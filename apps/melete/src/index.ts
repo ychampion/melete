@@ -788,6 +788,8 @@ export async function bootstrap(
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
         webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
+        // Paid search and reading calls count toward the same spending caps.
+        spending,
         // A private or sensitive conversation's words never go to an outside search.
         searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
       });

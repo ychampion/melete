@@ -452,23 +452,50 @@ over 1 MB are not read.
   and images are not requested. A search that fails or hits a rate limit moves
   on to the next backend.
 - **Reading pages `web.fetch` gets no text from.** When the direct read of a
-  page answers 403, 429 or 503, or returns an HTML page with almost no readable
-  text (a page built by scripts), `web.fetch` asks Tavily Extract for the same
-  page with `extract_depth: advanced`, which renders it first. This happens
-  only after the direct read has passed every rule for that address: the
-  Public web reads setting, a public address for the host and for every
-  redirect. The address is sent only when nothing in its path or query looks
-  like a credential or a link that is its own key (a share, reset or sign-in
-  link), and only on the terms a search query leaves on: the Public web reads
-  rule must allow it, even for a site the work's own list let it read, and so
-  must the privacy check. The
-  read stays within `web.fetch`'s total time and its 60,000-character limit,
-  and the receipt marks it with `read_through: "tavily"` and a note. When
-  Extract fails or finds less, the direct read's result is returned as it was.
-  Extract costs at most two credits a page, and none for a page it cannot read.
+  page meets a bot wall (a 403 that is a challenge or block page from a
+  bot-protection service), a rate limit (429) or an unavailable site (503), or
+  returns an HTML page with almost no readable text (a page built by scripts),
+  `web.fetch` asks Tavily Extract for the same page with `extract_depth:
+  advanced`, which renders it first. A plain 403 is the site saying the page
+  is not for this reader, so its address stays here. The fallback runs only
+  after the direct read has passed every rule for that address: the Public
+  web reads setting, and a public address for the host and every redirect.
+  The address is then sent only when:
+  - nothing in its host, path or query looks like a key: a run of eight or
+    more letters mixed with digits, ten or more digits, a JSON web token, or a
+    query name that suggests a key (`authkey`, `token`, `sig`, `session` and
+    the like);
+  - it is not a sign-in, sign-up, reset, invite or share step, and carries no
+    onward address (`next`, `redirect`, `return` and the like);
+  - the Public web reads rule allows it, even for a site the work's own list
+    let it read;
+  - the privacy check a search query passes allows it as sent, decoded, and
+    as words (`Jane%20Marlowe`, `jane-marlowe` and `john.doe%40gmail.com`
+    are read as the details they are).
 
-Evidence: `tavily.test.ts`, which runs both calls against a local stand-in for
-Tavily's API.
+  The read stays within `web.fetch`'s total time and its 60,000-character
+  limit, and the receipt marks it with `read_through: "tavily"` and a note.
+  When Extract fails or finds less, the direct read's result is returned as
+  it was. The hosted reader reads at most three pages each conversation turn;
+  past that, or past the work's spending limit, the receipt's note says so.
+
+Every Tavily call is charged to the job that made it, as the model's own
+search is: the most it can cost (one credit for a search, two for a page) is
+reserved on the job's spending estimate at $0.008 a credit before it is sent,
+then settled at the credits Tavily reports, counted on the attempt
+(`tavily_credits`, `usd_est`) and in the installation's spending record, so
+the spending limits in [DEPLOYMENT](DEPLOYMENT.md) cover it. A request and its
+receipt are `paid_api_request` and `paid_api_receipt` notices in the job's
+ledger. A search over the job's limit is refused, not moved to a free backend.
+
+When `recency` is asked for, the receipt keeps it only if the backend that
+answered held to it; otherwise its note tells the model the results are not
+limited to recent pages.
+
+Evidence: `tavily.test.ts` and `tavily-guard.test.ts`, which run the calls
+against a local stand-in for Tavily's API and the privacy check against the
+real redactor and topic classifier, and the integration test
+`paid-meter.test.ts`.
 
 ### Web reads
 

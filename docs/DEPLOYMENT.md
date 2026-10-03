@@ -1140,8 +1140,10 @@ otherwise with a search that needs no key (DuckDuckGo's results page, then
 Wikipedia). When a key is set, searches use that API first, Tavily before Brave.
 Tavily's results carry the passages of each page that match the query, and with
 its key `web.fetch` also reads, through Tavily Extract, a public page that gave
-a direct read no text. Tavily's free plan includes 1,000 credits a month; a
-search costs one and an extracted page at most two. The order, the
+a direct read no text, at most three pages a turn. Tavily's free plan includes
+1,000 credits a month; a search costs one and an extracted page at most two.
+Both are charged to the job that made them at $0.008 a credit and count toward
+the spending limits. The order, the
 privacy rules and what each search records are in
 [CONNECTORS](CONNECTORS.md#web-search).
 

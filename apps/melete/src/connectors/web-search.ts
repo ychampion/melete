@@ -57,6 +57,8 @@ export type SearchRequest = {
   attemptId: string;
   actionId: string;
   signal?: AbortSignal;
+  /** Charges a paid backend's call to the job, when given. */
+  meter?: PaidApiMeter;
 };
 
 export type SearchOutcome = {
@@ -69,6 +71,8 @@ export type SearchOutcome = {
   searches?: number;
   /** The provider and model a native search ran on. */
   model?: string;
+  /** Whether the backend kept to the recency asked for. */
+  recencyApplied?: boolean;
 };
 
 export type SearchBackend = {
@@ -189,12 +193,22 @@ function apiSignal(signal: AbortSignal | undefined): AbortSignal {
 /** The most a search API's reply may be; a larger one is not read. */
 export const MAX_API_REPLY_BYTES = 1024 * 1024;
 
+/** An API answered with an error status; only the status is kept, since its body can echo the key. */
+class ApiStatusError extends Error {
+  constructor(
+    name: string,
+    readonly status: number,
+  ) {
+    super(`${name} answered ${status}`);
+  }
+}
+
 async function apiJson(fetcher: Fetch, request: Request, name: string): Promise<unknown> {
   const response = await fetcher(request);
   if (!response.ok || !response.body) {
     await response.body?.cancel();
     // The status only: an API's error body can echo the key.
-    throw new Error(`${name} answered ${response.status}`);
+    throw new ApiStatusError(name, response.status);
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -252,6 +266,7 @@ export function braveSearch(options: { apiKey: string; fetch?: Fetch }): SearchB
           ),
           request.maxResults,
         ),
+        ...(request.recency ? { recencyApplied: true } : {}),
       };
     },
   };
@@ -266,6 +281,78 @@ const tavilyHeaders = (apiKey: string) => ({
   authorization: `Bearer ${apiKey}`,
 });
 
+/** The job a paid call is made for, to be charged to it. */
+export type PaidCall = { jobId: string; spaceId: string; attemptId: string; actionId: string };
+export type PaidCharge = {
+  provider: string;
+  kind: 'search' | 'extract';
+  /** The most the call can cost, in the provider's credits. */
+  maxCredits: number;
+};
+export type PaidHold = { id: string };
+
+/**
+ * Charges an outside API's calls to the job that made them: the most a call
+ * can cost is held against the job's spending before it is sent, and settled
+ * at what the provider reports once it answers.
+ */
+export type PaidApiMeter = {
+  /** Throws `PaidCallRefused`, with a sentence the model can read, when the call may not be made. */
+  reserve(call: PaidCall, charge: PaidCharge): Promise<PaidHold>;
+  settle(hold: PaidHold, credits: number): Promise<void>;
+};
+
+/** A paid call the job may not make now; the message says why, in plain words. */
+export class PaidCallRefused extends Error {}
+
+/** What a Tavily credit is charged as on the job's spending estimate: the pay-as-you-go price. */
+export const TAVILY_CREDIT_USD = 0.008;
+/** Credits one basic search costs. */
+export const TAVILY_SEARCH_CREDITS = 1;
+/** The most one advanced extract of a single page costs. */
+export const TAVILY_EXTRACT_CREDITS = 2;
+
+/** The credits a reply says it used, held within what was reserved; `fallback` when it does not say. */
+function creditsUsed(body: unknown, ceiling: number, fallback: number): number {
+  const credits = (body as { usage?: { credits?: unknown } } | null)?.usage?.credits;
+  return typeof credits === 'number' && Number.isFinite(credits) && credits >= 0
+    ? Math.min(credits, ceiling)
+    : fallback;
+}
+
+/**
+ * One metered call: the hold is taken first and settled whatever happens. A
+ * refusal by status was not billed; a call that failed any other way may have
+ * been, so it keeps its whole hold.
+ */
+async function metered<T>(
+  meter: PaidApiMeter | undefined,
+  call: PaidCall | undefined,
+  charge: PaidCharge,
+  send: () => Promise<{ value: T; credits: number }>,
+): Promise<T> {
+  if (!meter || !call) return (await send()).value;
+  const hold = await meter.reserve(call, charge);
+  let credits = charge.maxCredits;
+  try {
+    const sent = await send();
+    credits = sent.credits;
+    return sent.value;
+  } catch (error) {
+    if (error instanceof ApiStatusError) credits = 0;
+    throw error;
+  } finally {
+    await meter.settle(hold, credits);
+  }
+}
+
+const paidCall = (request: SearchRequest): PaidCall => ({
+  jobId: request.jobId,
+  spaceId: request.spaceId,
+  attemptId: request.attemptId,
+  actionId: request.actionId,
+});
+
 /**
  * Tavily Search (https://api.tavily.com/search), with `TAVILY_API_KEY`.
  *
@@ -274,35 +361,55 @@ const tavilyHeaders = (apiKey: string) => ({
  * result's `content`, so a search often answers without a `web.fetch` for
  * each page. Tavily's own written answer and whole-page text are not asked
  * for: the agent writes the answer from the sources, and whole pages are what
- * `web.fetch` is for.
+ * `web.fetch` is for. With a meter on the request the credit is charged to
+ * the job, and a job that may not spend it searches nowhere else either.
  */
 export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): SearchBackend {
   const fetcher = options.fetch ?? ((request: Request) => fetch(request));
   return {
     name: 'tavily',
     async search(request) {
-      const body = (await apiJson(
-        fetcher,
-        new Request(`${TAVILY_API}/search`, {
-          method: 'POST',
-          headers: tavilyHeaders(options.apiKey),
-          body: JSON.stringify({
-            query: request.query,
-            max_results: request.maxResults,
-            search_depth: 'basic',
-            chunks_per_source: 3,
-            include_answer: false,
-            include_raw_content: false,
-            include_images: false,
-            ...(request.recency
-              ? { time_range: request.recency, include_published_date: true }
-              : {}),
-          }),
-          redirect: 'error',
-          signal: apiSignal(request.signal),
-        }),
-        'tavily',
-      )) as { results?: unknown } | null;
+      const charge: PaidCharge = {
+        provider: 'tavily',
+        kind: 'search',
+        maxCredits: TAVILY_SEARCH_CREDITS,
+      };
+      let body: { results?: unknown } | null;
+      try {
+        body = await metered(request.meter, paidCall(request), charge, async () => {
+          const reply = (await apiJson(
+            fetcher,
+            new Request(`${TAVILY_API}/search`, {
+              method: 'POST',
+              headers: tavilyHeaders(options.apiKey),
+              body: JSON.stringify({
+                query: request.query,
+                max_results: request.maxResults,
+                search_depth: 'basic',
+                chunks_per_source: 3,
+                include_answer: false,
+                include_raw_content: false,
+                include_images: false,
+                include_usage: true,
+                ...(request.recency
+                  ? { time_range: request.recency, include_published_date: true }
+                  : {}),
+              }),
+              redirect: 'error',
+              signal: apiSignal(request.signal),
+            }),
+            'tavily',
+          )) as { results?: unknown } | null;
+          return {
+            value: reply,
+            credits: creditsUsed(reply, charge.maxCredits, charge.maxCredits),
+          };
+        });
+      } catch (error) {
+        // Over the job's spending, a search is not moved to a free backend to get round it.
+        if (error instanceof PaidCallRefused) throw new SearchRefused(error.message);
+        throw error;
+      }
       return {
         backend: 'tavily',
         results: distinctResults(
@@ -314,6 +421,7 @@ export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): Search
           ),
           request.maxResults,
         ),
+        ...(request.recency ? { recencyApplied: true } : {}),
       };
     },
   };
@@ -327,7 +435,14 @@ export type PageExtractor = {
   name: string;
   read(
     url: string,
-    options: { signal?: AbortSignal; timeoutMs: number; maxChars: number },
+    options: {
+      signal?: AbortSignal;
+      timeoutMs: number;
+      maxChars: number;
+      /** Charges the read to the job, when given with its call. */
+      meter?: PaidApiMeter;
+      call?: PaidCall;
+    },
   ): Promise<{ text: string; truncated: boolean } | null>;
 };
 
@@ -341,36 +456,51 @@ export function tavilyExtract(options: { apiKey: string; fetch?: Fetch }): PageE
   const fetcher = options.fetch ?? ((request: Request) => fetch(request));
   return {
     name: 'tavily',
-    async read(url, read) {
-      const timeoutMs = Math.max(1_000, Math.min(read.timeoutMs, 60_000));
-      const timeout = AbortSignal.timeout(timeoutMs);
-      const body = (await apiJson(
-        fetcher,
-        new Request(`${TAVILY_API}/extract`, {
-          method: 'POST',
-          headers: tavilyHeaders(options.apiKey),
-          body: JSON.stringify({
-            urls: [url],
-            extract_depth: 'advanced',
-            format: 'text',
-            include_images: false,
-            // Tavily's own limit, a second inside ours so its answer can arrive.
-            timeout: Math.max(1, Math.floor(timeoutMs / 1000) - 1),
-          }),
-          redirect: 'error',
-          signal: read.signal ? AbortSignal.any([read.signal, timeout]) : timeout,
-        }),
-        'tavily',
-      )) as { results?: unknown } | null;
-      const [page] = records(body?.results);
-      if (typeof page?.raw_content !== 'string') return null;
-      // A NUL never carries meaning in a page, and a receipt cannot store one.
-      const text = page.raw_content.replaceAll('\u0000', '').trim();
-      if (!text) return null;
-      return {
-        text: text.length > read.maxChars ? text.slice(0, read.maxChars) : text,
-        truncated: text.length > read.maxChars,
+    read(url, read) {
+      const charge: PaidCharge = {
+        provider: 'tavily',
+        kind: 'extract',
+        maxCredits: TAVILY_EXTRACT_CREDITS,
       };
+      return metered(read.meter, read.call, charge, async () => {
+        const timeoutMs = Math.max(1_000, Math.min(read.timeoutMs, 60_000));
+        const timeout = AbortSignal.timeout(timeoutMs);
+        const body = (await apiJson(
+          fetcher,
+          new Request(`${TAVILY_API}/extract`, {
+            method: 'POST',
+            headers: tavilyHeaders(options.apiKey),
+            body: JSON.stringify({
+              urls: [url],
+              extract_depth: 'advanced',
+              format: 'text',
+              include_images: false,
+              include_usage: true,
+              // Tavily's own limit, a second inside ours so its answer can arrive.
+              timeout: Math.max(1, Math.floor(timeoutMs / 1000) - 1),
+            }),
+            redirect: 'error',
+            signal: read.signal ? AbortSignal.any([read.signal, timeout]) : timeout,
+          }),
+          'tavily',
+        )) as { results?: unknown } | null;
+        const [page] = records(body?.results);
+        // A NUL never carries meaning in a page, and a receipt cannot store one.
+        const text =
+          typeof page?.raw_content === 'string'
+            ? page.raw_content.replaceAll('\u0000', '').trim()
+            : '';
+        // A page Tavily could not read is not billed.
+        const credits = creditsUsed(body, charge.maxCredits, text ? charge.maxCredits : 0);
+        if (!text) return { value: null, credits };
+        return {
+          value: {
+            text: text.length > read.maxChars ? text.slice(0, read.maxChars) : text,
+            truncated: text.length > read.maxChars,
+          },
+          credits,
+        };
+      });
     },
   };
 }
@@ -571,7 +701,11 @@ export function duckDuckGoSearch(
         cache.set(key, { at: now(), results });
         if (cache.size > CACHE_ENTRIES) cache.delete(cache.keys().next().value as string);
       }
-      return { backend: 'duckduckgo', results: results.slice(0, request.maxResults) };
+      return {
+        backend: 'duckduckgo',
+        results: results.slice(0, request.maxResults),
+        ...(request.recency ? { recencyApplied: true } : {}),
+      };
     },
   };
 }

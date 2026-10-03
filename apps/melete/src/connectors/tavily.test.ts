@@ -135,6 +135,7 @@ test('a Tavily search goes to api.tavily.com with the key as a bearer token and 
     include_answer: false,
     include_raw_content: false,
     include_images: false,
+    include_usage: true,
   });
   // The key travels only in the header.
   expect(JSON.stringify(sent?.body)).not.toContain(KEY);
@@ -332,6 +333,7 @@ test('Tavily Extract is asked for one page, rendered, as text, within the time l
     extract_depth: 'advanced',
     format: 'text',
     include_images: false,
+    include_usage: true,
     timeout: 19,
   });
 });
@@ -448,18 +450,30 @@ test('a page built by scripts is read through Extract at the address the redirec
   expect(page.about_this_text).toBeDefined();
 });
 
-test('a site that turns the direct read away is tried through Extract; other failures are not', async () => {
-  for (const status of [403, 429, 503]) {
+test('a bot wall, a rate limit or an unavailable site is tried through Extract; other failures are not', async () => {
+  const walls: Answer[] = [
+    { ...html('<p>Access denied</p>', 403), headers: { 'cf-mitigated': 'challenge' } },
+    html('<html><head><title>Just a moment...</title></head><body>cf-chl</body></html>', 403),
+    {
+      status: 403,
+      headers: { 'content-type': 'text/html', server: 'AkamaiGHost' },
+      body: '<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD></HTML>',
+    },
+    html('<div id="px-captcha"></div>', 403),
+    html('<p>Slow down</p>', 429),
+    html('<p>Try later</p>', 503),
+  ];
+  for (const answer of walls) {
     const { asked, extractor } = recordingExtractor();
     const page = detail(
       await fetchPage('https://blocked.example/', {
-        transport: site(() => html('<p>Access denied</p>', status)).transport,
+        transport: site(() => answer).transport,
         extract: extractor,
       }),
     );
     expect(asked).toHaveLength(1);
     expect(page.read_through).toBe('tavily');
-    expect(page.status).toBe(status);
+    expect(page.status).toBe(answer.status);
   }
   for (const status of [404, 410, 500]) {
     const { asked, extractor } = recordingExtractor();
@@ -632,7 +646,7 @@ test("when Extract fails, finds less, or there is too little time left, the dire
     const { asked, extractor } = recordingExtractor(outcome);
     const page = detail(
       await fetchPage('https://app.example/', {
-        transport: site(() => html('<p>Access denied</p>', 403)).transport,
+        transport: site(() => html('<p>Access denied</p>', 503)).transport,
         extract: extractor,
       }),
     );
@@ -693,6 +707,7 @@ test('web.search takes a recency, keeps it in the payload and the receipt, and r
                 published: '2026-10-01',
               },
             ],
+            recencyApplied: true,
           };
         },
       },
