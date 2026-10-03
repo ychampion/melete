@@ -128,6 +128,9 @@ export function createInternalServer(options: {
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
     privacy: options.privacy,
+    // The install's capability key, so a conversation's cache key is the same
+    // across service restarts and computable by nobody outside it.
+    promptCacheSecret: options.capabilityKey,
     // A placeholder still in a runtime payload is resolved before the broker reads it.
     brokerFetch: withPlaceholderResolution(
       learningRuntimeFetch({

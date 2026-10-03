@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type AttemptOutcome,
+  BASELINE_CONTEXT_BUDGET,
   type CanonicalMessage,
   contextBudget,
   type Deliverable,
 } from '@melete/contracts';
+import { estimateInputTokens } from '../gateway/metering.ts';
 import {
   assembleHistory,
   BundleContextLimitError,
@@ -14,6 +16,7 @@ import {
   renderEarlierWork,
   TRANSCRIPT_MAX_CHARACTERS,
   TRANSCRIPT_MAX_MESSAGES,
+  TRANSCRIPT_MAX_WIRE_BYTES,
   transcriptLimits,
 } from './bundle.ts';
 
@@ -615,5 +618,50 @@ describe('work an earlier attempt already did', () => {
     ]);
     expect(summary).toContain('- Saved out.md in work (4 bytes)');
     expect(summary).not.toContain('<melete-earlier-');
+  });
+});
+
+describe('the transcript bound holds for text in any script', () => {
+  const large = transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash'));
+  const say = (text: string, count: number) =>
+    Array.from(
+      { length: count },
+      (_, index): CanonicalMessage => ({
+        role: index % 2 ? 'assistant' : 'user',
+        content: `${index}: ${text}`,
+        at,
+      }),
+    );
+
+  test('Chinese text is bounded by the engine estimate, not four characters to the token', () => {
+    const bounded = boundTranscript(
+      say('请帮我查一下这个月的账单，并把结果告诉我。'.repeat(20), 800),
+      large,
+    );
+    const serialized = JSON.stringify(bounded);
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(large.maxTokens);
+    // At four characters to the token it would have kept four times as many.
+    expect(serialized.length).toBeLessThan(large.maxTokens * 2);
+    expect(Buffer.byteLength(JSON.stringify(serialized))).toBeLessThanOrEqual(
+      TRANSCRIPT_MAX_WIRE_BYTES,
+    );
+  });
+
+  test('text heavy with escapes and multi-byte letters stays inside the wire bound', () => {
+    const bounded = boundTranscript(say('"Привет" \\ ไทย\n'.repeat(60), 800), large);
+    const serialized = JSON.stringify(bounded);
+    expect(Buffer.byteLength(JSON.stringify(serialized))).toBeLessThanOrEqual(
+      TRANSCRIPT_MAX_WIRE_BYTES,
+    );
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(large.maxTokens);
+    expect(bounded.at(-1)?.content).toStartWith('799:');
+  });
+
+  test('Latin text keeps exactly the bound it had', () => {
+    const messages = say('plain words '.repeat(50), 200);
+    expect(boundTranscript(messages)).toEqual(
+      boundTranscript(messages, transcriptLimits(BASELINE_CONTEXT_BUDGET)),
+    );
+    expect(JSON.stringify(boundTranscript(messages)).length).toBeGreaterThan(31_000);
   });
 });

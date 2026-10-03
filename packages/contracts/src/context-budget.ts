@@ -100,9 +100,51 @@ export function contextBudgetForWindow(window: number): ContextBudget {
   };
 }
 
-/** The budgets for a model, from the window the catalog gives it. */
-export const contextBudget = (model: string): ContextBudget =>
-  contextBudgetForWindow(modelContextWindow(model));
+/** The limits beyond the catalog window that bound one attempt's context. */
+export type ContextBudgetLimits = {
+  /** The job's own per-request input ceiling (`budget.max_input_tokens`). */
+  maxInputTokens?: number;
+  /** The window the operator states for this deployment's models (`MELETE_MODEL_CONTEXT_WINDOW`). */
+  statedWindow?: number;
+  /** The engine's compaction trigger, in tokens, for this attempt. */
+  compactionTokens?: number;
+};
+
+/**
+ * The share of the engine's compaction trigger the transcript may fill. The
+ * rest is the tool definitions, the instructions, recalled knowledge and the
+ * reply, so the first request of an attempt never starts at the trigger.
+ */
+export const TRANSCRIPT_COMPACTION_SHARE = 0.4;
+
+const below = (value: number | undefined): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : Number.POSITIVE_INFINITY;
+
+/**
+ * The budgets for a model. They scale with the smallest of the window the
+ * catalog gives it, the window the operator states, and the job's own input
+ * ceiling, so a narrower limit is never exceeded by a budget sized for a wider
+ * one. The transcript is further held to a share of the engine's compaction
+ * trigger. No limit takes a budget below the baseline every model had before.
+ */
+export function contextBudget(model: string, limits: ContextBudgetLimits = {}): ContextBudget {
+  const window = Math.min(
+    modelContextWindow(model),
+    below(limits.statedWindow),
+    below(limits.maxInputTokens),
+  );
+  const budget = contextBudgetForWindow(window);
+  const compaction = below(limits.compactionTokens);
+  if (Number.isFinite(compaction)) {
+    budget.transcript_tokens = Math.min(
+      budget.transcript_tokens,
+      Math.max(BASELINE_TRANSCRIPT_TOKENS, Math.floor(compaction * TRANSCRIPT_COMPACTION_SHARE)),
+    );
+  }
+  return budget;
+}
 
 /** The baseline: what a 128,000-token model, or one the catalog does not name, gets. */
 export const BASELINE_CONTEXT_BUDGET: ContextBudget =

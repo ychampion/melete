@@ -1,4 +1,4 @@
-import { contextBudget, type ToolSpec } from '@melete/contracts';
+import type { ToolSpec } from '@melete/contracts';
 import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
@@ -9,6 +9,7 @@ import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentAccessIn, offeredTo } from '../experience/access.ts';
+import { attemptContextBudget } from '../jobs/context-budget.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
@@ -53,7 +54,7 @@ export class RuntimeCatalog {
     // only its connections' tools. Anything more is offered and then refused.
     const access = await agentAccessIn(tx, claims.job_id);
     // How much of each kind this attempt's model has room for.
-    const budget = contextBudget(bundle.model.model);
+    const budget = attemptContextBudget(bundle.model.model, bundle.budget);
     const granted = (await this.toolsForSpace(claims.space_id, claims.scopes, tx)).filter((tool) =>
       offeredTo(access, tool),
     );

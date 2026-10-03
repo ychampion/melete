@@ -690,7 +690,9 @@ export class ProcedureEvaluator {
     return {
       row,
       report: suite.grade(value, { output: summary, actions, state: current.state }, candidate),
-      tokens: (usage.charged_input_tokens ?? usage.input_tokens) + usage.output_tokens,
+      // Raw tokens: a cache discount depends on how warm the cache happened to be,
+      // so it would make the same evaluation look cheaper on a second run.
+      tokens: usage.input_tokens + usage.output_tokens,
       outputHash: digest(summary),
       attemptId: execution.id,
       runtime: execution.runtimeVersion,

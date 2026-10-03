@@ -75,3 +75,26 @@ test('a 200,000-token window sits between the two, in proportion', () => {
     transcript_tokens: 12_500,
   });
 });
+
+test('a narrower limit than the catalog window narrows every budget, never below the baseline', () => {
+  const model = 'accounts/fireworks/models/deepseek-v4p1-flash';
+  // A job held to 60,000 input tokens gets exactly what it had before.
+  expect(contextBudget(model, { maxInputTokens: 60_000 })).toMatchObject({
+    ...BASELINE_CONTEXT_BUDGET,
+    window: 60_000,
+  });
+  // An operator who states a 200,000-token window gets 200,000-token budgets.
+  expect(contextBudget(model, { statedWindow: 200_000 })).toEqual(contextBudgetForWindow(200_000));
+  // A stated window never raises a model past what the catalog gives it.
+  expect(contextBudget('unlisted-model', { statedWindow: 1_000_000 })).toEqual(
+    BASELINE_CONTEXT_BUDGET,
+  );
+});
+
+test('the transcript is held to a share of the compaction trigger', () => {
+  const model = 'accounts/fireworks/models/deepseek-v4p1-flash';
+  expect(contextBudget(model, { compactionTokens: 200_000 }).transcript_tokens).toBe(62_500);
+  expect(contextBudget(model, { compactionTokens: 100_000 }).transcript_tokens).toBe(40_000);
+  // A small trigger leaves the baseline, which every model had before.
+  expect(contextBudget(model, { compactionTokens: 10_000 }).transcript_tokens).toBe(8_000);
+});

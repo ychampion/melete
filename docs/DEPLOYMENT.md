@@ -1170,13 +1170,19 @@ How much of a model's window an attempt starts with follows that model's
 window from the same catalog; there is nothing to set. A 128,000-token model, and
 any model Melete does not know, gets the baseline: about 750 tokens of tool
 definitions with the rest named for the model to load, three skills, 2,000
-tokens of what Melete remembers, and the last 32,000 characters (about 8,000
-tokens) of the conversation. A larger window gets proportionally more, up to a
-ceiling: a million-token model starts with about 5,900 tokens of tool
-definitions, six skills, 8,000 tokens of memory and about 62,500 tokens of the
-conversation, and the engine summarises in place beyond that, as above. Because
-`MELETE_MODEL_CONTEXT_WINDOW` can only make these smaller than the baseline,
-which they never go below, it does not change them.
+tokens of what Melete remembers, and about 8,000 tokens of the conversation. A
+larger window gets proportionally more, up to a ceiling: a million-token model
+starts with about 5,900 tokens of tool definitions, six skills, 8,000 tokens of
+memory and up to 62,500 tokens of the conversation, and the engine summarises in
+place beyond that, as above. These follow the smallest window that applies:
+`MELETE_MODEL_CONTEXT_WINDOW` and a job's own input limit narrow them (never
+below the baseline, and never above the catalog's figure for the model), and
+the conversation is also held to four tenths of the compaction trigger, so with
+the default `MELETE_COMPACTION_MAX_TOKENS` a million-token model carries about
+52,000 tokens of it. Tokens are counted the way the engine counts them, a token
+per character in scripts such as Chinese or Japanese, so a conversation in any
+language stays inside these numbers and inside the largest request the gateway
+accepts.
 
 A tool the model loads part way through a reply is added to that reply's run,
 so loading one costs no restart.
@@ -1184,7 +1190,10 @@ so loading one costs no restart.
 Requests are ordered so the parts that stay the same from one turn to the next
 come first, and the gateway asks each provider to reuse them: Anthropic through
 cache breakpoints, OpenAI and a ChatGPT plan through one cache key per
-conversation, Fireworks by keeping a conversation on one server. Cached input
+conversation, Fireworks by keeping a conversation on one server. A key is
+derived with the install's own capability key from one conversation, or from
+one service call for one space, so no two people, spaces or installs share
+one and nobody outside the install can work one out. Cached input
 is recorded at the provider's cached price, a tenth of the input price for
 Anthropic and OpenAI, half for Fireworks and a quarter for Google, with a
 cache write on Anthropic at a quarter more. An endpoint you add yourself, and a

@@ -11,7 +11,7 @@ import {
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
-import { applyPromptCaching } from './caching.ts';
+import { applyPromptCaching, promptCacheScope } from './caching.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
@@ -80,6 +80,11 @@ export interface GatewayOptions {
    * transport.
    */
   privacy: PrivacyRouter | false;
+  /**
+   * The install's own secret the prompt-cache keys are an HMAC under. Without
+   * one, a secret drawn once for the process is used.
+   */
+  promptCacheSecret?: string;
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -309,15 +314,18 @@ export function createModelGateway(options: GatewayOptions): Server {
       // The runtime's mark on a screenshot is for the router; it never leaves.
       const outbound = withoutMarks(prepared?.body ?? body);
       const local = prepared?.local ?? null;
+      // A model on the person's own machine or device, by either route.
+      const own = local !== null || prepared?.receipt.route === 'on_device';
       // The provider's prompt-caching controls, for a request that leaves for
       // one. A model on the person's own machine is sent the body as written.
       const caching =
-        local || provider.fake
+        own || provider.fake
           ? null
           : applyPromptCaching(outbound, {
               provider: provider.name,
               protocol,
-              jobId: principal.jobId,
+              scope: promptCacheScope(principal),
+              ...(options.promptCacheSecret ? { secret: options.promptCacheSecret } : {}),
             });
       const encoded = JSON.stringify(outbound);
       // A picture is charged as the flat count the engine compacts by, not as
@@ -444,7 +452,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       // person's own machine is priced as no discount: it has no price list.
       settlement.usage =
         collector.completed && collector.usage
-          ? withChargedInput(collector.usage, local ? 'local' : provider.name)
+          ? withChargedInput(collector.usage, own ? 'local' : provider.name)
           : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
       settlement.latencyMs = Math.round(performance.now() - started);

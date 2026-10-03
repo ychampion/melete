@@ -235,6 +235,8 @@ def restore_pictures(history: list) -> list:
 # call it on its very next request, in the same run. The engine serves one run
 # at a time here; the reference is weak so a finished run's agent is not kept.
 _live_agent: list[Callable[[], Any]] = []
+# One refresh at a time: two loads finishing together must not both append.
+_live_lock = threading.Lock()
 
 
 def bind_agent(agent: Any) -> None:
@@ -246,20 +248,31 @@ def bind_agent(agent: Any) -> None:
         _live_agent[:] = [lambda: agent]
 
 
+def _fallback(name: str, reason: str) -> bool:
+    # One line per tool that has to wait for a fresh run, so losing the live
+    # path to an engine change shows up in the runtime's log, not only as latency.
+    sys.stderr.write(f"melete: {name} continues in a new run: {reason}\n")
+    return False
+
+
 def refresh_live_tools(name: str) -> bool:
     """Put a tool registered during a run in front of the running agent.
 
     True only when the agent's list now offers ``name``. False when no run is
     being served, the engine's refresh is not available or failed, or the tool
-    is still missing; the caller then falls back to starting a fresh run.
+    is still missing; the caller then falls back to starting a fresh run, and
+    the reason is written to the log.
     """
     agent = _live_agent[0]() if _live_agent else None
     if agent is None:
-        return False
-    try:
-        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        return _fallback(name, "no run is being served")
+    with _live_lock:
+        try:
+            from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
-        refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
-    except Exception:  # noqa: BLE001 - a refresh that fails falls back to a fresh run
-        return False
-    return name in (getattr(agent, "valid_tool_names", None) or ())
+            refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
+        except Exception as error:  # noqa: BLE001 - a refresh that fails falls back to a fresh run
+            return _fallback(name, f"the engine refresh failed ({type(error).__name__})")
+        if name in (getattr(agent, "valid_tool_names", None) or ()):
+            return True
+    return _fallback(name, "the refreshed tool list does not offer it")

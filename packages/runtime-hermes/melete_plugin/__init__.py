@@ -297,7 +297,8 @@ def _loaded_result(schema: Dict[str, Any], fingerprint: Any) -> Dict[str, Any]:
         from melete_runtime_hooks import refresh_live_tools
 
         live = refresh_live_tools(name)
-    except Exception:  # noqa: BLE001 - no live refresh means a fresh run
+    except Exception as error:  # noqa: BLE001 - no live refresh means a fresh run
+        logger.warning("melete: %s continues in a new run: %s", name, type(error).__name__)
         live = False
     if live:
         return {

@@ -3,9 +3,13 @@ import {
   applyPromptCaching,
   markAnthropicCache,
   promptCacheKey,
+  promptCacheScope,
   SESSION_AFFINITY_HEADER,
 } from './caching.ts';
 import { CACHED_INPUT_PRICE, chargedInputTokens, withChargedInput } from './metering.ts';
+
+const SECRET = 'an-install-secret-of-at-least-thirty-two-characters';
+const job = (jobId: string) => ({ jobId, attemptId: 'att_x', privacy: { kind: 'job' as const } });
 
 type MessagesBody = {
   model: string;
@@ -75,41 +79,108 @@ describe('prompt-caching controls', () => {
   });
 
   test('OpenAI and the ChatGPT plan get one cache key per conversation; Fireworks gets session affinity', () => {
+    const scope = promptCacheScope(job('job_a'));
     const openai: Record<string, unknown> = { model: 'gpt-fixture', input: 'hello' };
     expect(
-      applyPromptCaching(openai, { provider: 'openai', protocol: 'responses', jobId: 'job_a' }),
+      applyPromptCaching(openai, {
+        provider: 'openai',
+        protocol: 'responses',
+        scope,
+        secret: SECRET,
+      }),
     ).toEqual({ markers: 0, key: true, headers: {} });
-    expect(openai.prompt_cache_key).toBe(promptCacheKey('job_a'));
-    expect(promptCacheKey('job_a')).toMatch(/^[0-9a-f]{32}$/);
-    expect(promptCacheKey('job_a')).not.toBe(promptCacheKey('job_b'));
+    expect(openai.prompt_cache_key).toBe(promptCacheKey(scope, SECRET));
+    expect(promptCacheKey(scope, SECRET)).toMatch(/^[0-9a-f]{32}$/);
     // The job id itself never leaves.
     expect(String(openai.prompt_cache_key)).not.toContain('job_a');
-    const chatgpt: Record<string, unknown> = { prompt_cache_key: 'set-by-the-engine' };
-    applyPromptCaching(chatgpt, { provider: 'chatgpt', protocol: 'responses', jobId: 'job_a' });
-    expect(chatgpt.prompt_cache_key).toBe('set-by-the-engine');
+    // A key the engine chose, perhaps from its session id, is replaced, never passed on.
+    const chatgpt: Record<string, unknown> = { prompt_cache_key: 'job_a' };
+    applyPromptCaching(chatgpt, {
+      provider: 'chatgpt',
+      protocol: 'responses',
+      scope,
+      secret: SECRET,
+    });
+    expect(chatgpt.prompt_cache_key).toBe(promptCacheKey(scope, SECRET));
+    const compatible: Record<string, unknown> = { prompt_cache_key: 'job_a' };
+    applyPromptCaching(compatible, {
+      provider: 'openai-compatible',
+      protocol: 'chat/completions',
+      scope,
+      secret: SECRET,
+    });
+    expect(compatible.prompt_cache_key).toBe(promptCacheKey(scope, SECRET));
     const fireworks: Record<string, unknown> = { model: 'accounts/fireworks/models/x' };
     expect(
       applyPromptCaching(fireworks, {
         provider: 'fireworks',
         protocol: 'chat/completions',
-        jobId: 'job_a',
+        scope,
+        secret: SECRET,
       }),
     ).toEqual({
       markers: 0,
       key: false,
-      headers: { [SESSION_AFFINITY_HEADER]: promptCacheKey('job_a') },
+      headers: { [SESSION_AFFINITY_HEADER]: promptCacheKey(scope, SECRET) },
     });
     expect(fireworks).toEqual({ model: 'accounts/fireworks/models/x' });
-    // An endpoint with no known control is left alone.
+    // An endpoint with no known control, sent no key, is left alone.
     const other: Record<string, unknown> = { model: 'm' };
     expect(
       applyPromptCaching(other, {
         provider: 'openai-compatible',
         protocol: 'chat/completions',
-        jobId: 'j',
+        scope,
       }),
     ).toEqual({ markers: 0, key: false, headers: {} });
     expect(other).toEqual({ model: 'm' });
+  });
+
+  test('no two people, spaces or installs share a key, and an id alone does not give one', () => {
+    const service = (
+      purpose: string,
+      spaceId: string,
+      sourceJobId: string | null,
+      attemptId: string,
+    ) =>
+      promptCacheScope({
+        jobId: purpose === 'companies' ? 'companies-scan' : `${purpose}:${spaceId}`,
+        attemptId,
+        privacy: { kind: 'service', purpose, spaceId, sourceJobId },
+      });
+    const keys = [
+      // One fixed job name, two spaces.
+      service('companies', 'sp_a', null, 'scan:aaaa'),
+      service('companies', 'sp_b', null, 'scan:bbbb'),
+      // One space, two people's conversations.
+      service('memory', 'sp_a', 'job_person_one', 'memory:work-one'),
+      service('memory', 'sp_a', 'job_person_two', 'memory:work-two'),
+      // One space, two calls that carry no conversation.
+      service('memory', 'sp_a', null, 'memory:work-three'),
+      service('memory', 'sp_a', null, 'memory:work-four'),
+      service('action_review', 'sp_a', 'job_person_one', 'review:t1'),
+      promptCacheScope(job('job_person_one')),
+    ].map((scope) => promptCacheKey(scope, SECRET));
+    expect(new Set(keys).size).toBe(keys.length);
+    // Two installs: the same conversation id under two secrets.
+    const scope = promptCacheScope(job('job_a'));
+    expect(promptCacheKey(scope, SECRET)).not.toBe(promptCacheKey(scope, `${SECRET}-other`));
+    // Without the install's secret the key is not the plain digest of the id.
+    expect(promptCacheKey(scope)).not.toBe(promptCacheKey(scope, SECRET));
+  });
+
+  test('a cache_control property inside a schema or tool input does not switch the breakpoints off', () => {
+    const body = {
+      system: 'Melete',
+      tools: [{ name: 't', input_schema: { properties: { cache_control: { type: 'string' } } } }],
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'u', name: 't', input: { cache_control: 'x' } }],
+        },
+      ],
+    };
+    expect(markAnthropicCache(body)).toBe(3);
   });
 });
 

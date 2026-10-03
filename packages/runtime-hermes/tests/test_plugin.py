@@ -349,7 +349,7 @@ def test_a_loaded_tool_joins_the_running_agent_without_a_new_run(client, broker,
     assert [tool["name"] for tool in ctx.tools] == ["search_tools", "load_tool", "email.search"]
 
 
-def test_a_refresh_that_fails_or_misses_the_tool_falls_back_to_a_new_run(client, broker, monkeypatch):
+def test_a_refresh_that_fails_or_misses_the_tool_falls_back_to_a_new_run(client, broker, monkeypatch, capsys):
     import melete_runtime_hooks
 
     def broken(target, **options):
@@ -360,8 +360,10 @@ def test_a_refresh_that_fails_or_misses_the_tool_falls_back_to_a_new_run(client,
     melete_runtime_hooks.bind_agent(agent)
     try:
         assert melete_runtime_hooks.refresh_live_tools("email.search") is False
+        assert "the engine refresh failed (RuntimeError)" in capsys.readouterr().err
         _engine_refresh(monkeypatch, lambda target, **options: set())
         assert melete_runtime_hooks.refresh_live_tools("email.search") is False
+        assert "does not offer it" in capsys.readouterr().err
     finally:
         melete_runtime_hooks.bind_agent(object())
     # A finished run's agent is not kept alive by the reference.

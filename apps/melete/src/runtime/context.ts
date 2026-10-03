@@ -1,13 +1,13 @@
 import {
   type AttemptBundle,
   type ContextAwareRuntimeAdapter,
-  contextBudget,
   isRetrievable,
   type KnowledgeExcerpt,
   knowledgeExcerpt,
   type RuntimeAdapter,
 } from '@melete/contracts';
 import { loadSpace, openIndex } from '@melete/knowledge';
+import { attemptContextBudget } from '../jobs/context-budget.ts';
 import type { SpaceResolver } from '../knowledge/spaces.ts';
 import { withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
@@ -77,7 +77,7 @@ async function legacyKnowledge(
       });
       if (
         knowledgeTokens([...bundle.knowledge, ...selected, excerpt]) >
-        contextBudget(bundle.model.model).knowledge_tokens
+        attemptContextBudget(bundle.model.model, bundle.budget).knowledge_tokens
       )
         continue;
       selected.push(excerpt);

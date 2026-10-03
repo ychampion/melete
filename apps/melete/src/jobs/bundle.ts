@@ -10,9 +10,9 @@ import {
   type ContextBudget,
   type ContextGenerations,
   canonicalTimeZone,
-  contextBudget,
   type Deliverable,
   describeTrigger,
+  GATEWAY_MAX_REQUEST_BYTES,
   inputTokenCeiling,
   isRunKind,
   jobBudget,
@@ -54,6 +54,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentIdentity, agentView } from '../experience/agents.ts';
+import { estimateInputTokens } from '../gateway/metering.ts';
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
@@ -62,6 +63,7 @@ import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -76,18 +78,32 @@ export const TRANSCRIPT_MAX_MESSAGES = BASELINE_CONTEXT_BUDGET.transcript_messag
 export const TRANSCRIPT_MAX_CHARACTERS =
   BASELINE_CONTEXT_BUDGET.transcript_tokens * CONTEXT_CHARS_PER_TOKEN;
 
-export type TranscriptLimits = { maxMessages: number; maxCharacters: number };
+/**
+ * The most the serialized transcript may take of a request body, in UTF-8 bytes
+ * as it travels: embedded as text in the attempt's input and escaped again in
+ * the request. Four tenths of the largest body the gateway reads, so the rest
+ * of the request always has room.
+ */
+export const TRANSCRIPT_MAX_WIRE_BYTES = Math.floor(0.4 * GATEWAY_MAX_REQUEST_BYTES);
 
-/** The transcript bound a context budget sets, in messages and serialized characters. */
+/**
+ * A transcript bound: messages, tokens by the engine's own estimate (a token per
+ * character in the scripts a tokenizer charges by the character, four UTF-8
+ * bytes to the token elsewhere), and bytes on the wire.
+ */
+export type TranscriptLimits = { maxMessages: number; maxTokens: number; maxBytes: number };
+
+/** The transcript bound a context budget sets. */
 export const transcriptLimits = (budget: ContextBudget): TranscriptLimits => ({
   maxMessages: budget.transcript_messages,
-  maxCharacters: budget.transcript_tokens * CONTEXT_CHARS_PER_TOKEN,
+  maxTokens: budget.transcript_tokens,
+  maxBytes: TRANSCRIPT_MAX_WIRE_BYTES,
 });
 
-const BASELINE_TRANSCRIPT: TranscriptLimits = {
-  maxMessages: TRANSCRIPT_MAX_MESSAGES,
-  maxCharacters: TRANSCRIPT_MAX_CHARACTERS,
-};
+const BASELINE_TRANSCRIPT: TranscriptLimits = transcriptLimits(BASELINE_CONTEXT_BUDGET);
+
+/** The transcript as the request carries it: text inside the input, escaped again. */
+const wireBytes = (serialized: string): number => Buffer.byteLength(JSON.stringify(serialized));
 const omitted = '[Content omitted from bounded context; the durable record remains stored.]';
 const toolResult = z.object({ call_id: z.string().min(1), ok: z.boolean(), result: jsonObject });
 
@@ -105,7 +121,31 @@ export function boundTranscript(
   messages: readonly CanonicalMessage[],
   limits: TranscriptLimits = BASELINE_TRANSCRIPT,
 ): CanonicalMessage[] {
-  const { maxMessages, maxCharacters } = limits;
+  const { maxMessages, maxTokens, maxBytes } = limits;
+  // Bound by characters at four to the token, then check the result against
+  // the engine's own estimate and the bytes it takes on the wire. Text in a
+  // script a tokenizer charges by the character, or that takes three bytes to
+  // the character, comes out over; the character bound is narrowed in
+  // proportion until both hold. Latin text fits on the first pass.
+  let characters = maxTokens * CONTEXT_CHARS_PER_TOKEN;
+  for (let pass = 0; ; pass++) {
+    const bounded = boundByCharacters(messages, maxMessages, characters);
+    const serialized = JSON.stringify(bounded);
+    const tokens = estimateInputTokens(serialized);
+    const bytes = wireBytes(serialized);
+    if (tokens <= maxTokens && bytes <= maxBytes) return bounded;
+    if (pass >= 8)
+      throw new BundleContextLimitError('the transcript does not fit its token and byte bounds');
+    characters = Math.floor(characters * Math.min(maxTokens / tokens, maxBytes / bytes) * 0.95);
+  }
+}
+
+/** The bound in serialized characters, keeping every completed tool identity. */
+function boundByCharacters(
+  messages: readonly CanonicalMessage[],
+  maxMessages: number,
+  maxCharacters: number,
+): CanonicalMessage[] {
   const tools = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
     if (message.role === 'tool' && message.tool_call_id) tools.set(message.tool_call_id, index);
@@ -626,7 +666,7 @@ export async function buildAttemptSkeleton(
     usableEvents,
     attempts.filter(contextMatches),
     afterSeq,
-    transcriptLimits(contextBudget(model.model)),
+    transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
   );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
@@ -696,7 +736,7 @@ export async function buildAttemptSkeleton(
     await procedureReach(tx, procedures),
     // An agent that keeps no memory is not offered a skill that promises to.
     persona?.writesMemory !== false,
-    contextBudget(model.model).max_skills,
+    attemptContextBudget(model.model, jobBudget.parse(row.budget)).max_skills,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -777,7 +817,11 @@ export async function buildAttemptSkeleton(
     since_last: delta,
     transcript: history.transcript,
     tools: [],
-    skills: mergeSkills(procedures, context.skills, contextBudget(model.model).max_skills),
+    skills: mergeSkills(
+      procedures,
+      context.skills,
+      attemptContextBudget(model.model, jobBudget.parse(row.budget)).max_skills,
+    ),
     knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
@@ -812,7 +856,7 @@ export async function buildBundle(
 ): Promise<{ bundle: AttemptBundle; recall: RecallResult }> {
   const { sql, scope } = options;
   const jobId = skeleton.attempt.job_id;
-  const budget = contextBudget(skeleton.model.model);
+  const budget = attemptContextBudget(skeleton.model.model, skeleton.budget);
   const result = await recall(
     sql,
     scope,

@@ -13,8 +13,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type AttemptBundle,
+  BASELINE_CONTEXT_BUDGET,
   type CanonicalMessage,
-  contextBudget,
   EMPTY_SINCE_LAST,
   type ToolSpec,
 } from '@melete/contracts';
@@ -26,7 +26,8 @@ import {
 } from '@melete/runtime-hermes';
 import { estimateTokens } from '@melete/skills';
 import { applyPromptCaching } from '../gateway/caching.ts';
-import { boundTranscript, TRANSCRIPT_MAX_CHARACTERS, transcriptLimits } from './bundle.ts';
+import { boundTranscript, transcriptLimits } from './bundle.ts';
+import { attemptContextBudget } from './context-budget.ts';
 
 const LARGE_MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
 const TURNS = 60;
@@ -127,11 +128,18 @@ type Layout = 'before' | 'after';
 function request(layout: Layout, turn: number, messages: CanonicalMessage[]) {
   // Up to and including this turn's user message.
   const sofar = messages.slice(0, turn * 2 - 1);
-  const budget = contextBudget(LARGE_MODEL);
+  // Held to the default engine settings, as an attempt would be.
+  const budget = attemptContextBudget(
+    LARGE_MODEL,
+    {},
+    {
+      maxTurns: 150,
+      compactionMaxTokens: 200_000,
+      contextWindowLimit: undefined,
+    },
+  );
   const limits =
-    layout === 'after'
-      ? transcriptLimits(budget)
-      : { maxMessages: 100, maxCharacters: TRANSCRIPT_MAX_CHARACTERS };
+    layout === 'after' ? transcriptLimits(budget) : transcriptLimits(BASELINE_CONTEXT_BUDGET);
   const tools = toolsWithin(layout === 'after' ? budget.core_catalog_tokens : 750);
   const bundle = bundleFor(turn, boundTranscript(sofar, limits), tools);
   let system = renderInstructions(bundle);
@@ -227,7 +235,7 @@ describe('a long chat on a million-token model', () => {
     const anthropic = applyPromptCaching(messagesBody, {
       provider: 'anthropic',
       protocol: 'messages',
-      jobId: `job_${SUFFIX}`,
+      scope: `job_${SUFFIX}`,
     });
     expect(anthropic.markers).toBe(3);
     expect(JSON.stringify(messagesBody).match(/"cache_control"/g)).toHaveLength(3);
@@ -240,14 +248,14 @@ describe('a long chat on a million-token model', () => {
       applyPromptCaching(responses, {
         provider: 'openai',
         protocol: 'responses',
-        jobId: `job_${SUFFIX}`,
+        scope: `job_${SUFFIX}`,
       }).key,
     ).toBe(true);
     expect(typeof responses.prompt_cache_key).toBe('string');
     expect(
       applyPromptCaching(
         {},
-        { provider: 'fireworks', protocol: 'chat/completions', jobId: `job_${SUFFIX}` },
+        { provider: 'fireworks', protocol: 'chat/completions', scope: `job_${SUFFIX}` },
       ).headers,
     ).toHaveProperty('x-session-affinity');
   });

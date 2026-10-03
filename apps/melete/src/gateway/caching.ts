@@ -16,13 +16,16 @@
  * - Fireworks caches on its own too, per replica; the session-affinity header
  *   keeps a conversation's requests on the replica that holds its prefix.
  *
- * Nothing here changes what the model reads. The key is a digest of the job, so
- * no Melete identifier leaves the gateway, and a request the runtime already
- * marked or keyed is passed on as it is.
+ * Nothing here changes what the model reads. The key is an HMAC, under a secret
+ * that never leaves this install, of the call's own scope: one conversation, or
+ * one service call for one space and the conversation or call it works for. So
+ * two people, two spaces or two installs never share a key, and nobody who
+ * knows an id can compute one. A key the runtime set itself is replaced by this
+ * one, never passed on.
  */
-import { createHash } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { object } from './metering.ts';
-import type { GatewayProtocol } from './types.ts';
+import type { GatewayPrincipal, GatewayProtocol } from './types.ts';
 
 /** The header Fireworks routes a session's requests to one replica by. */
 export const SESSION_AFFINITY_HEADER = 'x-session-affinity';
@@ -32,17 +35,50 @@ const EPHEMERAL = { type: 'ephemeral' } as const;
 /** Blocks a cache breakpoint may not be placed on. */
 const UNMARKABLE = new Set(['thinking', 'redacted_thinking']);
 
-/** One conversation's cache key: stable across its requests, opaque outside the gateway. */
-export const promptCacheKey = (jobId: string): string =>
-  createHash('sha256').update(`melete-prompt-cache:${jobId}`).digest('hex').slice(0, 32);
+/**
+ * The secret a gateway keys its cache keys with when it is given none: drawn
+ * once per process. Keys then change when the service restarts, which costs one
+ * cache miss per conversation and never lets one be shared or computed.
+ */
+const PROCESS_SECRET = randomBytes(32).toString('hex');
 
-function hasCacheControl(value: unknown, depth = 0): boolean {
-  if (depth > 8) return false;
-  if (Array.isArray(value)) return value.some((item) => hasCacheControl(item, depth + 1));
-  const node = object(value);
-  if (!node) return false;
-  if ('cache_control' in node) return true;
-  return Object.values(node).some((item) => hasCacheControl(item, depth + 1));
+/**
+ * What one cache key covers. A conversation is its job. A service call is its
+ * purpose, its space, and the conversation whose words it carries, or the call
+ * itself when it carries none: a fixed job name such as a mailbox scan's is
+ * shared by every space, so it is never the scope on its own.
+ */
+export function promptCacheScope(
+  principal: Pick<GatewayPrincipal, 'jobId' | 'attemptId' | 'privacy'>,
+): string {
+  const privacy = principal.privacy;
+  if (privacy.kind === 'service')
+    return [
+      'service',
+      privacy.purpose,
+      privacy.spaceId,
+      privacy.sourceJobId ?? `call:${principal.attemptId}`,
+    ].join('\u0000');
+  return ['job', principal.jobId].join('\u0000');
+}
+
+/** One scope's cache key: stable across its requests, opaque outside the gateway. */
+export const promptCacheKey = (scope: string, secret: string = PROCESS_SECRET): string =>
+  createHmac('sha256', secret)
+    .update(`melete-prompt-cache\u0000${scope}`)
+    .digest('hex')
+    .slice(0, 32);
+
+/**
+ * Whether the request already carries a breakpoint where one may be placed: on
+ * a tool, the system prompt's blocks, or a message's blocks. A property named
+ * cache_control inside a tool's schema or a tool call's arguments is content.
+ */
+function hasCacheControl(body: Record<string, unknown>): boolean {
+  const marked = (value: unknown) => object(value)?.cache_control !== undefined;
+  const blocks = (value: unknown) => (Array.isArray(value) ? value : []);
+  if (blocks(body.tools).some(marked) || blocks(body.system).some(marked)) return true;
+  return blocks(body.messages).some((message) => blocks(object(message)?.content).some(marked));
 }
 
 /**
@@ -94,19 +130,22 @@ export type CachingApplied = { markers: number; key: boolean; headers: Record<st
  */
 export function applyPromptCaching(
   body: Record<string, unknown>,
-  options: { provider: string; protocol: GatewayProtocol; jobId: string },
+  options: { provider: string; protocol: GatewayProtocol; scope: string; secret?: string },
 ): CachingApplied {
   const applied: CachingApplied = { markers: 0, key: false, headers: {} };
-  const key = promptCacheKey(options.jobId);
+  const key = promptCacheKey(options.scope, options.secret);
   if (options.protocol === 'messages') {
     applied.markers = markAnthropicCache(body);
-  } else if (options.provider === 'openai' || options.provider === 'chatgpt') {
-    if (body.prompt_cache_key === undefined) {
-      body.prompt_cache_key = key;
-      applied.key = true;
-    }
-  } else if (options.provider === 'fireworks') {
-    applied.headers[SESSION_AFFINITY_HEADER] = key;
+  } else if (
+    options.provider === 'openai' ||
+    options.provider === 'chatgpt' ||
+    body.prompt_cache_key !== undefined
+  ) {
+    // Set, or replaced when the runtime chose its own: a key the engine derives
+    // from its session would carry the conversation's id to the provider.
+    body.prompt_cache_key = key;
+    applied.key = true;
   }
+  if (options.provider === 'fireworks') applied.headers[SESSION_AFFINITY_HEADER] = key;
   return applied;
 }

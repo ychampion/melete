@@ -210,12 +210,19 @@ The thin-harness numbers are the baseline, for a 128,000-token window and for
 any model the catalog does not name: 750 tokens of core tool schemas, a
 250-token index of the rest, three skills of 400 tokens, a 500-token skill
 index, 2,000 tokens of recalled knowledge, and a transcript of 100 messages and
-32,000 serialized characters. A larger window scales each by the same share of
-the window, to a cap: a million-token model gets about 5,900 tokens of core
-schemas, a 1,000-token index, six skills, a 2,000-token skill index, 8,000
-tokens of knowledge and 62,500 tokens (781 messages) of transcript (`a
-million-token model gets room for its catalog, skills, knowledge and a long
-transcript`, `the first catalog's room follows the attempt's model window`).
+8,000 tokens. A larger window scales each by the same share of the window, to a
+cap: a million-token model gets about 5,900 tokens of core schemas, a
+1,000-token index, six skills, a 2,000-token skill index, 8,000 tokens of
+knowledge and up to 62,500 tokens (781 messages) of transcript (`a million-token
+model gets room for its catalog, skills, knowledge and a long transcript`, `the
+first catalog's room follows the attempt's model window`). The window used is
+the smallest of the catalog's, `MELETE_MODEL_CONTEXT_WINDOW` and the job's
+`max_input_tokens`, and the transcript is further held to four tenths of the
+engine's compaction trigger (`jobs/context-budget.ts`, `an attempt's budget is
+held to the job's input ceiling, the stated window and the trigger`). The
+transcript is measured with the engine's own token estimate and its UTF-8 size
+on the wire, at most four tenths of the gateway's body limit, so text in any
+script stays inside both (`the transcript bound holds for text in any script`).
 The identity and each skill body keep their fixed sizes. Past these budgets the
 engine compacts in place, inside the attempt.
 
@@ -266,11 +273,19 @@ instructions and follows the prior conversation`). The gateway adds the
 provider's caching controls on the way out: Anthropic breakpoints after the
 tools, the system prompt and the newest message when the engine placed none, a
 per-conversation `prompt_cache_key` for OpenAI and the ChatGPT plan, and a
-session-affinity header for Fireworks; the key is a digest, never a Melete id.
+session-affinity header for Fireworks. The key is an HMAC under the install's
+capability key of the call's scope: the job for a conversation, and for a
+service call its purpose, space and the conversation it carries, or the call
+itself (`no two people, spaces or installs share a key, and an id alone does
+not give one`). A key the runtime set itself is replaced, never passed on.
 On a 60-turn chat with a million-token model, at least 70% of every request
 from the second turn on is a prefix of the one before it
 (`apps/melete/src/jobs/context-room.test.ts`). Cached input is recorded at the
-provider's cached price as `charged_input_tokens` beside the raw counts. The memory adapter
+provider's cached price as `charged_input_tokens` beside the raw counts; the
+learning evaluator keeps comparing raw counts, which do not depend on how warm
+a cache was. A live load the engine could not take is written to the runtime's
+log with the reason, and the engine's own failure detection is what marks it
+for the adapter (`the engine marks only the fallback load as an error`). The memory adapter
 separately bounds recall. `budget.max_output_tokens` remains the cumulative
 output ceiling (8,000 by default); the optional `max_input_tokens` bounds each
 request's context and defaults to the pinned model's context window minus the

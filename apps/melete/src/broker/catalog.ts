@@ -3,7 +3,6 @@ import {
   type CapabilityClaims,
   CONTEXT_LIMITS,
   type ConnectionHealth,
-  contextBudget,
   type JsonObject,
   REACT_TOOL_NAME,
   RUN_TOOL_NAMES,
@@ -27,6 +26,7 @@ import {
   toolOffered,
 } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
@@ -673,7 +673,10 @@ export class ToolCatalog {
       await tx`select core, loaded from attempt_tool_context where attempt_id = ${claims.attempt_id}`;
     if (row) return { core: row.core, loaded: row.loaded };
     const [attempt] = await tx`select model from attempt where id = ${claims.attempt_id}`;
-    const budget = contextBudget(typeof attempt?.model === 'string' ? attempt.model : '');
+    const budget = attemptContextBudget(
+      typeof attempt?.model === 'string' ? attempt.model : '',
+      job.budget,
+    );
     const core = selectCore(
       items,
       this.options.coreTokenBudget ?? budget.core_catalog_tokens,
