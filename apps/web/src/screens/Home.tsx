@@ -4,6 +4,8 @@
  * Every line is composed from what the service returns; a section with
  * nothing behind it is not drawn.
  */
+
+import type { AttachmentView } from '@melete/contracts/attachments';
 import {
   type KeyboardEvent,
   type Ref,
@@ -13,6 +15,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useAttachments } from '../chat/attachments.ts';
 import { Composer } from '../chat/Composer.tsx';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, matches, money } from '../companies/format.ts';
@@ -927,6 +930,8 @@ export function HomeScreen() {
   const [map, setMap] = useState<CompanyMap | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  // Files chosen here belong to the chat this box starts.
+  const files = useAttachments();
   const now = useNow(true, 60_000);
   const mainRef = useRef<HTMLDivElement>(null);
   const cleared = useCallback(() => mainRef.current?.focus(), []);
@@ -943,12 +948,12 @@ export function HomeScreen() {
     };
   }, []);
 
-  const start = async (body: string) => {
+  const start = async (body: string, attached: readonly AttachmentView[] = []) => {
     const clean = body.trim();
-    if (!clean || busy) return;
+    if ((!clean && !attached.length) || busy) return;
     setBusy(true);
     // Home talks to Melete; "@Scout …" still hands the message to Scout.
-    const title = shortTitle(clean, 60) || 'New chat';
+    const title = shortTitle(clean || (attached[0]?.name ?? ''), 60) || 'New chat';
     const created = await adapter.createConversation({ title });
     if (created.data === null) {
       setBusy(false);
@@ -959,10 +964,16 @@ export function HomeScreen() {
       });
       return;
     }
-    const sent = await adapter.send(created.data.conversation.id, clean, messageKey());
+    const sent = await adapter.send(
+      created.data.conversation.id,
+      clean,
+      messageKey(),
+      attached.map((file) => file.id),
+    );
     setBusy(false);
     if (sent.data === null)
       toast({ kind: 'err', title: 'Couldn’t send', sub: sent.error ?? sent.unavailable ?? '' });
+    else files.clear();
     refreshConversations();
     navigate(`/chat/${created.data.conversation.id}`);
   };
@@ -1016,9 +1027,10 @@ export function HomeScreen() {
             <Composer
               value={text}
               onChange={setText}
-              onSend={() => void start(text)}
+              onSend={() => void start(text, files.ready)}
               placeholder="Ask Melete to handle something"
               disabled={busy}
+              attachments={files}
             />
             <div className="suggestions">
               {suggestions.map((suggestion) => (
