@@ -279,6 +279,12 @@ async function jobPrincipal(tx: Query, job: LockedJob): Promise<string> {
   return String(row?.id ?? LEGACY_PERSON_DECISION);
 }
 
+/** Whether a space is one person's own, rather than a room everyone in it shares. */
+async function personalSpace(tx: Query, spaceId: string): Promise<boolean> {
+  const [row] = await tx`select kind from space where id = ${spaceId}`;
+  return row?.kind === 'personal';
+}
+
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
 /**
@@ -818,11 +824,13 @@ export class BrokerService implements BrokerOperations {
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
     // Kept in the person's own space, where they can delete it: the tool's
-    // own question about reaching outside does not apply to this one.
+    // own question about reaching outside does not apply to this one. A room's
+    // space is everyone's in it, so a new file there goes by the room's rule.
     const inSpace =
       !connectorAsks &&
       this.options.connectors.get(action.connection_id)?.staysInSpace?.(action, job.space_id) ===
-        true;
+        true &&
+      (await personalSpace(tx, job.space_id));
     const toolAsks = needsApproval(tool) && !inSpace;
     const tierOf = (doubts: OriginWarning[], existingGuests?: number | null): TierDecision =>
       inSpace && doubts.length === 0
@@ -2162,7 +2170,9 @@ export class BrokerService implements BrokerOperations {
         await tx`update action set dispatched_at = now() where id = ${id}`;
         await this.setStatus(tx, action, 'dispatched');
         // Nobody agreed to this one because its name was unused when it was
-        // checked; the connector keeps it to a new file (`only_new`).
+        // checked; the connector keeps it to a new file (`only_new`). Only a
+        // personal space lets one through unasked: `checkAuthority` classified
+        // it again above, and in a room's space it needs the room's answer.
         const onlyNew =
           !action.authorization_ref &&
           this.options.connectors

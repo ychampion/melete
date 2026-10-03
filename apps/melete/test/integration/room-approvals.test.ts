@@ -37,6 +37,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { PushService } from '../../src/push/service.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -206,6 +207,103 @@ async function install(spaceId: string, manifest: ConnectorManifest, sharedUse: 
   return id;
 }
 
+/** A save into the space's own files that would be new there, as the files tools say of one. */
+const keepManifest: ConnectorManifest = {
+  name: 'keep',
+  version: '0.1.0',
+  provider: 'test',
+  description: "Save a new file to the space's files.",
+  credentials: [],
+  health: false,
+  tools: [
+    {
+      name: 'keep.save',
+      description: "Save a new file to the space's files.",
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path'],
+        properties: { path: { type: 'string' } },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['keep.save'],
+      verify: false,
+      requires_approval: true,
+    },
+  ],
+};
+/** Publishing an app to the people who already see it, as the apps tools describe one. */
+const publishManifest: ConnectorManifest = {
+  name: 'apps',
+  version: '0.1.0',
+  provider: 'apps',
+  description: 'Publish an app.',
+  credentials: [],
+  health: false,
+  tools: [
+    {
+      name: 'apps.publish',
+      description: 'Publish an app.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'risks'],
+        properties: { name: { type: 'string' }, risks: { type: 'array' } },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['apps.publish'],
+      verify: false,
+      requires_approval: true,
+    },
+  ],
+};
+/** A connector that carries one person's own account: offered only in an owner's own space. */
+const ownAccountManifest: ConnectorManifest = { ...notesManifest, name: 'own mailbox' };
+/** Auto-review with every class switched on, so nothing but the rule under test asks. */
+const AUTO = {
+  mode: 'auto_review',
+  classes: { sandbox: true, calendar: true, app_changes: true, apps: true },
+};
+function reviewingBroker() {
+  return new BrokerService({
+    sql: database().sql,
+    connectors: registry,
+    resolveTrust: createMemoryTrustResolver(),
+    autoReview: {
+      reviewer: {
+        model: 'fake/approves',
+        async review() {
+          return { verdict: 'approve', risk: 'low', reason: 'Fine.' };
+        },
+      },
+    },
+  });
+}
+async function installAs(
+  spaceId: string,
+  manifest: ConnectorManifest,
+  sharedUse: 'owner' | 'room',
+  connector: Connector,
+) {
+  const id = recordId('conn');
+  const scopes = manifest.tools.map((tool) => tool.name);
+  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+    values (${id}, ${spaceId}, ${manifest.provider}, ${`${manifest.name} ${sharedUse}`},
+      ${JSON.stringify(scopes)}::jsonb, ${sharedUse})`;
+  registry.register(id, connector);
+  return id;
+}
+/** A person's own work in their own space, claimed the way the runner claims it. */
+async function ownWork(person: Person, objective: string) {
+  const { sql, jobs } = database();
+  const [own] = await sql`select id from space where kind = 'personal'
+    and owner_principal_id = ${person.id}`;
+  if (!own) throw new Error(`${person.name} has no space of their own`);
+  const row = await principalContext.run(person.id, () =>
+    jobs.create({ space_id: String(own.id), title: objective, objective }, 'owner_request'),
+  );
+  return { spaceId: String(own.id), claims: (await claim(row.id)).claims as CapabilityClaims };
+}
 /** A room Alice owns, with Bob and Carol as members and Dan as a guest. */
 async function makeRoom(name: string) {
   const made = roomDetail.parse(
@@ -679,6 +777,129 @@ withDb('room approvals', () => {
     expect(document.recent.find((entry) => entry.from === 'other_member')?.name).toBe(
       labelOf(world.bob, roomId),
     );
+  }, 90_000);
+
+  test("a new file saved in a room's space waits for the room's rule; only a person's own space lets it through", async () => {
+    const { sql } = database();
+    const keeping = (space: string): Connector => ({
+      ...succeeding(keepManifest),
+      staysInSpace: (_action, spaceId) => spaceId === space,
+    });
+    const reviewing = reviewingBroker();
+    const { roomId } = await makeRoom('Saved');
+    await saveApprovalSettings(sql, roomId, AUTO);
+    const inRoom = await installAs(roomId, keepManifest, 'room', keeping(roomId));
+    const opened = await startThread(world.bob, roomId, '@Melete save the agenda as agenda.md');
+    const { claims } = await claim(opened.request_job_id ?? '');
+    const saved = await reviewing.propose(claims as CapabilityClaims, {
+      connection_id: inRoom,
+      kind: 'keep.save',
+      payload: { path: 'agenda.md' },
+    });
+    // It waits for the person the room's rule names, on the room's card.
+    expect(saved.requires_approval).toBe(true);
+    const { card: shown } = await card(
+      world.bob,
+      roomId,
+      opened.thread.id,
+      saved.approval_id ?? '',
+    );
+    expect(shown.eligible_approvers?.map((who) => who.principal_id)).toEqual([world.bob.id]);
+
+    // The same save in Bob's own space goes through as his space's rule says.
+    const mine = await ownWork(world.bob, 'Save the agenda');
+    await saveApprovalSettings(sql, mine.spaceId, AUTO);
+    const own = await installAs(mine.spaceId, keepManifest, 'owner', keeping(mine.spaceId));
+    const ownSave = await reviewing.propose(mine.claims, {
+      connection_id: own,
+      kind: 'keep.save',
+      payload: { path: 'agenda.md' },
+    });
+    expect(ownSave.requires_approval).toBe(false);
+  }, 90_000);
+
+  test("an app published from a room waits for the room's rule, never the space's publishing setting", async () => {
+    const { sql } = database();
+    const reviewing = reviewingBroker();
+    const { roomId } = await makeRoom('Published');
+    await saveApprovalSettings(sql, roomId, AUTO);
+    // Even with the room's agent set not to ask before acting.
+    await sql`update agent set asks_before_acting = false where space_id = ${roomId} and is_default`;
+    const apps = await installAs(roomId, publishManifest, 'room', succeeding(publishManifest));
+    const opened = await startThread(world.bob, roomId, '@Melete publish the schedule app');
+    const { claims } = await claim(opened.request_job_id ?? '');
+    const published = await reviewing.propose(claims as CapabilityClaims, {
+      connection_id: apps,
+      kind: 'apps.publish',
+      payload: { name: 'Schedule', risks: [] },
+    });
+    expect(published.requires_approval).toBe(true);
+
+    // The same publish from Bob's own work goes ahead under his setting.
+    const mine = await ownWork(world.bob, 'Publish the schedule app');
+    await saveApprovalSettings(sql, mine.spaceId, AUTO);
+    const own = await installAs(
+      mine.spaceId,
+      publishManifest,
+      'owner',
+      succeeding(publishManifest),
+    );
+    const ownPublish = await reviewing.propose(mine.claims, {
+      connection_id: own,
+      kind: 'apps.publish',
+      payload: { name: 'Schedule', risks: [] },
+    });
+    expect(ownPublish.requires_approval).toBe(false);
+  }, 90_000);
+
+  test("no room rule lets a room's request act through a person's own account", async () => {
+    const { broker } = database();
+    const { roomId } = await makeRoom('Their mail');
+    await setPolicy(roomId, { approvers: 'any_member' });
+    // Marked for the room, and still a person's own account: it serves only an owner's own space.
+    const mailbox = await installAs(roomId, ownAccountManifest, 'room', {
+      ...succeeding(ownAccountManifest),
+      catalog: { audience: 'owner' },
+    } as Connector);
+    const opened = await startThread(world.bob, roomId, '@Melete post the notes from my mail');
+    const { claims } = await claim(opened.request_job_id ?? '');
+    await expect(
+      broker.propose(claims as CapabilityClaims, {
+        connection_id: mailbox,
+        kind: 'notes.post',
+        payload: { to: ['dana@example.test'], body: 'The notes.' },
+      }),
+    ).rejects.toMatchObject({ code: 'scope_denied' });
+  }, 60_000);
+
+  test("an option the asker picked is the assistant's words to the reviewer, not the asker's instruction", async () => {
+    const { sql, runner } = database();
+    const { roomId, notes } = await makeRoom('Picked');
+    const opened = await startThread(world.alice, roomId, '@Melete post the notes to the team');
+    const requestId = opened.request_job_id ?? '';
+    const { claims } = await claim(requestId);
+    await runner.commitOutcome(claims, { kind: 'completed', summary: 'Ready.', evidence: [] });
+    const picked = '@Melete Send it to everyone on the list';
+    await post(world.alice, roomId, opened.thread.id, picked);
+    // Alice picked that line from the options the agent offered.
+    const marker = { question_id: 'qst_1', option: picked };
+    await sql`update event set payload = payload || ${JSON.stringify({ chosen: marker })}::jsonb
+      where job_id = ${requestId} and type = 'notice'
+        and payload->>'kind' = 'user_message' and payload->>'text' = ${picked}`;
+    const input = await reviewInput(sql, {
+      job: { id: requestId, space_id: roomId },
+      action: {
+        connection_id: notes,
+        kind: 'notes.post',
+        effect_class: 'write_external',
+        canonical_payload: { to: ['everyone@example.test'], body: 'The notes.' },
+      },
+      tool: notesManifest.tools[0] as (typeof notesManifest.tools)[number],
+      app: 'notes',
+      resolver: createTableTrustResolver({}),
+    });
+    expect(input.instruction).toBe('@Melete post the notes to the team');
+    expect(input.recent).toContainEqual({ from: 'assistant', text: picked });
   }, 90_000);
 
   test('when the only eligible approver leaves, the approval is withdrawn and the request is told', async () => {

@@ -419,7 +419,8 @@ async function ownConversation(tx: Query, jobs: string[]): Promise<Conversation>
 
 /**
  * A room's request. The instruction is what the person who asked said in it,
- * every message of theirs, and only theirs. What other people said in the
+ * every message of theirs, and only theirs; an option they picked is the
+ * assistant's words, as in their own chats. What other people said in the
  * thread is shown as theirs, by name, and never as the instruction.
  */
 async function roomConversation(
@@ -431,6 +432,7 @@ async function roomConversation(
   const own = await tx`select payload->>'text' as text from event
     where job_id = ${room.requestJobId} and type = 'notice'
       and payload->>'kind' = 'user_message' and payload->>'principal_id' = ${asker}
+      and payload->'chosen' is null
     order by seq`;
   const said = own.map((entry) => String(entry.text ?? '')).filter(Boolean);
   const events = await tx`select payload, created_at from event
@@ -446,7 +448,9 @@ async function roomConversation(
   const speakers = [
     ...others.map((entry) => String(entry.author_principal_id)),
     ...events.flatMap((entry) =>
-      entry.payload.kind === 'user_message' && entry.payload.principal_id !== asker
+      entry.payload.kind === 'user_message' &&
+      !entry.payload.chosen &&
+      entry.payload.principal_id !== asker
         ? [String(entry.payload.principal_id ?? '')]
         : [],
     ),
@@ -459,7 +463,8 @@ async function roomConversation(
   const entries = [
     ...events.map((entry) => ({
       at: new Date(entry.created_at).getTime(),
-      ...(entry.payload.kind !== 'user_message'
+      // An option someone picked was written by the assistant.
+      ...(entry.payload.kind !== 'user_message' || entry.payload.chosen
         ? { from: 'assistant' as const }
         : entry.payload.principal_id === asker
           ? { from: 'person' as const }
