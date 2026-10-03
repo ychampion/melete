@@ -151,7 +151,12 @@ works this out again at admission and does not trust what the proposal decided.
 - **Apps.** Publishing an app, a new version of one, or going back to an
   earlier version, through the built-in Apps connection. The connector binds
   the reasons it should ask before anyone is asked: new people could open the
-  app, its code uses WebRTC, or it shows its viewers data they do not see now.
+  app, its code uses WebRTC, it shows its viewers data they do not see now, or
+  it starts collecting responses from them. The files an app shows are proved
+  by the connector to be recorded files of the publisher's own conversations
+  or routines in this space, at the proposal and again before it runs, so
+  origin checking leaves those paths to it (`verifiedFields`); every other
+  value keeps its origin check.
   With none, a fixed rule approves it when the person's `apps` switch is on (the
   default), with a receipt. With any, it asks, and the card leads with the
   reason. The connector works the reasons out again at admission and dispatch,

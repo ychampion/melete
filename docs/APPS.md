@@ -29,7 +29,9 @@ The agent asks you first, with a line saying why, when:
   another server;
 - it shows its viewers data they do not see now: a file it did not show before, or one it showed
   only after your review. Data in an app only you can open is yours already, so it does not ask,
-  and data under update review never reaches viewers before you let it through.
+  and data under update review never reaches viewers before you let it through;
+- it starts collecting responses its viewers could not send before. An app only you can open
+  collects only from you, so it does not ask.
 
 To be asked every time, switch off "Publishing your apps" in Settings → Approvals ("Ask me for
 everything" asks too). A conversation set to ask before acting, or one that has read an app's

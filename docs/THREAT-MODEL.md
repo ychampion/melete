@@ -526,9 +526,15 @@ rollback goes ahead without asking when it reaches nobody new, its code names
 no WebRTC, and it shows its viewers no data they do not see now. A question for
 each version shows file counts, not code, so it adds a step without adding
 something a person can check. What still asks is what changes who is exposed: a wider audience (new people or everyone), WebRTC by name, and new
-data. Those reasons are worked out by the service from the database, never
-taken from the agent, and are checked again at admission and dispatch, so a
-viewer added or data shared in between sends it back to the person. Every
+data or responses. Those reasons are worked out by the service from the
+database, never taken from the agent, and are checked again at admission and
+dispatch, so a viewer added or data shared in between sends it back to the
+person. A grant the person changes from the Apps screen in the moment between
+that last check and the publish is their own choice, and stands. The paths of
+the files an app shows are left out of origin checking for this connection
+only, because the connector proves each is a recorded file of the publisher's
+own in this space, before asking and again before it runs; who will see them
+is one of the reasons above. Every
 publish leaves a receipt in the conversation and on the auto-review record,
 and the version before it is one step away. The person can switch the rule off
 in Settings → Approvals. What this accepts: a new version written under a
