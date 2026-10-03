@@ -1,6 +1,6 @@
 {
-  "id": "cbcad065-3f14-4476-bc11-6e95fcaa4e3f",
-  "prevId": "8508cc76-5c34-4bcb-ac5d-c5b8558c84ab",
+  "id": "3f5209a7-daf9-4320-8c69-1d94c1f9646e",
+  "prevId": "5f7b56bc-1506-41a4-a2f4-f0fafcf5469f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2213,6 +2213,180 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.attachment": {
+      "name": "attachment",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size": {
+          "name": "size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blob_key": {
+          "name": "blob_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_key": {
+          "name": "preview_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pages": {
+          "name": "pages",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "attachment_job_idx": {
+          "name": "attachment_job_idx",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "attachment_space_idx": {
+          "name": "attachment_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "attachment_space_id_space_id_fk": {
+          "name": "attachment_space_id_space_id_fk",
+          "tableFrom": "attachment",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "attachment_job_id_job_id_fk": {
+          "name": "attachment_job_id_job_id_fk",
+          "tableFrom": "attachment",
+          "tableTo": "job",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "attachment_kind": {
+          "name": "attachment_kind",
+          "value": "\"attachment\".\"kind\" in ('image', 'pdf', 'docx', 'xlsx', 'csv', 'text')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.attempt": {
@@ -11968,91 +12142,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.principal_identity": {
-      "name": "principal_identity",
-      "schema": "",
-      "columns": {
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_id": {
-          "name": "external_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "principal_identity_principal_idx": {
-          "name": "principal_identity_principal_idx",
-          "columns": [
-            {
-              "expression": "principal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "principal_identity_principal_id_principal_id_fk": {
-          "name": "principal_identity_principal_id_principal_id_fk",
-          "tableFrom": "principal_identity",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "principal_identity_provider_external_id_pk": {
-          "name": "principal_identity_provider_external_id_pk",
-          "columns": [
-            "provider",
-            "external_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "principal_identity_provider": {
-          "name": "principal_identity_provider",
-          "value": "\"principal_identity\".\"provider\" ~ '^[a-z][a-z0-9_-]{0,31}$' and \"principal_identity\".\"provider\" <> 'web'"
-        },
-        "principal_identity_external_id": {
-          "name": "principal_identity_external_id",
-          "value": "length(\"principal_identity\".\"external_id\") between 1 and 200"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.privacy_conversation": {
       "name": "privacy_conversation",
       "schema": "",
@@ -14503,19 +14592,6 @@
           "notNull": true,
           "default": 0
         },
-        "surface": {
-          "name": "surface",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'web'"
-        },
-        "external_ref": {
-          "name": "external_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -14669,10 +14745,6 @@
         "room_message_request_state": {
           "name": "room_message_request_state",
           "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
-        },
-        "room_message_external_ref": {
-          "name": "room_message_external_ref",
-          "value": "\"room_message\".\"external_ref\" is null or length(\"room_message\".\"external_ref\") between 1 and 200"
         }
       },
       "isRLSEnabled": false

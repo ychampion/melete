@@ -86,6 +86,11 @@ export type PreparedRequest = {
   local: LocalModel | null;
   rehydrator: Rehydrator | null;
   receipt: PrivacyReceipt;
+  /**
+   * The conversation must stay private. A cloud request that is still sent
+   * went with the person's consent, redacted, and carries no picture or file.
+   */
+  private?: boolean;
 };
 
 export type GateDecision =
@@ -430,6 +435,7 @@ export class PrivacyRouter {
       local: null,
       rehydrator: new Rehydrator(state.vault, protocol),
       receipt,
+      private: decision.private,
     };
   }
 

@@ -20,6 +20,7 @@ import {
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
+import { bindAttachments } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import { databaseNow } from '../db/clock.ts';
 import { attempt, job, space, trigger } from '../db/schema.ts';
@@ -440,6 +441,8 @@ export class JobService {
     text: string,
     /** The answer the person marked this message as correcting, recorded as they sent it. */
     corrects?: string,
+    /** Files the person uploaded for this message; each must be theirs and unsent. */
+    attachments: readonly string[] = [],
   ): Promise<JobRow> {
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
@@ -484,6 +487,17 @@ export class JobService {
         row.budget = CONVERSATION_BUDGET;
       }
     }
+    // Checked before anything moves: a file that is not the speaker's refuses the message.
+    const files = attachments.length
+      ? await bindAttachments(tx, {
+          jobId: id,
+          spaceId: row.spaceId,
+          principalId: speaker ?? null,
+          ids: attachments,
+        })
+      : [];
+    if (!text && !files.length)
+      throw new ServiceError('invalid_request', 'A message needs words or a file.', 400);
     const updated = await this.move(
       tx,
       row,
@@ -498,6 +512,7 @@ export class JobService {
         text,
         principal_id: speaker ?? row.principalId ?? null,
         ...(corrects ? { corrects } : {}),
+        ...(files.length ? { attachments: files } : {}),
       },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });

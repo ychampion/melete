@@ -636,42 +636,49 @@
       "idx": 90,
       "version": "7",
       "when": 1789232400070,
-      "tag": "0090_rooms",
+      "tag": "0090_attachments",
       "breakpoints": true
     },
     {
       "idx": 91,
       "version": "7",
       "when": 1789232400071,
-      "tag": "0091_room_memory",
+      "tag": "0091_rooms",
       "breakpoints": true
     },
     {
       "idx": 92,
       "version": "7",
       "when": 1789232400072,
-      "tag": "0092_room_policy",
+      "tag": "0092_room_memory",
       "breakpoints": true
     },
     {
       "idx": 93,
       "version": "7",
       "when": 1789232400073,
-      "tag": "0093_room_guests",
+      "tag": "0093_room_policy",
       "breakpoints": true
     },
     {
       "idx": 94,
       "version": "7",
       "when": 1789232400074,
-      "tag": "0094_room_handoffs",
+      "tag": "0094_room_guests",
       "breakpoints": true
     },
     {
       "idx": 95,
       "version": "7",
       "when": 1789232400075,
-      "tag": "0095_principal_identity",
+      "tag": "0095_room_handoffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1789232400076,
+      "tag": "0096_principal_identity",
       "breakpoints": true
     }
   ]

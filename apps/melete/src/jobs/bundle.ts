@@ -31,6 +31,8 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
+import { messageFiles, withFiles } from '../attachments/render.ts';
+import { attachmentTexts } from '../attachments/store.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -314,6 +316,8 @@ export function assembleHistory(
   afterSeq: number,
   /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
   names?: ReadonlyMap<string, string>,
+  /** The text of each file the person sent, by id: what their messages' file blocks hold. */
+  fileTexts: ReadonlyMap<string, string | null> = new Map(),
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
@@ -350,7 +354,12 @@ export function assembleHistory(
           : undefined;
       const message: CanonicalMessage = {
         role: 'user',
-        content: pickedForAgent(payload.text, payload.chosen),
+        // The person's words, then the files they sent with them, fenced as untrusted data.
+        content: withFiles(
+          pickedForAgent(payload.text, payload.chosen),
+          messageFiles(payload.attachments),
+          fileTexts,
+        ),
         ...(speaker ? { name: speaker } : {}),
         at: row.createdAt.toISOString(),
       };
@@ -647,11 +656,17 @@ export async function buildAttemptSkeleton(
   });
   // A room's request reads its thread, with each person's name on what they said.
   const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  // A job running under a conversation reads that conversation's files too.
+  const files = await attachmentTexts(
+    tx,
+    row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
+  );
   const history = assembleHistory(
     usableEvents,
     attempts.filter(contextMatches),
     afterSeq,
     room?.names,
+    new Map([...files].map(([id, file]) => [id, file.text])),
   );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.

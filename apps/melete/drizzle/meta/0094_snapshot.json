@@ -1,6 +1,6 @@
 {
-  "id": "8508cc76-5c34-4bcb-ac5d-c5b8558c84ab",
-  "prevId": "2a88e3dc-f6db-4fd2-993c-17d4180c860e",
+  "id": "5f7b56bc-1506-41a4-a2f4-f0fafcf5469f",
+  "prevId": "648c444e-059e-4e0b-8b59-2cc8c01bea47",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2213,6 +2213,180 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.attachment": {
+      "name": "attachment",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size": {
+          "name": "size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blob_key": {
+          "name": "blob_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_key": {
+          "name": "preview_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pages": {
+          "name": "pages",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "attachment_job_idx": {
+          "name": "attachment_job_idx",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "attachment_space_idx": {
+          "name": "attachment_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "attachment_space_id_space_id_fk": {
+          "name": "attachment_space_id_space_id_fk",
+          "tableFrom": "attachment",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "attachment_job_id_job_id_fk": {
+          "name": "attachment_job_id_job_id_fk",
+          "tableFrom": "attachment",
+          "tableTo": "job",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "attachment_kind": {
+          "name": "attachment_kind",
+          "value": "\"attachment\".\"kind\" in ('image', 'pdf', 'docx', 'xlsx', 'csv', 'text')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.attempt": {
@@ -13878,307 +14052,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.room_handoff": {
-      "name": "room_handoff",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "room_job_id": {
-          "name": "room_job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "room_turn_id": {
-          "name": "room_turn_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "action_id": {
-          "name": "action_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger_id": {
-          "name": "trigger_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_principal_id": {
-          "name": "target_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_text": {
-          "name": "task_text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_hash": {
-          "name": "task_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "personal_job_id": {
-          "name": "personal_job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_text": {
-          "name": "result_text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_hash": {
-          "name": "result_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "room_handoff_target_idx": {
-          "name": "room_handoff_target_idx",
-          "columns": [
-            {
-              "expression": "target_principal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_handoff_personal_job_idx": {
-          "name": "room_handoff_personal_job_idx",
-          "columns": [
-            {
-              "expression": "personal_job_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_handoff_room_idx": {
-          "name": "room_handoff_room_idx",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_handoff_due_idx": {
-          "name": "room_handoff_due_idx",
-          "columns": [
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "room_handoff_space_id_space_id_fk": {
-          "name": "room_handoff_space_id_space_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_handoff_room_job_id_job_id_fk": {
-          "name": "room_handoff_room_job_id_job_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "job",
-          "columnsFrom": [
-            "room_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "room_handoff_thread_id_room_thread_id_fk": {
-          "name": "room_handoff_thread_id_room_thread_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "room_thread",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_handoff_connection_id_connection_id_fk": {
-          "name": "room_handoff_connection_id_connection_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "connection",
-          "columnsFrom": [
-            "connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "room_handoff_trigger_id_trigger_id_fk": {
-          "name": "room_handoff_trigger_id_trigger_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "trigger",
-          "columnsFrom": [
-            "trigger_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "room_handoff_target_principal_id_principal_id_fk": {
-          "name": "room_handoff_target_principal_id_principal_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "target_principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "room_handoff_personal_job_id_job_id_fk": {
-          "name": "room_handoff_personal_job_id_job_id_fk",
-          "tableFrom": "room_handoff",
-          "tableTo": "job",
-          "columnsFrom": [
-            "personal_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "room_handoff_action_id_unique": {
-          "name": "room_handoff_action_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "action_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "room_handoff_state": {
-          "name": "room_handoff_state",
-          "value": "\"room_handoff\".\"state\" in ('pending', 'accepted', 'declined', 'running', 'settled', 'shared', 'kept', 'expired')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.room_invite": {

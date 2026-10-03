@@ -183,6 +183,9 @@ const SPACE_KEYED_OPERATIONAL = [
   'room_policy',
   'room_message',
   'room_thread',
+  // Files people sent in chat went with their chats; one uploaded and never
+  // sent has no chat. Their bytes go in the blobs phase, by reference.
+  'attachment',
 ] as const;
 
 /**

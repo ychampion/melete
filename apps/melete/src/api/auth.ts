@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import {
+  ATTACHMENT_LIMITS,
+  attachmentSize,
   ID_PREFIXES,
   magicLinkConsume,
   magicLinkRequest,
@@ -48,7 +50,30 @@ const SESSION_BODY_BYTES = 8 * 1024 * 1024;
 const tooLarge = (c: Context) =>
   c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
 const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
-const sessionBody = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
+const sessionLimit = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
+/**
+ * A file uploaded for a message may be larger than any JSON body: the file at
+ * its limit, the small copy a picture brings, and the form around them.
+ */
+const UPLOAD_BODY_BYTES =
+  ATTACHMENT_LIMITS.file_bytes + ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
+const uploadLimit = bodyLimit({
+  maxSize: UPLOAD_BODY_BYTES,
+  onError: (c) =>
+    c.json(
+      {
+        error: {
+          code: 'attachment_too_large',
+          message: `Files can be up to ${attachmentSize(ATTACHMENT_LIMITS.file_bytes)}.`,
+        },
+      },
+      413,
+    ),
+});
+const sessionBody = (c: Context, next: () => Promise<void>) =>
+  c.req.method === 'POST' && c.req.path === '/attachments'
+    ? uploadLimit(c, next)
+    : sessionLimit(c, next);
 /** One JSON-RPC message from an assistant: a tool's arguments, never an upload. */
 const mcpBody = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
 /** Browsers that have not signed in to an account before share this many attempts on it. */

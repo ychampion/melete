@@ -21,9 +21,12 @@ import {
   type ConnectorManifest,
   type JsonValue,
   type Receipt,
+  type VerifyResult,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
+import { extractBounded, ReadersBusy } from '../attachments/bounded.ts';
+import { looksLike, UnreadableFile } from '../attachments/extract.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import { noLinks, segmentsFor } from '../paths.ts';
@@ -45,6 +48,13 @@ type FilesOptions = {
    * too; without this check, no other conversation's file is offered.
    */
   privateContext?: PrivateContext;
+  /** The files people sent in chat, which `files.save_attachment` copies into a job's workspace. */
+  attachments?: SentFiles;
+};
+
+/** Where a chat's sent files are read from: only this job's own, or its conversation's. */
+export type SentFiles = {
+  forJob(jobId: string, id: string): Promise<{ name: string; bytes: Uint8Array } | null>;
 };
 
 /**
@@ -72,22 +82,80 @@ const digest = (value: string | Buffer): string => createHash('sha256').update(v
 const PICTURE = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|avif|ico)$/i;
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
+/** What a read hands back: the words, or why there are none. */
+export type FileContent = {
+  /** The file as text, or the words read from a PDF, Word document or spreadsheet; null for any other binary file. */
+  content: string | null;
+  /** Set when the words were read out of a document rather than the file being text. */
+  format?: 'pdf' | 'docx' | 'xlsx';
+  /** Pages in a PDF, sheets in a spreadsheet. */
+  pages?: number | null;
+  /** A sentence for the agent when there are no words to give. */
+  note?: string;
+};
+
 /**
- * What a read hands back: the file as text. A file with a NUL byte or bytes
- * that are not UTF-8 is a picture or another binary file, which a read cannot
- * hand back as text and a record cannot hold. It fails plainly and at once,
- * so the agent hears why instead of waiting on a read that never settles.
+ * What a read hands back. A text file is given as it is. A PDF gives its text
+ * page by page, a Word document its paragraphs and a spreadsheet each sheet as
+ * CSV. Any other file with a NUL byte or bytes that are not UTF-8 is a picture
+ * or another binary: the read succeeds with no content and a sentence saying
+ * so, so the agent hears why at once instead of waiting on a read that cannot
+ * give it anything.
  */
-export function readableText(content: Buffer, relative: string): string {
-  if (!content.includes(0)) {
+export async function readableContent(content: Buffer, relative: string): Promise<FileContent> {
+  // A PDF can be all ASCII; its header, or its name with the header near the top, says what it is.
+  const pdf =
+    content.subarray(0, 5).toString('latin1') === '%PDF-' ||
+    (/\.pdf$/i.test(relative) && looksLike('pdf', content));
+  if (!pdf && !content.includes(0)) {
     try {
-      return UTF8.decode(content);
+      return { content: UTF8.decode(content) };
     } catch {
-      // Not UTF-8: told below.
+      // Not UTF-8: one of the documents below, or a binary file.
     }
   }
-  const what = PICTURE.test(relative) ? 'a picture' : 'not a text file';
-  throw new Error(`${JSON.stringify(relative)} is ${what}; files.read reads UTF-8 text only`);
+  const name = JSON.stringify(relative);
+  const unreadable = (what: string): FileContent => ({
+    content: null,
+    note: `${name} is ${what}, and no text could be read from it.`,
+  });
+  // Documents are read in a child process with a deadline and a memory ceiling,
+  // as uploads are: a file the agent fetched is no more trusted than one sent.
+  const format: 'pdf' | 'docx' | 'xlsx' | null =
+    pdf || looksLike('pdf', content)
+      ? 'pdf'
+      : looksLike('docx', content) && /\.docx$/i.test(relative)
+        ? 'docx'
+        : looksLike('xlsx', content) && /\.xlsx$/i.test(relative)
+          ? 'xlsx'
+          : null;
+  if (format) {
+    let read: { text: string | null; pages: number | null };
+    try {
+      read = await extractBounded(format, content);
+    } catch (error) {
+      if (error instanceof ReadersBusy) return { content: null, format, note: error.message };
+      if (!(error instanceof UnreadableFile)) throw error;
+      return unreadable(`a document Melete could not read (${error.message})`);
+    }
+    if (format === 'pdf' && read.text === null)
+      return {
+        content: null,
+        format,
+        pages: read.pages,
+        note: `${name} is a PDF with no text to read; its pages may be scanned pictures.`,
+      };
+    return {
+      content: read.text ?? '',
+      format,
+      ...(format === 'docx' ? {} : { pages: read.pages }),
+    };
+  }
+  const what = PICTURE.test(relative) ? 'a picture' : 'a binary file';
+  return {
+    content: null,
+    note: `${name} is ${what} of ${content.byteLength} bytes. files.read gives text, and the words in PDFs, Word documents and spreadsheets; work with this file another way, such as code on your computer.`,
+  };
 }
 
 function requiredString(payload: Record<string, JsonValue>, key: string): string {
@@ -479,7 +547,7 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.read',
       description:
-        'Read a UTF-8 text file and its content hash. Pictures and other binary files cannot be read this way.',
+        'Read a text file and its content hash; for a PDF, Word document or spreadsheet, the words in it (PDF pages are marked). Other binary files give a note instead of content.',
       input_schema: inputSchema({ path: pathSchema, area: areaSchema }, ['path']),
       effect_class: 'read',
       required_scopes: ['files.read'],
@@ -521,6 +589,22 @@ export const filesManifest: ConnectorManifest = {
       ),
       effect_class: 'write_reversible',
       required_scopes: ['files.move'],
+      verify: true,
+      requires_approval: false,
+    },
+    {
+      name: 'files.save_attachment',
+      description:
+        'Save a file the person attached in this chat into your workspace, to work on it with code. attachment_id is its file_ id; path must be unused.',
+      input_schema: inputSchema(
+        {
+          attachment_id: { type: 'string', pattern: '^file_[A-Za-z0-9]{1,64}$' },
+          path: pathSchema,
+        },
+        ['attachment_id', 'path'],
+      ),
+      effect_class: 'write_reversible',
+      required_scopes: ['files.write'],
       verify: true,
       requires_approval: false,
     },
@@ -673,6 +757,65 @@ export function createFilesConnector(options: FilesOptions): Connector {
       action.id !== action.idempotency_key
     )
       throw new Error('connector action identity mismatch');
+  };
+
+  /** A file sent in this job's chat, by its id; refused plainly when there is none. */
+  const sentFile = async (ctx: ConnectorContext, id: string) => {
+    if (!/^file_[A-Za-z0-9]{1,64}$/.test(id))
+      throw new Error('attachment_id must be the file_ id of a file attached in this chat');
+    const sent = await options.attachments?.forJob(ctx.job_id, id);
+    if (!sent) throw new Error(`there is no attached file ${id} in this chat`);
+    return sent;
+  };
+  /**
+   * A file in a held directory, read only when it is the size the attachment
+   * is (at most the upload limit): anything else at the path is some other
+   * file, answered as `different` without reading a byte of it.
+   */
+  const readIfSized = async (
+    directory: HeldDirectory,
+    name: string,
+    size: number,
+  ): Promise<Buffer | 'different'> => {
+    const file = await openIn(directory, name, READ_FLAGS);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size !== size) return 'different';
+      return await file.readFile();
+    } finally {
+      await file.close();
+    }
+  };
+  /** Whether a save whose answer was lost left the attachment at its path. */
+  const verifySaved = async (action: Action, ctx: ConnectorContext): Promise<VerifyResult> => {
+    const payload = action.canonical_payload;
+    let sent: { bytes: Uint8Array };
+    try {
+      sent = await sentFile(ctx, requiredString(payload, 'attachment_id'));
+    } catch {
+      return { decision: 'undecided', reason: 'the attachment is no longer there' };
+    }
+    try {
+      const located = await resolveFile(ctx, 'work', requiredString(payload, 'path'));
+      const directory = await holdBeneath(located.base, located.segments.slice(0, -1));
+      try {
+        const read = await readIfSized(directory, path.basename(located.target), sent.bytes.length);
+        const there = read === 'different' ? '' : digest(read);
+        if (there !== digest(Buffer.from(sent.bytes)))
+          return { decision: 'undecided', reason: 'the file at the path is not the attachment' };
+        const evidence = {
+          path: requiredString(payload, 'path'),
+          area: 'work',
+          content_hash: there,
+        };
+        return { decision: 'succeeded', evidence, receipt: receiptFor(action, evidence, there) };
+      } finally {
+        await directory.close();
+      }
+    } catch (error) {
+      if (missing(error)) return { decision: 'undecided', reason: 'no file was saved there' };
+      return { decision: 'undecided', reason: 'the saved file could not be checked' };
+    }
   };
 
   /**
@@ -866,7 +1009,48 @@ export function createFilesConnector(options: FilesOptions): Connector {
         payload.expect === undefined ? null : artifactExpectation.parse(payload.expect);
       let detail: Record<string, JsonValue>;
       let hash: string | null = null;
-      if (action.kind === 'files.move') {
+      if (action.kind === 'files.save_attachment') {
+        const id = requiredString(payload, 'attachment_id');
+        const relative = requiredString(payload, 'path');
+        const sent = await sentFile(ctx, id);
+        const located = await resolveFile(ctx, 'work', relative);
+        const bytes = Buffer.from(sent.bytes);
+        hash = digest(bytes);
+        const directory = await holdBeneath(located.base, located.segments.slice(0, -1), true);
+        try {
+          const name = path.basename(located.target);
+          const there = await readIfSized(directory, name, bytes.length).catch((error: unknown) => {
+            if (missing(error)) return null;
+            throw error;
+          });
+          // A retry of this same save finds its own bytes there and is done.
+          if (there === null) {
+            await createWith(directory.at(name), located.target, bytes).catch((error: unknown) => {
+              if (error instanceof Error && error.message === 'move destination already exists')
+                throw new Error(`there is already a file at ${JSON.stringify(relative)}`);
+              throw error;
+            });
+            await readableToAgent(directory, name);
+          } else if (there === 'different' || digest(there) !== hash)
+            throw new Error(`there is already a file at ${JSON.stringify(relative)}`);
+          const written = await readIfSized(directory, name, bytes.length);
+          if (written === 'different' || digest(written) !== hash)
+            throw new ConnectorFaultError({
+              kind: 'bad_output',
+              detail: 'the file on disk does not match the attachment that was saved',
+            });
+        } finally {
+          await directory.close();
+        }
+        detail = {
+          path: relative,
+          area: 'work',
+          attachment_id: id,
+          name: sent.name,
+          bytes: bytes.byteLength,
+          content_hash: hash,
+        };
+      } else if (action.kind === 'files.move') {
         const from = requiredString(payload, 'from');
         const to = requiredString(payload, 'to');
         const toArea = areaFor(payload.to_area ?? area);
@@ -945,7 +1129,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           detail = {
             path: relative,
             area,
-            content: readableText(content, relative),
+            ...(await readableContent(content, relative)),
             content_hash: hash,
             chat: entry.chat,
           };
@@ -985,7 +1169,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           detail = {
             path: relative,
             area,
-            content: readableText(content, relative),
+            ...(await readableContent(content, relative)),
             content_hash: hash,
           };
         } else if (action.kind === 'files.write') {
@@ -1075,6 +1259,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
     async verify(action, ctx) {
       checkIdentity(action, ctx);
       const payload = action.canonical_payload;
+      if (action.kind === 'files.save_attachment') return verifySaved(action, ctx);
       if (action.kind !== 'files.write' && action.kind !== 'files.move') {
         return { decision: 'unsupported', reason: 'file reads have no effect to verify' };
       }

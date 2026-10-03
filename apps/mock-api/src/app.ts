@@ -71,6 +71,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { mountAppsMock } from './apps.ts';
+import { mountAttachmentsMock } from './attachments.ts';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
@@ -189,6 +190,7 @@ export function createMockApp(deps: AppDeps) {
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
+  mountAttachmentsMock(app, experience);
   if (deps.seedExperience) experience.seed();
   // The companies surface is agreed but not yet in openapi.json, so it mounts
   // its own routes rather than going through the contract's operation table.

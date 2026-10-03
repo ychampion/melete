@@ -1,6 +1,7 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
 
 import { z } from 'zod';
+import { ATTACHMENT_LIMITS, attachmentView } from './attachments.ts';
 import {
   becauseLink,
   beliefBlockList,
@@ -578,6 +579,8 @@ export const conversationTurn = z.strictObject({
   status: turnStatus,
   delivery: deliveryState.nullable(),
   created_at: date,
+  /** The files the person sent with this message. */
+  attachments: z.array(attachmentView).max(ATTACHMENT_LIMITS.per_message).optional(),
 });
 export const conversationCreate = z.strictObject({
   title: text,
@@ -586,11 +589,19 @@ export const conversationCreate = z.strictObject({
   plan_id: id.optional(),
 });
 export const conversationSwitchAgent = z.strictObject({ agent_id: id });
-export const conversationMessage = z.strictObject({
-  text: z.string().min(1).max(100000),
-  /** The answer this message corrects, when the person replies to it as a correction. */
-  corrects: messageId.optional(),
-});
+export const conversationMessage = z
+  .strictObject({
+    /** May be empty when the message carries files. */
+    text: z.string().max(100000),
+    /** The answer this message corrects, when the person replies to it as a correction. */
+    corrects: messageId.optional(),
+    /** Files uploaded with `POST /attachments` and not yet sent, in the order shown. */
+    attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message).optional(),
+  })
+  .refine((value) => value.text.trim().length > 0 || (value.attachments?.length ?? 0) > 0, {
+    message: 'A message needs words or a file.',
+    path: ['text'],
+  });
 export const messageAcceptance = z.strictObject({
   turn_id: id,
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),

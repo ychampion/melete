@@ -20,6 +20,8 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { messageFiles } from '../attachments/render.ts';
+import { type AttachmentService, attachTurn } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import {
   agent,
@@ -103,6 +105,8 @@ export class ExperienceService {
   events?: ExperienceEvents;
   /** The permission cards and answers mounted beside this service, for the rooms routes. */
   permissions?: ExperiencePermissions;
+  /** Where the files people send are kept, when the blob store is mounted beside this service. */
+  attachments?: AttachmentService;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
@@ -124,7 +128,9 @@ export class ExperienceService {
         const dedupKey = `${row.id}:input:${row.stateVersion}`;
         const [input] = await tx.select().from(event).where(eq(event.dedupKey, dedupKey));
         const text = (input?.payload as { text?: string })?.text;
-        if (!text) throw new Error('Accepted conversation message is missing.');
+        const files = messageFiles((input?.payload as { attachments?: unknown })?.attachments);
+        if (text === undefined || (!text && !files.length))
+          throw new Error('Accepted conversation message is missing.');
         // "@Scout find …" hands this one message to Scout; the chat keeps its agent.
         // In a shared space only its owner hands a message on this way: a
         // member's message stays with the chat's agent and its reach.
@@ -169,6 +175,12 @@ export class ExperienceService {
           .update(event)
           .set({ payload: { ...(input?.payload as object), agent_id: agentId } })
           .where(eq(event.dedupKey, dedupKey));
+        await attachTurn(
+          tx,
+          row.id,
+          files.map((file) => file.id),
+          turnId,
+        );
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
         // A new message replaces what its own author asked for. In a room only the
         // person who asked a request supersedes it; nobody else's words reach it.
@@ -628,6 +640,7 @@ export class ExperienceService {
       .from(experienceTurn)
       .where(eq(experienceTurn.jobId, id))
       .orderBy(experienceTurn.createdAt, experienceTurn.id);
+    const files = this.attachments ? await this.attachments.forTurns(id) : new Map();
     return {
       turns: rows.map((row) =>
         conversationTurn.parse({
@@ -644,6 +657,7 @@ export class ExperienceService {
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),
+          attachments: files.get(row.id) ?? [],
         }),
       ),
     };
@@ -664,6 +678,9 @@ export class ExperienceService {
       ? `chat:${createHash('sha256').update(`${spaceId}:${id}:${key}`).digest('hex')}`
       : undefined;
     const result = await this.submissions.input(id, value, scopedKey);
+    // A file the message named that it may not carry is said as itself.
+    if (result.receipt.state !== 'accepted' && result.error?.code.startsWith('attachment'))
+      throw new ServiceError(result.error.code, result.error.message, result.status);
     if (result.receipt.state !== 'accepted')
       throw new ServiceError(
         'message_not_accepted',
