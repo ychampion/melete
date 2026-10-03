@@ -91,13 +91,25 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
         ? [block.permission.draft.subject]
         : [],
     )[0];
+  // An item a connection added says where it came from and where it stands there.
   const steps: Step[] = [
-    {
-      key: 'found',
-      label: 'Found in your mail',
-      sub: detail?.message ? `Their email of ${longDay(detail.message.received_at)}` : undefined,
-      state: 'done',
-    },
+    item.source
+      ? {
+          key: 'found',
+          label: `Added by ${item.source.label}`,
+          sub: item.source.next_step
+            ? `${item.source.state} · next: ${item.source.next_step}`
+            : item.source.state,
+          state: 'done',
+        }
+      : {
+          key: 'found',
+          label: 'Found in your mail',
+          sub: detail?.message
+            ? `Their email of ${longDay(detail.message.received_at)}`
+            : undefined,
+          state: 'done',
+        },
   ];
   if (drafted || sent)
     steps.push({ key: 'draft', label: 'Draft written', sub: draftSubject, state: 'done' });

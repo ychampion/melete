@@ -44,6 +44,9 @@ extractor returned, whatever the extractor is.
 | An email cannot close the fence around itself | `gateway.test.ts` — `an email that guesses at a closing tag still cannot close the real one` |
 | A malformed reply yields nothing, not a guess | `gateway.test.ts` — `a reply that is not the schema yields nothing rather than a guess` |
 | Another account reads none of it | `test/integration/companies-surface.test.ts` |
+| A connection's item is held to the same evidence rule | `published.test.ts` — `a fabricated quote, a shifted span and a missing source each drop the item` |
+| A connection's item can act only through a declared tool | `published.test.ts` — `an action through a tool the installation did not declare is dropped, and the item kept` |
+| A revoked connection's items are withheld | `test/integration/connection-ledger.test.ts` — `revoking the connection withholds its items from every read` |
 
 ## Running it
 
@@ -130,6 +133,16 @@ quote. The route asks through that interface and then records `job_id` and
 that owns the row. Nothing here sends: a send belongs on the existing broker
 path with its approval and exactly-once behaviour, and that is where the job's
 first message goes.
+
+## Items a connection adds
+
+An installed MCP server whose installation declares a ledger feed adds items
+of its own: `published.ts` admits them under the evidence rule above, and
+`feeds.ts` reads the feed through the connector and writes them for the owner
+of the connection's space. A published item carries `source`: the connection,
+its own `ref`, where the matter stands and the actions it offers. The rest of
+it is read like any other item. See
+[CONNECTORS](../../../../docs/CONNECTORS.md#adding-tracked-items-to-the-ledger).
 
 ## Scoping
 

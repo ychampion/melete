@@ -14,6 +14,27 @@ export const mcpHttpUrl = z.url().refine((value) => {
 }, 'MCP endpoint must be HTTP(S), without credentials or fragments');
 
 const scope = z.string().min(1).max(160);
+const toolAlias = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]*$/)
+  .max(80);
+
+/**
+ * What a server may add to its space's ledger, declared by whoever installs it.
+ * `feed` is the alias of the tool that lists tracked items, and it must be one
+ * of the installation's `read` tools; `actions` are the aliases an item may
+ * offer as a next step. A server cannot widen either: an item naming any other
+ * tool is admitted without that action, and a server with no declaration adds
+ * nothing to the ledger, whatever its tools return.
+ */
+export const mcpLedgerDeclaration = z
+  .object({
+    feed: toolAlias,
+    actions: z.array(toolAlias).max(16).default([]),
+  })
+  .strict();
+export type McpLedgerDeclaration = z.infer<typeof mcpLedgerDeclaration>;
+
 /** The operator declares authority; server annotations and tool arguments cannot grant it. */
 export const mcpOperatorPolicy = z
   .object({
@@ -39,6 +60,7 @@ export const mcpOperatorPolicy = z
       )
       .min(1)
       .max(256),
+    ledger: mcpLedgerDeclaration.optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -49,6 +71,29 @@ export const mcpOperatorPolicy = z
     for (const tool of config.tools) {
       if (!tool.required_scopes.every((item) => config.allowed_scopes.includes(item)))
         ctx.addIssue({ code: 'custom', message: 'MCP tool scopes exceed operator allowed_scopes' });
+    }
+    if (config.ledger) {
+      const effectOf = new Map(config.tools.map((tool) => [tool.alias, tool.effect_class]));
+      if (effectOf.get(config.ledger.feed) !== 'read')
+        ctx.addIssue({
+          code: 'custom',
+          path: ['ledger', 'feed'],
+          message: 'The ledger feed must name one of the installed read tools',
+        });
+      for (const action of config.ledger.actions) {
+        if (!effectOf.has(action) || action === config.ledger.feed)
+          ctx.addIssue({
+            code: 'custom',
+            path: ['ledger', 'actions'],
+            message: 'Each ledger action must name another installed tool',
+          });
+      }
+      if (new Set(config.ledger.actions).size !== config.ledger.actions.length)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['ledger', 'actions'],
+          message: 'Each ledger action is named once',
+        });
     }
   });
 

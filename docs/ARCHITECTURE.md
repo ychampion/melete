@@ -298,6 +298,14 @@ hash and approval are the same on every attempt. Connectors may also offer
 `describe`, `refreshCredential` and `routes`; one that offers none simply stops.
 See `.agents/notes/0015-typed-repair.md`.
 
+An installed MCP server whose installation declares a ledger feed can add
+tracked items to its space's ledger. Each item passes the evidence gate a
+scanned item passes, and an action survives only through a tool the
+installation declared ([CONNECTORS](CONNECTORS.md#adding-tracked-items-to-the-ledger)).
+Evidence: `a declared feed is read, and only what holds is written to the
+owner’s ledger` and `revoking the connection withholds its items from every
+read` in `connection-ledger.test.ts`.
+
 ## 8. Memory and skills
 
 Postgres is memory authority. Recall checks current revision, audience, source

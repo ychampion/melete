@@ -10,7 +10,7 @@
  * the same interface, so nothing downstream knows which ran.
  */
 
-import { isTerminal, jobState } from '@melete/contracts';
+import { isTerminal, jobState, type LedgerItem } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
@@ -29,6 +29,7 @@ import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import type { CompanyExtractor, ScanExtractor } from './extract.ts';
+import { publishedAction, syncLedgerFeed } from './feeds.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
 import { playbookHandler } from './handler.ts';
 import { connectorMailbox, MAILBOX_READ_LIMIT, type ScanMailbox } from './mailbox.ts';
@@ -284,5 +285,19 @@ export function companiesDeps(options: {
         }
       : {}),
     ...(options.sql ? { sendConnection: spaceSendConnection({ sql: options.sql }) } : {}),
+    ...(options.registry
+      ? {
+          feeds: {
+            sync: (connectionId: string, actor: string | null) =>
+              syncLedgerFeed(
+                { db: options.db, registry: options.registry as ConnectorRegistry },
+                connectionId,
+                actor,
+              ),
+            action: (item: LedgerItem, actionId?: string) =>
+              publishedAction(options.db, item, actionId),
+          },
+        }
+      : {}),
   };
 }

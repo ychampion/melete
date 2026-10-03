@@ -115,10 +115,14 @@ export function CompaniesScreen() {
     });
   };
 
-  const act = async (id: string, what: 'settled' | 'dropped' | 'handle'): Promise<void> => {
+  const act = async (
+    id: string,
+    what: 'settled' | 'dropped' | 'handle',
+    action?: string,
+  ): Promise<void> => {
     setBusy(true);
     if (what === 'handle') {
-      const result = await companiesApi.handle(id);
+      const result = await companiesApi.handle(id, action);
       setBusy(false);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t start it' });
@@ -180,10 +184,10 @@ export function CompaniesScreen() {
         <LedgerDetailPanel
           detail={detail}
           busy={busy}
-          onHandle={() =>
+          onHandle={(action) =>
             detail?.item.job_id
               ? navigate(`/chat/${detail.item.job_id}`)
-              : void act(item.id, 'handle')
+              : void act(item.id, 'handle', action)
           }
           onSettled={() => void act(item.id, 'settled')}
           onDrop={() => void act(item.id, 'dropped')}

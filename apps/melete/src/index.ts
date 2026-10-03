@@ -47,6 +47,7 @@ import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { LedgerFeedPoller } from './companies/feeds.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
 import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
@@ -526,6 +527,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let ledgerFeeds: LedgerFeedPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
@@ -547,6 +549,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          ledgerFeeds?.stop(),
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
@@ -1034,6 +1037,15 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+          // Connections whose installation declares a ledger feed are read on a
+          // schedule, so what they publish appears without anyone asking.
+          ledgerFeeds = new LedgerFeedPoller({
+            db: handle.db,
+            sql: handle.sql,
+            registry: connectors,
+            triggers,
+          });
+          await ledgerFeeds.start();
         }
         // Pushes to people's devices, when this installation has its VAPID keys.
         if (handle) {

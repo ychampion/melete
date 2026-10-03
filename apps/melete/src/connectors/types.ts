@@ -100,6 +100,13 @@ export interface Connector {
   /** Reopen a transport only after repair has proved the previous call did not execute. */
   reconnect?(action: Action, ctx: ConnectorContext): Promise<void>;
   /**
+   * Present only when the installation declared a ledger feed. Reads that feed
+   * once, as a `read` of the declared tool, and returns what the tool answered.
+   * Authority is re-read first, exactly as for `execute`; the service, never a
+   * job, calls it, and what comes back is still checked item by item.
+   */
+  ledgerFeed?(signal?: AbortSignal): Promise<JsonObject>;
+  /**
    * Equivalent authorized routes for the SAME operation, best first. Consulted
    * only after a route said definitively that it did not execute.
    */

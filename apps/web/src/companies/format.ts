@@ -73,6 +73,8 @@ export const KIND_WORDS: Record<LedgerItemKind, string> = {
   deposit: 'Deposit',
   data_held: 'Holding your data',
   promise: 'What they promised',
+  matter: 'Open matter',
+  commitment: 'Commitment',
 };
 
 export const STATUS_WORDS: Record<LedgerItem['status'], string> = {

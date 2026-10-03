@@ -190,13 +190,20 @@ type Suggestion = { id: string; label: string; icon: IconName };
 function suggestionsOf(map: CompanyMap | null, now: number): Suggestion[] {
   if (!map) return [];
   const name = (id: string) => map.companies.find((company) => company.id === id)?.name;
+  // A connection's item offers its own first step; a found one, its playbook.
+  const label = (item: CompanyMap['items'][number]) => {
+    const step = item.source?.actions[0];
+    if (step) return `${step.label} · ${name(item.company_id) ?? ''}`;
+    return SUGGESTION[item.kind]?.(name(item.company_id) ?? '') ?? '';
+  };
   return map.items
     .filter(
       (item) =>
-        item.suggested_playbook !== null &&
+        (item.source
+          ? item.source.actions.length > 0
+          : item.suggested_playbook !== null && SUGGESTION[item.kind] !== undefined) &&
         item.job_id === null &&
         item.status === 'found' &&
-        SUGGESTION[item.kind] !== undefined &&
         name(item.company_id) !== undefined,
     )
     .sort((a, b) => {
@@ -208,7 +215,7 @@ function suggestionsOf(map: CompanyMap | null, now: number): Suggestion[] {
     .slice(0, 3)
     .map((item) => ({
       id: item.id,
-      label: SUGGESTION[item.kind]?.(name(item.company_id) ?? '') ?? '',
+      label: label(item),
       icon: SUGGESTION_ICON[item.kind] ?? 'sparkles',
     }));
 }

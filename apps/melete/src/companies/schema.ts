@@ -13,7 +13,7 @@
  * in a shared space cannot read the first person's map.
  */
 
-import type { LedgerEvidence } from '@melete/contracts';
+import type { LedgerEvidence, LedgerItemSource } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -26,7 +26,10 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { principal, space } from '../db/schema.ts';
+import { connection, principal, space } from '../db/schema.ts';
+
+/** A published item's source as stored: everything but the connection id, which is a column. */
+export type PublishedSource = Omit<LedgerItemSource, 'connection_id'>;
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -121,10 +124,20 @@ export const ledgerItem = pgTable(
     scanId: text('scan_id').notNull(),
     /** What `dedupeKey` computed, so a re-scan recognises a claim it already has. */
     dedupeKey: text('dedupe_key').notNull(),
+    /**
+     * The connection that published the item, when one did. Removing the
+     * connection's row removes its items; revoking it withholds them.
+     */
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
+    /** What the connection said about the item beyond the ledger's own columns. */
+    source: jsonb('source').$type<PublishedSource>(),
     createdAt: created(),
   },
   (table) => [
     index('ledger_item_owner_idx').on(table.spaceId, table.principalId, table.status),
+    index('ledger_item_connection_idx')
+      .on(table.connectionId)
+      .where(sql`${table.connectionId} is not null`),
     uniqueIndex('ledger_item_dedupe_idx').on(table.spaceId, table.principalId, table.dedupeKey),
     // A finishing chase finds the item it was handling by this.
     index('ledger_item_job_idx').on(table.jobId).where(sql`${table.jobId} is not null`),

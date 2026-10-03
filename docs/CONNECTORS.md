@@ -643,6 +643,101 @@ A stdio MCP server never runs under the service's own identity. The stdio
 fixture above is launched only by tests; a server a person installs runs in a
 container of its own, described next.
 
+## Adding tracked items to the ledger
+
+An installed MCP server can add what it tracks to the ledger: a project
+tracker's open matters, a CRM's promises with dates on them, a shared inbox's
+replies someone owes. They appear on Home, in Waiting on, on the Companies
+ledger and in the case panel beside the items a mailbox scan found, and they
+are acted on through the server's own tools.
+
+The installation decides whether a server may do this. Its `mcp` block names a
+`ledger` declaration: `feed` is the alias of one of its `read` tools, and
+`actions` are the aliases an item may offer as a next step.
+
+```json
+{
+  "provider": "mcp",
+  "label": "Project tracker",
+  "mcp": {
+    "id": "tracker",
+    "url": "https://tracker.example.net/mcp",
+    "allowed_scopes": ["mcp_tracker.open_items", "mcp_tracker.post_note"],
+    "audience": "owner",
+    "tools": [
+      { "name": "open_items", "alias": "open_items", "required_scopes": ["mcp_tracker.open_items"], "effect_class": "read" },
+      { "name": "post_note", "alias": "post_note", "required_scopes": ["mcp_tracker.post_note"], "effect_class": "write_reversible" }
+    ],
+    "ledger": { "feed": "open_items", "actions": ["post_note"] }
+  }
+}
+```
+
+A server whose installation declares no feed adds nothing, whatever its tools
+return, and nothing a job or a model writes can declare one. A feed that names
+a tool that can write, or an action the installation does not have, is refused
+at installation.
+
+The service reads every declared feed every five minutes, and
+`POST /connections/{id}/ledger/sync` reads one now for the owner of its space.
+The feed tool is called with no arguments and answers, as structured content or
+as one text block of JSON:
+
+| Field | What it holds |
+| --- | --- |
+| `sources[]` | `ref`, `title`, `from`, `at` and `text`: the text the items quote, such as a message, a comment or a note |
+| `items[].ref` | The server's own id; publishing the same `ref` again updates the item |
+| `items[].kind` | `matter` (open, with a state and a next step) or `commitment` (owed one way or the other) |
+| `items[].direction` | `owed_to_you`, `you_owe`, or `info` for a matter that is about neither |
+| `items[].counterparty` | `name` and `domain`; the item joins the company the person already has at that domain |
+| `items[].state`, `next_step`, `parties[]` | Where it stands, in the server's words |
+| `items[].due_at`, `amount_minor`, `currency` | As on any ledger item |
+| `items[].evidence[]` | `source`, `quote`, `start`, `end`: a quote and its span in one of `sources` |
+| `items[].actions[]` | `id`, `label`, `tool` (an alias) and `input` |
+| `items[].closed` | True when the matter is over; the item is settled |
+
+Each item is checked on its own. Every quote must be exactly the text at its
+span in a source the same feed sent, the rule `evidenceHolds` applies to a
+scanned item, or the whole item is dropped and counted. An action whose tool is
+not one of the declared `actions` is dropped and the item kept. The sources an
+admitted item quotes are stored under an id that names the connection, the
+source and a digest of its text, so a person opens a published item back to its
+sentence the same way as a scanned one, and a source whose text later changes is
+stored again rather than rewritten. The answer counts what was written and what
+was dropped, by reason. Reading an unchanged feed writes nothing. An item left
+out of a later read is not taken to be closed. A person's own choices stay
+theirs: an item they dropped stays dropped, and one being handled keeps its job.
+
+Items are written for the owner of the connection's space, which is the only
+kind of space an MCP server is installed in, so they are fenced like the rest of
+the ledger: another account, or another member of a shared space, reads none of
+them. Revoking the connection withholds its items from every read and from every
+route that acts on one; removing its row removes them.
+
+`POST /ledger/{id}/handle` on a published item takes `{ "action": "<id>" }`, or
+the item's first action when the body is empty. It checks the installation as it
+stands then: the connection is active and still declares and grants that tool.
+It starts a job that calls that one tool once with the item's exact input,
+quoting only the sentences that still hold. The call waits for the person
+whenever the installation's effect class for the tool says it must, as any call
+does. An item that offers no action answers `400 no_action`.
+
+Evidence: `a declared feed is read, and only what holds is written to the
+owner’s ledger`, `a published item opens back to the exact sentence in its
+source`, `reading the same feed again writes nothing; a closed item is settled`,
+`another account reads none of it, and cannot read the feed`, `a server whose
+installation declares no feed adds nothing, whatever it returns`, `an action
+runs as a job that calls the connection’s declared tool, and only that one` and
+`revoking the connection withholds its items from every read` in
+[connection-ledger.test.ts](../apps/melete/test/integration/connection-ledger.test.ts);
+`a fabricated quote, a shifted span and a missing source each drop the item` and
+`an action through a tool the installation did not declare is dropped, and the
+item kept` in [published.test.ts](../apps/melete/src/companies/published.test.ts);
+`a feed that can write, or an action the installation does not have, is
+refused` in [ledger-feed.test.ts](../packages/contracts/src/ledger-feed.test.ts).
+A feed is read in one call of at most 200 items; a declaration kept only in
+`MELETE_CONNECTIONS_FILE` is not read.
+
 ## Plugins and stdio MCP servers
 
 A plugin is a stdio MCP server Melete runs for a person. `GET /plugins` lists

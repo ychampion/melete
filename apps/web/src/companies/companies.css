@@ -335,6 +335,21 @@ button.total:hover {
   font-size: 12px;
   color: var(--muted);
 }
+.ledger-source {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.ledger-source dt {
+  color: var(--muted);
+}
+.ledger-source dd {
+  margin: 0;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
 .ledger-detail-gone {
   margin: 0;
   padding: 12px;

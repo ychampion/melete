@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from '../experience/types.ts';
 import { EvidenceText, holds, MessageCard, segment } from './evidence.tsx';
 import { type Filter, inOrder, matches, money, whenDue } from './format.ts';
-import { EmptyLedger, LedgerRow } from './Ledger.tsx';
+import { EmptyLedger, LedgerDetailPanel, LedgerRow } from './Ledger.tsx';
 import { TotalsRow, totalsOf } from './Totals.tsx';
 
 const NOW = Date.parse('2026-09-18T09:00:00.000Z');
@@ -382,4 +382,42 @@ test('money and dates are written the way a person writes them', () => {
   expect(whenDue('2026-09-17T09:00:00.000Z', NOW)).toBe('yesterday');
   expect(whenDue('2026-09-25T09:00:00.000Z', NOW)).toBe('in 7 days');
   expect(whenDue('2026-09-09T09:00:00.000Z', NOW)).toBe('9 days ago');
+});
+
+/* ---------- items a connection added ---------- */
+
+test('an item a connection added says where it came from and offers only its own steps', () => {
+  const published = item({
+    kind: 'commitment',
+    suggested_playbook: null,
+    source: {
+      connection_id: 'conn_01M2000000000000000000000A',
+      label: 'Project tracker',
+      ref: 'TRK-17',
+      state: 'with the client',
+      next_step: 'Nudge on Monday',
+      parties: [{ name: 'Ana', role: 'client' }],
+      actions: [
+        { id: 'nudge', label: 'Nudge them', tool: 'post_note', input: {} },
+        { id: 'close', label: 'Close it', tool: 'close_item', input: {} },
+      ],
+      published_at: '2026-09-18T08:00:00.000Z',
+    },
+  });
+  const html = renderToStaticMarkup(
+    <LedgerDetailPanel
+      detail={{ item: published, company: COMPANY, message: MESSAGE }}
+      busy={false}
+      onHandle={() => undefined}
+      onSettled={() => undefined}
+      onDrop={() => undefined}
+    />,
+  );
+  for (const text of ['from Project tracker', 'with the client', 'Nudge on Monday', 'Ana (client)'])
+    expect(html).toContain(text);
+  expect(html).toContain('Nudge them');
+  expect(html).toContain('Close it');
+  // Its steps replace the playbook's button; there is no "Handle it" to press.
+  expect(html).not.toContain('Handle it');
+  expect(html).toContain('evidence-mark');
 });

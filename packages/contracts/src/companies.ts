@@ -16,7 +16,7 @@
  * bad item is dropped on its own instead of failing the whole extraction.
  */
 import { z } from 'zod';
-import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { confidence } from './knowledge.ts';
 
 /**
@@ -54,6 +54,7 @@ export type Company = z.infer<typeof company>;
 // ledger item
 // --------------------------------------------------------------------------
 
+/** What an inbox scan reads out of mail. */
 export const LEDGER_ITEM_KINDS = [
   'refund_owed',
   'wrong_charge',
@@ -68,7 +69,13 @@ export const LEDGER_ITEM_KINDS = [
   'data_held',
   'promise',
 ] as const;
-export const ledgerItemKind = z.enum(LEDGER_ITEM_KINDS);
+/**
+ * What a connection adds to the ledger: a `matter` is something open between
+ * the person and someone else, with a state and a next step; a `commitment` is
+ * something owed one way or the other by a date. A scan never produces either.
+ */
+export const PUBLISHED_ITEM_KINDS = ['matter', 'commitment'] as const;
+export const ledgerItemKind = z.enum([...LEDGER_ITEM_KINDS, ...PUBLISHED_ITEM_KINDS]);
 export type LedgerItemKind = z.infer<typeof ledgerItemKind>;
 
 /** Which way the money moves. `info` is for items that are not about money at all. */
@@ -118,6 +125,65 @@ export const ledgerEvidence = z.strictObject({
 });
 export type LedgerEvidence = z.infer<typeof ledgerEvidence>;
 
+// --------------------------------------------------------------------------
+// items a connection publishes
+// --------------------------------------------------------------------------
+
+/** A connection's own name for an item or a source: a ticket number, a thread id. */
+export const ledgerSourceRef = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:@#/-]*$/, 'letters, digits and . _ : @ # / -');
+
+/** Someone on a matter, as the connection names them. */
+export const ledgerParty = z.strictObject({
+  name: z.string().min(1).max(200),
+  /** Their part in it, in the connection's words: "client", "reviewer". */
+  role: z.string().min(1).max(60).nullable().default(null),
+});
+export type LedgerParty = z.infer<typeof ledgerParty>;
+
+/**
+ * A next step an item offers. `tool` is the installation's alias for one of
+ * the connection's own tools, and only an alias the installation declared as a
+ * ledger action survives admission; `input` is what that tool is asked with.
+ */
+export const ledgerItemAction = z.strictObject({
+  id: z
+    .string()
+    .min(1)
+    .max(60)
+    .regex(/^[a-z0-9][a-z0-9_-]*$/, 'lowercase letters, digits, - and _'),
+  label: z.string().min(1).max(80),
+  tool: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(80),
+  input: jsonObject.default({}),
+});
+export type LedgerItemAction = z.infer<typeof ledgerItemAction>;
+
+/**
+ * Where an item came from when a connection published it rather than a scan
+ * finding it. Present only on published items; the rest of the item is read
+ * the same way as one a scan found.
+ */
+export const ledgerItemSource = z.strictObject({
+  connection_id: prefixedId(ID_PREFIXES.connection),
+  /** The connection's label when it last published the item. */
+  label: z.string().min(1).max(200),
+  ref: ledgerSourceRef,
+  /** Where the matter stands, in the connection's own word: "open", "with the client". */
+  state: z.string().min(1).max(60),
+  next_step: z.string().min(1).max(300).nullable(),
+  parties: z.array(ledgerParty).max(20),
+  actions: z.array(ledgerItemAction).max(8),
+  /** When the connection last published it. */
+  published_at: timestamp,
+});
+export type LedgerItemSource = z.infer<typeof ledgerItemSource>;
+
 export const ledgerItem = z.strictObject({
   id: prefixedId(ID_PREFIXES.ledger_item),
   space_id: prefixedId(ID_PREFIXES.space),
@@ -142,6 +208,8 @@ export const ledgerItem = z.strictObject({
   job_id: prefixedId(ID_PREFIXES.job).nullable().default(null),
   /** One line in the person's own words: "Refund for the cancelled order". */
   summary: z.string().min(1).max(500),
+  /** Present when a connection published the item; absent when a scan found it. */
+  source: ledgerItemSource.optional(),
 });
 export type LedgerItem = z.infer<typeof ledgerItem>;
 
@@ -208,3 +276,109 @@ export function evidenceHolds(
   if (end - start !== quote.length) return false;
   return messageText.slice(start, end) === quote;
 }
+
+// --------------------------------------------------------------------------
+// what a connection's ledger feed returns
+// --------------------------------------------------------------------------
+
+/**
+ * The text an item's evidence is checked against: a message, a ticket comment,
+ * a note. It travels with the items that quote it, and the service keeps it,
+ * so a person can open a published item back to its sentence the same way as
+ * one a scan found.
+ */
+export const ledgerFeedSource = z.strictObject({
+  ref: ledgerSourceRef,
+  title: z.string().max(300).default(''),
+  /** Who wrote it, as the connection shows it. */
+  from: z.string().max(320).default(''),
+  at: timestamp.optional(),
+  text: z.string().min(1).max(20_000),
+});
+export type LedgerFeedSource = z.infer<typeof ledgerFeedSource>;
+
+/** One quote, naming the source it sits in by that source's `ref`. */
+export const ledgerFeedEvidence = z.strictObject({
+  source: ledgerSourceRef,
+  quote: z.string().min(1).max(2000),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().nonnegative(),
+});
+
+/**
+ * One tracked item as a connection publishes it. `ref` is the connection's
+ * own id for it, so publishing the same `ref` again updates the item rather
+ * than adding a second one. `closed` is how a connection says the matter is
+ * over; an item left out of a later feed is not taken to be closed.
+ */
+export const ledgerFeedItem = z
+  .strictObject({
+    ref: ledgerSourceRef,
+    kind: z.enum(PUBLISHED_ITEM_KINDS),
+    direction: z.enum(['owed_to_you', 'you_owe', 'info']),
+    summary: z.string().min(1).max(500),
+    /** Who the item is with. Its domain groups it with what else the person has from them. */
+    counterparty: z.strictObject({
+      name: z.string().min(1).max(200),
+      domain: z
+        .string()
+        .min(1)
+        .max(253)
+        .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/),
+    }),
+    parties: z.array(ledgerParty).max(20).default([]),
+    state: z.string().min(1).max(60),
+    next_step: z.string().min(1).max(300).nullable().default(null),
+    due_at: timestamp.nullable().default(null),
+    due_date_only: z.boolean().optional(),
+    amount_minor: minorAmount.nullable().default(null),
+    currency: currencyCode.nullable().default(null),
+    closed: z.boolean().default(false),
+    evidence: z.array(ledgerFeedEvidence).min(1).max(8),
+    actions: z.array(ledgerItemAction).max(8).default([]),
+  })
+  .superRefine((item, ctx) => {
+    if (item.kind === 'commitment' && item.direction === 'info')
+      ctx.addIssue({
+        code: 'custom',
+        path: ['direction'],
+        message: 'A commitment is owed one way or the other',
+      });
+    if ((item.amount_minor === null) !== (item.currency === null))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['currency'],
+        message: 'An amount and its currency come together',
+      });
+    if (new Set(item.actions.map((action) => action.id)).size !== item.actions.length)
+      ctx.addIssue({ code: 'custom', path: ['actions'], message: 'Each action id is used once' });
+  });
+export type LedgerFeedItem = z.infer<typeof ledgerFeedItem>;
+
+/**
+ * A feed page. Items are checked one at a time, so the outer shape leaves them
+ * unparsed: one malformed item is dropped and counted, and the rest stand.
+ */
+export const ledgerFeed = z.object({
+  sources: z.array(ledgerFeedSource).max(200).default([]),
+  items: z.array(z.unknown()).max(200),
+});
+export type LedgerFeed = z.infer<typeof ledgerFeed>;
+
+/** What one read of a connection's feed did. */
+export const ledgerSyncResult = z.strictObject({
+  connection_id: prefixedId(ID_PREFIXES.connection),
+  /** Items the feed returned. */
+  items_seen: z.number().int().nonnegative(),
+  /** Items added or changed by this read. */
+  items_written: z.number().int().nonnegative(),
+  /** Items, and actions on items, left out, by reason. */
+  dropped: z.record(z.string(), z.number().int().nonnegative()),
+});
+export type LedgerSyncResult = z.infer<typeof ledgerSyncResult>;
+
+/** Which of an item's actions to take. Left out, its first. */
+export const ledgerHandleRequest = z.strictObject({
+  action: ledgerItemAction.shape.id.optional(),
+});
+export type LedgerHandleRequest = z.infer<typeof ledgerHandleRequest>;

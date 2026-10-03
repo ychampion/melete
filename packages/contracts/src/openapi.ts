@@ -51,7 +51,13 @@ import {
   liveScopeResponse,
   liveUp,
 } from './browser-live.ts';
-import { company, companyMap, ledgerItem } from './companies.ts';
+import {
+  company,
+  companyMap,
+  ledgerHandleRequest,
+  ledgerItem,
+  ledgerSyncResult,
+} from './companies.ts';
 import {
   accountSignInAvailability,
   accountSignInRequest,
@@ -2684,11 +2690,15 @@ export function buildOpenApiDocument() {
             summary: 'Start the job that handles this item',
             description:
               'Creates the job that runs the item’s playbook. Any message it sends goes ' +
-              'through the existing approval path; this route starts the work, it does not send.',
+              'through the existing approval path; this route starts the work, it does not send. ' +
+              'For an item a connection published, the job takes one of the item’s actions ' +
+              'through that connection’s own tool, named by `action` or the first one offered, ' +
+              'and only while the installation still declares and grants it. The body is optional.',
             requestParams: {
               ...idParam('id', 'Ledger item id'),
               query: z.object({ space_id: z.string().optional() }),
             },
+            requestBody: json(ledgerHandleRequest),
             responses: {
               '200': jsonResponse(
                 'Already being handled, by the job named here',
@@ -2697,8 +2707,31 @@ export function buildOpenApiDocument() {
               '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
               '400': problem('Nothing ships yet that handles this kind of item on its own'),
               '404': problem('No such item for this person'),
-              '409': problem('Already finished, or no longer quotable'),
+              '409': problem(
+                'Already finished, no longer quotable, or the action is no longer offered',
+              ),
               '503': problem('Handling is not connected yet'),
+            },
+          },
+        },
+        '/connections/{id}/ledger/sync': {
+          post: {
+            tags: ['companies'],
+            summary: 'Read a connection’s ledger feed now',
+            description:
+              'Reads the feed tool the installation declared and writes the items it admits ' +
+              'into the ledger of the space’s owner. Every quote must hold at its span in a ' +
+              'source the same feed sent, or the item is dropped and counted; an action naming ' +
+              'a tool the installation did not declare is dropped. The service also reads every ' +
+              'declared feed on its own every five minutes.',
+            requestParams: idParam('id', 'Connection id'),
+            responses: {
+              '200': jsonResponse('What the read did', ledgerSyncResult),
+              '403': problem('This connection is not accessible to the signed-in account'),
+              '404': problem('This connection declares no ledger feed'),
+              '409': problem('The connection is not active'),
+              '502': problem('The connection answered with something that is not a ledger feed'),
+              '503': problem('The connection is not running, or its feed did not answer'),
             },
           },
         },

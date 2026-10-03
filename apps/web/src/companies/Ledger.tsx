@@ -134,7 +134,8 @@ export function LedgerDetailPanel({
 }: {
   detail: LedgerDetail | null;
   busy: boolean;
-  onHandle: () => void;
+  /** For an item a connection added, `action` is the step the person chose. */
+  onHandle: (action?: string) => void;
   onSettled: () => void;
   onDrop: () => void;
 }) {
@@ -148,14 +149,17 @@ export function LedgerDetailPanel({
   const { item, company, message } = detail;
   const spans = message ? item.evidence.filter((span) => span.message_id === message.id) : [];
   const done = item.status === 'settled' || item.status === 'dropped';
+  const source = item.source;
   return (
     <div className="ledger-detail">
       <div className="ledger-detail-head">
         <span className="ledger-detail-summary">{item.summary}</span>
         <span className="ledger-detail-meta">
-          {company.name} · {company.domain} · {CONFIDENCE_WORDS[item.confidence].toLowerCase()}
+          {company.name} · {company.domain} ·{' '}
+          {source ? `from ${source.label}` : CONFIDENCE_WORDS[item.confidence].toLowerCase()}
         </span>
       </div>
+      {source ? <SourceFacts source={source} /> : null}
       {message ? (
         <MessageCard message={message} spans={spans} />
       ) : (
@@ -169,11 +173,30 @@ export function LedgerDetailPanel({
       )}
       <div className="ledger-actions">
         {item.job_id ? (
-          <Button icon="arrowUpRight" className="btn-card" onClick={onHandle}>
+          <Button icon="arrowUpRight" className="btn-card" onClick={() => onHandle()}>
             Open the job
           </Button>
+        ) : source ? (
+          // A connection's item is acted on through the steps it offers, and
+          // only those; with none, there is nothing to start here.
+          source.actions.map((action, index) => (
+            <Button
+              key={action.id}
+              {...(index === 0 ? { icon: 'send' as const } : { variant: 'outline' as const })}
+              className="btn-card"
+              disabled={busy || done}
+              onClick={() => onHandle(action.id)}
+            >
+              {action.label}
+            </Button>
+          ))
         ) : (
-          <Button icon="send" className="btn-card" disabled={busy || done} onClick={onHandle}>
+          <Button
+            icon="send"
+            className="btn-card"
+            disabled={busy || done}
+            onClick={() => onHandle()}
+          >
             Handle it
           </Button>
         )}
@@ -185,6 +208,32 @@ export function LedgerDetailPanel({
         </Button>
       </div>
     </div>
+  );
+}
+
+/** Where a connection's item stands, in the connection's own words. */
+function SourceFacts({ source }: { source: NonNullable<LedgerItem['source']> }) {
+  return (
+    <dl className="ledger-source">
+      <dt>Where it stands</dt>
+      <dd>{source.state}</dd>
+      {source.next_step ? (
+        <>
+          <dt>Next step</dt>
+          <dd>{source.next_step}</dd>
+        </>
+      ) : null}
+      {source.parties.length ? (
+        <>
+          <dt>With</dt>
+          <dd>
+            {source.parties
+              .map((party) => (party.role ? `${party.name} (${party.role})` : party.name))
+              .join(', ')}
+          </dd>
+        </>
+      ) : null}
+    </dl>
   );
 }
 

@@ -16,7 +16,7 @@ import type {
   LedgerItem,
   LedgerItemStatus,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
@@ -95,6 +95,8 @@ export interface CompanyStore {
   /** `timeZone` is the person's own; a due date with no time is a day there. */
   map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap>;
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
+  /** The stored text of each of these messages that is still held, by message id. */
+  messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
   /**
@@ -254,7 +256,22 @@ const itemView = (row: ItemRow): LedgerItem => ({
   suggested_playbook: row.suggestedPlaybook,
   job_id: row.jobId,
   summary: row.summary,
+  ...(row.connectionId && row.source
+    ? { source: { connection_id: row.connectionId, ...row.source } }
+    : {}),
 });
+
+/**
+ * A published item is served only while the connection behind it is. Revoking
+ * the connection withholds its items from every read, and every route that
+ * acts on an item reads it first.
+ */
+const standing = () =>
+  or(
+    isNull(ledgerItem.connectionId),
+    sql`exists (select 1 from connection c
+      where c.id = ${ledgerItem.connectionId} and c.status <> 'revoked')`,
+  );
 
 /**
  * A scan runs inside the service process that started it, so a scan still
@@ -509,7 +526,7 @@ export class PostgresCompanyStore implements CompanyStore {
     const items = await this.db
       .select()
       .from(ledgerItem)
-      .where(ownedItem(owner))
+      .where(and(ownedItem(owner), standing()))
       .orderBy(desc(ledgerItem.createdAt), ledgerItem.id);
     const view = items.map(itemView);
     const totals = computeTotals(view, { now, timeZone });
@@ -525,7 +542,7 @@ export class PostgresCompanyStore implements CompanyStore {
     const [row] = await this.db
       .select()
       .from(ledgerItem)
-      .where(and(ownedItem(owner), eq(ledgerItem.id, id)));
+      .where(and(ownedItem(owner), standing(), eq(ledgerItem.id, id)));
     if (!row) return null;
     const [parent] = await this.db
       .select()
@@ -558,6 +575,21 @@ export class PostgresCompanyStore implements CompanyStore {
           }
         : null,
     };
+  }
+
+  async messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
+    if (!messageIds.length) return new Map();
+    const rows = await this.db
+      .select({ messageId: companyMessage.messageId, body: companyMessage.body })
+      .from(companyMessage)
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...messageIds]),
+        ),
+      );
+    return new Map(rows.map((row) => [row.messageId, row.body]));
   }
 
   async setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null> {
@@ -902,6 +934,14 @@ export class MemoryCompanyStore implements CompanyStore {
           }
         : null,
     };
+  }
+  async messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    for (const id of messageIds) {
+      const message = this.messages.get(this.key(owner, id));
+      if (message) found.set(id, message.text);
+    }
+    return found;
   }
   /**
    * Changing an item is about the item, so it does not go through `item()`,

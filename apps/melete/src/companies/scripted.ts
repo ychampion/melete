@@ -15,10 +15,13 @@
  * the pipeline is built to enforce.
  */
 
-import type { LedgerDirection, LedgerItemKind } from '@melete/contracts';
+import type { LedgerDirection } from '@melete/contracts';
 import { calendarDay } from '../dates.ts';
 import { tier0Values } from '../memory/tier0.ts';
 import type { CompanyExtractor, ExtractedItem, ExtractionRequest } from './extract.ts';
+
+/** The kinds a scan can find; a connection's own kinds never come out of mail. */
+type LedgerItemKind = ExtractedItem['kind'];
 
 type Rule = {
   pattern: RegExp;

@@ -7,7 +7,7 @@ tools that act as that person:
 
 | Tool | What it does |
 | --- | --- |
-| `waiting_on` | Lists what companies owe the person: refunds, credits, deposits and promises Melete found in their mailbox, each with the `item_id` to pass to `handle`. |
+| `waiting_on` | Lists what companies owe the person: refunds, credits, deposits and promises Melete found in their mailbox, and what a connected tracker or CRM [added to the ledger](CONNECTORS.md#adding-tracked-items-to-the-ledger), each with the `item_id` to pass to `handle`. |
 | `handle` | Asks Melete to chase one owed item. Melete starts the chase and returns its `job_id`. Asking again for the same item returns the same chase. The person approves its first message in Melete, as for a chase they start themselves. |
 | `safe_send` | Proposes an email from the person's connected mailbox. It returns "Awaiting your approval in Melete." The person reads the exact text in Melete and approves it there; only then does Melete send it. |
 | `remember` | Saves a detail under a topic and a name. Melete records it as saved by that assistant, not as the person's own words, so a message that uses it shows a warning on its approval card. |

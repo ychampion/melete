@@ -1,5 +1,11 @@
-import { type Action, jobConstraints } from '@melete/contracts';
+import {
+  type Action,
+  canonicalizePayload,
+  type JsonObject,
+  jobConstraints,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { newId } from '../ids.ts';
 import { type McpServerConfig, type McpWorker, openMcpWorker } from './mcp.ts';
 import { mcpCredentialAccess, mcpCredentialUrl } from './mcp-credentials.ts';
 import { publicOnlyFetch } from './public-fetch.ts';
@@ -13,6 +19,18 @@ export type McpSessionHooks = {
   done(): void;
 };
 
+/** The brokered name of the tool an installation declared as its ledger feed, if it declared one. */
+export function ledgerFeedTool(config: Pick<McpServerConfig, 'id' | 'ledger'>): string | undefined {
+  return config.ledger ? `mcp_${config.id}.${config.ledger.feed}` : undefined;
+}
+
+/** A ledger feed that could not be read. The reason is a fixed code, never the server's words. */
+export class LedgerFeedUnavailable extends Error {
+  constructor(readonly reason: 'not_granted' | 'not_running' | 'no_answer') {
+    super(`ledger feed unavailable: ${reason}`);
+  }
+}
+
 /** Service-side adapter; only the transport receives remote data or launches a worker. */
 export function mcpConnector(
   worker: McpWorker,
@@ -20,6 +38,8 @@ export function mcpConnector(
   sql: Sql,
   credentials?: ReturnType<typeof mcpCredentialAccess>,
   session?: McpSessionHooks,
+  /** The brokered name of the declared ledger feed tool, from the installation. */
+  ledgerFeed?: string,
 ): Connector {
   async function granted(action: Action, context: ConnectorContext) {
     const [row] = await sql`select c.scopes, s.audience, j.constraints from connection c
@@ -75,6 +95,78 @@ export function mcpConnector(
       }
     },
     verify: () => worker.verify(),
+    ...(ledgerFeed
+      ? {
+          async ledgerFeed(signal?: AbortSignal): Promise<JsonObject> {
+            // The same authority `execute` re-reads, without a job: the row is
+            // active, the space is the owner's, and the feed tool is granted.
+            const [row] = await sql`select c.scopes, s.audience from connection c
+              join space s on s.id = c.space_id
+              where c.id = ${binding.connectionId} and c.space_id = ${binding.spaceId}
+                and c.provider = 'mcp' and c.status = 'active'`;
+            const tool = worker.tools.find((entry) => entry.name === ledgerFeed);
+            if (
+              !row ||
+              !tool ||
+              row.audience !== 'owner' ||
+              tool.effect_class !== 'read' ||
+              ![ledgerFeed, ...tool.required_scopes].every((scope) => row.scopes.includes(scope))
+            )
+              throw new LedgerFeedUnavailable('not_granted');
+            const refused = await session?.ready();
+            if (refused) throw new LedgerFeedUnavailable('not_running');
+            try {
+              const id = newId('act');
+              const payload = canonicalizePayload({});
+              const now = new Date().toISOString();
+              const result = await worker.execute(
+                {
+                  id,
+                  job_id: id,
+                  attempt_id: id,
+                  connection_id: binding.connectionId,
+                  kind: ledgerFeed,
+                  effect_class: 'read',
+                  canonical_payload: payload.canonical,
+                  payload_hash: payload.hash,
+                  intent_key: null,
+                  status: 'dispatched',
+                  authorization_ref: null,
+                  budget_reservation: null,
+                  idempotency_key: id,
+                  dispatched_at: now,
+                  receipt: null,
+                  resolved_at: null,
+                  reconciliation: null,
+                  repair_trace: [],
+                  repair_counters: {},
+                  repair_disposition: null,
+                  retry_after_at: null,
+                  created_at: now,
+                },
+                {
+                  job_id: id,
+                  space_id: binding.spaceId,
+                  idempotency_key: id,
+                  constraints: jobConstraints.parse({}),
+                  ...(signal ? { signal } : {}),
+                  audience: row.audience,
+                  scopes: row.scopes,
+                },
+              );
+              const answered = result.outcome === 'succeeded' ? result.receipt.detail.result : null;
+              if (!answered || typeof answered !== 'object' || Array.isArray(answered))
+                throw new LedgerFeedUnavailable('no_answer');
+              return answered as JsonObject;
+            } catch (error) {
+              if (error instanceof LedgerFeedUnavailable) throw error;
+              throw new LedgerFeedUnavailable('no_answer');
+            } finally {
+              session?.done();
+            }
+          },
+        }
+      : {}),
     async reconnect(action, context) {
       if (await granted(action, context)) await worker.reconnect();
     },
@@ -126,7 +218,7 @@ export async function openConfiguredMcpConnector(
     ...credentials,
     ...(pinned ? { fetch: pinned } : {}),
   });
-  return mcpConnector(worker, binding, sql, credentials);
+  return mcpConnector(worker, binding, sql, credentials, undefined, ledgerFeedTool(config));
 }
 
 /**

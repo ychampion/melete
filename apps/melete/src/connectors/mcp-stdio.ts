@@ -29,7 +29,7 @@ import {
   mcpToolDefinition,
   openMcpWorker,
 } from './mcp.ts';
-import { mcpConnector } from './mcp-connector.ts';
+import { ledgerFeedTool, mcpConnector } from './mcp-connector.ts';
 import { type McpTransport, openLineMcpTransport, type StdioChannel } from './mcp-transport.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import type { Connector } from './types.ts';
@@ -442,10 +442,17 @@ export async function openStdioMcpConnector(
     server.done();
   }
   const reopen = () => worker.reconnect();
-  const connector = mcpConnector(worker, binding, sql, undefined, {
-    ready: () => server.ready(reopen),
-    done: () => server.done(),
-  });
+  const connector = mcpConnector(
+    worker,
+    binding,
+    sql,
+    undefined,
+    {
+      ready: () => server.ready(reopen),
+      done: () => server.done(),
+    },
+    ledgerFeedTool(config),
+  );
   return {
     ...connector,
     manifest: {

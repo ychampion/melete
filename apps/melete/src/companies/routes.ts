@@ -17,7 +17,12 @@ import {
   awaitedReply as awaitedReplyContract,
   type CompanyMap,
   companyMap as companyMapContract,
+  type LedgerItem,
+  type LedgerItemAction,
+  type LedgerSyncResult,
+  ledgerHandleRequest,
   ledgerItem as ledgerItemContract,
+  ledgerSyncResult,
   type WaitingOn,
   waitingOn as waitingOnContract,
 } from '@melete/contracts';
@@ -64,6 +69,19 @@ export type CompaniesDeps = {
   now?: () => Date;
   /** Model calls one person's scans may make in a day. Left out, there is no daily limit. */
   dailyCalls?: number;
+  /**
+   * Connections that publish items into the ledger. Absent, reading a feed and
+   * acting on a published item are not connected.
+   */
+  feeds?: {
+    /** Read one connection's feed now, as `actor`, and write what it admits. */
+    sync(connectionId: string, actor: string | null): Promise<LedgerSyncResult>;
+    /** The action asked for on a published item, checked against its installation now. */
+    action(
+      item: LedgerItem,
+      actionId?: string,
+    ): Promise<{ action: LedgerItemAction; toolName: string }>;
+  };
 };
 
 /**
@@ -289,6 +307,10 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.post('/ledger/:id/handle', async (c) => {
     const id = c.req.param('id');
+    // The body is optional: it only names which action to take on an item a
+    // connection published, and a playbook item takes none.
+    const text = await c.req.text();
+    const request = ledgerHandleRequest.parse(text.trim() ? JSON.parse(text) : {});
     // A second press waits for the first, then reads the item it left behind.
     const answer = await exclusively(`ledger:${id}`, async (store) => {
       const found = await findItem(deps, id, c.req.query('space_id'), store);
@@ -297,6 +319,30 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       // answer and the playbook is not asked again — the same rule the rest of
       // the product follows about never saying the same thing twice.
       if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
+      if (found.item.source) {
+        // A published item is acted on through its connection's own tool, and
+        // only one the installation still declares and grants.
+        if (!deps.feeds || !handler.handlePublishedItem)
+          throw new ServiceError('not_connected', 'Handling is not connected yet.', 503);
+        const chosen = await deps.feeds.action(found.item, request.action);
+        const texts = await store.messageTexts(
+          found.owner,
+          found.item.evidence.map((entry) => entry.message_id),
+        );
+        const result = await handler.handlePublishedItem({
+          item: found.item,
+          company: found.company,
+          action: chosen.action,
+          toolName: chosen.toolName,
+          texts,
+          principalId: found.owner.principalId,
+          spaceId: found.owner.spaceId,
+        });
+        await store.setJob(found.owner, found.item.id, result.job_id);
+        return { job_id: result.job_id, status: 201 as const };
+      }
+      if (request.action)
+        throw new ServiceError('invalid_request', 'This item offers no such action.', 400);
       // Which mailbox the message would leave from is the installation's to decide,
       // not the caller's: it is looked up from the space the item was found in.
       const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
@@ -319,6 +365,15 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       return { job_id: result.job_id, status: 201 as const };
     });
     return c.json({ job_id: answer.job_id }, answer.status);
+  });
+
+  // Read a connection's ledger feed now, rather than at the next scheduled read.
+  // Only the owner of the connection's space may; anyone else is told it is not there.
+  app.post('/connections/:id/ledger/sync', async (c) => {
+    if (!deps.feeds)
+      throw new ServiceError('not_connected', 'Ledger feeds are not connected.', 503);
+    const result = await deps.feeds.sync(c.req.param('id'), requestPrincipal() ?? null);
+    return c.json(ledgerSyncResult.parse(result));
   });
 
   /**
