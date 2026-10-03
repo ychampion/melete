@@ -166,3 +166,10 @@ A person asks "Book dinner with Sam at seven and let him know." These are the `t
 ```
 
 The activity for the same turn has a row for the recall, the skill, the page, the email and the memory write, in that order; the model entries mark where each step began. While the email waits for approval, `progress` reads `{ "steps_done": 3, "current": "Proposed sending an email to sam@example.com — waiting for you" }`.
+
+## Saving into the person's space versus their Files
+
+Two tools put a file where the person keeps things, and they are asked about differently.
+
+- `artifact.publish` to the space saves a finished file into Melete's own space. A new file there goes ahead without a question, because the person can open and delete it; replacing a file they already keep there asks first.
+- `files.write` and `files.move` with `area` or `to_area` set to `artifacts` change the person's own Files. That is not the agent's workspace, so it is treated like a reversible change in a connected app: it asks first, or goes to the independent reviewer when the person has switched on "Reversible changes in connected apps". The permission card names where the file goes ("Save imgtest.png to your Files", "Move “a.png” into your Files"), and approving it is one tap. Work in the agent's own workspace (`area: work`, the default) does not ask.

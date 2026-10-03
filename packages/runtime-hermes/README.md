@@ -47,12 +47,16 @@ own bundled skills are never copied into an attempt's home.
 The boot script adds only what belongs to one attempt: the capability, the model
 it was granted, and the window and trigger that follow from that model. The
 image also applies
-`patches/observer_bridge.py`: four source hashes must match the audited pin or
+`patches/observer_bridge.py`: six source hashes must match the audited pin or
 the identical reviewed patch. It adds a real compaction dispatch, binds plugin
 observations to the current HTTP run queue, puts the model's reasoning on the
-run's event stream as `reasoning.delta`, and, when `agent.host_prompt` is
-false, leaves the engine's product pointer, profile line and host runtime block
-out of the system prompt; updating the pin means reviewing those seams again. A
+run's event stream as `reasoning.delta`, keeps the agent's own screenshot in
+the session store and puts a paired computer's back from the broker when the
+next run of the same session reads its history (the engine stores a picture as
+the word "[screenshot]", and code the agent runs can read that store), and, when
+`agent.host_prompt` is false, leaves the engine's product pointer, profile line
+and host runtime block out of the system prompt; updating the pin means
+reviewing those seams again. A
 checkout carrying the version of the patch before the reasoning seam is moved to
 this one; one carrying any other version is refused, so it has to be restored to
 the pinned commit first.

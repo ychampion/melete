@@ -61,6 +61,19 @@ export const AUTO_REVIEW_DEFAULTS = { timeoutMs: 12_000, hourlyLimit: 60, breake
 
 /** Providers whose writes land only in the agent's own workspace. */
 const SANDBOX_PROVIDERS = new Set(['exec', 'sandbox', 'files']);
+
+/**
+ * A file saved into, moved into or moved out of the person's own Files (the
+ * space's `artifacts` area). The files tools also reach the agent's own
+ * workspace (`work`, the default), which is sandbox work; the person's Files
+ * are not, so a change there is theirs to agree to, like a change in a
+ * connected app.
+ */
+export function changesPersonFiles(name: string, payload: JsonObject): boolean {
+  if (name === 'files.write') return payload.area === 'artifacts';
+  if (name === 'files.move') return payload.area === 'artifacts' || payload.to_area === 'artifacts';
+  return false;
+}
 /** The agent's own browser: filling, clicking and choosing. Submitting is `browser.submit`. */
 const SANDBOX_BROWSER = new Set(['browser.fill', 'browser.click', 'browser.select']);
 /** A draft in the person's own mailbox, and discarding one. */
@@ -173,6 +186,12 @@ export function reviewTier(input: {
   }
   if (tool.effect_class === 'read' && !tool.requires_approval)
     return { tier: 'sandbox', actionClass: 'sandbox', reason: 'It only reads.' };
+  if (changesPersonFiles(tool.name, payload))
+    return {
+      tier: 'reviewable',
+      actionClass: 'app_changes',
+      reason: 'It changes your own Files, which can be put back.',
+    };
   if (
     tool.effect_class === 'write_reversible' &&
     !tool.requires_approval &&

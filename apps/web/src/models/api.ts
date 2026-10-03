@@ -47,6 +47,15 @@ export const models = {
       },
     }),
   restoreServerDefault: () => call<ModelSettings>('/model-settings/default', { method: 'DELETE' }),
+  /**
+   * Say whether the model in use reads images; null hands it back to Melete's
+   * list. The model, and where it came from, stay as they are.
+   */
+  setVision: (name: string, model: string, supportsVision: boolean | null) =>
+    call<ModelSettings>('/model-settings/vision', {
+      method: 'PUT',
+      body: { provider: name, model, supports_vision: supportsVision },
+    }),
 
   /* ChatGPT sign-in, over the existing model-provider sign-in routes. */
   signInStatus: (name: string) => call<SignInStatus>(`/model-providers/${provider(name)}/sign-in`),

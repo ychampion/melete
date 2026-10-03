@@ -341,9 +341,13 @@ export type ToolExcerpt = z.infer<typeof toolExcerpt>;
  */
 export const toolFailure = z.enum(['error', 'refused', 'declined']);
 export type ToolFailure = z.infer<typeof toolFailure>;
-/** Something the person can open for more: a file, the pending permission, a page. */
+/**
+ * Something the person can open for more: a file, the pending permission, a
+ * page. A `screenshot` names the action that took one; its picture is at
+ * `GET /screenshots/{id}`, for the person only.
+ */
 export const toolDetail = z.strictObject({
-  type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page']),
+  type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page', 'screenshot']),
   id,
   url: url.optional(),
 });

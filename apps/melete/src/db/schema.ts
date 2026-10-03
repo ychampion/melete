@@ -184,6 +184,26 @@ export const modelDefault = pgTable(
   (table) => [check('model_default_single_row', sql`${table.id} = 'installation'`)],
 );
 
+/**
+ * The owner's word on whether a model reads images, apart from which model is
+ * chosen: saying so for the server's default model leaves it the server's.
+ * One row per model; none leaves it to the model chosen in the app, the
+ * operator's setting or the catalog.
+ */
+export const modelVision = pgTable(
+  'model_vision',
+  {
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    supportsVision: boolean('supports_vision').notNull(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => owner.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.provider, table.model] })],
+);
+
 export const connection = pgTable(
   'connection',
   {

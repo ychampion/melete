@@ -188,6 +188,19 @@ const journey = late ? await database() : null;
         payload: { path: 'note.txt', content: 'kept in the job workspace' },
       });
       expect(written.status).toBe('succeeded');
+      // The person's own Files are not the job's workspace: saving into them,
+      // or moving a file there, waits for the person.
+      for (const [kind, payload] of [
+        ['files.write', { path: 'imgtest.png', area: 'artifacts', content: 'unrequested' }],
+        ['files.move', { from: 'note.txt', to: 'note.txt', to_area: 'artifacts' }],
+      ] as const) {
+        const asked = await broker.propose(claimed.claims, {
+          connection_id: files.id,
+          kind,
+          payload,
+        });
+        expect(asked.status).toBe('needs_approval');
+      }
     } finally {
       await running.close();
     }

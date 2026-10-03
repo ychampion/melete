@@ -1,6 +1,6 @@
 {
-  "id": "90642ae3-837e-41c3-bd76-b1c32a27c70a",
-  "prevId": "2baaaffc-ef8b-4f0f-b3f6-865b68d044a4",
+  "id": "30141431-2df7-479c-942c-f16e7b034d75",
+  "prevId": "eac4661f-ba43-4f16-aee0-16092335a90a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3487,6 +3487,72 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.model_vision": {
+      "name": "model_vision",
+      "schema": "",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "supports_vision": {
+          "name": "supports_vision",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "model_vision_owner_id_owner_id_fk": {
+          "name": "model_vision_owner_id_owner_id_fk",
+          "tableFrom": "model_vision",
+          "tableTo": "owner",
+          "columnsFrom": [
+            "owner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "model_vision_provider_model_pk": {
+          "name": "model_vision_provider_model_pk",
+          "columns": [
+            "provider",
+            "model"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

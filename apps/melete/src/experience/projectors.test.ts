@@ -510,6 +510,26 @@ test('a permission to save a file names the file and carries its exact text', ()
   const shown = permission({ path: 'plans/email-and-admin.md', content });
   // Present tense and the path, not "Saved a file".
   expect(shown.what).toBe('Save plans/email-and-admin.md');
+  // Into the person's own Files, the card says so; so does a move in or out of them.
+  expect(permission({ path: 'imgtest.png', area: 'artifacts', content }).what).toBe(
+    'Save imgtest.png to your Files',
+  );
+  const move = (payload: Record<string, unknown>) =>
+    projectPermission({
+      id: 'apr_move',
+      version: 'v1',
+      action: { ...write, kind: 'files.move', canonicalPayload: payload },
+      connection: files,
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-30T04:00:00.000Z'),
+    }).what;
+  expect(move({ from: 'shots/a.png', to: 'a.png', to_area: 'artifacts' })).toBe(
+    'Move “a.png” into your Files',
+  );
+  expect(move({ from: 'a.png', to: 'a.png', area: 'artifacts', to_area: 'work' })).toBe(
+    'Move “a.png” out of your Files',
+  );
   expect(shown.file).toEqual({
     path: 'plans/email-and-admin.md',
     bytes: Buffer.byteLength(content, 'utf8'),

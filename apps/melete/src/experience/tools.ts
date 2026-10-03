@@ -476,6 +476,8 @@ function actionDetail(
   const detail = object(object(row.receipt).detail);
   if (typeof detail.artifact_id === 'string' && /^art_/.test(detail.artifact_id))
     return { type: 'artifact', id: detail.artifact_id };
+  // The person sees every screenshot taken for them, their own computer's too.
+  if (SCREENSHOT_KINDS.has(row.kind)) return { type: 'screenshot', id: row.id };
   if (row.kind === 'web.fetch') {
     const url = displayUrl(detail.final_url ?? detail.url);
     return url ? { type: 'page', id: row.id, url } : null;
@@ -484,6 +486,13 @@ function actionDetail(
     return { type: 'receipt', id: row.id };
   return null;
 }
+
+/** The actions whose picture the person's trail shows (`GET /screenshots/{id}`). */
+const SCREENSHOT_KINDS = new Set([
+  'computer.screenshot',
+  'device.screenshot',
+  'device.browser_screenshot',
+]);
 
 /** How an action is named while it runs, once it is done, and when it asks first. */
 type Phrase = { doing: string; done: string; ask: string };

@@ -23,6 +23,7 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { BrokerFault } from '../broker/errors.ts';
+import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
@@ -354,9 +355,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) {
       throw new Error('invalid trusted file scope');
     }
+    const segments = segmentsFor(relative);
+    // A paired computer's screenshot an earlier version left here is not the
+    // agent's to open, whatever that computer allows (devices/screen-paths.ts).
+    if (area === 'work' && LEGACY_SCREEN_PATH.test(segments.join('/')))
+      throw new Error("that is a paired computer's screenshot, which is not a file you can open");
     const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
     const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return noLinks(base, [...scope, ...segmentsFor(relative)], create);
+    return noLinks(base, [...scope, ...segments], create);
   };
   const read = async (target: string): Promise<Buffer> => {
     const file = await open(target, READ_FLAGS);

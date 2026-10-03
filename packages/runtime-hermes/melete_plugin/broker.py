@@ -20,7 +20,9 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+
+from .vision import Withheld
 
 #: Where the broker listens. In compose this is the service's internal address;
 #: the container has no route anywhere else, so a wrong value fails closed.
@@ -164,12 +166,16 @@ class BrokerClient:
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
 
-    def screenshot(self, action_id: str) -> Optional[bytes]:
-        """A succeeded screenshot's picture, read by the service; None when it has none."""
+    def screenshot(self, action_id: str) -> Union[bytes, Withheld, None]:
+        """A succeeded screenshot's picture, read by the service; why it is kept
+        from the model when it is; None when it has none."""
         try:
             result = self._call("GET", f"/actions/{urllib.parse.quote(action_id, safe='')}/screenshot")
         except BrokerError:
             return None
+        if isinstance(result, dict) and result.get("withheld") is True:
+            reason = result.get("reason")
+            return Withheld(reason if isinstance(reason, str) and reason else "The screenshot is kept private.")
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, str):
             return None
