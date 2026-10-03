@@ -11,7 +11,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
@@ -29,6 +28,7 @@ import {
   routingFromEnv,
   serviceFallback,
 } from '../gateway/routing.ts';
+import { replyOf, withStructuredOutput } from '../gateway/structured.ts';
 import { GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import {
   createModelReviewer,
@@ -40,21 +40,6 @@ import {
 
 const INPUT_TOKENS = 8_000;
 const OUTPUT_TOKENS = 300;
-
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })).min(1),
-});
 
 export type ReviewGatewayOptions = {
   /** The model every review uses when no `source` is given. */
@@ -161,7 +146,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  const chat: ReviewChat = async (messages, signal, scope) => {
+  const chat: ReviewChat = async (messages, signal, scope, format) => {
     // The model is read for each review, so one connected in the app applies at once.
     const target = options.source
       ? await options.source.current()
@@ -171,7 +156,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     const token = randomUUID();
     live.set(token, { scope, target });
     const system = messages.find((message) => message.role === 'system')?.content ?? '';
-    const body =
+    const plain: Record<string, unknown> =
       protocol === 'responses'
         ? { model: target.model, input: messages, max_output_tokens: OUTPUT_TOKENS }
         : protocol === 'messages'
@@ -182,6 +167,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
               max_tokens: OUTPUT_TOKENS,
             }
           : { model: target.model, messages, max_tokens: OUTPUT_TOKENS };
+    const body = format ? withStructuredOutput(plain, target, protocol, format) : plain;
     try {
       const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
         method: 'POST',
@@ -197,23 +183,8 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
         signal,
       });
       if (!response.ok) throw new Error(`review gateway ${response.status}`);
-      const result = await response.json();
-      const text =
-        protocol === 'responses'
-          ? responsesReply
-              .parse(result)
-              .output.flatMap((item) => item.content ?? [])
-              .filter((item) => item.type === 'output_text')
-              .map((item) => item.text)
-              .join('')
-          : protocol === 'messages'
-            ? messagesReply
-                .parse(result)
-                .content.filter((item) => item.type === 'text')
-                .map((item) => item.text ?? '')
-                .join('')
-            : (chatReply.parse(result).choices[0]?.message.content ?? '');
-      return { text, model };
+      const { text, end } = replyOf(protocol, await response.json());
+      return { text, model, end };
     } catch (error) {
       throw new ReviewCallFailed(model, { cause: error });
     } finally {

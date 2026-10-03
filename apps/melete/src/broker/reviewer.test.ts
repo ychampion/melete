@@ -2,10 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import {
   createModelReviewer,
   parseVerdict,
+  REVIEW_FORMAT,
   ReviewCallFailed,
   type ReviewChat,
   type Reviewer,
   type ReviewInput,
+  type ReviewReply,
   reviewPrompt,
   reviewWithin,
 } from './reviewer.ts';
@@ -221,5 +223,60 @@ describe('reviewWithin', () => {
     const verdict = await reviewWithin(slow, input(), 30, scope);
     expect(aborted).toBe(true);
     expect(verdict.verdict).toBe('none');
+  });
+});
+
+describe('the reviewer’s answer schema', () => {
+  const signal = new AbortController().signal;
+  const reviewer = (chat: ReviewChat) =>
+    createModelReviewer({ model: 'fake/scripted', chat, nonce: () => NONCE });
+
+  test('every call carries the verdict schema', async () => {
+    const formats: unknown[] = [];
+    await reviewer(async (_messages, _signal, _scope, format) => {
+      formats.push(format);
+      return answer({});
+    }).review(input(), signal, scope);
+    expect(formats).toEqual([REVIEW_FORMAT]);
+  });
+
+  test('the old failure: an answer cut off mid-JSON is asked once more, and the second is used', async () => {
+    const replies: ReviewReply[] = [
+      // Recorded: the output limit hit inside the reason.
+      {
+        text: `{"review_id":"${NONCE}","verdict":"approve","risk":"low","reason":"Adds a ta`,
+        end: 'cut_off',
+      },
+      { text: answer({}), end: 'complete' },
+    ];
+    let calls = 0;
+    const verdict = await reviewer(async () => replies[calls++] as ReviewReply).review(
+      input(),
+      signal,
+      scope,
+    );
+    expect(calls).toBe(2);
+    expect(verdict).toEqual({ verdict: 'approve', risk: 'low', reason: 'Fine.' });
+  });
+
+  test('two unusable answers escalate with the reason the person reads', async () => {
+    let calls = 0;
+    const verdict = await reviewer(async () => {
+      calls++;
+      return { text: '{"review_id":', end: 'cut_off' };
+    }).review(input(), signal, scope);
+    expect(calls).toBe(2);
+    expect(verdict).toMatchObject({ verdict: 'none', failure: 'unreadable' });
+    if (verdict.verdict === 'none') expect(verdict.reason).toContain('cut off');
+  });
+
+  test('a declined answer is not asked again', async () => {
+    let calls = 0;
+    const verdict = await reviewer(async () => {
+      calls++;
+      return { text: '', end: 'refused' };
+    }).review(input(), signal, scope);
+    expect(calls).toBe(1);
+    expect(verdict).toMatchObject({ verdict: 'none', reason: 'The reviewer declined to answer.' });
   });
 });
