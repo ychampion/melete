@@ -139,6 +139,45 @@ export function summarize(work: Work[]): string {
   return text ? `${text[0]?.toUpperCase()}${text.slice(1)}` : '';
 }
 
+/** How each kind of work is counted in a turn's one-line summary: once, and n times. */
+const COUNTED: Record<WorkKind, [one: string, many: (n: number) => string]> = {
+  command: ['ran a command', (n) => `ran ${n} commands`],
+  read: ['read a file', (n) => `read ${n} files`],
+  edit: ['edited a file', (n) => `edited ${n} files`],
+  search_files: ['searched files', (n) => `searched files ${n} times`],
+  web_search: ['searched the web', (n) => `searched the web ${n} times`],
+  page: ['read a page', (n) => `read ${n} pages`],
+  open: ['opened a site', (n) => `opened ${n} sites`],
+  screenshot: ['took a screenshot', (n) => `took ${n} screenshots`],
+  browser: ['used the browser', () => 'used the browser'],
+  memory: ['used memory', () => 'used memory'],
+  skill: ['used a skill', (n) => `used ${n} skills`],
+  ask: ['asked you', (n) => `asked you ${n} times`],
+  app: ['used an app', (n) => `used ${n} apps`],
+  other: ['used a tool', (n) => `used ${n} tools`],
+};
+
+/** At most this many kinds are named in a turn's summary line; the log holds the rest. */
+const SUMMARY_KINDS = 3;
+
+/**
+ * "ran 6 commands, read 3 files": what a whole turn did, counted, each kind once
+ * in the order the turn first did it. Edit cards count as edits. Empty when the
+ * turn did no work.
+ */
+export function countWork(items: LogItem[]): string {
+  const counts = new Map<WorkKind, number>();
+  const add = (kind: WorkKind) => counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  for (const item of items) {
+    if (item.type === 'work') for (const work of item.work) add(workKind(work));
+    else if (item.type === 'edit') add('edit');
+  }
+  return [...counts.entries()]
+    .slice(0, SUMMARY_KINDS)
+    .map(([kind, count]) => (count > 1 ? COUNTED[kind][1](count) : COUNTED[kind][0]))
+    .join(', ');
+}
+
 /** The icon a summary row wears: what most says what the work was. */
 export function summaryKind(work: Work[]): WorkKind {
   const kinds = new Set(work.map(workKind));
@@ -315,12 +354,34 @@ export const KEEP_TURNS = 6;
 const FOLD_FROM = 10;
 
 /**
- * How many of the oldest turns fold away, and how many messages they hold. A
- * turn still waiting on the person never folds, nor any turn after it.
+ * Where the agent's memory of the chat was last summarised: the index of the
+ * newest turn during which the earlier conversation was compacted, or 0 when
+ * it never was (a summary before the first turn leaves nothing to fold).
  */
-export function foldedTurns(turns: TranscriptTurn[]): { count: number; messages: number } {
-  if (turns.length < FOLD_FROM) return { count: 0, messages: 0 };
-  let count = turns.length - KEEP_TURNS;
+export function summarisedBefore(turns: TranscriptTurn[]): number {
+  for (let index = turns.length - 1; index > 0; index--) if (turns[index]?.compacted) return index;
+  return 0;
+}
+
+export type Fold = {
+  /** How many of the oldest turns are folded away. */
+  count: number;
+  /** How many messages those turns hold. */
+  messages: number;
+  /** The index of the turn the earlier part was summarised before, or 0. */
+  summarised: number;
+};
+
+/**
+ * How many of the oldest turns fold away, and how many messages they hold. A
+ * long chat folds all but its newest turns; a chat whose earlier part was
+ * summarised folds at least that part. A turn still waiting on the person
+ * never folds, nor any turn after it.
+ */
+export function foldedTurns(turns: TranscriptTurn[]): Fold {
+  const summarised = summarisedBefore(turns);
+  let count = Math.max(turns.length < FOLD_FROM ? 0 : turns.length - KEEP_TURNS, summarised);
+  if (count <= 0) return { count: 0, messages: 0, summarised };
   const waiting = turns.findIndex((turn) =>
     turn.blocks.some(
       (block) =>
@@ -335,7 +396,7 @@ export function foldedTurns(turns: TranscriptTurn[]): { count: number; messages:
     const said = turn.flow.filter((entry) => entry.type === 'text' && entry.text.trim()).length;
     messages += Math.max(said, finalText(turn) ? 1 : 0);
   }
-  return { count: Math.max(0, count), messages };
+  return { count: Math.max(0, count), messages, summarised };
 }
 
 /* ---------- the person's message ---------- */

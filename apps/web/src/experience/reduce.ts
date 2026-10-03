@@ -84,6 +84,8 @@ export type TranscriptTurn = {
    * finished turn read as working again.
    */
   finished?: boolean;
+  /** The agent's copy of the conversation before this turn was summarised during it. */
+  compacted?: true;
 };
 
 export type ReactionMessage = {
@@ -508,6 +510,10 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
           : { turn: { ...turn.turn, status: item.status } }),
       }));
     }
+    case 'compacted':
+      return patchTurn(base, event.turn_id, (turn) =>
+        turn.compacted ? turn : { ...turn, compacted: true },
+      );
     case 'tool': {
       const tool = item.tool;
       const underWay = tool.status === 'running' || tool.status === 'needs_approval';
