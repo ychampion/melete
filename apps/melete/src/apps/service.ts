@@ -543,6 +543,35 @@ export function appRoleSql(q: Sql | TransactionSql, principalId: string) {
 }
 
 /**
+ * Whether anyone besides `actor` could open app `appId` once a publish or a
+ * rollback has run, by the same rules as appRoleSql: the space's owner, the
+ * publisher while they still belong to the space, a manage grant, a view grant
+ * or a grant to everyone here. With `viewGrantsKept` false (a publish to
+ * `only_me`, which takes back every view grant) only manage grants count among
+ * the grants. A change to who may open an app goes through appRoleSql and here
+ * together, so the two cannot drift apart.
+ */
+export async function othersCanOpen(
+  sql: Sql | TransactionSql,
+  appId: string,
+  actor: string,
+  viewGrantsKept: boolean,
+): Promise<boolean> {
+  const [row] = await sql<{ others: boolean }[]>`select (
+      (s.owner_principal_id is not null and s.owner_principal_id <> ${actor})
+      or (a.publisher_principal_id <> ${actor} and exists (
+        select 1 from space_membership m where m.space_id = a.space_id
+          and m.principal_id = a.publisher_principal_id and m.revoked_at is null))
+      or exists (select 1 from app_grant g where g.app_id = a.id and g.revoked_at is null
+        and not (g.grantee_kind = 'principal' and g.grantee_id = ${actor})
+        and (${viewGrantsKept} or g.role = 'manage'))
+    ) as others
+    from app a join space s on s.id = a.space_id where a.id = ${appId}`;
+  // An app that cannot be found is treated as open to others: the question is asked.
+  return row?.others ?? true;
+}
+
+/**
  * What `principalId` may do with an app (see appRoleSql), or null for
  * nothing. An app whose space is being removed, or that is not active, is
  * nothing to everyone.

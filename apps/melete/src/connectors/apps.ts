@@ -52,6 +52,7 @@ import {
   type DesiredGrant,
   manifestFor,
   manifestHash,
+  othersCanOpen,
   publishVersion,
   readBundle,
   setCurrentVersion,
@@ -551,27 +552,22 @@ async function wideningLine(
 }
 
 /**
- * Whether anyone besides the publisher could open the app after this change:
- * the people or everyone the audience names, anyone holding a grant it keeps,
- * or the space's owner when that is someone else.
+ * Whether anyone besides the person acting could open the app after this
+ * change: the people or everyone the audience names, or, for an app that
+ * exists, anyone who can open it now and keeps that (see othersCanOpen). A new
+ * app is open to its publisher and the space's owner.
  */
 async function sharedAfter(
   tx: Query,
   ctx: ConnectorContext,
   appId: string | null,
   audience: JsonObject | null,
-  publisher: string,
+  actor: string,
 ): Promise<boolean> {
   if (audience?.kind === 'people' || audience?.kind === 'everyone') return true;
+  if (appId) return othersCanOpen(tx, appId, actor, audience?.kind !== 'only_me');
   const [space] = await tx`select owner_principal_id from space where id = ${ctx.space_id}`;
-  if (space?.owner_principal_id !== publisher) return true;
-  if (!appId) return false;
-  // `only_me` takes back every view grant; the managers stay.
-  const viewersStay = audience?.kind !== 'only_me';
-  const [kept] = await tx`select 1 from app_grant where app_id = ${appId} and revoked_at is null
-    and not (grantee_kind = 'principal' and grantee_id = ${publisher})
-    and (${viewersStay} or role = 'manage') limit 1`;
-  return Boolean(kept);
+  return space?.owner_principal_id !== actor;
 }
 
 /**

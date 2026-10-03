@@ -489,6 +489,61 @@ databaseTest(
 );
 
 databaseTest(
+  "in a shared space, new data in an app a member published asks the space's owner, publish or rollback",
+  async () => {
+    const ctx = await setup();
+    // Bo belongs to Alice's space and publishes an app there from this conversation.
+    await ctx.sql`insert into space_membership (principal_id, space_id, role)
+      values (${ctx.bo}, ${ctx.claims.space_id}, 'member')`;
+    const as = (who: string) =>
+      ctx.sql`update job set principal_id = ${who} where id = ${ctx.claims.job_id}`;
+    await ctx.record('data/deals.json', '[1]');
+    await as(ctx.bo);
+    await ctx.write('index.html', 'bo v1');
+    const withData = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Bo board',
+      data: { deals: { artifact: 'data/deals.json' } },
+    });
+    // Alice owns the space, so she can open it: the data is new to her.
+    expect(withData.status).toBe('needs_approval');
+    expect((await ctx.approveAndRun(withData)).status).toBe('succeeded');
+    const v1 = await ctx.app();
+    await ctx.write('index.html', 'bo v2');
+    const plain = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Bo board',
+      app_id: v1.id,
+    });
+    expect(plain.status).toBe('succeeded');
+
+    // Alice's conversation adds data back. Bo still manages the app he published, so he
+    // would see it, whether the viewers stay as they are or the publish names only her.
+    await as(ctx.alice);
+    const line = 'It would show its viewers data they do not see now: deals (data/deals.json).';
+    for (const audience of [undefined, { kind: 'only_me' }]) {
+      await ctx.write('index.html', `alice ${audience ? 'only' : 'same'}`);
+      const again = await ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Bo board',
+        app_id: v1.id,
+        data: { deals: { artifact: 'data/deals.json' } },
+        ...(audience ? { audience } : {}),
+      });
+      expect(again.status).toBe('needs_approval');
+      expect(again.canonical_payload.risks).toEqual([line]);
+    }
+    const back = await ctx.propose('apps.rollback', {
+      app_id: v1.id,
+      version_id: v1.current_version_id,
+    });
+    expect(back.status).toBe('needs_approval');
+    expect(back.canonical_payload.risks).toEqual([line]);
+  },
+  SLOW,
+);
+
+databaseTest(
   'collecting responses in an app only its publisher can open goes ahead',
   async () => {
     const ctx = await setup();
