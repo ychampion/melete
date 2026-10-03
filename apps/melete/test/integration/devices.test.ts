@@ -6,7 +6,7 @@
  * temporary folder; nothing listens on the "computer".
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -25,12 +25,19 @@ import {
   pair,
 } from '../../../../packages/device/src/index.ts';
 import { recordId } from '../../src/broker/records.ts';
-import { BrokerService } from '../../src/broker/service.ts';
+import { BrokerService, DEVICE_SCREEN_WITHHELD } from '../../src/broker/service.ts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { sandboxExecManifest } from '../../src/connectors/sandbox-exec.ts';
 import { sharedDeviceHub } from '../../src/devices/hub.ts';
 import { PUBLIC_ONLY_NOTE, routedDescription, SIGNED_IN_NOTE } from '../../src/devices/routing.ts';
+import {
+  DEVICE_SCREENS_DIRECTORY,
+  LEGACY_SCREEN_PATH,
+  moveWorkspaceScreens,
+  readDeviceScreen,
+  saveDeviceScreen,
+} from '../../src/devices/screens.ts';
 import { loadEnv } from '../../src/env.ts';
 import { projectPermission } from '../../src/experience/projectors.ts';
 import { createApp } from '../../src/index.ts';
@@ -543,79 +550,132 @@ withDb('the agent uses the computer through the broker', () => {
     expect(await store.screenshotSource(claims.job_id, recordId('act'))).toBeNull();
   }, 60_000);
 
-  test("a screenshot's picture is handed to its own job's runtime by the broker, from the service's copy", async () => {
+  test("a computer's screenshot is kept out of the job's workspace, and goes to the runtime only when that computer allows it", async () => {
     const s = need();
-    const { config } = await s.computer({ grant: { screenshot: true } });
+    // A PNG as the companion sends one: the signature, then the header the receipt reads its size from.
+    const header = Buffer.alloc(17);
+    header.write('IHDR', 4, 'ascii');
+    header.writeUInt32BE(13, 0);
+    header.writeUInt32BE(800, 8);
+    header.writeUInt32BE(600, 12);
+    const picture = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      header,
+      Buffer.from("the person's own screen"),
+    ]);
+    const { config, agent } = await s.computer({
+      grant: { screenshot: true },
+      tools: { captureScreen: async () => picture },
+    });
     const connectionId = await connectionOf(config.device_id);
     const shots = [...tools, 'device.screenshot'];
     const claims = await s.job(shots);
     const broker = new BrokerService({ sql: s.sql, connectors: registry, workRoot: s.workRoot });
-    // Saved the way the device connector saves it: readable by the service's
-    // own user only, which the runtime (another user) cannot open itself.
-    const picture = Buffer.concat([
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-      Buffer.from('a picture'),
-    ]);
-    const saved = async (
-      job: typeof claims,
-      kind: string,
-      status: string,
-      path: string,
-      bytes: Buffer = picture,
-    ): Promise<string> => {
+    const shot = await connected(agent, () =>
+      broker.propose(claims, {
+        kind: 'device.screenshot',
+        connection_id: connectionId,
+        payload: {},
+      }),
+    );
+    expect(shot.status).toBe('succeeded');
+    const [row] = await s.sql`select receipt from action where id = ${shot.action_id}`;
+    const detail = detailOf(row as { receipt: { detail: unknown } });
+    expect(detail).toMatchObject({ width: 800, height: 600, bytes: picture.byteLength });
+    // The receipt names no file, and the job's workspace holds none: nothing a
+    // sandbox is given, the engine mounts or the files tools read has it.
+    expect(detail.path).toBeUndefined();
+    const inWorkspace = await readdir(join(s.workRoot, claims.job_id), { recursive: true }).catch(
+      () => [] as string[],
+    );
+    expect(inWorkspace.filter((name) => String(name).endsWith('.png'))).toEqual([]);
+    const kept = await readdir(join(s.workRoot, DEVICE_SCREENS_DIRECTORY, claims.job_id));
+    expect(kept).toEqual([`${shot.action_id}.png`]);
+    if (process.platform !== 'win32')
+      expect(
+        (await stat(join(s.workRoot, DEVICE_SCREENS_DIRECTORY, claims.job_id))).mode & 0o777,
+      ).toBe(0o700);
+
+    // Off by default: the runtime is told it is kept private, and gets no picture.
+    expect(await broker.screenshot(claims, shot.action_id)).toEqual({
+      withheld: true,
+      reason: DEVICE_SCREEN_WITHHELD,
+    });
+    // On for this computer: the picture, as it was taken.
+    const allow = (value: boolean | null) =>
+      s.app.request(
+        `/devices/${config.device_id}`,
+        s.as(s.cookie, 'PATCH', { cloud_screenshots: value }),
+      );
+    expect((await allow(true)).status).toBe(200);
+    expect(await broker.screenshot(claims, shot.action_id)).toEqual({
+      media_type: 'image/png',
+      data: picture.toString('base64'),
+    });
+    // Off for this computer, whatever the privacy setting says for the rest.
+    await s.sql`insert into privacy_settings (space_id, settings)
+      select space_id, '{"screenshots_paired_devices": true}'::jsonb from job where id = ${claims.job_id}
+      on conflict (space_id) do update set settings = excluded.settings`;
+    expect((await allow(false)).status).toBe(200);
+    expect(await broker.screenshot(claims, shot.action_id)).toMatchObject({ withheld: true });
+    // With no answer of its own, the privacy setting decides.
+    expect((await allow(null)).status).toBe(200);
+    expect(await broker.screenshot(claims, shot.action_id)).toMatchObject({
+      media_type: 'image/png',
+    });
+    await s.sql`delete from privacy_settings
+      where space_id = (select space_id from job where id = ${claims.job_id})`;
+
+    // Another job, a tool that is not a screenshot, one that did not succeed,
+    // or a kept file that is not the picture the receipt recorded gets nothing.
+    expect((await allow(true)).status).toBe(200);
+    const otherJob = await s.job(shots);
+    const recorded = async (kind: string, status: string) => {
       const id = recordId('act');
-      await mkdir(join(s.workRoot, job.job_id, 'device'), { recursive: true });
-      await writeFile(join(s.workRoot, job.job_id, 'device', `screenshot-${id}.png`), bytes, {
-        mode: 0o600,
-      });
+      await saveDeviceScreen(s.workRoot, claims.job_id, id, picture);
       const receipt = {
         action_id: id,
         connection_id: connectionId,
         external_ref: null,
-        detail: { path: path.replace('{id}', id) },
+        detail: { bytes: picture.byteLength, content_hash: detail.content_hash },
         received_at: new Date().toISOString(),
         late: false,
       };
       await s.sql`insert into action (id, job_id, attempt_id, connection_id, kind,
         effect_class, canonical_payload, payload_hash, idempotency_key, status, receipt)
-        values (${id}, ${job.job_id}, ${job.attempt_id}, ${connectionId}, ${kind}, 'read',
+        values (${id}, ${claims.job_id}, ${claims.attempt_id}, ${connectionId}, ${kind}, 'read',
           '{}'::jsonb, ${'d'.repeat(64)}, ${id}, ${status}, ${JSON.stringify(receipt)}::jsonb)`;
       return id;
     };
-    const shot = await saved(
-      claims,
-      'device.screenshot',
-      'succeeded',
-      'device/screenshot-{id}.png',
-    );
-    expect(await broker.screenshot(claims, shot)).toEqual({
-      media_type: 'image/png',
-      data: picture.toString('base64'),
-    });
-    // Another job, a tool that is not a screenshot, one that did not succeed,
-    // or a receipt naming a path outside the job's workspace gets nothing.
-    const otherJob = await s.job(shots);
+    const changed = await recorded('device.screenshot', 'succeeded');
+    await saveDeviceScreen(s.workRoot, claims.job_id, changed, Buffer.concat([picture, picture]));
     for (const [job, id] of [
-      [otherJob, shot],
-      [claims, await saved(claims, 'device.read_file', 'succeeded', 'device/screenshot-{id}.png')],
-      [claims, await saved(claims, 'device.screenshot', 'failed', 'device/screenshot-{id}.png')],
-      [claims, await saved(claims, 'device.screenshot', 'succeeded', '../escape.png')],
-      // A file at the receipt's path that is not a PNG is not served as one.
-      [
-        claims,
-        await saved(
-          claims,
-          'device.screenshot',
-          'succeeded',
-          'device/screenshot-{id}.png',
-          Buffer.from('<html>not a picture</html>'),
-        ),
-      ],
+      [otherJob, shot.action_id],
+      [claims, await recorded('device.read_file', 'succeeded')],
+      [claims, await recorded('device.screenshot', 'failed')],
+      [claims, changed],
     ] as const)
       expect(await rejectionOf(broker.screenshot(job, id))).toMatchObject({
         code: 'action_not_found',
       });
   }, 60_000);
+
+  test("screenshots an earlier version left in a job's workspace move out of it, and a sandbox is never given one", async () => {
+    const s = need();
+    const job = `job_${recordId('act').slice(4)}`;
+    const id = recordId('act');
+    const folder = join(s.workRoot, job, 'device');
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, `screenshot-${id}.png`), 'old picture', { mode: 0o600 });
+    // Something else the agent put in a folder of that name stays where it is.
+    await writeFile(join(folder, 'notes.txt'), 'mine');
+    expect(await moveWorkspaceScreens(s.workRoot)).toBe(1);
+    expect(await readdir(folder)).toEqual(['notes.txt']);
+    expect(String(await readDeviceScreen(s.workRoot, job, id, 1024))).toBe('old picture');
+    expect(await moveWorkspaceScreens(s.workRoot)).toBe(0);
+    expect(LEGACY_SCREEN_PATH.test(`device/screenshot-${id}.png`)).toBe(true);
+    expect(LEGACY_SCREEN_PATH.test('device/notes.txt')).toBe(false);
+  });
 
   test('work for an offline computer waits, and goes when it connects again', async () => {
     const s = need();

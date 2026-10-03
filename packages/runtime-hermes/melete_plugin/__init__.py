@@ -37,6 +37,7 @@ from .terminal_backend import (
     register_terminal_backend,
 )
 from .vision import attach as attach_picture
+from .vision import restore as restore_picture
 
 #: `run.try` runs its first command, then its variants side by side, each up
 #: to the command limit plus the time the broker allows around a sandbox command.
@@ -336,7 +337,8 @@ def engine_result(name: str, result: Dict[str, Any], client: Optional[BrokerClie
     shaped = attach_picture(name, result, getattr(client, "screenshot", None))
     if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
         return shaped
-    return json.dumps(result, ensure_ascii=False)
+    # The receipt, with what was said about a picture that is not shown.
+    return json.dumps(shaped if isinstance(shaped, dict) else result, ensure_ascii=False)
 
 
 def engine_handler(
@@ -388,6 +390,11 @@ def register_tools(ctx: Any, client: BrokerClient) -> List[str]:
         return []
 
     registered: List[str] = []
+
+    # A paired computer's picture is never kept in the engine's session store;
+    # the next run of the session asks the broker for it again.
+    from melete_runtime_hooks import register_picture_restorer
+    register_picture_restorer(lambda name, content: restore_picture(name, content, client.screenshot))
 
     # A space with a sandbox runs the engine's own terminal there. Selecting it
     # is the rendered configuration's job (TERMINAL_ENV); this only makes the

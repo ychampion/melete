@@ -30,11 +30,11 @@ import {
   type ModelProvider,
   type ModelSettings,
 } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { Database } from '../db/client.ts';
-import { modelDefault, modelProviderKey } from '../db/schema.ts';
+import { modelDefault, modelProviderKey, modelVision } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import type { ProviderSignIn } from './credentials.ts';
@@ -213,35 +213,100 @@ export class ModelSettingsService {
   async activeChoice(
     db: Runner = this.options.db,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    const { provider, model, vision } = this.active(await this.chosen(db));
+    const { provider, model, vision } = await this.active(await this.chosen(db), db);
     return { provider, model, vision };
   }
 
+  /** The owner's word on this model reading images, given apart from choosing it. */
+  private async visionSaid(
+    provider: string,
+    model: string,
+    db: Runner = this.options.db,
+  ): Promise<boolean | null> {
+    const [row] = await db
+      .select()
+      .from(modelVision)
+      .where(and(eq(modelVision.provider, provider), eq(modelVision.model, model)));
+    return row?.supportsVision ?? null;
+  }
+
   /**
-   * The model in use and whether it is shown pictures: the owner's word for a
-   * model chosen in the app, the operator's for the server default, and the
-   * catalog's when neither said.
+   * The model in use and whether it is shown pictures: the owner's word on
+   * this model, given by itself or when choosing it in the app; else the
+   * operator's for the server default; else the catalog's. Which of them said
+   * so never changes where the model itself came from.
    */
-  private active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>) {
+  private async active(
+    chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>,
+    db: Runner = this.options.db,
+  ) {
     const provider = chosen?.provider ?? this.env.MELETE_DEFAULT_PROVIDER;
     const model = chosen?.model ?? this.env.MELETE_DEFAULT_MODEL;
-    const stated = chosen ? chosen.supportsVision : this.env.MELETE_DEFAULT_MODEL_VISION;
+    const owner = (await this.visionSaid(provider, model, db)) ?? chosen?.supportsVision ?? null;
+    const stated = owner ?? (chosen ? null : this.env.MELETE_DEFAULT_MODEL_VISION);
     return {
       provider,
       model,
       vision: effectiveVision(provider, model, stated),
       vision_source:
-        typeof stated === 'boolean'
-          ? chosen
-            ? ('app' as const)
-            : ('operator' as const)
-          : ('catalog' as const),
+        typeof owner === 'boolean'
+          ? ('app' as const)
+          : typeof stated === 'boolean'
+            ? ('operator' as const)
+            : ('catalog' as const),
     };
+  }
+
+  /**
+   * Say whether the model in use reads images, or with null hand that back to
+   * Melete's list. It changes nothing else: the model, and whether it was
+   * chosen here or is the server's default, stay as they are.
+   */
+  async setVision(
+    provider: string,
+    model: string,
+    ownerId: string,
+    supportsVision: boolean | null,
+  ): Promise<void> {
+    const chosen = await this.chosen();
+    const active = await this.active(chosen);
+    if (active.provider !== provider || active.model !== model.trim())
+      throw new ServiceError(
+        'model_changed',
+        'The model in use has changed since this page loaded. Reload and try again.',
+        409,
+      );
+    await this.options.db.transaction(async (tx) => {
+      if (supportsVision === null) {
+        await tx
+          .delete(modelVision)
+          .where(and(eq(modelVision.provider, provider), eq(modelVision.model, active.model)));
+        // An answer given when the model was chosen is handed back too, and
+        // the choice itself is left as it was.
+        if (chosen && chosen.supportsVision !== null)
+          await tx
+            .update(modelDefault)
+            .set({ supportsVision: null })
+            .where(eq(modelDefault.id, 'installation'));
+        return;
+      }
+      const values = {
+        provider,
+        model: active.model,
+        supportsVision,
+        ownerId,
+        updatedAt: new Date(),
+      };
+      await tx
+        .insert(modelVision)
+        .values(values)
+        .onConflictDoUpdate({ target: [modelVision.provider, modelVision.model], set: values });
+    });
   }
 
   async view(canEdit: boolean): Promise<ModelSettings> {
     const [rows, chosen] = await Promise.all([this.keyRows(), this.chosen()]);
-    const active = this.active(chosen);
+    const active = await this.active(chosen);
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
         const row = this.usableRow(provider, rows);

@@ -8,6 +8,7 @@ import {
   modelSettingsResponse,
   saveModelKeyRequest,
   setDefaultModelRequest,
+  setModelVisionRequest,
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from '@melete/contracts';
@@ -68,6 +69,13 @@ export function mountModelSettings(
     const ownerId = await requireOwner(c);
     const input = setDefaultModelRequest.parse(await c.req.json());
     await settings.setDefault(input.provider, input.model, ownerId, input.supports_vision ?? null);
+    return view(c);
+  });
+
+  app.put('/model-settings/vision', async (c) => {
+    const ownerId = await requireOwner(c);
+    const input = setModelVisionRequest.parse(await c.req.json());
+    await settings.setVision(input.provider, input.model, ownerId, input.supports_vision);
     return view(c);
   });
 
