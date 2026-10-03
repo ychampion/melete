@@ -589,7 +589,7 @@ describe("a room request's history", () => {
         createdAt: new Date(later),
       },
     ];
-    const named = assembleHistory(events, [], 1, new Map([['own_alice', 'Alice']]));
+    const named = assembleHistory(events, [], 1, { names: new Map([['own_alice', 'Alice']]) });
     expect(named.transcript.map((message) => message.name)).toEqual(['Alice', 'Alice']);
     expect(named.inputs.new_user_messages).toEqual([
       { role: 'user', content: 'For six.', name: 'Alice', at: later },

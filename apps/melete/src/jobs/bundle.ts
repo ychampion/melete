@@ -314,11 +314,14 @@ export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
-  /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
-  names?: ReadonlyMap<string, string>,
-  /** The text of each file the person sent, by id: what their messages' file blocks hold. */
-  fileTexts: ReadonlyMap<string, string | null> = new Map(),
+  context: {
+    /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
+    names?: ReadonlyMap<string, string>;
+    /** The text of each file the person sent, by id: what their messages' file blocks hold. */
+    fileTexts?: ReadonlyMap<string, string | null>;
+  } = {},
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
+  const { names, fileTexts = new Map() } = context;
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
     approval_results: [],
@@ -665,8 +668,10 @@ export async function buildAttemptSkeleton(
     usableEvents,
     attempts.filter(contextMatches),
     afterSeq,
-    room?.names,
-    new Map([...files].map(([id, file]) => [id, file.text])),
+    {
+      ...(room?.names ? { names: room.names } : {}),
+      fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+    },
   );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
