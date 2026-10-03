@@ -38,7 +38,10 @@ test("the mock serves a view's files isolated, and ends the view when the grants
   expect(page.status).toBe(200);
   expect(isIsolated(page.headers)).toBe(true);
   expect(await page.text()).toContain('<title>Open deals</title>');
-  expect(await (await app.request(`/apps/${deals?.id}/data/deals`)).json()).toHaveLength(3);
+  const data = (await (await app.request(`/apps/${deals?.id}/data/deals`)).json()) as {
+    value: unknown[];
+  };
+  expect(data.value).toHaveLength(3);
 
   await app.request(`/apps/${deals?.id}/grants`, json('PUT', { grants: [] }));
   const after = await app.request(view.view_path);

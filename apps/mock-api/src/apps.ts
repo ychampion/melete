@@ -6,19 +6,32 @@
  * Two apps are seeded: Deals, which the signed-in person published and
  * manages, with three versions; and a team tracker someone else shared with
  * them. Deals reads its data through the bridge, which this mock answers at
- * `GET /apps/{id}/data/{name}` with a fixed list.
+ * `GET /apps/{id}/data/{name}`. Its publisher reviews each new version of
+ * that data: one is let through and a newer one waits. Deals also collects
+ * feedback, three responses of which are seeded.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  type AppDataUpdate,
   type AppDetail,
   type AppManifest,
+  type AppSubmission,
   type AppSummary,
   appCurrentRequest,
+  appDataReleaseRequest,
+  appDataUpdates,
+  appDataValue,
   appDeleted,
   appDetail,
   appGrantsRequest,
   appListResponse,
+  appSubmissionAccepted,
+  appSubmissionDeleted,
+  appSubmissionList,
+  appSubmissionRequest,
+  appSubmissionsDeleted,
   appView,
+  type JsonValue,
 } from '@melete/contracts';
 import type { Hono } from 'hono';
 import { VIEW_POLICY, viewHeaders } from '../../melete/src/viewer/headers.ts';
@@ -39,6 +52,11 @@ const CLIENT = `const melete = (() => {
     waiting.delete(reply.id);
     reply.ok ? settle[0](reply.value) : settle[1](new Error(reply.error));
   });
+  const changed = new Set();
+  addEventListener('message', (event) => {
+    if (event.source === parent && event.data && event.data.type === 'melete.changed')
+      for (const listener of changed) listener(event.data.name);
+  });
   const ask = (message) =>
     new Promise((resolve, reject) => {
       const id = ++next;
@@ -50,6 +68,7 @@ const CLIENT = `const melete = (() => {
     submit: (collection, record) => ask({ type: 'melete.submit', collection, record }),
     link: (url) => parent.postMessage({ type: 'melete.link', url }, '*'),
     size: (height) => parent.postMessage({ type: 'melete.size', height }, '*'),
+    onChange: (listener) => changed.add(listener),
   };
 })();
 `;
@@ -59,12 +78,16 @@ const DEALS_HTML = (title: string) => `<!doctype html>
 <link rel="stylesheet" href="style.css"></head>
 <body><main><h1>${title}</h1><p id="status">Loading deals…</p>
 <table><thead><tr><th>Company</th><th>Stage</th><th>Value</th></tr></thead><tbody id="rows"></tbody></table>
-<p><button id="crm" type="button">Open the CRM</button></p></main>
+<p><button id="crm" type="button">Open the CRM</button></p>
+<form id="feedback"><label>Feedback <input id="note" name="note" required></label>
+<button type="submit">Send</button> <span id="sent"></span></form></main>
 <script src="melete-app.js"></script><script src="app.js"></script></body></html>
 `;
 
-const DEALS_JS = `melete.data('deals').then((deals) => {
+const DEALS_JS = `const show = () => melete.data('deals').then((deals) => {
   const rows = document.getElementById('rows');
+  rows.textContent = '';
+  if (!deals) { document.getElementById('status').textContent = 'No deals yet'; return; }
   for (const deal of deals) {
     const row = document.createElement('tr');
     for (const value of [deal.company, deal.stage, '$' + deal.value.toLocaleString('en-US')]) {
@@ -76,7 +99,16 @@ const DEALS_JS = `melete.data('deals').then((deals) => {
   }
   document.getElementById('status').textContent = deals.length + ' open deals';
 }).catch((error) => { document.getElementById('status').textContent = error.message; });
+show();
+melete.onChange((name) => { if (name === 'deals') show(); });
 document.getElementById('crm').addEventListener('click', () => melete.link('https://example.com/crm'));
+document.getElementById('feedback').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const note = document.getElementById('note');
+  melete.submit('feedback', { note: note.value })
+    .then(() => { note.value = ''; document.getElementById('sent').textContent = 'Sent'; })
+    .catch((error) => { document.getElementById('sent').textContent = error.message; });
+});
 `;
 
 const DEALS_CSS = `body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; color: #1d1b16; }
@@ -96,6 +128,11 @@ const DEALS_DATA = [
   { company: 'Globex', stage: 'Negotiation', value: 48000 },
   { company: 'Initech', stage: 'Discovery', value: 7500 },
 ];
+/** The routine's newer version, waiting for the publisher. */
+const DEALS_NEXT = [...DEALS_DATA, { company: 'Umbrella', stage: 'Discovery', value: 9000 }];
+
+/** One recorded version of a data file. */
+type DataVersion = { artifact_id: string; value: JsonValue; written_at: string; size: number };
 
 const TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -117,6 +154,9 @@ type MockApp = {
   current: string;
   grants: NonNullable<AppDetail['grants']>;
   generation: number;
+  /** By binding name: every version written, oldest first, and the one let through. */
+  data: Record<string, { versions: DataVersion[]; released: string | null }>;
+  submissions: AppSubmission[];
 };
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -193,14 +233,37 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
         ago(0.2),
       ),
     ];
-    for (const v of dealsVersions)
+    for (const v of dealsVersions) {
       v.manifest.data = {
         deals: {
           kind: 'artifact',
           path: 'data/deals.json',
           source_job_id: 'job_01M0000000000000000000000A',
+          review: true,
         },
       };
+      v.manifest.collections = { feedback: { max_bytes: 2048 } };
+    }
+    const dataVersion = (id: string, value: JsonValue, at: string): DataVersion => ({
+      artifact_id: id,
+      value,
+      written_at: at,
+      size: Buffer.byteLength(JSON.stringify(value)),
+    });
+    const response = (
+      n: number,
+      by: typeof ME,
+      note: string,
+      at: string,
+      version: string,
+    ): AppSubmission => ({
+      id: `asub_01M000000000000000000000${String(n).padStart(2, '0')}`,
+      collection: 'feedback',
+      version_id: version,
+      by,
+      data: { note },
+      created_at: at,
+    });
     apps.set(dealsId, {
       summary: {
         id: dealsId,
@@ -215,6 +278,20 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
       current: dealsVersions[2]?.id ?? '',
       grants: [{ kind: 'principal', principal: SAM, role: 'view', granted_at: ago(4) }],
       generation: 1,
+      data: {
+        deals: {
+          versions: [
+            dataVersion('art_01M0000000000000000000000A', DEALS_DATA, ago(1)),
+            dataVersion('art_01M0000000000000000000000B', DEALS_NEXT, ago(0.1)),
+          ],
+          released: 'art_01M0000000000000000000000A',
+        },
+      },
+      submissions: [
+        response(3, SAM, 'Could we sort by value?', ago(0.05), dealsVersions[2]?.id ?? ''),
+        response(2, ME, 'Globex closes next week', ago(0.5), dealsVersions[2]?.id ?? ''),
+        response(1, SAM, 'Love this, thanks', ago(2), dealsVersions[1]?.id ?? ''),
+      ],
     });
     const trackerId = 'app_tracker00000000000000000000001';
     const tracker = version(trackerId, { 'index.html': TRACKER_HTML }, ago(2), SAM);
@@ -232,6 +309,8 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
       current: tracker.id,
       grants: [],
       generation: 0,
+      data: {},
+      submissions: [],
     });
   }
 
@@ -251,6 +330,30 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
     };
   };
 
+  /** The newest version of each reviewed binding that was not let through. */
+  const waiting = (entry: MockApp): AppDataUpdate[] =>
+    Object.entries(entry.data).flatMap(([name, binding]) => {
+      const newest = binding.versions.at(-1);
+      if (!newest || newest.artifact_id === binding.released) return [];
+      const before = binding.versions.find((v) => v.artifact_id === binding.released) ?? null;
+      const from = Array.isArray(before?.value) ? before.value.length : 0;
+      const to = Array.isArray(newest.value) ? newest.value.length : 0;
+      return [
+        {
+          binding: name,
+          path: 'data/deals.json',
+          artifact_id: newest.artifact_id,
+          written_at: newest.written_at,
+          size: newest.size,
+          size_before: before?.size ?? null,
+          changes: null,
+          summary: before
+            ? `${from} → ${to} items, ${before.size} → ${newest.size} bytes`
+            : `First version, ${newest.size} bytes`,
+        },
+      ];
+    });
+
   const detail = (entry: MockApp): AppDetail => {
     const current = entry.versions.find((v) => v.id === entry.current) ?? entry.versions[0];
     const manager = entry.summary.role === 'manage';
@@ -265,8 +368,13 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
         name,
         kind: binding.kind,
         path: binding.path,
+        review: binding.review === true,
       })),
-      collections: [],
+      data_waiting: manager ? waiting(entry).length : null,
+      collections: Object.entries(current?.manifest.collections ?? {}).map(([name, value]) => ({
+        name,
+        max_bytes: value.max_bytes,
+      })),
       versions: manager
         ? entry.versions
             .map((v, index) => ({
@@ -358,12 +466,106 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
     return Response.json(appDeleted.parse({ id, deleted: true }));
   });
 
-  // The data a binding reads. Deals has one, `deals`.
+  // The data a binding reads. Deals has one, `deals`, which its publisher reviews.
   app.get('/apps/:id/data/:name', (c) => {
     const entry = apps.get(c.req.param('id'));
+    const name = c.req.param('name');
     const current = entry?.versions.find((v) => v.id === entry.current);
-    if (!current || !(c.req.param('name') in current.manifest.data)) return missing();
-    return Response.json(DEALS_DATA);
+    const binding = current?.manifest.data[name];
+    if (!entry || !binding) return missing();
+    const versions = entry.data[name]?.versions ?? [];
+    const shown = binding.review
+      ? versions.find((v) => v.artifact_id === entry.data[name]?.released)
+      : versions.at(-1);
+    return Response.json(
+      appDataValue.parse({
+        name,
+        state: shown ? 'ready' : 'none',
+        format: shown ? 'json' : null,
+        value: shown?.value ?? null,
+        updated_at: shown?.written_at ?? null,
+      }),
+    );
+  });
+
+  app.get('/apps/:id/data-updates', (c) => {
+    const entry = apps.get(c.req.param('id'));
+    if (!entry) return missing();
+    return Response.json(appDataUpdates.parse({ updates: waiting(entry) }));
+  });
+
+  app.post('/apps/:id/data-updates', async (c) => {
+    const entry = apps.get(c.req.param('id'));
+    const input = appDataReleaseRequest.safeParse(await c.req.json().catch(() => null));
+    const binding = input.success ? entry?.data[input.data.binding] : undefined;
+    if (!entry || !input.success || !binding) return missing();
+    if (binding.versions.at(-1)?.artifact_id !== input.data.artifact_id)
+      return Response.json(
+        { error: { code: 'conflict', message: 'A newer version was written since.' } },
+        { status: 409 },
+      );
+    binding.released = input.data.artifact_id;
+    return Response.json(appDataUpdates.parse({ updates: waiting(entry) }));
+  });
+
+  app.post('/apps/:id/submissions', async (c) => {
+    const entry = apps.get(c.req.param('id'));
+    const current = entry?.versions.find((v) => v.id === entry.current);
+    if (!entry || !current) return missing();
+    const input = appSubmissionRequest.safeParse(await c.req.json().catch(() => null));
+    if (!input.success || !current.manifest.collections[input.data.collection])
+      return Response.json(
+        { error: { code: 'invalid_request', message: 'This app does not collect that.' } },
+        { status: 400 },
+      );
+    const created = now().toISOString();
+    const id = `asub_${sha(`${created}${entry.submissions.length}`)
+      .slice(0, 26)
+      .toUpperCase()
+      .replace(/[ILOU]/g, '0')}`;
+    entry.submissions.unshift({
+      id,
+      collection: input.data.collection,
+      version_id: current.id,
+      by: ME,
+      data: input.data.record,
+      created_at: created,
+    });
+    return Response.json(appSubmissionAccepted.parse({ id, created_at: created }));
+  });
+
+  app.get('/apps/:id/submissions', (c) => {
+    const entry = apps.get(c.req.param('id'));
+    if (!entry) return missing();
+    const collection = c.req.query('collection');
+    return Response.json(
+      appSubmissionList.parse({
+        submissions: entry.submissions.filter(
+          (submission) => !collection || submission.collection === collection,
+        ),
+        next_before: null,
+      }),
+    );
+  });
+
+  app.delete('/apps/:id/submissions', (c) => {
+    const entry = apps.get(c.req.param('id'));
+    const from = c.req.query('from');
+    if (!entry || !from) return missing();
+    const before = entry.submissions.length;
+    entry.submissions = entry.submissions.filter((submission) => submission.by?.id !== from);
+    return Response.json(
+      appSubmissionsDeleted.parse({ from, deleted: before - entry.submissions.length }),
+    );
+  });
+
+  app.delete('/apps/:id/submissions/:submission_id', (c) => {
+    const entry = apps.get(c.req.param('id'));
+    const id = c.req.param('submission_id');
+    if (!entry) return missing();
+    if (!entry.submissions.some((submission) => submission.id === id)) return missing();
+    entry.submissions = entry.submissions.filter((submission) => submission.id !== id);
+    return Response.json(appSubmissionDeleted.parse({ id, deleted: true }));
   });
 
   app.get('/apps/view/:token/:path{.+}', (c) => {

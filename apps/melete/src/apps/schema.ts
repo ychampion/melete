@@ -109,6 +109,65 @@ export const appGrant = pgTable(
   ],
 );
 
+/**
+ * A response a viewer sent from an app. Kept with who sent it and the version
+ * they sent it from; a deleted one keeps its row without its contents.
+ */
+export const appSubmission = pgTable(
+  'app_submission',
+  {
+    id: text('id').primaryKey(),
+    appId: text('app_id')
+      .notNull()
+      .references(() => app.id, { onDelete: 'cascade' }),
+    versionId: text('version_id').notNull(),
+    collection: text('collection').notNull(),
+    principalId: text('principal_id').references(() => principal.id, { onDelete: 'set null' }),
+    data: jsonb('data').notNull(),
+    /** The record's size as JSON, in bytes. */
+    size: integer('size').notNull(),
+    createdAt: created(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: text('deleted_by').references(() => principal.id, { onDelete: 'set null' }),
+  },
+  (table) => [
+    index('app_submission_list_idx').on(table.appId, table.collection, table.id),
+    index('app_submission_sender_idx').on(table.appId, table.principalId, table.createdAt),
+    check('app_submission_size', sql`${table.size} between 0 and 16384`),
+  ],
+);
+
+/**
+ * A version of a reviewed data file that the publisher let through to
+ * viewers. The bytes are kept as a blob (`blob_ref` owner kind
+ * `app_data_release`), because the file in the workspace moves on.
+ */
+export const appDataRelease = pgTable(
+  'app_data_release',
+  {
+    id: text('id').primaryKey(),
+    appId: text('app_id')
+      .notNull()
+      .references(() => app.id, { onDelete: 'cascade' }),
+    binding: text('binding').notNull(),
+    /** The binding's file and conversation when it was released; a later version may name others. */
+    path: text('path').notNull(),
+    sourceJobId: text('source_job_id').notNull(),
+    /** The recorded version released. Not a key: it outlives its row. */
+    artifactId: text('artifact_id').notNull(),
+    contentHash: text('content_hash').notNull(),
+    size: integer('size').notNull(),
+    writtenAt: timestamp('written_at', { withTimezone: true }).notNull(),
+    approvedBy: text('approved_by').references(() => principal.id, { onDelete: 'set null' }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('app_data_release_artifact_idx').on(table.appId, table.binding, table.artifactId),
+    index('app_data_release_newest_idx').on(table.appId, table.binding, table.approvedAt),
+    check('app_data_release_hash_shape', sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
 export type AppRow = typeof app.$inferSelect;
 export type AppVersionRow = typeof appVersion.$inferSelect;
 export type AppGrantRow = typeof appGrant.$inferSelect;

@@ -7,29 +7,58 @@
  * and one they can open but do not manage refuses changes.
  */
 import {
+  APP_LIMITS,
   type AppDetail,
   type AppManifest,
   type AppRole,
   type AppSummary,
+  appBindingName,
   appCurrentRequest,
+  appDataReleaseRequest,
+  appDataUpdates,
+  appDataValue,
   appDeleted,
   appDetail,
   appGrantsRequest,
   appId as appIdSchema,
   appListResponse,
+  appSubmissionAccepted,
+  appSubmissionDeleted,
+  appSubmissionList,
+  appSubmissionRequest,
+  appSubmissionsDeleted,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { type ArtifactRoots, defaultArtifactRoots } from '../artifact/content.ts';
+import type { BlobStore } from '../storage/blob.ts';
+import {
+  type DataDeps,
+  DataUnavailable,
+  dataUpdates,
+  dataWaiting,
+  ReleaseRefused,
+  readData,
+  releaseData,
+} from './data.ts';
 import {
   AppUnavailable,
   appRoleFor,
   appRoleSql,
   type DesiredGrant,
   deleteApp,
+  ownsApp,
   replaceGrants,
   setCurrentVersion,
 } from './service.ts';
+import {
+  deleteSubmission,
+  deleteSubmissionsFrom,
+  listSubmissions,
+  SubmissionRefused,
+  submit,
+} from './submissions.ts';
 
 const notFound = () => new ServiceError('not_found', 'No such app.', 404);
 const notManager = () =>
@@ -133,10 +162,25 @@ function changesBetween(before: AppManifest | null, after: AppManifest): Changed
   };
 }
 
-export type AppRoutesDeps = { sql: Sql };
+export type AppRoutesDeps = {
+  sql: Sql;
+  /** Where data versions let through to viewers are kept. */
+  blobs?: BlobStore;
+  /** Where the conversations' workspaces are, to read the files data names. */
+  roots?: ArtifactRoots;
+};
+
+/** The largest request body a response may arrive in, well above its record's limit. */
+const SUBMISSION_BODY_BYTES = 4 * APP_LIMITS.max_collection_record_bytes;
+const SUBMISSION_ID = /^asub_[0-9A-Z]{26}$/;
 
 export function mountApps(app: Hono, deps: AppRoutesDeps): void {
   const { sql } = deps;
+  const data: DataDeps = {
+    sql,
+    roots: deps.roots ?? defaultArtifactRoots(),
+    ...(deps.blobs ? { blobs: deps.blobs } : {}),
+  };
   const principalOf = (c: Context): string => {
     const id = c.get('owner')?.id as string | undefined;
     if (!id) throw notFound();
@@ -156,14 +200,15 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
     return { principalId, appId, role };
   };
 
-  /** The app's publisher while they belong to its space, or the space's owner. */
-  const isOwner = async (appId: string, principalId: string) => {
-    const [row] = await sql<{ owner: boolean }[]>`select (s.owner_principal_id = ${principalId}
-        or (a.publisher_principal_id = ${principalId} and exists (
-          select 1 from space_membership m where m.space_id = a.space_id
-            and m.principal_id = ${principalId} and m.revoked_at is null))) as owner
-      from app a join space s on s.id = a.space_id where a.id = ${appId}`;
-    return row?.owner === true;
+  const isOwner = (appId: string, principalId: string) => ownsApp(sql, appId, principalId);
+
+  /** The app's space and its current version's manifest. */
+  const currentOf = async (appId: string) => {
+    const [row] = await sql<{ space_id: string; manifest: AppManifest }[]>`select a.space_id,
+        v.manifest from app a join app_version v on v.id = a.current_version_id
+      where a.id = ${appId}`;
+    if (!row) throw notFound();
+    return { app: { id: appId, space_id: row.space_id }, manifest: row.manifest };
   };
 
   const detail = async (principalId: string, appId: string): Promise<AppDetail> => {
@@ -246,7 +291,11 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
         name,
         kind: binding.kind,
         path: binding.path,
+        review: binding.review === true,
       })),
+      data_waiting: (await isOwner(appId, principalId))
+        ? await dataWaiting(sql, (await currentOf(appId)).app, manifest)
+        : null,
       collections: Object.entries(manifest.collections).map(([name, collection]) => ({
         name,
         max_bytes: collection.max_bytes,
@@ -354,5 +403,143 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
       );
     if (!(await deleteApp(sql, appId))) throw notFound();
     return c.json(appDeleted.parse({ id: appId, deleted: true }));
+  });
+  app.get('/apps/:id/data/:name', async (c) => {
+    const { appId } = await requireRole(c, 'view');
+    const name = appBindingName.safeParse(c.req.param('name'));
+    if (!name.success)
+      throw new ServiceError('not_found', 'This app has no data by that name.', 404);
+    const { app: found, manifest } = await currentOf(appId);
+    let value: Awaited<ReturnType<typeof readData>>;
+    try {
+      value = await readData(data, found, manifest, name.data);
+    } catch (error) {
+      if (error instanceof DataUnavailable) throw new ServiceError('conflict', error.message, 409);
+      throw error;
+    }
+    if (!value) throw new ServiceError('not_found', 'This app has no data by that name.', 404);
+    return c.json(appDataValue.parse(value));
+  });
+
+  /** The publisher while they belong to the space, or the space's owner. */
+  const requireOwner = async (c: Context) => {
+    const found = await requireRole(c, 'view');
+    if (!(await isOwner(found.appId, found.principalId)))
+      throw new ServiceError(
+        'forbidden',
+        'Only the person who published this app, or the owner of its space, can review its data.',
+        403,
+      );
+    return found;
+  };
+
+  const waiting = async (appId: string) => {
+    const { app: found, manifest } = await currentOf(appId);
+    return appDataUpdates.parse({ updates: await dataUpdates(data, found, manifest) });
+  };
+
+  app.get('/apps/:id/data-updates', async (c) => {
+    const { appId } = await requireOwner(c);
+    return c.json(await waiting(appId));
+  });
+
+  app.post('/apps/:id/data-updates', async (c) => {
+    const { appId, principalId } = await requireOwner(c);
+    const input = appDataReleaseRequest.parse(await c.req.json());
+    const blobs = data.blobs;
+    if (!blobs) throw new Error('releasing app data needs a blob store');
+    try {
+      await releaseData(
+        { ...data, blobs },
+        {
+          appId,
+          name: input.binding,
+          artifactId: input.artifact_id,
+          principalId,
+          allowed: (tx) => ownsApp(tx, appId, principalId),
+        },
+      );
+    } catch (error) {
+      if (error instanceof ReleaseRefused)
+        throw new ServiceError(
+          error.status === 409 ? 'conflict' : error.status === 403 ? 'forbidden' : 'not_found',
+          error.message,
+          error.status,
+        );
+      throw error;
+    }
+    return c.json(await waiting(appId));
+  });
+
+  app.post('/apps/:id/submissions', async (c) => {
+    const { appId, principalId } = await requireRole(c, 'view');
+    const tooLarge = () =>
+      new ServiceError('payload_too_large', 'This response is too large.', 413);
+    if (Number(c.req.header('content-length') ?? 0) > SUBMISSION_BODY_BYTES) throw tooLarge();
+    const text = await c.req.text();
+    if (Buffer.byteLength(text, 'utf8') > SUBMISSION_BODY_BYTES) throw tooLarge();
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new ServiceError('invalid_request', 'A response is a JSON object.', 400);
+    }
+    const parsed = appSubmissionRequest.safeParse(body);
+    if (!parsed.success)
+      throw new ServiceError(
+        'invalid_request',
+        'A response names a collection and carries a record object.',
+        400,
+      );
+    try {
+      const stored = await submit(sql, {
+        appId,
+        principalId,
+        collection: parsed.data.collection,
+        record: parsed.data.record,
+      });
+      return c.json(appSubmissionAccepted.parse(stored));
+    } catch (error) {
+      if (!(error instanceof SubmissionRefused)) throw error;
+      const code = {
+        400: 'invalid_request',
+        404: 'not_found',
+        413: 'payload_too_large',
+        429: 'rate_limited',
+      }[error.status];
+      throw new ServiceError(code, error.message, error.status);
+    }
+  });
+
+  app.get('/apps/:id/submissions', async (c) => {
+    const { appId } = await requireRole(c, 'manage');
+    const collection = c.req.query('collection');
+    const before = c.req.query('before');
+    if (collection !== undefined && !appBindingName.safeParse(collection).success)
+      throw new ServiceError('invalid_request', 'No collection by that name.', 400);
+    if (before !== undefined && !SUBMISSION_ID.test(before))
+      throw new ServiceError('invalid_request', 'Not a response id.', 400);
+    const page = await listSubmissions(sql, appId, {
+      collection: collection ?? null,
+      before: before ?? null,
+    });
+    return c.json(appSubmissionList.parse(page));
+  });
+
+  app.delete('/apps/:id/submissions', async (c) => {
+    const { appId, principalId } = await requireRole(c, 'manage');
+    const from = c.req.query('from');
+    if (!from || from.length > 200)
+      throw new ServiceError('invalid_request', 'Name whose responses to delete.', 400);
+    const deleted = await deleteSubmissionsFrom(sql, appId, from, principalId);
+    return c.json(appSubmissionsDeleted.parse({ from, deleted }));
+  });
+
+  app.delete('/apps/:id/submissions/:submission_id', async (c) => {
+    const { appId, principalId } = await requireRole(c, 'manage');
+    const id = c.req.param('submission_id');
+    if (!SUBMISSION_ID.test(id) || !(await deleteSubmission(sql, appId, id, principalId)))
+      throw new ServiceError('not_found', 'No such response.', 404);
+    return c.json(appSubmissionDeleted.parse({ id, deleted: true }));
   });
 }

@@ -8,8 +8,12 @@
  * when the frame's own view is about to end the frame takes the new one, and
  * when this person can no longer open the app the frame goes (frame.ts).
  *
- * Managers also get the app's versions, with "Use this version", and who can
- * open it. The publisher and the space's owner can delete it.
+ * Managers also get the app's versions, with "Use this version", who can
+ * open it, and the responses it collected. The publisher and the space's
+ * owner can delete it, and review data they asked to see first.
+ *
+ * Data the app read is asked for again at each check; when a newer version
+ * is there, the app is told (`melete.changed`) and reads it if it wants.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LoadError } from '../design/LoadError.tsx';
@@ -18,6 +22,7 @@ import { useLoad } from '../experience/hooks.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { FramedView } from '../viewer/FramedView.tsx';
+import { DataUpdatesDialog, ResponsesDialog } from './AppData.tsx';
 import { changedWhen } from './AppsScreen.tsx';
 import {
   type AppDetail,
@@ -29,6 +34,9 @@ import {
   viewSource,
 } from './api.ts';
 import { CHECK_EVERY_MS, type Frame, nextFrame } from './frame.ts';
+
+const RECHECK_AT_MOST_MS = 5_000;
+
 import './apps.css';
 
 /** "version 3", counted from the first; null when the versions are not listed for this person. */
@@ -243,6 +251,11 @@ export function AppViewer({ id }: { id: string }) {
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [responsesOpen, setResponsesOpen] = useState(false);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [dataChanged, setDataChanged] = useState<{ name: string; at: number } | null>(null);
+  /** Each data name the app read, with when the version it got was written. */
+  const read = useRef(new Map<string, string | null>());
   const shown = useRef<string | null>(null);
   const reloadDetail = detail.reload;
 
@@ -288,19 +301,53 @@ export function AppViewer({ id }: { id: string }) {
   }, [isOpen, open]);
 
   // A request the app makes that fails may mean the person lost the app: ask at once.
-  const calls = useMemo(() => {
-    const base = appBridgeCalls(id);
-    const checked =
-      <A extends unknown[]>(call: (...args: A) => ReturnType<typeof base.data>) =>
-      async (...args: A) => {
-        const result = await call(...args);
-        if (!result.ok) void open();
+  const base = useMemo(() => appBridgeCalls(id), [id]);
+  // At most one re-check every few seconds, however often the app's requests fail.
+  const lastCheck = useRef(0);
+  const recheck = useCallback(() => {
+    const now = Date.now();
+    if (now - lastCheck.current < RECHECK_AT_MOST_MS) return;
+    lastCheck.current = now;
+    void open();
+  }, [open]);
+  const calls = useMemo(
+    () => ({
+      data: async (name: string) => {
+        const result = await base.data(name);
+        if (result.ok) read.current.set(name, result.updatedAt);
+        else recheck();
         return result;
-      };
-    return { data: checked(base.data), submit: checked(base.submit) };
-  }, [id, open]);
+      },
+      submit: async (collection: string, record: Record<string, unknown>) => {
+        const result = await base.submit(collection, record);
+        // Too many, too large or not declared is the app's doing; anything else may be lost access.
+        if (!result.ok && ![400, 413, 429].includes(result.status ?? 0)) recheck();
+        return result;
+      },
+    }),
+    [base, recheck],
+  );
+
+  // Data the app read is asked for again with each check; a newer version is told to the app.
+  const owner = detail.data?.data_waiting !== null && detail.data?.data_waiting !== undefined;
+  useEffect(() => {
+    if (!isOpen) return;
+    const timer = setInterval(async () => {
+      if (owner) reloadDetail();
+      for (const [name, seen] of [...read.current]) {
+        const result = await base.data(name);
+        if (result.ok && result.updatedAt !== seen) {
+          read.current.set(name, result.updatedAt);
+          setDataChanged({ name, at: Date.now() });
+        }
+      }
+    }, CHECK_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [isOpen, base, owner, reloadDetail]);
   const app = detail.data?.app;
   const manager = app?.role === 'manage';
+  const collects = (detail.data?.collections.length ?? 0) > 0;
+  const waiting = detail.data?.data_waiting ?? 0;
   const version = detail.data ? versionLabel(detail.data) : null;
   const changed = app ? (app.current_version?.created_at ?? app.updated_at) : null;
   const name = app?.name ?? 'App';
@@ -330,6 +377,11 @@ export function AppViewer({ id }: { id: string }) {
               <Button variant="outline" icon="share" onClick={() => setShareOpen(true)}>
                 Share
               </Button>
+              {collects ? (
+                <Button variant="outline" icon="inbox" onClick={() => setResponsesOpen(true)}>
+                  Responses
+                </Button>
+              ) : null}
               <Button variant="ghost" icon="trash" onClick={() => setDeleting(true)}>
                 Delete
               </Button>
@@ -339,9 +391,27 @@ export function AppViewer({ id }: { id: string }) {
         {detail.error ? (
           <LoadError what="this app" error={detail.error} onRetry={detail.reload} />
         ) : null}
+        {waiting > 0 ? (
+          <div className="row app-waiting" role="status">
+            <span className="app-waiting-text">
+              {waiting === 1
+                ? 'A new version of its data waits for you before viewers see it.'
+                : `${waiting} new data versions wait for you before viewers see them.`}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => setUpdatesOpen(true)}>
+              Review
+            </Button>
+          </div>
+        ) : null}
         <section className="app-frame" aria-label={`${name}, published by its author`}>
           {frame.kind === 'open' ? (
-            <FramedView key={frame.src} src={frame.src} title={name} calls={calls} />
+            <FramedView
+              key={frame.src}
+              src={frame.src}
+              title={name}
+              calls={calls}
+              changed={dataChanged}
+            />
           ) : frame.kind === 'ended' ? (
             <div className="col app-ended" role="status">
               <span className="app-empty-title">{frame.reason}</span>
@@ -374,6 +444,11 @@ export function AppViewer({ id }: { id: string }) {
               toast({ kind: 'ok', title: 'Everyone now sees that version' });
             }}
           />
+          <ResponsesDialog
+            open={responsesOpen}
+            onClose={() => setResponsesOpen(false)}
+            detail={detail.data}
+          />
           <ShareDialog
             open={shareOpen}
             onClose={() => setShareOpen(false)}
@@ -391,6 +466,12 @@ export function AppViewer({ id }: { id: string }) {
           />
         </>
       ) : null}
+      <DataUpdatesDialog
+        open={updatesOpen}
+        onClose={() => setUpdatesOpen(false)}
+        appId={id}
+        onReleased={reloadDetail}
+      />
       <Dialog
         open={deleting}
         onClose={() => setDeleting(false)}

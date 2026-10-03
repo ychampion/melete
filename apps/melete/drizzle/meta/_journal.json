@@ -596,6 +596,13 @@
       "when": 1789232400064,
       "tag": "0084_apps",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1789232400065,
+      "tag": "0085_app_data",
+      "breakpoints": true
     }
   ]
 }

@@ -282,7 +282,12 @@ export function createApp(deps: AppDeps) {
       personalSpace,
     );
   // Apps a person can open, and the changes they make to their own.
-  if (deps.sql) mountApps(app, { sql: deps.sql });
+  if (deps.sql)
+    mountApps(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      roots: { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+    });
   // Opening one: a view for the person, and the files it loads with its token.
   if (deps.sql)
     mountAppViews(app, {

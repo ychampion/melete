@@ -145,6 +145,65 @@
   overflow-wrap: anywhere;
 }
 
+/* Data waiting for the publisher, above the frame. */
+.app-waiting {
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.app-waiting-text {
+  flex: 1;
+  min-width: 200px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--heading);
+}
+
+.app-responses {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.app-response {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.app-response:first-child {
+  border-top: 0;
+}
+.app-response-head {
+  gap: 12px;
+  justify-content: space-between;
+}
+.app-response-by {
+  min-width: 0;
+}
+.app-response-fields {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+.app-response-field {
+  display: grid;
+  grid-template-columns: minmax(80px, 30%) 1fr;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 20px;
+}
+.app-response-field dt {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.app-response-field dd {
+  margin: 0;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 767px) {
   .app-page {
     padding: 16px;

@@ -38,6 +38,7 @@ import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { ZodError } from 'zod';
 import { ServiceError } from '../api/errors.ts';
+import { asksAfterResponses } from '../apps/response-guard.ts';
 import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
@@ -808,9 +809,12 @@ export class BrokerService implements BrokerOperations {
             reason: 'It stays in your own space, where you can delete it.',
           }
         : reviewTier({ tool, provider, payload: action.canonical_payload, doubts, existingGuests });
+    // A conversation that read responses to an app asks before changing a file an app shows.
+    const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
       toolAsks ||
       connectorAsks ||
+      afterResponses ||
       (agentAsks && changes) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||

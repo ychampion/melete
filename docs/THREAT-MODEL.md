@@ -587,6 +587,36 @@ without the session cookie, and the app's own requests arrive marked
 cross-site, so no cookie travels with them anyway. Bytes are read whole and
 checked against the manifest's hash before they are sent.
 
+Data reaches an app only through the page around it, with the viewer's session,
+and only for the names its version declares, which the publish question listed.
+A data name resolves to the newest recorded version of one file in one
+conversation, and both the record and the conversation must belong to the
+space the app was published from, whatever the manifest says. Bytes on disk
+that no write recorded are not served. When the publisher reviews updates,
+viewers get only versions they let through, kept as blobs; a version can be let
+through only while it is the newest one and its bytes are the ones recorded.
+
+Responses are the app's way back in. An app's code can send them in the
+viewer's name without the viewer doing anything, so they are bounded: only for
+collections the version declares, at most the declared size (16 KiB at most),
+30 a minute per person per app, 500 kept per person per app, and 10,000 kept per
+app. The agent reads them
+only for apps in its own space that its person manages, and the receipt marks
+them as content Melete read (`external_content`), not as the person's word.
+Reading them asks nothing and grants nothing: any action the agent takes about
+a response goes through the same admission and approvals as any other, and a
+recipient or destination lifted from one is not a trusted origin. Workspace
+writes usually do not ask, so one more rule closes the path from a viewer's text
+to what every viewer sees: in a conversation that has read responses, a write or
+move to a file an app's current version shows, and any command (code runner
+or the agent's computer) in a conversation whose files an app shows, waits for
+the person. The rule follows the conversation that read the responses: another
+conversation or a routine that is later steered by a summary of them can still
+write a bound file without asking. Update review closes that path for the data
+it covers. A deleted
+response is removed from the app; copies the agent already read stay in that
+conversation and in the record of the read.
+
 What the app may ask for, it asks the Melete page around it with
 `postMessage`: the data the publish approval listed, read with the viewer's own
 session, and an https link, which opens in a new tab only after the person

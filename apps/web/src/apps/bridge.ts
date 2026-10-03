@@ -11,6 +11,9 @@
  * - `{type:'melete.link', url}`: open an https link, after the person confirms it;
  * - `{type:'melete.size', height}`: how tall the app would like its frame.
  *
+ * Melete also tells the app, unasked, when data it read has a newer version:
+ * `{type:'melete.changed', name}`. The app reads it again if it wants it.
+ *
  * A message counts only when it comes from the frame's own window with the
  * origin `null`, which is what a sandboxed page has. Replies go back to that
  * window with `{type:'melete.reply', id, ok, value | error}`. The window is
@@ -184,4 +187,10 @@ export function connectBridge(
   };
   target.addEventListener('message', onMessage);
   return () => target.removeEventListener('message', onMessage);
+}
+
+/** Tell a framed app that data it read has a newer version. */
+export function notifyChanged(frame: HTMLIFrameElement | null, name: string): void {
+  if (!BINDING_NAME.test(name)) return;
+  frame?.contentWindow?.postMessage({ type: 'melete.changed', name }, '*');
 }

@@ -17,6 +17,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { createAppsConnector } from '../../src/connectors/apps.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
+import { recordFile } from '../helpers/artifacts.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -56,6 +57,15 @@ async function setup() {
   const broker = new BrokerService({ sql, connectors: registry });
   const write = (name: string, content: string | Uint8Array) =>
     Bun.write(path.join(workRoot, seed.claims.job_id, 'app', name), content);
+  /** A checked file in the conversation's workspace, recorded as a write with expect leaves it. */
+  const record = (relative: string, content: string) =>
+    recordFile(sql, {
+      workRoot,
+      spaceId: seed.claims.space_id,
+      jobId: seed.claims.job_id,
+      path: relative,
+      content,
+    });
   // The Apps routes as a signed-in person reaches them.
   const api = (as: string) => {
     const app = new Hono();
@@ -128,6 +138,7 @@ async function setup() {
     cy,
     tag,
     write,
+    record,
     api,
     propose,
     approveAndRun,
@@ -145,7 +156,7 @@ databaseTest(
     const ctx = await setup();
     await ctx.write('index.html', '<!doctype html><title>Deals</title>');
     await ctx.write('app.js', 'console.log("deals")');
-    await ctx.write('../data/deals.json', deals);
+    await ctx.record('data/deals.json', deals);
     const proposal = await ctx.propose('apps.publish', {
       dir: 'app',
       name: 'Deals',
@@ -502,7 +513,7 @@ databaseTest(
   async () => {
     const ctx = await setup();
     await ctx.write('index.html', 'v1');
-    await ctx.write('../data/salaries.json', '[]');
+    await ctx.record('data/salaries.json', '[]');
     await ctx.approveAndRun(
       await ctx.propose('apps.publish', {
         dir: 'app',
