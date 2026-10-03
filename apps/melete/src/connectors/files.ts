@@ -926,25 +926,43 @@ export function createFilesConnector(options: FilesOptions): Connector {
           if (Buffer.byteLength(content) > limit)
             throw new Error('content exceeds the write limit');
           const { base, segments, target } = located as Located;
+          hash = digest(content);
+          // Nobody was asked about a write into the person's Files only because
+          // the name was unused (`staysInSpace`), so the open must still create
+          // it: one that appeared since is theirs, and is not replaced unasked.
+          const onlyNew = area === 'artifacts' && !action.authorization_ref;
           const directory = await holdBeneath(base, segments.slice(0, -1), true);
           try {
+            const at = directory.at(path.basename(target));
             const file = await open(
-              directory.at(path.basename(target)),
-              constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+              at,
+              constants.O_WRONLY |
+                constants.O_CREAT |
+                constants.O_NOFOLLOW |
+                constants.O_NONBLOCK |
+                (onlyNew ? constants.O_EXCL : 0),
               0o600,
-            );
-            try {
-              await openedAt(file, target);
-              await file.truncate(0);
-              await file.writeFile(content, 'utf8');
-              await file.sync();
-            } finally {
-              await file.close();
-            }
+            ).catch(async (error: unknown) => {
+              if (!onlyNew || codeOf(error) !== 'EEXIST') throw error;
+              // A retry of this same write finds its own bytes there and is done.
+              const there = await readOpened(at).catch(() => null);
+              if (there && digest(there) === hash) return null;
+              throw new Error(
+                "the person's Files already have a file with that name; saving over it needs the person to approve",
+              );
+            });
+            if (file)
+              try {
+                await openedAt(file, target);
+                await file.truncate(0);
+                await file.writeFile(content, 'utf8');
+                await file.sync();
+              } finally {
+                await file.close();
+              }
           } finally {
             await directory.close();
           }
-          hash = digest(content);
           // A file existing is not a delivery. Read back what was written and
           // compare it, so a short write or a racing writer is a bad output
           // rather than a receipt for content nobody has.

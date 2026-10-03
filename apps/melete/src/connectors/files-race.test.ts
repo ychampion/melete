@@ -281,3 +281,45 @@ test.skipIf(!linux)(
     expect(await readdir(path.join(work, 'new'))).toEqual(['deeper']);
   },
 );
+
+test('a write into the person’s Files let through as new never replaces a file that appeared since', async () => {
+  const action = connectorAction('files.write', {
+    path: 'plan.md',
+    area: 'artifacts',
+    content: 'from the agent',
+  });
+  // Decided while the name was unused, so nobody was asked.
+  expect(connector().staysInSpace?.(action, 'sp_01')).toBe(true);
+  expect(action.authorization_ref).toBeNull();
+  await writeFile(path.join(artifacts, 'plan.md'), 'the person’s own plan');
+  await expect(connector().execute(action, connectorContext(action))).rejects.toThrow(
+    'needs the person to approve',
+  );
+  expect(await readFile(path.join(artifacts, 'plan.md'), 'utf8')).toBe('the person’s own plan');
+  // A retry of a write that did land finds its own bytes and is done.
+  await writeFile(path.join(artifacts, 'plan.md'), 'from the agent');
+  expect((await connector().execute(action, connectorContext(action))).outcome).toBe('succeeded');
+  // Once the person has approved it, saving over theirs goes ahead.
+  await writeFile(path.join(artifacts, 'plan.md'), 'the person’s own plan');
+  const approved = { ...action, authorization_ref: 'apr_01' };
+  expect((await connector().execute(approved, connectorContext(approved))).outcome).toBe(
+    'succeeded',
+  );
+  expect(await readFile(path.join(artifacts, 'plan.md'), 'utf8')).toBe('from the agent');
+});
+
+test('a move into the person’s Files never replaces a file that appeared since', async () => {
+  await writeFile(path.join(work, 'notes.txt'), 'mine');
+  const action = connectorAction('files.move', {
+    from: 'notes.txt',
+    to: 'notes.txt',
+    to_area: 'artifacts',
+  });
+  expect(connector().staysInSpace?.(action, 'sp_01')).toBe(true);
+  await writeFile(path.join(artifacts, 'notes.txt'), 'theirs');
+  await expect(connector().execute(action, connectorContext(action))).rejects.toThrow(
+    'already exists',
+  );
+  expect(await readFile(path.join(artifacts, 'notes.txt'), 'utf8')).toBe('theirs');
+  expect(await readFile(path.join(work, 'notes.txt'), 'utf8')).toBe('mine');
+});
