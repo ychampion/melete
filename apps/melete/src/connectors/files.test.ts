@@ -314,3 +314,24 @@ test("a paired computer's screenshot an earlier version left in the workspace ca
   });
   expect(JSON.stringify(theirs)).toContain('theirs');
 });
+
+test("only a new file in the person's own Files stays in their space without a question", async () => {
+  const files = path.join(root, 'spaces', 'sp_01', 'artifacts');
+  await writeFile(path.join(files, 'theirs.txt'), 'kept');
+  const stays = (kind: string, payload: Record<string, unknown>) =>
+    connector().staysInSpace?.(connectorAction(kind, payload), 'sp_01');
+  expect(stays('files.write', { path: 'new.txt', area: 'artifacts', content: 'x' })).toBe(true);
+  expect(stays('files.move', { from: 'a.txt', to: 'new.txt', to_area: 'artifacts' })).toBe(true);
+  // Saving over theirs, a name that is a link, a path that is not a plain name,
+  // moving out of or within their Files, and the agent's own workspace: no.
+  await symlink(path.join(root, 'outside'), path.join(files, 'link'), 'junction').catch(() => {});
+  for (const [kind, payload] of [
+    ['files.write', { path: 'theirs.txt', area: 'artifacts', content: 'x' }],
+    ['files.write', { path: 'link', area: 'artifacts', content: 'x' }],
+    ['files.write', { path: '../escape.txt', area: 'artifacts', content: 'x' }],
+    ['files.move', { from: 'theirs.txt', to: 'out.txt', area: 'artifacts', to_area: 'work' }],
+    ['files.move', { from: 'theirs.txt', to: 'renamed.txt', area: 'artifacts' }],
+    ['files.write', { path: 'notes.md', content: 'x' }],
+  ] as const)
+    expect(stays(kind, payload)).toBe(false);
+});

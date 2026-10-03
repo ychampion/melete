@@ -811,9 +811,11 @@ export class BrokerService implements BrokerOperations {
       toolAsks ||
       connectorAsks ||
       (agentAsks && changes) ||
-      // The person's own Files are not the agent's workspace: a change there
-      // is asked, or reviewed when the person lets reviewed app changes go.
-      changesPersonFiles(tool.name, action.canonical_payload) ||
+      // The person's own Files are not the agent's workspace. A new file there
+      // stays in their space and goes through like other work; saving over one
+      // of theirs or taking one out is asked, or reviewed when the person lets
+      // reviewed app changes go.
+      (changesPersonFiles(tool.name, action.canonical_payload) && !inSpace) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
       // With the sandbox switch off, work in the agent's own workspace asks too.
