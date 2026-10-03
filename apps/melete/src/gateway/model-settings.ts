@@ -53,7 +53,8 @@ import {
   providersFromEnv,
   providerUrl,
 } from './providers.ts';
-import type { GatewayProvider, SignedInCredential } from './types.ts';
+import { addressIsLocal, agentRoutes, type ModelRouting, sameModel } from './routing.ts';
+import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
@@ -223,6 +224,20 @@ export class ModelSettingsService {
     return !operatorBase || operatorBase === row.baseUrl ? row : undefined;
   }
 
+  /**
+   * Whether this provider is a model server on the owner's machine or network:
+   * the OpenAI-compatible endpoint at a local address, as the operator or the
+   * owner connected it.
+   */
+  async servesLocally(provider: string): Promise<boolean> {
+    if (provider !== OPENAI_COMPATIBLE) return false;
+    const base =
+      this.operatorBaseUrl() ??
+      this.usableRow(provider, await this.keyRows())?.baseUrl ??
+      undefined;
+    return addressIsLocal(base);
+  }
+
   /** Whether a model call to this provider would carry a credential now. */
   async isConnected(provider: string): Promise<boolean> {
     return this.connected(provider, await this.keyRows());
@@ -237,6 +252,55 @@ export class ModelSettingsService {
   ): Promise<{ provider: string; model: string; vision: boolean }> {
     const { provider, model, vision } = await this.active(await this.chosen(db), db);
     return { provider, model, vision };
+  }
+
+  /**
+   * The model the next attempt runs on, as `activeChoice`, told to send its
+   * pictures when the operator configured a vision model that will read them
+   * for it. A model the owner chose in the app is used exactly as chosen.
+   */
+  async routedChoice(
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<{ provider: string; model: string; vision: boolean }> {
+    const chosen = await this.chosen(db);
+    const { provider, model, vision } = await this.active(chosen, db);
+    const routes = agentRoutes(
+      routing,
+      { provider, model },
+      { ownerChose: this.ownerChose({ provider, model }), primaryReadsImages: vision },
+    );
+    return { provider, model, vision: vision || Boolean(routes?.vision) };
+  }
+
+  /**
+   * Whether this model is one the owner chose in the app rather than the
+   * server's default. Agent turns on an owner's choice are never rerouted.
+   */
+  private ownerChose(choice: { provider: string; model: string }): boolean {
+    return !sameModel(choice, {
+      provider: this.env.MELETE_DEFAULT_PROVIDER,
+      model: this.env.MELETE_DEFAULT_MODEL,
+    });
+  }
+
+  /**
+   * The operator's alternatives for an attempt on this model: a vision model
+   * for its pictures when it reads none, and fallbacks. None when the owner
+   * chose the model in the app.
+   */
+  async attemptRoutes(
+    routing: ModelRouting,
+    primary: { provider: string; model: string },
+  ): Promise<GatewayRoutes | undefined> {
+    if (this.ownerChose(primary)) return undefined;
+    const owner = await this.visionSaid(primary.provider, primary.model);
+    const readsImages = effectiveVision(
+      primary.provider,
+      primary.model,
+      owner ?? this.env.MELETE_DEFAULT_MODEL_VISION ?? null,
+    );
+    return agentRoutes(routing, primary, { ownerChose: false, primaryReadsImages: readsImages });
   }
 
   /** The owner's word on this model reading images, given apart from choosing it. */
@@ -798,6 +862,8 @@ export type ServiceModelSource = {
   providers(configured: GatewayProvider[]): Promise<GatewayProvider[]>;
   /** Whether a call to this provider would carry a credential now. */
   connected(provider: string): Promise<boolean>;
+  /** Whether this provider is a model server on the owner's machine or network. */
+  local(provider: string): Promise<boolean>;
 };
 
 /**
@@ -808,12 +874,23 @@ export type ServiceModelSource = {
  * server's default with the configured providers.
  */
 export function serviceModelSource(options: {
-  env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'>;
+  env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'> & {
+    OPENAI_COMPAT_BASE_URL?: string;
+  };
   settings?: ModelSettingsService;
   pinned?: { provider?: string; model?: string };
+  /**
+   * The operator's fast model (MELETE_MODEL_FAST), for a short side call. A
+   * model pinned for this use wins over it; it wins over the default.
+   */
+  fast?: ServiceModel | null;
 }): ServiceModelSource {
   const { env, settings } = options;
   const pinned = options.pinned?.provider || options.pinned?.model ? options.pinned : undefined;
+  const local = async (provider: string) =>
+    settings
+      ? settings.servesLocally(provider)
+      : provider === OPENAI_COMPATIBLE && addressIsLocal(env.OPENAI_COMPAT_BASE_URL);
   return {
     async current() {
       if (pinned)
@@ -821,12 +898,18 @@ export function serviceModelSource(options: {
           provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
           model: pinned.model || env.MELETE_DEFAULT_MODEL,
         };
-      return settings
-        ? settings.activeChoice()
+      const chosen = settings
+        ? await settings.activeChoice()
         : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
+      // A model on the owner's own machine or network keeps the side calls on
+      // it; the fast model is for a cloud model's.
+      if (options.fast && !(await local(chosen.provider)))
+        return { provider: options.fast.provider, model: options.fast.model };
+      return { provider: chosen.provider, model: chosen.model };
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),
     connected: async (provider) => (settings ? settings.isConnected(provider) : true),
+    local,
   };
 }
 

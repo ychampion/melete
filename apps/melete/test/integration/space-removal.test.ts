@@ -329,6 +329,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Jobs and everything below them, the rows that outlive a job, and what the
   // space holds apart from its jobs.
   job: 'operational',
+  // Kept, with its space and job cleared, so a spending limit is not reset.
+  model_usage: 'operational',
   artifact: 'operational',
   app: 'operational',
   // The bytes are files: they go in the files phase, and their references after them.

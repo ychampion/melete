@@ -104,6 +104,10 @@ export async function sweepOperational(
         state = case when state in ('running', 'settled') then 'settled' else state end
       where personal_job_id in (select id from job where space_id = ${spaceId})`;
     await tx`delete from job where space_id = ${spaceId}`;
+    // What the space's model calls cost stays counted against its person, so
+    // removing a space does not reset a spending limit; which space and job
+    // they came from goes with the space.
+    await tx`update model_usage set space_id = null, job_id = null where space_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation
     // and publication rows.

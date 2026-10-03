@@ -115,6 +115,12 @@ export type RunnerOptions = {
    * answer instead of running again.
    */
   dispatchWaitMs?: number;
+  /**
+   * The sentence for a spending limit this job's person has reached, or null.
+   * An attempt is not started past it, and one that ends while it holds ends
+   * with that sentence rather than as a failure to retry.
+   */
+  spendingLimit?: (jobId: string) => Promise<string | null>;
 };
 
 /**
@@ -362,6 +368,13 @@ export class AttemptRunner {
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
         await this.finish(tx, row, attemptId, settled);
+        return null;
+      }
+      // Past a spending limit no engine is started: the turn, routine run or
+      // background job ends at once with the sentence that says when it resets.
+      const capped = await this.options.spendingLimit?.(row.id);
+      if (capped) {
+        await this.finish(tx, row, attemptId, { kind: 'budget_exhausted', summary: capped });
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
@@ -618,9 +631,16 @@ export class AttemptRunner {
     tx: Transaction,
     row: JobRow,
     attemptId: string,
-    original: AttemptOutcome,
+    given: AttemptOutcome,
     raised: readonly QuestionSpec[] = [],
   ): Promise<JobRow> {
+    // An attempt whose model calls were refused at a spending limit ends on
+    // that limit, not as a failure to run again while it still holds.
+    const capped =
+      (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
+        ? await this.options.spendingLimit(row.id)
+        : null;
+    const original: AttemptOutcome = capped ? { kind: 'budget_exhausted', summary: capped } : given;
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx
@@ -885,8 +905,8 @@ export class AttemptRunner {
           // ends with a plain sentence, not the name of the limit.
           ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
             ? {
-                answer: sql`case when ${experienceTurn.answer} = '' then ${LIMIT_REACHED_NOTE}
-                  else ${experienceTurn.answer} || ${`\n\n${LIMIT_REACHED_NOTE}`} end`,
+                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${capped ?? LIMIT_REACHED_NOTE}`} end`,
               }
             : 'summary' in outcome
               ? { answer: outcome.summary }
@@ -1290,6 +1310,16 @@ export class AttemptRunner {
       });
     }
     await this.afterRecovery?.();
+  }
+
+  /**
+   * End an attempt whose model call was refused at a spending limit. The call
+   * that was refused made nothing; a call already answering is not cut off.
+   */
+  stopForSpending(jobId: string, attemptId: string, message: string): void {
+    for (const active of this.active.values())
+      if (active.jobId === jobId && active.attemptId === attemptId)
+        active.controller.abort(new AttemptBudgetExceeded(message));
   }
 
   interrupt(jobId: string, attemptId?: string): void {

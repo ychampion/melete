@@ -1,6 +1,6 @@
 {
-  "id": "2ef83a07-5930-4dd3-b7ee-898df3c8b45b",
-  "prevId": "18fd2ba7-8c31-4585-b37f-dd0d240a8fba",
+  "id": "cbcad065-3f14-4476-bc11-6e95fcaa4e3f",
+  "prevId": "8508cc76-5c34-4bcb-ac5d-c5b8558c84ab",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9855,6 +9855,188 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.memory_room_capture": {
+      "name": "memory_room_capture",
+      "schema": "",
+      "columns": {
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "memory_room_capture_source": {
+          "name": "memory_room_capture_source",
+          "columns": [
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.memory_room_grant": {
+      "name": "memory_room_grant",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "claim_id": {
+          "name": "claim_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_space_id": {
+          "name": "source_space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_space_id": {
+          "name": "room_space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by": {
+          "name": "granted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "members_only": {
+          "name": "members_only",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "memory_room_grant_active": {
+          "name": "memory_room_grant_active",
+          "columns": [
+            {
+              "expression": "claim_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"memory_room_grant\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memory_room_grant_room": {
+          "name": "memory_room_grant_room",
+          "columns": [
+            {
+              "expression": "room_space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memory_room_grant_source": {
+          "name": "memory_room_grant_source",
+          "columns": [
+            {
+              "expression": "source_space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "claim_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.memory_settings": {
       "name": "memory_settings",
       "schema": "",
@@ -10044,6 +10226,12 @@
           "notNull": true,
           "default": "'owner'"
         },
+        "author_principal_id": {
+          "name": "author_principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_trust": {
           "name": "origin_trust",
           "type": "text",
@@ -10163,7 +10351,7 @@
         },
         "memory_source_author": {
           "name": "memory_source_author",
-          "value": "\"memory_sources\".\"author\" in ('owner','external')"
+          "value": "\"memory_sources\".\"author\" in ('owner','external','member')"
         },
         "memory_source_trust": {
           "name": "memory_source_trust",
@@ -11776,6 +11964,91 @@
         "principal_kind": {
           "name": "principal_kind",
           "value": "\"principal\".\"kind\" in ('person', 'guest', 'room')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.principal_identity": {
+      "name": "principal_identity",
+      "schema": "",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "principal_identity_principal_idx": {
+          "name": "principal_identity_principal_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "principal_identity_principal_id_principal_id_fk": {
+          "name": "principal_identity_principal_id_principal_id_fk",
+          "tableFrom": "principal_identity",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "principal_identity_provider_external_id_pk": {
+          "name": "principal_identity_provider_external_id_pk",
+          "columns": [
+            "provider",
+            "external_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "principal_identity_provider": {
+          "name": "principal_identity_provider",
+          "value": "\"principal_identity\".\"provider\" ~ '^[a-z][a-z0-9_-]{0,31}$' and \"principal_identity\".\"provider\" <> 'web'"
+        },
+        "principal_identity_external_id": {
+          "name": "principal_identity_external_id",
+          "value": "length(\"principal_identity\".\"external_id\") between 1 and 200"
         }
       },
       "isRLSEnabled": false
@@ -13692,6 +13965,463 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.room_handoff": {
+      "name": "room_handoff",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_job_id": {
+          "name": "room_job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "room_turn_id": {
+          "name": "room_turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trigger_id": {
+          "name": "trigger_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_principal_id": {
+          "name": "target_principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_text": {
+          "name": "task_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_hash": {
+          "name": "task_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "personal_job_id": {
+          "name": "personal_job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_text": {
+          "name": "result_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_hash": {
+          "name": "result_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "room_handoff_target_idx": {
+          "name": "room_handoff_target_idx",
+          "columns": [
+            {
+              "expression": "target_principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_handoff_personal_job_idx": {
+          "name": "room_handoff_personal_job_idx",
+          "columns": [
+            {
+              "expression": "personal_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_handoff_room_idx": {
+          "name": "room_handoff_room_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_handoff_due_idx": {
+          "name": "room_handoff_due_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_handoff_space_id_space_id_fk": {
+          "name": "room_handoff_space_id_space_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_handoff_room_job_id_job_id_fk": {
+          "name": "room_handoff_room_job_id_job_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "job",
+          "columnsFrom": [
+            "room_job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "room_handoff_thread_id_room_thread_id_fk": {
+          "name": "room_handoff_thread_id_room_thread_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "room_thread",
+          "columnsFrom": [
+            "thread_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_handoff_connection_id_connection_id_fk": {
+          "name": "room_handoff_connection_id_connection_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "room_handoff_trigger_id_trigger_id_fk": {
+          "name": "room_handoff_trigger_id_trigger_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "trigger",
+          "columnsFrom": [
+            "trigger_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "room_handoff_target_principal_id_principal_id_fk": {
+          "name": "room_handoff_target_principal_id_principal_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "target_principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "room_handoff_personal_job_id_job_id_fk": {
+          "name": "room_handoff_personal_job_id_job_id_fk",
+          "tableFrom": "room_handoff",
+          "tableTo": "job",
+          "columnsFrom": [
+            "personal_job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "room_handoff_action_id_unique": {
+          "name": "room_handoff_action_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "action_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "room_handoff_state": {
+          "name": "room_handoff_state",
+          "value": "\"room_handoff\".\"state\" in ('pending', 'accepted', 'declined', 'running', 'settled', 'shared', 'kept', 'expired')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_invite": {
+      "name": "room_invite",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'guest'"
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "redeemed_at": {
+          "name": "redeemed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "room_invite_space_idx": {
+          "name": "room_invite_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_invite_space_id_space_id_fk": {
+          "name": "room_invite_space_id_space_id_fk",
+          "tableFrom": "room_invite",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_invite_created_by_principal_id_fk": {
+          "name": "room_invite_created_by_principal_id_fk",
+          "tableFrom": "room_invite",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "room_invite_principal_id_principal_id_fk": {
+          "name": "room_invite_principal_id_principal_id_fk",
+          "tableFrom": "room_invite",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "room_invite_token_hash_unique": {
+          "name": "room_invite_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "room_invite_role": {
+          "name": "room_invite_role",
+          "value": "\"room_invite\".\"role\" in ('guest')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.room_message": {
       "name": "room_message",
       "schema": "",
@@ -13772,6 +14502,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "surface": {
+          "name": "surface",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'web'"
+        },
+        "external_ref": {
+          "name": "external_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -13926,6 +14669,117 @@
         "room_message_request_state": {
           "name": "room_message_request_state",
           "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
+        },
+        "room_message_external_ref": {
+          "name": "room_message_external_ref",
+          "value": "\"room_message\".\"external_ref\" is null or length(\"room_message\".\"external_ref\") between 1 and 200"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_policy": {
+      "name": "room_policy",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "approvers": {
+          "name": "approvers",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'requester'"
+        },
+        "agent_turns": {
+          "name": "agent_turns",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'asked'"
+        },
+        "guests_may_ask": {
+          "name": "guests_may_ask",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "requests_per_hour": {
+          "name": "requests_per_hour",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 30
+        },
+        "requests_per_person_hour": {
+          "name": "requests_per_person_hour",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_policy_space_id_space_id_fk": {
+          "name": "room_policy_space_id_space_id_fk",
+          "tableFrom": "room_policy",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_policy_updated_by_principal_id_fk": {
+          "name": "room_policy_updated_by_principal_id_fk",
+          "tableFrom": "room_policy",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_policy_approvers": {
+          "name": "room_policy_approvers",
+          "value": "\"room_policy\".\"approvers\" in ('requester', 'any_member', 'owners')"
+        },
+        "room_policy_agent_turns": {
+          "name": "room_policy_agent_turns",
+          "value": "\"room_policy\".\"agent_turns\" in ('asked', 'every_message')"
+        },
+        "room_policy_limits": {
+          "name": "room_policy_limits",
+          "value": "\"room_policy\".\"requests_per_hour\" between 1 and 1000 and \"room_policy\".\"requests_per_person_hour\" between 1 and \"room_policy\".\"requests_per_hour\""
         }
       },
       "isRLSEnabled": false
@@ -15695,6 +16549,12 @@
         },
         "revoked_at": {
           "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

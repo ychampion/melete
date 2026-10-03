@@ -60,6 +60,7 @@ export * from './sandbox-computer.ts';
 export * from './skills.ts';
 export * from './spaces.ts';
 export * from './style.ts';
+export * from './usage.ts';
 export * from './voice.ts';
 export * from './waiting.ts';
 export * from './watch.ts';

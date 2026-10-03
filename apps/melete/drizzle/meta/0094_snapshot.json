@@ -1,6 +1,6 @@
 {
-  "id": "fe961213-3267-44cf-89bb-d9776449c9bf",
-  "prevId": "2e9868f9-ed5b-4353-a0c3-887d97679436",
+  "id": "8508cc76-5c34-4bcb-ac5d-c5b8558c84ab",
+  "prevId": "2a88e3dc-f6db-4fd2-993c-17d4180c860e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10944,6 +10944,185 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.model_usage": {
+      "name": "model_usage",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_actual": {
+          "name": "model_actual",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "routed_from": {
+          "name": "routed_from",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_tokens": {
+          "name": "input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "output_tokens": {
+          "name": "output_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "cached_input_tokens": {
+          "name": "cached_input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "cost_usd": {
+          "name": "cost_usd",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "usage_estimated": {
+          "name": "usage_estimated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {
+        "model_usage_created_idx": {
+          "name": "model_usage_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "model_usage_principal_idx": {
+          "name": "model_usage_principal_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "model_usage_space_idx": {
+          "name": "model_usage_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.model_vision": {
       "name": "model_vision",
       "schema": "",
@@ -11785,91 +11964,6 @@
         "principal_kind": {
           "name": "principal_kind",
           "value": "\"principal\".\"kind\" in ('person', 'guest', 'room')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.principal_identity": {
-      "name": "principal_identity",
-      "schema": "",
-      "columns": {
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_id": {
-          "name": "external_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "principal_identity_principal_idx": {
-          "name": "principal_identity_principal_idx",
-          "columns": [
-            {
-              "expression": "principal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "principal_identity_principal_id_principal_id_fk": {
-          "name": "principal_identity_principal_id_principal_id_fk",
-          "tableFrom": "principal_identity",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "principal_identity_provider_external_id_pk": {
-          "name": "principal_identity_provider_external_id_pk",
-          "columns": [
-            "provider",
-            "external_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "principal_identity_provider": {
-          "name": "principal_identity_provider",
-          "value": "\"principal_identity\".\"provider\" ~ '^[a-z][a-z0-9_-]{0,31}$' and \"principal_identity\".\"provider\" <> 'web'"
-        },
-        "principal_identity_external_id": {
-          "name": "principal_identity_external_id",
-          "value": "length(\"principal_identity\".\"external_id\") between 1 and 200"
         }
       },
       "isRLSEnabled": false
@@ -14324,19 +14418,6 @@
           "notNull": true,
           "default": 0
         },
-        "surface": {
-          "name": "surface",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'web'"
-        },
-        "external_ref": {
-          "name": "external_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -14490,10 +14571,6 @@
         "room_message_request_state": {
           "name": "room_message_request_state",
           "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
-        },
-        "room_message_external_ref": {
-          "name": "room_message_external_ref",
-          "value": "\"room_message\".\"external_ref\" is null or length(\"room_message\".\"external_ref\") between 1 and 200"
         }
       },
       "isRLSEnabled": false
@@ -16625,6 +16702,53 @@
           "value": "\"space_removal\".\"phase\" in ('fence','sessions','journal','sandboxes','browser','runtime','files','operational','principals','memory','verify','space')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.spending_notice": {
+      "name": "spending_notice",
+      "schema": "",
+      "columns": {
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period": {
+          "name": "period",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "level": {
+          "name": "level",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "spending_notice_scope_period_level_pk": {
+          "name": "spending_notice_scope_period_level_pk",
+          "columns": [
+            "scope",
+            "period",
+            "level"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.submission": {

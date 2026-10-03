@@ -102,6 +102,7 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
         'extraction_provider_unavailable',
         'extraction_provider_timeout',
         'memory_daily_budget',
+        'spending_limit_reached',
       ].includes(code)
     ) {
       if ((await deferWork(options.sql, scope, batch, code)) === 'given_up')

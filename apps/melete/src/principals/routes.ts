@@ -37,7 +37,9 @@ export function mountPrincipals(
   const service = new PrincipalService(db, spacesRoot, jobs);
   app.use('*', async (c, next) => {
     if (
-      ['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path) ||
+      ['/health', '/health/detail', '/setup', '/login', '/oauth/client-metadata.json'].includes(
+        c.req.path,
+      ) ||
       // A room invite is opened and accepted before its guest has an account; it checks itself.
       INVITE_PUBLIC_PATHS.includes(c.req.path) ||
       // An assistant's OAuth and MCP requests carry no session; their routes check for themselves.
