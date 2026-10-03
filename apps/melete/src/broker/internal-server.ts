@@ -139,6 +139,9 @@ export function createInternalServer(options: {
     privacy: options.privacy,
     spending: options.spending,
     reasoningEffort: options.reasoningEffort,
+    // The install's capability key, so a conversation's cache key is the same
+    // across service restarts and computable by nobody outside it.
+    promptCacheSecret: options.capabilityKey,
     attachments: options.attachments,
     // A placeholder still in a runtime payload is resolved before the broker reads it.
     brokerFetch: withPlaceholderResolution(

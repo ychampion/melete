@@ -192,6 +192,11 @@ export class PostgresGatewayBudget implements GatewayBudget {
         output_tokens: Number(previous.output_tokens ?? 0) + (usage?.outputTokens ?? 0),
         cached_input_tokens:
           Number(previous.cached_input_tokens ?? 0) + (usage?.cachedInputTokens ?? 0),
+        // Input at full-price-equivalent tokens, cached input at its cached price.
+        // An attempt recorded before this was kept counts its raw input.
+        charged_input_tokens:
+          Number(previous.charged_input_tokens ?? previous.input_tokens ?? 0) +
+          (usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0),
         requests: Number(previous.requests ?? 0) + 1,
         usd_est: Number(previous.usd_est ?? 0),
       };
@@ -221,6 +226,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
                 input_tokens: usage.inputTokens,
                 output_tokens: usage.outputTokens,
                 cached_input_tokens: usage.cachedInputTokens,
+                charged_input_tokens: usage.chargedInputTokens ?? usage.inputTokens,
                 total_tokens: usage.totalTokens,
               }
             : null,

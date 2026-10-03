@@ -18,11 +18,13 @@ import {
   mediaTokens,
   withAttachedFiles,
 } from './attachments.ts';
+import { applyPromptCaching, promptCacheScope } from './caching.ts';
 import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
+import { PriceTable } from './prices.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -44,6 +46,7 @@ import {
   type SignedInCredential,
 } from './types.ts';
 
+export * from './caching.ts';
 export * from './fake.ts';
 export * from './providers.ts';
 export * from './types.ts';
@@ -98,6 +101,16 @@ export interface GatewayOptions {
    * bounded request each, recorded against the job that searched.
    */
   providerSearch?: boolean;
+  /**
+   * The install's own secret the prompt-cache keys are an HMAC under. Without
+   * one, a secret drawn once for the process is used.
+   */
+  promptCacheSecret?: string;
+  /**
+   * The price table that turns cached input into full-price-equivalent tokens.
+   * Left out, the spending guard's own table is used, or the defaults.
+   */
+  prices?: PriceTable;
   /** The files people sent in chat, swapped into a job's requests as files where allowed. */
   attachments?: GatewayAttachments;
 }
@@ -190,6 +203,10 @@ export function createModelGateway(options: GatewayOptions): Server {
   }
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
+  // One price table for spending and for charged input: the spending guard's.
+  const guardPrices = (options.spending as { prices?: unknown } | undefined)?.prices;
+  const prices =
+    options.prices ?? (guardPrices instanceof PriceTable ? guardPrices : new PriceTable());
   const maxRequestBytes = options.maxRequestBytes ?? GATEWAY_MAX_REQUEST_BYTES;
   const defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
   if (!positiveInteger(defaultMaxTokens))
@@ -400,6 +417,7 @@ export function createModelGateway(options: GatewayOptions): Server {
             : 'fallback';
         let encoded: string;
         let inputTokens: number;
+        let cachingHeaders: Record<string, string> = {};
         try {
           // Where this request may go and what it may carry: private conversations
           // go to the person's own model, everything else leaves with its sensitive
@@ -426,6 +444,22 @@ export function createModelGateway(options: GatewayOptions): Server {
             source: options.attachments,
             maxRequestBytes,
           });
+          // The provider's prompt-caching controls, placed on the request as it
+          // will leave, after the person's files are swapped in, so a breakpoint
+          // never lands ahead of a block that is still to change. A model on the
+          // person's own machine, device or network is sent the body as written.
+          cachingHeaders =
+            local ||
+            prepared?.route === 'on_device' ||
+            providerIsLocal(callProvider) ||
+            callProvider.fake
+              ? {}
+              : applyPromptCaching(outbound, {
+                  provider: callProvider.name,
+                  protocol,
+                  scope: promptCacheScope(principal),
+                  ...(options.promptCacheSecret ? { secret: options.promptCacheSecret } : {}),
+                }).headers;
           encoded = JSON.stringify(outbound);
           // A picture is charged as the flat count the engine compacts by, and a
           // document by its pages, not as the base64 text either travels in.
@@ -504,6 +538,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         });
         for (const [name, value] of Object.entries(signedIn?.headers ?? {}))
           headers.set(name, value);
+        for (const [name, value] of Object.entries(cachingHeaders)) headers.set(name, value);
         if (local) {
           if (credential) headers.set('authorization', `Bearer ${credential}`);
           // The router pinned the local model to the address it checked for this request.
@@ -627,7 +662,21 @@ export function createModelGateway(options: GatewayOptions): Server {
       const rest = redactor.feed(new Uint8Array(), true);
       const tail = streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
       settlement.modelActual = collector.modelActual;
-      settlement.usage = collector.completed ? collector.usage : null;
+      // Cached input in full-price-equivalent tokens, from the price table the
+      // spending caps use; nothing is discounted on the person's own model.
+      settlement.usage =
+        collector.completed && collector.usage
+          ? {
+              ...collector.usage,
+              chargedInputTokens: settlement.servedLocally
+                ? collector.usage.inputTokens
+                : prices.chargedInputTokens(
+                    settlement.provider,
+                    settlement.modelRequested,
+                    collector.usage,
+                  ),
+            }
+          : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
       // A reply cut off before its usage arrived is still billed by the
       // provider. The job keeps its whole reservation charged; the spending
