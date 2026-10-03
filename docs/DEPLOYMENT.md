@@ -1522,9 +1522,10 @@ request to any of them.
 - Jobs, attempts, events, memory and everything else the service stores.
 
 **Work one instance does at a time.** The sandbox sweep and reconciliation, the
-learning proposal drain, removing stdio server data for removed connections, and
-removing what stopped instances left behind each run on the instance that holds
-that work's lease. A lease is a Postgres advisory lock on a connection the
+learning proposal drain, removing stdio server data for removed connections,
+removing what stopped instances left behind, the blob collector, egress record
+retention and the background process monitor each run on the instance that
+holds that work's lease. A lease is a Postgres advisory lock on a connection the
 instance keeps for leases alone, never recycled by age and with TCP keepalives
 of about half a minute. Every check asks Postgres whether that connection holds
 the lock; a held lease is checked every five seconds, and the sandbox sweep and
