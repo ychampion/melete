@@ -236,6 +236,9 @@ import {
   peopleList,
   peopleQuery,
   postRoomMessageRequest,
+  roomConnectionList,
+  roomConnectionResponse,
+  roomConnectionUpdate,
   roomDetail,
   roomLeaveResponse,
   roomList,
@@ -244,6 +247,10 @@ import {
   roomMemoryView,
   roomMessageDeleted,
   roomMessageResponse,
+  roomPermissionDecision,
+  roomPermissionOutcome,
+  roomPolicyResponse,
+  roomPolicyUpdate,
   roomPresenceResponse,
   roomShareResponse,
   roomShareWithdrawn,
@@ -904,6 +911,73 @@ function roomsPaths() {
         requestParams: { path: z.object({ id: z.string(), jobId: z.string() }) },
         responses: {
           '200': jsonResponse('Computers', sandboxComputerList),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/policy': {
+      get: {
+        tags: ['rooms'],
+        summary: 'How a room works',
+        description:
+          "Who decides the permissions its requests ask for, when its agent answers, whether guests may ask, and the room's hourly limits.",
+        requestParams: room,
+        responses: { '200': jsonResponse('The settings', roomPolicyResponse), '404': notIn },
+      },
+      put: {
+        tags: ['rooms'],
+        summary: 'Change how a room works',
+        description:
+          'Owners only. Settings left out stay as they are. Who may answer a permission is checked when the answer is given, so a new rule covers the permissions already waiting.',
+        requestParams: room,
+        requestBody: json(roomPolicyUpdate),
+        responses: {
+          '200': jsonResponse('The settings', roomPolicyResponse),
+          '400': problem('A person cannot ask more often than the whole room'),
+          '403': problem('Only an owner of the room changes how it works'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/approvals/{approvalId}': {
+      post: {
+        tags: ['rooms'],
+        summary: "Answer one of a room's permissions",
+        description:
+          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
+        requestParams: { path: z.object({ id: z.string(), approvalId: z.string() }) },
+        requestBody: json(roomPermissionDecision),
+        responses: {
+          '200': jsonResponse('Answered', roomPermissionOutcome),
+          '403': problem("The room's rule does not name this person"),
+          '404': notIn,
+          '409': problem(
+            'What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)',
+          ),
+        },
+      },
+    },
+    '/rooms/{id}/connections': {
+      get: {
+        tags: ['rooms'],
+        summary: "The connections in a room's space",
+        description:
+          "A connection marked `room` serves the room's requests; one marked `owner` serves only the owner's own work there.",
+        requestParams: room,
+        responses: { '200': jsonResponse('Connections', roomConnectionList), '404': notIn },
+      },
+    },
+    '/rooms/{id}/connections/{connectionId}': {
+      put: {
+        tags: ['rooms'],
+        summary: "Let a connection serve the room's requests, or keep it to the owner",
+        description:
+          'Owners only. Work under way in the room starts again, and permissions waiting in it are withdrawn.',
+        requestParams: { path: z.object({ id: z.string(), connectionId: z.string() }) },
+        requestBody: json(roomConnectionUpdate),
+        responses: {
+          '200': jsonResponse('The connection', roomConnectionResponse),
+          '403': problem('Only an owner of the room changes this'),
           '404': notIn,
         },
       },

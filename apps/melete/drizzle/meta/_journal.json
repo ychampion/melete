@@ -631,6 +631,13 @@
       "when": 1789232400069,
       "tag": "0089_room_memory",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1789232400070,
+      "tag": "0090_room_policy",
+      "breakpoints": true
     }
   ]
 }

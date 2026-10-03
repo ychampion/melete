@@ -131,6 +131,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
   service.events = events;
+  service.permissions = permissions;
   /** The conversation's own job and the command jobs it started, all the caller's own. */
   const conversationJobs = async (spaceId: string, id: string) => {
     await service.requireThread(spaceId, id);

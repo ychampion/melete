@@ -10,6 +10,7 @@ import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentAccessIn, offeredTo } from '../experience/access.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
+import { connectionServesJob, typedAudience } from '../jobs/scopes.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
 
@@ -35,16 +36,27 @@ export class RuntimeCatalog {
     private readonly connectors: ConnectorLookup,
   ) {}
 
+  /**
+   * The tools of a space's active connections that the scopes grant. With a
+   * job, only the connections that serve that job: two connections can grant
+   * the same scope, and a room's request is offered only the room's.
+   */
   async toolsForSpace(
     spaceId: string,
     scopes?: readonly string[],
     query: Database | Transaction = this.db,
+    jobId?: string,
   ): Promise<ToolSpec[]> {
     const connections = await query
       .select()
       .from(connection)
       .where(and(eq(connection.spaceId, spaceId), eq(connection.status, 'active')));
-    return grantedToolCatalog(connections, this.connectors, scopes);
+    const audience = jobId ? await typedAudience(query, jobId) : null;
+    if (jobId && !audience) return [];
+    const serving = audience
+      ? connections.filter((row) => connectionServesJob(audience, row.sharedUse))
+      : connections;
+    return grantedToolCatalog(serving, this.connectors, scopes);
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
@@ -52,9 +64,9 @@ export class RuntimeCatalog {
     // agent without the computer gets no engine terminal, and a narrowed agent
     // only its connections' tools. Anything more is offered and then refused.
     const access = await agentAccessIn(tx, claims.job_id);
-    const granted = (await this.toolsForSpace(claims.space_id, claims.scopes, tx)).filter((tool) =>
-      offeredTo(access, tool),
-    );
+    const granted = (
+      await this.toolsForSpace(claims.space_id, claims.scopes, tx, claims.job_id)
+    ).filter((tool) => offeredTo(access, tool));
     // The engine builds its own terminal from the sandbox's terminal.run in this
     // list, and the plugin hands the terminal to it whenever the broker serves
     // that tool. So it keeps its place ahead of the cut: sorted by name, a

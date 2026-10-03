@@ -61,6 +61,7 @@ import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
+import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -868,13 +869,17 @@ export class BrokerService implements BrokerOperations {
     // only a grant scoped to this job, over values the person approved in it,
     // is asked when there are doubts, and it is told exactly what they are.
     const input = { job, action, tool, phase, warnings };
+    // A room's work is answered by the people its rule names, each time: no
+    // standing rule or scope, made by anyone for their own work, answers for it.
+    const roomWork = requiresApproval && (await roomAuthorityOf(tx, job.id)) !== null;
     const authorizedBy =
-      requiresApproval && warnings.length > 0 && this.options.resolveScopedGrant
+      requiresApproval && !roomWork && warnings.length > 0 && this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
         : null;
     const granted =
       authorizedBy !== null ||
       (requiresApproval &&
+        !roomWork &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));
@@ -908,6 +913,9 @@ export class BrokerService implements BrokerOperations {
         tier,
         // The connector's own question, and a write a viewer's response may have
         // steered to a file an app shows, are the person's: never policy's or the reviewer's.
+        // A room's permission is answered by the people its rule names, never by
+        // the reviewer or a publishing policy; work in the room's own workspace
+        // stays under the sandbox rule, as it does for a person.
         outcome:
           connectorAsks || afterResponses
             ? 'person'
@@ -916,13 +924,14 @@ export class BrokerService implements BrokerOperations {
               : // Publishing an app that reaches nobody new. An agent set to ask before
                 // acting promises that publishes wait, and a conversation that read
                 // an app's responses asks before changing what an app shows.
-                tier.tier === 'apps' && allowed && !agentAsks && !afterResponses
+                tier.tier === 'apps' && allowed && !agentAsks && !afterResponses && !roomWork
                 ? 'policy_approved'
                 : // An agent set to ask before acting promises that sends, bookings and payments
                   // wait for the person, so its calendar changes do. A reversible app change is
                   // none of those, and the person switched that class on themselves.
                   tier.tier === 'reviewable' &&
                     allowed &&
+                    !roomWork &&
                     (!agentAsks || tier.actionClass === 'app_changes')
                   ? 'review'
                   : 'person',
@@ -1597,7 +1606,9 @@ export class BrokerService implements BrokerOperations {
   /**
    * A person's answer to a permission, recorded as theirs: `decidedBy` is the
    * principal who answered. Left out, as on the service's own approval route,
-   * the answer is the job's principal's, the only person a job asks.
+   * the answer is the job's principal's, the only person a job asks. A room's
+   * work is answered only by the people its rule names (`rooms/approvals.ts`),
+   * whichever route the answer came by.
    */
   async decide(
     id: string,
@@ -1615,6 +1626,12 @@ export class BrokerService implements BrokerOperations {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
       const decider = decidedBy ?? (await jobPrincipal(tx, job));
+      // A room's request is the room's job, so its own principal names nobody
+      // who can answer: the room's rule does. Checked first, before any answer
+      // is recorded (a Deny included), with the roster as it is now.
+      const room = await roomAuthorityOf(tx, job.id);
+      if (room && !(await mayDecide(tx, room, decider)))
+        throw new BrokerFault('scope_denied', 'Only the people this room names can answer this.');
       const [approval] = await tx`select * from approval where action_id = ${id}
         and payload_hash = ${request.payload_hash} for update`;
       if (

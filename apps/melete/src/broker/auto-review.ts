@@ -34,6 +34,7 @@ import {
   type OriginWarning,
 } from '@melete/contracts';
 import { isEgressTool } from '../egress/adapters/types.ts';
+import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
 import type { Reviewer, ReviewInput, ReviewVerdict } from './reviewer.ts';
 import { collectOriginFields, type TrustResolver } from './trust.ts';
@@ -354,22 +355,10 @@ export async function reviewInput(
   const { job, action, tool } = input;
   const [row] = await tx`select objective, experience_parent_id from job where id = ${job.id}`;
   const jobs = [job.id, ...(row?.experience_parent_id ? [String(row.experience_parent_id)] : [])];
-  const messages = await tx`select payload from event
-    where job_id = any(${jobs}) and type = 'notice'
-      and payload->>'kind' in ('user_message', 'experience_say')
-    order by seq desc limit 6`;
-  const recent = messages
-    .reverse()
-    .map((message) => ({
-      // An option the person picked was written by the assistant.
-      from:
-        message.payload.kind === 'user_message' && !message.payload.chosen
-          ? ('person' as const)
-          : ('assistant' as const),
-      text: String(message.payload.text ?? ''),
-    }))
-    .filter((entry) => entry.text);
-  const lastAsked = [...recent].reverse().find((entry) => entry.from === 'person');
+  const room = await roomAuthorityOf(tx, job.id);
+  const { recent, instruction } = room
+    ? await roomConversation(tx, room, jobs)
+    : await ownConversation(tx, jobs);
   const fields = collectOriginFields(action.canonical_payload, action.kind);
   const resolved = fields.length
     ? await input.resolver.resolve(tx, {
@@ -391,7 +380,7 @@ export async function reviewInput(
       app: input.app,
       payload: action.canonical_payload,
     },
-    instruction: lastAsked?.text ?? String(row?.objective ?? ''),
+    instruction: instruction ?? String(row?.objective ?? ''),
     recent,
     origins: fields.map((field) => {
       const known = byPath.get(field.path);
@@ -402,6 +391,93 @@ export async function reviewInput(
         note: known?.description ?? 'Melete cannot say where this value came from.',
       };
     }),
+  };
+}
+
+type Conversation = { recent: ReviewInput['recent']; instruction: string | null };
+
+/** A person's own conversation: every message in it is theirs. */
+async function ownConversation(tx: Query, jobs: string[]): Promise<Conversation> {
+  const messages = await tx`select payload from event
+    where job_id = any(${jobs}) and type = 'notice'
+      and payload->>'kind' in ('user_message', 'experience_say')
+    order by seq desc limit 6`;
+  const recent = messages
+    .reverse()
+    .map((message) => ({
+      // An option the person picked was written by the assistant.
+      from:
+        message.payload.kind === 'user_message' && !message.payload.chosen
+          ? ('person' as const)
+          : ('assistant' as const),
+      text: String(message.payload.text ?? ''),
+    }))
+    .filter((entry) => entry.text);
+  const lastAsked = [...recent].reverse().find((entry) => entry.from === 'person');
+  return { recent, instruction: lastAsked?.text ?? null };
+}
+
+/**
+ * A room's request. The instruction is what the person who asked said in it,
+ * every message of theirs, and only theirs. What other people said in the
+ * thread is shown as theirs, by name, and never as the instruction.
+ */
+async function roomConversation(
+  tx: Query,
+  room: RoomAuthority,
+  jobs: string[],
+): Promise<Conversation> {
+  const asker = room.requestedBy ?? '';
+  const own = await tx`select payload->>'text' as text from event
+    where job_id = ${room.requestJobId} and type = 'notice'
+      and payload->>'kind' = 'user_message' and payload->>'principal_id' = ${asker}
+    order by seq`;
+  const said = own.map((entry) => String(entry.text ?? '')).filter(Boolean);
+  const events = await tx`select payload, created_at from event
+    where job_id = any(${[...new Set([...jobs, room.requestJobId])]}) and type = 'notice'
+      and payload->>'kind' in ('user_message', 'experience_say')
+    order by seq desc limit 6`;
+  const others = room.threadId
+    ? await tx`select author_principal_id, text, created_at from room_message
+        where thread_id = ${room.threadId} and space_id = ${room.spaceId}
+          and redacted_at is null and author_principal_id <> ${asker}
+        order by created_at desc, id desc limit 6`
+    : [];
+  const speakers = [
+    ...others.map((entry) => String(entry.author_principal_id)),
+    ...events.flatMap((entry) =>
+      entry.payload.kind === 'user_message' && entry.payload.principal_id !== asker
+        ? [String(entry.payload.principal_id ?? '')]
+        : [],
+    ),
+  ];
+  const names = await labelsIn(tx, speakers);
+  const other = (id: string) => ({
+    from: 'other_member' as const,
+    name: names.get(id) ?? 'Someone else in the room',
+  });
+  const entries = [
+    ...events.map((entry) => ({
+      at: new Date(entry.created_at).getTime(),
+      ...(entry.payload.kind !== 'user_message'
+        ? { from: 'assistant' as const }
+        : entry.payload.principal_id === asker
+          ? { from: 'person' as const }
+          : other(String(entry.payload.principal_id ?? ''))),
+      text: String(entry.payload.text ?? ''),
+    })),
+    ...others.map((entry) => ({
+      at: new Date(entry.created_at).getTime(),
+      ...other(String(entry.author_principal_id)),
+      text: String(entry.text ?? ''),
+    })),
+  ]
+    .filter((entry) => entry.text)
+    .sort((a, b) => a.at - b.at)
+    .slice(-6);
+  return {
+    recent: entries.map(({ at: _at, ...entry }) => entry),
+    instruction: said.length ? said.join('\n\n') : null,
   };
 }
 

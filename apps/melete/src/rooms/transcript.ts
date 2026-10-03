@@ -3,12 +3,12 @@
  * their name, and the answers to the thread's other requests. Nothing from
  * anyone's personal space is here; a thread is all room material.
  */
-import type { CanonicalMessage } from '@melete/contracts';
+import type { CanonicalMessage, RoomApprovers } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { experienceTurn, job, principal } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { answerText } from '../experience/answer-filter.ts';
-import { roomMessage } from './schema.ts';
+import { roomMessage, roomPolicy } from './schema.ts';
 
 /**
  * The most of each source read for one attempt. The attempt's transcript,
@@ -53,6 +53,15 @@ export type RoomTranscript = {
   names: Map<string, string>;
   /** Who asked this request. */
   requester: string;
+  /** Who answers this request's permissions, as one sentence for the agent. */
+  approvers: string;
+};
+
+/** Who answers a room request's permissions, under each of the room's rules. */
+export const APPROVERS_LINE: Record<RoomApprovers, string> = {
+  requester: 'Only they can answer the permissions it asks for.',
+  any_member: 'Anyone in the room who is not a guest can answer the permissions it asks for.',
+  owners: "Only the room's owners can answer the permissions it asks for.",
 };
 
 /**
@@ -129,5 +138,20 @@ export async function roomTranscript(
     }),
   ].sort((a, b) => a.at.localeCompare(b.at));
   const requester = names.get(row.requestedByPrincipalId ?? '') ?? 'Someone';
-  return { thread, names, requester };
+  const [policy] = await tx
+    .select({ approvers: roomPolicy.approvers })
+    .from(roomPolicy)
+    .where(eq(roomPolicy.spaceId, row.spaceId));
+  // A guest never answers a permission: their request is answered by the owners.
+  const [asker] = row.requestedByPrincipalId
+    ? await tx
+        .select({ kind: principal.kind })
+        .from(principal)
+        .where(eq(principal.id, row.requestedByPrincipalId))
+    : [];
+  const rule = (policy?.approvers ?? 'requester') as RoomApprovers;
+  const approvers =
+    APPROVERS_LINE[rule === 'requester' && asker?.kind === 'guest' ? 'owners' : rule] ??
+    APPROVERS_LINE.requester;
+  return { thread, names, requester, approvers };
 }

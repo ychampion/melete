@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Query } from '../broker/records.ts';
+import type { Database } from '../db/client.ts';
 import { connection, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 
@@ -67,7 +68,8 @@ export async function jobConnectionAudience(
   return fromRow(row);
 }
 
-async function typedAudience(tx: Transaction, jobId: string) {
+/** The audience for a job, for code that holds a Drizzle transaction. */
+export async function typedAudience(tx: Transaction | Database, jobId: string) {
   const [row] = (await tx.execute(
     sql`${sql.raw(AUDIENCE_SELECT)} where j.id = ${jobId}`,
   )) as unknown as AudienceRow[];

@@ -788,7 +788,7 @@ export async function buildAttemptSkeleton(
         row.objective,
         await situation(tx, row),
         room
-          ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions.`
+          ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions. ${room.approvers}`
           : '',
       ]
         .filter(Boolean)

@@ -830,6 +830,33 @@ agent's working session for the request that read them.
 Isolation between a room and the rest of the installation is an application
 check, as it is between accounts.
 
+A room's permissions are answered only by the people the room's rule names: the
+person who asked (the default), any member who is not a guest, or the room's
+owners. The broker checks the rule when it records an answer, whichever route
+the answer came by, against the room's people at that moment: an answer that
+names nobody, the service's own approval key, a guest, the room's principal,
+anyone the rule leaves out and anyone outside the room are all refused, a Deny
+included. A guest's request is answered by the room's owners. Auto-review
+never answers a room's permission, and no standing rule or scope covers room
+work. An answer names the card's version and the exact content's hash, so
+it covers only what the person saw, and it is recorded as theirs. A room never
+makes a standing rule. A recipient, address or amount counts as the asker's
+only when they typed it in their own request; a value another member typed is
+shown on the asker's card as that member's, with a warning, and no saved rule
+admits it. Auto-review judges a room's action against the asker's own words,
+and sees other members' messages labelled with their names. A decision push
+reaches only the people who may answer. Marking a connection for the room is an
+owner's act, and fences work in the room like a change of who is in it.
+[room-approvals.test.ts](../apps/melete/test/integration/room-approvals.test.ts)
+holds each of these as a test.
+
+What remains: what a member says in a room stays in the room after they leave.
+Under the default rule a member answers the permissions of their own request,
+so a member can have the room's agent act through the room's connections with
+their own approval; owners who want to see every such action choose the
+`owners` rule. Isolation between a room and the rest of the installation is an
+application check, as it is between accounts.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized
