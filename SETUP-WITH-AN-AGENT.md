@@ -355,11 +355,14 @@ asks, following [browser-worker.md](docs/browser-worker.md).
 
 ## Later: updating and removing
 
-- **Update**, with published images: `deploy/scripts/update.sh`, plus
-  `--profile sandbox` when the computer is on. It checks the disk, pulls first,
-  and leaves the running stack alone if a pull fails. Take a
-  [backup](docs/DEPLOYMENT.md#backup-and-restore) first if the person may want
-  to go back.
+- **Update**, with published images: `bun run melete init --adopt` once, then
+  `bun run melete deploy --checkout --dry-run` to show the person the plan, and
+  `bun run melete deploy --checkout`. It sizes the update against the disk,
+  backs up the database when the release adds migrations, pulls one image at a
+  time, and leaves the running stack alone if anything fails before the switch.
+  `bun run melete rollback` goes back.
+- **Back up**: `bun run melete backup --estimate`, then `bun run melete backup`
+  ([Backup and restore](docs/DEPLOYMENT.md#backup-and-restore)).
 - **Remove**: [Remove it completely](docs/DEPLOYMENT.md#remove-it-completely).
   It deletes everything Melete stored, so confirm with the person first.
 

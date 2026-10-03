@@ -555,6 +555,43 @@ describe('the Docker stdio launcher', () => {
   });
 });
 
+describe('several service instances on one engine', () => {
+  test("instances never replace each other's servers, and a start removes only its own", async () => {
+    const engine = new FakeEngine();
+    const running = new Set(['first']);
+    const instance = (id: string) => ({ instance: { id, running: async () => running } });
+    const first = launcherFor(engine, instance('first'));
+    const second = launcherFor(engine, instance('second'));
+    await first.start(spec({}), signal());
+    engine.calls.length = 0;
+    await second.start(spec({}), signal());
+    const firstName = `melete-mcp-first-${CONNECTION.toLowerCase()}`;
+    const secondName = `melete-mcp-second-${CONNECTION.toLowerCase()}`;
+    // Neither start removed the other's container, and both keep one data volume.
+    expect(engine.calls).not.toContain(`DELETE /containers/${firstName}?force=true&v=true`);
+    expect(engine.calls).toContain(`POST /containers/create?name=${secondName}`);
+    expect(
+      new Set(
+        engine
+          .created()
+          .map((body) => (body.Labels as Record<string, string>)['com.melete.instance']),
+      ),
+    ).toEqual(new Set(['first', 'second']));
+    const [firstId, secondId] = [...engine.bodies.keys()];
+    engine.calls.length = 0;
+    // The second restarts while the first runs; only one instance prunes data.
+    await second.reconcile(new Set([CONNECTION]), { volumes: false });
+    expect(engine.calls).toContain(`DELETE /containers/${secondId}?force=true&v=true`);
+    expect(engine.calls).not.toContain(`DELETE /containers/${firstId}?force=true&v=true`);
+    expect(engine.calls.some((call) => call.startsWith('DELETE /volumes/'))).toBe(false);
+    // Once the first has stopped, the second's next sweep removes what it left.
+    running.delete('first');
+    engine.calls.length = 0;
+    await second.reconcile(new Set([CONNECTION]), { starting: false, volumes: false });
+    expect(engine.calls).toContain(`DELETE /containers/${firstId}?force=true&v=true`);
+  });
+});
+
 describe('what runs in a server container', () => {
   test('each package runner runs what it prepared, from the read-only package volume', () => {
     const launch = (value: Record<string, unknown>) => mcpStdioLaunch.parse(value);

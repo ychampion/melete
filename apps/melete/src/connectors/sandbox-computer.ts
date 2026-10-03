@@ -17,6 +17,7 @@ import type { Action, ConnectorManifest, JsonValue } from '@melete/contracts';
 
 type ToolManifest = ConnectorManifest['tools'][number];
 
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import {
   type DesktopCommand,
   DOCKER_DESKTOP,
@@ -25,7 +26,6 @@ import {
 import { computerControls } from '../sandbox/computer-control.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import { sessionHandle } from '../sandbox/sessions.ts';
-import { writeWorkspaceFile } from '../sandbox/workspace.ts';
 
 /**
  * Every computer action names its step. The broker treats a proposal with the
@@ -247,7 +247,7 @@ export async function runComputerAction(options: {
   const size = pngSize(answer);
   if (!size) throw new Error('the desktop did not answer with an image');
   const path = `.melete/computer/${action.id}.png`;
-  await writeWorkspaceFile(options.workRoot, options.jobId, path, answer, 0o644);
+  await new LocalWorkspaceFs(options.workRoot).write(options.jobId, path, answer, 0o644);
   const info = infoOf(
     await provider.computer(handle, { kind: 'info' }, signal).catch(() => new Uint8Array()),
   );

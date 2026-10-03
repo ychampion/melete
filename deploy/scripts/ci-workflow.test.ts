@@ -314,7 +314,11 @@ describe('the conformance workflow', () => {
     expect(conformance.workflow.concurrency?.group).toBeTruthy();
     // A second run must wait rather than cancel a stack that is already running.
     expect(conformance.workflow.concurrency?.['cancel-in-progress']).toBe(false);
-    expect(conformance.named.map(([name]) => name).sort()).toEqual(['compose', 'upgrade']);
+    expect(conformance.named.map(([name]) => name).sort()).toEqual([
+      'cloud-vm',
+      'compose',
+      'upgrade',
+    ]);
     for (const job of conformance.jobs) {
       expect(job['runs-on']).toMatch(/^ubuntu-/);
       expect(job['timeout-minutes']).toBeGreaterThan(0);

@@ -23,6 +23,7 @@ export default defineConfig({
     './src/egress/schema.ts',
     './src/storage/schema.ts',
     './src/apps/schema.ts',
+    './src/ops/schema.ts',
   ],
   out: './drizzle',
   strict: true,

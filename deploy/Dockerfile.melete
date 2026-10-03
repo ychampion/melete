@@ -26,6 +26,7 @@ RUN apt-get update \
 COPY package.json bun.lock ./
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/device/package.json packages/device/
+COPY packages/cli/package.json packages/cli/
 COPY packages/client/package.json packages/client/
 COPY packages/knowledge/package.json packages/knowledge/
 COPY packages/runtime-hermes/package.json packages/runtime-hermes/
