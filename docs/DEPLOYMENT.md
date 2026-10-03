@@ -931,10 +931,16 @@ docker compose -f deploy/docker-compose.yml \
 
 ## Sign-in limits
 
-Every limit below lives in the memory of the one Melete process. Restarting
-Melete clears all of them at once: waits end, bursts are full again, and nothing
-is written to Postgres. Each limiter holds at most 1024 keys; further keys share
-one overflow bucket, so new keys can neither evict a live wait nor grow memory.
+Every limit below is counted in Postgres, in `rate_limit_window`, so it holds
+across a restart and across every service instance on the same database: a
+caller who spreads attempts over several instances meets one limit. Each row is
+keyed by a SHA-256 digest of the limiter and its key, so the table names no
+address, account or device, and rows are deleted once their limit has expired.
+Each limited request is one short write transaction, and a sign-in up to three;
+the per-address limit, checked first, bounds how many rows one source can add.
+A service started without a database keeps the limits in its own memory, where
+each limiter holds at most 1024 keys; further keys share one overflow bucket, so
+new keys can neither evict a live wait nor grow memory.
 
 **Whose address counts.** The web proxy sets `X-Melete-Client-Address` on every
 request it forwards to the API. The value is the proxy's own socket peer and
@@ -1495,6 +1501,77 @@ These checks reproduce source identity and enforce dependency locks. Image
 digests can differ between builds, because OS package repositories, build
 timestamps and build tooling change the resulting bytes; compare the recorded
 labels and inventories when rebuilding.
+
+## Running more than one service instance
+
+Several Melete service containers can serve one installation when they share
+one Postgres database and one `MELETE_MASTER_KEY`. A load balancer may send any
+request to any of them.
+
+**What every instance shares through Postgres.**
+
+- Sign-in and request limits ([Sign-in limits](#sign-in-limits)), the MCP
+  server's limits on registrations, tokens, authorization pages and tool calls,
+  and the limit on wrong pairing codes.
+- Sign-ins waiting for the browser to come back: model providers, Google and
+  Microsoft accounts, and remote MCP servers. A sign-in started on one instance
+  finishes on any other. Each one is kept in `signin_pending` for at most 15
+  minutes, sealed with `MELETE_MASTER_KEY` and found by a digest of its state.
+- The key that signs the MCP server's consent page, derived from
+  `MELETE_MASTER_KEY`, so a page shown by one instance is accepted by another.
+- Jobs, attempts, events, memory and everything else the service stores.
+
+**Work one instance does at a time.** The sandbox sweep and reconciliation, the
+learning proposal drain, removing stdio server data for removed connections, and
+removing what stopped instances left behind each run on the instance that holds
+that work's lease. A lease is a Postgres advisory lock on a connection the
+instance keeps for leases alone, never recycled by age and with TCP keepalives
+of about half a minute. Every check asks Postgres whether that connection holds
+the lock; a held lease is checked every five seconds, and the sandbox sweep and
+reconciliation stop as soon as a check finds the lease lost. When an instance
+stops, its connection to the database ends, or its network to the database
+breaks, another instance takes the lease the next time it checks for that
+work. Leases need a direct connection to Postgres, or a pooler that keeps one
+server connection per client; PgBouncer in transaction mode cannot hold them.
+
+**Instances on one Docker engine.** Each instance records itself in
+`ops_instance` with a heartbeat every 30 seconds and labels every attempt
+container, network and volume it creates, and every stdio server it starts,
+with `com.melete.instance`. At start an instance removes only its own leftovers,
+unlabelled ones from before this label existed, and those of instances that
+stopped. An instance counts as stopped when it stopped cleanly, when its
+heartbeat is older than ten minutes, or when its heartbeat is older than two
+minutes and no container by its name runs on the engine; an instance whose
+database link stalls keeps its cells while its container runs. A configured
+`MELETE_INSTANCE_ID` that names no container on the engine has none to find, so
+such an instance counts as stopped two minutes after its heartbeat stops. While they run,
+one instance removes what a stopped instance left, once a minute.
+
+The instance name is `MELETE_INSTANCE_ID` when set (lower-case letters, digits
+and hyphens), otherwise the container's host name, which Docker keeps across a
+restart of the same container. Set `MELETE_INSTANCE_ID` only where each
+instance has its own environment; replicas started from one Compose service
+share theirs and should use their host names. An instance refuses to start
+when another running process already uses its name, including when both start
+at the same moment, and says so in its log.
+After a crash, a restarted container waits up to 45 seconds at start to tell
+its own earlier run from another process.
+
+Upgrade the running instance before starting a second one beside it: cells
+started by a release without instance labels count as the starting instance's
+own.
+
+**What stays with one instance.**
+
+- A paired computer holds its connection open to one instance, and calls for it
+  are queued in that instance's memory. Run one instance, or send every
+  `/api/device/*` request to the same instance, when computers are paired.
+- Spaces' git repositories and the restriction journal are written from the
+  service's volumes; instances on different hosts need those volumes shared.
+- A stdio MCP server runs on the instance that started it, and each instance
+  counts its own running servers against the limit of 16.
+- Docker sandboxes keep their idle clock in the memory of the instance that
+  serves them.
 
 ## Upgrading
 

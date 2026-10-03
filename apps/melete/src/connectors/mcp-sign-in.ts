@@ -6,11 +6,13 @@
  * installation path a pasted credential takes, so the grants, the approvals and
  * the receipts are exactly those of any other MCP connection.
  *
- * A sign-in in progress is held in this process's memory: its PKCE verifier and
- * state never touch storage, and a restart ends it.
+ * A sign-in in progress is kept in the store it is given: the service's is
+ * Postgres, sealed with the master key, so the browser may come back to any
+ * instance and a restart does not end it. The state is found by its digest.
  */
 import { randomBytes } from 'node:crypto';
 import type { ConnectionResponse, McpConnectionConfig } from '@melete/contracts';
+import { MemorySignInStore, type SignInStore } from '../ops/signin-store.ts';
 import {
   type AuthorizationServer,
   authorizationUrl,
@@ -93,19 +95,19 @@ export type McpSignInHooks = {
     credentials: Record<string, string>,
   ): Promise<ConnectionResponse>;
   now?: () => number;
+  /** Where sign-ins wait for the browser. Left out, this process's memory. */
+  store?: SignInStore;
 };
 
+const KIND = 'mcp';
+
 export class McpSignIns {
-  private readonly pending = new Map<string, Pending>();
-  private readonly byState = new Map<string, string>();
-  private readonly finished = new Map<
-    string,
-    { actor: string; status: McpSignInStatus; until: number }
-  >();
+  private readonly store: SignInStore;
   private readonly now: () => number;
 
   constructor(private readonly hooks: McpSignInHooks) {
     this.now = hooks.now ?? Date.now;
+    this.store = hooks.store ?? new MemorySignInStore();
   }
 
   /**
@@ -153,7 +155,6 @@ export class McpSignIns {
     /** What the sign-in asks for; empty when the server names no scopes. */
     scopes: string[];
   }> {
-    this.sweep();
     const existing =
       'connection_id' in request
         ? await this.hooks.existing(actor, request.connection_id)
@@ -181,7 +182,7 @@ export class McpSignIns {
     const id = randomBytes(24).toString('base64url');
     const expiresAt = this.now() + PENDING_TTL_MS;
     const scope = requestedScope(protectedResource, server, existing?.scopes);
-    this.pending.set(id, {
+    const pending: Pending = {
       id,
       actor,
       spaceId,
@@ -194,8 +195,9 @@ export class McpSignIns {
       client,
       resource: protectedResource.resource,
       expiresAt,
-    });
-    this.byState.set(state, id);
+    };
+    await this.store.put(KIND, id, pending, expiresAt);
+    await this.store.put(`${KIND}:state`, state, id, expiresAt);
     return {
       sign_in_id: id,
       authorize_url: authorizationUrl(server, {
@@ -218,12 +220,14 @@ export class McpSignIns {
    * succeeds or not, and only the person who started it can finish it.
    */
   async complete(actor: string, query: URLSearchParams): Promise<ConnectionResponse> {
-    this.sweep();
-    const id = this.byState.get(query.get('state') ?? '');
-    const entry = id ? this.pending.get(id) : undefined;
+    const now = this.now();
+    const id = await this.store.get<string>(`${KIND}:state`, query.get('state') ?? '', now);
+    const entry = id ? await this.store.get<Pending>(KIND, id, now) : undefined;
     if (!entry || entry.actor !== actor) throw new McpSignInFailure('sign_in_not_found');
-    this.pending.delete(entry.id);
-    this.byState.delete(entry.state);
+    // Of two returns, on any instance, only one takes the sign-in.
+    if (!(await this.store.take<Pending>(KIND, entry.id, now)))
+      throw new McpSignInFailure('sign_in_not_found');
+    await this.store.delete(`${KIND}:state`, entry.state);
     try {
       const code = callbackCode(query, {
         state: entry.state,
@@ -261,37 +265,34 @@ export class McpSignIns {
         'connection_id' in entry.request
           ? await this.hooks.renew(actor, entry.request.connection_id, credentials)
           : await this.hooks.install(actor, { ...entry.request, credentials });
-      this.finish(entry.id, actor, { state: 'connected', connection_id: installed.connection.id });
+      await this.finish(entry.id, actor, {
+        state: 'connected',
+        connection_id: installed.connection.id,
+      });
       return installed;
     } catch (error) {
       const code = error instanceof McpSignInFailure ? error.code : 'install_failed';
-      this.finish(entry.id, actor, { state: 'failed', error: code });
+      await this.finish(entry.id, actor, { state: 'failed', error: code });
       throw error;
     }
   }
 
-  status(actor: string, id: string): McpSignInStatus | null {
-    this.sweep();
-    const entry = this.pending.get(id);
+  async status(actor: string, id: string): Promise<McpSignInStatus | null> {
+    const now = this.now();
+    const entry = await this.store.get<Pending>(KIND, id, now);
     if (entry)
       return entry.actor === actor
         ? { state: 'pending', expires_at: new Date(entry.expiresAt).toISOString() }
         : null;
-    const done = this.finished.get(id);
+    const done = await this.store.get<{ actor: string; status: McpSignInStatus }>(
+      `${KIND}:done`,
+      id,
+      now,
+    );
     return done && done.actor === actor ? done.status : null;
   }
 
   private finish(id: string, actor: string, status: McpSignInStatus) {
-    this.finished.set(id, { actor, status, until: this.now() + FINISHED_TTL_MS });
-  }
-
-  private sweep() {
-    const now = this.now();
-    for (const [id, entry] of this.pending)
-      if (entry.expiresAt <= now) {
-        this.pending.delete(id);
-        this.byState.delete(entry.state);
-      }
-    for (const [id, done] of this.finished) if (done.until <= now) this.finished.delete(id);
+    return this.store.put(`${KIND}:done`, id, { actor, status }, this.now() + FINISHED_TTL_MS);
   }
 }

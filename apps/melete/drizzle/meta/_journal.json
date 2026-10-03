@@ -610,6 +610,13 @@
       "when": 1789232400066,
       "tag": "0086_app_data",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1789232400067,
+      "tag": "0087_shared_state",
+      "breakpoints": true
     }
   ]
 }
