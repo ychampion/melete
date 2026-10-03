@@ -26,7 +26,7 @@ import { lockSpace, type MemoryScope, type MemorySql, type MemoryTx } from './db
 
 export type SourceOrigin = {
   source_type: SourceEvent['source_type'];
-  author: 'owner' | 'external';
+  author: 'owner' | 'external' | 'member';
   /** Where it was recorded; another assistant's writes sit on a stream named for it. */
   stream?: string;
 };
@@ -151,7 +151,7 @@ async function loadHandles(
         origin_trust: row.origin_trust as OriginTrust,
         origin: {
           source_type: row.source_type as SourceEvent['source_type'],
-          author: row.author as 'owner' | 'external',
+          author: row.author as SourceOrigin['author'],
           stream: row.stream as string,
           event_at: new Date(row.event_at as Date).toISOString(),
         },
@@ -178,7 +178,7 @@ async function loadHandles(
       origin: weakest
         ? {
             source_type: weakest.source_type as SourceEvent['source_type'],
-            author: weakest.author as 'owner' | 'external',
+            author: weakest.author as SourceOrigin['author'],
             stream: weakest.stream as string,
             event_at: new Date(weakest.event_at as Date).toISOString(),
           }

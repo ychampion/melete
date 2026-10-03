@@ -55,9 +55,10 @@ import { agentIdentity, agentView, roomIdentity } from '../experience/agents.ts'
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
-import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
+import { attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { withSharedItems } from '../rooms/shares.ts';
 import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
@@ -854,6 +855,8 @@ export async function buildBundle(
       withheld: options.withheld === true,
     },
   );
+  // A room's request is also handed what people shared into the room from their own memory.
+  const recalled = await withSharedItems(sql, scope, jobId, result);
   const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
   // The delta was built once, in the lease transaction, from the job's own
@@ -870,11 +873,11 @@ export async function buildBundle(
       and (${since}::timestamptz is null or s.ingested_at > ${since}::timestamptz)
     order by s.ingested_at, s.id limit 50`;
   return {
-    recall: result,
+    recall: recalled.recall,
     bundle: {
       ...skeleton,
       tools,
-      knowledge: result.items.map(asKnowledge),
+      knowledge: recalled.knowledge,
       inputs: { ...skeleton.inputs, repair_briefs: repairBriefs },
       since_last: {
         ...skeleton.since_last,

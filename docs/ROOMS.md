@@ -16,7 +16,9 @@ An owner adds people who have accounts on this installation
 (`POST /rooms/{id}/members`, from the list at `GET /people`). An owner can
 remove someone, and anyone can leave (`DELETE /rooms/{id}/members/{person}`).
 Removing someone ends their access at once, including any thread they have
-open. What they said stays in the room. The room's owner cannot be removed.
+open. What they said stays in the room; each person can delete their own
+messages first (`DELETE /rooms/{id}/messages/{message}`). The room's owner
+cannot be removed.
 
 In a room every person is shown as the name they chose followed by their email,
 as in `Alice <alice@example.com>`, to the people in the room and to its agent.
@@ -60,11 +62,33 @@ For a request, the agent reads:
 - the room's skills and knowledge that are shared with its members;
 - the thread, with each person's name on what they said, and the answers to the
   thread's other requests;
+- the room's memory: what people said in the room, with who said it;
+- details people chose to share into the room from their own memory, each
+  marked with who shared it;
 - the request itself, and who asked it.
 
-It reads nothing from anyone's personal space: no personal memory, no personal
-files, no personal chats and no personal connections. A room's own tools and
-the connections marked for the room are the only ones its requests use.
+Beyond the details people shared, it reads nothing from anyone's personal
+space: no personal memory, no personal files, no personal chats and no personal
+connections. A room's own tools and the connections marked for the room are the
+only ones its requests use.
+
+## Memory in a room
+
+Everything anyone says in a room's threads becomes the room's memory, under the
+name of the person who said it. Everyone in the room sees it, with whose words
+each detail rests on (`GET /rooms/{id}/memory`). A room's owner can forget any
+detail, and anyone can forget a detail that came from their own words alone, in
+the room or in plain words ("forget that"). Deleting one's own message takes its
+words out of the thread, the request it asked and the room's memory.
+
+A person can share a detail from their own memory into a room
+(`POST /rooms/{id}/shares`). The room reads it from the person's memory as it
+is now, so forgetting it there takes it out of the room at once. Shares are
+members-only unless the person says otherwise: while a guest is in the room,
+the agent does not read them. The person who shared a detail, or an owner,
+withdraws it (`DELETE /rooms/{id}/shares/{share}`). Every removal here holds
+after a restore from an older backup. [MEMORY](MEMORY.md#rooms) has the
+details.
 
 ## Who sees what
 

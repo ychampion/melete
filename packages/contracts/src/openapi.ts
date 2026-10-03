@@ -240,12 +240,18 @@ import {
   roomLeaveResponse,
   roomList,
   roomMembershipResponse,
+  roomMemoryForgotten,
+  roomMemoryView,
+  roomMessageDeleted,
   roomMessageResponse,
   roomPresenceResponse,
+  roomShareResponse,
+  roomShareWithdrawn,
   roomStopResponse,
   roomStreamFrame,
   roomThreadList,
   roomThreadView,
+  shareToRoomRequest,
   updateMeRequest,
 } from './rooms.ts';
 import { runtimeEvent } from './runtime.ts';
@@ -909,6 +915,88 @@ function roomsPaths() {
         description: 'Display only: who may read a room is decided by membership, not presence.',
         requestParams: room,
         responses: { '200': jsonResponse('Who is here now', roomPresenceResponse), '404': notIn },
+      },
+    },
+    '/rooms/{id}/memory': {
+      get: {
+        tags: ['rooms'],
+        summary: "What the room's agent remembers, with whose words each detail rests on",
+        description:
+          'Details people said in the room, and details people shared into it from their own ' +
+          "memory. The agent reads nothing else of anyone's memory.",
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Room memory', roomMemoryView),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/memory/{claimId}/forget': {
+      post: {
+        tags: ['rooms'],
+        summary: "Forget a detail from the room's memory",
+        description:
+          'An owner of the room forgets any detail; anyone else only a detail from their own ' +
+          'words. Forgetting holds across a restore from an older backup.',
+        requestParams: { path: z.object({ id: z.string(), claimId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Forgotten', roomMemoryForgotten),
+          '403': problem('Only an owner of the room, or the person whose words it rests on'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/shares': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Share a detail from your own memory into a room',
+        description:
+          'A reference, not a copy: the room reads the current value, and forgetting it in your ' +
+          'own memory takes it out of the room at once. Members-only shares stay out of the ' +
+          "agent's work while a guest is in the room.",
+        requestParams: room,
+        requestBody: json(shareToRoomRequest),
+        responses: {
+          '200': jsonResponse('Already shared', roomShareResponse),
+          '201': jsonResponse('Shared', roomShareResponse),
+          '403': problem('Guests share nothing into a room'),
+          '404': problem('Not in this room, or no such detail in your own memory'),
+          '409': problem('The detail came from a private conversation and stays yours'),
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/shares/{shareId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Withdraw a shared detail from a room',
+        description: 'The person who shared it, or an owner of the room.',
+        requestParams: { path: z.object({ id: z.string(), shareId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Withdrawn', roomShareWithdrawn),
+          '403': problem('Only the person who shared it, or an owner of the room'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/messages/{messageId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Delete your own message',
+        description:
+          "Its words leave the thread, the request it asked, and the room's memory, and stay " +
+          'gone after a restore from an older backup. Work under way in the thread starts again ' +
+          'without them.',
+        requestParams: { path: z.object({ id: z.string(), messageId: z.string() }) },
+        responses: {
+          '200': jsonResponse('The message, with no words', roomMessageDeleted),
+          '403': problem('Only the person who wrote it'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
       },
     },
   };
