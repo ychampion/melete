@@ -1123,7 +1123,7 @@ withDb('rooms', () => {
       values (${files}, ${legacy}, 'files', 'Files', '["files.read"]'::jsonb,
         '{"builtin":"files"}'::jsonb)`;
     const migration = await readFile(
-      new URL('../../drizzle/0088_rooms.sql', import.meta.url),
+      new URL('../../drizzle/0089_rooms.sql', import.meta.url),
       'utf8',
     );
     const backfill = migration
