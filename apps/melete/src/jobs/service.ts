@@ -212,7 +212,7 @@ export class JobService {
     tx: Transaction,
     input: CreateResponsibilityRequest,
     experience?: {
-      kind: 'chat' | 'plan' | 'routine' | 'milestone' | 'run' | 'run_step';
+      kind: 'responsibility' | 'chat' | 'plan' | 'routine' | 'milestone' | 'run' | 'run_step';
       agentId?: string;
       planId?: string;
       scheduledAt?: Date;

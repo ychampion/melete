@@ -16,6 +16,7 @@ import { and, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
+  agent,
   attempt,
   connection,
   experienceTurn,
@@ -27,6 +28,7 @@ import {
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { agentValues, MELETE_AGENT } from '../experience/agents.ts';
 import { answerText } from '../experience/answer-filter.ts';
 import { newId } from '../ids.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
@@ -63,6 +65,30 @@ export async function personalSpaceOf(tx: Pick<Transaction, 'execute'>, principa
       and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId}
     order by s.created_at, s.id limit 1`)) as unknown as { id: string }[];
   return rows[0]?.id ?? null;
+}
+
+/**
+ * A person's own agent, Melete, in their own space, made the first time it is
+ * asked as every space's is. A task handed to them runs as it, so the asking
+ * their agent does before acting, and every rule that follows from it, apply
+ * to the task as to anything else they ask for.
+ */
+async function ownAgentOf(tx: Transaction, spaceId: string) {
+  const find = () =>
+    tx
+      .select({ id: agent.id })
+      .from(agent)
+      .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, true)))
+      .limit(1);
+  const [found] = await find();
+  if (found) return found.id;
+  await tx
+    .insert(agent)
+    .values({ id: newId('agent'), spaceId, ...agentValues(MELETE_AGENT, true), isDefault: true })
+    .onConflictDoNothing();
+  const [made] = await find();
+  if (!made) throw new Error('Agent insert returned no row');
+  return made.id;
 }
 
 /**
@@ -286,11 +312,12 @@ export class HandoffService {
         .where(eq(space.id, row.spaceId));
       const first = row.taskText.split('\n')[0]?.trim() ?? '';
       const title = `For ${room?.name ?? 'a room'}: ${first}`.slice(0, 200);
+      const ownAgent = await ownAgentOf(tx, personal);
       const started = await principalContext.run(actor, () =>
         this.deps.jobs.createInTransaction(
           tx,
           { space_id: personal, title, objective: row.taskText },
-          undefined,
+          { kind: 'responsibility', agentId: ownAgent },
           'room_handoff',
         ),
       );

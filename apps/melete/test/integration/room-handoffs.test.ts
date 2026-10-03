@@ -25,6 +25,7 @@ import {
   roomThreadView,
 } from '@melete/contracts';
 import { createArtifactRecorder } from '../../src/artifact/record.ts';
+import { saveApprovalSettings } from '../../src/broker/auto-review.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -185,6 +186,64 @@ const notes: Connector = {
     return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
   },
 };
+
+/** Changes Bob can undo, and publishing an app to the people who see it now. */
+const changesManifest: ConnectorManifest = {
+  name: 'changes',
+  version: '0.1.0',
+  provider: 'test',
+  description: 'Rename a list.',
+  credentials: [],
+  health: false,
+  tools: [
+    {
+      name: 'lists.rename',
+      description: 'Rename a list.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name'],
+        properties: { name: { type: 'string' } },
+      },
+      effect_class: 'write_reversible',
+      required_scopes: ['lists.rename'],
+      verify: false,
+      requires_approval: false,
+    },
+  ],
+};
+const publishManifest: ConnectorManifest = {
+  name: 'apps',
+  version: '0.1.0',
+  provider: 'apps',
+  description: 'Publish an app.',
+  credentials: [],
+  health: false,
+  tools: [
+    {
+      name: 'apps.publish',
+      description: 'Publish an app.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'risks'],
+        properties: { name: { type: 'string' }, risks: { type: 'array' } },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['apps.publish'],
+      verify: false,
+      requires_approval: true,
+    },
+  ],
+};
+async function installIn(spaceId: string, manifest: ConnectorManifest) {
+  const id = recordId('conn');
+  await database().sql`insert into connection (id, space_id, provider, label, scopes)
+    values (${id}, ${spaceId}, ${manifest.provider}, ${manifest.name},
+      ${JSON.stringify(manifest.tools.map((tool) => tool.name))}::jsonb)`;
+  registry.register(id, { ...notes, manifest });
+  return id;
+}
 
 async function roomConnection(spaceId: string) {
   const [row] = await database().sql`select id from connection
@@ -470,6 +529,58 @@ withDb('room handoffs', () => {
       send(world.alice.cookie, '/permissions'),
     );
     expect(theirs.permissions.map((item) => item.id)).not.toContain(asked.approval_id ?? '');
+  });
+
+  test("a handoff runs as the person's own agent, so it asks wherever their agent asks", async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Own rules');
+    const task = 'Rename my packing list to Launch and publish the schedule app.';
+    const { handoffId } = await handOff(roomId, task);
+    const running = await accept(world.bob, handoffId, task);
+    const [work] = await sql`select j.agent_id, a.is_default, a.space_id from job j
+      left join agent a on a.id = j.agent_id where j.id = ${running.job_id}`;
+    expect(work).toMatchObject({ is_default: true, space_id: world.bob.space });
+    // Bob's Melete asks before acting, so a change his own setup would ask about asks him.
+    const lists = await installIn(world.bob.space, changesManifest);
+    const apps = await installIn(world.bob.space, publishManifest);
+    await saveApprovalSettings(sql, world.bob.space, {
+      mode: 'auto_review',
+      classes: { sandbox: true, calendar: true, app_changes: true, apps: true },
+    });
+    const reviewing = new BrokerService({
+      sql,
+      connectors: registry,
+      resolveTrust: createMemoryTrustResolver(),
+      resolveStandingGrant: resolvePersonGrant,
+      autoReview: {
+        reviewer: {
+          model: 'fake/escalates',
+          async review() {
+            return { verdict: 'escalate', risk: 'medium', reason: 'Ask.' };
+          },
+        },
+      },
+    });
+    const claims = await claim(String(running.job_id));
+    const renamed = await reviewing.propose(claims, {
+      connection_id: lists,
+      kind: 'lists.rename',
+      payload: { name: 'Launch' },
+    });
+    expect(renamed.requires_approval).toBe(true);
+    // Nor does his publishing setting publish it for him: his agent asks first.
+    const published = await reviewing.propose(claims, {
+      connection_id: apps,
+      kind: 'apps.publish',
+      payload: { name: 'Schedule', risks: [] },
+    });
+    expect(published.requires_approval).toBe(true);
+    const mine = await ok<{ permissions: { id: string }[] }>(
+      send(world.bob.cookie, '/permissions'),
+    );
+    expect(mine.permissions.map((item) => item.id)).toEqual(
+      expect.arrayContaining([renamed.approval_id ?? '', published.approval_id ?? '']),
+    );
   });
 
   test('a handoff result reaches the room only after its owner approves that exact text', async () => {
