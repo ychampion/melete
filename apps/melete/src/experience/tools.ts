@@ -318,6 +318,10 @@ function actionInput(row: ActionRow): ToolSummary | null {
       const site = host(payload.url);
       return site ? summary(`On ${site}`) : null;
     }
+    case 'web.search':
+      return typeof payload.query === 'string' && payload.query.trim()
+        ? summary('Looked for', quote(payload.query, 'request'))
+        : null;
     case 'exec.run':
     case 'terminal.run':
     case 'device.run':
@@ -430,6 +434,13 @@ function actionOutput(
       return summary('Restored');
     case 'web.fetch':
       return summary('Page read', quote(pageTitle(detail), 'page'));
+    case 'web.search': {
+      const results = array(detail.results);
+      return summary(
+        results.length ? count(results.length, 'result', 'results') : 'Nothing found',
+        quote(object(results[0]).title, 'page'),
+      );
+    }
     case 'device.list_files':
       return summary(count(array(detail.entries).length, 'item', 'items'));
     case 'device.read_file':
@@ -515,6 +526,12 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
   switch (row.kind) {
     case 'web.fetch':
       return page ? phrase(`Reading page ${page}`, `Read page ${page}`) : base;
+    case 'web.search': {
+      const query = quoted(payload.query);
+      return query
+        ? phrase(`Searching the web for ${query}`, `Searched the web for ${query}`)
+        : base;
+    }
     case 'browser.open':
       return page
         ? phrase(`Opening ${page} in the browser`, `Opened ${page} in the browser`)

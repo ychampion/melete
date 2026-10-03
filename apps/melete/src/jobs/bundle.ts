@@ -188,6 +188,21 @@ function earlierStep({ kind, payload, receipt }: EarlierAction): {
         text: [title && `Title: ${title}.`, body].filter(Boolean).join(' '),
       };
     }
+    case 'web.search': {
+      const query = clip(detail.query ?? input.query, 300);
+      const results = Array.isArray(detail.results) ? detail.results : [];
+      const listed = results
+        .slice(0, 8)
+        .map((item) => {
+          const entry = (item ?? {}) as Record<string, unknown>;
+          return `${clip(entry.title, 120)} (${clip(entry.url, 200)})`;
+        })
+        .join('; ');
+      return {
+        line: `- Searched the web for "${query}"`,
+        text: [clip(detail.answer, 600), listed].filter(Boolean).join(' '),
+      };
+    }
     case 'terminal.run':
     case 'device.run': {
       const command = clip(detail.command ?? input.command, 300);
