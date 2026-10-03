@@ -553,6 +553,13 @@ export async function openLab(
     }
     if (!data.initial) {
       await wake(jobId, (scenario.history?.length ?? 0) + 1);
+      // In a conversation, a final turn whose attempt failed is retried like the earlier ones.
+      for (
+        let retry = 0;
+        retry < 3 && scenario.history?.length && (await snapshot(jobId)).state === 'queued';
+        retry++
+      )
+        await wake(jobId, (await snapshot(jobId)).attempts + 1);
       if (process.env.EVALS_CRASH_AT === 'after_first_turn') process.exit(77);
       data = {
         ...data,
