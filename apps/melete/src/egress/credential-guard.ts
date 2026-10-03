@@ -17,6 +17,9 @@ export const MINTED_CREDENTIALS = {
   gitlab_deploy: /gldt-[A-Za-z0-9_-]{20,}/,
   gitlab_runner: /glrt-[A-Za-z0-9_-]{20,}/,
   gitlab_trigger: /glptt-[A-Za-z0-9_-]{20,}/,
+  gitlab_agent: /glagent-[A-Za-z0-9_-]{20,}/,
+  gitlab_feed: /glft-[A-Za-z0-9_-]{20,}/,
+  gitlab_incoming_mail: /glimt-[A-Za-z0-9_-]{20,}/,
   npm: /npm_[A-Za-z0-9]{36}/,
 } as const satisfies Record<string, RegExp>;
 export type MintedCredential = keyof typeof MINTED_CREDENTIALS;

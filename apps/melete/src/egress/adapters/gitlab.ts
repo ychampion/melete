@@ -569,6 +569,8 @@ const MINTS_CREDENTIAL = [
   /^\/api\/v4\/(?:projects|groups|users)\/[^/]+\/(?:access_tokens|personal_access_tokens|impersonation_tokens|deploy_tokens|triggers|runners|deploy_keys|keys)(?:\/|$)/,
   /^\/api\/v4\/user\/(?:personal_access_tokens|runners|keys)(?:\/|$)/,
   /^\/api\/v4\/(?:personal_access_tokens|deploy_tokens|runners|keys)(?:\/|$)/,
+  // A cluster agent's tokens, which connect a cluster to the project.
+  /^\/api\/v4\/projects\/[^/]+\/cluster_agents(?:\/[^/]+\/tokens)?(?:\/|$)/,
 ];
 /** GraphQL mutations that make a token, a runner or a key. */
 export const MINTING_MUTATION = /token|runner(?:Create|Register)|key/i;
@@ -783,7 +785,15 @@ export const gitlabAdapter: CredentialAdapter<GitlabAdapterConfig> = {
   rejected,
   uncertain,
   heldAnswer,
-  mintedCredentials: ['gitlab_personal', 'gitlab_deploy', 'gitlab_runner', 'gitlab_trigger'],
+  mintedCredentials: [
+    'gitlab_personal',
+    'gitlab_deploy',
+    'gitlab_runner',
+    'gitlab_trigger',
+    'gitlab_agent',
+    'gitlab_feed',
+    'gitlab_incoming_mail',
+  ],
 };
 
 /** What GitLab says about a token: the account it belongs to, or why it was refused. */
