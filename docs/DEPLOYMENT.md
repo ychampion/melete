@@ -1570,8 +1570,10 @@ own.
   service's volumes; instances on different hosts need those volumes shared.
 - A stdio MCP server runs on the instance that started it, and each instance
   counts its own running servers against the limit of 16.
-- Docker sandboxes keep their idle clock in the memory of the instance that
-  serves them.
+- Docker sandboxes keep the time each was last used in the memory of the
+  instance that serves them. Which ones background processes keep awake is read
+  from the database on every pass, so a container with running processes is
+  never stopped for idleness, whichever instance started them.
 
 ## Upgrading
 
