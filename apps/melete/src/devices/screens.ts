@@ -148,8 +148,13 @@ export async function moveJobScreens(workRoot: string, jobId: string): Promise<n
   // The folder is in the agent's workspace, which its commands can change at
   // any moment: the job's folder and then `device` are walked and held, and
   // each file is read and removed inside the held folder.
+  // A job folder that is not a plain folder is left alone, for the workspace
+  // checks to refuse in their own words.
   const job = await realpath(workRoot)
-    .then((base) => holdBeneath(base, [jobId]))
+    .then(async (base) => {
+      const stat = await lstat(path.join(base, jobId));
+      return stat.isDirectory() && !stat.isSymbolicLink() ? holdBeneath(base, [jobId]) : null;
+    })
     .catch(absent);
   if (!job) return 0;
   let moved = 0;
