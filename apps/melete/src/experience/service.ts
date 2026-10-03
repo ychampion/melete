@@ -650,13 +650,6 @@ export class ExperienceService {
         409,
       );
     const value = conversationMessage.parse(raw);
-    const most = this.attachments?.settings.perMessage;
-    if (most !== undefined && (value.attachments?.length ?? 0) > most)
-      throw new ServiceError(
-        'attachments_invalid',
-        `A message can carry up to ${most} files.`,
-        400,
-      );
     if (!this.submissions) return unavailable('Conversations are not ready yet.');
     // Prefixing an opaque submission key prevents a collision with another space or API caller.
     const scopedKey = key

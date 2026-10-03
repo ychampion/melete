@@ -1595,6 +1595,8 @@ with many people, such as a hosted one, can set the per-person limits.
 | `MELETE_ATTACHMENT_UPLOADS_AT_ONCE` | Uploads one person may have under way at once (default: no limit) |
 | `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | Uploads one person may start in a window (default: no limit) |
 | `MELETE_ATTACHMENT_UPLOAD_WINDOW_MINUTES` | That window, in minutes (default `10`) |
+| `MELETE_ATTACHMENT_SERVER_UPLOADS` | Uploads the whole service holds in flight at once, from everyone (default `16`) |
+| `MELETE_ATTACHMENT_SERVER_UPLOAD_MB` | The MB those uploads may hold between them (default `256`, never less than one file at the largest size) |
 
 - A file over the size, or a message over the number, is refused with a plain
   sentence before anything is kept: "Files can be up to 20 MB. scan.pdf is
@@ -1606,6 +1608,14 @@ with many people, such as a hosted one, can set the per-person limits.
   With no limit set it uploads four at a time.
 - The upload window is counted where sign-in limits are, in Postgres, so every
   service instance shares it; the number at once is counted by each instance.
+- The last two settings are not limits on people. An upload is held in memory
+  while it is read, so each service instance always bounds how many it holds
+  and their bytes; past that, an upload gets `503` and "Melete is busy reading
+  other files. Try again in a moment." One person sending ten files at once
+  stays well inside the defaults.
+- Every way a message arrives (a chat, a chat started from Home, and
+  `POST /jobs/{id}/input`) binds its files in one place, which checks the files
+  per message and that each is the sender's own, unsent, and in the same space.
 - Reading a file stays bounded whatever these are: two reads run at a time
   with a short queue, each with a deadline and a memory ceiling, and archives
   and page counts are capped, so a crafted file cannot take the service down.

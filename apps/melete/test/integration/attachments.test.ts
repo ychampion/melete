@@ -77,6 +77,17 @@ const limitedApp = handle
       checkDatabase: async () => 'ok',
     })
   : null;
+/** The same service with a small bound on what it holds in flight, to reach it in a test. */
+const busyEnv = loadEnv({ NODE_ENV: 'test', MELETE_ATTACHMENT_SERVER_UPLOADS: '2' });
+const busyApp = handle
+  ? createApp({
+      db: handle.db,
+      env: busyEnv,
+      sql: handle.sql,
+      attachments: new AttachmentService(handle.sql, store, attachmentSettingsFromEnv(busyEnv)),
+      checkDatabase: async () => 'ok',
+    })
+  : null;
 const spaceId = newId('sp');
 const ownerId = newId('own');
 const token = randomBytes(32).toString('base64url');
@@ -419,6 +430,75 @@ const LEASE = pdfWith(['The lease starts in May.', 'Repairs are due within 14 da
       ),
     );
     expect(results.map((response) => response.status)).toEqual(Array(12).fill(201));
+  }, 120_000);
+
+  test('ten files at once from one person stay inside what the service holds in flight', async () => {
+    const settings = attachmentSettingsFromEnv(loadEnv({ NODE_ENV: 'test' }));
+    // No limit on people by default, and room for ten files at the largest size.
+    expect(settings.uploadsAtOnce).toBeNull();
+    expect(settings.uploadRate).toBeNull();
+    expect(settings.serverUploads).toBeGreaterThanOrEqual(ATTACHMENT_LIMITS.per_message);
+    expect(settings.serverUploadBytes).toBeGreaterThanOrEqual(
+      ATTACHMENT_LIMITS.per_message * (settings.fileBytes + ATTACHMENT_LIMITS.model_image_bytes),
+    );
+  });
+
+  test('past what the whole service holds in flight, an upload is asked to come back', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        upload(
+          `busy-${index}.pdf`,
+          'application/pdf',
+          pdfWith([`Busy ${index}`]),
+          undefined,
+          busyApp,
+        ),
+      ),
+    );
+    const refused = results.filter((response) => response.status === 503);
+    expect(results.filter((response) => response.status === 201)).toHaveLength(2);
+    expect(refused).toHaveLength(10);
+    for (const response of refused)
+      expect(await said(response)).toBe(
+        'Melete is busy reading other files. Try again in a moment.',
+      );
+  }, 120_000);
+
+  test('a chat started from Home, or a job input, cannot carry more files than the operator allows', async () => {
+    if (!jobs) return;
+    const files = [];
+    for (let index = 0; index < ATTACHMENT_LIMITS.per_message + 1; index++)
+      files.push(
+        await uploaded(`many-${index}.txt`, 'text/plain', new TextEncoder().encode(`${index}`)),
+      );
+    const ids = files.map((file) => file.id);
+    const sentence = `A message can carry up to ${ATTACHMENT_LIMITS.per_message} files, each once.`;
+    // Home starts a chat, then sends its first message with the files.
+    const started = await request('/conversations', 'POST', { title: 'Many files' });
+    const chat = conversationResponse.parse(await started.json()).conversation;
+    const first = await request(
+      `/conversations/${chat.id}/messages`,
+      'POST',
+      { text: 'Read these', attachments: ids },
+      'home-too-many',
+    );
+    expect(first.status).toBe(400);
+    expect(await said(first)).toBe(sentence);
+    // The same files through the jobs API meet the same check.
+    const viaJobs = await request(`/jobs/${chat.id}/input`, 'POST', {
+      text: 'Read these',
+      attachments: ids,
+    });
+    expect(viaJobs.status).toBe(400);
+    expect(JSON.stringify(await viaJobs.json())).toContain(sentence);
+    // Nothing was bound: every file is still unsent and can go in a smaller message.
+    const sent = await request(
+      `/conversations/${chat.id}/messages`,
+      'POST',
+      { text: 'Read these', attachments: ids.slice(0, ATTACHMENT_LIMITS.per_message) },
+      'home-just-enough',
+    );
+    expect(sent.status).toBe(200);
   }, 120_000);
 
   test('where the operator limits uploads at once, three go ahead and nine are asked to wait', async () => {

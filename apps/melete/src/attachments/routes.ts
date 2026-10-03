@@ -2,7 +2,10 @@
  * Uploading a file for a message, reading it back, and taking back one not
  * sent yet. The space and the person come from the session, never from the
  * request. How many uploads one person may have under way, or start in a
- * while, is limited only where the operator sets a limit.
+ * while, is limited only where the operator sets a limit. The whole service
+ * always bounds the uploads it holds in flight, by number and by bytes, since
+ * each is held in memory while it is read; past that, an upload is asked to
+ * come back in a moment.
  */
 import {
   ATTACHMENT_LIMITS,
@@ -28,8 +31,12 @@ export function mountAttachments(
   /** Where upload counts are kept, shared by every instance; left out, this process counts. */
   limits: LimitStore = new MemoryLimitStore(),
 ): void {
-  const { fileBytes, uploadsAtOnce, uploadRate } = attachments.settings;
+  const { fileBytes, uploadsAtOnce, uploadRate, serverUploads } = attachments.settings;
+  // Room for at least one file at the largest size, whatever the setting.
+  const byteBudget = Math.max(attachments.settings.serverUploadBytes, fileBytes + FORM_OVERHEAD);
   const underWay = new Map<string, number>();
+  /** Every upload this service holds in flight, from everyone, and the bytes they declared. */
+  const held = { count: 0, bytes: 0 };
   /** A fixed window: how many uploads this person started in it. True with no limit set. */
   const counted = async (key: string) => {
     if (!uploadRate) return true;
@@ -80,6 +87,16 @@ export function mountAttachments(
         `You can upload ${uploadsAtOnce} files at a time. Wait for one to finish, then try again.`,
         429,
       );
+    // A body without a declared length is counted at the most it may be.
+    const bytes = declared > 0 ? declared : fileBytes + FORM_OVERHEAD;
+    if (held.count >= serverUploads || held.bytes + bytes > byteBudget)
+      throw new ServiceError(
+        'attachment_server_busy',
+        'Melete is busy reading other files. Try again in a moment.',
+        503,
+      );
+    held.count++;
+    held.bytes += bytes;
     underWay.set(who, now + 1);
     try {
       if (!(await counted(who)))
@@ -90,6 +107,8 @@ export function mountAttachments(
         );
       return await receive(c, scope);
     } finally {
+      held.count--;
+      held.bytes -= bytes;
       const left = (underWay.get(who) ?? 1) - 1;
       if (left > 0) underWay.set(who, left);
       else underWay.delete(who);

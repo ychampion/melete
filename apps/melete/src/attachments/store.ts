@@ -321,14 +321,25 @@ export class AttachmentService {
  */
 export async function bindAttachments(
   tx: Transaction,
-  input: { jobId: string; spaceId: string; principalId: string | null; ids: readonly string[] },
+  input: {
+    jobId: string;
+    spaceId: string;
+    principalId: string | null;
+    ids: readonly string[];
+    /** The operator's files per message; never above the ceiling. */
+    perMessage?: number;
+  },
 ): Promise<SentAttachment[]> {
   const ids = [...new Set(input.ids)];
-  // The operator's number per message is checked where the message arrives; this is the ceiling.
-  if (ids.length !== input.ids.length || ids.length > ATTACHMENT_LIMITS.per_message_ceiling)
+  // Every way a message arrives binds its files here, so the number is checked here.
+  const most = Math.min(
+    input.perMessage ?? ATTACHMENT_LIMITS.per_message,
+    ATTACHMENT_LIMITS.per_message_ceiling,
+  );
+  if (ids.length !== input.ids.length || ids.length > most)
     throw new ServiceError(
       'attachments_invalid',
-      `A message can carry up to ${ATTACHMENT_LIMITS.per_message_ceiling} files, each once.`,
+      `A message can carry up to ${most} files, each once.`,
       400,
     );
   if (!ids.length) return [];

@@ -498,6 +498,17 @@ const variables = z.object({
   MELETE_ATTACHMENT_UPLOAD_WINDOW_MINUTES: unsetWhenBlank(
     z.coerce.number().int().min(1).max(1440).default(10),
   ),
+  /**
+   * Always on, for the service's own sake: uploads it holds in flight at once
+   * from everyone, and the MB they may hold between them (never less than one
+   * file at the largest size).
+   */
+  MELETE_ATTACHMENT_SERVER_UPLOADS: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(256).default(16),
+  ),
+  MELETE_ATTACHMENT_SERVER_UPLOAD_MB: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(8192).default(256),
+  ),
   /** Percent of a limit at which the person is told it is close. */
   MELETE_SPEND_NOTICE_PERCENT: unsetWhenBlank(z.coerce.number().int().min(1).max(99).default(80)),
   /** Per-million-token prices that replace the built-in estimates, as JSON. */

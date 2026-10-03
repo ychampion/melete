@@ -4,6 +4,7 @@
  * schemas so the two can never drift.
  */
 import { z } from 'zod';
+import { ATTACHMENT_LIMITS } from './attachments.ts';
 import { actionStatus, approvalRequestView, effectClass, payloadHash } from './broker.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
@@ -147,7 +148,10 @@ export const postMessageRequest = z
      */
     corrects: messageId.optional(),
     /** Files uploaded for this message, checked as the person's own and unsent when it is accepted. */
-    attachments: z.array(z.string().min(1).max(240)).max(10).optional(),
+    attachments: z
+      .array(z.string().min(1).max(240))
+      .max(ATTACHMENT_LIMITS.per_message_ceiling)
+      .optional(),
   })
   .refine((value) => value.text.length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',

@@ -25620,7 +25620,7 @@
         "$ref": "#/components/schemas/__schema17"
       },
       "__schema46": {
-        "maxItems": 10,
+        "maxItems": 100,
         "type": "array",
         "items": {
           "$ref": "#/components/schemas/__schema47"
