@@ -476,6 +476,53 @@ address.
   person who wants a computer that reaches one site and nothing else chooses
   `connected_hosts_only`.
 
+## Attacker 9: code in the agent's computer with a connected command-line account
+
+A person can connect an account for the Docker computer's command-line tools
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md)). The egress relay terminates
+TLS for that account's hosts and adds the account on the way out; the computer
+holds only placeholders, the egress CA's certificate and per-command tokens.
+
+- **The secret.** It never enters the computer. Answers pass through a byte
+  redactor over every form of it, uncompressed so nothing hides it, and
+  `Set-Cookie` is dropped. `a computer uses a connected account through the
+  relay, and its environment, files and output never hold the secret` runs a
+  real computer in CI against an upstream that echoes the `Authorization`
+  header back.
+- **Misuse as the person (confused deputy).** Every request is classified at
+  the wire; anything the adapter cannot read or does not list counts as a
+  change, and every change asks, as an ordinary action under the
+  `write_external` class and the person's auto-review tier. The approval is
+  bound to the job's revision and to the request as it will be sent: method,
+  address, the digest of its exact body bytes and every forwarded header (a
+  short list of headers that say nothing about the change excepted), and only
+  those headers are forwarded. Headers that name another method are removed
+  from every request. A request that differs in any bound part is a different
+  approval. A re-run after approval is admitted once; a lost answer is never
+  sent again.
+- **After the command.** A token works only from its own computer and only
+  until its command ends; a connection opened under it is closed when it ends,
+  and every request on it checks the token again.
+- **Host confusion.** The `Host` header and any absolute address must name the
+  connection's host; upgrades and tunnels inside it are refused; requests are
+  re-originated to the host's pinned public address with certificate checks.
+- **The CA.** Its key is sealed with the master key for this purpose alone and
+  stays in the service. Its certificate is name-constrained to the adapters'
+  DNS names and excludes every IP address (`the egress CA cannot sign for a
+  host outside its constraints` checks a forged certificate against a real TLS
+  client). Host certificates last a day and stay in memory.
+- **Rooms.** An account is offered only to work in the person's own space, never
+  in a shared space or a public compartment, and only where the conversation's
+  agent may use that connection.
+- **What remains.** Reading with the account and sending what was read
+  elsewhere is limited by the account's own permissions and the computer's
+  egress setting; `connected_hosts_only` keeps such a computer to the account's
+  hosts and the operator's list. Holding a change for an answer holds its body
+  in memory: each body is bounded by `MELETE_EGRESS_HOLD_MAX_BYTES`, a computer
+  has at most four possible changes in hand (checked before a body is read),
+  and the bodies held stay within four such requests' worth per computer and
+  sixteen for the installation.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

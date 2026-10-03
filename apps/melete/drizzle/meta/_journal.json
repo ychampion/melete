@@ -568,6 +568,13 @@
       "when": 1789232400060,
       "tag": "0080_blob_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1789232400061,
+      "tag": "0081_egress_ca",
+      "breakpoints": true
     }
   ]
 }

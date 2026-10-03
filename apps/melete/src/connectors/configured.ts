@@ -8,7 +8,10 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import { credentialAdapters } from '../egress/adapters/index.ts';
+import { createCommandLineConnector } from '../egress/connector.ts';
 import { egressRecorder } from '../egress/records.ts';
+import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
@@ -448,6 +451,13 @@ export class ConnectorFactory {
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
+    if (row.provider === 'command_line') {
+      // Its account is used by the egress relay; the connector only carries its writes' admission.
+      const adapter = row.configuration?.kind === 'command_line' ? row.configuration.adapter : null;
+      const offered = credentialAdapters({ test: options.enableTestConnector === true });
+      if (typeof adapter !== 'string' || !offered.has(adapter as never)) return undefined;
+      return ownerOnly(createCommandLineConnector(adapter as never));
+    }
     if (
       (stored?.kind === 'gmail' && row.provider === 'imap') ||
       (stored?.kind === 'google_calendar' && row.provider === 'caldav')
@@ -728,6 +738,18 @@ type ConnectorExtras = {
   privateContext?: PrivateContext;
 };
 
+/** The docker settings, with egress records and, where offered, command-line accounts. */
+function dockerWithEgress(sql: Sql, env: Env): DockerSandboxSettings {
+  const accounts = egressCredentialsFromEnv(sql, env);
+  return {
+    ...dockerSandboxSettings(env),
+    egressRecords: egressRecorder(sql),
+    ...(accounts
+      ? { egressCredentials: accounts.credentials, egressIntercept: accounts.intercept }
+      : {}),
+  };
+}
+
 export function connectorOptionsFromEnv(
   sql: Sql,
   env: Env,
@@ -793,7 +815,7 @@ export function connectorOptionsFromEnv(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
             ),
-            docker: { ...dockerSandboxSettings(env), egressRecords: egressRecorder(sql) },
+            docker: dockerWithEgress(sql, env),
           },
         }
       : {}),

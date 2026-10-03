@@ -17,6 +17,7 @@ import {
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
 import { namesLocalNetwork } from '../devices/paths.ts';
+import { isEgressTool } from '../egress/adapters/types.ts';
 import { ENDED_NOTE, OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { answerText, hideSecrets, isInternalRecord } from './answer-filter.ts';
 
@@ -869,6 +870,47 @@ export function proposedFile(payload: Record<string, unknown>): PermissionCard['
   };
 }
 
+/** A card value within a card's limit, saying how much was left out when it is cut. */
+function shownWhole(text: string, limit = 4000): string {
+  if (text.length <= limit) return text;
+  const kept = limit - 80;
+  return `${text.slice(0, kept)}\n… ${text.length - kept} more characters not shown`;
+}
+
+/**
+ * A change a command in the agent's computer asked to make with a connected
+ * account: the adapter's own summary, whether it deletes or overwrites, and
+ * the request in full under Details. Read from the canonical payload the
+ * person approves, never from model text.
+ */
+
+function egressCard(
+  kind: string,
+  payload: Record<string, unknown>,
+): { title: string; facts: Array<{ label: string; value: string }> } | null {
+  if (!isEgressTool(kind)) return null;
+  const summary = object(payload.summary);
+  const facts = Array.isArray(summary.facts)
+    ? summary.facts.flatMap((fact) => {
+        const item = object(fact);
+        // Long enough for a body and its note of what was left out; invisible characters shown.
+        const value = shownWhole(showInvisible(plainText(item.value, '', 8000)));
+        return typeof item.label === 'string' && value
+          ? [{ label: plainText(item.label, 'Detail', 60), value }]
+          : [];
+      })
+    : [];
+  return {
+    title: showInvisible(plainText(summary.title, 'Make a change with your account', 300)),
+    facts: [
+      ...(payload.destructive === true
+        ? [{ label: 'Warning', value: 'This deletes or overwrites something.' }]
+        : []),
+      ...facts,
+    ],
+  };
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -892,15 +934,18 @@ export function projectPermission(input: {
   const label = actionLabel(input.action);
   const past = Object.keys(ASKED).find((verb) => label.startsWith(`${verb} `));
   const base = past ? `${ASKED[past]}${label.slice(past.length)}` : label;
+  const egress = egressCard(input.action.kind, payload);
   const what = isSend
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (stepAsk(input.action.kind, payload) ??
+      : (egress?.title ??
+        stepAsk(input.action.kind, payload) ??
         DEVICE_ASKS[input.action.kind] ??
         SANDBOX_ASKS[input.action.kind] ??
         base);
   const facts = [
+    ...(egress?.facts ?? []),
     ...(file
       ? [
           { label: 'File', value: file.path },

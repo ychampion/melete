@@ -27,6 +27,7 @@ import {
   type JsonValue,
   type OriginWarning,
 } from '@melete/contracts';
+import { isEgressTool } from '../egress/adapters/types.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
 import type { Reviewer, ReviewInput, ReviewVerdict } from './reviewer.ts';
 import { collectOriginFields, type TrustResolver } from './trust.ts';
@@ -114,6 +115,14 @@ export function reviewTier(input: {
   const { tool, provider, payload, doubts } = input;
   const person = (reason: string): TierDecision => ({ tier: 'person', actionClass: null, reason });
   if (tool.effect_class === 'spend') return person('It spends money.');
+  // A change a command in the agent's computer makes with a connected account
+  // leaves Melete with the person's own identity, and always asks.
+  if (isEgressTool(tool.name))
+    return person(
+      payload.destructive === true
+        ? 'It deletes or overwrites something with your account, from a command in the agent’s computer.'
+        : 'It changes something with your account, from a command in the agent’s computer.',
+    );
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
   if (DESTRUCTIVE.test(words(tool.name))) return person('It deletes or removes something.');
