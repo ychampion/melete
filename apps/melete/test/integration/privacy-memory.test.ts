@@ -20,6 +20,7 @@ import { QUEUES } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { captureChat } from '../../src/memory/capture.ts';
+import { newMessagesNotRemembered } from '../../src/memory/context.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { openMemoryGateway } from '../../src/memory/gateway.ts';
 import { recall } from '../../src/memory/recall.ts';
@@ -215,6 +216,28 @@ withDb('memory keeps private conversations private', () => {
         join memory_sources s on s.id = w.source_id join memory_source_content b on b.source_id = s.id
         where b.content like 'I cried%'`;
       expect(kept).toMatchObject({ status: 'rejected', error_code: 'extraction_kept_private' });
+      // The agent answering that turn is told nothing from it was remembered;
+      // an ordinary conversation's agent is not.
+      const latestTurn = async (jobId: string) => {
+        const rows = await db.sql`select payload->>'text' as text, created_at from event
+          where job_id = ${jobId} and type = 'notice' and payload->>'kind' = 'user_message'
+          order by seq desc limit 1`;
+        return {
+          attempt: { id: 'att_x', job_id: jobId, epoch: 1, revision: 1, token: 't' },
+          inputs: {
+            new_user_messages: rows.map((row) => ({
+              role: 'user' as const,
+              content: row.text as string,
+              at: new Date(row.created_at as string).toISOString(),
+            })),
+            approval_results: [],
+            trigger_events: [],
+            repair_briefs: [],
+          },
+        };
+      };
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(therapy))).toBe(true);
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(ordinary))).toBe(false);
 
       // 2. With a local model, the private message is read there, and only there.
       await updateSettings(router, scope.spaceId, {
@@ -223,6 +246,8 @@ withDb('memory keeps private conversations private', () => {
       await say(db, therapy, 'The doctor has me on lithium at night now.');
       await settle();
       expect(toLocal.join('\n')).toContain('lithium at night');
+      // Read on the local model, so that turn's agent is not told otherwise.
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(therapy))).toBe(false);
       expect(toCloud.join('\n')).not.toContain('lithium');
       const learned = await db.sql`select c.key, b.content from memory_claims c
         join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision

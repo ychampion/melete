@@ -26,6 +26,42 @@ import {
   recall,
 } from './recall.ts';
 
+/**
+ * What the agent is told when memory could not keep what the person just
+ * wrote. Without it the agent only knows that Melete remembers what the person
+ * says on its own, and answers "got it" to a request to remember.
+ */
+export const NOT_REMEMBERED_NOTE =
+  'Memory has not kept what the person wrote in this turn and will not: this conversation is private and there is no local model set up to read it. If they asked you to remember something, tell them plainly that it was not saved; never say it was saved or that you will remember it.';
+
+/**
+ * Whether memory refused to read any of this attempt's new messages because
+ * they came from a private conversation with no local model to read them on
+ * (`extraction_kept_private`). Memory's own record is the fact: a message that
+ * is still waiting to be read is not counted, since it may yet be kept.
+ */
+export async function newMessagesNotRemembered(
+  sql: MemorySql,
+  scope: MemoryScope,
+  bundle: Pick<AttemptBundle, 'attempt' | 'inputs'>,
+): Promise<boolean> {
+  const times = bundle.inputs.new_user_messages.flatMap((message) =>
+    message.at ? [Date.parse(message.at)] : [],
+  );
+  if (!times.length) return false;
+  // `at` is the message event's time cut to milliseconds, so the earliest one
+  // is at or just before that event.
+  const since = new Date(Math.min(...times)).toISOString();
+  const [row] = await sql`select 1 from memory_capture c
+    join event e on e.seq = c.event_seq
+    join memory_work w on w.source_id = c.source_id
+    where c.job_id = ${bundle.attempt.job_id} and w.space_id = ${scope.spaceId}
+      and w.status = 'rejected' and w.error_code = 'extraction_kept_private'
+      and e.created_at >= ${since}::timestamptz
+    limit 1`;
+  return Boolean(row);
+}
+
 export async function recordAttemptContext(
   sql: MemorySql,
   scope: MemoryScope,
@@ -330,9 +366,16 @@ export function withMemoryRuntime(
           (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id)));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const since = (assembled ?? bundle).since_last;
+      const unremembered = await newMessagesNotRemembered(sql, scope, bundle);
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
-        job: { ...bundle.job, constraints: job.constraints },
+        job: {
+          ...bundle.job,
+          constraints: job.constraints,
+          objective: unremembered
+            ? [bundle.job.objective, NOT_REMEMBERED_NOTE].filter(Boolean).join('\n\n')
+            : bundle.job.objective,
+        },
         inputs: { ...(assembled ?? bundle).inputs, repair_briefs: briefs },
         // The delta brief carries the same briefs as the inputs. The delta is
         // what an attempt reads to say what it did last time, and a correction
