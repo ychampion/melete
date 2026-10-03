@@ -1448,6 +1448,38 @@ nothing summarised. For a model Melete does know, this may lower the window and
 not raise it, because the same catalog figure is what the model gateway's
 accounting is keyed on.
 
+How much of a model's window an attempt starts with follows that model's
+window from the same catalog; there is nothing to set. A 128,000-token model, and
+any model Melete does not know, gets the baseline: about 750 tokens of tool
+definitions with the rest named for the model to load, three skills, 2,000
+tokens of what Melete remembers, and about 8,000 tokens of the conversation. A
+larger window gets proportionally more, up to a ceiling: a million-token model
+starts with about 5,900 tokens of tool definitions, six skills, 8,000 tokens of
+memory and up to 62,500 tokens of the conversation, and the engine summarises in
+place beyond that, as above. These follow the smallest window that applies:
+`MELETE_MODEL_CONTEXT_WINDOW` and a job's own input limit narrow them (never
+below the baseline, and never above the catalog's figure for the model), and
+the conversation is also held to four tenths of the compaction trigger, so with
+the default `MELETE_COMPACTION_MAX_TOKENS` a million-token model carries about
+52,000 tokens of it. Tokens are counted the way the engine counts them, a token
+per character in scripts such as Chinese or Japanese, so a conversation in any
+language stays inside these numbers and inside the largest request the gateway
+accepts.
+
+A tool the model loads part way through a reply is added to that reply's run,
+so loading one costs no restart.
+
+Requests are ordered so the parts that stay the same from one turn to the next
+come first, and the gateway asks each provider to reuse them: Anthropic through
+cache breakpoints, OpenAI and a ChatGPT plan through one cache key per
+conversation, Fireworks by keeping a conversation on one server. A key is
+derived with the install's own capability key from one conversation, or from
+one service call for one space, so no two people, spaces or installs share
+one and nobody outside the install can work one out. Cached input is priced
+from the same table as spending (see the spending limits below), and each call
+also records its input in full-price-equivalent tokens beside the raw counts.
+A model on your own machine is never discounted.
+
 `MELETE_RUNTIME_START_TIMEOUT_MS` (default `120000`) is how long, in
 milliseconds, an attempt's container may take to start and answer before the
 attempt is ended. Raise it on a slow host where the first start after an
@@ -1530,8 +1562,13 @@ before the built-in table:
 MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":{"input":0.3,"output":1.2},"anthropic/*sonnet*":{"input":3,"output":15,"cached_input":0.3}}'
 ```
 
-`cached_input` is the price of input read from the provider's cache; left out,
-it is a tenth of `input`. A call answered on the person's own model (the local
+`cached_input` is the price of input read from the provider's cache, and
+`cache_write_input` the price of input written to it. Left out, each is the
+provider's published share of `input`: a cache read at a tenth for Anthropic,
+OpenAI, a ChatGPT plan and Google, a fifth for Fireworks (the highest share it
+lists for any model), and an
+Anthropic cache write at a quarter more. Any other provider, an endpoint you
+add yourself included, is priced as though nothing was cached. A call answered on the person's own model (the local
 model a private conversation uses, an endpoint the owner confirmed is on their
 device, or an OpenAI-compatible endpoint at a local address) costs nothing and
 is recorded as served by `local` where the privacy router sent it there; its

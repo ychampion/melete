@@ -116,10 +116,20 @@ export interface GatewayReservation {
 }
 
 export interface GatewayUsage {
+  /** Every input token the request carried, cached or not. */
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** The part of the input the provider read from its prompt cache. */
   cachedInputTokens: number;
+  /** The part of the input the provider wrote to its prompt cache, where it says so. */
+  cacheWriteInputTokens?: number;
+  /**
+   * The input at full-price-equivalent tokens: cached input at the provider's
+   * cached price, a cache write at its write price. What allowance and spending
+   * accounting should charge for input; `inputTokens` stays the raw count.
+   */
+  chargedInputTokens?: number;
 }
 
 export interface GatewaySettlement {

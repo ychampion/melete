@@ -299,7 +299,9 @@ export const recallRequest = z.strictObject({
   mode: z.enum(['current', 'historical']).default('current'),
   at: timestamp.optional(),
   path: z.enum(['ordinary', 'investigative']).default('ordinary'),
-  max_tokens: positive.max(2000).default(2000),
+  // The default is the baseline knowledge budget; a long-context model's
+  // attempt asks for up to the largest one (contextBudget).
+  max_tokens: positive.max(8000).default(2000),
   limit: positive.max(50).default(10),
 });
 export type RecallRequest = z.infer<typeof recallRequest>;

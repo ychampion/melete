@@ -713,6 +713,7 @@ describe('provider evidence parsing', () => {
       inputTokens: 9,
       outputTokens: 5,
       cachedInputTokens: 4,
+      cacheWriteInputTokens: 2,
       totalTokens: 14,
     });
     const responses = new UsageCollector(true);
@@ -869,3 +870,80 @@ function requestThroughConnect(port: number, cert: Buffer, host: string): Promis
     });
   });
 }
+
+describe('prompt caching on the way out', () => {
+  test('requests leave with the provider’s caching controls and cached input is charged at its price', async () => {
+    const seen: { url: string; body: Record<string, unknown>; headers: Headers }[] = [];
+    const { post, budget } = await start({
+      fetch: async (request) => {
+        seen.push({
+          url: request.url,
+          body: (await request.json()) as Record<string, unknown>,
+          headers: request.headers,
+        });
+        if (request.url.endsWith('/messages'))
+          return Response.json({
+            model: 'fixture-messages',
+            content: [],
+            usage: {
+              input_tokens: 100,
+              cache_read_input_tokens: 9_000,
+              cache_creation_input_tokens: 0,
+              output_tokens: 2,
+            },
+          });
+        return Response.json({
+          model: 'fixture-chat',
+          output: [],
+          usage: {
+            input_tokens: 10_000,
+            // The Responses protocol reports a cache read here.
+            input_tokens_details: { cached_tokens: 8_000 },
+            output_tokens: 2,
+            total_tokens: 10_002,
+          },
+        });
+      },
+    });
+    const tools = [{ name: 'notes_search', input_schema: { type: 'object' } }];
+    expect(
+      (
+        await post('/v1/messages', {
+          model: 'fixture-messages',
+          system: 'You are Melete.',
+          tools,
+          messages: [{ role: 'user', content: 'hello' }],
+        })
+      ).status,
+    ).toBe(200);
+    const anthropic = seen[0]?.body;
+    expect(anthropic?.system).toEqual([
+      { type: 'text', text: 'You are Melete.', cache_control: { type: 'ephemeral' } },
+    ]);
+    expect((anthropic?.tools as Record<string, unknown>[] | undefined)?.[0]).toMatchObject({
+      cache_control: { type: 'ephemeral' },
+    });
+    expect(anthropic?.messages).toEqual([{ role: 'user', content: 'hello' }]);
+    // 100 fresh tokens and 9,000 read from the cache at a tenth of the price.
+    expect(budget.settlements[0]?.usage).toMatchObject({
+      inputTokens: 9_100,
+      cachedInputTokens: 9_000,
+      chargedInputTokens: 1_000,
+    });
+
+    expect(
+      (await post('/providers/openai/v1/responses', { model: 'fixture-chat', input: 'hello' }))
+        .status,
+    ).toBe(200);
+    expect(typeof seen[1]?.body.prompt_cache_key).toBe('string');
+    expect(String(seen[1]?.body.prompt_cache_key)).not.toContain(principal.jobId);
+    expect(budget.settlements[1]?.usage).toMatchObject({
+      inputTokens: 10_000,
+      cachedInputTokens: 8_000,
+      chargedInputTokens: 2_800,
+    });
+    // The same conversation names the same key on every request.
+    await post('/providers/openai/v1/responses', { model: 'fixture-chat', input: 'again' });
+    expect(seen[2]?.body.prompt_cache_key).toBe(seen[1]?.body.prompt_cache_key);
+  });
+});

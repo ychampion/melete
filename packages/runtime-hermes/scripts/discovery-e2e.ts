@@ -41,7 +41,7 @@ const sourceHashes = {
 // The process supervisor applies this reviewed observer variant of the same pin.
 const observerHashes: Record<string, string> = {
   'gateway/platforms/api_server_runs.py':
-    'b5c5b21170408f8cb117319ceb5ac0d85d6e4a92f3cd6c5f3eb9f04dfc94790f',
+    '23e8cefeb83c27f8e22f0ab1fe0596dc01188f3cd0b2ae3d688507177057b2c0',
 };
 type WireMessage = { role?: string; content?: unknown; [key: string]: unknown };
 type WireTool = { function?: { name?: string } };
@@ -207,7 +207,7 @@ async function main() {
           invoked = true;
           turn = { tool: { name: TARGET, arguments: {}, id: 'call_inspect' } };
         } else {
-          // A request can race the explicit stop; it cannot invoke an absent schema.
+          // A request never invokes a schema the agent was not given.
           turn = {
             text: invoked ? `The recorded receipt says: ${VERDICT}.` : 'Tool loading recorded.',
           };
@@ -292,8 +292,9 @@ async function main() {
     );
     assert.equal(outcome.kind, 'completed');
     assert.equal(executions, 1);
-    assert.equal(starts.length, 2);
-    assert(stops.length >= 1);
+    // The loaded tool joined the running agent: one run, never stopped.
+    assert.equal(starts.length, 1);
+    assert.equal(stops.length, 0);
     assert(captures.length >= 4);
     const first = captures[0]?.body;
     const beforeLoad = captures[1]?.body;
@@ -303,8 +304,12 @@ async function main() {
     assert(captures.every((capture) => capture.attemptId === claims.attempt_id));
     assert.deepEqual(
       starts.map((start) => start.headers.get('Idempotency-Key')),
-      [claims.attempt_id, `${claims.attempt_id}:tools:1`],
+      [claims.attempt_id],
     );
+    // Earlier tools keep their places; the loaded one is added at the end, so
+    // the cached prefix of the tool list does not move.
+    assert.deepEqual(names(afterLoad).slice(0, names(first).length), names(first));
+    assert.equal(names(afterLoad).at(-1), TARGET);
     for (const start of starts) {
       assert.equal(start.body.session_id, claims.job_id);
       assert.equal(start.body.conversation_history, undefined);
@@ -312,7 +317,7 @@ async function main() {
     assert.deepEqual(
       nonSystem(afterLoad).slice(0, nonSystem(beforeLoad).length),
       nonSystem(beforeLoad),
-      'Native history must remain an exact prefix across continuation.',
+      'Native history must remain an exact prefix once the tool is loaded.',
     );
     assert(JSON.stringify(nonSystem(afterLoad)).includes('Preserve this earlier fixture context.'));
     const results = captures.flatMap((capture) =>

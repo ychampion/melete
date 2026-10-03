@@ -66,20 +66,23 @@ export function mountAttachments(
     if (!/^multipart\/form-data/i.test(c.req.header('content-type') ?? ''))
       throw new ServiceError('invalid_request', 'Send the file as multipart/form-data.', 400);
     const who = `${scope.spaceId}:${scope.principalId ?? 'owner'}`;
-    if ((underWay.get(who) ?? 0) >= UPLOADS_AT_ONCE)
+    // Checked and counted together, before anything is awaited: parallel
+    // uploads cannot all pass the check while none has been counted yet.
+    const now = underWay.get(who) ?? 0;
+    if (now >= UPLOADS_AT_ONCE)
       throw new ServiceError(
         'attachment_busy',
         `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
         429,
       );
-    if (!(await counted(who)))
-      throw new ServiceError(
-        'attachment_rate',
-        'You have uploaded a lot of files in the last few minutes. Try again shortly.',
-        429,
-      );
-    underWay.set(who, (underWay.get(who) ?? 0) + 1);
+    underWay.set(who, now + 1);
     try {
+      if (!(await counted(who)))
+        throw new ServiceError(
+          'attachment_rate',
+          'You have uploaded a lot of files in the last few minutes. Try again shortly.',
+          429,
+        );
       return await receive(c, scope);
     } finally {
       const left = (underWay.get(who) ?? 1) - 1;

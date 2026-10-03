@@ -20457,6 +20457,7 @@ export interface components {
         __schema397: {
             /** @default 0 */
             cached_input_tokens: number;
+            charged_input_tokens?: number;
             /** @default 0 */
             input_tokens: number;
             /** @default 0 */

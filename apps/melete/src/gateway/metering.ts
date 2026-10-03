@@ -107,6 +107,7 @@ export class UsageCollector {
           usage.cache_read_input_tokens,
           usage.cache_creation_input_tokens,
           object(usage.prompt_tokens_details)?.cached_tokens,
+          object(usage.input_tokens_details)?.cached_tokens,
         ].some((value) => value !== undefined && !validCount(value))
       ) {
         this.usage = null;
@@ -125,10 +126,15 @@ export class UsageCollector {
         usage.output_tokens !== undefined || usage.completion_tokens !== undefined
           ? count(usage.output_tokens ?? usage.completion_tokens)
           : (previous?.outputTokens ?? 0);
+      // Anthropic names a cache read itself; Chat Completions reports it under
+      // prompt_tokens_details and Responses under input_tokens_details.
       const cached = count(
-        usage.cache_read_input_tokens ?? object(usage.prompt_tokens_details)?.cached_tokens,
+        usage.cache_read_input_tokens ??
+          object(usage.prompt_tokens_details)?.cached_tokens ??
+          object(usage.input_tokens_details)?.cached_tokens,
       );
-      // Anthropic reports uncached input separately; caching still consumes the token allowance.
+      // Anthropic reports uncached input separately. The raw total counts every
+      // input token; the price table prices the cached part (prices.ts).
       const cacheCreation = count(usage.cache_creation_input_tokens);
       const inputTotal = input + ('cache_read_input_tokens' in usage ? cached : 0) + cacheCreation;
       if (!Number.isSafeInteger(inputTotal + output)) {
@@ -141,6 +147,10 @@ export class UsageCollector {
         inputTokens: inputTotal,
         outputTokens: output,
         cachedInputTokens: cached || previous?.cachedInputTokens || 0,
+        // Only Anthropic reports a cache write; elsewhere the field is left out.
+        ...(cacheCreation || previous?.cacheWriteInputTokens
+          ? { cacheWriteInputTokens: cacheCreation || previous?.cacheWriteInputTokens }
+          : {}),
         totalTokens: Math.max(count(usage.total_tokens), inputTotal + output),
       };
     }
