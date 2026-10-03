@@ -73,7 +73,9 @@ A thread starts with its first message (`POST /rooms/{id}/threads`), and
 anyone in the room replies (`POST /rooms/{id}/threads/{thread}/messages`). A
 message asks the agent when:
 
-- it names the agent: `@Melete`, or `@` and the agent's own name;
+- it names an agent: `@Melete`, or `@` and the name of another agent the room
+  has. The agent it names first answers that message; the request's next
+  message goes back to the room's agent unless it names one again;
 - it starts a thread with `ask_agent`;
 - it follows straight on from the agent's answer to the same person.
 
@@ -111,8 +113,9 @@ Guests never answer a permission, and nor does the room's agent. Where the
 rule is `requester` and a guest asked, the room's owners answer instead.
 Auto-review never answers a room's permission either: whatever the room's
 settings, the people the rule names decide. Work that stays in the room's own
-workspace (its files, its computer) follows the same sandbox rule as a
-person's own work. An answer is
+workspace (the files it works on, its computer) follows the same sandbox rule
+as a person's own work. Saving a new file to the room's files, and publishing
+an app from the room, wait for the people the rule names. An answer is
 given at `POST /rooms/{id}/approvals/{approval}` with the card's `version` and
 the exact content's `payload_hash`; if either has changed, it is refused and
 the card is shown again. The answer is checked against the rule and the room's
@@ -210,9 +213,10 @@ someone else in the room who is not a guest.
 The person finds it on their Home and with their approvals (`GET /handoffs`):
 the room, who asked, and the whole task, word for word. They choose "Run with my
 setup" or "Decline" (`POST /handoffs/{id}`). Running it starts work in their own
-space with exactly that text, using their own connections; anything it sends asks
-them as usual, and an address or amount the task names is shown on their card as
-coming from the room. Accepting names the task's hash, so only the task they read
+space with exactly that text, as their own agent and using their own
+connections; anything it sends or changes asks them wherever their agent would,
+and an address or amount the task names is shown on their card as coming from
+the room. Accepting names the task's hash, so only the task they read
 runs. A handoff nobody answers within seven days is withdrawn, and so is one
 whose request was stopped or ended. Only a request from a member hands work to
 anyone; a guest's request never reaches a person's own setup. A person has at

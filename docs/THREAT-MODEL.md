@@ -826,13 +826,6 @@ person deletes only their own messages, and the deletion scrubs the copies the
 service made of them. Every such removal is journaled and replayed on restore
 ([rooms-memory.test.ts](../apps/melete/test/integration/rooms-memory.test.ts)).
 
-What remains: what a member says in a room stays in the room after they leave,
-unless they delete it first or an owner forgets it. The words of a deleted
-message stay in any answer the agent already gave that quoted them, and in the
-agent's working session for the request that read them.
-Isolation between a room and the rest of the installation is an application
-check, as it is between accounts.
-
 A guest is invited by an owner for a number of days, through a link that works
 once and names only the room; only the SHA-256 of its token is stored, and the
 token travels in request bodies and the link's fragment, never in a path. A link
@@ -871,7 +864,12 @@ shown on the asker's card as that member's, with a warning, and no saved rule
 admits it. Auto-review judges a room's action against the asker's own words,
 and sees other members' messages labelled with their names. A decision push
 reaches only the people who may answer. Marking a connection for the room is an
-owner's act, and fences work in the room like a change of who is in it.
+owner's act, and fences work in the room like a change of who is in it. A new
+file saved in a room's space waits for the room's rule: only a person's own
+space lets one through unasked. An app published from a room waits for the
+room's rule too, whatever the space's publishing setting. A connection that
+carries a person's own account serves only their own space, so a room's request
+cannot act through it under any rule; the room hands that person the task.
 [room-approvals.test.ts](../apps/melete/test/integration/room-approvals.test.ts)
 holds each of these as a test.
 
@@ -879,7 +877,8 @@ Nothing crosses between a room and a person's own space except through the
 built-in room connection, and each crossing is a person's own act. A room's
 request cannot reach anyone's mail, files or memory; it can only hand a person a
 task. The person sees the whole task and accepts it by its hash, so what runs in
-their own space is exactly the text they read, recorded as coming from the room:
+their own space is exactly the text they read, run as their own agent, Melete,
+so it asks before acting wherever their agent would, and recorded as coming from the room:
 an address or amount it names carries a warning on their own card, and no
 standing rule they made admits it. The result reaches the room only when they
 approve that exact text, also by its hash; keeping it private tells the room

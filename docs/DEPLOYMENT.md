@@ -1530,7 +1530,8 @@ request to any of them.
 **Work one instance does at a time.** The sandbox sweep and reconciliation, the
 learning proposal drain, removing stdio server data for removed connections,
 removing what stopped instances left behind, the blob collector, episode and
-egress record retention and the background process monitor each run on the
+egress record retention, the background process monitor and the sweep that
+ends room guests' places when their time is up each run on the
 instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
 instance keeps for leases alone, never recycled by age and with TCP keepalives
 of about half a minute. Every check asks Postgres whether that connection holds
