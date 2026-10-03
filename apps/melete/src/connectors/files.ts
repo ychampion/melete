@@ -10,6 +10,7 @@ import {
   readlink,
   realpath,
   rename,
+  rmdir,
   unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -28,10 +29,12 @@ import { validateArtifact } from '../artifact/validate.ts';
 import { extractBounded, ReadersBusy } from '../attachments/bounded.ts';
 import { looksLike, UnreadableFile } from '../attachments/extract.ts';
 import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import { noLinks, segmentsFor } from '../paths.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ConnectorFaultError } from './faults.ts';
+import { loadFileRecords, personGivenReason } from './files-ownership.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
 
@@ -593,6 +596,23 @@ export const filesManifest: ConnectorManifest = {
       requires_approval: false,
     },
     {
+      name: 'files.delete',
+      description:
+        "Delete a file or folder. What you made in this conversation goes at once; the person's own files (in their Files, or ones they gave you) ask them first. A command on your computer cannot delete the person's files.",
+      input_schema: inputSchema(
+        {
+          path: pathSchema,
+          area: areaSchema,
+          checked: { type: 'object', description: 'Filled in by Melete; leave it out.' },
+        },
+        ['path'],
+      ),
+      effect_class: 'write_reversible',
+      required_scopes: ['files.delete'],
+      verify: true,
+      requires_approval: false,
+    },
+    {
       name: 'files.save_attachment',
       description:
         'Save a file the person attached in this chat into your workspace, to work on it with code. attachment_id is its file_ id; path must be unused.',
@@ -656,6 +676,120 @@ async function readableToAgent(directory: HeldDirectory, name: string): Promise<
 
 /** A file of a job: the trusted root, the names under it, and the path they make. */
 type Located = { base: string; segments: string[]; target: string };
+
+/** The most entries one `files.delete` takes: a bigger folder is deleted in parts. */
+export const DELETE_ENTRIES = 2000;
+/** Files up to this size are named by their content in a delete's check; larger ones by size and time. */
+const HASHED_BYTES = 16 * 1024 * 1024;
+
+/** What a delete would take, as it stands: bound before anyone is asked, compared before it goes. */
+export type DeleteTarget = {
+  what: 'file' | 'folder';
+  files: number;
+  bytes: number;
+  /** One hash of everything it would take, so any change since it was decided shows. */
+  state: string;
+  /** For a file, its content hash (null when it is too large to read for this). */
+  content_hash: string | null;
+};
+
+/** One file's part of a delete's state, read through a held directory without following a link. */
+async function fileState(directory: HeldDirectory, name: string) {
+  const file = await openIn(directory, name, READ_FLAGS);
+  try {
+    const stat = await file.stat();
+    const hash = stat.isFile() && stat.size <= HASHED_BYTES ? digest(await file.readFile()) : null;
+    return { size: stat.size, hash, line: hash ?? `${stat.size}:${stat.mtimeMs}` };
+  } finally {
+    await file.close();
+  }
+}
+
+/**
+ * What deleting `name` in a held directory would take. A link is never
+ * followed: deleting one removes the link. A folder is walked through held
+ * directories, as every other walk here is.
+ */
+async function inspectEntry(directory: HeldDirectory, name: string): Promise<DeleteTarget> {
+  const at = directory.at(name);
+  const stat = await lstat(at);
+  if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
+  if (stat.isFile()) {
+    const state = await fileState(directory, name);
+    return {
+      what: 'file',
+      files: 1,
+      bytes: state.size,
+      state: digest(`file\0${state.size}\0${state.line}`),
+      content_hash: state.hash,
+    };
+  }
+  if (!stat.isDirectory()) throw new Error('only a file or a folder can be deleted');
+  const lines: string[] = [];
+  let files = 0;
+  let bytes = 0;
+  const visit = async (held: HeldDirectory, prefix: string) => {
+    const entries = await readdir(held.self);
+    entries.sort();
+    for (const entry of entries) {
+      if (lines.length >= DELETE_ENTRIES)
+        throw new Error(
+          `that folder holds more than ${DELETE_ENTRIES} entries; delete the folders inside it one at a time`,
+        );
+      const relative = `${prefix}${entry}`;
+      const found = await lstat(held.at(entry));
+      if (found.isDirectory() && !found.isSymbolicLink()) {
+        lines.push(`${relative}/`);
+        const inner = await holdWithin(held, entry);
+        try {
+          await visit(inner, `${relative}/`);
+        } finally {
+          await inner.close();
+        }
+      } else if (found.isFile()) {
+        const state = await fileState(held, entry);
+        files += 1;
+        bytes += state.size;
+        lines.push(`${relative}\0${state.size}\0${state.line}`);
+      } else lines.push(`${relative}\0other`);
+    }
+  };
+  const folder = await holdWithin(directory, name);
+  try {
+    await visit(folder, '');
+  } finally {
+    await folder.close();
+  }
+  return {
+    what: 'folder',
+    files,
+    bytes,
+    state: digest(`folder\0${lines.join('\n')}`),
+    content_hash: null,
+  };
+}
+
+/**
+ * Remove `name` from a held directory: a file or link unlinked, a folder
+ * emptied through held directories and then removed. Nothing is followed
+ * through a link, so nothing outside the directory is touched.
+ */
+export async function removeIn(directory: HeldDirectory, name: string): Promise<void> {
+  checkName(name);
+  const at = directory.at(name);
+  const stat = await lstat(at);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    await unlink(at);
+    return;
+  }
+  const inner = await holdWithin(directory, name);
+  try {
+    for (const entry of await readdir(inner.self)) await removeIn(inner, entry);
+  } finally {
+    await inner.close();
+  }
+  await rmdir(at);
+}
 
 export function createFilesConnector(options: FilesOptions): Connector {
   const limit = options.maxBytes ?? 2 * 1024 * 1024;
@@ -816,6 +950,34 @@ export function createFilesConnector(options: FilesOptions): Connector {
       if (missing(error)) return { decision: 'undecided', reason: 'no file was saved there' };
       return { decision: 'undecided', reason: 'the saved file could not be checked' };
     }
+  };
+
+  /** Whether a delete whose answer was lost left nothing at its path. */
+  const verifyDeleted = async (action: Action, ctx: ConnectorContext): Promise<VerifyResult> => {
+    const payload = action.canonical_payload;
+    const relative = requiredString(payload, 'path');
+    const area = areaFor(payload.area);
+    try {
+      const located = await resolveFile(ctx, area, relative);
+      const folder = await holdBeneath(located.base, located.segments.slice(0, -1));
+      try {
+        await lstat(folder.at(path.basename(located.target)));
+      } finally {
+        await folder.close();
+      }
+      return { decision: 'undecided', reason: 'it is still there' };
+    } catch (error) {
+      if (!missing(error)) return { decision: 'undecided', reason: 'it could not be checked' };
+    }
+    const evidence = { path: relative, area, deleted: true };
+    const state = action.canonical_payload.checked;
+    const bound =
+      state && typeof state === 'object' && !Array.isArray(state) ? state.state : undefined;
+    return {
+      decision: 'succeeded',
+      evidence,
+      receipt: receiptFor(action, evidence, typeof bound === 'string' ? bound : null),
+    };
   };
 
   /**
@@ -986,10 +1148,113 @@ export function createFilesConnector(options: FilesOptions): Connector {
     }
   };
 
+  /**
+   * What a delete would take and whose it is, checked before anyone is asked
+   * and bound into the payload: the card shows it, `asksFirst` reads it, and
+   * the delete goes only while what is there is still what was decided.
+   */
+  const deleteCheck = async (
+    ctx: ConnectorContext,
+    tx: Query | null,
+    payload: Record<string, JsonValue>,
+  ): Promise<Record<string, JsonValue>> => {
+    const area = areaFor(payload.area);
+    const relative = requiredString(payload, 'path');
+    const segments = segmentsFor(relative);
+    if (segments.length === 0)
+      throw new Error(`a whole area cannot be deleted; name a file or folder in ${area}`);
+    if (area === 'artifacts' && segments[0] === FROM_CHATS)
+      throw new Error('a file saved in another conversation is deleted from that conversation');
+    const located = await resolveFile(ctx, area, relative);
+    const name = path.basename(located.target);
+    let target: DeleteTarget;
+    try {
+      const directory = await holdBeneath(located.base, located.segments.slice(0, -1));
+      try {
+        target = await inspectEntry(directory, name);
+      } finally {
+        await directory.close();
+      }
+    } catch (error) {
+      if (missing(error))
+        throw new Error(`there is no file or folder ${JSON.stringify(relative)} in ${area}`);
+      throw error;
+    }
+    const records = tx ? await loadFileRecords(tx, ctx.job_id) : null;
+    const joined = segments.join('/');
+    let owner: 'agent' | 'person';
+    let reason: string;
+    if (area === 'work') {
+      const given = records ? personGivenReason(records, joined) : null;
+      owner = given ? 'person' : 'agent';
+      reason = given ? `${given}.` : "It is in this conversation's own workspace.";
+    } else {
+      const made =
+        target.what === 'file' &&
+        target.content_hash !== null &&
+        records?.madeInFiles.get(joined) === target.content_hash;
+      owner = made ? 'agent' : 'person';
+      reason = made
+        ? 'Melete saved it as a new file in this conversation, and it has not changed since.'
+        : "It is in the person's Files.";
+    }
+    const shown = `“${segments.at(-1)}”`;
+    const where = area === 'artifacts' ? ' from your Files' : ', which you gave Melete';
+    const warning =
+      target.what === 'file'
+        ? `This permanently deletes ${shown}${where}. It cannot be undone.`
+        : `This permanently deletes the folder ${shown}${where}, with the ${target.files === 1 ? 'file' : `${target.files} files`} in it. It cannot be undone.`;
+    return {
+      owner,
+      what: target.what,
+      files: target.files,
+      bytes: target.bytes,
+      state: target.state,
+      ...(target.content_hash ? { content_hash: target.content_hash } : {}),
+      reason,
+      ...(owner === 'person' ? { warning } : {}),
+    };
+  };
+  /** The delete check of an action, as bound. */
+  const checkedOf = (action: Pick<Action, 'canonical_payload'>): Record<string, JsonValue> => {
+    const checked = action.canonical_payload.checked;
+    return checked && typeof checked === 'object' && !Array.isArray(checked)
+      ? (checked as Record<string, JsonValue>)
+      : {};
+  };
+
   return {
     manifest: filesManifest,
     staysInSpace: newInPersonFiles,
-    async prepare(payload) {
+    /** A delete asks unless its check found it Melete's own. */
+    asksFirst: (action) => action.kind === 'files.delete' && checkedOf(action).owner !== 'agent',
+    async validateBinding(action, ctx, tx) {
+      if (action.kind !== 'files.delete') return;
+      const bound = checkedOf(action);
+      let now: Record<string, JsonValue>;
+      try {
+        now = await deleteCheck(ctx, tx, action.canonical_payload);
+      } catch (error) {
+        throw new BrokerFault('payload_invalid', (error as Error).message);
+      }
+      if (now.state !== bound.state || (bound.owner === 'agent' && now.owner !== 'agent'))
+        throw new BrokerFault(
+          'payload_invalid',
+          `${JSON.stringify(action.canonical_payload.path)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now.`,
+        );
+    },
+    async prepare(payload, ctx, tx, kind) {
+      if (kind === 'files.delete') {
+        try {
+          return {
+            path: payload.path ?? null,
+            ...(payload.area !== undefined ? { area: payload.area } : {}),
+            checked: await deleteCheck(ctx, tx, payload),
+          };
+        } catch (error) {
+          throw new BrokerFault('payload_invalid', (error as Error).message);
+        }
+      }
       if (payload.expect !== undefined) {
         const declaration = artifactExpectation.safeParse(payload.expect);
         if (!declaration.success)
@@ -1049,6 +1314,44 @@ export function createFilesConnector(options: FilesOptions): Connector {
           name: sent.name,
           bytes: bytes.byteLength,
           content_hash: hash,
+        };
+      } else if (action.kind === 'files.delete') {
+        const relative = requiredString(payload, 'path');
+        const checked = checkedOf(action);
+        if (typeof checked.state !== 'string')
+          throw new Error('this delete was not checked before it was sent; ask for it again');
+        const located = await resolveFile(ctx, area, relative);
+        const name = path.basename(located.target);
+        const absent = (error: unknown) => {
+          if (missing(error))
+            throw new Error(`there is no file or folder ${JSON.stringify(relative)} in ${area}`);
+          throw error;
+        };
+        const directory = await holdBeneath(located.base, located.segments.slice(0, -1)).catch(
+          absent,
+        );
+        let gone: DeleteTarget;
+        try {
+          gone = await inspectEntry(directory, name).catch(absent);
+          // What the person agreed to, or what was found to be Melete's own,
+          // is what goes; anything else there now is asked about again.
+          if (gone.state !== checked.state)
+            throw new Error(
+              `${JSON.stringify(relative)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now`,
+            );
+          await removeIn(directory, name);
+        } finally {
+          await directory.close();
+        }
+        hash = gone.state;
+        detail = {
+          path: relative,
+          area,
+          deleted: gone.what,
+          files: gone.files,
+          bytes: gone.bytes,
+          owner: checked.owner === 'agent' ? 'agent' : 'person',
+          ...(gone.content_hash ? { content_hash: gone.content_hash } : {}),
         };
       } else if (action.kind === 'files.move') {
         const from = requiredString(payload, 'from');
@@ -1226,7 +1529,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
               detail: 'the file on disk does not match the content that was written',
             });
           }
-          detail = { path: relative, area, content_hash: hash, bytes: Buffer.byteLength(content) };
+          detail = {
+            path: relative,
+            area,
+            content_hash: hash,
+            bytes: Buffer.byteLength(content),
+            // Made new in the person's Files: Melete's own until it changes (files-ownership.ts).
+            ...(onlyNew ? { created: true } : {}),
+          };
           // A declared write is an artifact, and an artifact is checked here,
           // by trusted service code over the bytes that were actually written,
           // before the runtime hears that the write succeeded. The broker turns
@@ -1260,6 +1570,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
       checkIdentity(action, ctx);
       const payload = action.canonical_payload;
       if (action.kind === 'files.save_attachment') return verifySaved(action, ctx);
+      if (action.kind === 'files.delete') return verifyDeleted(action, ctx);
       if (action.kind !== 'files.write' && action.kind !== 'files.move') {
         return { decision: 'unsupported', reason: 'file reads have no effect to verify' };
       }

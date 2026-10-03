@@ -1109,6 +1109,7 @@ export function describeAction(action: LedgerAction): string {
     if (!path) return 'saving a file';
     if (kind === 'files.read') return `reading ${path}`;
     if (kind === 'files.list') return `looking in ${path}`;
+    if (kind === 'files.delete') return `deleting ${path}`;
     return `saving ${path}`;
   }
   if (isMessage(action)) {

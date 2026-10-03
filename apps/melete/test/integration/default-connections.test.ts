@@ -27,6 +27,7 @@ afterAll(async () => {
 
 const DEFAULT_TOOLS = [
   'artifact.publish',
+  'files.delete',
   'files.list',
   'files.move',
   'files.read',

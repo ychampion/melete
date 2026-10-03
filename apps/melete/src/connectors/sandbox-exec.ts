@@ -57,7 +57,14 @@ import {
   sessionHandle,
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
-import { SANDBOX_WORKDIR, syncIn, syncOut } from '../sandbox/workspace.ts';
+import {
+  SANDBOX_WORKDIR,
+  type SentFile,
+  type SyncOutReport,
+  syncIn,
+  syncOut,
+} from '../sandbox/workspace.ts';
+import { loadFileRecords, personGivenReason } from './files-ownership.ts';
 import {
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOLS,
@@ -72,6 +79,36 @@ import {
   processDispatchBudgetMs,
 } from './sandbox-process.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+
+/** At most this many paths are named on a receipt; the count says the rest. */
+const NAMED_PATHS = 50;
+
+/**
+ * What a command did to the workspace that the agent must hear: files it
+ * deleted that are gone, files it deleted that were put back and why, or a
+ * read-back that failed. Said on the command's receipt, never left silent.
+ */
+export function workspaceNote(report: SyncOutReport | Error): Record<string, JsonValue> {
+  if (report instanceof Error)
+    return {
+      workspace_note: `What the command changed in /work was not read back into the workspace (${report.message}). Check before relying on it.`,
+    };
+  const note: Record<string, JsonValue> = {};
+  if (report.deleted.length) note.workspace_deleted = report.deleted.slice(0, NAMED_PATHS);
+  if (report.kept.length) {
+    note.workspace_restored = report.kept
+      .slice(0, NAMED_PATHS)
+      .map((entry) => ({ path: entry.path, reason: entry.reason }));
+    const count = report.kept.length === 1 ? 'a file' : `${report.kept.length} files`;
+    note.workspace_note = `The command deleted ${count} that will be back in /work on your next command: ${report.kept
+      .slice(0, 3)
+      .map((entry) => entry.reason)
+      .join(
+        '; ',
+      )}${report.kept.length > 3 ? '; ...' : ''}. A command cannot delete the person's files; use files.delete, which asks them.`;
+  }
+  return note;
+}
 
 export type SandboxExecOptions = {
   sessions: SandboxSessions;
@@ -751,6 +788,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       let payload: Payload;
       let session: SessionRow;
       let timeZone: string | null = null;
+      let sent: ReadonlyMap<string, SentFile> | null = null;
       try {
         payload = payloadOf(action);
         timeZone = (await jobFacts(ctx.job_id)).timeZone;
@@ -760,13 +798,15 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         const renewed = await sessions.renew(opened.row.id);
         if (!renewed) throw new Error('the sandbox session ended before the command was sent');
         session = renewed;
-        await syncIn({
-          provider,
-          handle: sessionHandle(session),
-          workRoot: options.workRoot,
-          jobId: ctx.job_id,
-          signal,
-        });
+        sent = (
+          await syncIn({
+            provider,
+            handle: sessionHandle(session),
+            workRoot: options.workRoot,
+            jobId: ctx.job_id,
+            signal,
+          })
+        ).sent;
       } catch (error) {
         // Nothing was dispatched: no sandbox took a command, so this is a
         // plain failure and the same action may be sent again.
@@ -839,15 +879,35 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       await sessions.renew(session.id).catch(() => {});
       // The workspace is read back after every command, so a file that lives
       // only in the sandbox at completion is a wrong answer, not a slow one.
-      if (result.outcome !== 'unknown')
-        await syncOut({
-          provider,
-          handle: sessionHandle(session),
-          workRoot: options.workRoot,
-          jobId: ctx.job_id,
-          signal,
-        }).catch(() => {});
-      return outcome;
+      // A file the command deleted is deleted here too when it is Melete's
+      // own; one the person gave is kept and comes back, and the receipt says
+      // so either way.
+      if (result.outcome === 'unknown') return outcome;
+      const records = await loadFileRecords(sql, ctx.job_id).catch(() => null);
+      const report = await syncOut({
+        provider,
+        handle: sessionHandle(session),
+        workRoot: options.workRoot,
+        jobId: ctx.job_id,
+        signal,
+        ...(sent
+          ? {
+              deletions: {
+                sent,
+                keep: (relative: string) =>
+                  records
+                    ? personGivenReason(records, relative)
+                    : `Melete could not check whose ${JSON.stringify(relative)} is`,
+              },
+            }
+          : {}),
+      }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+      const note = workspaceNote(report);
+      if (outcome.outcome !== 'succeeded' || !Object.keys(note).length) return outcome;
+      return {
+        ...outcome,
+        receipt: { ...outcome.receipt, detail: { ...outcome.receipt.detail, ...note } },
+      };
     },
 
     verify,

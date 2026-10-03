@@ -305,6 +305,7 @@ function actionInput(row: ActionRow): ToolSummary | null {
     case 'files.read':
     case 'files.write':
     case 'files.restore':
+    case 'files.delete':
     case 'files.list':
       return payload.path === undefined
         ? null
@@ -432,6 +433,8 @@ function actionOutput(
       return summary('Moved');
     case 'files.restore':
       return summary('Restored');
+    case 'files.delete':
+      return summary('Deleted');
     case 'web.fetch':
       return summary('Page read', quote(pageTitle(detail), 'page'));
     case 'web.search': {

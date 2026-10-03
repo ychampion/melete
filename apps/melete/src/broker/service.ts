@@ -1360,6 +1360,7 @@ export class BrokerService implements BrokerOperations {
               constraints: jobConstraints.parse(job.constraints),
             },
             tx,
+            request.kind,
           ),
         );
         this.validatePayload(tool, canonical.canonical);

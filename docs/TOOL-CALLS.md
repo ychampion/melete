@@ -175,3 +175,14 @@ The activity for the same turn has a row for the recall, the skill, the page, th
 - These still ask: saving over a file the person already keeps, moving a file out of their Files or renaming one there, a path that is not a plain name inside them, and sending a file by email. The permission card names where the file goes ("Save imgtest.png to your Files", "Move “a.png” out of your Files").
 - The person's stricter settings still apply: "Ask me for everything", an agent set to ask before acting, and the switch for work in the agent's own workspace.
 - Work in the agent's own workspace (`area: work`, the default) does not ask.
+
+## Deleting files
+
+`files.delete` removes one file or folder, in the agent's workspace or the person's Files. Before anyone is asked, Melete checks what it would take and whose it is, and binds that into the action:
+
+- **Melete's own** goes through with a receipt: anything in the conversation's workspace, and a file the conversation saved as a new file in the person's Files that has not changed since.
+- **The person's** asks, with a warning that names what goes and says it cannot be undone: anything else in their Files, any folder there, and a file in the workspace that they gave the agent (saved from their upload, or moved out of their Files).
+- The delete goes only while what is there is what was checked. A file or folder that changed after the check, or after the person agreed, is not deleted, and the agent is told to ask again.
+- A path that leaves the area, the root of an area, a link and the files saved in other conversations are refused.
+
+A command on the agent's computer (`terminal.run`) can delete files in `/work` too. After the command, a file it deleted is deleted from the workspace as well when it is Melete's own and unchanged since the command started. A file the person gave is kept and comes back in `/work` on the next command, and the command's receipt says so (`workspace_restored`, `workspace_note`) and points the agent to `files.delete`. Files deleted for good are listed in `workspace_deleted`.
