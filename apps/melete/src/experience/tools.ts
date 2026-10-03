@@ -638,6 +638,16 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
     }
     case 'artifact.publish':
       return file ? phrase(`Publishing ${file}`, `Published ${file}`) : base;
+    case 'apps.publish': {
+      const app = quoted(payload.name);
+      return app ? phrase(`Publishing the app ${app}`, `Published the app ${app}`) : base;
+    }
+    case 'apps.read_submissions': {
+      if (!row.receipt) return base;
+      const app = quoted(detail.name);
+      const read = count(array(detail.submissions).length, 'response', 'responses');
+      return app ? phrase(base.doing, `Read ${read} to ${app}`) : base;
+    }
     default: {
       // A tool from an installed server: the server's name, then the tool's.
       const tool = MCP_KIND.exec(row.kind)?.[1];

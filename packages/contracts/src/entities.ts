@@ -79,6 +79,8 @@ export const CONNECTION_PROVIDERS = [
    * which holds the secret and asks before every change.
    */
   'command_line',
+  /** Publishes a folder of web files as an app people can open. */
+  'apps',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

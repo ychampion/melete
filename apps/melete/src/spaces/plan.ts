@@ -120,6 +120,9 @@ export async function sweepOperational(
     await tx`delete from device_pairing where space_id = ${spaceId}`;
     // A memory question belongs to a space rather than to a job.
     await tx`delete from question where space_id = ${spaceId}`;
+    // Published apps, with their versions and grants. The versions' blob
+    // references went in the files phase, with every blob only they used.
+    await tx`delete from app where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)
       await tx`delete from ${tx(table)} where space_id = ${spaceId}`;
     // A person's "don't do this" is theirs, not the space's: it keeps standing in

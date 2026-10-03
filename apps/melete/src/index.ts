@@ -44,6 +44,8 @@ import {
   voiceProvidersFromEnv,
 } from './api/voice.ts';
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
+import { mountApps } from './apps/routes.ts';
+import { mountAppViews } from './apps/serve.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -153,6 +155,8 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { mountSandboxPreviews, previewsFor, type SandboxPreviews } from './sandbox/preview.ts';
+import { PREVIEW_PREFIX } from './sandbox/preview-path.ts';
 import { startProcessMonitor } from './sandbox/process-monitor.ts';
 import { startProcesses } from './sandbox/processes.ts';
 import {
@@ -163,8 +167,10 @@ import {
 } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
-import { configuredBlobStore } from './storage/blob.ts';
+import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
+import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -210,6 +216,8 @@ export type AppDeps = {
   browserSessions?: BrowserSessionService;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
+  /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
+  sandboxPreviews?: SandboxPreviews;
   removals?: SpaceRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
@@ -236,6 +244,10 @@ export type AppDeps = {
   spending?: SpendingGuard;
   /** The operator's health detail. Left out, the database and queue checks alone. */
   healthDetail?: () => Promise<HealthDetail>;
+  /** Where published apps' files are kept. Left out, an app's files are not served. */
+  blobs?: BlobStore;
+  /** Signs app views. Left out, keyed from the master key. */
+  viewTokens?: ViewTokens;
 };
 
 export function createApp(deps: AppDeps) {
@@ -257,6 +269,11 @@ export function createApp(deps: AppDeps) {
       500,
     );
   });
+  // First, so it runs last: nothing under the app view path leaves without the
+  // isolation headers, whatever answered it.
+  app.use(`${VIEW_PREFIX}*`, isolated);
+  // The same for a preview of a server in an agent's computer.
+  app.use(`${PREVIEW_PREFIX}*`, isolated);
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -279,6 +296,20 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
     );
+  // Apps a person can open, and the changes they make to their own.
+  if (deps.sql)
+    mountApps(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      roots: { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+    });
+  // Opening one: a view for the person, and the files it loads with its token.
+  if (deps.sql)
+    mountAppViews(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
+    });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
@@ -427,6 +458,7 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
+  if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 
   mountHealthDetail(app, {
     token: deps.env.MELETE_OPERATOR_TOKEN,
@@ -565,6 +597,7 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
+  let sandboxPreviews: SandboxPreviews | undefined;
   let processSweep: { stop(): void } | undefined;
   let processMonitor: { stop(): void } | undefined;
   let processFactory: Parameters<typeof startProcessMonitor>[0] | undefined;
@@ -697,6 +730,7 @@ export async function bootstrap(
         );
       }
       processSweep = startProcesses(connectors);
+      sandboxPreviews = previewsFor(handle.sql, connectors, env.MELETE_MASTER_KEY);
       processFactory = connectors;
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
@@ -1161,6 +1195,7 @@ export async function bootstrap(
     privacy,
     spending,
     healthDetail: detail,
+    ...(blobs ? { blobs: blobs.store } : {}),
     db: handle?.db ?? null,
     jobs,
     triggers,
@@ -1182,6 +1217,7 @@ export async function bootstrap(
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
     sandboxComputers,
+    sandboxPreviews,
     removals,
     episodes,
     proposer: learning?.proposer,

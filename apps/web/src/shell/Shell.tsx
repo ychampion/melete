@@ -128,6 +128,7 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
     path: '/automations',
     match: (p) => p.startsWith('/automations'),
   },
+  { icon: 'apps', label: 'Apps', path: '/apps', match: (p) => p.startsWith('/apps') },
 ];
 
 const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
