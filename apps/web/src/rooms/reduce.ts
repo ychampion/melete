@@ -7,20 +7,22 @@
 import type { RoomFrame, RoomMessage, RoomRequest, ThreadView } from './api.ts';
 
 /**
- * A person in a room is labelled `Name <email>` by the service, always. The
- * email is what tells two people with the same name apart, so it is shown,
- * never dropped; this only splits the label so the two parts can be set apart.
+ * A person in a room is labelled `Name <handle>` by the service, always. The
+ * handle is the room's own code for them: nobody chooses it, so it is what
+ * tells two people with the same name apart, and it is shown, never dropped.
+ * No label carries an email. This only splits the label so the two parts can
+ * be set apart.
  */
-export function splitLabel(label: string): { name: string; email: string | null } {
-  const match = /^(.*\S)\s+<([^<>\s]+@[^<>\s]+)>$/.exec(label.trim());
-  if (!match?.[1] || !match[2]) return { name: label.trim(), email: null };
-  return { name: match[1], email: match[2] };
+export function splitLabel(label: string): { name: string; handle: string | null } {
+  const match = /^(.*\S)\s+<([^<>\s@]+)>$/.exec(label.trim());
+  if (!match?.[1] || !match[2]) return { name: label.trim(), handle: null };
+  return { name: match[1], handle: match[2] };
 }
 
 /** One or two letters for an avatar, from the name part of a label. */
 export function initialsOf(label: string): string {
-  const { name, email } = splitLabel(label);
-  const words = (name || email || '?').split(/\s+/).filter(Boolean);
+  const { name, handle } = splitLabel(label);
+  const words = (name || handle || '?').split(/\s+/).filter(Boolean);
   const letters = words.length > 1 ? [words[0], words[words.length - 1]] : [words[0]];
   return letters
     .map((word) => Array.from(word ?? '')[0] ?? '')
@@ -307,4 +309,26 @@ export function decisionWords(decision: RoomDecisionView): string {
   return decision.decision === 'approved'
     ? 'Allowed by the room’s settings'
     : 'Withdrawn by Melete';
+}
+
+type PermissionView = NonNullable<RoomRequest['permissions']>[number];
+
+/**
+ * Whether the signed-in person may answer this permission: the room's rule
+ * names them among its approvers, and the card names the exact content an
+ * answer is for. Everyone else in the room sees the card and who can answer it.
+ */
+export function canAnswer(permission: PermissionView, me: string | null): boolean {
+  if (!me || !permission.payload_hash) return false;
+  return (permission.eligible_approvers ?? []).some((person) => person.principal_id === me);
+}
+
+/** A date as people say it: "Oct 25", with the year only when it is not this one. */
+export function dayOf(iso: string, now = new Date()): string {
+  const date = new Date(iso);
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
 }

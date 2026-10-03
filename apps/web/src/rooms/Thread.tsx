@@ -18,12 +18,14 @@ import {
   type RoomDetail,
   type RoomFrame,
   type RoomMessage,
+  type RoomPermission,
   type RoomRequest,
   roomsApi,
   type ThreadView,
 } from './api.ts';
 import { PersonAvatar, Who } from './parts.tsx';
 import { RoomComposer } from './RoomComposer.tsx';
+import { RoomPermissionCard } from './RoomPermission.tsx';
 import {
   applyFrame,
   canStop,
@@ -67,6 +69,7 @@ export function Thread({
   threadId,
   detail,
   me,
+  ruleChanged = 0,
   onActivity,
   onGone,
 }: {
@@ -74,6 +77,8 @@ export function Thread({
   threadId: string;
   detail: RoomDetail;
   me: Me | null;
+  /** Bumped when the room's rule changes: who may answer what waits is read again. */
+  ruleChanged?: number;
   onActivity: () => void;
   onGone: () => void;
 }) {
@@ -173,6 +178,11 @@ export function Thread({
     };
   }, [roomId, threadId, read, schedule]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: read again only when the rule changes
+  useEffect(() => {
+    if (ruleChanged > 0) void read();
+  }, [ruleChanged]);
+
   // Keep the newest message in sight while the person is already at the bottom.
   const log = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
@@ -205,6 +215,36 @@ export function Thread({
     if (posted.request_job_id) schedule();
     onActivity();
     return true;
+  };
+
+  const remove = async (message: RoomMessage) => {
+    const result = await roomsApi.deleteMessage(roomId, message.id);
+    if (!result.data) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t delete it' });
+      return false;
+    }
+    const deleted = result.data.message;
+    setView((current) => (current ? upsertMessage(current, deleted) : current));
+    toast({ kind: 'ok', title: 'Deleted', sub: 'Nobody reads it now, and Melete forgets it.' });
+    // The buttons that held focus are gone; the thread keeps it.
+    log.current?.focus();
+    return true;
+  };
+
+  // One answer per permission at a time; the thread is read again once it lands.
+  const [answering, setAnswering] = useState<string | null>(null);
+  const answer = async (permission: RoomPermission, option: 'allow_once' | 'deny') => {
+    if (answering) return;
+    setAnswering(permission.id);
+    const result = await roomsApi.answer(roomId, permission, option);
+    setAnswering(null);
+    if (!result.data) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer it' });
+      void read();
+      return;
+    }
+    toast({ kind: 'ok', title: option === 'allow_once' ? 'Allowed once' : 'Denied' });
+    void read();
   };
 
   const stop = async (request: RoomRequest) => {
@@ -253,7 +293,13 @@ export function Thread({
           ) : null}
           {entries.map((entry) =>
             entry.type === 'message' ? (
-              <Message key={entry.message.id} message={entry.message} agent={agent} />
+              <Message
+                key={entry.message.id}
+                message={entry.message}
+                agent={agent}
+                mine={entry.message.author.principal_id === me?.id}
+                onDelete={() => remove(entry.message)}
+              />
             ) : (
               <Answer
                 key={entry.turn.id}
@@ -263,6 +309,9 @@ export function Thread({
                 last={entry.last}
                 stoppable={entry.last && canStop(entry.request, me?.id ?? null, role)}
                 onStop={() => void stop(entry.request)}
+                me={me?.id ?? null}
+                answering={answering}
+                onAnswer={(permission, option) => void answer(permission, option)}
               />
             ),
           )}
@@ -273,7 +322,30 @@ export function Thread({
   );
 }
 
-function Message({ message, agent }: { message: RoomMessage; agent: string }) {
+function Message({
+  message,
+  agent,
+  mine,
+  onDelete,
+}: {
+  message: RoomMessage;
+  agent: string;
+  mine: boolean;
+  onDelete: () => Promise<boolean>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  // A line the service wrote: how a handoff went, said as the person it was for.
+  if (message.kind === 'system')
+    return (
+      <p className="room-note">
+        <Icon name="info" size={14} />
+        <span>{message.text ?? 'Deleted by its author'}</span>
+        <time dateTime={message.created_at}>{timeOf(message.created_at)}</time>
+      </p>
+    );
+  const deletable = mine && message.kind === 'person' && message.text !== null;
   return (
     <article className="room-msg">
       <PersonAvatar id={message.author.principal_id} label={message.author.display_name} />
@@ -281,6 +353,9 @@ function Message({ message, agent }: { message: RoomMessage; agent: string }) {
         <div className="room-msg-head">
           <Who label={message.author.display_name} />
           {message.via_agent ? <span className="room-msg-tag">via Melete</span> : null}
+          {message.kind === 'handoff_result' ? (
+            <span className="room-msg-tag">Shared from their own setup</span>
+          ) : null}
           <time dateTime={message.created_at}>{timeOf(message.created_at)}</time>
           {message.request_state === 'pending' ? (
             <Status tone="waiting" quiet>
@@ -288,6 +363,18 @@ function Message({ message, agent }: { message: RoomMessage; agent: string }) {
             </Status>
           ) : message.request_state === 'started' ? (
             <span className="room-msg-tag">Asked {agent}</span>
+          ) : null}
+          {deletable && !confirming ? (
+            <button
+              ref={deleteRef}
+              type="button"
+              className="room-msg-delete"
+              aria-label="Delete your message"
+              title="Delete your message"
+              onClick={() => setConfirming(true)}
+            >
+              <Icon name="trash" size={14} />
+            </button>
           ) : null}
         </div>
         {message.text === null ? (
@@ -297,6 +384,40 @@ function Message({ message, agent }: { message: RoomMessage; agent: string }) {
         ) : (
           <p className="room-msg-text">{message.text}</p>
         )}
+        {confirming ? (
+          <fieldset className="room-msg-confirm">
+            <legend>
+              Delete this message? Nobody in the room reads it again, and Melete forgets what it
+              learned from it.
+            </legend>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <Button
+                size="sm"
+                variant="destructive"
+                autoFocus
+                loading={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  const done = await onDelete();
+                  setBusy(false);
+                  if (!done) setConfirming(false);
+                }}
+              >
+                Delete
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setConfirming(false);
+                  requestAnimationFrame(() => deleteRef.current?.focus());
+                }}
+              >
+                Keep it
+              </Button>
+            </div>
+          </fieldset>
+        ) : null}
       </div>
     </article>
   );
@@ -309,6 +430,9 @@ function Answer({
   last,
   stoppable,
   onStop,
+  me,
+  answering,
+  onAnswer,
 }: {
   agent: string;
   request: RoomRequest;
@@ -316,6 +440,9 @@ function Answer({
   last: boolean;
   stoppable: boolean;
   onStop: () => void;
+  me: string | null;
+  answering: string | null;
+  onAnswer: (permission: RoomPermission, option: 'allow_once' | 'deny') => void;
 }) {
   const status = last ? request.status : turn.status;
   const streaming = status === 'streaming' || status === 'working' || status === 'queued';
@@ -348,7 +475,9 @@ function Answer({
             <Markdown text={turn.answer} streaming={streaming && last} />
           </div>
         ) : null}
-        {last ? <Waiting request={request} /> : null}
+        {last ? (
+          <Waiting request={request} me={me} answering={answering} onAnswer={onAnswer} />
+        ) : null}
         {last && (request.cards.length > 0 || request.receipts.length > 0) ? (
           <div className="col room-answer-work">
             {request.cards.map((card) => (
@@ -372,41 +501,35 @@ function Answer({
 }
 
 /**
- * What a request waits on, and what was answered, read-only: each waiting
- * permission names who may answer it under the room's rule, and each answer
- * names who gave it.
+ * What a request waits on, and what was answered. Everyone in the room sees
+ * each waiting permission whole, with what exactly it would do, and who may
+ * answer it under the room's rule; only those people get its answers. Each
+ * answer names who gave it.
  */
-function Waiting({ request }: { request: RoomRequest }) {
+function Waiting({
+  request,
+  me,
+  answering,
+  onAnswer,
+}: {
+  request: RoomRequest;
+  me: string | null;
+  answering: string | null;
+  onAnswer: (permission: RoomPermission, option: 'allow_once' | 'deny') => void;
+}) {
   const permissions = request.permissions ?? [];
   const decisions = request.decisions ?? [];
   if (permissions.length === 0 && decisions.length === 0) return null;
   return (
     <div className="col room-waiting">
       {permissions.map((permission) => (
-        <section key={permission.id} className="room-permission" aria-label={permission.what}>
-          <span className="room-permission-tile" aria-hidden="true">
-            <Icon name="lock" size={16} />
-          </span>
-          <div className="col room-permission-main">
-            <span className="room-permission-what">{permission.what}</span>
-            {permission.why.map((line) => (
-              <span key={line} className="room-permission-why">
-                {line}
-              </span>
-            ))}
-            {permission.eligible_approvers && permission.eligible_approvers.length > 0 ? (
-              <span className="room-permission-who">
-                Who can answer:{' '}
-                {permission.eligible_approvers.map((person, index) => (
-                  <span key={person.principal_id}>
-                    {index > 0 ? ', ' : null}
-                    <Who label={person.display_name} />
-                  </span>
-                ))}
-              </span>
-            ) : null}
-          </div>
-        </section>
+        <RoomPermissionCard
+          key={permission.id}
+          permission={permission}
+          me={me}
+          busy={answering === permission.id}
+          onAnswer={onAnswer}
+        />
       ))}
       {decisions.map((decision) => (
         <span key={decision.approval_id} className="room-decision">

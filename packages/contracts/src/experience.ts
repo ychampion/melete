@@ -234,6 +234,11 @@ export const permissionCard = z.strictObject({
    * else in the room sees the card and cannot answer it.
    */
   eligible_approvers: z.array(permissionPerson).optional(),
+  /**
+   * In a room: the hash of exactly what this would do. An answer names it, so
+   * nobody answers for content they did not see.
+   */
+  payload_hash: id.optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 
@@ -1034,7 +1039,7 @@ export const homeResponse = z.strictObject({
   open_task_count: count,
   /** Routines that ran in the last day, newest first. */
   routine_results: z.array(routineResult),
-  /** Work rooms asked the person to run with their own setup, and results waiting to be shared or kept. */
+  /** Work rooms asked the person to run with their own setup, work of theirs running for a room, and results waiting to be shared or kept. */
   handoffs: z.array(roomHandoff).optional(),
 });
 export const experienceAutomation = z.strictObject({
@@ -1215,7 +1220,7 @@ export const experienceOperations = {
   'GET /permissions': {
     response: z.strictObject({
       permissions: z.array(permissionCard),
-      /** Handoffs from rooms that wait for the person: to run, or to share or keep the result. */
+      /** Handoffs from rooms: to run, running with the person's setup, or a result to share or keep. */
       handoffs: z.array(roomHandoff).optional(),
     }),
   },

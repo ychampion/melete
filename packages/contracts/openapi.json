@@ -14922,6 +14922,13 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "person",
+                            "guest"
+                          ]
                         }
                       },
                       "required": [
@@ -32931,6 +32938,9 @@
             "items": {
               "$ref": "#/components/schemas/__schema267"
             }
+          },
+          "payload_hash": {
+            "$ref": "#/components/schemas/__schema241"
           }
         },
         "required": [

@@ -49,7 +49,7 @@
 .who-name[data-strong="true"] {
   font-weight: 600;
 }
-.who-email {
+.who-handle {
   color: var(--muted);
   font-weight: 400;
 }
@@ -498,53 +498,21 @@
   }
 }
 
-/* ---------- what a request waits on (read-only here) ---------- */
+/* ---------- what a request waits on ---------- */
 
 .room-waiting {
   gap: 8px;
   margin-top: 4px;
 }
-.room-permission {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-lift);
-  background: var(--surface);
+.room-permission-card {
+  gap: 6px;
 }
-.room-permission-tile {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  border-radius: 10px;
-  background: var(--sand);
-  color: var(--sand-ink);
-}
-.room-permission-main {
-  gap: 3px;
-  min-width: 0;
-}
-.room-permission-what {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--heading);
-  overflow-wrap: anywhere;
-}
-.room-permission-why,
 .room-permission-who {
+  padding: 0 4px;
   font-size: 13px;
   line-height: 19px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-.room-permission-who {
   color: var(--secondary);
-  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .room-decision {
   display: inline-flex;
@@ -554,4 +522,216 @@
   font-size: 13px;
   color: var(--secondary);
   overflow-wrap: anywhere;
+}
+
+/* ---------- answering, notes and deleting in a thread ---------- */
+
+.room-rule {
+  font-size: 12px;
+  color: var(--muted);
+}
+.room-note {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-left: 40px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.room-note time {
+  font-size: 12px;
+  color: var(--muted);
+}
+.room-msg-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border-radius: 8px;
+  color: var(--muted);
+}
+.room-msg-delete:hover {
+  background: var(--hover);
+  color: var(--heading);
+}
+.room-msg-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block);
+  background: var(--soft);
+  min-width: 0;
+}
+.room-msg-confirm legend {
+  float: left;
+  width: 100%;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text);
+}
+
+/* ---------- guests, memory and settings ---------- */
+
+.people-invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px auto;
+  align-items: end;
+  gap: 8px;
+}
+.people-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-block);
+  background: var(--blue-soft);
+  min-width: 0;
+}
+.people-link .input {
+  flex: 1;
+  min-width: 0;
+}
+.memory-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.memory-row:first-child {
+  border-top: 0;
+}
+.memory-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.memory-content {
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.memory-content[data-gone="true"] {
+  color: var(--muted);
+  font-style: italic;
+}
+.memory-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.settings-group legend {
+  padding: 0;
+}
+.settings-choice {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block);
+  cursor: pointer;
+}
+.settings-choice:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--blue-soft);
+}
+.settings-group:disabled .settings-choice {
+  cursor: default;
+}
+.settings-choice input {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.settings-choice-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.settings-switch {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---------- an invite link, opened ---------- */
+
+.invite-card {
+  gap: 16px;
+  width: 440px;
+  max-width: 100%;
+}
+.invite-title {
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 400;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.invite-sub {
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--muted);
+}
+.invite-note {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--sand);
+  color: var(--sand-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+/* ---------- a room's task on Home ---------- */
+
+.handoff-tile {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.handoff-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.handoff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  .people-invite-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .room-note {
+    margin-left: 0;
+  }
+  .room-head-actions {
+    flex-wrap: wrap;
+  }
 }

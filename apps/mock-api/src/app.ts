@@ -152,6 +152,38 @@ export function createMockApp(deps: AppDeps) {
     }),
   );
 
+  /**
+   * A guest's sign-in reaches only the rooms routes, its own account and a
+   * room's files, as on the service; everything else is refused before it
+   * runs. Set once the rooms mock exists, further down.
+   */
+  const guests: { active: () => boolean; signOut: () => void } = {
+    active: () => false,
+    signOut: () => undefined,
+  };
+  const OPEN_TO_ALL = ['/health', '/setup', '/login', '/invites/view', '/invites/accept'];
+  app.use('*', async (c, next) => {
+    if (!guests.active() || c.req.method === 'OPTIONS') return next();
+    const path = c.req.path;
+    if (OPEN_TO_ALL.includes(path) || path.startsWith('/signin') || path === '/password-reset')
+      return next();
+    if (c.req.method === 'POST' && path === '/signout') {
+      guests.signOut();
+      return c.json({ status: 'ok' });
+    }
+    const allowed =
+      path === '/rooms' ||
+      path.startsWith('/rooms/') ||
+      (path === '/me' && ['GET', 'PATCH'].includes(c.req.method)) ||
+      (c.req.method === 'POST' && path === '/account/password') ||
+      (c.req.method === 'GET' && /^\/artifacts\/[^/]+\/content$/.test(path));
+    if (allowed) return next();
+    return c.json(
+      fail('guests_use_rooms', 'A guest account uses only the rooms it was invited to.'),
+      403,
+    );
+  });
+
   // Before the experience routes, which answer every operation they do not implement.
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
@@ -270,8 +302,15 @@ export function createMockApp(deps: AppDeps) {
       !account ||
       body.value.email.toLowerCase() !== account.email ||
       body.value.password !== account.password
-    )
-      return c.json(fail('invalid_credentials', 'Email or password is wrong.'), 401);
+    ) {
+      // A guest signs in with the password they chose when they accepted an invite.
+      const guest = roomsMock.signInGuest(body.value.email, body.value.password);
+      if (!guest) return c.json(fail('invalid_credentials', 'Email or password is wrong.'), 401);
+      return send(ownerResponse, {
+        owner: { id: guest.id, email: guest.email, created_at: guest.created_at },
+      });
+    }
+    roomsMock.signOutGuest();
     experience.signedOut = false;
     return send(ownerResponse, owned(account));
   });
@@ -281,7 +320,15 @@ export function createMockApp(deps: AppDeps) {
     account: () => account,
     signedOut: () => experience.signedOut,
     profileName: () => experience.profile.name,
+    belief: (claimId) => {
+      const found = experience.beliefs.beliefs.get(claimId);
+      const view = found ? experience.beliefs.view(found) : null;
+      return view ? { label: view.label, value: view.value } : null;
+    },
   });
+  experience.handoffsWaiting = roomsMock.handoffsWaiting;
+  guests.active = () => roomsMock.guest() !== null;
+  guests.signOut = roomsMock.signOutGuest;
   if (deps.seedExperience) roomsMock.seed();
 
   // ------------------------------------------------------------------

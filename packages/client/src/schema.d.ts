@@ -9503,6 +9503,8 @@ export interface paths {
                                 /** Format: email */
                                 email: string;
                                 id: string;
+                                /** @enum {string} */
+                                kind?: "person" | "guest";
                             };
                         };
                     };
@@ -21340,6 +21342,7 @@ export interface components {
             };
             id: components["schemas"]["__schema241"];
             options: components["schemas"]["__schema265"][];
+            payload_hash?: components["schemas"]["__schema241"];
             preview: components["schemas"]["__schema256"] | null;
             requested_by?: components["schemas"]["__schema267"];
             review?: components["schemas"]["__schema260"];

@@ -1,12 +1,14 @@
 /**
  * A room's thread reads in order, with each answer straight after the message
- * that asked for it, and every person shown by name and email.
+ * that asked for it, and every person shown by name and the room's handle for them.
  */
 import { expect, test } from 'bun:test';
-import type { RoomMessage, RoomRequest, ThreadView } from './api.ts';
+import { inviteLink, type RoomMessage, type RoomRequest, type ThreadView } from './api.ts';
 import {
   applyFrame,
+  canAnswer,
   canStop,
+  dayOf,
   decisionWords,
   initialsOf,
   mentionFor,
@@ -20,8 +22,8 @@ import {
   withStreams,
 } from './reduce.ts';
 
-const ALICE = { principal_id: 'own_alice', display_name: 'Alice <alice@example.test>' };
-const BOB = { principal_id: 'own_bob', display_name: 'Bob <bob@example.test>' };
+const ALICE = { principal_id: 'own_alice', display_name: 'Alice <k7q2mxwa>' };
+const BOB = { principal_id: 'own_bob', display_name: 'Bob <p3vz8ndr>' };
 
 const at = (minute: number) => new Date(Date.UTC(2026, 9, 2, 9, minute)).toISOString();
 
@@ -85,18 +87,17 @@ const shape = (v: ThreadView) =>
       : `answer:${entry.turn.id}${entry.last ? ':last' : ''}`,
   );
 
-test('a label splits into the name and the email, and a bare name keeps no email', () => {
-  expect(splitLabel('Alice <alice@example.test>')).toEqual({
-    name: 'Alice',
-    email: 'alice@example.test',
-  });
-  expect(splitLabel('Mary Ann Lee <mal@example.test>')).toEqual({
+test("a label splits into the name and the room's handle, and a bare name keeps no handle", () => {
+  expect(splitLabel('Alice <k7q2mxwa>')).toEqual({ name: 'Alice', handle: 'k7q2mxwa' });
+  expect(splitLabel('Mary Ann Lee <h4ndl3ab>')).toEqual({
     name: 'Mary Ann Lee',
-    email: 'mal@example.test',
+    handle: 'h4ndl3ab',
   });
-  expect(splitLabel('Someone')).toEqual({ name: 'Someone', email: null });
-  expect(initialsOf('Mary Ann Lee <mal@example.test>')).toBe('ML');
-  expect(initialsOf('alice <alice@example.test>')).toBe('A');
+  expect(splitLabel('Someone')).toEqual({ name: 'Someone', handle: null });
+  // Nothing shaped like an email is ever taken for a handle.
+  expect(splitLabel('Alice <alice@example.test>').handle).toBeNull();
+  expect(initialsOf('Mary Ann Lee <h4ndl3ab>')).toBe('ML');
+  expect(initialsOf('alice <k7q2mxwa>')).toBe('A');
 });
 
 test('an answer follows the message that asked for it, even when others spoke in between', () => {
@@ -273,12 +274,50 @@ test('a read that is ahead of the stream never shows a word twice', () => {
 test('an answered permission says who answered it, or that nobody in the room did', () => {
   const base = { approval_id: 'apr_1', decided_at: at(4) };
   expect(decisionWords({ ...base, decision: 'approved', decided_by: BOB })).toBe(
-    'Allowed by Bob <bob@example.test>',
+    'Allowed by Bob <p3vz8ndr>',
   );
   expect(decisionWords({ ...base, decision: 'denied', decided_by: ALICE })).toBe(
-    'Denied by Alice <alice@example.test>',
+    'Denied by Alice <k7q2mxwa>',
   );
   expect(decisionWords({ ...base, decision: 'denied', decided_by: null })).toBe(
     'Withdrawn by Melete',
   );
+});
+
+test("only the people the room's rule names can answer, and only for the content the card names", () => {
+  const card = {
+    id: 'apr_1',
+    conversation_id: 'job_1',
+    what: 'Send the notes',
+    why: ['Waiting for Bob <p3vz8ndr>, who asked for it.'],
+    options: ['allow_once', 'deny'] as ('allow_once' | 'deny' | 'always')[],
+    version: 'v1',
+    preview: null,
+    created_at: '2026-10-02T10:00:00.000Z',
+    eligible_approvers: [BOB],
+    payload_hash: 'a'.repeat(64),
+  };
+  expect(canAnswer(card, 'own_bob')).toBe(true);
+  expect(canAnswer(card, 'own_alice')).toBe(false);
+  expect(canAnswer(card, null)).toBe(false);
+  // A card that names no content is never answered from here.
+  const { payload_hash: _hash, ...unbound } = card;
+  expect(canAnswer(unbound, 'own_bob')).toBe(false);
+  expect(canAnswer({ ...card, eligible_approvers: [] }, 'own_bob')).toBe(false);
+});
+
+test('an invite link opens on this page when the service knows no public address', () => {
+  const path = '/#/invite?token=abc';
+  expect(inviteLink({ link: null, path }, 'http://melete.local:8080/')).toBe(
+    'http://melete.local:8080/#/invite?token=abc',
+  );
+  expect(inviteLink({ link: 'https://melete.example/#/invite?token=abc', path }, 'x')).toBe(
+    'https://melete.example/#/invite?token=abc',
+  );
+});
+
+test('a date reads as people say it, with the year only when it is not this one', () => {
+  const now = new Date('2026-10-02T12:00:00.000Z');
+  expect(dayOf('2026-10-25T12:00:00.000Z', now)).toBe('Oct 25');
+  expect(dayOf('2027-01-05T12:00:00.000Z', now)).toBe('Jan 5, 2027');
 });
