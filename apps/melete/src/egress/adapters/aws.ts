@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import type { JsonObject } from '@melete/contracts';
 import { XMLParser } from 'fast-xml-parser';
 import { z } from 'zod';
+import { credentialInAnswer } from '../answer-guard.ts';
 import {
   AWS_REGION,
   type AwsAccessKey,
@@ -836,32 +837,12 @@ function uncertain(write: ClassifiedWrite, upstream: UpstreamResponse): string |
   return `AWS answered with an error (${error.code ?? 'no code'}) after starting this change, so it may still have taken effect. Check before asking for it again.`;
 }
 
-/**
- * What in an answer is a credential: an AWS secret access key or session
- * token (as an XML, JSON or CBOR key), a private key, or a field named
- * `Secret`. An answer holding one is kept from the computer, whatever
- * operation asked for it.
- */
-const IN_ANSWER: Array<[RegExp, string]> = [
-  [/secret_?access_?key/i, 'an AWS secret access key'],
-  [/session_?token/i, 'a session token'],
-  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, 'a private key'],
-  [/"secret"\s*:/i, 'a secret'],
-];
-
 function answerCheck(
   request: InterceptedRequest,
 ): ((answer: UpstreamResponse) => string | null) | null {
   // An unsigned request carried no account; S3 objects are the person's own files.
   if (request.authorization === undefined || s3Host(request.host)) return null;
-  return (answer) => {
-    const text = [
-      answer.body.toString('latin1'),
-      ...Object.entries(answer.headers).map(([name, value]) => `${name}: ${value}`),
-    ].join('\n');
-    for (const [pattern, what] of IN_ANSWER) if (pattern.test(text)) return what;
-    return null;
-  };
+  return (answer) => credentialInAnswer(answer);
 }
 
 const escapeXml = (text: string) =>

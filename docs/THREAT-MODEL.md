@@ -551,8 +551,9 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   sign-in link) are refused; other names that speak of a credential, token, key
   pair, password or private key ask, and reading a stored secret asks. Every
   answer to a signed request, but an S3 object's, is checked whole before the
-  computer sees it: one holding an AWS secret key, a session token, a private
-  key or a `Secret` field is withheld and recorded (`the relay keeps an answer
+  computer sees it: one holding an AWS secret key or session token, an access,
+  refresh, identity or authorization token, a password, a client secret, a
+  private key or a `Secret` field is withheld and recorded (`the relay keeps an answer
   holding a credential from the computer, and records it`). S3 is read by
   method, bucket, key and subresource (`list and describe calls are reads, and
   delete and run calls ask` runs the classifier over the requests the AWS SDK

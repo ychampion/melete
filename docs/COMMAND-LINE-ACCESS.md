@@ -255,9 +255,9 @@ request's operation is believed only where its service reads it.
   link. Any other operation whose name speaks of a credential, token, key pair,
   password or private key asks, and says it may hand one back.
 - **Every answer is checked.** An answer to a signed request (other than an S3
-  object, which is the person's own file) that holds an AWS secret access key, a
-  session token, a private key or a field named `Secret` is kept from the
-  computer, which is told why; the connection's record notes it, and for a
+  object, which is the person's own file) that holds a credential (an AWS secret access key or session token; an
+  access, refresh, identity or authorization token; a password, a client secret,
+  a `Secret` field or a private key) is kept from the computer, which is told why; the connection's record notes it, and for a
   change that was made, its receipt does too.
 - A signed request to a server that runs on AWS rather than one of AWS's APIs
   (an EC2 instance's public name, a load balancer) is refused: the account is
