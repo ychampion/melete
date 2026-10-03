@@ -145,6 +145,8 @@ export interface GatewaySettlement {
    * the spending caps alone; the job's ledger keeps its reservation instead.
    */
   spendEstimate?: GatewayUsage;
+  /** A flat fee on top of the tokens, such as a provider's charge per web search. */
+  feeUsd?: number;
   /** Served on the person's own model, which costs nothing unless the operator prices it. */
   servedLocally?: boolean;
   /** The model that actually answered, when the privacy router sent the call to the local model. */

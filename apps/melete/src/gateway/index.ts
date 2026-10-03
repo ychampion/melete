@@ -86,6 +86,25 @@ export interface GatewayOptions {
    * turns or the service's side calls. Added only where a request names none.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Lets a request carry its provider's own web search tool, and no other
+   * built-in tool. Only the service's search gateway sets it: its calls are one
+   * bounded request each, recorded against the job that searched.
+   */
+  providerSearch?: boolean;
+}
+
+/** A provider's own web search tool: `web_search` (Responses) or `web_search_YYYYMMDD` (Messages). */
+export const isProviderSearchTool = (tool: unknown): boolean => {
+  const type = object(tool)?.type;
+  return typeof type === 'string' && /^web_search(?:_preview|_\d{8})?$/.test(type);
+};
+
+/** The body without its provider search tools, for the built-in-tool check. */
+function withoutSearchTools(body: Record<string, unknown>): Record<string, unknown> {
+  return Array.isArray(body.tools)
+    ? { ...body, tools: body.tools.filter((tool) => !isProviderSearchTool(tool)) }
+    : body;
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -315,7 +334,8 @@ export function createModelGateway(options: GatewayOptions): Server {
       // Remote media and built-in tools cannot be metered by this gateway. A
       // picture the request carries itself (a screenshot the agent took) can,
       // within the limits countImages holds it to.
-      if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
+      if (containsRemoteInput(options.providerSearch ? withoutSearchTools(body) : body))
+        throw new GatewayError(400, 'unmetered_input_denied');
       const carriesPictures = countImages(body) > 0;
       // The models this call may be served by, in order: the one it names (or
       // the vision model, for a picture its own model cannot read), then the

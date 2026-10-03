@@ -410,9 +410,9 @@ export class SpendingGuard implements GatewaySpending {
         provider: settlement.provider,
         model: settlement.modelRequested,
       };
-      const cost = usage
-        ? this.costOf({ ...served, local: settlement.servedLocally === true }, usage)
-        : 0;
+      const cost =
+        (usage ? this.costOf({ ...served, local: settlement.servedLocally === true }, usage) : 0) +
+        (settlement.feeUsd ?? 0);
       await this.sql`insert into model_usage (id, created_at, space_id, principal_id, job_id,
           purpose, provider, model, model_actual, route, routed_from, status,
           input_tokens, output_tokens, cached_input_tokens, cost_usd, usage_estimated)
