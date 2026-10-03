@@ -26,7 +26,7 @@ import {
 import { gatewayAttachments } from '../../src/attachments/model.ts';
 import { AttachmentService } from '../../src/attachments/store.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { owner, space } from '../../src/db/schema.ts';
+import { owner, principal, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
@@ -165,20 +165,23 @@ async function conversation() {
   return conversationResponse.parse(await created.json()).conversation;
 }
 
-/** Another person on the same installation, with a space and a session of their own. */
+/** Another person on the same installation, with a personal space and a session of their own. */
 async function person(): Promise<string> {
   if (!handle) throw new Error('Postgres unavailable');
   const theirSpace = newId('sp');
-  const theirOwner = newId('own');
+  const them = newId('own');
   const theirToken = randomBytes(32).toString('base64url');
-  await handle.db.insert(owner).values({ id: theirOwner, email: `${theirOwner}@example.test` });
-  await handle.sql`insert into principal (id, email, password_hash) select id, email, password_hash from owner where id = ${theirOwner}`;
-  await handle.db
-    .insert(space)
-    .values({ id: theirSpace, name: 'Personal', gitPath: `/spaces/${theirSpace}` });
+  await handle.db.insert(principal).values({ id: them, email: `${them}@example.test` });
+  await handle.db.insert(space).values({
+    id: theirSpace,
+    name: 'Personal',
+    ownerPrincipalId: them,
+    gitPath: `/spaces/${theirSpace}`,
+  });
   await handle.db.insert(session).values({
     tokenHash: createHash('sha256').update(theirToken).digest('hex'),
-    ownerId: theirOwner,
+    ownerId,
+    principalId: them,
     spaceId: theirSpace,
     expiresAt: new Date(Date.now() + 600_000),
   });
