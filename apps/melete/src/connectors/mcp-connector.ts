@@ -30,7 +30,7 @@ export function mcpConnector(
     const tool = worker.tools.find((tool) => tool.name === action.kind);
     return row &&
       tool &&
-      row.audience === 'owner' &&
+      (row.audience === 'owner' || row.audience === 'space') &&
       action.connection_id === binding.connectionId &&
       context.space_id === binding.spaceId &&
       !jobConstraints.parse(row.constraints).public_compartment &&

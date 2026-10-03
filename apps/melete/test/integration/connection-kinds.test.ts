@@ -1129,7 +1129,7 @@ withDb('installing each kind of connection through the API', () => {
     expect((await h.revoke(replacement)).status).toBe(200);
   }, 120_000);
 
-  test('only the owner of an owner-audience space installs, and a session without a space_id means its own space', async () => {
+  test("only an owner of the space installs, a room's account serves the room, and a session without a space_id means its own space", async () => {
     if (!h || !fixture) throw new Error('Postgres unavailable');
     const feed = Bun.serve({
       hostname: '127.0.0.1',
@@ -1178,11 +1178,23 @@ withDb('installing each kind of connection through the API', () => {
     const shared = await h.app.request('/spaces/shared', h.as(h.cookie, { name: 'Household' }));
     expect(shared.status).toBe(201);
     const sharedId = ((await shared.json()) as { space: { id: string } }).space.id;
-    expect((await h.install({ ...body, space_id: sharedId })).status).toBe(403);
+    // Someone outside the room is refused before the address is examined.
+    expect((await h.install({ ...body, space_id: sharedId }, memberCookie)).status).toBe(403);
     expect(
-      (await h.install({ ...body, space_id: sharedId, ics: { url: 'https://10.0.0.8/m.ics' } }))
-        .status,
+      (
+        await h.install(
+          { ...body, space_id: sharedId, ics: { url: 'https://10.0.0.8/m.ics' } },
+          memberCookie,
+        )
+      ).status,
     ).toBe(403);
+    // The room's owner adds an account the room uses as its own.
+    const team = await h.install({ ...body, label: 'Team feed', space_id: sharedId });
+    expect(team.status).toBe(201);
+    const teamId = connectionResponse.parse(team.json).connection.id;
+    const [teamRow] = await h.sql`select space_id, shared_use from connection where id = ${teamId}`;
+    expect(teamRow).toMatchObject({ space_id: sharedId, shared_use: 'room' });
+    expect((await h.revoke(teamId)).status).toBe(200);
 
     // A new account's space and a new shared space receive the defaults as they are created.
     for (const created of [installed.space_id, sharedId]) {

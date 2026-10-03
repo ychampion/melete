@@ -853,23 +853,36 @@ withDb('room approvals', () => {
   }, 90_000);
 
   test("no room rule lets a room's request act through a person's own account", async () => {
-    const { broker } = database();
+    const { broker, db, sql } = database();
     const { roomId } = await makeRoom('Their mail');
     await setPolicy(roomId, { approvers: 'any_member' });
-    // Marked for the room, and still a person's own account: it serves only an owner's own space.
-    const mailbox = await installAs(roomId, ownAccountManifest, 'room', {
+    // Bob's own mailbox stays in Bob's own space; the room reaches it only by
+    // handing Bob the task, which then runs under Bob's own rules.
+    const [own] = await sql`select id from space
+      where owner_principal_id = ${world.bob.id} and kind = 'personal' limit 1`;
+    const mailbox = await installAs(String(own?.id), ownAccountManifest, 'owner', {
       ...succeeding(ownAccountManifest),
       catalog: { audience: 'owner' },
     } as Connector);
     const opened = await startThread(world.bob, roomId, '@Melete post the notes from my mail');
-    const { claims } = await claim(opened.request_job_id ?? '');
+    const requestId = opened.request_job_id ?? '';
+    const offered = (
+      await new RuntimeCatalog(db, registry).toolsForSpace(
+        roomId,
+        ownAccountManifest.tools.map((tool) => tool.name),
+        db,
+        requestId,
+      )
+    ).map((tool) => tool.connection_id);
+    expect(offered).not.toContain(mailbox);
+    const { claims } = await claim(requestId);
     await expect(
       broker.propose(claims as CapabilityClaims, {
         connection_id: mailbox,
         kind: 'notes.post',
         payload: { to: ['dana@example.test'], body: 'The notes.' },
       }),
-    ).rejects.toMatchObject({ code: 'scope_denied' });
+    ).rejects.toMatchObject({ code: 'unknown_connection' });
   }, 60_000);
 
   test("an option the asker picked is the assistant's words to the reviewer, not the asker's instruction", async () => {
@@ -1075,6 +1088,44 @@ withDb('room approvals', () => {
       kind: 'calendar.create',
       payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
     });
+    expect(proposed.requires_approval).toBe(true);
+  }, 90_000);
+
+  test("an account the room's owners added serves the room's requests, under the room's rule", async () => {
+    const { db } = database();
+    const { roomId } = await makeRoom('Team accounts');
+    // An installed account carries its own audience mark, as a mailbox or a
+    // calendar account does; in a room's space it serves the room.
+    const account = succeeding(calendarManifest);
+    const team = await installAs(
+      roomId,
+      calendarManifest,
+      'room',
+      Object.assign(account, { catalog: { ...account.catalog, audience: 'owner' as const } }),
+    );
+    const opened = await startThread(
+      world.bob,
+      roomId,
+      '@Melete put the offsite on the team calendar',
+    );
+    const requestId = opened.request_job_id ?? '';
+    const catalog = new RuntimeCatalog(db, registry);
+    const offered = (
+      await catalog.toolsForSpace(
+        roomId,
+        calendarManifest.tools.map((tool) => tool.name),
+        db,
+        requestId,
+      )
+    ).map((tool) => tool.connection_id);
+    expect(offered).toContain(team);
+    const { claims } = await claim(requestId);
+    const proposed = await database().broker.propose(claims as CapabilityClaims, {
+      connection_id: team,
+      kind: 'calendar.create',
+      payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
+    });
+    // The room's rule decides it: the person who asked answers.
     expect(proposed.requires_approval).toBe(true);
   }, 90_000);
 
