@@ -2,10 +2,13 @@
  * A turn as a work log: the agent's own messages in order, the work between
  * two of them as one quiet row that opens onto each piece, a command opening
  * onto its shell output, an edit as a card with its changes. While the turn
- * runs the log is open; once it ends it folds behind "Worked for …", and the
- * final answer stays below it. Every string from outside is drawn as plain text.
+ * runs the log streams inline in the conversation; once it ends it folds into
+ * one line, "Worked for … · ran 6 commands", and the final answer stays below
+ * it. Opening anything unfolds it in place: no boxes, only height and a fade,
+ * and no motion at all for a person who asked for less. Every string from
+ * outside is drawn as plain text.
  */
-import { type ReactNode, useId, useState } from 'react';
+import { type ReactNode, useEffect, useId, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Dialog } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
@@ -16,6 +19,7 @@ import { toolIcon } from './activity.tsx';
 import { Markdown } from './Markdown.tsx';
 import { stoppedLine } from './parts.tsx';
 import {
+  countWork,
   type DiffSummary,
   editedFile,
   type LogItem,
@@ -30,6 +34,77 @@ import {
 } from './worklog.ts';
 
 const RUNNING = new Set(['queued', 'working', 'streaming', 'paused']);
+
+/* ---------- motion ---------- */
+
+const REDUCE = '(prefers-reduced-motion: reduce)';
+
+/** Whether the person asked for less motion; false where there is no window to ask. */
+export function readReducedMotion(): boolean {
+  try {
+    return Boolean(globalThis.matchMedia?.(REDUCE).matches);
+  } catch {
+    return false;
+  }
+}
+
+/** The reduced-motion preference, kept current when the person changes it. */
+export function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(readReducedMotion);
+  useEffect(() => {
+    const query = globalThis.matchMedia?.(REDUCE);
+    if (!query) return;
+    const change = () => setReduced(query.matches);
+    query.addEventListener?.('change', change);
+    return () => query.removeEventListener?.('change', change);
+  }, []);
+  return reduced;
+}
+
+/**
+ * Content that unfolds in place: its height grows from nothing and it fades
+ * in, and it folds back the same way. What it holds is drawn the first time it
+ * opens and kept after, so folding is seen too; while folded it is inert, out
+ * of the tab order and the accessibility tree. With reduced motion it opens
+ * and closes at once.
+ */
+export function Reveal({
+  id,
+  open,
+  className,
+  children,
+}: {
+  id?: string;
+  open: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const reduced = useReducedMotion();
+  const [seen, setSeen] = useState(open);
+  if (open && !seen) setSeen(true);
+  return (
+    <div
+      id={id}
+      className="reveal"
+      data-open={open ? 'true' : 'false'}
+      data-motion={reduced ? 'off' : undefined}
+      inert={!open}
+    >
+      <div className="reveal-clip">
+        <div className={className ? `reveal-body ${className}` : 'reveal-body'}>
+          {seen || open ? children : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Words that shimmer while what they name is under way, and sit still once it is not. */
+function Live({ on, children }: { on: boolean; children: ReactNode }): ReactNode {
+  return on ? <span className="shimmer-text">{children}</span> : children;
+}
+
+/* ---------- rows ---------- */
 
 const KIND_ICON: Partial<Record<WorkKind, IconName>> = {
   command: 'terminal',
@@ -99,9 +174,7 @@ export function ShellBlock({ tool, live }: { tool: ToolEntry; live: boolean }) {
         ) : null}
       </section>
       <div className="log-shell-foot" role="status">
-        {tool.status === 'running' ? (
-          <Icon name="loader" size={13} stroke={2} className={live ? 'spin' : undefined} />
-        ) : tool.status === 'done' ? (
+        {tool.status === 'running' ? null : tool.status === 'done' ? (
           <Icon name="check" size={13} stroke={2} />
         ) : tool.status === 'failed' ? (
           <Icon name="circleX" size={13} stroke={2} />
@@ -109,7 +182,7 @@ export function ShellBlock({ tool, live }: { tool: ToolEntry; live: boolean }) {
           <Icon name="clock" size={13} stroke={2} />
         )}
         <span>
-          {STATUS_WORDS[tool.status]}
+          <Live on={live && tool.status === 'running'}>{STATUS_WORDS[tool.status]}</Live>
           {failedWhy ? ` · ${failedWhy}` : ''}
         </span>
       </div>
@@ -179,6 +252,10 @@ function Preview({ tool, live }: { tool: ToolEntry; live: boolean }) {
         </pre>
       ) : tool.output_summary ? (
         <Summary summary={tool.output_summary} />
+      ) : tool.status === 'running' ? (
+        <p className="log-summary">
+          <Live on={live}>Waiting for what comes back…</Live>
+        </p>
       ) : null}
       <DetailLink tool={tool} />
     </div>
@@ -233,14 +310,12 @@ export function WorkLine({
   const line = (
     <>
       <span className="log-icon" aria-hidden="true">
-        {running ? (
-          <Icon name="loader" size={14} stroke={2} className={live ? 'spin' : undefined} />
-        ) : (
-          <Icon name={iconFor(work)} size={15} />
-        )}
+        <Icon name={iconFor(work)} size={15} />
       </span>
       <span className="log-title">
-        <Title title={tool.title} />
+        <Live on={live && running}>
+          <Title title={tool.title} />
+        </Live>
       </span>
       {tool.status === 'failed' ? (
         <span className="log-flag" data-tone="danger">
@@ -274,11 +349,9 @@ export function WorkLine({
           <Icon name="chevronDown" size={13} />
         </span>
       </button>
-      {open ? (
-        <div id={id} className="log-detail">
-          <Preview tool={tool} live={live} />
-        </div>
-      ) : null}
+      <Reveal id={id} open={open} className="log-detail">
+        <Preview tool={tool} live={live} />
+      </Reveal>
     </div>
   );
 }
@@ -313,14 +386,16 @@ export function WorkGroup({
         onClick={() => setOpen(!open)}
       >
         <span className="log-icon" aria-hidden="true">
-          {current ? (
-            <Icon name="loader" size={14} stroke={2} className="spin" />
-          ) : (
-            <Icon name={KIND_ICON[kind] ?? iconFor(first)} size={15} />
-          )}
+          <Icon name={current ? iconFor(current) : (KIND_ICON[kind] ?? iconFor(first))} size={15} />
         </span>
         <span className="log-title">
-          {current?.type === 'tool' ? <Title title={current.tool.title} /> : summarize(work)}
+          {current?.type === 'tool' ? (
+            <Live on>
+              <Title title={current.tool.title} />
+            </Live>
+          ) : (
+            summarize(work)
+          )}
         </span>
         {failed.length ? (
           <span className="log-flag" data-tone="danger">
@@ -331,17 +406,15 @@ export function WorkGroup({
           <Icon name="chevronDown" size={13} />
         </span>
       </button>
-      {open ? (
-        <div id={id} className="log-group-rows">
-          {work.map((entry, index) => (
-            <WorkLine
-              key={entry.type === 'tool' ? entry.tool.id : `group-${index}`}
-              work={entry}
-              live={live}
-            />
-          ))}
-        </div>
-      ) : null}
+      <Reveal id={id} open={open} className="log-group-rows">
+        {work.map((entry, index) => (
+          <WorkLine
+            key={entry.type === 'tool' ? entry.tool.id : `group-${index}`}
+            work={entry}
+            live={live}
+          />
+        ))}
+      </Reveal>
     </div>
   );
 }
@@ -463,6 +536,8 @@ export function LogEntries({
   );
 }
 
+/* ---------- the turn ---------- */
+
 /** The header over a turn's work: live while it runs, how long it worked once it ends. */
 export function headerWords(turn: TranscriptTurn, now: number): string {
   const seconds = turnSeconds(turn, now);
@@ -483,9 +558,27 @@ export function headerWords(turn: TranscriptTurn, now: number): string {
   }
 }
 
+/** The one line a finished turn folds into: how long it worked, and what it did. */
+export function summaryLine(turn: TranscriptTurn, now: number, items: LogItem[]): string {
+  const counted = countWork(items);
+  const words = headerWords(turn, now);
+  return counted ? `${words} · ${counted}` : words;
+}
+
 /**
- * The work log of one turn. Open while the turn runs or waits on the person;
- * folded once it ends, keeping cards that need the person and results in view.
+ * Whether a turn's log is open: always while the turn runs or waits on the
+ * person, folded once it ends until the person opens it.
+ */
+export const logOpen = (finished: boolean, choice: boolean | null): boolean =>
+  finished ? (choice ?? false) : true;
+
+/**
+ * The work log of one turn. While the turn runs or waits on the person it is
+ * part of the conversation: messages and work rows inline, a shimmering line
+ * for the work under way. Once it ends it folds into one summary line that
+ * opens back onto the same messages and rows. Cards that need the person and
+ * results they can open stay in view either way: a decision waiting on the
+ * person is never folded away.
  */
 export function WorkLog({
   turn,
@@ -503,11 +596,6 @@ export function WorkLog({
   const [choice, setChoice] = useState<boolean | null>(null);
   const id = useId();
   const running = RUNNING.has(turn.status);
-  const anyRunning = items.some(
-    (item) =>
-      item.type === 'work' &&
-      item.work.some((work) => work.type === 'tool' && work.tool.status === 'running'),
-  );
   const hasWork = items.some((item) => item.type !== 'block' || !finished);
   if (!hasWork && !running) {
     // Nothing to fold: whatever is here is a card that needs the person.
@@ -515,58 +603,108 @@ export function WorkLog({
       <LogEntries items={items} live={false} streaming={false} renderBlock={renderBlock} />
     ) : null;
   }
-  const open = choice ?? !finished;
+  const open = logOpen(finished, choice);
+  // Folded, what stays in view is drawn under the line and only there, so a
+  // card is never on the page twice.
   const kept = open ? [] : items.filter(staysInView);
+  const shown = open ? items : items.filter((item) => !staysInView(item));
   const stopped = turn.status === 'stopped' ? stoppedLine(stoppedTools(items)) : null;
+  const paused = turn.status === 'paused';
+  // While a message is being written its words are the sign of life; between
+  // messages the shimmering line says the work goes on.
+  const writing = turn.streaming && items.at(-1)?.type === 'message';
   return (
-    <div className="worklog" data-open={open ? 'true' : undefined}>
-      <button
-        type="button"
-        className="worklog-head"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setChoice(!open)}
-      >
-        {running ? (
-          <span className="working-dots" aria-hidden="true">
-            <span className="pulse" />
-            <span className="pulse" style={{ animationDelay: '.2s' }} />
-            <span className="pulse" style={{ animationDelay: '.4s' }} />
-          </span>
-        ) : null}
-        <span>{headerWords(turn, now)}</span>
-        <Icon name="chevronDown" size={14} className="worklog-chevron" />
-      </button>
+    <div className="worklog" data-state={finished ? (open ? 'open' : 'closed') : 'live'}>
+      {finished ? (
+        <button
+          type="button"
+          className="worklog-head"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setChoice(!open)}
+        >
+          <span className="worklog-words">{summaryLine(turn, now, items)}</span>
+          <Icon name="chevronRight" size={14} className="worklog-chevron" />
+        </button>
+      ) : null}
       {stopped ? <p className="worklog-sub">{stopped}</p> : null}
-      {open ? (
-        <div id={id} className="worklog-body">
-          <LogEntries
-            items={items}
-            live={running}
-            streaming={turn.streaming && running}
-            renderBlock={renderBlock}
-          />
-          {running && !anyRunning && !turn.streaming ? (
-            <div className="log-line log-live" data-static="true" role="status">
-              <span className="log-icon" aria-hidden="true">
-                {turn.status === 'paused' ? (
-                  <Icon name="clock" size={14} />
-                ) : (
-                  <Icon name="loader" size={14} stroke={2} className="spin" />
-                )}
-              </span>
-              <span className="log-title">
-                {turn.status === 'paused' ? 'Paused' : (turn.live?.title ?? 'Working')}
-              </span>
-            </div>
-          ) : null}
+      <Reveal id={id} open={open} className="worklog-body">
+        <LogEntries
+          items={shown}
+          live={running}
+          streaming={turn.streaming && running}
+          renderBlock={renderBlock}
+        />
+      </Reveal>
+      {running && !writing ? (
+        <div className="log-line log-live" data-static="true" role="status">
+          <span className="log-icon" aria-hidden="true">
+            <Icon name={paused ? 'clock' : 'sparkles'} size={14} />
+          </span>
+          <span className="log-title">
+            <Live on={!paused}>{headerWords(turn, now)}</Live>
+          </span>
         </div>
-      ) : kept.length ? (
-        <div className="worklog-body">
+      ) : null}
+      {kept.length ? (
+        <div className="worklog-kept">
           <LogEntries items={kept} live={false} streaming={false} renderBlock={renderBlock} />
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The quiet line over the older part of a long chat. Folded, it opens onto the
+ * earlier turns; open, it folds them back. When the agent's copy of that part
+ * was summarised it says so, instead of setting out the summary itself.
+ */
+export function EarlierMessages({
+  summarised,
+  messages,
+  open,
+  onToggle,
+}: {
+  /** The earlier part was summarised for the agent. */
+  summarised: boolean;
+  /** How many messages the folded turns hold. */
+  messages: number;
+  open: boolean;
+  /** Absent when there is nothing to fold or open. */
+  onToggle?: () => void;
+}) {
+  const count = `${messages} message${messages === 1 ? '' : 's'}`;
+  const words = summarised
+    ? open || !messages
+      ? 'Earlier messages summarised'
+      : `Earlier messages summarised · ${count}`
+    : `${messages} previous message${messages === 1 ? '' : 's'}`;
+  const why = summarised
+    ? 'The agent now works from a summary of the conversation before this point. Every message is still here.'
+    : undefined;
+  if (!onToggle)
+    return (
+      <p
+        className="previous-messages"
+        data-summarised={summarised ? 'true' : undefined}
+        title={why}
+      >
+        {words}
+      </p>
+    );
+  return (
+    <button
+      type="button"
+      className="previous-messages"
+      data-summarised={summarised ? 'true' : undefined}
+      aria-expanded={open}
+      title={why}
+      onClick={onToggle}
+    >
+      <span>{words}</span>
+      <Icon name="chevronRight" size={14} className="previous-chevron" />
+    </button>
   );
 }
 

@@ -3047,6 +3047,9 @@ export interface paths {
                                     tool: components["schemas"]["__schema231"];
                                     /** @constant */
                                     type: "tool";
+                                } | {
+                                    /** @constant */
+                                    type: "compacted";
                                 };
                                 seq: components["schemas"]["__schema227"];
                                 turn_id: components["schemas"]["__schema222"] | null;

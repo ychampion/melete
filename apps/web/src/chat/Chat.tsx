@@ -7,7 +7,7 @@
  */
 
 import { mentionedAgent } from '@melete/contracts/mention';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
 import {
@@ -81,7 +81,7 @@ import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
-import { AgentLine, LogEntries, WorkLog } from './WorkLog.tsx';
+import { AgentLine, EarlierMessages, LogEntries, WorkLog } from './WorkLog.tsx';
 import type { WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
@@ -392,8 +392,6 @@ function TurnView({
     />
   ));
   const layout = layoutTurn(turn);
-  const nothingYet =
-    !finished && layout.log.length === 0 && !layout.answer && turn.trail.length === 0;
   // A turn handed to another agent with @Name: that agent starts, and says when it is done.
   const handedTo = agent && conversationAgentId && agent.id !== conversationAgentId ? agent : null;
   const answer = finalText(turn);
@@ -430,12 +428,6 @@ function TurnView({
                 streaming={false}
                 renderBlock={renderBlock}
               />
-            ) : null}
-            {nothingYet ? (
-              <div className="col" style={{ gap: 10, paddingTop: 6 }}>
-                <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
-                <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
-              </div>
             ) : null}
             {handedTo && turn.status === 'done' ? (
               <AgentLine
@@ -1081,42 +1073,49 @@ export function ChatScreen({ id }: { id: string | null }) {
                 </div>
               ) : null}
               {folded.count > 0 && !showAll ? (
-                <button
-                  type="button"
-                  className="previous-messages"
-                  onClick={() => setShowAll(true)}
-                >
-                  {folded.messages} previous message{folded.messages === 1 ? '' : 's'}
-                  <Icon name="chevronRight" size={14} />
-                </button>
+                <EarlierMessages
+                  summarised={folded.summarised > 0}
+                  messages={folded.messages}
+                  open={false}
+                  onToggle={() => setShowAll(true)}
+                />
               ) : null}
               {transcript.turns.map((turn, index) =>
                 index < hidden ? null : (
-                  <TurnView
-                    key={turn.id}
-                    turn={turn}
-                    now={now}
-                    touch={touch}
-                    latest={turn.id === lastId}
-                    onDecide={decide}
-                    onSendDraft={sendDraft}
-                    onUndo={undo}
-                    onAnswer={answer}
-                    onOwn={(own) => void send(own)}
-                    unknown={turn.id === lastId ? unknown : undefined}
-                    onResolve={resolve}
-                    busy={(id) => flight.has(id)}
-                    onRetry={retry}
-                    conversationAgentId={conversation?.agent_id ?? null}
-                    reactions={reactions.filter(
-                      (r) => turnIndexForReaction(transcript, r) === index,
-                    )}
-                    onReact={
-                      reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
-                        ? (emoji) => react(turn, emoji)
-                        : undefined
-                    }
-                  />
+                  <Fragment key={turn.id}>
+                    {index > hidden && index === folded.summarised ? (
+                      <EarlierMessages
+                        summarised
+                        messages={folded.messages}
+                        open
+                        onToggle={folded.count > 0 ? () => setShowAll(false) : undefined}
+                      />
+                    ) : null}
+                    <TurnView
+                      turn={turn}
+                      now={now}
+                      touch={touch}
+                      latest={turn.id === lastId}
+                      onDecide={decide}
+                      onSendDraft={sendDraft}
+                      onUndo={undo}
+                      onAnswer={answer}
+                      onOwn={(own) => void send(own)}
+                      unknown={turn.id === lastId ? unknown : undefined}
+                      onResolve={resolve}
+                      busy={(id) => flight.has(id)}
+                      onRetry={retry}
+                      conversationAgentId={conversation?.agent_id ?? null}
+                      reactions={reactions.filter(
+                        (r) => turnIndexForReaction(transcript, r) === index,
+                      )}
+                      onReact={
+                        reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
+                          ? (emoji) => react(turn, emoji)
+                          : undefined
+                      }
+                    />
+                  </Fragment>
                 ),
               )}
               <RunChatCards conversationId={conversationId} refresh={transcript.status} />
