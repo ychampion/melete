@@ -38,6 +38,7 @@ import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { ZodError } from 'zod';
 import { ServiceError } from '../api/errors.ts';
+import { asksAfterResponses } from '../apps/response-guard.ts';
 import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
@@ -51,6 +52,7 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
+import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
@@ -59,7 +61,6 @@ import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
-import { readWorkspaceFile } from '../sandbox/workspace.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -75,6 +76,7 @@ import {
   type AutoReviewOptions,
   actionReviewView,
   CHANGES_EXISTING_EVENT,
+  changesPersonFiles,
   deciding,
   escalationReason,
   loadApprovalSettings,
@@ -106,6 +108,7 @@ import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } fro
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
+import { readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -114,18 +117,14 @@ import {
 } from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
-/** The tools whose succeeded receipts name a screenshot saved in the job's workspace. */
-export const SCREENSHOT_TOOLS: readonly string[] = [
-  'computer.screenshot',
-  'device.screenshot',
-  'device.browser_screenshot',
-];
+/** What a runtime is told instead of a paired computer's picture it may not show. */
+export const DEVICE_SCREEN_WITHHELD =
+  'The screenshot was taken and is kept private: this computer does not let cloud models see its screen (Settings > Devices). It is not a file you can open. Say what you could not see; do not guess at it or look for it.';
 
-/** The eight bytes every PNG file starts with. */
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** The largest saved screenshot handed back to a runtime: a device's own cap is 8 MB. */
-const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+/** A screenshot's picture for a runtime, or why it is kept from the model. */
+export type ScreenshotPicture =
+  | { media_type: 'image/png'; data: string }
+  | { withheld: true; reason: string };
 
 export type BrokerOptions = {
   sql: Sql;
@@ -227,10 +226,11 @@ type Admissibility = {
   authorized_by: string | null;
   /**
    * What auto-review makes of an action that would ask the person: approved by
-   * the sandbox rule, put to the reviewer, or left for the person to decide.
-   * Null when auto-review is off or the action asks nobody anyway.
+   * a fixed rule (the sandbox's, or the one for publishing apps), put to the
+   * reviewer, or left for the person to decide. Null when auto-review is off or
+   * the action asks nobody anyway.
    */
-  auto: { tier: TierDecision; outcome: 'sandbox_approved' | 'review' | 'person' } | null;
+  auto: { tier: TierDecision; outcome: 'policy_approved' | 'review' | 'person' } | null;
 };
 
 /** A review to run once the proposal's transaction has committed. */
@@ -244,6 +244,9 @@ type PendingReview = {
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+/** What resuming an approved change from the command line says instead of sending it. */
+export const EGRESS_RERUN =
+  'Approved. This change is made by a command in your computer, not resent from here: run the same command again, unchanged, and it goes through once.';
 /**
  * A dispatch that ended without an answer. A read changes nothing, so it simply
  * failed and can be tried again; anything else may have landed and is unknown.
@@ -431,8 +434,25 @@ export class BrokerService implements BrokerOperations {
       kind: action.kind,
       effect_class: action.effect_class,
       canonical_payload: action.canonical_payload,
-      fields: collectOriginFields(action.canonical_payload),
+      fields: this.originFields(action),
     });
+  }
+
+  /**
+   * The fields whose origin decides admission: every one `collectOriginFields`
+   * finds, less the resource fields the action's connector proved itself.
+   */
+  private originFields(
+    action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
+    kind?: string,
+  ) {
+    const fields = collectOriginFields(action.canonical_payload, kind);
+    const verified = new Set(
+      this.options.connectors.get(action.connection_id)?.verifiedFields?.(action) ?? [],
+    );
+    return verified.size
+      ? fields.filter((field) => field.category !== 'resource' || !verified.has(field.path))
+      : fields;
   }
 
   private async tool(
@@ -642,37 +662,39 @@ export class BrokerService implements BrokerOperations {
 
   /**
    * The picture a succeeded screenshot of this attempt's job saved, as base64.
-   * Only for a screenshot tool, only for its own job, and only from the path
-   * its receipt names inside that job's workspace.
+   * Only for a screenshot tool and only for its own job. The agent's own
+   * computer's is read from the path its receipt names inside that job's
+   * workspace; a paired computer's from the service's own store, and only when
+   * that computer lets cloud models see its screen (its own switch, or the
+   * privacy setting when it has none). Otherwise the answer says it is kept
+   * private, and the model is given the receipt alone. Either picture is served
+   * only while it is the one the receipt recorded.
    */
-  async screenshot(
-    claims: CapabilityClaims,
-    id: string,
-  ): Promise<{ media_type: 'image/png'; data: string }> {
+  async screenshot(claims: CapabilityClaims, id: string): Promise<ScreenshotPicture> {
     const action = await this.get(claims, id);
-    const detail = action.receipt?.detail as { path?: unknown } | undefined;
-    if (
-      !this.options.workRoot ||
-      !SCREENSHOT_TOOLS.includes(action.kind) ||
-      action.status !== 'succeeded' ||
-      typeof detail?.path !== 'string' ||
-      !detail.path.toLowerCase().endsWith('.png')
-    )
+    const workRoot = this.options.workRoot;
+    if (!workRoot || !SCREENSHOT_TOOLS.includes(action.kind) || action.status !== 'succeeded')
       throw new BrokerFault('action_not_found');
-    let bytes: Buffer;
-    try {
-      bytes = await readWorkspaceFile(
-        this.options.workRoot,
-        action.job_id,
-        detail.path,
-        MAX_SCREENSHOT_BYTES,
-      );
-    } catch {
-      throw new BrokerFault('action_not_found');
-    }
-    // Served as a PNG only when it is one: whatever else sits at that path is not.
-    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) throw new BrokerFault('action_not_found');
+    if (action.kind !== 'computer.screenshot' && !(await this.deviceScreenShared(action)))
+      return { withheld: true, reason: DEVICE_SCREEN_WITHHELD };
+    const bytes = await readScreenshot(workRoot, action);
+    if (!bytes) throw new BrokerFault('action_not_found');
     return { media_type: 'image/png', data: bytes.toString('base64') };
+  }
+
+  /** Whether a paired computer's screenshot may be shown to a cloud model. */
+  private async deviceScreenShared(action: Action): Promise<boolean> {
+    const [row] = await this.sql`select d.id as device_id, d.cloud_screenshots,
+        coalesce(ps.settings->>'screenshots_paired_devices', '') = 'true' as by_default
+      from action a
+      join job j on j.id = a.job_id
+      left join paired_device d on d.connection_id = a.connection_id and d.space_id = j.space_id
+      left join privacy_settings ps on ps.space_id = j.space_id
+      where a.id = ${action.id}`;
+    if (!row || typeof row.device_id !== 'string') return false;
+    return typeof row.cloud_screenshots === 'boolean'
+      ? row.cloud_screenshots
+      : row.by_default === true;
   }
 
   async get(claims: CapabilityClaims, id: string): Promise<Action> {
@@ -804,10 +826,18 @@ export class BrokerService implements BrokerOperations {
             reason: 'It stays in your own space, where you can delete it.',
           }
         : reviewTier({ tool, provider, payload: action.canonical_payload, doubts, existingGuests });
+    // A conversation that read responses to an app asks before changing a file an app shows.
+    const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
       toolAsks ||
       connectorAsks ||
+      afterResponses ||
       (agentAsks && changes) ||
+      // The person's own Files are not the agent's workspace. A new file there
+      // stays in their space and goes through like other work; saving over one
+      // of theirs or taking one out is asked, or reviewed when the person lets
+      // reviewed app changes go.
+      (changesPersonFiles(tool.name, action.canonical_payload) && !inSpace) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
       // With the sandbox switch off, work in the agent's own workspace asks too.
@@ -816,7 +846,7 @@ export class BrokerService implements BrokerOperations {
         changes &&
         tierOf([]).tier === 'sandbox');
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
+    const fields = gated ? this.originFields(action, action.kind) : [];
     const warnings = await resolveOriginWarnings(
       tx,
       gated
@@ -876,26 +906,34 @@ export class BrokerService implements BrokerOperations {
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
-        outcome: connectorAsks
-          ? 'person'
-          : tier.tier === 'sandbox' && allowed && !toolAsks
-            ? 'sandbox_approved'
-            : // An agent set to ask before acting promises that sends, bookings and payments
-              // wait for the person, so its calendar changes do. A reversible app change is
-              // none of those, and the person switched that class on themselves.
-              tier.tier === 'reviewable' &&
-                allowed &&
-                (!agentAsks || tier.actionClass === 'app_changes')
-              ? 'review'
-              : 'person',
+        // The connector's own question, and a write a viewer's response may have
+        // steered to a file an app shows, are the person's: never policy's or the reviewer's.
+        outcome:
+          connectorAsks || afterResponses
+            ? 'person'
+            : tier.tier === 'sandbox' && allowed && !toolAsks
+              ? 'policy_approved'
+              : // Publishing an app that reaches nobody new. An agent set to ask before
+                // acting promises that publishes wait, and a conversation that read
+                // an app's responses asks before changing what an app shows.
+                tier.tier === 'apps' && allowed && !agentAsks && !afterResponses
+                ? 'policy_approved'
+                : // An agent set to ask before acting promises that sends, bookings and payments
+                  // wait for the person, so its calendar changes do. A reversible app change is
+                  // none of those, and the person switched that class on themselves.
+                  tier.tier === 'reviewable' &&
+                    allowed &&
+                    (!agentAsks || tier.actionClass === 'app_changes')
+                  ? 'review'
+                  : 'person',
       };
     }
-    const sandboxApproved = auto?.outcome === 'sandbox_approved';
+    const policyApproved = auto?.outcome === 'policy_approved';
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
-      requires_approval: requiresApproval && !granted && !sandboxApproved,
+      requires_approval: requiresApproval && !granted && !policyApproved,
       authorized_by: authorizedBy,
       auto,
     };
@@ -1454,14 +1492,14 @@ export class BrokerService implements BrokerOperations {
         await this.setStatus(tx, created, 'needs_approval');
         const escalated = await this.recordPolicyEscalation(tx, review, classified);
         await this.askOwner(tx, job, created, approvalId, classified, escalated);
-      } else if (classified.auto?.outcome === 'sandbox_approved')
+      } else if (classified.auto?.outcome === 'policy_approved')
         await recordReview(tx, {
           action_id: id,
           job_id: job.id,
           space_id: job.space_id,
           attempt_id: claims.attempt_id,
-          tier: 'sandbox',
-          action_class: 'sandbox',
+          tier: classified.auto.tier.tier,
+          action_class: classified.auto.tier.actionClass,
           decided_by: 'policy',
           outcome: 'approved',
           risk: null,
@@ -1514,6 +1552,11 @@ export class BrokerService implements BrokerOperations {
       return stored;
     });
     const key = action.intent_key ?? '';
+    // The bytes of a change from the command line live in the computer, so
+    // nothing is replayed from here: the command is run again, and its request
+    // is admitted against this approval once.
+    if (isEgressTool(action.kind) && ['approved', 'admitted'].includes(action.status))
+      return { ...(await this.proposalView(action, key, false)), message: EGRESS_RERUN };
     if (action.status === 'approved') {
       await this.admit(claims, action.id, action.payload_hash);
       return this.proposalView(await this.dispatch(action.id), key, false);
@@ -2096,7 +2139,17 @@ export class BrokerService implements BrokerOperations {
         }
         await tx`update action set dispatched_at = now() where id = ${id}`;
         await this.setStatus(tx, action, 'dispatched');
-        return { action: await loadAction(tx, id), context: this.context(job, action) };
+        // Nobody agreed to this one because its name was unused when it was
+        // checked; the connector keeps it to a new file (`only_new`).
+        const onlyNew =
+          !action.authorization_ref &&
+          this.options.connectors
+            .get(action.connection_id)
+            ?.staysInSpace?.(action, job.space_id) === true;
+        return {
+          action: await loadAction(tx, id),
+          context: { ...this.context(job, action), ...(onlyNew ? { only_new: true } : {}) },
+        };
       });
     } catch (error) {
       release();

@@ -1,5 +1,6 @@
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
+import { PostgresSignInStore } from '../ops/signin-store.ts';
 import { type IssuerSource, PostgresCredentialRepository, ProviderSignIn } from './credentials.ts';
 import { fakeProvider } from './fake.ts';
 import {
@@ -126,6 +127,8 @@ export function providerSignIn(sql: Sql, env: Env): ProviderSignIn | undefined {
       [OPENAI_COMPATIBLE]: env.OPENAI_COMPAT_OAUTH_LABEL ?? 'your model provider',
     },
     masterKey: () => masterKey,
+    // Shared by every instance on the database, sealed with the same key.
+    store: new PostgresSignInStore(sql, () => masterKey),
   });
 }
 

@@ -10,6 +10,7 @@ import { getCookie } from 'hono/cookie';
 import type { Sql, TransactionSql } from 'postgres';
 import type { z } from 'zod';
 import type { ExperienceSignIn } from '../experience/signin.ts';
+import type { LimitStore } from '../ops/limiter.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
@@ -108,16 +109,18 @@ export function mountPassword(
     signIn?: ExperienceSignIn;
     publicUrl?: string;
     clock?: () => number;
+    /** Where the limits are counted; left out, in this process. */
+    limits?: LimitStore;
   },
 ) {
   const { sql } = deps;
-  const changes = new LoginThrottle(deps.clock);
-  const requests = new LoginThrottle(deps.clock);
-  const consumes = new LoginThrottle(deps.clock);
+  const changes = new LoginThrottle(deps.clock, undefined, deps.limits, 'password.change');
+  const requests = new LoginThrottle(deps.clock, undefined, deps.limits, 'password.request');
+  const consumes = new LoginThrottle(deps.clock, undefined, deps.limits, 'password.consume');
 
   app.post('/account/password', async (c) => {
     const principalId = c.get('owner').id;
-    const retryAfter = changes.admit(principalId);
+    const retryAfter = await changes.admit(principalId);
     if (retryAfter > 0) return limited(c, retryAfter);
     const input = passwordChange.parse(await c.req.json());
     const [row] = await sql`select password_hash from principal where id = ${principalId}`;
@@ -129,12 +132,12 @@ export function mountPassword(
     await sql.begin((tx) =>
       setPassword(tx, principalId, input.new_password, token ? digest(token) : null),
     );
-    changes.succeeded(principalId);
+    await changes.succeeded(principalId);
     return c.json({ status: 'ok' as const });
   });
 
   app.post('/password-reset', async (c) => {
-    const retryAfter = requests.admit(clientAddress(c));
+    const retryAfter = await requests.admit(clientAddress(c));
     if (retryAfter > 0) return limited(c, retryAfter);
     const input = passwordResetRequest.parse(await c.req.json());
     if (!deps.signIn || !deps.publicUrl)
@@ -148,7 +151,7 @@ export function mountPassword(
 
   app.post('/password-reset/consume', async (c) => {
     const source = clientAddress(c);
-    const retryAfter = consumes.admit(source);
+    const retryAfter = await consumes.admit(source);
     if (retryAfter > 0) return limited(c, retryAfter);
     const body = await c.req.json();
     const shaped = passwordResetConsume.safeParse(body);
@@ -163,7 +166,7 @@ export function mountPassword(
         'This reset link has expired or was already used. Ask for a new one.',
         400,
       );
-    consumes.succeeded(source);
+    await consumes.succeeded(source);
     return c.json({ status: 'ok' as const });
   });
 

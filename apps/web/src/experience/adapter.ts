@@ -79,6 +79,9 @@ import type {
   PrivacyReveal,
   PrivacySettings,
   PrivacySettingsUpdate,
+  ProcessOutput,
+  ProcessPreview,
+  ProcessStopped,
   Profile,
   ProfileInput,
   PushDevice,
@@ -149,6 +152,10 @@ const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
 const artifactUrl = (id: string): string =>
   `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
+
+/** The picture a screenshot took, for the person's own trail. */
+const screenshotUrl = (id: string): string =>
+  `${client.options.baseUrl}/screenshots/${encodeURIComponent(id)}`;
 
 /** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
 function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
@@ -706,8 +713,18 @@ export const adapter = {
         body: { live_id: liveId },
       }),
     ),
+  /* ---------- background processes in the agent's computer ---------- */
+  processPreview: (processId: string) =>
+    guard<ProcessPreview>(() => api.POST('/sandbox/processes/{id}/previews', path(processId))),
+  processOutput: (processId: string) =>
+    guard<ProcessOutput>(() => api.GET('/sandbox/processes/{id}/output', path(processId))),
+  processStop: (processId: string) =>
+    guard<ProcessStopped>(() => api.POST('/sandbox/processes/{id}/stop', path(processId))),
+  /** Where a preview's page loads: the API's own address, then the preview's path. */
+  previewSource: (preview: ProcessPreview) => `${API_BASE_URL}${preview.path}`,
   /** Where a file or picture the service keeps is served, with the session's cookie. */
   artifactUrl,
+  screenshotUrl,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
 

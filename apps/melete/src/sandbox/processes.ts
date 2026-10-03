@@ -5,8 +5,9 @@
  * attributed to the job and action that started it. Its row is written before
  * anything starts, under a lock on the space, so the caps are decided by
  * Postgres: a computer runs at most a few processes, a space a few more, and
- * the processes of a space may keep its computers running for a set time each
- * day. The action is unique on the row, so one admitted start is one process
+ * the processes of a space may keep its computers running, after the
+ * attempts that used them ended, for a set time each day (metered by
+ * `sessions.ts`). The action is unique on the row, so one admitted start is one process
  * however often it is dispatched; the helper's own directory per process is
  * the guard inside the computer.
  *
@@ -16,14 +17,17 @@
  * lost, and one the service has already closed but the computer still runs
  * is killed. A periodic sweep does the same for computers nobody is using,
  * stops processes past their time limit, stops a space's processes once its
- * allowance for the day is used, and stops those whose starting job was
- * cancelled or deleted. A process outlives the job that started it when that
+ * allowance for the day is used, with a notice in the conversations that
+ * started them, and stops those whose starting job was cancelled or deleted.
+ * A computer found stopped while its session says it runs has lost its
+ * processes, and their rows are closed. A process outlives the job that started it when that
  * job completes; that is the point of it.
  */
 import type { ProcessState } from '@melete/contracts';
 import type { Sql } from 'postgres';
-import { recordId } from '../broker/records.ts';
+import { appendEvent, recordId } from '../broker/records.ts';
 import {
+  type ComputerStatus,
   helperComputer,
   type ProcessComputer,
   type ProcessComputerFor,
@@ -32,6 +36,7 @@ import {
   ProcessHelperRefusal,
   ProcessHelperUnavailable,
 } from './process-helper.ts';
+import { awakeSecondsToday } from './sessions.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
 export type ProcessLimits = {
@@ -74,7 +79,8 @@ export type ProcessRow = {
   createdAt: Date;
 };
 
-function rowOf(raw: Record<string, unknown>): ProcessRow {
+/** One `sandbox_process` row as the service reads it. */
+export function rowOf(raw: Record<string, unknown>): ProcessRow {
   const date = (value: unknown) => (value ? new Date(value as string) : null);
   return {
     id: String(raw.id),
@@ -128,6 +134,10 @@ export const END_REASONS = {
   job: 'the job that started it was cancelled or deleted',
   connection: "the computer's connection was revoked or removed",
   computer_gone: 'the computer it ran in no longer exists',
+  computer_stopped:
+    'the computer it ran in was stopped (it reached its time limit, or its host restarted), which ends every process in it',
+  suspended:
+    "the attempt that used the computer ended, and on this computer's provider that stops every process in it",
   restarted: 'the computer restarted, which ends every process in it',
   vanished: 'its record in the computer is gone',
   stopped: 'it was stopped',
@@ -148,28 +158,10 @@ export type AdmitRequest = {
   ttlMinutes: number | null;
 };
 
-const DAY_MS = 86_400_000;
 /** How long a start may take to reach the computer before its missing directory means it never did. */
 const STARTING_GRACE_MS = 300_000;
 /** A time as Postgres reads it; the driver is given text, never a Date. */
 const iso = (ms: number) => new Date(ms).toISOString();
-
-/** The time the union of these intervals covers, in seconds. */
-export function coveredSeconds(intervals: readonly [number, number][]): number {
-  const sorted = intervals.filter(([from, to]) => to > from).sort((a, b) => a[0] - b[0]);
-  let total = 0;
-  let start = Number.NEGATIVE_INFINITY;
-  let end = Number.NEGATIVE_INFINITY;
-  for (const [from, to] of sorted) {
-    if (from > end) {
-      if (end > start) total += end - start;
-      start = from;
-      end = to;
-    } else if (to > end) end = to;
-  }
-  if (end > start) total += end - start;
-  return total / 1000;
-}
 
 export type SandboxProcessesOptions = {
   limits: ProcessLimits;
@@ -233,21 +225,12 @@ export class SandboxProcesses {
     return rows.map(rowOf);
   }
 
-  /** How long the space's processes have kept its computers running today (UTC), in seconds. */
-  async awakeSecondsToday(spaceId: string, sql: Sql = this.sql): Promise<number> {
-    const now = this.now().getTime();
-    const dayStart = now - (now % DAY_MS);
-    const rows = await sql`select coalesce(started_at, created_at) as began, ended_at
-      from sandbox_process
-      where space_id = ${spaceId}
-        and (ended_at is null or ended_at > ${iso(dayStart)}::timestamptz)
-        and created_at < ${iso(now)}::timestamptz`;
-    return coveredSeconds(
-      rows.map((row) => [
-        Math.max(new Date(row.began as string).getTime(), dayStart),
-        Math.min(row.ended_at ? new Date(row.ended_at as string).getTime() : now, now),
-      ]),
-    );
+  /**
+   * How long the space's computers were kept running by their processes
+   * today (UTC), after the attempts that used them ended, in seconds.
+   */
+  awakeSecondsToday(spaceId: string, sql: Sql = this.sql): Promise<number> {
+    return awakeSecondsToday(sql, spaceId);
   }
 
   /**
@@ -396,7 +379,23 @@ export class SandboxProcesses {
     computer: ProcessComputer,
     signal: AbortSignal,
   ): Promise<ProcessRow[]> {
-    const status = await computer.status('all', signal);
+    return this.reconcileWith(
+      spaceId,
+      agentId,
+      computer,
+      await computer.status('all', signal),
+      signal,
+    );
+  }
+
+  /** The same, from an answer to `status('all')` the caller already has. */
+  async reconcileWith(
+    spaceId: string,
+    agentId: string,
+    computer: ProcessComputer,
+    status: ComputerStatus,
+    signal: AbortSignal,
+  ): Promise<ProcessRow[]> {
     const found = new Map(status.processes.map((facts) => [facts.id, facts]));
     const rows = await this.forComputer(spaceId, agentId);
     const out: ProcessRow[] = [];
@@ -479,6 +478,7 @@ export class SandboxProcesses {
    */
   async sweep(providers: ProcessProviders, signal: AbortSignal): Promise<{ ended: string[] }> {
     const ended: string[] = [];
+    const stoppedForAllowance: ProcessRow[] = [];
     const live = (
       await this.sql`select p.*, c.status as connection_status,
           j.state as job_state
@@ -542,6 +542,19 @@ export class SandboxProcesses {
           }
           continue;
         }
+        // Stopped under a session that says it runs: whatever ran in it ended
+        // with it. Suspended where a suspend ends processes: the same. A
+        // computer that keeps its processes through a suspend is not that.
+        const ends = session.status === 'ready' || !held.provider.capabilities.keepAwake;
+        if (where !== 'running' && ends) {
+          const reason =
+            session.status === 'ready' ? END_REASONS.computer_stopped : END_REASONS.suspended;
+          for (const { row } of members) {
+            await this.close(row.id, 'lost', reason);
+            ended.push(row.id);
+          }
+          continue;
+        }
         // A computer that is not running is not woken for this: what must end
         // is closed here, and killed the next time the computer is used.
         reachable = where === 'running' && session.status !== 'opening';
@@ -580,11 +593,44 @@ export class SandboxProcesses {
           ending = { state: 'stopped', reason: END_REASONS.allowance };
         else if (member?.jobGone) ending = { state: 'stopped', reason: END_REASONS.job };
         if (!ending) continue;
-        await this.end(row, computer, ending.state, ending.reason, budget);
+        const closed = await this.end(row, computer, ending.state, ending.reason, budget);
         ended.push(row.id);
+        if (ending.reason === END_REASONS.allowance && closed.endReason === END_REASONS.allowance)
+          stoppedForAllowance.push(closed);
       }
     }
+    await this.noticeAllowance(stoppedForAllowance);
     return { ended };
+  }
+
+  /**
+   * Tell each conversation whose processes the allowance stopped, once for
+   * the processes one pass stopped: how much awake time the space has, and
+   * when they stopped.
+   */
+  private async noticeAllowance(rows: ProcessRow[]): Promise<void> {
+    const byJob = new Map<string, ProcessRow[]>();
+    for (const row of rows)
+      if (row.jobId) byJob.set(row.jobId, [...(byJob.get(row.jobId) ?? []), row]);
+    for (const [jobId, stopped] of byJob) {
+      const at = stopped[0]?.endedAt ?? this.now();
+      await appendEvent(
+        this.sql,
+        jobId,
+        null,
+        'notice',
+        {
+          kind: 'processes_stopped',
+          reason: 'awake_allowance_used',
+          allowance_seconds: this.limits.awakeSecondsPerDay,
+          stopped_at: at.toISOString(),
+          processes: stopped.map((row) => ({ process_id: row.id, name: row.name })),
+        },
+        `processes_stopped:${jobId}:${at.toISOString().slice(0, 10)}:${stopped.map((row) => row.id).join(',')}`,
+      ).catch((error: unknown) => {
+        this.say(`the notice for processes stopped in ${jobId} was not written: ${String(error)}`);
+      });
+    }
   }
 
   /** Run the sweep on a timer. */

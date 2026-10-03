@@ -37,7 +37,9 @@ recipient's origin is owner-stated or connector-verified, the rule is unrevoked
 and inside both its expiry and its re-consent window, and the cap has room;
 each use is recorded once, at admission. Rules exist for named kinds only:
 sending a message, creating, changing or removing an event, discarding a draft,
-and saving or restoring a file. A `spend` asks every time, and an action the
+saving or restoring a file, and pushing to `melete/` branches of one repository
+from the agent's computer
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A `spend` asks every time, and an action the
 owner is already reviewing keeps its own approval. [CLIENT](CLIENT.md)
 describes the cards, `GET /rules` and `DELETE /rules/{id}`.
 Evidence for the default effect gate is conformance 4, `An approval cannot be
@@ -171,6 +173,10 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
+| GitHub for the agent's computer | `command_line` | `command_line`: `{ "adapter": "github" }` | `credentials.token`, a fine-grained token; GitHub is asked whose it is before it is kept | `egress.github_read`, `egress.github_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github) |
+| AWS for the agent's computer | `command_line` | `command_line`: `{ "adapter": "aws", "region": "us-east-1" }`, with an optional `role_arn` and `external_id` | `credentials.access_key_id` and `credentials.secret_access_key`; AWS is asked whose the key is, through the role, before it is kept | `egress.aws_read`, `egress.aws_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#aws) |
+| GitLab for the agent's computer | `command_line` | `command_line`: `{ "adapter": "gitlab" }` | `credentials.token`, a GitLab.com personal or project access token; GitLab is asked whose it is before it is kept | `egress.gitlab_read`, `egress.gitlab_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#gitlab) |
+| npm for the agent's computer | `command_line` | `command_line`: `{ "adapter": "npm" }` | `credentials.token`, a granular access token; the registry is asked whose it is before it is kept | `egress.npm_read`, `egress.npm_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#npm) |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in

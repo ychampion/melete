@@ -1,5 +1,5 @@
 {
-  "id": "d44dc586-c3c0-4497-9d19-5b2dc0f96f20",
+  "id": "d9da438b-40d6-41ad-8645-06f2d2153771",
   "prevId": "c55c5791-d0ab-40f4-a597-efe7b8b4dc9c",
   "version": "7",
   "dialect": "postgresql",
@@ -3487,52 +3487,6 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.model_vision_report": {
-      "name": "model_vision_report",
-      "schema": "",
-      "columns": {
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "supports_vision": {
-          "name": "supports_vision",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reported_at": {
-          "name": "reported_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "model_vision_report_provider_model_pk": {
-          "name": "model_vision_report_provider_model_pk",
-          "columns": [
-            "provider",
-            "model"
-          ]
-        }
-      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -14084,6 +14038,84 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.egress_ca": {
+      "name": "egress_ca",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "cert_pem": {
+          "name": "cert_pem",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sealed_key": {
+          "name": "sealed_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name_constraints": {
+          "name": "name_constraints",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "not_after": {
+          "name": "not_after",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "superseded_at": {
+          "name": "superseded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "egress_ca_current_idx": {
+          "name": "egress_ca_current_idx",
+          "columns": [
+            {
+              "expression": "superseded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.egress_record": {
       "name": "egress_record",
       "schema": "",
@@ -14180,6 +14212,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "write_action_ids": {
+          "name": "write_action_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "bytes_up": {
           "name": "bytes_up",

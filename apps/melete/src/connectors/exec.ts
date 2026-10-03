@@ -20,9 +20,10 @@
  * recorded execution is "this command ran, in this directory, and produced this
  * output", not "this command could not have done anything else".
  */
+
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import {
   type Action,
   ARTIFACT_MIME,
@@ -35,7 +36,8 @@ import {
   type Receipt,
 } from '@melete/contracts';
 import { validateArtifact } from '../artifact/validate.ts';
-import { noLinks, segmentsFor } from './files.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type ExecOptions = {
@@ -120,18 +122,18 @@ export const execManifest: ConnectorManifest = {
 export function createExecConnector(options: ExecOptions): Connector {
   const limit = options.maxBytes ?? EXEC_LIMITS.max_capture_bytes;
 
+  const workspace = new LocalWorkspaceFs(options.workRoot);
   /** Resolve a relative path inside this job's workspace, refusing every escape. */
   const resolveInWorkspace = async (ctx: ConnectorContext, relative: string): Promise<string> => {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id)) throw new Error('invalid trusted file scope');
-    const base = await realpath(options.workRoot);
-    return noLinks(base, [ctx.job_id, ...segmentsFor(relative)], false);
+    const { base, segments } = await workspace.location(ctx.job_id, segmentsFor(relative));
+    return noLinks(base, segments, false);
   };
 
-  const readStored = async (target: string): Promise<Buffer> => {
-    const file = await open(
-      target,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
+  /** Opened by walking the names, so a folder swapped for a link since the check opens nothing. */
+  const readStored = async (ctx: ConnectorContext, relative: string): Promise<Buffer> => {
+    const { base, segments } = await workspace.location(ctx.job_id, segmentsFor(relative));
+    const file = await openBeneath(base, segments, constants.O_RDONLY);
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)
@@ -179,13 +181,12 @@ export function createExecConnector(options: ExecOptions): Connector {
     let storedBytes: number | null = null;
     let stored: Buffer | null = null;
     if (record.output_path) {
-      const target = await resolveInWorkspace(ctx, record.output_path).catch(() => {
+      await resolveInWorkspace(ctx, record.output_path).catch(() => {
         throw new Error(
           `the recorded output file is outside this job workspace: ${record.output_path}`,
         );
       });
-      await lstat(target);
-      stored = await readStored(target);
+      stored = await readStored(ctx, record.output_path);
       storedBytes = stored.byteLength;
       if (storedBytes !== record.output_bytes)
         throw new Error('stored output size does not match the captured bytes');

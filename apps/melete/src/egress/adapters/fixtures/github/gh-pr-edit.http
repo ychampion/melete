@@ -1,0 +1,29 @@
+# gh pr edit 7 --repo alice/site --title New
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {id,author{login,...on User{id,name}},url,title,body,baseRefName,reviewRequests(first: 100) {nodes {requestedReviewer {__typename,...on User{login},...on Team{organization{login}name,slug}}}},labels(first:100){nodes{id,name,description,color},totalCount},milestone{number,title,description,dueOn},assignedActors(first: 10) {nodes {...on User {id,login,name,__typename}...on Bot {id,login,__typename}},totalCount},number}\n\t\t}\n\t}","variables":{"owner":"alice","pr_number":7,"repo":"site"}}
+
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"query PullRequestProjectItems($endCursor:String$name:String!$number:Int!$owner:String!){repository(owner: $owner, name: $name){pullRequest(number: $number){projectItems(first: 100, after: $endCursor){totalCount,nodes{id,project{id,title},status:fieldValueByName(name: \"Status\"){... on ProjectV2ItemFieldSingleSelectValue{optionId,name}}},pageInfo{hasNextPage,endCursor}}}}}","variables":{"endCursor":null,"name":"site","number":7,"owner":"alice"}}
+
+
+### write
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"mutation PullRequestUpdate($input:UpdatePullRequestInput!){updatePullRequest(input: $input){__typename}}","variables":{"input":{"pullRequestId":"PR_kwDOAlice7","title":"New"}}}
+

@@ -46,11 +46,18 @@ const CLASSES: readonly { key: ClassKey; title: string; sub: string; reviewed: b
     sub: 'Creating or editing something the app can take back, like a task or a note.',
     reviewed: true,
   },
+  {
+    key: 'apps',
+    title: 'Publishing your apps',
+    sub: 'A new app or version, or an earlier version, for the same people as now. Decided by a fixed rule, with a receipt for each. Switch it off to be asked every time.',
+    reviewed: false,
+  },
 ];
 
 const ALWAYS_ASKS = [
   'Paying or spending money',
-  'Sending, publishing or submitting anything',
+  'Sending, publishing or submitting anything, except an app for the same people as now',
+  'An app that new people could open, that uses WebRTC, or that shows new data',
   'Deleting or removing anything',
   'Passwords, keys, codes or card details',
   'A recipient, place or amount you didn’t give Melete yourself',

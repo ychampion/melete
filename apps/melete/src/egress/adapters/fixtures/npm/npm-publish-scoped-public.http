@@ -1,0 +1,34 @@
+# npm publish --access public
+
+### read
+GET https://registry.npmjs.org/@alice%2ftool
+accept: application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: publish
+pacote-pkg-id: registry:@alice/tool
+pacote-req-type: packument
+pacote-version: 21.1.0
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+
+### read
+GET https://registry.npmjs.org/@alice%2ftool
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+pacote-version: 21.1.0
+pacote-req-type: packument
+pacote-pkg-id: registry:@alice/tool
+accept: application/json
+npm-auth-type: web
+npm-command: publish
+authorization: Bearer melete-proxy-adds-this
+
+### write
+PUT https://registry.npmjs.org/@alice%2ftool
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+npm-auth-type: web
+npm-command: publish
+authorization: Bearer melete-proxy-adds-this
+content-type: application/json
+accept: */*
+
+{"_id":"@alice/tool","name":"@alice/tool","dist-tags":{"latest":"0.2.0"},"versions":{"0.2.0":{"name":"@alice/tool","version":"0.2.0","license":"MIT","readme":"ERROR: No README data found!","_id":"@alice/tool@0.2.0","_nodeVersion":"24.14.0","_npmVersion":"11.9.0","dist":{"integrity":"sha512-aOB1x+bB+iC8/kElBo/jPH5EtT+nYSEPgmu5t2w7MYrTwHIXqx9zJBPK4msEJJLSKGVhZW6IZicjFB41e5pu6w==","shasum":"86cacf8e6445a669b27fbae73eb30cf2829b313f","tarball":"http://127.0.0.1:18802/@alice/tool/-/@alice/tool-0.2.0.tgz"}}},"access":"public","_attachments":{"@alice/tool-0.2.0.tgz":{"content_type":"application/octet-stream","data":"H4sIAAAAAAAC/+3UsQqDMBAG4Mx9inCzxEsaFSyFrh269QWChqLVRIwWofTdi0U6lI5VkOZbDu5uueG/RmVXddFhYXI9sNKRGSBiLCX91n8RkpJtFCPncYySEuSYCE4JkgX0rlMtQfzBkYhI33Ulapv3lWZ6aGzbObqnYrch3t9opvxPlZXOmqXzn/DP/PNo3Pf5n98djKo1pHBQVZHpsLO2ggBuunWFNZACMsEQAhinxo2bp+MZHv5JeJ7nrdsTwlsSmAAMAAA=","length":200}}}

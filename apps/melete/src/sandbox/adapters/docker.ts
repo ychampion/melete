@@ -19,13 +19,19 @@
  *
  * A workspace is the container itself. Suspending it records it idle; a
  * container nobody has used for the idle period is stopped, and anything that
- * uses it again starts it: files persist on the volumes, processes do not.
+ * uses it again starts it: files persist on the volumes, processes do not. A
+ * container with background processes running is in use while they run, as
+ * the service's process records say, so it is not stopped for idleness.
  *
  * Commands follow the service's marker protocol like every other adapter: the
  * adapter runs the wrapped argv under `timeout -s KILL`, and anything it cannot
  * vouch for is reported as such, never guessed.
  */
 
+import { rootCertificates } from 'node:tls';
+import { EXEC_ENV_NAMES, type ExecEnvName } from '@melete/contracts';
+import type { ComputerTrust, EgressCredentialPort } from '../../egress/credentials.ts';
+import type { InterceptOptions } from '../../egress/intercept.ts';
 import type { EgressRecordSink } from '../../egress/records.ts';
 import type { AttributedCommand, CommandEgress, EgressAttribution } from '../../egress/tokens.ts';
 import { DockerError, DockerSocketApi } from '../../runtime/docker.ts';
@@ -36,6 +42,7 @@ import {
   type ExecOutcome,
   type ExecSpec,
   type FileEntry,
+  type PreviewAddress,
   SandboxAdapterRefusal,
   type SandboxCapabilities,
   SandboxFileNotFound,
@@ -110,7 +117,46 @@ export type DockerSandboxSettings = {
    * `.suffix` for the names below one.
    */
   egressExtraHosts?: readonly string[];
+  /**
+   * Connected command-line accounts: the egress guard terminates TLS for
+   * their hosts, and their computers get the egress CA and placeholders.
+   */
+  egressCredentials?: EgressCredentialPort;
+  /** Limits for requests held inside a terminated tunnel. */
+  egressIntercept?: InterceptOptions;
+  /**
+   * The containers background processes keep awake, read from the service's
+   * process records. The idle stop never stops one of these; without an
+   * answer it stops nothing for idleness that pass.
+   */
+  awake?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 };
+
+/** Where a computer with a connected account finds the egress CA and its trust bundle. */
+export const DOCKER_TRUST_DIR = '/home/agent/.melete/ca';
+export const DOCKER_TRUST_CA = `${DOCKER_TRUST_DIR}/egress-ca.pem`;
+export const DOCKER_TRUST_BUNDLE = `${DOCKER_TRUST_DIR}/bundle.pem`;
+
+/**
+ * The environment that points the common clients at the trust bundle: Go,
+ * OpenSSL and `gh`; git and curl; Python; Node (which adds to its own); the
+ * AWS CLI; and the Google Cloud CLI.
+ */
+export const TRUST_ENV = {
+  SSL_CERT_FILE: DOCKER_TRUST_BUNDLE,
+  GIT_SSL_CAINFO: DOCKER_TRUST_BUNDLE,
+  CURL_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  REQUESTS_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  NODE_EXTRA_CA_CERTS: DOCKER_TRUST_CA,
+  AWS_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE: DOCKER_TRUST_BUNDLE,
+} as const;
+
+/** Only names a command may be given; anything else an adapter offered is left out. */
+function allowedEnv(values: Record<string, string>): Partial<Record<ExecEnvName, string>> {
+  const allowed: ReadonlySet<string> = new Set(EXEC_ENV_NAMES);
+  return Object.fromEntries(Object.entries(values).filter(([name]) => allowed.has(name)));
+}
 
 export const DOCKER_SANDBOX_DEFAULTS: Omit<DockerSandboxSettings, 'socket' | 'project'> = {
   cpus: 1,
@@ -136,11 +182,14 @@ export function dockerCapabilities(): SandboxCapabilities {
     reattach: 'marker_only',
     // On the home volume: `/var/tmp` is in memory and goes with an idle stop.
     markerRoot: DOCKER_MARKER_ROOT,
-    ports: 'none',
+    // A port is reached only by the service, on the sandbox's own network, and
+    // shown to a person through its preview route (sandbox/preview.ts).
+    ports: 'authenticated',
     image: 'registry',
     billing: 'per_second',
     regions: [],
     maxUploadBytes: 8 * MiB,
+    keepAwake: true,
   };
 }
 
@@ -373,6 +422,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
   private readonly lifetimes = new Map<string, number>();
   private readonly started = new Map<string, number>();
   private readonly usage = new Map<string, { at: number; kb: number }>();
+  /** The egress CA each computer was last given, by name; cleared when it starts again. */
+  private readonly trusted = new Map<string, string>();
   private reaper?: ReturnType<typeof setInterval>;
   private readonly now: () => number;
 
@@ -385,7 +436,13 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       options.guard ??
       new SandboxEgressGuard({
         ...(settings.egressRecords ? { records: settings.egressRecords } : {}),
-        connectedHosts: () => settings.egressExtraHosts ?? [],
+        ...(settings.egressCredentials ? { credentials: settings.egressCredentials } : {}),
+        ...(settings.egressIntercept ? { intercept: settings.egressIntercept } : {}),
+        // The operator's list, and the hosts of the space's connected accounts.
+        connectedHosts: async (space) => [
+          ...(settings.egressExtraHosts ?? []),
+          ...((await settings.egressCredentials?.hosts(space)) ?? []),
+        ],
       });
     this.now = options.now ?? Date.now;
   }
@@ -458,14 +515,77 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
    * A proxy address naming one command, for a computer with a network. The
    * token works only from this computer, and only until `settle`.
    */
-  attributeCommand(handle: SandboxHandle, attribution: EgressAttribution): AttributedCommand {
+  async attributeCommand(
+    handle: SandboxHandle,
+    attribution: EgressAttribution,
+  ): Promise<AttributedCommand> {
     const name = DockerSandboxHost.checkName(handle);
     const token = this.guard.mint(name, attribution);
     const proxy = `http://cmd:${token}@${EGRESS_ALIAS}:${this.settings.egressPort}`;
+    let trust: ComputerTrust | null = null;
+    try {
+      trust = await this.trust(name);
+    } catch {
+      // Without the bundle, a connected host's certificate is not trusted and
+      // its requests fail in the computer: nothing is sent with the account.
+      trust = null;
+    }
     return {
-      env: { HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy },
+      env: {
+        HTTPS_PROXY: proxy,
+        https_proxy: proxy,
+        HTTP_PROXY: proxy,
+        http_proxy: proxy,
+        // git's libcurl otherwise waits for a proxy challenge before sending
+        // the command's token, which the relay never sends: its tunnels would
+        // all go unattributed, and a connected account would never be used.
+        GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
+        ...(trust ? { ...allowedEnv(trust.placeholders), ...TRUST_ENV } : {}),
+      },
       settle: () => this.guard.tokens.settle(token),
     };
+  }
+
+  /**
+   * With a connected command-line account in the computer's space, the egress
+   * CA's certificate and a bundle of the public roots plus it, written into
+   * the home volume once per start (and again when the CA changes). Never a
+   * key: the computer can only trust, not vouch.
+   */
+  private async trust(name: string): Promise<ComputerTrust | null> {
+    const credentials = this.settings.egressCredentials;
+    if (!credentials) return null;
+    const trust = await credentials.computer(this.guard.spaceOf(name));
+    if (!trust) return null;
+    if (this.trusted.get(name) === trust.caId) return trust;
+    const file = (path: string, text: string) => ({
+      name: path,
+      directory: false,
+      mode: 0o644,
+      uid: DOCKER_SANDBOX_UID,
+      gid: DOCKER_SANDBOX_UID,
+      bytes: new TextEncoder().encode(text),
+    });
+    const directory = (path: string) => ({
+      name: path,
+      directory: true,
+      mode: 0o755,
+      uid: DOCKER_SANDBOX_UID,
+      gid: DOCKER_SANDBOX_UID,
+    });
+    await this.api.putArchive(
+      name,
+      DOCKER_SANDBOX_HOME,
+      tarArchive([
+        directory('.melete'),
+        directory('.melete/ca'),
+        file('.melete/ca/egress-ca.pem', trust.caPem),
+        file('.melete/ca/bundle.pem', [...rootCertificates, trust.caPem].join('\n')),
+      ]),
+      AbortSignal.timeout(30_000),
+    );
+    this.trusted.set(name, trust.caId);
+    return trust;
   }
 
   /** Start a stopped container again: the automatic resume after an idle stop. */
@@ -485,6 +605,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       }
       if (!state?.State?.Running) throw new Error(`the sandbox ${name} did not start`);
       this.started.set(name, this.now());
+      // A computer that starts again is given the trust bundle again.
+      this.trusted.delete(name);
     } else if (state.State?.Paused) {
       await this.api.request('POST', `/containers/${name}/unpause`);
     }
@@ -715,6 +837,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       await this.ensureRunning(name);
     } catch (error) {
       this.guard.revoke(name);
+      this.trusted.delete(name);
       for (const undo of made.reverse()) await undo().catch(() => {});
       if (error instanceof SandboxAdapterRefusal) throw error;
       throw new Error(`the sandbox could not be created: ${describe(error)}`);
@@ -731,6 +854,29 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     signal.throwIfAborted();
     const state = await this.inspectContainer(DockerSandboxHost.checkName(handle));
     return Boolean(state?.State?.Running);
+  }
+
+  /**
+   * The container's own address on its internal network, which only it and
+   * this service share. A `deny_all` container has no network, so nothing can
+   * be previewed in it; a stopped or paused one is never started for a preview.
+   */
+  async previewAddress(
+    handle: SandboxHandle,
+    port: number,
+    signal: AbortSignal,
+  ): Promise<PreviewAddress | null> {
+    signal.throwIfAborted();
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
+    const name = DockerSandboxHost.checkName(handle);
+    const state = await this.inspectContainer(name);
+    if (!state?.State?.Running || state.State.Paused) return null;
+    const network = this.networkOf(state);
+    const host = network ? state.NetworkSettings?.Networks?.[network]?.IPAddress : undefined;
+    if (!network || !host) return null;
+    // The service joins the network again if it left it, as any command would.
+    await this.grantEgress(name, state);
+    return { host, port };
   }
 
   async exec(handle: SandboxHandle, spec: ExecSpec, signal: AbortSignal): Promise<ExecOutcome> {
@@ -991,6 +1137,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     signal.throwIfAborted();
     const name = DockerSandboxHost.checkName(handle);
     this.guard.revoke(name);
+    this.trusted.delete(name);
     await this.api.request('DELETE', `/containers/${name}?force=1`).catch((error) => {
       if (!notFound(error)) throw error;
     });
@@ -1204,8 +1351,25 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
 
   // ---- idle stop and lifetime ----------------------------------------------
 
-  /** Stop what nobody has used for the idle period, or what ran past its lifetime. */
+  /**
+   * Stop what nobody has used for the idle period, or what ran past its
+   * lifetime. A container its background processes keep awake is in use for
+   * as long as they run, whoever execs into it, so its idle clock starts only
+   * once they have ended; its lifetime still ends it.
+   */
   async reap(signal: AbortSignal = AbortSignal.timeout(60_000)): Promise<string[]> {
+    let awake: ReadonlySet<string> | null = new Set();
+    if (this.settings.awake) {
+      try {
+        awake = await this.settings.awake(signal);
+      } catch (error) {
+        // Not knowing which are awake, none is taken for idle.
+        awake = null;
+        process.stderr.write(
+          `docker sandbox idle stop skipped: the running processes could not be read: ${describe(error)}\n`,
+        );
+      }
+    }
     const filters = encodeURIComponent(
       JSON.stringify({
         label: [`${OWNER}=v1`, `${LABEL_PROJECT}=${this.settings.project}`],
@@ -1222,6 +1386,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       signal.throwIfAborted();
       const name = (container.Names?.[0] ?? '').replace(/^\//, '');
       if (!NAME.test(name)) continue;
+      // Kept awake by its processes, it counts as used now.
+      if (awake?.has(name)) this.activity.set(name, now);
       // A container this process has not seen used starts its idle clock now.
       const last = this.activity.get(name) ?? now;
       if (!this.activity.has(name)) this.activity.set(name, now);
@@ -1230,10 +1396,11 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       const lifetime =
         this.lifetimes.get(name) ??
         Number(container.Labels?.[LIFETIME] ?? Number.POSITIVE_INFINITY);
-      const idle = now - last >= this.settings.idleSeconds * 1000;
+      const idle = awake !== null && now - last >= this.settings.idleSeconds * 1000;
       const expired = now - since >= lifetime * 1000;
       if (!idle && !expired) continue;
       this.guard.revoke(name);
+      this.trusted.delete(name);
       await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
         if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
           throw error;

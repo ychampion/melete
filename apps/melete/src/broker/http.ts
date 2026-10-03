@@ -34,11 +34,11 @@ export interface BrokerOperations {
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
-  /** A succeeded screenshot's picture, for a runtime whose model reads images. */
+  /** A succeeded screenshot's picture, for a runtime whose model reads images, or why it is kept from it. */
   screenshot?(
     claims: CapabilityClaims,
     id: string,
-  ): Promise<{ media_type: 'image/png'; data: string }>;
+  ): Promise<{ media_type: 'image/png'; data: string } | { withheld: true; reason: string }>;
   /** Carry out an approved action by id; the caller supplies no payload. */
   resume?(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse>;
   /** Send a chase's covered follow-up; the service writes it, the caller supplies nothing. */

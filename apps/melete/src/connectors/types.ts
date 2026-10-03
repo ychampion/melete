@@ -24,6 +24,13 @@ export type ConnectorContext = {
    * the route the policy authorized; it is never a way to change what is sent.
    */
   repair?: RepairAttemptContext;
+  /**
+   * Set by the broker when this action was let through only because what it
+   * makes is new in the person's space (`staysInSpace`), with no approval and
+   * no standing permission behind it. The connector must then not replace
+   * anything that has appeared at that name since.
+   */
+  only_new?: boolean;
 };
 
 export interface Connector {
@@ -91,6 +98,15 @@ export interface Connector {
    * work in the agent's own workspace, under the person's own settings.
    */
   staysInSpace?(action: Pick<Action, 'kind' | 'canonical_payload'>, spaceId: string): boolean;
+  /**
+   * Payload paths (as `collectOriginFields` names them) whose values this
+   * connector proved itself before anyone was asked, and proves again in
+   * `validateBinding`: a file it checked is the person's own. Where such a value
+   * came from in the conversation then says nothing more, so the broker leaves
+   * it out of origin checking. Only `resource` fields are ever left out; a
+   * recipient, destination or amount is always checked.
+   */
+  verifiedFields?(action: Pick<Action, 'kind' | 'canonical_payload'>): readonly string[];
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault

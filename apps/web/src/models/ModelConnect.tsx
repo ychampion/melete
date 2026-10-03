@@ -103,7 +103,7 @@ function VisionSetting({
   const line = visionLine(active);
   const save = (next: boolean | null, done: string) => {
     setBusy(true);
-    void models.choose(active.provider as ModelProvider, active.model, next).then((result) => {
+    void models.setVision(active.provider, active.model, next).then((result) => {
       setBusy(false);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? 'Couldn’t change that' });

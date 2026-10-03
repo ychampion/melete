@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { noLinks, openBeneath, segmentsFor } from '../connectors/files.ts';
 import type { Database } from '../db/client.ts';
 import { artifact, job } from '../db/schema.ts';
 import { ownJob } from '../principals/authority.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ServiceError } from './errors.ts';
 import type { SpaceResolver } from './reactions.ts';
 
@@ -27,7 +28,7 @@ export function artifactLocation(
   roots: ArtifactRoots,
   spaceId: string,
   row: Stored,
-): { root: string; segments: string[] } {
+): { job: string; segments: string[] } | { root: string; segments: string[] } {
   if (!/^sp_[A-Za-z0-9]+$/.test(spaceId) || (row.area !== 'work' && row.area !== 'artifacts'))
     throw notFound();
   const work = row.area === 'work' && row.sourceJobId !== null;
@@ -46,7 +47,7 @@ export function artifactLocation(
   }
   if (!segments.length) throw notFound();
   return work
-    ? { root: roots.workRoot, segments: [row.sourceJobId as string, ...segments] }
+    ? { job: row.sourceJobId as string, segments }
     : { root: roots.spacesRoot, segments: [spaceId, 'artifacts', ...segments] };
 }
 
@@ -57,8 +58,13 @@ async function readArtifact(
 ): Promise<Uint8Array> {
   const location = artifactLocation(roots, spaceId, row);
   // Every component is checked, so a link anywhere on the way is refused.
-  const file = await noLinks(await realpath(location.root), location.segments, false);
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const { base, segments } =
+    'job' in location
+      ? await new LocalWorkspaceFs(roots.workRoot).location(location.job, location.segments)
+      : { base: await realpath(location.root), segments: location.segments };
+  await noLinks(base, segments, false);
+  // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
+  const handle = await openBeneath(base, segments, constants.O_RDONLY);
   try {
     if (!(await handle.stat()).isFile()) throw notFound();
     return new Uint8Array(await handle.readFile());

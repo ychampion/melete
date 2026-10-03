@@ -701,6 +701,8 @@ withDb('a command in a remote sandbox', () => {
         jobId: s.scope.jobId,
         attemptId: s.attemptId,
         actionId: first.action.id,
+        // When the command runs out of time: a held request is answered before then.
+        deadlineAt: expect.any(Number),
       },
     ]);
     // Ended with the command, so a later command never shares its token.

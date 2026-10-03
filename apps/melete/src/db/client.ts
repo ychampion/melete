@@ -5,6 +5,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { schema } from './schema.ts';
+import { verifyingTls } from './tls.ts';
 
 export type Database = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -49,10 +50,13 @@ export function openDatabase(
   max = 10,
   idleInTransactionMs = IDLE_IN_TRANSACTION_TIMEOUT_MS,
 ): DatabaseHandle {
+  // For verify-ca and verify-full, the server is checked against the URL's own host (db/tls.ts).
+  const tls = verifyingTls(url);
   const sql = postgres(url, {
     max,
     onnotice: () => {},
     connection: { idle_in_transaction_session_timeout: idleInTransactionMs },
+    ...(tls ? { ssl: tls } : {}),
   });
   // Every transaction, the Drizzle service's included, begins here.
   const begin = sql.begin.bind(sql) as (...args: unknown[]) => Promise<unknown>;

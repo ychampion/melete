@@ -1,0 +1,18 @@
+# glab api -X POST projects/alice%2Fsite/issues -f title=Hello
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/issues
+user-agent: glab/v1.120.0 (windows, amd64)
+content-type: application/json; charset=utf-8
+private-token: melete-proxy-adds-this
+
+{"title":"Hello"}
+
+### refuse
+POST https://gitlab.com/api/v4/usage_data/track_event
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+content-type: application/json
+private-token: melete-proxy-adds-this
+
+{"event":"gitlab_cli_command_used","send_to_snowplow":true,"additional_properties":{"api_endpoint":"/projects/:id/issues","architecture":"amd64","cli_version":"v1.120.0","command_and_subcommand":"api","http_method":"POST","label":"api","platform":"windows","property":""}}

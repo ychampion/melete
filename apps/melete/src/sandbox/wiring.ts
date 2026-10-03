@@ -8,14 +8,21 @@
  * workspaces nobody resumed; and when an attempt ends it suspends that
  * attempt's workspace, or closes its sandbox when there is nothing to keep.
  *
+ * A workspace with background processes still running when its attempt ends
+ * is kept running for them instead, where its provider can keep a computer
+ * running between attempts; the sweep keeps it while they live and suspends
+ * it once they have ended. Where the provider cannot, suspending would end
+ * them, so they are stopped first, each with that reason on its record.
+ *
  * A provider belongs to the connection that holds its key, so everything here
  * is resolved by connection: two spaces may use the same provider with
  * different accounts, and one account's reconciliation must never judge the
  * other's sandboxes.
  */
 import type { Sql } from 'postgres';
+import { END_REASONS, LIVE_STATES, type SandboxProcesses } from './processes.ts';
 import { reconcileSandboxes } from './reconcile.ts';
-import type { SandboxSessions } from './sessions.ts';
+import { type SandboxSessions, sessionHandle } from './sessions.ts';
 import type { SandboxProvider } from './types.ts';
 
 /** The providers this installation currently has, by the connection that holds the key. */
@@ -32,6 +39,8 @@ export type SandboxWiringOptions = {
   project: string;
   /** How often the sweep runs. */
   sweepMs: number;
+  /** The computers' background processes, which may keep a workspace running after its attempt. */
+  processes?: SandboxProcesses;
   /**
    * How often reconciliation runs again after boot, so an orphan left while
    * the service ran is found without waiting for a restart. An hour unless set.
@@ -54,7 +63,12 @@ export type SandboxWiring = {
   afterAttempt(attemptId: string): void;
   /** Ends the attempt's session: suspended if it is a workspace, closed if not. */
   settleAttempt(attemptId: string, signal: AbortSignal): Promise<void>;
-  start(): void;
+  /**
+   * Starts the timed sweep and reconciliation. With several service instances
+   * on one database, the lease says whether this one runs them now, so one
+   * instance at a time does, and its signal stops a run whose lease was lost.
+   */
+  start(lease?: { leads(): Promise<boolean>; signal(): AbortSignal }): void;
   stop(): void;
 };
 
@@ -71,6 +85,28 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         `connection ${connectionId} now holds the ${held.adapter} adapter, and this session's sandbox was created by ${adapter}`,
       );
     return held?.provider;
+  };
+  /** End a computer's live processes before a suspend that would end them anyway. */
+  const stopForSuspend = async (
+    row: Record<string, unknown>,
+    provider: SandboxProvider,
+    signal: AbortSignal,
+  ) => {
+    const processes = options.processes;
+    if (!processes) return;
+    const live = (
+      await processes.forComputer(String(row.space_id), String(row.agent_id), 0)
+    ).filter(
+      (each) => each.connectionId === String(row.connection_id) && LIVE_STATES.includes(each.state),
+    );
+    if (!live.length) return;
+    const computer = processes.computer(provider, {
+      providerSandboxId: String(row.provider_sandbox_id),
+      imageDigest: (row.image_digest as string | null) ?? null,
+      region: (row.region as string | null) ?? null,
+    });
+    for (const each of live)
+      await processes.end(each, computer, 'stopped', END_REASONS.suspended, signal);
   };
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
@@ -104,7 +140,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
 
     async settleAttempt(attemptId, signal) {
       const rows = await sql`select id, agent_id, persistence, connection_id, adapter,
-          provider_sandbox_id
+          provider_sandbox_id, space_id, image_digest, region, status
         from sandbox_session
         where attempt_id = ${attemptId} and status in ('opening', 'ready')`;
       for (const row of rows) {
@@ -116,6 +152,23 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         try {
           const provider = providerFor(String(row.adapter), String(row.connection_id));
           if (!provider) continue;
+          if (workspace && row.status === 'ready' && (await sessions.hasLiveProcesses(id))) {
+            // Its processes keep it running, and the next attempt takes it over.
+            if (provider.capabilities.keepAwake) {
+              const held = await sessions.holdForProcesses(id, attemptId);
+              if (held) {
+                await provider
+                  .keepAlive?.(sessionHandle(held), sessions.leaseSeconds * 2, signal)
+                  .catch((error: unknown) => {
+                    say(`sandbox session ${id} could not be kept running: ${String(error)}`);
+                  });
+                continue;
+              }
+            }
+            // Suspending stops them on this provider: they are ended first,
+            // with the reason, rather than left to be found lost.
+            else await stopForSuspend(row, provider, signal);
+          }
           if (workspace) await sessions.suspendWorkspace(id, provider, signal);
           else await sessions.close(id, provider, signal);
         } catch (error) {
@@ -140,17 +193,27 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       pending.add(work);
     },
 
-    start() {
+    start(lease) {
+      const led = async () => (lease ? lease.leads() : true);
+      // Work under a lease stops the moment the lease is found lost.
+      const bounded = (ms: number) =>
+        lease
+          ? AbortSignal.any([AbortSignal.timeout(ms), lease.signal()])
+          : AbortSignal.timeout(ms);
       timer ??= setInterval(() => {
-        void wiring.sweep(AbortSignal.timeout(options.sweepMs)).catch(() => {
-          say('sandbox sweep failed');
-        });
+        void led()
+          .then((leading) => (leading ? wiring.sweep(bounded(options.sweepMs)) : undefined))
+          .catch(() => {
+            say('sandbox sweep failed');
+          });
       }, options.sweepMs);
       timer.unref?.();
       reconcileTimer ??= setInterval(() => {
-        void wiring.reconcile(AbortSignal.timeout(120_000)).catch(() => {
-          say('sandbox reconciliation failed');
-        });
+        void led()
+          .then((leading) => (leading ? wiring.reconcile(bounded(120_000)) : undefined))
+          .catch(() => {
+            say('sandbox reconciliation failed');
+          });
       }, options.reconcileMs ?? 3_600_000);
       reconcileTimer.unref?.();
     },
@@ -256,7 +319,12 @@ export function sandboxRemovalTeardown(
  */
 export type SandboxFactory = {
   options: {
-    sandbox?: { sessions: SandboxSessions; project: string; maxConcurrent: number };
+    sandbox?: {
+      sessions: SandboxSessions;
+      project: string;
+      maxConcurrent: number;
+      processes?: SandboxProcesses;
+    };
   };
   sandboxProviders: ReadonlyMap<string, { adapter: string; provider: SandboxProvider }>;
 };
@@ -277,6 +345,7 @@ export function startSandboxesFromEnv(
     sessions: sandbox.sessions,
     providers: () => factory.sandboxProviders,
     project: sandbox.project,
+    ...(sandbox.processes ? { processes: sandbox.processes } : {}),
     // Often enough that a lease that ran out is noticed well before a session
     // could be mistaken for live, and seldom enough to be cheap.
     sweepMs: Math.max(30_000, Math.floor((env.MELETE_SANDBOX_LEASE_SECONDS * 1000) / 3)),

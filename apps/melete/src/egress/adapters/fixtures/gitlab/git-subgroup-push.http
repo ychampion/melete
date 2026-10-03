@@ -1,0 +1,14 @@
+# git push origin melete/docs (a project in a subgroup)
+
+### read
+GET https://gitlab.com/acme/team/site.git/info/refs?service=git-receive-pack
+user-agent: git/2.53.0
+accept: */*
+
+### write base64
+POST https://gitlab.com/acme/team/site.git/git-receive-pack
+user-agent: git/2.53.0
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDBjODAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAgN2ZkZTg2MTVkNmNkODk3YzNiNDVhYWYyOWExZDU0Nzc5OTE2ODZhYiByZWZzL2hlYWRzL21lbGV0ZS9kb2NzACByZXBvcnQtc3RhdHVzLXYyIHNpZGUtYmFuZC02NGsgcXVpZXQgb2JqZWN0LWZvcm1hdD1zaGExIGFnZW50PWdpdC8yLjUzLjAud2luZG93cy4yLVdpbmRvd3MwMDAwUEFDSwAAAAIAAAABmwt4nI2KQQoCMQwA731F74Kk3WybgIiCH2nSLArWXdYKPt8+wTkNw/TdzKNQnKsmjCrJhAsksBlloZo4Ei1ihgzotrLbq3uemELOmuNEYsNCkoVxhkqxqCEFTaFO6Mqn39fdX/2pXOxb2va0o67t7ENmoBAJwB9g4EZtj97tr9ndVn27H6LaNGIK14nnpZ1Q+8Z0rGNQ7UkpTabbFg==

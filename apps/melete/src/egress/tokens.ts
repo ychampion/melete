@@ -14,6 +14,7 @@
  * between commands of the same computer and changes nothing else.
  */
 import { createHash, randomBytes } from 'node:crypto';
+import type { ExecEnvName } from '@melete/contracts';
 import type { SandboxHandle } from '../sandbox/types.ts';
 
 /** `command` for one `terminal.run`; `process` for a background process that outlives it. */
@@ -26,6 +27,11 @@ export type EgressAttribution = {
   jobId: string | null;
   attemptId: string | null;
   actionId: string | null;
+  /**
+   * When the command is killed for running out of time, in epoch milliseconds.
+   * A request the relay holds for an approval is answered before then.
+   */
+  deadlineAt?: number;
 };
 
 /** One host a command reached, or tried to: what a receipt shows. */
@@ -37,6 +43,12 @@ export type EgressHostSummary = {
   refused: number;
   bytes_up: number;
   bytes_down: number;
+  /** Present when a connected account was used on this host. */
+  credentialed?: true;
+  /** Requests on this host that only read, with the account. */
+  reads?: number;
+  /** Requests on this host that changed something, each through its own approval. */
+  writes?: number;
 };
 
 /** Counters one tunnel adds to while it lasts, even after its command settled. */
@@ -45,16 +57,36 @@ export type EgressHostCounters = {
   refused: number;
   bytesUp: number;
   bytesDown: number;
+  credentialed?: boolean;
+  reads?: number;
+  writes?: number;
 };
 
 export type EgressTokenEntry = {
+  /** The hash the token is kept under. */
+  key: string;
   /** The computer the token works from. */
   sandbox: string;
   attribution: EgressAttribution;
   hosts: Map<string, EgressHostCounters>;
+  /** Called once when the token ends: what was opened under it with an account closes. */
+  ended: Set<() => void>;
 };
 
 const hashOf = (token: string) => createHash('sha256').update(token).digest('hex');
+
+/** Runs what waits for a token to end, once each; one that throws stops none of the others. */
+function end(entry: EgressTokenEntry): void {
+  const waiting = [...entry.ended];
+  entry.ended.clear();
+  for (const each of waiting) {
+    try {
+      each();
+    } catch {
+      // Closing a tunnel that is already gone is not a failure of the settle.
+    }
+  }
+}
 
 /** The tokens of commands still running, by a hash of the token. */
 export class EgressTokens {
@@ -63,8 +95,24 @@ export class EgressTokens {
   /** A fresh token for one command in this computer. */
   mint(sandbox: string, attribution: EgressAttribution): string {
     const token = randomBytes(24).toString('base64url');
-    this.live.set(hashOf(token), { sandbox, attribution: { ...attribution }, hosts: new Map() });
+    const key = hashOf(token);
+    this.live.set(key, {
+      key,
+      sandbox,
+      attribution: { ...attribution },
+      hosts: new Map(),
+      ended: new Set(),
+    });
     return token;
+  }
+
+  /**
+   * Whether this entry's token is still live. Asked again for every request a
+   * credentialed tunnel carries, so a tunnel opened by a command that has
+   * since settled never carries an account again.
+   */
+  isLive(entry: EgressTokenEntry): boolean {
+    return this.live.get(entry.key) === entry;
   }
 
   /**
@@ -81,12 +129,18 @@ export class EgressTokens {
     const key = hashOf(token);
     const entry = this.live.get(key);
     this.live.delete(key);
-    return entry ? summarize(entry.hosts) : [];
+    if (!entry) return [];
+    end(entry);
+    return summarize(entry.hosts);
   }
 
   /** Ends every token of a computer that was stopped, removed or given away. */
   revokeSandbox(sandbox: string): void {
-    for (const [key, entry] of this.live) if (entry.sandbox === sandbox) this.live.delete(key);
+    for (const [key, entry] of this.live)
+      if (entry.sandbox === sandbox) {
+        this.live.delete(key);
+        end(entry);
+      }
   }
 
   get size(): number {
@@ -127,21 +181,34 @@ export function summarize(hosts: ReadonlyMap<string, EgressHostCounters>): Egres
       refused: each.refused,
       bytes_up: each.bytesUp,
       bytes_down: each.bytesDown,
+      ...(each.credentialed
+        ? { credentialed: true as const, reads: each.reads ?? 0, writes: each.writes ?? 0 }
+        : {}),
     }))
     .sort((a, b) => a.host.localeCompare(b.host));
 }
 
 /** What one command is given, and how it is ended. */
 export type AttributedCommand = {
-  /** Proxy names for the command's own environment, over the computer's. */
-  env: Readonly<Record<'HTTPS_PROXY' | 'https_proxy' | 'HTTP_PROXY' | 'http_proxy', string>>;
+  /**
+   * Proxy names for the command's own environment, over the computer's; with a
+   * connected command-line account, also the trust bundle's paths and the
+   * account's placeholders. Never a secret.
+   */
+  env: Readonly<
+    Record<'HTTPS_PROXY' | 'https_proxy' | 'HTTP_PROXY' | 'http_proxy', string> &
+      Partial<Record<ExecEnvName, string>>
+  >;
   /** Ends the token; answers the hosts the command reached. */
   settle(): EgressHostSummary[];
 };
 
 /** A sandbox provider whose computers leave only through this service's egress guard. */
 export interface CommandEgress {
-  attributeCommand(handle: SandboxHandle, attribution: EgressAttribution): AttributedCommand;
+  attributeCommand(
+    handle: SandboxHandle,
+    attribution: EgressAttribution,
+  ): AttributedCommand | Promise<AttributedCommand>;
 }
 
 export const hasCommandEgress = (provider: object): provider is CommandEgress =>

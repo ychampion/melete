@@ -65,8 +65,12 @@ import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, owner, secret, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
+import { COMMAND_LINE_SERVICE, commandLineAccount } from '../egress/adapters/accounts.ts';
+import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
+import { awsSecret } from '../egress/aws-session.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import { signInStore } from '../ops/signin-store.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
 import {
   checkSandboxConfiguration,
@@ -122,6 +126,10 @@ function view(row: typeof connection.$inferSelect) {
       ? { needs_scope: row.configuration.needs_scope }
       : {}),
     shared_use: row.sharedUse,
+    // The account a command-line connection acts as, found when it was connected.
+    ...(row.provider === 'command_line' && typeof row.configuration.account === 'string'
+      ? { account: row.configuration.account }
+      : {}),
     last_checked_at: row.lastCheckedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
   });
@@ -589,7 +597,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
   // Signing in to a remote MCP server. The sign-in earns the credential that
   // would otherwise be pasted, and ends on the same installation path.
+  // A sign-in may come back to any instance, so they wait in Postgres.
+  const pendingSignIns = signInStore(deps.sql, factory.options.masterKey);
   const signIns = new McpSignIns({
+    store: pendingSignIns,
     publicUrl: deps.env.MELETE_PUBLIC_URL,
     clientMetadata: deps.env.MELETE_OAUTH_CLIENT_METADATA,
     authorize: async (actor, requested) => {
@@ -697,8 +708,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
   });
 
-  app.get('/mcp-sign-ins/:id', (c) => {
-    const status = signIns.status(c.get('owner').id, c.req.param('id'));
+  app.get('/mcp-sign-ins/:id', async (c) => {
+    const status = await signIns.status(c.get('owner').id, c.req.param('id'));
     if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
     return c.json(mcpSignInStatus.parse(status));
   });
@@ -833,6 +844,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const title = ACCOUNT_TITLES[name];
     const provider = accountProviders[name];
     const signIns = new AccountSignIns<ConnectionResponse>(name, {
+      store: pendingSignIns,
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       ...(provider ? { provider } : {}),
       authorize: async (actor, requested) => {
@@ -891,8 +903,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       }
     });
 
-    app.get(`/${name}-sign-ins/:id`, (c) => {
-      const status = signIns.status(c.get('owner').id, c.req.param('id'));
+    app.get(`/${name}-sign-ins/:id`, async (c) => {
+      const status = await signIns.status(c.get('owner').id, c.req.param('id'));
       if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
       return c.json(accountSignInStatus.parse(status));
     });
@@ -1081,6 +1093,7 @@ const KIND_COVERS = {
   mcp: 'tools',
   mcp_stdio: 'tools',
   sandbox: 'execution',
+  command_line: 'execution',
 } as const satisfies Record<
   ConnectionKindDescriptor['kind'],
   ConnectionCatalogEntry['covers'][number]
@@ -1332,6 +1345,75 @@ async function requestedShape(
       scopes: installation.scopes,
       secret: credentials ? JSON.stringify(credentials) : null,
       configuration: { kind: 'sandbox', sandbox: installation.config },
+    };
+  }
+  if (installation.kind === 'command_line' && 'access_key_id' in installation.credentials) {
+    // The key is asked whose it is (and the role assumed with it) while it is
+    // still only in memory: one AWS refuses never becomes a row or a secret.
+    const key = installation.credentials;
+    const config = {
+      region: installation.config.region ?? '',
+      ...(installation.config.role_arn ? { role_arn: installation.config.role_arn } : {}),
+      ...(installation.config.external_id ? { external_id: installation.config.external_id } : {}),
+    };
+    const checked = await awsAccount(key, awsAdapterConfig.parse(config), {
+      ...(factory.options.commandLine?.awsSts ?? {}),
+    });
+    if (!checked.ok)
+      throw new ServiceError(
+        'invalid_request',
+        checked.code === 'credential_refused'
+          ? installation.config.role_arn
+            ? 'AWS did not accept this key, or did not let it assume the role. Check both, then try again.'
+            : 'AWS did not accept this key. Check that it is active, then paste it again.'
+          : CONNECTION_CHECK_DETAIL.unavailable,
+        400,
+      );
+    return {
+      scopes: installation.scopes,
+      secret: awsSecret(key),
+      configuration: {
+        kind: 'command_line',
+        adapter: 'aws',
+        config,
+        account: checked.arn,
+      },
+    };
+  }
+  if (installation.kind === 'command_line') {
+    if (!('token' in installation.credentials))
+      throw new ServiceError('invalid_request', 'A GitHub account needs credentials.token.', 400);
+    const { token } = installation.credentials;
+    // The token is asked whose it is while it is still only in memory: one
+    // the service refuses never becomes a row or a sealed secret.
+    const service = installation.config.adapter;
+    if (service === 'aws')
+      throw new ServiceError(
+        'invalid_request',
+        'An AWS account needs credentials.access_key_id and credentials.secret_access_key.',
+        400,
+      );
+    const checked = await commandLineAccount(service, installation.credentials.token, {
+      ...factory.options.commandLine,
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+    });
+    if (!checked.ok)
+      throw new ServiceError(
+        'invalid_request',
+        checked.code === 'credential_refused'
+          ? `${COMMAND_LINE_SERVICE[service]} did not accept this token. Check that it has not expired, then paste it again.`
+          : CONNECTION_CHECK_DETAIL.unavailable,
+        400,
+      );
+    return {
+      scopes: installation.scopes,
+      secret: token,
+      configuration: {
+        kind: 'command_line',
+        adapter: installation.config.adapter,
+        config: {},
+        account: checked.login,
+      },
     };
   }
   const shape =

@@ -8,6 +8,12 @@
  * - `reviewable`: a reversible or low-impact change outside the sandbox. An
  *   independent reviewer judges it, and it goes ahead only when the reviewer
  *   approves at low risk and the person has switched that class on.
+ * - `apps`: publishing an app, a new version of one, or going back to an
+ *   earlier version, through Melete's own Apps connection, when nobody new can
+ *   open it, its code opens no direct connections and it shows no data its
+ *   viewers do not see now. A fixed rule approves it when the person allows
+ *   it; each is undone by going back to the version before. Any of those risks
+ *   puts it in the person's tier, with the reason.
  * - `person`: anything that spends, sends or publishes beyond undo, deletes,
  *   carries credentials, or rests on a recipient, destination or amount the
  *   person never confirmed. It always asks. The reviewer is never consulted.
@@ -27,11 +33,12 @@ import {
   type JsonValue,
   type OriginWarning,
 } from '@melete/contracts';
+import { isEgressTool } from '../egress/adapters/types.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
 import type { Reviewer, ReviewInput, ReviewVerdict } from './reviewer.ts';
 import { collectOriginFields, type TrustResolver } from './trust.ts';
 
-export type ReviewTier = 'sandbox' | 'reviewable' | 'person';
+export type ReviewTier = 'sandbox' | 'apps' | 'reviewable' | 'person';
 export type TierDecision = {
   tier: ReviewTier;
   /** The switch that governs it; null for the person's tier. */
@@ -54,6 +61,20 @@ export const AUTO_REVIEW_DEFAULTS = { timeoutMs: 12_000, hourlyLimit: 60, breake
 
 /** Providers whose writes land only in the agent's own workspace. */
 const SANDBOX_PROVIDERS = new Set(['exec', 'sandbox', 'files']);
+
+/**
+ * A file saved into, moved into or moved out of the person's own Files (the
+ * space's `artifacts` area). The files tools also reach the agent's own
+ * workspace (`work`, the default), which is sandbox work; the person's Files
+ * are not. A new file there stays in their space and is not asked about (the
+ * files connector says so through `staysInSpace`); anything else that changes
+ * them is theirs to agree to, like a change in a connected app.
+ */
+export function changesPersonFiles(name: string, payload: JsonObject): boolean {
+  if (name === 'files.write') return payload.area === 'artifacts';
+  if (name === 'files.move') return payload.area === 'artifacts' || payload.to_area === 'artifacts';
+  return false;
+}
 /** The agent's own browser: filling, clicking and choosing. Submitting is `browser.submit`. */
 const SANDBOX_BROWSER = new Set(['browser.fill', 'browser.click', 'browser.select']);
 /** A draft in the person's own mailbox, and discarding one. */
@@ -67,6 +88,28 @@ const OWN_CALENDAR = new Set(['calendar.create', 'calendar.update']);
  * calendar says it has none.
  */
 export const CHANGES_EXISTING_EVENT = new Set(['calendar.update']);
+
+/**
+ * Publishing through Melete's own Apps connection. Its connector binds, before
+ * anyone is asked, `risks`: why this one should be the person's to decide (new
+ * people could open it, its code opens direct connections, it shows data its
+ * viewers do not see now). The connector re-checks them at admission and at
+ * dispatch, and refuses one that gained a risk since.
+ */
+const APPS_PROVIDER = 'apps';
+const APP_PUBLISHING = new Set(['apps.publish', 'apps.rollback']);
+
+/** Why an app publish or rollback asks, as bound into its payload; null when it was never checked. */
+export function appRisks(payload: JsonObject): string[] | null {
+  const risks = payload.risks;
+  if (!Array.isArray(risks) || !risks.every((risk) => typeof risk === 'string')) return null;
+  const found = risks as string[];
+  // The connection warning is bound on its own as well; either one asks.
+  const connecting = Array.isArray(payload.opens_connections) && payload.opens_connections.length;
+  return connecting && !found.length
+    ? ['Its code can open direct connections to other servers (WebRTC).']
+    : found;
+}
 
 const DESTRUCTIVE =
   /(?:^|[._-])(?:delete|remove|destroy|drop|purge|erase|trash|wipe|revoke|unshare|uninstall)(?:$|[._-])/i;
@@ -114,6 +157,14 @@ export function reviewTier(input: {
   const { tool, provider, payload, doubts } = input;
   const person = (reason: string): TierDecision => ({ tier: 'person', actionClass: null, reason });
   if (tool.effect_class === 'spend') return person('It spends money.');
+  // A change a command in the agent's computer makes with a connected account
+  // leaves Melete with the person's own identity, and always asks.
+  if (isEgressTool(tool.name))
+    return person(
+      payload.destructive === true
+        ? 'It deletes or overwrites something with your account, from a command in the agent’s computer.'
+        : 'It changes something with your account, from a command in the agent’s computer.',
+    );
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
   if (DESTRUCTIVE.test(words(tool.name))) return person('It deletes or removes something.');
@@ -121,8 +172,27 @@ export function reviewTier(input: {
     return person(
       'A recipient, destination or amount in it did not come from you or a connected app you verified.',
     );
+  if (provider === APPS_PROVIDER && APP_PUBLISHING.has(tool.name)) {
+    const risks = appRisks(payload);
+    if (risks === null) return person('Melete could not check who this app would reach.');
+    if (risks.length) return person(risks.join(' '));
+    return {
+      tier: 'apps',
+      actionClass: 'apps',
+      reason:
+        tool.name === 'apps.rollback'
+          ? 'It goes back to an earlier version for the same viewers, and shows them no new data.'
+          : 'It publishes to the same people as now, opens no direct connections, and shows no new data.',
+    };
+  }
   if (tool.effect_class === 'read' && !tool.requires_approval)
     return { tier: 'sandbox', actionClass: 'sandbox', reason: 'It only reads.' };
+  if (changesPersonFiles(tool.name, payload))
+    return {
+      tier: 'reviewable',
+      actionClass: 'app_changes',
+      reason: 'It changes your own Files, which can be put back.',
+    };
   if (
     tool.effect_class === 'write_reversible' &&
     !tool.requires_approval &&
@@ -175,6 +245,11 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
     mode: row.mode,
     classes: {
       ...DEFAULT_APPROVAL_SETTINGS.classes,
+      // A row saved before publishing had its own switch follows the person's
+      // sandbox switch: someone who chose to be asked more is not asked less.
+      ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'apps')
+        ? { apps: stored.sandbox }
+        : {}),
       ...Object.fromEntries(
         Object.entries(stored).filter(
           ([key, value]) => key in DEFAULT_APPROVAL_SETTINGS.classes && typeof value === 'boolean',
@@ -185,7 +260,10 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
   // A row that no longer reads is the most cautious setting, never the default.
   return parsed.success
     ? parsed.data
-    : { mode: 'ask', classes: { sandbox: false, calendar: false, app_changes: false } };
+    : {
+        mode: 'ask',
+        classes: { sandbox: false, calendar: false, app_changes: false, apps: false },
+      };
 }
 
 export async function saveApprovalSettings(
@@ -193,7 +271,22 @@ export async function saveApprovalSettings(
   spaceId: string,
   input: unknown,
 ): Promise<ApprovalSettings> {
-  const settings = approvalSettings.parse(input);
+  // A switch the caller does not name keeps its stored value, so a client
+  // written before a class existed cannot turn it back to its default.
+  const value = input as { classes?: unknown } | null;
+  const named =
+    value && typeof value === 'object' && value.classes && typeof value.classes === 'object'
+      ? (value.classes as Record<string, unknown>)
+      : null;
+  const stored = named ? await loadApprovalSettings(tx, spaceId) : null;
+  const settings = approvalSettings.parse(
+    named && stored
+      ? {
+          ...value,
+          classes: { ...stored.classes, ...named },
+        }
+      : input,
+  );
   await tx`insert into approval_review_policy (space_id, mode, classes, updated_at)
     values (${spaceId}, ${settings.mode}, ${JSON.stringify(settings.classes)}::jsonb, now())
     on conflict (space_id) do update set mode = excluded.mode, classes = excluded.classes,

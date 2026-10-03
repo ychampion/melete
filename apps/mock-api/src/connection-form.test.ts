@@ -34,6 +34,10 @@ const TYPED: Record<string, string> = {
   'mcp_stdio.allowed_scopes': 'mcp_notes.search, mcp_notes.add',
   'sandbox.image': 'base',
   'credentials.api_key': 'sandbox-key-value',
+  'credentials.token': 'github_pat_example_value',
+  'credentials.access_key_id': 'AKIAEXAMPLEKEY000001',
+  'credentials.secret_access_key': 'example/Secret+value0000000',
+  'command_line.region': 'us-east-1',
 };
 const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },
@@ -62,6 +66,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
   ).kinds;
   expect([...new Set(kinds.map((kind) => kind.kind))].sort()).toEqual([
     'caldav',
+    'command_line',
     'ics',
     'mail',
     'mcp',

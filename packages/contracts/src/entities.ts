@@ -74,6 +74,13 @@ export const CONNECTION_PROVIDERS = [
   'sandbox',
   /** A person's own computer, reached through the companion they paired it with. */
   'device',
+  /**
+   * An account a command in the agent's computer uses through the egress relay,
+   * which holds the secret and asks before every change.
+   */
+  'command_line',
+  /** Publishes a folder of web files as an app people can open. */
+  'apps',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
@@ -117,6 +124,8 @@ export const connection = z.object({
    * connections serve its owner whatever this says.
    */
   shared_use: z.enum(['owner', 'room']).optional(),
+  /** The account a command-line connection acts as, as the service it reaches names it. */
+  account: z.string().max(200).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

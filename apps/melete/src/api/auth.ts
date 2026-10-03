@@ -21,12 +21,15 @@ import type { Env } from '../env.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
+import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import {
   resolveSessionSpace,
   type SessionSpace,
   selectedSpace,
 } from '../principals/session-space.ts';
+import { previewPath } from '../sandbox/preview-path.ts';
+import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
@@ -71,6 +74,12 @@ declare module 'hono' {
      * other.
      */
     createdSpaceId: string;
+    /**
+     * The digest of the browser session this request came with, so what is
+     * issued for the session (an app view) can end with it. Unset for an
+     * assistant's bearer token.
+     */
+    sessionDigest: string;
   }
 }
 
@@ -183,6 +192,8 @@ export function mountAuth(
     db: Database | null;
     env: Env;
     loginThrottle?: LoginThrottle;
+    /** Where the limits are counted. Left out, in Postgres when there is one, so every instance shares them. */
+    limits?: LimitStore;
     sql?: Sql;
     registry?: ConnectorRegistry;
   },
@@ -200,10 +211,13 @@ export function mountAuth(
       : undefined;
   // Four limiters on one clock: client addresses, accounts as seen by browsers
   // that are new to them, known devices, and setup attempts.
-  const loginThrottle = deps.loginThrottle ?? new LoginThrottle();
-  const accountThrottle = new LoginThrottle(loginThrottle.clock, ACCOUNT_BURST);
-  const deviceThrottle = new LoginThrottle(loginThrottle.clock);
-  const setupThrottle = new LoginThrottle(loginThrottle.clock);
+  const limits = deps.limits ?? (handle ? new PostgresLimitStore(handle) : undefined);
+  const loginThrottle =
+    deps.loginThrottle ?? new LoginThrottle(undefined, undefined, limits, 'login.address');
+  const clock = loginThrottle.clock;
+  const accountThrottle = new LoginThrottle(clock, ACCOUNT_BURST, limits, 'login.account');
+  const deviceThrottle = new LoginThrottle(clock, undefined, limits, 'login.device');
+  const setupThrottle = new LoginThrottle(clock, undefined, limits, 'login.setup');
   const devices = new DeviceCookies(env.MELETE_MASTER_KEY, loginThrottle.clock);
   const deviceCookie = (c: Context, email: string) =>
     setCookie(c, DEVICE_COOKIE, devices.issue(email), {
@@ -281,6 +295,13 @@ export function mountAuth(
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.
     if (c.req.path.startsWith('/device/')) return next();
+    // A framed app's files are fetched from an opaque origin, which holds no
+    // session. The token in the path is their whole authorisation; see
+    // apps/serve.ts. Reading is all these routes do.
+    if (viewPath(c.req.method, c.req.path)) return next();
+    // A preview of a server in an agent's computer is fetched the same way; see
+    // sandbox/preview.ts.
+    if (previewPath(c.req.method, c.req.path)) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -297,6 +318,7 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
+    c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.
     const resolved = await resolveSessionSpace(
       db,
@@ -320,7 +342,8 @@ export function mountAuth(
       sessionCookie: SESSION_COOKIE,
       signIn,
       publicUrl: env.MELETE_PUBLIC_URL,
-      clock: loginThrottle.clock,
+      clock,
+      limits,
     });
   app.post('/signin/magic-link', async (c) => {
     const input = magicLinkRequest.parse(await c.req.json());
@@ -375,7 +398,7 @@ export function mountAuth(
 
   app.post('/setup', async (c) => {
     const source = clientAddress(c);
-    const retryAfter = setupThrottle.admit(source);
+    const retryAfter = await setupThrottle.admit(source);
     if (retryAfter > 0) return rateLimited(c, retryAfter, 'setup');
     if (!db) {
       return c.json(
@@ -429,7 +452,7 @@ export function mountAuth(
         409,
       );
     }
-    setupThrottle.succeeded(source);
+    await setupThrottle.succeeded(source);
     c.set('createdSpaceId', personalId);
     sessionCookie(c, authenticated.token, env);
     deviceCookie(c, created.email);
@@ -450,7 +473,7 @@ export function mountAuth(
     const source = clientAddress(c);
     const device = devices.verify(getCookie(c, DEVICE_COOKIE));
     if (!device) {
-      const retryAfter = loginThrottle.admit(source);
+      const retryAfter = await loginThrottle.admit(source);
       if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
     }
     if (!db) {
@@ -469,10 +492,12 @@ export function mountAuth(
     const account = devices.account(input.email);
     const known = device?.account === account ? device : null;
     if (device && !known) {
-      const retryAfter = loginThrottle.admit(source);
+      const retryAfter = await loginThrottle.admit(source);
       if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
     }
-    const retryAfter = known ? deviceThrottle.admit(known.nonce) : accountThrottle.admit(account);
+    const retryAfter = await (known
+      ? deviceThrottle.admit(known.nonce)
+      : accountThrottle.admit(account));
     if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
     const [found] = await db
       .select()
@@ -497,10 +522,10 @@ export function mountAuth(
     // Success clears only what this request paid into. The shared account
     // limiter gets this one attempt back and keeps every failure it has seen,
     // so it counts wrong passwords and one person signing in cannot reopen it.
-    if (known) deviceThrottle.succeeded(known.nonce);
+    if (known) await deviceThrottle.succeeded(known.nonce);
     else {
-      loginThrottle.succeeded(source);
-      accountThrottle.refund(account);
+      await loginThrottle.succeeded(source);
+      await accountThrottle.refund(account);
     }
     sessionCookie(c, authenticated.token, env);
     deviceCookie(c, found.email);

@@ -8,11 +8,13 @@
  * children are deleted before their parents. Everything here is safe to run
  * twice: a repeated phase deletes nothing the first pass left.
  */
-import { constants } from 'node:fs';
-import { access, lstat, mkdir, realpath, rm } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import { initSpace } from '@melete/knowledge';
 import type { Sql, TransactionSql } from 'postgres';
+import { PathHeld, removeConfined } from '../paths.ts';
+import { LocalWorkspaceFs, type WorkspaceFs } from '../runtime/workspace-fs.ts';
+
+export { PathHeld, PathOutsideRoot, removeConfined } from '../paths.ts';
 
 /**
  * Run first inside each destructive transaction, and throws when the run that
@@ -116,6 +118,9 @@ export async function sweepOperational(
     await tx`delete from device_pairing where space_id = ${spaceId}`;
     // A memory question belongs to a space rather than to a job.
     await tx`delete from question where space_id = ${spaceId}`;
+    // Published apps, with their versions and grants. The versions' blob
+    // references went in the files phase, with every blob only they used.
+    await tx`delete from app where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)
       await tx`delete from ${tx(table)} where space_id = ${spaceId}`;
     // A person's "don't do this" is theirs, not the space's: it keeps standing in
@@ -147,6 +152,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'learned_change',
   // Held while a procedure is evaluated in the space; a removal ends it.
   'learning_evaluation_lease',
+  // How long the space's computers were kept running by their processes, by day.
+  'sandbox_awake_day',
   // The privacy router's sealed vaults, its settings and its audit rows.
   'privacy_vault',
   'privacy_settings',
@@ -256,7 +263,7 @@ export async function clearSpaceFiles(
   emptied: boolean,
   beforeRetry?: () => Promise<void>,
 ): Promise<string[]> {
-  const held = await clearJobWorkspaces(roots.workRoot, jobIds, beforeRetry);
+  const held = await clearJobWorkspaces(new LocalWorkspaceFs(roots.workRoot), jobIds, beforeRetry);
   await removeConfined(roots.spacesRoot, spaceId, beforeRetry);
   if (emptied) await initSpace(resolve(roots.spacesRoot), spaceId);
   return held;
@@ -264,80 +271,18 @@ export async function clearSpaceFiles(
 
 /** Each job's workspace, and the ones still held open once their retries are spent. */
 export async function clearJobWorkspaces(
-  workRoot: string,
+  workspaces: WorkspaceFs,
   jobIds: readonly string[],
   beforeRetry?: () => Promise<void>,
 ): Promise<string[]> {
   const held: string[] = [];
   for (const id of jobIds) {
     try {
-      await removeConfined(workRoot, id, beforeRetry);
+      await workspaces.remove(id, beforeRetry);
     } catch (error) {
       if (!(error instanceof PathHeld)) throw error;
       held.push(error.path);
     }
   }
   return held;
-}
-
-export class PathHeld extends Error {
-  constructor(
-    readonly path: string,
-    cause: unknown,
-  ) {
-    super(
-      `${path} could not be removed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  }
-}
-
-export class PathOutsideRoot extends Error {
-  constructor(readonly path: string) {
-    super(`${path} does not sit under its own root`);
-  }
-}
-
-const RETRIES = 3;
-
-/**
- * Remove one entry directly under one root, and nothing else. The name must be
- * a single path segment, the entry must not be a link, and where it really
- * leads must be exactly where it is: the same guard the browser profile uses
- * before Chromium is allowed to open one.
- */
-export async function removeConfined(
-  root: string,
-  name: string,
-  beforeRetry?: () => Promise<void>,
-): Promise<void> {
-  if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..')
-    throw new PathOutsideRoot(name);
-  const base = resolve(root);
-  await mkdir(base, { recursive: true });
-  const canonicalRoot = await realpath(base);
-  const target = join(canonicalRoot, name);
-  if (!target.startsWith(canonicalRoot + sep)) throw new PathOutsideRoot(target);
-  try {
-    await access(target, constants.F_OK);
-  } catch {
-    return;
-  }
-  // existsSync follows links, so the link itself is checked before the target.
-  if ((await lstat(target)).isSymbolicLink()) throw new PathOutsideRoot(target);
-  if ((await realpath(target)) !== target) throw new PathOutsideRoot(target);
-  let failure: unknown;
-  for (let attempt = 0; attempt < RETRIES; attempt += 1) {
-    try {
-      await rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      return;
-    } catch (error) {
-      failure = error;
-      // On Windows the usual cause is a process that still holds the directory
-      // open, so whatever stops it runs again before the next try, after a
-      // pause that grows with each one.
-      await beforeRetry?.();
-      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
-    }
-  }
-  throw new PathHeld(target, failure);
 }

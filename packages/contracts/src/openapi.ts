@@ -39,6 +39,7 @@ import {
   spaceListResponse,
   triggerResponse,
 } from './api.ts';
+import { appsPaths } from './apps-openapi.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -156,6 +157,7 @@ import {
   modelSettingsResponse,
   saveModelKeyRequest,
   setDefaultModelRequest,
+  setModelVisionRequest,
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
@@ -167,6 +169,7 @@ import {
   principal,
   spaceMembership,
 } from './principals.ts';
+import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
   attributionReport,
   attributionRequest,
@@ -737,6 +740,7 @@ export function buildOpenApiDocument() {
         { name: 'reactions' },
         { name: 'actions' },
         { name: 'artifacts' },
+        { name: 'apps' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'devices' },
@@ -2266,6 +2270,25 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/screenshots/{id}': {
+          get: {
+            tags: ['artifacts'],
+            summary: 'Retrieve the picture a screenshot took, for its own conversation',
+            description:
+              'A succeeded screenshot of the agent’s own computer or of a paired computer, for the ' +
+              'person whose work it was. Served only while it is the picture the receipt recorded.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The screenshot action, from a trail entry'),
+            responses: {
+              '200': {
+                description: 'The picture',
+                content: { 'image/png': { schema: z.string().meta({ format: 'binary' }) } },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such screenshot for this person'),
+            },
+          },
+        },
         '/browser/sessions/{id}/takeover': {
           post: {
             tags: ['browser'],
@@ -2927,6 +2950,23 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/model-settings/vision': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Say whether the model in use reads images',
+            description:
+              'Applies to the model in use, for the next attempt. Null hands it back to Melete’s ' +
+              'list. The model, and whether it was chosen here or is the server’s default, do not change.',
+            requestBody: json(setModelVisionRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The model in use has changed since the page loaded'),
+            },
+          },
+        },
+
         '/model-providers/sign-in': {
           get: {
             tags: ['model-providers'],
@@ -3114,6 +3154,8 @@ export function buildOpenApiDocument() {
           },
         },
         ...devicePaths(),
+        ...appsPaths(),
+        ...processPreviewPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

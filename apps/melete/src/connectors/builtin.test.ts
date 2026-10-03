@@ -1,15 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  COMMAND_LINE_ADAPTERS,
   CONNECTION_KIND_DESCRIPTORS,
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
 } from '@melete/contracts';
+import { createCommandLineConnector } from '../egress/connector.ts';
 import { storedSandboxConnection } from '../sandbox/connection.ts';
 import {
   DEFAULT_SANDBOX_LIFETIME_SECONDS,
   defaultSandboxConfig,
   dockerSandboxSettings,
 } from '../sandbox/docker-default.ts';
+import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { BUILTIN_CONNECTIONS, builtinEnvironment } from './builtin.ts';
 import { calendarManifest } from './calendar.ts';
@@ -27,10 +30,12 @@ describe('default connections', () => {
       files: filesManifest,
       web: webManifest,
       artifacts: artifactsManifest,
+      apps: appsManifest,
       exec: execManifest,
       sandbox: sandboxExecManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
+      'apps',
       'artifacts',
       'exec',
       'files',
@@ -124,7 +129,13 @@ describe('default connections', () => {
   });
 
   test('every default effect that leaves the space waits for approval', () => {
-    for (const manifest of [filesManifest, webManifest, artifactsManifest, execManifest])
+    for (const manifest of [
+      filesManifest,
+      webManifest,
+      artifactsManifest,
+      appsManifest,
+      execManifest,
+    ])
       for (const tool of manifest.tools)
         if (tool.effect_class === 'write_external' || tool.effect_class === 'spend')
           expect(tool.requires_approval).toBe(true);
@@ -162,10 +173,10 @@ describe('default connections', () => {
       BUILTIN_CONNECTIONS.filter((builtin) => builtin.when?.(environment) ?? true).map(
         (builtin) => builtin.key,
       );
-    expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts']);
+    expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts', 'apps']);
     expect(
       wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
-    ).toEqual(['files', 'web', 'artifacts', 'generation', 'transcription', 'exec']);
+    ).toEqual(['files', 'web', 'artifacts', 'apps', 'generation', 'transcription', 'exec']);
   });
 });
 
@@ -176,16 +187,35 @@ describe('installable kinds against the connectors they select', () => {
     expect(sorted(CONNECTION_KIND_SCOPES.caldav)).toEqual(toolNames(calendarManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.list']);
     expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
+    // The read grant is checked by the egress relay itself; the write grant is the broker tool.
+    expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual(
+      sorted(
+        COMMAND_LINE_ADAPTERS.flatMap((adapter) => [
+          `egress.${adapter}_read`,
+          ...toolNames(createCommandLineConnector(adapter).manifest),
+        ]),
+      ),
+    );
   });
 
   test('a form says a grant asks first exactly when the connector requires approval', () => {
     const tools = new Map(
-      [...emailManifest.tools, ...calendarManifest.tools, ...sandboxExecManifest.tools].map(
-        (tool) => [tool.name, tool],
-      ),
+      [
+        ...emailManifest.tools,
+        ...calendarManifest.tools,
+        ...sandboxExecManifest.tools,
+        ...COMMAND_LINE_ADAPTERS.flatMap(
+          (adapter) => createCommandLineConnector(adapter).manifest.tools,
+        ),
+      ].map((tool) => [tool.name, tool]),
     );
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS)
       for (const scope of descriptor.scopes) {
+        // Reading through the relay is no tool: it never asks.
+        if (/^egress\.[a-z0-9]+_read$/.test(scope.scope)) {
+          expect([scope.effect_class, scope.asks_first]).toEqual(['read', false]);
+          continue;
+        }
         const tool = tools.get(scope.scope);
         expect(tool).toBeDefined();
         expect(scope.effect_class).toBe(tool?.effect_class ?? 'read');

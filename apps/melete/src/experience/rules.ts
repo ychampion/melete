@@ -15,7 +15,55 @@ export const ruleKinds: Record<string, StandingRule['kind']> = {
   'email.discard': 'discard_draft',
   'files.write': 'save_file',
   'files.move': 'restore_file',
+  'egress.github_write': 'push_branch',
 };
+
+/**
+ * What a push rule lets happen beyond the push itself, said on the rule: a
+ * pushed branch runs the repository's workflows with the pushed code and the
+ * repository's secrets, and a workflow allowed to write can change any branch
+ * that is not protected, the default branch included.
+ */
+export const PUSH_RULE_WARNING =
+  "Each push it covers also runs the repository's workflows on the pushed code, with the repository's secrets; a workflow allowed to write can change the default branch unless it is protected. Use a token without the Workflows permission, read-only workflow permissions, and protection on the default branch.";
+
+/** The only branches a standing rule for pushes covers. */
+export const RULE_BRANCH_PREFIX = 'refs/heads/melete/';
+
+/**
+ * Whether a standing rule of its kind could ever cover this action. Most kinds
+ * are covered whole; a change from the agent's computer only when it is a
+ * push that creates or moves `melete/` branches of one repository and carries
+ * no push options. A delete, a tag, the default branch or any other branch, and every other change
+ * (a pull request, a merge, an API call) always ask.
+ */
+export function ruleCovers(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
+  const kind = ruleKinds[action.kind];
+  if (!kind) return false;
+  if (kind !== 'push_branch') return true;
+  const payload = action.canonical_payload;
+  const updates = Array.isArray(payload.updates) ? payload.updates : [];
+  return (
+    payload.operation === 'push' &&
+    payload.destructive === false &&
+    typeof payload.resource === 'string' &&
+    // A push option asks the service to do more than move the branch (open or
+    // merge a change request, skip or vary its checks): such a push asks.
+    Array.isArray(payload.push_options) &&
+    payload.push_options.length === 0 &&
+    updates.length > 0 &&
+    updates.every((update) => {
+      const item = (update ?? {}) as Record<string, unknown>;
+      return (
+        typeof item.ref === 'string' &&
+        item.ref.startsWith(RULE_BRANCH_PREFIX) &&
+        item.ref.length > RULE_BRANCH_PREFIX.length &&
+        typeof item.new === 'string' &&
+        !/^0+$/.test(item.new)
+      );
+    })
+  );
+}
 export const ruleRecipient = (action: Action) => collectOriginFields(action.canonical_payload);
 export const permissionVersion = (approval: Record<string, unknown>) =>
   createHash('sha256')
@@ -42,7 +90,9 @@ export function ruleView(row: Record<string, unknown>): StandingRule {
     // A rule scoped to one job is a chase's follow-ups, and says so.
     text: row.job_id
       ? `Follow-ups in one chase to ${recipient}, up to ${row.count_cap}, until ${numericDate(new Date(String(row.expires_at)))}.`
-      : `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
+      : kind === 'push_branch'
+        ? `Pushes to melete/ branches in ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days. ${PUSH_RULE_WARNING}`
+        : `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
     bounds: {
       count_cap: row.count_cap,
       expires_at: new Date(String(row.expires_at)).toISOString(),
@@ -60,7 +110,7 @@ export const isAssistantCommand = (key: string | null | undefined): boolean =>
 /** Exact trusted selectors prevent one recipient's permission from authorizing another. */
 export const resolveExperienceGrant: StandingGrantResolver = async (tx, input) => {
   const { action, job, phase } = input;
-  if (!ruleKinds[action.kind]) return false;
+  if (!ruleCovers(action)) return false;
   // A reviewed action retains its original approval binding, including expiry.
   const [review] = await tx`select id from approval where action_id = ${action.id} limit 1`;
   if (review) return false;

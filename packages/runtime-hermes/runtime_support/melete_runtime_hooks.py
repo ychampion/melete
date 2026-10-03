@@ -197,3 +197,30 @@ def failure_frame(attempt_id: str) -> dict:
         "attempt_id": attempt_id,
         "capture_id": f"{prefix}runtime-error",
     }
+
+
+# A paired computer's screenshot is never kept in the engine's session store
+# (patches/observer_bridge.py, the picture seam). When a later run of the same
+# session reads its history back, the plugin's restorer is asked for each tool
+# message and may put the picture back from the broker. Nothing here fetches.
+_picture_restorer: list[Callable[[Any, Any], Any]] = []
+
+
+def register_picture_restorer(restore: Callable[[Any, Any], Any]) -> None:
+    """Set the function that, given a tool message's tool name and content, returns its content."""
+    _picture_restorer[:] = [restore]
+
+
+def restore_pictures(history: list) -> list:
+    """History read back for a run, with what the restorer gives back for each tool message."""
+    if not _picture_restorer or not isinstance(history, list):
+        return history
+    restore = _picture_restorer[0]
+    for message in history:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        try:
+            message["content"] = restore(message.get("tool_name"), message.get("content"))
+        except Exception:  # noqa: BLE001 - a picture that cannot come back leaves the receipt
+            continue
+    return history

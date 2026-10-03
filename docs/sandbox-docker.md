@@ -54,8 +54,12 @@ Removing a space, or the connection, removes its containers and their volumes.
 
 ## What is in the container
 
-- Bash, coreutils, curl, git, jq, procps, unzip and xz; Python 3.12 with pip.
-  `pip install` falls back to the user's own directory, which persists.
+- Bash, coreutils, curl, git, jq, procps, unzip and xz; Python 3.12 with pip; Node.js 24
+  with npm; GitHub's `gh` 2.83.2, AWS's `aws` 2.37.8 and GitLab's `glab` 1.120.0. Node.js,
+  `gh`, `aws` and `glab` are pinned by checksum
+  ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github), [AWS](COMMAND-LINE-ACCESS.md#aws)).
+  `pip install` falls back to the user's own directory, and `npm install -g` installs
+  there too; both persist.
 - A 1024x768 virtual display with a light window manager and Chromium, the same
   size as the live view.
 - `/work`, the job's workspace. Files the agent writes with its file tools are
@@ -156,7 +160,12 @@ A container nobody has used for `MELETE_SANDBOX_DOCKER_IDLE_SECONDS` (15 minutes
 by default) is stopped. The next command, file operation, desktop action or
 live view starts it again. Files on its volumes persist; running processes and
 the open browser do not. Watching the desktop counts as use, and so does a
-background process that is still running (see "Long-running work" below).
+background process that is still running (see "Long-running work" below): the
+idle stop reads which containers have running processes from the service's
+records, so such a container is never stopped for idleness, and its idle clock
+starts when its last process ends. The container's own lifetime still applies;
+when it runs out, the container stops with its processes, and the conversations
+see them ended with that reason.
 
 Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
@@ -171,8 +180,9 @@ A suspended workspace nobody resumes is removed after
   brokered action each, with a timeout of up to 120 seconds, the first 16 KiB of
   output in the conversation and up to 1 MiB stored with the job.
 - **Background processes.** `process.start`, `process.list`, `process.read`,
-  `process.write`, `process.signal`, `process.stop` and `process.extend`, for
-  work longer than a command (see "Long-running work" below).
+  `process.write`, `process.signal`, `process.stop`, `process.extend` and
+  `process.wait`, for work longer than a command (see "Long-running work"
+  below).
 - **Files.** The file tools write the job's workspace, which the container
   sees as `/work`.
 - **Computer.** `computer.screenshot` captures the desktop and stores the PNG
@@ -231,12 +241,81 @@ Limits, each set in the service's environment:
 | `MELETE_PROCESS_OUTPUT_MAX_BYTES` | 8388608 | the output ring of one process |
 | `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | 21600 | how long a space's processes may keep its computers running each day (UTC) |
 
+When a conversation's turn ends with processes still running in the agent's
+computer, the computer is not suspended: the processes keep it running, and
+the next conversation with that agent takes it over as it is, with them still
+in it. Once the last one ends, the computer is suspended as usual. A computer
+kept running this way counts toward `MELETE_SANDBOX_MAX_CONCURRENT`, like one a
+conversation is using.
+
+The awake allowance counts only that time: how long a space's computers were
+kept running by their processes alone, after the turns that used them ended,
+added up over its computers for the day (UTC). Time a conversation is using
+the computer does not count.
+
 Every minute the service checks each computer with running processes. It
 stops a process past its time limit, stops a space's processes once the day's
-allowance is used, and records a process as lost when its container restarted,
-since a restart ends every process in it. A start over a limit is refused with
-the reason, which the agent passes on: "This computer is already running 4
-processes. Stop one first."
+allowance is used, and records a process as lost when its container restarted
+or stopped, since that ends every process in it. When the allowance stops
+processes, the conversation that started them says so: "Your computer's awake
+time for today is used up (6 of 6 hours). Processes stopped at 14:02 UTC." A
+start over a limit is refused with the reason, which the agent passes on: "This
+computer is already running 4 processes. Stop one first."
+
+### Picking the conversation up when a process finishes
+
+An agent that starts the test suite says so and ends its turn; the
+conversation picks up again when the suite finishes, with its exit code and
+last lines. It asks for this when it starts the process
+(`process.start` with `notify`), or later for a process already running
+(`process.wait` with `later`), on one of three things:
+
+| On | Wakes the job |
+|---|---|
+| `exit` | when the process ends, with its exit code, the reason it ended and the end of its output |
+| `output` | on a line it prints, or a line matching a regular expression (RE2), at most once a minute; lines printed meanwhile are covered by that wake |
+| `listening` | once, when the process opens its port |
+
+The agent then ends its turn waiting on `process:<process id>`. The service
+asks each computer with watched processes how they are, every 5 seconds on
+Docker and every 30 seconds on remote providers, in one call per computer, and
+only what the job asked for wakes it: until then no attempt runs and no model
+is called. A process that ends before the line or port it was watched for
+wakes the job with how it ended. A job watches at most four processes at once,
+and each watch goes when its process has ended.
+
+For a short wait inside the turn, `process.wait` holds the turn for up to 100
+seconds until the process ends, prints a matching line or opens its port, and
+returns what it saw.
+
+A wake never reaches a computer while it is being suspended: the woken
+conversation waits for the suspend to finish and then resumes the computer as
+usual.
+
+### Previewing a server
+
+A process started with a `port` is a server the person can look at. In the
+computer view, the Processes list shows each background process with its
+state, how long it has run, its port and the last line it printed, and lets
+the person whose job started it read the end of its output, stop it, or open
+**Preview**. The preview is the page the server answers on that port, framed
+inside Melete.
+
+- The server must listen on all addresses (`0.0.0.0`), not only on
+  `localhost`: the service reaches it at the computer's own address on its
+  private network. Most development servers take a `--host 0.0.0.0` option.
+- Only computers with network access (`open`) can be previewed. A `deny_all`
+  computer has no network the preview could use, and opening one says so.
+- Pages are framed with the same isolation as a published app: an opaque
+  origin, no Melete session, and nothing fetched from anywhere, including the
+  server's own API. Pages, scripts and styles that link the server's own
+  files from the root (`/src/main.js`) have those links kept inside the
+  preview, up to 5 MiB per answer; larger ones are passed on unchanged. Live
+  reload connections are not passed on, so reload the preview to see a change.
+- One answer may be up to 50 MiB, and the server has 30 seconds to give it.
+- A preview lasts half an hour. While it is on screen the computer view opens
+  a new one shortly before then and reloads the page. It ends at once when the
+  process stops or the browser session that opened it signs out.
 
 ## Watching and taking over
 

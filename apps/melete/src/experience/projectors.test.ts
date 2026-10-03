@@ -510,6 +510,26 @@ test('a permission to save a file names the file and carries its exact text', ()
   const shown = permission({ path: 'plans/email-and-admin.md', content });
   // Present tense and the path, not "Saved a file".
   expect(shown.what).toBe('Save plans/email-and-admin.md');
+  // Into the person's own Files, the card says so; so does a move in or out of them.
+  expect(permission({ path: 'imgtest.png', area: 'artifacts', content }).what).toBe(
+    'Save imgtest.png to your Files',
+  );
+  const move = (payload: Record<string, unknown>) =>
+    projectPermission({
+      id: 'apr_move',
+      version: 'v1',
+      action: { ...write, kind: 'files.move', canonicalPayload: payload },
+      connection: files,
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-30T04:00:00.000Z'),
+    }).what;
+  expect(move({ from: 'shots/a.png', to: 'a.png', to_area: 'artifacts' })).toBe(
+    'Move “a.png” into your Files',
+  );
+  expect(move({ from: 'a.png', to: 'a.png', area: 'artifacts', to_area: 'work' })).toBe(
+    'Move “a.png” out of your Files',
+  );
   expect(shown.file).toEqual({
     path: 'plans/email-and-admin.md',
     bytes: Buffer.byteLength(content, 'utf8'),
@@ -624,4 +644,151 @@ test('the line naming the request ends with one stop, never two', () => {
   expect(forLine('Plan the trip')).toBe('For Plan the trip.');
   expect(forLine('[ftE] impossible / open…')).toBe('For [ftE] impossible / open…');
   expect(forLine('Is it done?')).toBe('For Is it done?');
+});
+
+test('a permission to publish an app names it, its size, who can open it and the data it shows', () => {
+  const publish: ActionRow = {
+    ...base,
+    kind: 'apps.publish',
+    effectClass: 'write_external',
+    connectionId: 'apps-connection',
+    canonicalPayload: {
+      dir: 'app',
+      name: 'Deals',
+      create: true,
+      file_count: 14,
+      total_bytes: 225_280,
+      audience: { kind: 'people', emails: ['bo@example.test'], principal_ids: ['own_bo'] },
+      data: { deals: { kind: 'artifact', path: 'data/deals.json', source_job_id: 'chat' } },
+      data_shown: ['deals: data/deals.json from this conversation, newest version each time'],
+      manifest_hash: 'a'.repeat(64),
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const apps = { id: 'apps-connection', label: 'Apps', provider: 'apps' };
+  const ask = (payload: Record<string, unknown>) =>
+    projectPermission({
+      id: 'apr_app',
+      version: 'v1',
+      action: {
+        ...publish,
+        canonicalPayload: { ...(publish.canonicalPayload as object), ...payload },
+      },
+      connection: apps,
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+    });
+  const shown = ask({});
+  expect(shown.what).toBe('Publish Deals');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'App', value: 'Deals' },
+    { label: 'Files', value: '14 files, 220 KB' },
+    { label: 'Viewers', value: 'You and bo@example.test' },
+    {
+      label: 'Data it shows',
+      value:
+        'deals: data/deals.json from this conversation, newest version each time. Viewers see each new version automatically.',
+    },
+  ]);
+  // Code that opens WebRTC connections is a warning on the card, never a refusal.
+  expect(ask({ opens_connections: ['call.js'] }).preview?.facts.at(-1)).toEqual({
+    label: 'Warning',
+    value:
+      'Its code can open direct connections to other servers (WebRTC, in call.js), which can send what the app shows, or what a viewer types into it, anywhere. Publish it only if you trust that code with that data.',
+  });
+  // Why it came to the person rather than going ahead on its own leads the card.
+  expect(
+    ask({
+      risks: [
+        'New people could open it: bo@example.test.',
+        'Its code can open direct connections to other servers (WebRTC).',
+      ],
+    }).preview?.facts[0],
+  ).toEqual({
+    label: 'Why you are asked',
+    value:
+      'New people could open it: bo@example.test. Its code can open direct connections to other servers (WebRTC).',
+  });
+  expect(ask({ risks: [] }).preview?.facts).toEqual(shown.preview?.facts);
+  // A new version names the app it replaces as it is called now, whatever name
+  // the request gives, and a new name is a fact of its own on the card.
+  const again = ask({
+    create: false,
+    app_id: 'app_PAYROLL',
+    current_name: 'Payroll',
+    audience: { kind: 'unchanged', now: 'only you' },
+  });
+  expect(again.what).toBe('Publish a new version of Payroll');
+  expect(again.preview?.facts.slice(0, 2)).toEqual([
+    { label: 'App', value: 'Payroll' },
+    { label: 'Renames it to', value: 'Deals' },
+  ]);
+  expect(again.preview?.facts.find((fact) => fact.label === 'Viewers')?.value).toBe(
+    'Unchanged: only you',
+  );
+  const sameName = ask({ create: false, current_name: 'Deals' });
+  expect(sameName.preview?.facts.map((fact) => fact.label)).not.toContain('Renames it to');
+  expect(
+    ask({ audience: { kind: 'everyone' } }).preview?.facts.find((fact) => fact.label === 'Viewers')
+      ?.value,
+  ).toBe('Everyone with an account here');
+  // Who keeps access whatever the audience says is named, never hidden behind "Only you".
+  const viewersOf = (audience: Record<string, unknown>) =>
+    ask({ audience }).preview?.facts.find((fact) => fact.label === 'Viewers')?.value;
+  expect(viewersOf({ kind: 'only_me' })).toBe('Only you');
+  expect(viewersOf({ kind: 'only_me', also: 'alice@example.test' })).toBe(
+    'You and alice@example.test',
+  );
+  expect(
+    viewersOf({
+      kind: 'people',
+      emails: ['bo@example.test'],
+      principal_ids: ['own_bo'],
+      also: 'alice@example.test',
+    }),
+  ).toBe('You and bo@example.test, alice@example.test');
+  expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+});
+
+test("a permission to change the version of an app shows that version's data and who will see it", () => {
+  const rollback: ActionRow = {
+    ...base,
+    kind: 'apps.rollback',
+    effectClass: 'write_external',
+    connectionId: 'apps-connection',
+    canonicalPayload: {
+      app_id: 'app_DEALS',
+      version_id: 'b'.repeat(64),
+      name: 'Deals',
+      version_published_at: '2026-09-20T07:02:00.000Z',
+      viewers_now: 'everyone with an account here',
+      data_shown: ['salaries: data/salaries.json from this conversation, newest version each time'],
+      collections_shown: ['feedback'],
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const shown = projectPermission({
+    id: 'apr_back',
+    version: 'v1',
+    action: rollback,
+    connection: { id: 'apps-connection', label: 'Apps', provider: 'apps' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  expect(shown.what).toBe('Change which version of Deals people see');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'App', value: 'Deals' },
+    { label: 'Version', value: 'The one published 2026-09-20T07:02:00.000Z' },
+    { label: 'Viewers', value: 'Everyone with an account here' },
+    {
+      label: 'Data it shows',
+      value:
+        'salaries: data/salaries.json from this conversation, newest version each time. Viewers see each new version automatically.',
+    },
+    { label: 'Responses it collects', value: 'feedback' },
+  ]);
 });

@@ -54,3 +54,22 @@ test('a file step says what it did to the file', () => {
   expect(file('files.write')).toBe('saving “screenshot-1.png”');
   expect(file('files.list')).toBe('looking in “screenshot-1.png”');
 });
+
+test('a file move is told as one, never as a message to the file', () => {
+  const move = {
+    id: 'act_2',
+    kind: 'files.move',
+    status: 'unknown',
+    canonical_payload: {
+      from: 'shots/capture.png',
+      to: 'random-org-screenshot.png',
+      to_area: 'artifacts',
+    },
+  } as unknown as LedgerAction;
+  const html = renderToStaticMarkup(<UnknownCard action={move} onResolve={() => {}} />);
+  expect(html).toContain('I tried this once and couldn’t confirm it finished.');
+  expect(html).toContain('moving “capture.png” to “random-org-screenshot.png”');
+  expect(html).not.toContain('a message');
+  expect(html).toContain('It didn’t');
+  expect(html).not.toContain('It arrived');
+});

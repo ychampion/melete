@@ -1,13 +1,16 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
-Three observer seams, one prompt seam and one reasoning seam. The prompt seam:
-`agent.host_prompt: false` leaves out the engine's own product pointer, its
-profile line and its host runtime block, which describe the engine's install
-rather than the attempt. It is inert unless that key is set. The reasoning seam
-puts the model's reasoning on a run's event stream as `reasoning.delta`, beside
-the `message.delta` text the stream already carries.
+Three observer seams, one prompt seam, one reasoning seam and one picture
+seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
+product pointer, its profile line and its host runtime block, which describe
+the engine's install rather than the attempt. It is inert unless that key is
+set. The reasoning seam puts the model's reasoning on a run's event stream as
+`reasoning.delta`, beside the `message.delta` text the stream already carries.
+The picture seam keeps the agent's own screenshot in the session store, and
+puts a paired computer's back from the broker, so the next run of the same
+session still shows it to the model.
 
-All four original source hashes are checked before any write. A subsequent
+All six original source hashes are checked before any write. A subsequent
 run accepts only the same patch, or a named earlier version of it, never an
 arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
@@ -124,6 +127,53 @@ def _join_tier(parts: List[Optional[str]]) -> str:
              "        agent.reasoning_callback = _reasoning_cb  # Melete reasoning seam\n        self._active_run_agents[run_id] = agent\n"),
         ],
     ),
+    # The picture seam. Each tool message is written to the session store as it
+    # lands, and the next run of the same session reads its history back from
+    # there. At the pin a picture is stored as the word "[screenshot]", so a
+    # screenshot taken just before the adapter starts another run (after a tool
+    # is loaded) reached the model as its receipt and that word. The agent's own
+    # computer's screenshot, made only of text and pictures, is stored whole. A
+    # paired computer's is not: code the agent runs can read this store, and that
+    # picture may only reach a cloud model. It is stored as text, and fetched
+    # from the broker again when the next run reads its history (below).
+    "agent/session_persistence.py": (
+        "e6c6c9787ec6d8140b58978efc6208ca9f6e0bc0aaaa2e07574a90120217adda",
+        [
+            ("def _durable_content(content: Any) -> Any:\n",
+             """_MELETE_OWN_SCREENSHOT = re.compile(r"computer\\.screenshot(?:__[0-9a-f]{12})?")  # Melete picture seam
+
+
+def _keeps_pictures(role: Any, content: Any, tool_name: Any) -> bool:  # Melete picture seam
+    \"\"\"The agent's own screenshot: a tool result of text and pictures only, with one.\"\"\"
+    return (role == "tool" and isinstance(tool_name, str) and bool(_MELETE_OWN_SCREENSHOT.fullmatch(tool_name))
+            and isinstance(content, list)
+            and any(isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES for p in content)
+            and all(isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
+                    for p in content))
+
+
+def _durable_content(content: Any) -> Any:
+"""),
+            ("        \"role\": role, \"content\": _durable_content(content), \"tool_name\": msg.get(\"tool_name\"),\n",
+             "        \"role\": role,  # Melete picture seam\n"
+             "        \"content\": content if _keeps_pictures(role, content, msg.get(\"tool_name\")) else _durable_content(content),\n"
+             "        \"tool_name\": msg.get(\"tool_name\"),\n"),
+        ],
+    ),
+    # The other half of the picture seam: history read back for the next run
+    # goes through the runtime support module, where the plugin puts a paired
+    # computer's picture back, fetched from the broker, when that computer still
+    # lets cloud models see its screen.
+    "gateway/platforms/api_server.py": (
+        "221589ae8c45349736bb291b4679b86e9e12cb22f5a33220ae3d22929fea8297",
+        [
+            ("            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)\n",
+             """            history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            from melete_runtime_hooks import restore_pictures  # Melete picture seam
+            return await asyncio.to_thread(restore_pictures, history)
+"""),
+        ],
+    ),
 }
 
 # A checkout patched by an earlier reviewed version of a file's patch is
@@ -190,7 +240,7 @@ def main() -> None:
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:
         target.write_text(content, encoding="utf-8", newline="\n")
-    print("Melete observer bridge applied: 4 checked source files and 1 support module")
+    print("Melete observer bridge applied: 6 checked source files and 1 support module")
 
 
 if __name__ == "__main__":

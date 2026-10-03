@@ -476,6 +476,300 @@ address.
   person who wants a computer that reaches one site and nothing else chooses
   `connected_hosts_only`.
 
+## Attacker 9: code in the agent's computer with a connected command-line account
+
+A person can connect an account for the Docker computer's command-line tools
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md)). The egress relay terminates
+TLS for that account's hosts and adds the account on the way out; the computer
+holds only placeholders, the egress CA's certificate and per-command tokens.
+
+- **The secret.** It never enters the computer. Answers pass through a byte
+  redactor over every form of it, uncompressed so nothing hides it, and
+  `Set-Cookie` is dropped. `a computer uses a connected account through the
+  relay, and its environment, files and output never hold the secret` runs a
+  real computer in CI against an upstream that echoes the `Authorization`
+  header back.
+- **Misuse as the person (confused deputy).** Every request is classified at
+  the wire; anything the adapter cannot read or does not list counts as a
+  change, and every change asks, as an ordinary action under the
+  `write_external` class and the person's auto-review tier. The approval is
+  bound to the job's revision and to the request as it will be sent: method,
+  address, the digest of its exact body bytes and every forwarded header (a
+  short list of headers that say nothing about the change excepted), and only
+  those headers are forwarded. Headers that name another method are removed
+  from every request. A request that differs in any bound part is a different
+  approval. A re-run after approval is admitted once; a lost answer is never
+  sent again.
+- **After the command.** A token works only from its own computer and only
+  until its command ends; a connection opened under it is closed when it ends,
+  and every request on it checks the token again.
+- **Host confusion.** The `Host` header and any absolute address must name the
+  connection's host; upgrades and tunnels inside it are refused; requests are
+  re-originated to the host's pinned public address with certificate checks.
+- **The CA.** Its key is sealed with the master key for this purpose alone and
+  stays in the service. Its certificate is name-constrained to the adapters'
+  DNS names and excludes every IP address (`the egress CA cannot sign for a
+  host outside its constraints` checks a forged certificate against a real TLS
+  client). Host certificates last a day and stay in memory.
+- **Rooms.** An account is offered only to work in the person's own space, never
+  in a shared space or a public compartment, and only where the conversation's
+  agent may use that connection.
+- **What remains.** Reading with the account and sending what was read
+  elsewhere is limited by the account's own permissions and the computer's
+  egress setting; `connected_hosts_only` keeps such a computer to the account's
+  hosts and the operator's list. Holding a change for an answer holds its body
+  in memory: each body is bounded by `MELETE_EGRESS_HOLD_MAX_BYTES`, a computer
+  has at most four possible changes in hand (checked before a body is read),
+  and the bodies held stay within four such requests' worth per computer and
+  sixteen for the installation.
+- **GitHub.** A push is bound to its repository and its exact ref updates, old
+  and new commit, which name their content by hash; the pack that carries the
+  commits is not part of the approval, so a push can also carry objects no
+  pushed ref reaches, which GitHub keeps unreferenced in the repository, where
+  they can be fetched by hash (by anyone, in a public repository) until it
+  cleans them up. The
+  REST and GraphQL APIs are bound to the exact request, and a GraphQL document
+  with any mutation in it, or that does not parse, asks. `every mutation in the
+  gh corpus is classified as a write` runs the classifier over the requests
+  `gh` 2.83 and git sent for each command that changes something, recorded,
+  and over shapes written from the protocols. A standing rule covers only
+  pushes that create or move `melete/` branches of one repository, never a
+  delete, a tag or a push to another branch (`a standing rule admits pushes to
+  melete branches and never to the default branch`). **Limit:** a push the rule
+  covers starts the repository's push workflows without asking, and they run
+  the pushed code with the repository's secrets and workflow token; where that
+  token may write and the default branch is unprotected, that code can change
+  the default branch. The rule's text says so, and the docs advise a token
+  without the Workflows permission, read-only workflow permissions and a
+  protected default branch. A server error after a change was sent, and a
+  GraphQL answer of errors with no data, are recorded as possibly landed, never
+  as nothing changed. Signed download links GitHub returns reach the computer
+  as sent; each opens one object for minutes.
+- **AWS.** AWS signs requests with the key itself, so the relay signs each one
+  again: the computer signs with a placeholder key, the relay reads that
+  signature only for its service and region, and signs with the stored key or
+  with a session of the role the service assumes for that command (named
+  after it). A request signed with any other key, carrying its own session
+  token or presigned is refused; unsigned requests go out without the account.
+  A request's operation is believed only where its service reads it, from a
+  table generated from the AWS SDK's service definitions: `Action` for query
+  services, the service's own `X-Amz-Target` for JSON services, method and path
+  for REST services; a name in the wrong place, or two names, is refused, and
+  an unknown service asks for everything. Operations whose answer is a
+  credential (STS sessions, new IAM access keys, registry and database tokens,
+  GameLift access, S3 Express sessions, and any operation named as assuming a
+  role or getting, creating or generating credentials, a token or a presigned
+  sign-in link) are refused; other names that speak of a credential, token, key
+  pair, password or private key ask, and reading a stored secret asks. Every
+  answer to a signed request, but an S3 object's, is checked whole before the
+  computer sees it: one holding an AWS secret key or session token, an access,
+  refresh, identity or authorization token, a password, a client secret, a
+  private key or a `Secret` field is withheld and recorded (`the relay keeps an answer
+  holding a credential from the computer, and records it`). S3 is read by
+  method, bucket, key and subresource (`list and describe calls are reads, and
+  delete and run calls ask` runs the classifier over the requests the AWS SDK
+  builds for each operation). The approval binds the request as sent but for
+  the signing date, the SDK's request id and retry count and an idempotency
+  token the SDK makes up (blanked, with its name kept). Multipart parts pass
+  unasked only into an upload the same job started with an approval, within
+  10,000 parts and 64 GiB; its start and completion both ask. A signed request
+  to an EC2 instance's public name or a load balancer is refused. **Limits:**
+  chunk-signed uploads are refused; links AWS returns in an answer (Lambda's
+  code location) reach the computer as sent; other reads return what the
+  account may read, such as a Lambda function's environment variables; with
+  `connected_hosts_only`, the computer can reach resources others own under
+  `amazonaws.com`, sending them the account's key id and a short-lived session
+  token but never its secret. `aws in a real computer reads, asks before a change and
+  makes it once after approval, and the computer never holds the key` runs the
+  real `aws` command line in CI against a local stand-in that checks every
+  signature.
+- **GitLab and npm.** A GitLab push is bound like a GitHub one, push options
+  included; GitLab reads those to open or merge a merge request or to skip a
+  pipeline, so a push that carries any is never covered by a standing rule, on
+  either service, and no GitLab or npm change is covered by one at all; the
+  card says in plain words what the options make GitLab do. A request that asks
+  to act as another GitLab user (`Sudo`, in any part of the request) and glab's
+  usage reports are refused. So is every request that would hand the computer
+  a credential of its own: GitLab token creation and rotation, runners, trigger
+  tokens, SSH and deploy keys and OAuth tokens, and npm logins, tokens and
+  token exchanges. Behind those refusals, the relay withholds any answer that
+  holds a GitLab or npm token (`a read whose answer holds a token is withheld,
+  in its body or its headers`). **Limit:** reads return what the account can
+  read, CI/CD variable values included. The publish card reads install scripts
+  from the tarball's own `package.json` and flags a mismatch with the declared
+  manifest. An npm publish is bound to its exact bytes, tarball
+  included, and its card shows the scripts that run on install; unpublishing,
+  deprecating, maintainer, tag, access, team and organisation changes ask, and the
+  audit lookups npm sends as POSTs are the only POSTs that read.
+  `every change in the glab and git corpus is classified as a write` and
+  `every change in the npm corpus is classified as a write, and installs and
+  audits read` run the classifiers over requests recorded from glab 1.120, git
+  and npm 11, and over shapes written from the protocols.
+
+## Attacker 10: a published app and its viewers
+
+An app is a folder of web files the agent wrote and a person allowed to publish
+(see [APPS](APPS.md)). Its code may be hostile: written under a prompt
+injection, or changed by someone who manages it. The aims are to act as the
+viewer in Melete, to read their session, storage or other work, to send what
+the app shows somewhere else, to keep showing it after the viewer was removed,
+and to frame Melete itself to trick a person into a click.
+
+Every file of an app is served under `/api/apps/view/<token>/` with
+`Content-Security-Policy: sandbox allow-scripts allow-forms allow-downloads`,
+so the page runs with an opaque origin: it has no cookies, no storage, and no
+same-origin access to Melete, however it is opened. The Apps screen also frames
+it with the same `sandbox` attribute and without `allow-same-origin`. The rest
+of the policy lets it load scripts, styles, images and fonts only from its own
+files, and fetch nothing (`connect-src 'none'`), post no form, frame nothing,
+open no window and move no page but its own frame. Melete's own pages carry
+`frame-src 'self'`, so even that frame cannot be moved to another site. The
+headers are set in one place, and a response under that path that lacks the
+exact policy is replaced by a 500 before it leaves the service; the web server
+checks again and passes nothing on without it.
+
+A file is served only to a browser that says it is loading it inside a page
+(`Sec-Fetch-Dest`). A file asked for as a page of its own is refused, because a
+page opened on its own could move itself to another site and take what it
+holds with it.
+
+The page holds no credential. The token in its path names one person, one app,
+one version, the app's grant generation and the browser session it was opened
+from. It lasts at most twelve hours and is signed with a key derived from the
+master key; without a master key the key lasts as long as the process, so
+installations with more than one service instance need one. Every file
+request checks all of them again: any change to who may open the app, to the
+version it shows, or signing out ends the view on its next file request. A
+page already loaded keeps showing what it has until the Apps screen next
+checks, within a minute. The token names the person by their account id,
+which the app can read in its own address. The web server forwards these requests
+without the session cookie, and the app's own requests arrive marked
+cross-site, so no cookie travels with them anyway. Bytes are read whole and
+checked against the manifest's hash before they are sent.
+
+Data reaches an app only through the page around it, with the viewer's session,
+and only for the names its version declares, which the publish question listed.
+A data name resolves to the newest recorded version of one file in one
+conversation, and both the record and the conversation must belong to the
+space the app was published from, whatever the manifest says. Bytes on disk
+that no write recorded are not served. When the publisher reviews updates,
+viewers get only versions they let through, kept as blobs; a version can be let
+through only while it is the newest one and its bytes are the ones recorded.
+
+Responses are the app's way back in. An app's code can send them in the
+viewer's name without the viewer doing anything, so they are bounded: only for
+collections the version declares, at most the declared size (16 KiB at most),
+30 a minute per person per app, 500 kept per person per app, and 10,000 kept per
+app. The agent reads them
+only for apps in its own space that its person manages, and the receipt marks
+them as content Melete read (`external_content`), not as the person's word.
+Reading them asks nothing and grants nothing: any action the agent takes about
+a response goes through the same admission and approvals as any other, and a
+recipient or destination lifted from one is not a trusted origin. Workspace
+writes usually do not ask, so one more rule closes the path from a viewer's text
+to what every viewer sees: in a conversation that has read responses, a write or
+move to a file an app's current version shows, and any command (code runner
+or the agent's computer) in a conversation whose files an app shows, waits for
+the person. The rule follows the conversation that read the responses: another
+conversation or a routine that is later steered by a summary of them can still
+write a bound file without asking. Update review closes that path for the data
+it covers. A deleted
+response is removed from the app; copies the agent already read stay in that
+conversation and in the record of the read.
+
+What the app may ask for, it asks the Melete page around it with
+`postMessage`: the data the publish approval listed, read with the viewer's own
+session, and an https link, which opens in a new tab only after the person
+confirms it. The page answers only its own frame's window.
+
+Melete's own pages send `frame-ancestors 'self'` and `X-Frame-Options:
+SAMEORIGIN`, so another site cannot frame them.
+
+**WebRTC is open.** Browsers let any page, sandboxed or not, open WebRTC
+connections, and no header in today's browsers stops them: an app can reach a
+STUN or TURN server it names, and send what it shows, or what a viewer types
+into it, to that server. Names the page looks up can carry data the same way.
+Neither carries the viewer's session. A publish whose code uses WebRTC by
+name (`RTCPeerConnection`, `RTCDataChannel`, `getUserMedia`) always asks, with
+a warning; code that hides those names is not found. Apps are for code the
+person trusts with the data it shows.
+
+**Publishing without a question.** By default a publish, a new version or a
+rollback goes ahead without asking when it reaches nobody new, its code names
+no WebRTC, and it shows its viewers no data they do not see now. A question for
+each version shows file counts, not code, so it adds a step without adding
+something a person can check. What still asks is what changes who is exposed: a wider audience (new people or everyone), WebRTC by name, and new
+data or responses. Those reasons are worked out by the service from the
+database, never taken from the agent, and are checked again at admission and
+dispatch, so a viewer added or data shared in between sends it back to the
+person. They are checked once more under the app's own lock as the version is
+written, the lock a change to its grants takes too, so a share that lands in
+between stops the publish. Who can open an app is counted as access counts it:
+the space's owner and the person who published it keep access whatever a
+publish's audience says, and the card names them. The paths of
+the files an app shows are left out of origin checking for this connection
+only, because the connector proves each is a recorded file of the publisher's
+own in this space, before asking and again before it runs; who will see them
+is one of the reasons above. Every
+publish leaves a receipt in the conversation and on the auto-review record,
+and the version before it is one step away. The person can switch the rule off
+in Settings → Approvals. What this accepts: a new version written under a
+prompt injection reaches the same viewers without a question, with the same
+data, and code that hides its use of WebRTC can send that data elsewhere. That
+was open before too, since the question showed file counts and not code. A
+conversation that read an app's responses, or that is set to ask before
+acting, still asks for every publish.
+
+## Attacker 10: a page served from the agent's computer
+
+A person can preview a web server a background process runs in the agent's
+computer (see [sandbox-docker](sandbox-docker.md#previewing-a-server)). The
+server and its pages were written by the agent, and may be hostile in the same
+ways an app may. The aims are those of Attacker 9, plus two of its own: to use
+the preview to reach something else on the computer's network, and to reach
+another person's computer.
+
+The preview reuses the app viewer's isolation unchanged. Every answer under
+`/api/previews/<token>/` carries the same `Content-Security-Policy: sandbox`
+policy, set in the same place, and the Melete page frames it with the same
+`sandbox` attribute, so the page has an opaque origin, no cookies, no storage,
+fetches nothing and cannot move Melete's page. An answer without the exact
+policy is replaced by a 500 in the service and by a 502 in the web server. A
+page asked for on its own, rather than in a frame, is refused.
+
+The service forwards only reads (GET and HEAD), with a short list of request
+headers: the Melete cookie, any `Authorization`, `Origin` and every other
+header stay behind, and no connection upgrade is passed on. Answers come back
+with the isolation headers and a short list of the server's own; its cookies
+never reach the browser. A redirect is kept only when it points back at the
+same server, and made a path inside the preview.
+
+Each request goes to one address only: the computer's own address on the
+private network it shares with the service, at the port the process declared
+when it started. The address comes from the container engine, and the port from
+the process record; nothing in the request can choose either. A computer with
+no network (`deny_all`) cannot be previewed. On Docker that network holds only
+the computer and the service, so no other computer is reachable from it.
+
+The token in the path names one person, one process, the port and the computer
+it runs in, and the browser session it was opened from, and is signed with a
+key of its own. A preview lasts half an hour; the computer view opens a new
+one while it is on screen. Only the person whose job started the process can
+open one (a job with no recorded person is its space owner's), and only while
+the process runs and listens on its port. Every request checks again that the
+session is signed in, that the person may still use the space, that the
+computer's connection is active, and that the process record still says it
+runs, with that port, in that computer. Whether the process itself still
+listens is checked when the preview is opened, not on each request: if it
+stopped listening before the record caught up, another process in the same
+computer could answer on that port, and nothing outside that computer can.
+Stopping the process, revoking the connection, losing the space or signing out
+ends the preview on its next request.
+
+WebRTC and name lookups are open to a previewed page as they are to an app.
+The preview shows what the agent's own server serves, to the person who asked
+for it.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

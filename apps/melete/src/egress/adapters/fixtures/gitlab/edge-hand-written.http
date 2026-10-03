@@ -1,0 +1,302 @@
+# Written by hand from the git, Git LFS and GitLab API documentation: request shapes the recorded
+# corpus does not cover. A label is what the request does, not what is convenient.
+### read base64
+POST https://gitlab.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAwMA==
+
+### write base64
+POST https://gitlab.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAyYnB1c2gtY2VydAAgcmVwb3J0LXN0YXR1cyBzaWRlLWJhbmQtNjRrCjAwMWNjZXJ0aWZpY2F0ZSB2ZXJzaW9uIDAuMQowMDJlcHVzaGVyIEEgPGFAZXhhbXBsZS5jb20+IDE3OTAwMDAwMDAgKzAwMDAKMDAwNQowMDY2ZWY1ZTYzY2Q4MDhlZGRiZTlmYWQ4MWY4NWIxNTM0MTE4ODA5M2IxYiA3M2NkOTExYjU2MjZkZGJmOGFiZDcyN2FjOTM2NDJmMTgyNWNjM2UyIHJlZnMvaGVhZHMvbWFpbgowMDEycHVzaC1jZXJ0LWVuZAowMDAwUEFDSw==
+
+### write base64
+POST https://gitlab.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAzNHNoYWxsb3cgZWY1ZTYzY2Q4MDhlZGRiZTlmYWQ4MWY4NWIxNTM0MTE4ODA5M2IxYjAwODJlZjVlNjNjZDgwOGVkZGJlOWZhZDgxZjg1YjE1MzQxMTg4MDkzYjFiIDczY2Q5MTFiNTYyNmRkYmY4YWJkNzI3YWM5MzY0MmYxODI1Y2MzZTIgcmVmcy9oZWFkcy9tYWluACByZXBvcnQtc3RhdHVzIHNpZGUtYmFuZC02NGswMDAwUEFDSw==
+
+### write base64
+POST https://gitlab.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+content-encoding: gzip
+
+H4sIAAAAAAAACgXByxFCIQwAQEuhAeclhE84Oh692EJCwujBzwD27y5ATT6yF+rGwG6m3oYY4+CsmCkhMkMjRQ2VujVEzSUWMx0sajVW6Y1KigM55t7JY5g+1vFwsXW85Pk+henfz9zntWX/FgDA/XK9/QFvlXA1fAAAAA==
+
+### write
+POST https://gitlab.com/alice/site.git/info/lfs/objects/batch
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"operation":"upload","transfers":["basic"],"ref":{"name":"refs/heads/main"},"objects":[{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":12}],"hash_algo":"sha256"}
+
+### read
+POST https://gitlab.com/alice/site.git/info/lfs/objects/batch
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"operation":"download","transfers":["basic"],"objects":[{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":12}]}
+
+### write
+POST https://gitlab.com/alice/site.git/info/lfs/locks
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"path":"assets/logo.psd","ref":{"name":"refs/heads/main"}}
+
+### read
+POST https://gitlab.com/alice/site.git/info/lfs/locks/verify
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"ref":{"name":"refs/heads/main"}}
+
+### write base64
+POST https://gitlab.com/acme/team/site/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDA4ZmVmNWU2M2NkODA4ZWRkYmU5ZmFkODFmODViMTUzNDExODgwOTNiMWIgNzNjZDkxMWI1NjI2ZGRiZjhhYmQ3MjdhYzkzNjQyZjE4MjVjYzNlMiByZWZzL2hlYWRzL21haW4AIHJlcG9ydC1zdGF0dXMgc2lkZS1iYW5kLTY0ayBwdXNoLW9wdGlvbnMwMDAwMDAxOW1lcmdlX3JlcXVlc3QuY3JlYXRlCjAwMDBQQUNL
+
+### write base64
+POST https://gitlab.com/alice/site.git/git-receive-pack?service=x
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAwMA==
+
+### write
+POST https://gitlab.com/alice/site/../mallory/site.git/git-upload-pack
+content-type: application/x-git-upload-pack-request
+
+0000
+
+### write
+POST https://gitlab.com/alice/site%2F..%2Fmallory.git/git-receive-pack
+content-type: application/x-git-receive-pack-request
+
+0000
+
+### read
+GET https://gitlab.com/alice/site/-/raw/main/README.md
+
+### read
+GET https://gitlab.com/alice/site/-/archive/main/site-main.tar.gz
+
+### refuse
+POST https://gitlab.com/oauth/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=password&username=alice&password=x
+
+### write
+POST https://gitlab.com/alice/site/-/merge_requests
+content-type: application/x-www-form-urlencoded
+
+merge_request%5Btitle%5D=Fix
+
+### read
+POST https://gitlab.com/api/v4/markdown
+content-type: application/json
+
+{"text":"**hi**","gfm":true,"project":"alice/site"}
+
+### refuse
+POST https://gitlab.com/api/v4/markdown?sudo=bob
+content-type: application/json
+
+{"text":"**hi**"}
+
+### refuse
+GET https://gitlab.com/api/v4/projects/alice%2Fsite/variables
+sudo: root
+
+### refuse
+GET https://gitlab.com/api/v4/projects?sudo=bob
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/issues
+content-type: application/json
+
+{"title":"Hi","sudo":"bob"}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/issues
+content-type: application/x-www-form-urlencoded
+
+title=Hi&SUDO=bob
+
+### read
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"query { project(fullPath: \"alice/site\") { id name } }"}
+
+### write
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"query A { project(fullPath: \"alice/site\") { id } } mutation B { mergeRequestAccept(input: {projectPath: \"alice/site\", iid: \"7\"}) { errors } }","operationName":"A"}
+
+### write
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"fragment F on Project { id }"}
+
+### write
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"mutation {"}
+
+### write
+GET https://gitlab.com/api/graphql?query=mutation%20%7B%20destroyNote(input%3A%20%7Bid%3A%20%22gid%3A%2F%2Fgitlab%2FNote%2F1%22%7D)%20%7B%20errors%20%7D%20%7D
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/repository/commits
+content-type: application/json
+
+{"branch":"main","commit_message":"Change","actions":[{"action":"update","file_path":"README.md","content":"x"}],"force":true}
+
+### write
+PUT https://gitlab.com/api/v4/projects/42/merge_requests/7/merge
+content-type: application/json
+
+{"squash":true,"should_remove_source_branch":true}
+
+### write
+DELETE https://gitlab.com/api/v4/projects/alice%2Fsite/repository/branches/melete%2Ffix-login
+
+### refuse
+POST https://gitlab.com/api/v4/users/1/personal_access_tokens
+content-type: application/json
+
+{"name":"more","scopes":["api"]}
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/hooks
+content-type: application/json
+
+{"url":"https://example.com/hook","push_events":true}
+
+### write
+PATCH https://gitlab.com/api/v4/projects/alice%2Fsite
+content-type: application/json
+
+{"visibility":"public"}
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2E%2E%2Fsite/issues
+content-type: application/json
+
+{"title":"Hi"}
+
+### refuse
+POST https://gitlab.com/api/v4/usage_data/increment_unique_users
+content-type: application/json
+
+{"event":"x"}
+
+### refuse
+POST https://gitlab.com/api/v4/personal_access_tokens/self/rotate
+content-type: application/json
+
+{}
+
+### refuse
+POST https://gitlab.com/api/v4/user/personal_access_tokens
+content-type: application/json
+
+{"name":"more","scopes":["api"]}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/access_tokens
+content-type: application/json
+
+{"name":"bot","scopes":["api"],"access_level":40}
+
+### refuse
+POST https://gitlab.com/api/v4/groups/acme/access_tokens/9/rotate
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/deploy_tokens
+content-type: application/json
+
+{"name":"ci","scopes":["read_repository"]}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/42/%64eploy_tokens
+content-type: application/json
+
+{"name":"ci","scopes":["read_repository"]}
+
+### refuse
+POST https://gitlab.com/api/v4/user/runners
+content-type: application/json
+
+{"runner_type":"project_type","project_id":42}
+
+### refuse
+POST https://gitlab.com/api/v4/runners
+content-type: application/x-www-form-urlencoded
+
+token=glrt-registration
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/runners/reset_registration_token
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/triggers
+content-type: application/json
+
+{"description":"deploy"}
+
+### refuse
+POST https://gitlab.com/api/v4/user/keys
+content-type: application/json
+
+{"title":"computer","key":"ssh-ed25519 AAAA"}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/deploy_keys
+content-type: application/json
+
+{"title":"computer","key":"ssh-ed25519 AAAA","can_push":true}
+
+### refuse
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"mutation { runnerCreate(input: {runnerType: PROJECT_TYPE, projectId: \"gid://gitlab/Project/42\"}) { token } }"}
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/repository/files/docs%2Fkeys
+content-type: application/json
+
+{"branch":"main","content":"x","commit_message":"Add keys notes"}
+
+### read
+GET https://gitlab.com/api/v4/user/personal_access_tokens
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/issues
+content-type: application/x-www-form-urlencoded
+
+title=Hi&sudo%5B%5D=bob
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/uploads
+content-type: multipart/form-data; boundary=x
+
+--x
+Content-Disposition: form-data; name="sudo"
+
+bob
+--x--

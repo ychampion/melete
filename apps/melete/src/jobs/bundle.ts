@@ -404,6 +404,12 @@ export async function buildSinceLast(
     )
     .orderBy(asc(approval.requestedAt));
 
+  // The person's own answer, unless a provider's evidence has since overruled it.
+  const ownerDecided = (value: unknown): boolean => {
+    const decision = (value ?? {}) as { decided_by?: unknown; superseded_owner_answer?: unknown };
+    return decision.decided_by === 'owner' && decision.superseded_owner_answer === undefined;
+  };
+
   // A receipt is what makes "it was sent" a fact. Say the connector's own
   // handle, not the action id, because that is the thing a person can look up.
   const receiptRef = (value: unknown): string | null => {
@@ -420,6 +426,7 @@ export async function buildSinceLast(
       status: row.status,
       receipt_ref: receiptRef(row.receipt),
       at: (row.resolvedAt ?? row.createdAt).toISOString(),
+      ...(ownerDecided(row.reconciliation) ? { decided_by: 'owner' as const } : {}),
     })),
     evidence: [
       ...artifacts.map((row) => ({

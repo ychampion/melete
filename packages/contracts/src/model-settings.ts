@@ -84,8 +84,8 @@ export const activeModel = z
     }),
     vision_source: z.enum(['catalog', 'app', 'operator']).meta({
       description:
-        '`catalog`: Melete’s list of models that read images. `app`: the owner said so when ' +
-        'choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION.',
+        '`catalog`: Melete’s list of models that read images. `app`: the owner said so for ' +
+        'this model in Settings. `operator`: MELETE_DEFAULT_MODEL_VISION.',
     }),
     provider_vision: z
       .boolean()
@@ -188,6 +188,23 @@ export const setDefaultModelRequest = z
         description:
           'Whether this model reads images. Left out or null, Melete’s model catalog decides; ' +
           'set it for a model the catalog does not know.',
+      }),
+  })
+  .strict();
+
+export const setModelVisionRequest = z
+  .object({
+    provider: z.string().trim().min(1).max(100).meta({
+      description: 'The model in use, as the page showed it; a different one is refused',
+    }),
+    model: z.string().trim().min(1).max(300),
+    supports_vision: z
+      .boolean()
+      .nullable()
+      .meta({
+        description:
+          'Whether this model reads images. Null hands it back to Melete’s list. Neither ' +
+          'changes the model in use or where it came from.',
       }),
   })
   .strict();

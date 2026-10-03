@@ -17,6 +17,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { CLIENT_ADDRESS_HEADER as API_CLIENT_ADDRESS_HEADER } from '../../apps/melete/src/api/listener.ts';
+import { isIsolated, viewHeaders } from '../../apps/melete/src/viewer/headers.ts';
 import { CLIENT_ADDRESS_HEADER, createStaticServer, resolveInside } from './serve-static.ts';
 
 /** Appears only in files outside the bundle. Any response carrying it is a leak. */
@@ -165,6 +166,21 @@ describe('the server over a socket', () => {
     expect(response.body).toContain('export const ok = true;');
   });
 
+  test('the Melete app refuses to be framed by another site', async () => {
+    for (const path of ['/', '/assets/app.js', '/chat/c_01']) {
+      const response = await fetch(`${origin()}${path}`);
+      expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+      expect(response.headers.get('content-security-policy')).toBe(
+        "frame-ancestors 'self'; frame-src 'self'",
+      );
+      await response.arrayBuffer();
+    }
+    // The file's own type survives the added headers.
+    const script = await fetch(`${origin()}/assets/app.js`);
+    expect(script.headers.get('content-type')).toContain('javascript');
+    await script.arrayBuffer();
+  });
+
   test('falls back to the index for a deep link with no file behind it', async () => {
     const response = await raw('/jobs/job_01J');
     expect(response.status).toBe(200);
@@ -284,6 +300,18 @@ describe('same-origin API proxy', () => {
       async fetch(request) {
         apiRequests++;
         const url = new URL(request.url);
+        if (url.pathname.startsWith('/apps/view/') || url.pathname.startsWith('/previews/')) {
+          const seen = JSON.stringify({
+            cookie: request.headers.get('cookie'),
+            authorization: request.headers.get('authorization'),
+            origin: request.headers.get('origin'),
+          });
+          // A view answer that lost its isolation, as a bug would leave it.
+          if (url.pathname.includes('/bare/')) return new Response(`<p>${seen}</p>`);
+          const headers = viewHeaders('text/html; charset=utf-8');
+          headers.append('set-cookie', 'melete_session=tossed; Path=/');
+          return new Response(seen, { headers });
+        }
         if (url.pathname === '/redirect') {
           return Response.redirect(`http://127.0.0.1:${external.port}/secret`, 302);
         }
@@ -419,6 +447,65 @@ describe('same-origin API proxy', () => {
       });
       expect(response.status).toBe(403);
     }
+    expect(apiRequests).toBe(count);
+  });
+
+  test("an app's file read from its opaque origin reaches the API, without the session", async () => {
+    const response = await fetch(`${webOrigin()}/api/apps/view/tok/app.js`, {
+      headers: {
+        origin: 'null',
+        'sec-fetch-site': 'cross-site',
+        cookie: 'melete_session=session-value',
+        authorization: 'Bearer x',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cookie: null, authorization: null, origin: null });
+    expect(isIsolated(response.headers)).toBe(true);
+    expect(response.headers.has('set-cookie')).toBe(false);
+  });
+
+  test("an app's file that arrives without its isolation is not passed on", async () => {
+    const response = await fetch(`${webOrigin()}/api/apps/view/tok/bare/index.html`);
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain('<p>');
+    expect(response.headers.get('content-security-policy')).toStartWith('sandbox');
+  });
+
+  test("a preview's page, read from its opaque origin, reaches the API without the session, and only isolated", async () => {
+    const response = await fetch(`${webOrigin()}/api/previews/tok/src/main.js`, {
+      headers: {
+        origin: 'null',
+        'sec-fetch-site': 'cross-site',
+        cookie: 'melete_session=session-value',
+        authorization: 'Bearer x',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cookie: null, authorization: null, origin: null });
+    expect(isIsolated(response.headers)).toBe(true);
+    expect(response.headers.has('set-cookie')).toBe(false);
+    const bare = await fetch(`${webOrigin()}/api/previews/tok/bare/index.html`);
+    expect(bare.status).toBe(502);
+    expect(await bare.text()).not.toContain('<p>');
+    const count = apiRequests;
+    const posted = await fetch(`${webOrigin()}/api/previews/tok/`, {
+      method: 'POST',
+      headers: { origin: 'null', 'sec-fetch-site': 'cross-site' },
+      body: '{}',
+    });
+    expect(posted.status).toBe(403);
+    expect(apiRequests).toBe(count);
+  });
+
+  test('a write under the app view path is still refused from another origin', async () => {
+    const count = apiRequests;
+    const response = await fetch(`${webOrigin()}/api/apps/view/tok/index.html`, {
+      method: 'POST',
+      headers: { origin: 'null', 'sec-fetch-site': 'cross-site' },
+      body: '{}',
+    });
+    expect(response.status).toBe(403);
     expect(apiRequests).toBe(count);
   });
 

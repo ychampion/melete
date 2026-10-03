@@ -184,6 +184,8 @@ export const standingRule = z.strictObject({
     'save_file',
     'restore_file',
     'discard_draft',
+    /** Pushes from the agent's computer to `melete/` branches of one repository. */
+    'push_branch',
   ]),
   connection_id: id,
   recipient_class: text,
@@ -229,7 +231,7 @@ export type PermissionCard = z.infer<typeof permissionCard>;
  * spends, sends, deletes, carries credentials, or rests on a value the person
  * never confirmed is not a class here: it always asks.
  */
-export const AUTO_REVIEW_CLASSES = ['sandbox', 'calendar', 'app_changes'] as const;
+export const AUTO_REVIEW_CLASSES = ['sandbox', 'calendar', 'app_changes', 'apps'] as const;
 export const autoReviewClass = z.enum(AUTO_REVIEW_CLASSES);
 export type AutoReviewClass = z.infer<typeof autoReviewClass>;
 export const approvalSettings = z.strictObject({
@@ -242,12 +244,19 @@ export const approvalSettings = z.strictObject({
     calendar: z.boolean(),
     /** Reversible changes in connected apps, after the reviewer approves. */
     app_changes: z.boolean(),
+    /**
+     * Publishing an app, a new version of one, or going back to an earlier
+     * version, decided by a fixed rule: it goes ahead when nobody new can open
+     * the app, its code opens no direct connections, and it shows its viewers
+     * no data they do not see now. Anything else asks, with the reason.
+     */
+    apps: z.boolean(),
   }),
 });
 export type ApprovalSettings = z.infer<typeof approvalSettings>;
 export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   mode: 'auto_review',
-  classes: { sandbox: true, calendar: false, app_changes: false },
+  classes: { sandbox: true, calendar: false, app_changes: false, apps: true },
 };
 export const approvalSettingsResponse = z.strictObject({
   settings: approvalSettings,
@@ -332,9 +341,13 @@ export type ToolExcerpt = z.infer<typeof toolExcerpt>;
  */
 export const toolFailure = z.enum(['error', 'refused', 'declined']);
 export type ToolFailure = z.infer<typeof toolFailure>;
-/** Something the person can open for more: a file, the pending permission, a page. */
+/**
+ * Something the person can open for more: a file, the pending permission, a
+ * page. A `screenshot` names the action that took one; its picture is at
+ * `GET /screenshots/{id}`, for the person only.
+ */
 export const toolDetail = z.strictObject({
-  type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page']),
+  type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page', 'screenshot']),
   id,
   url: url.optional(),
 });

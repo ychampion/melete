@@ -330,6 +330,87 @@ describeWithDb('the model, connected in the app', () => {
     expect((await claim('Cleared')).bundle.provider).toBe('fireworks');
   }, 30_000);
 
+  test('the vision switch is the owner’s word on the model in use and leaves where it came from alone', async () => {
+    const api = app({ FIREWORKS_API_KEY: FIREWORKS_KEY });
+    const cookie = await owner(api);
+    const model = 'accounts/fireworks/models/deepseek-v4p1-flash';
+    const before = await api.call('/model-settings', cookie);
+    expect(before.body.active).toMatchObject({
+      provider: 'fireworks',
+      model,
+      source: 'operator',
+      vision: false,
+      vision_source: 'catalog',
+      updated_at: null,
+    });
+    const vision = (body: Json) => api.call('/model-settings/vision', cookie, put(body));
+
+    // Turned on for the server's default model: it stays the server's.
+    const on = await vision({ provider: 'fireworks', model, supports_vision: true });
+    expect(on.status).toBe(200);
+    expect(on.body.active).toEqual({ ...before.body.active, vision: true, vision_source: 'app' });
+    expect(await api.settings.activeChoice()).toEqual({
+      provider: 'fireworks',
+      model,
+      vision: true,
+    });
+    const [chosen] = await database().sql`select count(*)::int as count from model_default`;
+    expect(chosen?.count).toBe(0);
+
+    // Melete's list takes back only that answer: everything is as it was.
+    const list = await vision({ provider: 'fireworks', model, supports_vision: null });
+    expect(list.body.active).toEqual(before.body.active);
+
+    // A page that showed another model changes nothing.
+    const stale = await vision({
+      provider: 'fireworks',
+      model: 'another-model',
+      supports_vision: true,
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('model_changed');
+
+    // A member cannot say it.
+    const memberCookie = await member(api, cookie);
+    expect(
+      (
+        await api.call(
+          '/model-settings/vision',
+          memberCookie,
+          put({ provider: 'fireworks', model, supports_vision: true }),
+        )
+      ).status,
+    ).toBe(403);
+
+    // For a model chosen here, the choice and when it was made stay; Melete's
+    // list also takes back an answer given when it was chosen.
+    const other = 'accounts/fireworks/models/fixture-vl';
+    const picked = await api.call(
+      '/model-settings/default',
+      cookie,
+      put({ provider: 'fireworks', model: other, supports_vision: true }),
+    );
+    expect(picked.body.active).toMatchObject({ source: 'app', vision: true, vision_source: 'app' });
+    const off = await vision({ provider: 'fireworks', model: other, supports_vision: false });
+    expect(off.body.active).toMatchObject({
+      model: other,
+      source: 'app',
+      vision: false,
+      vision_source: 'app',
+      updated_at: picked.body.active.updated_at,
+    });
+    const back = await vision({ provider: 'fireworks', model: other, supports_vision: null });
+    expect(back.body.active).toMatchObject({
+      model: other,
+      source: 'app',
+      vision_source: 'catalog',
+      updated_at: picked.body.active.updated_at,
+    });
+    // The server's default comes back exactly as it started.
+    const restored = await api.call('/model-settings/default', cookie, { method: 'DELETE' });
+    expect(restored.body.active).toEqual(before.body.active);
+  }, 30_000);
+
   test('memory reads and the companies scan use the key and model connected in the app', async () => {
     // No provider key in the environment: the app is the only place one is set.
     const api = app();

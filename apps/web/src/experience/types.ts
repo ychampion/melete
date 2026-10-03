@@ -163,6 +163,11 @@ export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>
 export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
 export type ComputerBrowser = NonNullable<AgentComputer['browser']>;
 export type ComputerCommand = AgentComputer['terminal'][number];
+/** One background process in the agent's computer, as the person may see it. */
+export type ComputerProcess = AgentComputer['processes'][number];
+export type ProcessPreview = Ok<paths['/sandbox/processes/{id}/previews'], 'post'>;
+export type ProcessOutput = Ok<paths['/sandbox/processes/{id}/output'], 'get'>;
+export type ProcessStopped = Ok<paths['/sandbox/processes/{id}/stop'], 'post'>;
 export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'>;
 export type LiveOpen = Ok<paths['/browser/sessions/{id}/live'], 'post'>;
 export type LiveUp = Body<paths['/browser/sessions/{id}/live/input'], 'post'>;

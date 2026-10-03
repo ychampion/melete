@@ -21,6 +21,7 @@
  */
 import { connect } from 'node:net';
 import type { McpStdioLaunch } from '@melete/contracts';
+import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import { type DockerApi, DockerError, DockerSocketApi } from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
@@ -30,6 +31,8 @@ import type { StdioChannel } from './mcp-transport.ts';
 const OWNER = 'com.melete.mcp-launcher';
 const PROJECT = 'com.melete.project';
 const CONNECTION = 'com.melete.connection';
+/** The service instance running a server, when several share one engine. */
+const INSTANCE = 'com.melete.instance';
 const USER = '10001:10001';
 /** The address a server's proxy settings name; the service answers to it on each egress network. */
 const EGRESS_ALIAS = 'melete-egress';
@@ -82,6 +85,14 @@ export type DockerStdioOptions = {
   prepareTimeoutMs?: number;
   /** Servers running at once across the deployment; a start beyond it is refused. */
   maxServers?: number;
+  /**
+   * This service instance, when several share the engine. Its servers'
+   * containers and networks carry its name, so two instances never replace
+   * each other's, and reconciliation removes only its own, unlabelled ones,
+   * and those of instances `running` no longer lists. A connection's kept
+   * data stays one volume, whichever instance runs its server.
+   */
+  instance?: InstanceView;
 };
 
 export const DEFAULT_STDIO_IMAGES = {
@@ -490,17 +501,25 @@ export class DockerStdioLauncher implements StdioLauncher {
   private names(connectionId: string): Names {
     if (!/^conn_[A-Za-z0-9]+$/.test(connectionId)) throw new Error('Invalid connection id');
     const prefix = `${this.options.project}-mcp-${connectionId.toLowerCase()}`;
+    const running = this.options.instance
+      ? `${this.options.project}-mcp-${this.options.instance.id}-${connectionId.toLowerCase()}`
+      : prefix;
     return {
-      container: prefix,
-      prepare: `${prefix}-prepare`,
-      network: `${prefix}-net`,
+      container: running,
+      prepare: `${running}-prepare`,
+      network: `${running}-net`,
       volume: `${prefix}-data`,
       packages: `${prefix}-pkg`,
     };
   }
 
   private labels(connectionId: string): Record<string, string> {
-    return { [OWNER]: 'v1', [PROJECT]: this.options.project, [CONNECTION]: connectionId };
+    return {
+      [OWNER]: 'v1',
+      [PROJECT]: this.options.project,
+      [CONNECTION]: connectionId,
+      ...(this.options.instance ? { [INSTANCE]: this.options.instance.id } : {}),
+    };
   }
 
   private owned(labels: Record<string, string> | undefined, connectionId?: string): boolean {
@@ -885,7 +904,35 @@ export class DockerStdioLauncher implements StdioLauncher {
       if (key.startsWith(`${connectionId}\n`)) this.prepared.delete(key);
   }
 
-  async reconcile(keep: ReadonlySet<string>): Promise<void> {
+  /**
+   * Removes servers no running service started, and the kept data of
+   * connections that are gone. At a start that is this instance's own servers
+   * too; later (`starting: false`), only those of instances that stopped. With
+   * several instances, one of them prunes the data (`volumes`).
+   */
+  async reconcile(
+    keep: ReadonlySet<string>,
+    { starting = true, volumes = true }: { starting?: boolean; volumes?: boolean } = {},
+  ): Promise<void> {
+    const instance = this.options.instance;
+    const stopped = instance
+      ? await stoppedInstances(instance, async (name) => {
+          try {
+            const found = (await this.docker.request('GET', `/containers/${name}/json`)) as {
+              State?: { Running?: boolean };
+            };
+            return found.State?.Running !== false;
+          } catch (error) {
+            if (error instanceof DockerError && error.status === 404) return false;
+            throw error;
+          }
+        })
+      : undefined;
+    const ours = async (labels: Record<string, string>) => {
+      const owner = labels[INSTANCE];
+      if (!instance || !stopped || owner === undefined || owner === instance.id) return starting;
+      return stopped(owner);
+    };
     const filter = encodeURIComponent(
       JSON.stringify({ label: [`${OWNER}=v1`, `${PROJECT}=${this.options.project}`] }),
     );
@@ -895,14 +942,14 @@ export class DockerStdioLauncher implements StdioLauncher {
       `/containers/json?all=true&filters=${filter}`,
     )) as Array<{ Id: string; Labels: Record<string, string> }>;
     for (const container of containers)
-      if (this.owned(container.Labels))
+      if (this.owned(container.Labels) && (await ours(container.Labels)))
         await this.remove('DELETE', `/containers/${container.Id}?force=true&v=true`);
     const networks = (await this.docker.request('GET', `/networks?filters=${filter}`)) as Array<{
       Id: string;
       Labels: Record<string, string>;
     }>;
     for (const network of networks) {
-      if (!this.owned(network.Labels)) continue;
+      if (!this.owned(network.Labels) || !(await ours(network.Labels))) continue;
       if (this.options.selfId)
         await this.remove('POST', `/networks/${network.Id}/disconnect`, {
           Container: this.options.selfId,
@@ -910,11 +957,12 @@ export class DockerStdioLauncher implements StdioLauncher {
         });
       await this.remove('DELETE', `/networks/${network.Id}`);
     }
+    if (!volumes) return;
     // Kept data outlives a restart, but not the connection it belonged to.
-    const volumes = (await this.docker.request('GET', `/volumes?filters=${filter}`)) as {
+    const found = (await this.docker.request('GET', `/volumes?filters=${filter}`)) as {
       Volumes: Array<{ Name: string; Labels: Record<string, string> }> | null;
     };
-    for (const volume of volumes.Volumes ?? [])
+    for (const volume of found.Volumes ?? [])
       if (this.owned(volume.Labels) && !keep.has(volume.Labels[CONNECTION] ?? ''))
         await this.remove('DELETE', `/volumes/${volume.Name}`);
   }

@@ -215,6 +215,17 @@ describe('the continuous integration workflow', () => {
     }
   });
 
+  test('a job of its own proves app and preview isolation in two browsers, and fails rather than skips', () => {
+    const job = ci.workflow.jobs?.['app-isolation'];
+    const runs = (job?.steps ?? []).map((step) => step.run ?? '');
+    expect(runs).toContain('bunx playwright install --with-deps chromium firefox');
+    const proof = job?.steps?.find((step) => step.run?.includes('app-isolation.test.ts'));
+    expect(proof?.env?.MELETE_APP_ISOLATION_PROOF).toBe('1');
+    const preview = job?.steps?.find((step) => step.run?.includes('preview-isolation.test.ts'));
+    expect(preview?.env?.MELETE_APP_ISOLATION_PROOF).toBe('1');
+    expect((job?.steps ?? []).filter((step) => step.if !== undefined)).toEqual([]);
+  });
+
   test('a job of its own proves the browser renderer sandbox', () => {
     const [name, job] = ci.named.find(([key]) => key === 'browser-sandbox') ?? [];
     expect(name).toBe('browser-sandbox');
@@ -303,7 +314,11 @@ describe('the conformance workflow', () => {
     expect(conformance.workflow.concurrency?.group).toBeTruthy();
     // A second run must wait rather than cancel a stack that is already running.
     expect(conformance.workflow.concurrency?.['cancel-in-progress']).toBe(false);
-    expect(conformance.named.map(([name]) => name).sort()).toEqual(['compose', 'upgrade']);
+    expect(conformance.named.map(([name]) => name).sort()).toEqual([
+      'cloud-vm',
+      'compose',
+      'upgrade',
+    ]);
     for (const job of conformance.jobs) {
       expect(job['runs-on']).toMatch(/^ubuntu-/);
       expect(job['timeout-minutes']).toBeGreaterThan(0);

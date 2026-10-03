@@ -329,6 +329,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // space holds apart from its jobs.
   job: 'operational',
   artifact: 'operational',
+  app: 'operational',
   // The bytes are files: they go in the files phase, and their references after them.
   blob_ref: 'files',
   browser_recipe_candidate: 'operational',
@@ -362,6 +363,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_process: 'operational',
   sandbox_session: 'operational',
   egress_record: 'operational',
+  sandbox_awake_day: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -670,6 +672,9 @@ describe.if(handle !== null)('removing a space', () => {
         command_redacted, command_digest, cwd, name, state, expires_at, ended_at)
       values (${`prc_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId},
         ${`sbx_${seeded.spaceId}`}, 'npm test', 'digest', '.', 'tests', 'stopped', now(), now())`;
+    // The time that process kept the computer running after its turn ended.
+    await sql`insert into sandbox_awake_day (space_id, day, seconds)
+      values (${seeded.spaceId}, current_date, 600)`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;

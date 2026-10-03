@@ -160,18 +160,15 @@ function DetailLink({ tool }: { tool: ToolEntry }) {
 function Preview({ tool, live }: { tool: ToolEntry; live: boolean }) {
   if (isCommand(tool)) return <ShellBlock tool={tool} live={live} />;
   const shot =
-    workKind({ type: 'tool', tool }) === 'screenshot' && tool.detail?.type === 'artifact'
-      ? tool.detail.id
-      : null;
+    tool.detail?.type === 'screenshot'
+      ? adapter.screenshotUrl(tool.detail.id)
+      : workKind({ type: 'tool', tool }) === 'screenshot' && tool.detail?.type === 'artifact'
+        ? adapter.artifactUrl(tool.detail.id)
+        : null;
   return (
     <div className="log-preview">
       {shot ? (
-        <img
-          className="log-shot"
-          src={adapter.artifactUrl(shot)}
-          alt="The screenshot it took"
-          loading="lazy"
-        />
+        <img className="log-shot" src={shot} alt="The screenshot it took" loading="lazy" />
       ) : null}
       {tool.input_summary && !tool.input_excerpt ? <Summary summary={tool.input_summary} /> : null}
       {tool.input_excerpt ? <pre className="log-pre">{tool.input_excerpt.text}</pre> : null}

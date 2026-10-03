@@ -36,9 +36,19 @@ export type EgressRecordOpen = {
   openedAt: Date;
   /** Set for a refusal, which is over as soon as it is recorded. */
   closedAt?: Date;
+  /** The command-line account a `credentialed` tunnel used. */
+  connectionId?: string | null;
 };
 
-export type EgressRecordClose = { bytesUp: number; bytesDown: number; closedAt: Date };
+export type EgressRecordClose = {
+  bytesUp: number;
+  bytesDown: number;
+  closedAt: Date;
+  /** For a credentialed tunnel: the requests that read, and the writes with their actions. */
+  reads?: number;
+  writes?: number;
+  writeActionIds?: string[];
+};
 
 /** Where the guard sends what it saw. No call may throw or block the guard. */
 export interface EgressRecordSink {
@@ -109,12 +119,13 @@ export function egressRecorder(
       // space other than the one its computer belongs to.
       const work = track(
         sql`insert into egress_record (id, session_id, space_id, job_id, attempt_id, action_id,
-            token_kind, host, port, verdict, reason, count, opened_at, closed_at)
+            token_kind, host, port, verdict, reason, count, opened_at, closed_at, connection_id)
           select ${record.id}::text, s.id, s.space_id, ${record.jobId}::text,
             ${record.attemptId}::text, ${record.actionId}::text, ${record.tokenKind}::text,
             ${column(record.host, 255)}::text, ${record.port}::int, ${record.verdict}::text,
             ${record.reason}::text, ${record.count}::int, ${record.openedAt.toISOString()}::timestamptz,
-            ${record.closedAt?.toISOString() ?? null}::timestamptz
+            ${record.closedAt?.toISOString() ?? null}::timestamptz,
+            ${record.connectionId ?? null}::text
           from sandbox_session s where s.id = ${record.sessionId}`.then(
           () => {},
           failed('written'),
@@ -128,7 +139,9 @@ export function egressRecorder(
     closed(id, totals) {
       after(id, () =>
         sql`update egress_record set bytes_up = ${totals.bytesUp},
-            bytes_down = ${totals.bytesDown}, closed_at = ${totals.closedAt.toISOString()}
+            bytes_down = ${totals.bytesDown}, closed_at = ${totals.closedAt.toISOString()},
+            reads = ${totals.reads ?? 0}, writes = ${totals.writes ?? 0},
+            write_action_ids = ${JSON.stringify((totals.writeActionIds ?? []).slice(0, 256))}::jsonb
           where id = ${id}`.then(() => {}, failed('completed')),
       );
     },
@@ -152,13 +165,25 @@ export function egressRecorder(
 /** What one command reached, from its records: for a receipt read back after the fact. */
 export async function egressHostsFor(sql: Sql, actionId: string): Promise<EgressHostSummary[]> {
   const rows = await sql<
-    { host: string; tunnels: number; refused: number; bytes_up: number; bytes_down: number }[]
+    {
+      host: string;
+      tunnels: number;
+      refused: number;
+      bytes_up: number;
+      bytes_down: number;
+      credentialed: boolean;
+      reads: number;
+      writes: number;
+    }[]
   >`select host,
       coalesce(sum(count) filter (where verdict in ('tunnel', 'credentialed', 'unattributed')), 0)::int
         as tunnels,
       coalesce(sum(count) filter (where verdict = 'refused'), 0)::int as refused,
       coalesce(sum(bytes_up), 0)::float8 as bytes_up,
-      coalesce(sum(bytes_down), 0)::float8 as bytes_down
+      coalesce(sum(bytes_down), 0)::float8 as bytes_down,
+      coalesce(bool_or(verdict = 'credentialed'), false) as credentialed,
+      coalesce(sum(reads), 0)::int as reads,
+      coalesce(sum(writes), 0)::int as writes
     from egress_record where action_id = ${actionId} and verdict <> 'suppressed'
     group by host order by host`;
   const hosts = new Map<string, EgressHostCounters>();
@@ -168,6 +193,11 @@ export async function egressHostsFor(sql: Sql, actionId: string): Promise<Egress
     counters.refused += Number(row.refused);
     counters.bytesUp += Number(row.bytes_up);
     counters.bytesDown += Number(row.bytes_down);
+    if (row.credentialed) {
+      counters.credentialed = true;
+      counters.reads = (counters.reads ?? 0) + Number(row.reads);
+      counters.writes = (counters.writes ?? 0) + Number(row.writes);
+    }
   }
   return summarize(hosts);
 }
@@ -184,11 +214,15 @@ export function startEgressRetention(
   sql: Sql,
   days: number,
   say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+  leads: () => boolean | Promise<boolean> = () => true,
 ): () => void {
+  // One instance expires records at a time; the others skip the pass.
   const sweep = () =>
-    void expireEgressRecords(sql, days).catch((error: unknown) =>
-      say(`egress record retention failed: ${String((error as Error)?.message ?? error)}`),
-    );
+    void Promise.resolve(leads())
+      .then((leading) => (leading ? expireEgressRecords(sql, days) : undefined))
+      .catch((error: unknown) =>
+        say(`egress record retention failed: ${String((error as Error)?.message ?? error)}`),
+      );
   sweep();
   const timer = setInterval(sweep, 60 * 60_000);
   timer.unref?.();

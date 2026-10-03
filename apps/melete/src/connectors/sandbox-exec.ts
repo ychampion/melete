@@ -39,6 +39,7 @@ import { appendEvent } from '../broker/records.ts';
 import { egressHostsFor } from '../egress/records.ts';
 import { type EgressHostSummary, hasCommandEgress } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
   checkSandboxConfiguration,
@@ -56,7 +57,7 @@ import {
   sessionHandle,
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
-import { readWorkspaceFile, SANDBOX_WORKDIR, syncIn, syncOut } from '../sandbox/workspace.ts';
+import { SANDBOX_WORKDIR, syncIn, syncOut } from '../sandbox/workspace.ts';
 import {
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOLS,
@@ -554,10 +555,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     return detail;
   };
 
+  const workspace = new LocalWorkspaceFs(options.workRoot);
   const workspaceFile = async (jobId: string, relative: string | null) =>
-    relative
-      ? readWorkspaceFile(options.workRoot, jobId, relative, EXEC_LIMITS.max_capture_bytes)
-      : null;
+    relative ? workspace.read(jobId, relative, EXEC_LIMITS.max_capture_bytes) : null;
 
   const finish = async (
     action: Action,
@@ -784,14 +784,16 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
       // A token for this command alone, ended when it settles: a process it
       // leaves behind reaches out unattributed from then on.
+      const timeoutMs = payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms;
       const attributed =
         guarded(session) && hasCommandEgress(provider)
-          ? provider.attributeCommand(sessionHandle(session), {
+          ? await provider.attributeCommand(sessionHandle(session), {
               kind: 'command',
               sessionId: session.id,
               jobId: ctx.job_id,
               attemptId: action.attempt_id,
               actionId: action.id,
+              deadlineAt: Date.now() + timeoutMs,
             })
           : null;
       let result: CommandResult;
@@ -804,7 +806,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             marker: action.id,
             argv: ['sh', '-c', payload.command],
             cwd: sandboxCwd(payload.cwd),
-            timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
+            timeoutMs,
             dispatch,
             env: { ...commandEnv(timeZone), ...attributed?.env },
             forget,

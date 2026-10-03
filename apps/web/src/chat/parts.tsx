@@ -1089,20 +1089,28 @@ export function Questionnaire({
  */
 export function describeAction(action: LedgerAction): string {
   const payload = action.canonical_payload as Record<string, unknown>;
-  const to = payload.to;
-  if (Array.isArray(to) && to.length) return `a message to ${to.map(String).join(', ')}`;
-  if (typeof to === 'string' && to) return `a message to ${to}`;
+  const kind = typeof action.kind === 'string' ? action.kind : '';
+  const name = (value: unknown) =>
+    typeof value === 'string' && value ? `“${plainTitle(value.split('/').pop() ?? value)}”` : null;
+  // A file's `to` is where it goes, never someone it is sent to.
+  if (kind === 'files.move') {
+    const from = name(payload.from);
+    const to = name(payload.to);
+    return from && to ? `moving ${from} to ${to}` : 'moving a file';
+  }
+  if (/^files\./.test(kind)) {
+    const path = name(payload.path);
+    if (!path) return 'saving a file';
+    if (kind === 'files.read') return `reading ${path}`;
+    if (kind === 'files.list') return `looking in ${path}`;
+    return `saving ${path}`;
+  }
+  if (isMessage(action)) {
+    const to = payload.to;
+    return `a message to ${Array.isArray(to) ? to.map(String).join(', ') : String(to)}`;
+  }
   if (typeof payload.title === 'string' && payload.title) return `“${payload.title}”`;
   if (typeof payload.summary === 'string' && payload.summary) return `“${payload.summary}”`;
-  const kind = typeof action.kind === 'string' ? action.kind : '';
-  const path = typeof payload.path === 'string' ? payload.path : null;
-  if (path && /^files\./.test(kind)) {
-    const name = `“${plainTitle(path.split('/').pop() ?? path)}”`;
-    if (kind === 'files.read') return `reading ${name}`;
-    if (kind === 'files.list') return `looking in ${name}`;
-    if (kind === 'files.move') return `moving ${name}`;
-    return `saving ${name}`;
-  }
   if (typeof payload.command === 'string' || /^(?:exec|sandbox|device)\./.test(kind))
     return 'a command on its computer';
   return 'one step of this task';
@@ -1115,8 +1123,15 @@ export function describeAction(action: LedgerAction): string {
 export const ownComputerStep = (action: Pick<LedgerAction, 'kind'>): boolean =>
   /^(?:terminal\.run|computer\.)/.test(action.kind);
 
+/**
+ * The kinds whose `to` is a place or a time, not someone a message goes to:
+ * a file's destination, a calendar window, a step on a computer.
+ */
+const NOT_MESSAGES = /^(?:files|calendar|device|computer|browser|terminal|exec|sandbox)\./;
+
 /** Whether a step that went unconfirmed was a message to someone, which "arrives". */
 const isMessage = (action: LedgerAction): boolean => {
+  if (NOT_MESSAGES.test(typeof action.kind === 'string' ? action.kind : '')) return false;
   const to = (action.canonical_payload as Record<string, unknown>).to;
   return (Array.isArray(to) && to.length > 0) || (typeof to === 'string' && to.length > 0);
 };

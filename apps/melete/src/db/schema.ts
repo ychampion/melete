@@ -185,9 +185,30 @@ export const modelDefault = pgTable(
 );
 
 /**
+ * The owner's word on whether a model reads images, apart from which model is
+ * chosen: saying so for the server's default model leaves it the server's.
+ * One row per model; none leaves it to the model chosen in the app, the
+ * operator's setting or the catalog.
+ */
+export const modelVision = pgTable(
+  'model_vision',
+  {
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    supportsVision: boolean('supports_vision').notNull(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => owner.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.provider, table.model] })],
+);
+
+/**
  * What a provider's own model list said about which of its models read
  * images, kept from the last time the list was fetched. A provider's rows are
- * replaced whenever its list is fetched again.
+ * replaced whenever its list is fetched again. Shown to the owner; it never
+ * decides whether a model is shown pictures.
  */
 export const modelVisionReport = pgTable(
   'model_vision_report',
