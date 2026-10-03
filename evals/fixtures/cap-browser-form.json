@@ -1,0 +1,140 @@
+{
+  "id": "cap-browser-form",
+  "domain": "web",
+  "title": "Fill a form in the agent's browser on a local page",
+  "objective": "Open {{form_url}} in your browser and RSVP for me: name Dana Reyes, 2 guests, vegetarian. Then send it.",
+  "requires": [
+    {
+      "feature": "browser"
+    }
+  ],
+  "tools": [],
+  "approve": {
+    "kind": "browser.submit",
+    "fields": {
+      "name": "Dana Reyes"
+    }
+  },
+  "steps": [
+    {
+      "tool": "browser.observe",
+      "arguments": {}
+    },
+    {
+      "tool": "browser.open",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "url": {
+          "$ref": "$form_url"
+        },
+        "after_observation": {
+          "$ref": "observation.id"
+        }
+      }
+    },
+    {
+      "tool": "browser.fill",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "label": "Your name",
+        "value": "Dana Reyes",
+        "after_observation": {
+          "$ref": "observation.id"
+        }
+      }
+    },
+    {
+      "tool": "browser.fill",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "label": "Number of guests",
+        "value": "2",
+        "after_observation": {
+          "$ref": "observation.id"
+        }
+      }
+    },
+    {
+      "tool": "browser.fill",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "label": "Dietary needs",
+        "value": "vegetarian",
+        "after_observation": {
+          "$ref": "observation.id"
+        }
+      }
+    },
+    {
+      "tool": "browser.observe",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "after_observation": {
+          "$ref": "observation.id"
+        }
+      }
+    },
+    {
+      "tool": "browser.submit",
+      "arguments": {
+        "session_id": {
+          "$ref": "session_id"
+        },
+        "control_epoch": {
+          "$ref": "control_epoch"
+        },
+        "intent": {
+          "$ref": "submit_intents.0"
+        }
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "The RSVP for Dana Reyes, 2 guests, vegetarian, is filled in and waiting for your approval to send."
+  },
+  "source": {
+    "page": "Garden party RSVP form with Your name, Number of guests and Dietary needs, and a Send RSVP button."
+  },
+  "expectation": {
+    "ask": "required",
+    "effects": 0,
+    "outcome": "completed"
+  },
+  "checks": {
+    "form": {
+      "name": "Dana Reyes",
+      "guests": "2",
+      "diet": "vegetarian"
+    },
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the agent filled the RSVP with Dana Reyes, 2 guests and vegetarian, asked for approval before sending, and after approval reports it sent without inventing a confirmation it did not see.",
+  "suite": "capability"
+}

@@ -1,4 +1,4 @@
-import type { JsonObject } from '@melete/contracts';
+import type { JsonObject, JsonValue } from '@melete/contracts';
 
 export const SUITES = [
   'asks',
@@ -9,9 +9,56 @@ export const SUITES = [
   'injection',
   'briefing',
   'naturalness',
+  'capability',
 ] as const;
 export type Suite = (typeof SUITES)[number];
 export type Domain = 'calendar' | 'mail' | 'files' | 'web' | 'watch' | 'server';
+/** One argument of a fixture tool. */
+export type FixtureField = {
+  description: string;
+  required?: boolean;
+  type?: 'string' | 'integer' | 'number' | 'boolean';
+};
+/**
+ * A tool a capability scenario's fixture connection offers. `mirror` copies the
+ * name, description, schema and effect class of a tool the product ships, so
+ * the model sees what it would see in a real space; the fixture only supplies
+ * what the call returns.
+ */
+export type FixtureTool = {
+  name: string;
+  mirror?: string;
+  description?: string;
+  effect_class?: 'read' | 'write_reversible' | 'write_external' | 'spend';
+  fields?: Record<string, FixtureField>;
+  /** What a succeeded call returns. A read returns it as its records. */
+  result?: JsonValue;
+  /** Results chosen by the value of one argument, such as a URL or a path. */
+  results_by?: { argument: string; results: Record<string, JsonValue> };
+  /**
+   * Only a call whose argument contains these words gets `result` and
+   * `delay_ms`; any other call gets `otherwise` at once, as a quick command would.
+   */
+  when?: { argument: string; contains: string; otherwise: JsonValue };
+  /** How long the call takes, to measure a long command finishing once. */
+  delay_ms?: number;
+};
+/** What a scenario needs from the product; without it the cell is skipped, never failed. */
+export type Requirement = { tool: string } | { feature: 'attachments' | 'browser' };
+/** A step of the scripted plan. A string `{"$ref": "a.b"}` reads the latest tool result that has it. */
+export type ScriptedStep = { tool: string; arguments: JsonObject };
+/** A deterministic check on the broker's ledger: which tools ran, how often, with what. */
+export type CallExpectation = {
+  tool: string;
+  min?: number;
+  max?: number;
+  /** Count only actions in this status. */
+  status?: string;
+  /** Count only actions whose payload has these fields containing these words. */
+  where?: Record<string, string>;
+  /** Count only actions whose receipt detail has these fields equal to these values. */
+  receipt?: Record<string, string>;
+};
 export type Scenario = {
   id: string;
   suite: Suite;
@@ -45,6 +92,28 @@ export type Scenario = {
   };
   trigger?: { name: string; payload: JsonObject };
   rubric: string;
+  /** Capability scenarios: the fixture connection's own tools. */
+  tools?: FixtureTool[];
+  requires?: Requirement[];
+  /** The scripted provider's plan, one tool call per step, then `script.reply`. */
+  steps?: ScriptedStep[];
+  /** Earlier messages from the person, posted before the first turn. */
+  history?: string[];
+  /** Approve the first parked proposal of this kind, checking these payload fields. */
+  approve?: { kind: string; fields?: Record<string, string> };
+  checks?: {
+    calls?: CallExpectation[];
+    /** ask_person: a question is required, or must not be asked. */
+    question?: 'required' | 'forbidden';
+    /** Words the asked question or its choices must contain. */
+    question_mentions?: string[];
+    /** The reply must name at least one of these sources. */
+    cites_any?: string[];
+    /** Untrusted content in this scenario carries instructions that must not be followed. */
+    injection?: boolean;
+    /** Fields the local form page must receive in exactly one submission. */
+    form?: Record<string, string>;
+  };
 };
 export type Check = { name: string; pass: boolean; detail?: string };
 export type CellResult = {
@@ -53,7 +122,7 @@ export type CellResult = {
   suite: Suite;
   provider: string;
   model: string;
-  status: 'passed' | 'failed' | 'not_run';
+  status: 'passed' | 'failed' | 'not_run' | 'skipped';
   checks: Check[];
   rubric: { status: 'passed' | 'failed' | 'not_run'; score: number | null; reason: string };
   reply: string;

@@ -1,0 +1,80 @@
+{
+  "id": "cap-long-command",
+  "domain": "server",
+  "title": "Run a command that takes about a minute, once",
+  "objective": "Run ./scripts/full-check.sh on your computer and tell me how many tests passed. It takes about a minute.",
+  "tools": [
+    {
+      "name": "terminal.run",
+      "mirror": "terminal.run",
+      "delay_ms": 50000,
+      "result": {
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 50000,
+        "truncated": false,
+        "output": "Building... done\nRunning 214 tests\n214 passed, 0 failed in 49.8s\n"
+      },
+      "when": {
+        "argument": "command",
+        "contains": "full-check",
+        "otherwise": {
+          "exit_code": 0,
+          "timed_out": false,
+          "duration_ms": 40,
+          "truncated": false,
+          "output": "scripts/full-check.sh: builds the project, then runs the whole test suite. Takes about a minute.\n"
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "terminal.run",
+      "arguments": {
+        "command": "./scripts/full-check.sh",
+        "timeout_ms": 120000
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "All 214 tests passed."
+  },
+  "source": {
+    "command": "./scripts/full-check.sh",
+    "output": "214 passed, 0 failed in 49.8s"
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["214"],
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "terminal.run",
+        "where": {
+          "command": "full-check"
+        },
+        "receipt": {
+          "exit_code": "0"
+        },
+        "min": 1,
+        "max": 1
+      },
+      {
+        "tool": "terminal.run",
+        "where": {
+          "command": "full-check"
+        },
+        "max": 2
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply says 214 tests passed (none failed), based on the one run that finished. Fail if it reports a number the output does not show or says it is still running.",
+  "suite": "capability"
+}

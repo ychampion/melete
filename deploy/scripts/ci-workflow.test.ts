@@ -129,7 +129,12 @@ describe('the continuous integration workflow', () => {
   });
 
   test('every install is cached, cut off when it stalls, and retried', () => {
-    const workflows = [ci, conformance, load('.github/workflows/images.yml')];
+    const workflows = [
+      ci,
+      conformance,
+      load('.github/workflows/images.yml'),
+      load('.github/workflows/evals.yml'),
+    ];
     const installing = workflows.flatMap(({ named }) =>
       named.flatMap(([name, job]) => {
         const jobSteps = job.steps ?? [];
@@ -285,6 +290,35 @@ describe('the browser sandbox proof this workflow runs', () => {
 
 const linesOf = (job?: Job) =>
   (job?.steps ?? []).flatMap((step) => (step.run ?? '').split('\n')).map((line) => line.trim());
+
+describe('the capability evaluations', () => {
+  const evals = load('.github/workflows/evals.yml');
+
+  test('every pull request runs the scripted suite against its baseline, with no secret', () => {
+    const job = ci.workflow.jobs?.['capability-evals'];
+    const run = job?.steps?.map((step) => step.run ?? '').join(' ') ?? '';
+    expect(run).toContain('bun run evals -- --engine light --provider scripted --suite capability');
+    expect(run).toContain('--baseline evals/baselines/scripted.json');
+    expect(existsSync(join(root, 'evals/baselines/scripted.json'))).toBe(true);
+    expect(job?.services?.postgres?.image).toMatch(/^postgres:17(?:[.-]|$)/);
+    expect(JSON.stringify(job)).not.toMatch(/secrets\./);
+  });
+
+  test('the real-model suite runs only by hand and skips without the key', () => {
+    expect(Object.keys(evals.workflow.on ?? {})).toEqual(['workflow_dispatch']);
+    expect(evals.workflow.permissions).toEqual({ contents: 'read' });
+    // The one secret it reads is the provider key, and every later step waits on it.
+    expect(evals.source.match(/secrets\.\w+/g)).toEqual(['secrets.FIREWORKS_API_KEY']);
+    const [check, ...rest] = evals.steps;
+    expect(check?.run).toContain('present=false');
+    for (const step of rest) expect(step.if).toContain("steps.key.outputs.present == 'true'");
+    expect(evals.source).toContain('--baseline evals/baselines/fireworks.json');
+    expect(existsSync(join(root, 'evals/baselines/fireworks.json'))).toBe(true);
+    for (const job of evals.jobs) expect(job['timeout-minutes']).toBeGreaterThan(0);
+    for (const step of evals.steps)
+      if (step.uses) expect(step.uses).toMatch(/^[\w.-]+\/[\w.-]+@[a-f0-9]{40}$/);
+  });
+});
 
 describe('the conformance workflow', () => {
   test('runs weekly, on request, and when main changes what it proves', () => {

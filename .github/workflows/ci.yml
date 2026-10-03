@@ -146,6 +146,58 @@ jobs:
       - name: Runtime plugin suite
         run: bun run test:plugin
 
+  capability-evals:
+    name: Capability evaluations with the scripted provider
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      # The light engine's disposable database, on the same server image as the test job.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: melete_test
+          POSTGRES_PASSWORD: melete_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U melete_test -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
+      - name: Install dependencies
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
+      # The real broker, gateway, ledger and fixture destinations around the light engine,
+      # with a scripted model: no provider and no secret. A key scenario that stops passing
+      # fails the job against the stored scripted baseline. A scenario that needs something
+      # this runner lacks (web search, attachments, Chromium) is skipped by name.
+      - name: Run the capability suite against its baseline
+        run: |
+          bun run evals -- --engine light --provider scripted --suite capability --runs 1             --workers 3 --campaign ci-capability --out-dir "$RUNNER_TEMP/evals"             --baseline evals/baselines/scripted.json
+
   browser-sandbox:
     name: Prove the browser renderer sandbox
     runs-on: ubuntu-24.04

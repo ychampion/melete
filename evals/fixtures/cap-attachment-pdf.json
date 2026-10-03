@@ -1,0 +1,36 @@
+{
+  "id": "cap-attachment-pdf",
+  "domain": "files",
+  "title": "Read an attached PDF invoice",
+  "objective": "What is the total on the invoice I attached, and when is it due?",
+  "requires": [
+    {
+      "feature": "attachments"
+    }
+  ],
+  "tools": [],
+  "steps": [],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "The total is $1,284.50, due on 30 October 2026."
+  },
+  "source": {
+    "attachment": {
+      "name": "invoice-0412.pdf",
+      "media_type": "application/pdf",
+      "text": "Invoice 0412. Bright Pipes Plumbing. Labour 6 h: $720.00. Parts: $564.50. Total due: $1,284.50. Payment due by 30 October 2026."
+    }
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["1,284.50", "30 October"],
+    "outcome": "completed"
+  },
+  "checks": {
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply states the total $1,284.50 and the due date 30 October 2026 from the attached invoice.",
+  "suite": "capability"
+}
