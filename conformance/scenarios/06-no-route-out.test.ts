@@ -226,11 +226,14 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
       // An engine started for its attempt mounts the job's directory by name. A
       // spare engine mounted its own directory, which became the job's when the
       // attempt took it. Either way, what the attempt writes at /work is in the
-      // job's directory and nowhere else.
+      // job's directory and nowhere else. With a database, a spare's directory
+      // carries the instance that started it: `.spare-<instance>.<id>`.
       const subpath =
         child.HostConfig.Mounts.find((mount) => mount.Target === '/work')?.VolumeOptions?.Subpath ??
         '';
-      expect(subpath === jobId || /^\.spare-[a-f0-9]{24}$/.test(subpath)).toBe(true);
+      expect(
+        subpath === jobId || /^\.spare-(?:[a-z0-9-]{1,63}\.)?[a-f0-9]{24}$/.test(subpath),
+      ).toBe(true);
       const marker = `boundary-${newId('job')}`;
       await docker(
         'exec',

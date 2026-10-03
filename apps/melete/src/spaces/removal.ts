@@ -14,8 +14,7 @@
  * claimed to clear and finds nothing. A phase that could not be reached is not
  * a zero, and a removal carrying one reports itself blocked instead.
  */
-import { realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import {
   EMPTY_COUNTS,
   isTerminal,
@@ -39,6 +38,7 @@ import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { spaceAuthority } from '../principals/authority.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { BlobStore } from '../storage/blob.ts';
 import { releaseSpaceBlobs } from '../storage/refs.ts';
 import {
@@ -846,10 +846,10 @@ export class SpaceRemovalService {
    * removal is repeated.
    */
   private async cleanUp(row: SpaceRemovalRow, token: string): Promise<SpaceRemovalRow> {
-    const workRoot = this.deps.roots.workRoot;
+    const workspaces = new LocalWorkspaceFs(this.deps.roots.workRoot);
     await this.deps.sql.begin(this.holdFor(row.id, token));
     await this.deps.stopJobs?.(row.jobIds);
-    const held = await clearJobWorkspaces(workRoot, row.jobIds, async () => {
+    const held = await clearJobWorkspaces(workspaces, row.jobIds, async () => {
       await this.deps.stopJobs?.(row.jobIds);
     });
     const counts = removalCounts.parse({ ...(row.counts ?? {}), paths: held });
@@ -968,15 +968,7 @@ export function onlyHeldWorkspacesLeft(
   counts: RemovalCounts,
 ): boolean {
   if (removal.kind !== 'emptied' || counts.paths.length === 0) return false;
-  const roots = new Set([resolve(workRoot)]);
-  try {
-    roots.add(realpathSync(workRoot));
-  } catch {
-    // A work root that does not exist holds no workspace; the written form is enough.
-  }
-  const workspaces = new Set(
-    removal.jobIds.flatMap((id) => [...roots].map((root) => join(root, id))),
-  );
+  const workspaces = new LocalWorkspaceFs(workRoot).workspacePaths(removal.jobIds);
   return (
     counts.paths.every((path) => workspaces.has(resolve(path))) &&
     removalIsClear({ ...counts, paths: [] })

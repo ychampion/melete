@@ -1,6 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, readdir, realpath, rename, rm, rmdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import {
   type AttemptBundle,
   type AttemptOutcome,
@@ -16,27 +14,22 @@ import {
   engineConfigEnvironment,
   engineSettingsFromEnvironment,
   type FetchLike,
-  HERMES_PINNED_COMMIT,
   HermesRuntimeAdapter,
   type ParkedActions,
 } from '@melete/runtime-hermes';
 import { moveJobScreens } from '../devices/screens.ts';
 import { modelApiMode } from '../gateway/providers.ts';
-import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
+import type { InstanceView } from '../ops/instance.ts';
+import type { CellHandle, CellHost } from './cell-host.ts';
+import { type DockerApi, DockerError, DockerSocketApi, LocalCellHost } from './cell-host-local.ts';
 
-const OWNER = 'com.melete.attempt-supervisor';
-const PROJECT = 'com.melete.project';
-const ATTEMPT = 'com.melete.attempt';
-const JOB = 'com.melete.job';
-/**
- * Marks an engine container started ahead of its attempt; its labels name no
- * attempt or job. Once an attempt takes it, its container name is that attempt's.
- */
-const SPARE = 'com.melete.spare';
-/** A spare's own workspace directory, until an attempt's job takes it over. */
-const SPARE_DIRECTORY = '.spare-';
-/** Where a job's workspace is set aside while a spare's directory becomes it. */
-const ADOPTING = '.adopt-';
+export {
+  ATTEMPT_LOG_CONFIG,
+  type DockerApi,
+  DockerError,
+  DockerSocketApi,
+} from './cell-host-local.ts';
+
 /**
  * The values a spare engine container is started without and handed with its
  * attempt; while it loads it reports any of them being read (process_launcher.py).
@@ -54,57 +47,6 @@ export const CONTAINER_ATTEMPT_KEYS = [
 export const SPARE_HANDOFF_PATH = '/melete/handoff';
 /** The launcher's exit status when the engine read an attempt value while it loaded. */
 const SPARE_UNUSABLE_EXIT = 3;
-/** The Compose services' log bound; an attempt must not be the one container without it. */
-export const ATTEMPT_LOG_CONFIG = {
-  Type: 'json-file',
-  Config: { 'max-size': '10m', 'max-file': '5' },
-} as const;
-type Labels = Record<string, string>;
-type Method = 'GET' | 'POST' | 'DELETE';
-
-export interface DockerApi {
-  request(method: Method, path: string, body?: unknown): Promise<unknown>;
-}
-
-export class DockerError extends Error {
-  constructor(
-    readonly status: number,
-    method: Method,
-    path: string,
-  ) {
-    // Docker errors can include the submitted configuration. Never log its Env.
-    super(`Docker ${method} ${path.split('?')[0]} answered ${status}`);
-  }
-}
-
-/** Only this trusted service has the socket; no cell receives it or a Docker client. */
-export class DockerSocketApi implements DockerApi, DockerVersionSource {
-  constructor(private readonly socket: string) {}
-
-  /** Unversioned, so an engine too old for the API below can still say which one it is. */
-  async version(): Promise<unknown> {
-    const response = await fetch('http://localhost/version', {
-      unix: this.socket,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new DockerError(response.status, 'GET', '/version');
-    return response.json();
-  }
-
-  async request(method: Method, path: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`http://localhost/v${DOCKER_API_VERSION}${path}`, {
-      unix: this.socket,
-      method,
-      ...(body === undefined
-        ? {}
-        : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new DockerError(response.status, method, path);
-    const text = await response.text();
-    return text ? JSON.parse(text) : null;
-  }
-}
 
 export type DockerRuntimeOptions = {
   project: string;
@@ -128,23 +70,19 @@ export type DockerRuntimeOptions = {
   spares?: number;
   /** Docker supplies HOSTNAME as the service container's short id. */
   selfId?: string;
+  /**
+   * This service instance, when several share the engine and the workspace
+   * volume. Its cells and their directories carry its id, and reconciliation
+   * removes only its own, unlabelled ones, and those of instances `running`
+   * no longer lists. Left out, every cell of the project is this service's.
+   */
+  instance?: InstanceView;
   docker?: DockerApi;
+  /** Where cells run; by default the engine behind `socket` (or `docker`). */
+  host?: CellHost;
   fetch?: FetchLike;
 };
 
-type Names = { container: string; network: string; home: string };
-type Resources = Names & {
-  containerId?: string;
-  networkId?: string;
-  attached?: boolean;
-  volume?: boolean;
-};
-type ContainerInfo = {
-  Id: string;
-  Config: { Labels: Labels };
-  NetworkSettings: { Networks: Record<string, { IPAddress: string }> };
-  State?: { Status?: string; ExitCode?: number };
-};
 /** What a container engine is given that follows from its model and features, not its attempt. */
 type EngineSetup = { key: string; environment: string[] };
 /**
@@ -156,8 +94,7 @@ type Spare = {
   id: string;
   key: string;
   apiKey: string;
-  directory: string;
-  resources: Resources;
+  cell: CellHandle;
   url?: string;
   loaded: boolean;
   ready: Promise<boolean>;
@@ -166,13 +103,11 @@ type Spare = {
 
 /** A claimed attempt gets one mount root and one network with exactly the broker peer. */
 export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
-  private readonly docker: DockerApi;
+  private readonly host: CellHost;
   private readonly request: FetchLike;
   private readonly shutdown = new AbortController();
   private readonly active = new Map<string, Promise<AttemptOutcome>>();
   private initialized?: Promise<void>;
-  private self = '';
-  private image = '';
   /** Engines loaded ahead of their attempts, oldest first. */
   private readonly spares: Spare[] = [];
   /** Removals of spares no attempt took. */
@@ -183,75 +118,21 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   private spareCount: number;
 
   constructor(private readonly options: DockerRuntimeOptions) {
-    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(options.project))
-      throw new Error('Invalid Docker compose project');
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(options.workVolume))
-      throw new Error('Invalid workspace volume name');
+    this.host =
+      options.host ??
+      new LocalCellHost({
+        project: options.project,
+        image: options.image,
+        workRoot: options.workRoot,
+        workVolume: options.workVolume,
+        selfId: options.selfId,
+        instance: options.instance,
+        docker: options.docker ?? new DockerSocketApi(options.socket),
+      });
     if (!options.image || !options.probeKey)
       throw new Error('Runtime image and API key are required');
-    this.docker = options.docker ?? new DockerSocketApi(options.socket);
     this.request = options.fetch ?? ((input, init) => fetch(input, init));
     this.spareCount = Math.max(0, Math.floor(options.spares ?? 0));
-  }
-
-  private names(attempt: string): Names {
-    prefixedId('att').parse(attempt);
-    const prefix = `${this.options.project}-${attempt.toLowerCase()}`;
-    return { container: prefix, network: `${prefix}-net`, home: `${prefix}-home` };
-  }
-
-  private spareNames(id: string): Names {
-    if (!/^[a-f0-9]{24}$/.test(id)) throw new Error('Invalid spare engine id');
-    const prefix = `${this.options.project}-spare-${id}`;
-    return { container: prefix, network: `${prefix}-net`, home: `${prefix}-home` };
-  }
-
-  private ownedSpare(labels?: Labels): boolean {
-    return (
-      labels?.[OWNER] === 'v1' &&
-      labels[PROJECT] === this.options.project &&
-      /^[a-f0-9]{24}$/.test(labels[SPARE] ?? '') &&
-      labels[ATTEMPT] === undefined &&
-      labels[JOB] === undefined
-    );
-  }
-
-  /**
-   * Whether a container name is the one a cold engine for some attempt would
-   * carry, which a spare is renamed to when an attempt takes it (`claimSpare`).
-   */
-  private attemptContainerName(name: string): boolean {
-    const prefix = `/${this.options.project}-att_`;
-    if (!name.startsWith(prefix)) return false;
-    const attempt = `att_${name.slice(prefix.length).toUpperCase()}`;
-    return (
-      prefixedId('att').safeParse(attempt).success && `/${this.names(attempt).container}` === name
-    );
-  }
-
-  /** The resource names an owned container, network or volume must carry, or nothing. */
-  private expectedNames(labels?: Labels): Names | undefined {
-    if (this.owned(labels)) return this.names(labels?.[ATTEMPT] ?? '');
-    if (this.ownedSpare(labels)) return this.spareNames(labels?.[SPARE] ?? '');
-    return undefined;
-  }
-
-  private labels(bundle: AttemptBundle): Labels {
-    return {
-      [OWNER]: 'v1',
-      [PROJECT]: this.options.project,
-      [ATTEMPT]: bundle.attempt.id,
-      [JOB]: bundle.attempt.job_id,
-    };
-  }
-
-  private owned(labels?: Labels): boolean {
-    return (
-      labels?.[OWNER] === 'v1' &&
-      labels[PROJECT] === this.options.project &&
-      prefixedId('att').safeParse(labels[ATTEMPT]).success &&
-      prefixedId('job').safeParse(labels[JOB]).success
-    );
   }
 
   /** Reconcile this project's abandoned cells before any replacement can start. */
@@ -261,109 +142,17 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   }
 
   private async initializeOnce() {
-    const hostname = this.options.selfId ?? process.env.HOSTNAME ?? '';
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(hostname))
-      throw new Error('The supervisor must run inside its Melete compose container');
-    const self = (await this.docker.request(
-      'GET',
-      `/containers/${hostname}/json`,
-    )) as ContainerInfo;
-    if (
-      self.Config.Labels['com.docker.compose.project'] !== this.options.project ||
-      self.Config.Labels['com.docker.compose.service'] !== 'melete'
-    )
-      throw new Error('Refusing to attach a container outside the Melete compose service');
-    this.self = self.Id;
-    const image = (await this.docker.request(
-      'GET',
-      `/images/${encodeURIComponent(this.options.image)}/json`,
-    )) as {
-      Id: string;
-      Config: { Labels: Labels };
-    };
-    if (
-      image.Config.Labels['com.melete.hermes.commit'] !== HERMES_PINNED_COMMIT ||
-      !/^[a-f0-9]{64}$/.test(image.Config.Labels['com.melete.plugin.sha256'] ?? '') ||
-      !/^sha256:[a-f0-9]{64}$/.test(image.Id)
-    )
-      throw new Error('The runtime image must carry the pinned Hermes commit and plugin digest');
-    // Resolve the mutable local tag once. Every child uses this exact image id.
-    this.image = image.Id;
-    const filter = encodeURIComponent(
-      JSON.stringify({ label: [`${OWNER}=v1`, `${PROJECT}=${this.options.project}`] }),
-    );
-    const containers = (await this.docker.request(
-      'GET',
-      `/containers/json?all=true&filters=${filter}`,
-    )) as Array<{
-      Id: string;
-      Names: string[];
-      Labels: Labels;
-    }>;
-    for (const container of containers) {
-      const names = this.expectedNames(container.Labels);
-      if (!names) continue;
-      // A spare an attempt took carries that attempt's name; its network and home keep the spare's.
-      const named =
-        container.Names.includes(`/${names.container}`) ||
-        (this.ownedSpare(container.Labels) &&
-          container.Names.some((name) => this.attemptContainerName(name)));
-      if (!named) throw new Error('An owned attempt container has an unexpected name');
-      await this.remove('DELETE', `/containers/${container.Id}?force=true`);
-    }
-    const networks = (await this.docker.request('GET', `/networks?filters=${filter}`)) as Array<{
-      Id: string;
-      Name: string;
-      Labels: Labels;
-    }>;
-    for (const network of networks) {
-      const names = this.expectedNames(network.Labels);
-      if (!names) continue;
-      if (network.Name !== names.network)
-        throw new Error('An owned attempt network has an unexpected name');
-      const detail = (await this.docker.request('GET', `/networks/${network.Id}`)) as {
-        Containers: Record<string, unknown>;
-      };
-      if (Object.keys(detail.Containers ?? {}).some((id) => id !== this.self))
-        throw new Error('An abandoned attempt network contains an unexpected peer');
-      if (detail.Containers?.[this.self])
-        await this.docker.request('POST', `/networks/${network.Id}/disconnect`, {
-          Container: this.self,
-          Force: true,
-        });
-      await this.remove('DELETE', `/networks/${network.Id}`);
-    }
-    const volumes = (await this.docker.request('GET', `/volumes?filters=${filter}`)) as {
-      Volumes: Array<{ Name: string; Labels: Labels }> | null;
-    };
-    for (const volume of volumes.Volumes ?? []) {
-      const names = this.expectedNames(volume.Labels);
-      if (!names) continue;
-      if (volume.Name !== names.home)
-        throw new Error('An owned runtime home has an unexpected name');
-      await this.remove('DELETE', `/volumes/${volume.Name}`);
-    }
-    await this.reconcileWorkspaces();
+    await this.host.verify();
+    await this.host.reconcile('start');
   }
 
   /**
-   * A job workspace set aside while a spare's directory became it is put back,
-   * and a spare directory no attempt took is removed. Both are left only by a
-   * service that stopped in between; no attempt runs until this is done.
+   * Removes the cells of instances that stopped while this one runs. With
+   * several instances on one engine, one of them does this now and then.
    */
-  private async reconcileWorkspaces() {
-    // No workspace root yet means no attempt has ever left anything in it.
-    if (!(await lstat(resolve(this.options.workRoot)).catch(() => undefined))) return;
-    const root = await this.workspaceRoot();
-    for (const entry of await readdir(root)) {
-      if (entry.startsWith(ADOPTING)) {
-        const jobId = prefixedId('job').parse(entry.slice(ADOPTING.length));
-        await this.restoreSetAside(join(root, entry), join(root, jobId));
-      } else if (entry.startsWith(SPARE_DIRECTORY)) {
-        const path = join(root, entry);
-        if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true });
-      }
-    }
+  async removeStopped(): Promise<void> {
+    await this.initialize();
+    await this.host.reconcile('stopped');
   }
 
   async capabilities(): Promise<RuntimeCapabilities> {
@@ -390,81 +179,6 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     this.active.set(bundle.attempt.id, pending);
     void pending.finally(() => this.active.delete(bundle.attempt.id)).catch(() => {});
     return pending;
-  }
-
-  private async workspaceRoot(): Promise<string> {
-    const root = resolve(this.options.workRoot);
-    const rootStat = await lstat(root);
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (await realpath(root)) !== root)
-      throw new Error('The workspace root must be a real directory');
-    return root;
-  }
-
-  /** A directory directly under the workspace root, created for the runtime's group. */
-  private async ownedDirectory(name: string) {
-    const path = join(await this.workspaceRoot(), name);
-    await mkdir(path, { mode: 0o2770 }).catch((error: unknown) => {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-    });
-    const stat = await lstat(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || (await realpath(path)) !== path)
-      throw new Error('Refusing a symlink or non-directory job workspace');
-    await chmod(path, 0o2770);
-    return path;
-  }
-
-  private async prepareWorkspace(jobId: string) {
-    await this.ownedDirectory(prefixedId('job').parse(jobId));
-  }
-
-  /**
-   * Makes the spare's directory, which its container has mounted at /work, the
-   * job's workspace, with what the job already had in it. Each step is a rename
-   * on the one volume; a stop between them leaves `.adopt-<job>`, which the next
-   * start puts back (`reconcileWorkspaces`).
-   */
-  private async adoptWorkspace(directory: string, jobId: string) {
-    const root = await this.workspaceRoot();
-    const spare = join(root, directory);
-    const job = join(root, prefixedId('job').parse(jobId));
-    const spareStat = await lstat(spare);
-    if (!spareStat.isDirectory() || spareStat.isSymbolicLink())
-      throw new Error("Refusing a spare workspace that is not the spare's own directory");
-    const existing = await lstat(job).catch((error: unknown) => {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
-      throw error;
-    });
-    if (!existing) {
-      await rename(spare, job);
-      return;
-    }
-    if (!existing.isDirectory() || existing.isSymbolicLink())
-      throw new Error('Refusing a symlink or non-directory job workspace');
-    const aside = join(root, `${ADOPTING}${jobId}`);
-    await rename(job, aside);
-    try {
-      await rename(spare, job);
-    } finally {
-      // Whichever directory is the job's now, it ends with everything it had.
-      await this.restoreSetAside(aside, job);
-    }
-  }
-
-  /** Moves a set-aside workspace's entries back into the job's; the job's own win. */
-  private async restoreSetAside(aside: string, job: string) {
-    const exists = await lstat(job).catch(() => undefined);
-    if (!exists) {
-      await rename(aside, job);
-      return;
-    }
-    if (!exists.isDirectory() || exists.isSymbolicLink())
-      throw new Error('Refusing a symlink or non-directory job workspace');
-    for (const entry of await readdir(aside)) {
-      // Anything the spare wrote under the same name while it loaded gives way.
-      await rm(join(job, entry), { recursive: true, force: true });
-      await rename(join(aside, entry), join(job, entry));
-    }
-    await rmdir(aside);
   }
 
   private brokerUrl() {
@@ -531,91 +245,6 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     };
   }
 
-  /** One private network with the broker as its sole peer, and a home volume. */
-  private async provisionCell(resources: Resources, labels: Labels, signal: AbortSignal) {
-    const network = (await this.docker.request('POST', '/networks/create', {
-      Name: resources.network,
-      Driver: 'bridge',
-      Internal: true,
-      EnableIPv6: false,
-      Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
-      Labels: labels,
-    })) as { Id: string };
-    resources.networkId = network.Id;
-    signal.throwIfAborted();
-    await this.docker.request('POST', `/networks/${network.Id}/connect`, {
-      Container: this.self,
-      EndpointConfig: { Aliases: ['melete'] },
-    });
-    resources.attached = true;
-    const home = (await this.docker.request('POST', '/volumes/create', {
-      Name: resources.home,
-      Labels: labels,
-    })) as { Name: string; Labels: Labels };
-    if (
-      home.Name !== resources.home ||
-      this.expectedNames(home.Labels)?.home !== resources.home ||
-      Object.entries(labels).some(([key, value]) => home.Labels[key] !== value)
-    )
-      throw new Error('Refusing a runtime home that belongs to another container');
-    resources.volume = true;
-    signal.throwIfAborted();
-  }
-
-  /** Creates and starts the engine container on its cell; returns its API address. */
-  private async startContainer(
-    resources: Resources,
-    labels: Labels,
-    environment: string[],
-    workspace: string,
-    signal: AbortSignal,
-  ): Promise<string> {
-    const created = (await this.docker.request(
-      'POST',
-      `/containers/create?name=${resources.container}`,
-      {
-        Image: this.image,
-        User: '10001:10001',
-        WorkingDir: '/work',
-        Labels: labels,
-        Env: environment,
-        HostConfig: {
-          NetworkMode: resources.network,
-          ReadonlyRootfs: true,
-          CapDrop: ['ALL'],
-          SecurityOpt: ['no-new-privileges:true'],
-          PidsLimit: 256,
-          Memory: 2 * 1024 ** 3,
-          Tmpfs: { '/tmp': 'size=64m,mode=1777' },
-          RestartPolicy: { Name: 'no' },
-          LogConfig: ATTEMPT_LOG_CONFIG,
-          Mounts: [
-            {
-              Type: 'volume',
-              Source: this.options.workVolume,
-              Target: '/work',
-              VolumeOptions: { Subpath: workspace, NoCopy: true },
-            },
-            { Type: 'volume', Source: resources.home, Target: '/var/lib/hermes' },
-          ],
-        },
-        NetworkingConfig: { EndpointsConfig: { [resources.network]: {} } },
-      },
-    )) as { Id: string };
-    resources.containerId = created.Id;
-    signal.throwIfAborted();
-    await this.docker.request('POST', `/containers/${created.Id}/start`);
-    const container = (await this.docker.request(
-      'GET',
-      `/containers/${created.Id}/json`,
-    )) as ContainerInfo;
-    const networks = container.NetworkSettings.Networks;
-    const address = networks[resources.network]?.IPAddress;
-    if (Object.keys(networks).length !== 1 || !address || !/^\d+\.\d+\.\d+\.\d+$/.test(address))
-      throw new Error('The runtime must have exactly its private attempt network');
-    return `http://${address}:8790`;
-  }
-
   private mount(jobId: string) {
     this.mounted.set(jobId, (this.mounted.get(jobId) ?? 0) + 1);
   }
@@ -635,7 +264,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     // another container of this job still has mounted.
     const sharing = this.mounted.has(bundle.attempt.job_id);
     this.mount(bundle.attempt.job_id);
-    let resources: Resources | undefined;
+    let cell: CellHandle | undefined;
     try {
       await this.initialize();
       signal.throwIfAborted();
@@ -646,26 +275,19 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       let url: string;
       let apiKey: string;
       if (warm) {
-        ({ resources, url, apiKey } = warm);
+        ({ cell, url, apiKey } = warm);
       } else {
-        await this.prepareWorkspace(bundle.attempt.job_id);
-        const cell: Resources = this.names(bundle.attempt.id);
-        resources = cell;
-        const labels = this.labels(bundle);
         apiKey = randomBytes(32).toString('hex');
-        await this.provisionCell(cell, labels, signal);
         const values = this.attemptValues(bundle);
-        url = await this.startContainer(
-          cell,
-          labels,
-          [
+        cell = this.host.cell({
+          cell: { attempt: bundle.attempt.id, job: bundle.attempt.job_id },
+          environment: [
             ...this.baseEnvironment(apiKey),
             ...CONTAINER_ATTEMPT_KEYS.map((key) => `${key}=${values[key]}`),
             ...setup.environment,
           ],
-          bundle.attempt.job_id,
-          signal,
-        );
+        });
+        url = await cell.start(signal);
       }
       await this.waitForApi(url, apiKey, signal);
       return await new HermesRuntimeAdapter({
@@ -682,7 +304,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       }).start(bundle, sink, signal);
     } finally {
       try {
-        if (resources) await this.cleanup(resources);
+        if (cell) await cell.release();
       } finally {
         this.unmount(bundle.attempt.job_id);
       }
@@ -706,18 +328,26 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
 
   private startSpare(setup: EngineSetup) {
     const id = randomBytes(12).toString('hex');
+    const apiKey = randomBytes(32).toString('hex');
     const spare: Spare = {
       id,
       key: setup.key,
-      apiKey: randomBytes(32).toString('hex'),
-      directory: `${SPARE_DIRECTORY}${id}`,
-      resources: this.spareNames(id),
+      apiKey,
+      cell: this.host.cell({
+        cell: { spare: id },
+        environment: [
+          ...this.baseEnvironment(apiKey),
+          ...setup.environment,
+          'MELETE_RUNTIME_SPARE=1',
+          `MELETE_RUNTIME_SPARE_KEYS=${CONTAINER_ATTEMPT_KEYS.join(',')}`,
+        ],
+      }),
       loaded: false,
       ready: Promise.resolve(false),
       stop: new AbortController(),
     };
     const signal = AbortSignal.any([spare.stop.signal, this.shutdown.signal]);
-    spare.ready = this.loadSpare(spare, setup, signal).then(
+    spare.ready = this.loadSpare(spare, signal).then(
       () => {
         spare.loaded = true;
         return true;
@@ -736,24 +366,10 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     this.spares.push(spare);
   }
 
-  private async loadSpare(spare: Spare, setup: EngineSetup, signal: AbortSignal) {
+  private async loadSpare(spare: Spare, signal: AbortSignal) {
     await this.initialize();
     signal.throwIfAborted();
-    await this.ownedDirectory(spare.directory);
-    const labels = { [OWNER]: 'v1', [PROJECT]: this.options.project, [SPARE]: spare.id };
-    await this.provisionCell(spare.resources, labels, signal);
-    spare.url = await this.startContainer(
-      spare.resources,
-      labels,
-      [
-        ...this.baseEnvironment(spare.apiKey),
-        ...setup.environment,
-        'MELETE_RUNTIME_SPARE=1',
-        `MELETE_RUNTIME_SPARE_KEYS=${CONTAINER_ATTEMPT_KEYS.join(',')}`,
-      ],
-      spare.directory,
-      signal,
-    );
+    spare.url = await spare.cell.start(signal);
     const deadline = Date.now() + (this.options.startTimeoutMs ?? 120_000);
     for (let tries = 1; Date.now() < deadline; tries++) {
       signal.throwIfAborted();
@@ -768,12 +384,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
         signal.throwIfAborted();
       }
       if (tries % 8 === 0) {
-        const container = (await this.docker.request(
-          'GET',
-          `/containers/${spare.resources.containerId}/json`,
-        )) as ContainerInfo;
-        if (container.State?.Status === 'exited') {
-          if (container.State.ExitCode === SPARE_UNUSABLE_EXIT) {
+        const state = await spare.cell.state();
+        if (state.status === 'exited') {
+          if (state.exitCode === SPARE_UNUSABLE_EXIT) {
             // The engine read an attempt's value while it loaded; every later
             // spare would too, so attempts go back to starting their own.
             this.spareCount = 0;
@@ -796,7 +409,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     setup: EngineSetup,
     bundle: AttemptBundle,
     signal: AbortSignal,
-  ): Promise<{ resources: Resources; url: string; apiKey: string } | undefined> {
+  ): Promise<{ cell: CellHandle; url: string; apiKey: string } | undefined> {
     if (this.spareCount < 1) return undefined;
     const matching = this.spares.filter((spare) => spare.key === setup.key);
     const spare = matching.find((candidate) => candidate.loaded) ?? matching[0];
@@ -827,9 +440,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       signal.throwIfAborted();
       return undefined;
     }
-    const resources = spare.resources;
+    const cell = spare.cell;
     try {
-      await this.adoptWorkspace(spare.directory, bundle.attempt.job_id);
+      await cell.adopt(bundle.attempt.job_id);
       signal.throwIfAborted();
       const response = await this.request(`${spare.url}${SPARE_HANDOFF_PATH}`, {
         method: 'POST',
@@ -842,18 +455,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       });
       await response.body?.cancel();
       if (response.status !== 204) throw new Error(`the spare engine answered ${response.status}`);
-      // Labels cannot change after creation, so the container takes the name a
-      // cold engine for this attempt would have: an operator (or a check) finds
-      // the container serving an attempt by its name either way.
-      const name = this.names(bundle.attempt.id).container;
-      await this.docker.request(
-        'POST',
-        `/containers/${resources.containerId}/rename?name=${encodeURIComponent(name)}`,
-      );
-      resources.container = name;
+      await cell.rename(bundle.attempt.id);
     } catch (error) {
-      await this.cleanup(resources);
-      await this.removeSpareDirectory(spare);
+      await cell.release();
       signal.throwIfAborted();
       // The job's workspace is intact either way; the attempt starts its own engine.
       process.stderr.write(
@@ -861,7 +465,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       );
       return undefined;
     }
-    return { resources, url: spare.url ?? '', apiKey: spare.apiKey };
+    return { cell, url: spare.url ?? '', apiKey: spare.apiKey };
   }
 
   /** Stops a spare no attempt took, wherever it has got to, and removes what it owned. */
@@ -875,16 +479,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   }
 
   private async removeSpare(spare: Spare) {
-    await this.cleanup(spare.resources);
-    await this.removeSpareDirectory(spare);
-  }
-
-  /** The spare's own directory, unless it has already become a job's workspace. */
-  private async removeSpareDirectory(spare: Spare) {
-    const path = join(await this.workspaceRoot(), spare.directory);
-    const stat = await lstat(path).catch(() => undefined);
-    if (stat?.isDirectory() && !stat.isSymbolicLink())
-      await rm(path, { recursive: true, force: true });
+    await spare.cell.release();
   }
 
   private async waitForApi(url: string, key: string, signal: AbortSignal) {
@@ -911,29 +506,6 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       }
     }
     throw new Error('The Hermes API did not become ready before its startup deadline');
-  }
-
-  private async remove(method: Method, path: string, body?: unknown) {
-    try {
-      await this.docker.request(method, path, body);
-    } catch (error) {
-      if (!(error instanceof DockerError && error.status === 404)) throw error;
-    }
-  }
-
-  private async cleanup(resources: Resources) {
-    // This order leaves durable home reservations in place until the process is gone.
-    if (resources.containerId)
-      await this.remove('DELETE', `/containers/${resources.containerId}?force=true`);
-    if (resources.networkId) {
-      if (resources.attached)
-        await this.remove('POST', `/networks/${resources.networkId}/disconnect`, {
-          Container: this.self,
-          Force: true,
-        });
-      await this.remove('DELETE', `/networks/${resources.networkId}`);
-    }
-    if (resources.volume) await this.remove('DELETE', `/volumes/${resources.home}`);
   }
 
   beginShutdown(): void {

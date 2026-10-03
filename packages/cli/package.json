@@ -1,0 +1,16 @@
+{
+  "name": "@melete/cli",
+  "version": "0.1.0-pre",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The melete command: check, look after and configure a self-hosted installation.",
+  "main": "./src/main.ts",
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "yaml": "2.8.1",
+    "zod": "4.6.2"
+  }
+}

@@ -214,11 +214,15 @@ export function startEgressRetention(
   sql: Sql,
   days: number,
   say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+  leads: () => boolean | Promise<boolean> = () => true,
 ): () => void {
+  // One instance expires records at a time; the others skip the pass.
   const sweep = () =>
-    void expireEgressRecords(sql, days).catch((error: unknown) =>
-      say(`egress record retention failed: ${String((error as Error)?.message ?? error)}`),
-    );
+    void Promise.resolve(leads())
+      .then((leading) => (leading ? expireEgressRecords(sql, days) : undefined))
+      .catch((error: unknown) =>
+        say(`egress record retention failed: ${String((error as Error)?.message ?? error)}`),
+      );
   sweep();
   const timer = setInterval(sweep, 60 * 60_000);
   timer.unref?.();

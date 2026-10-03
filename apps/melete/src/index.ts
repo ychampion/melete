@@ -117,7 +117,7 @@ import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
 import { mountProposals } from './learning/proposal-routes.ts';
 import type { ProcedureProposer } from './learning/proposer.ts';
-import { expireEpisodes } from './learning/retention.ts';
+import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
@@ -129,6 +129,9 @@ import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { InstanceRegistry, instanceId } from './ops/instance.ts';
+import { Leases, leaseConnection } from './ops/leader.ts';
+import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
   refusedForRemoval,
   requestPrincipal,
@@ -186,6 +189,8 @@ export type AppDeps = {
   /** Long work in the background; built from `jobs` when left out. */
   runs?: RunService;
   loginThrottle?: LoginThrottle;
+  /** Where request limits are counted. Left out, in Postgres when `sql` is given. */
+  limits?: LimitStore;
   jobs?: JobService;
   triggers?: TriggerService;
   approvals?: ApprovalService;
@@ -281,7 +286,9 @@ export function createApp(deps: AppDeps) {
   // Mounted before the routes it follows, so it runs once they have answered;
   // see mountDefaultConnections.
   if (connections) mountDefaultConnections(app, connections);
-  mountAuth(app, deps);
+  // Limits every instance on the database shares; one instance alone counts the same.
+  const limits = deps.limits ?? (deps.sql ? new PostgresLimitStore(deps.sql) : undefined);
+  mountAuth(app, { ...deps, limits });
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
@@ -325,6 +332,7 @@ export function createApp(deps: AppDeps) {
         policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       }),
+      limits,
     );
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
@@ -431,6 +439,7 @@ export function createApp(deps: AppDeps) {
       env: deps.env,
       broker: deps.broker,
       registry: deps.registry,
+      limits,
     });
   if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -516,6 +525,16 @@ export function createApp(deps: AppDeps) {
   return app;
 }
 
+/** This instance's name and the instances running beside it, for the Docker backends. */
+const instanceOf = (instances: InstanceRegistry | undefined) =>
+  instances
+    ? { id: instances.id, running: (staleAfterMs?: number) => instances.others(staleAfterMs) }
+    : undefined;
+
+/** Whether this instance runs the named singleton work now. Without a database, it is alone. */
+const leading = (leases: Leases | undefined, name: string) =>
+  leases ? leases.leads(name) : Promise.resolve(true);
+
 /** Wire the real dependencies. Called only when this file is the entry point. */
 export async function bootstrap(
   options: {
@@ -576,7 +595,7 @@ export async function bootstrap(
   let effectBoundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
-  let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -605,12 +624,17 @@ export async function bootstrap(
   let runtimeProbe: (() => Promise<unknown>) | undefined;
   let healthMonitor: HealthMonitor | undefined;
   const routing = routingFromEnv(env);
+  /** This instance among any others on the database, and the singleton work it leads. */
+  let instances: InstanceRegistry | undefined;
+  let leases: Leases | undefined;
+  let leftovers: ReturnType<typeof setInterval> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
-    clearInterval(episodeRetention);
+    stopEpisodeRetention?.();
     stopEgressRetention?.();
+    clearInterval(leftovers);
     sandboxes?.stop();
     processSweep?.stop();
     processMonitor?.stop();
@@ -644,6 +668,9 @@ export async function bootstrap(
       () => stdioLauncher?.close(),
       () => browser?.pool.close(),
       () => sandboxTeardown?.close(),
+      // Its cells are gone; another instance may now take its leases and clean up after it.
+      () => leases?.close(),
+      () => instances?.stop(),
       () => queue?.stop(),
       () => handle?.close(),
     ]) {
@@ -658,6 +685,15 @@ export async function bootstrap(
   try {
     if (handle) {
       await migrateDatabase(handle);
+      // Recorded before this instance starts anything another could remove.
+      instances = new InstanceRegistry(handle.sql, instanceId(env.MELETE_INSTANCE_ID));
+      await instances.start();
+      // Its own connection: a lease is a lock held by that one session.
+      if (env.DATABASE_URL) {
+        const url = env.DATABASE_URL;
+        const id = instances.id;
+        leases = new Leases(() => leaseConnection(url, id));
+      }
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
@@ -666,13 +702,15 @@ export async function bootstrap(
       modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
       // One record of what every model call cost, shared by every gateway.
       spending = spendingFromEnv(handle.sql, env);
-      episodeRetention = setInterval(() => {
-        void expireEpisodes(handle.sql).catch(() =>
-          process.stderr.write('episode retention failed\n'),
-        );
-      }, 60_000);
-      episodeRetention.unref();
-      stopEgressRetention = startEgressRetention(handle.sql, env.MELETE_EGRESS_RECORD_DAYS);
+      stopEpisodeRetention = startEpisodeRetention(handle.sql, () =>
+        leading(leases, 'episode-retention'),
+      );
+      stopEgressRetention = startEgressRetention(
+        handle.sql,
+        env.MELETE_EGRESS_RECORD_DAYS,
+        undefined,
+        () => leading(leases, 'egress-retention'),
+      );
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.
@@ -689,11 +727,15 @@ export async function bootstrap(
           egressPort: env.MELETE_MCP_EGRESS_PORT,
           nodeImage: env.MELETE_MCP_NODE_IMAGE,
           pythonImage: env.MELETE_MCP_PYTHON_IMAGE,
+          instance: instanceOf(instances),
         });
-        // No server survives the process that started it; a removed installation's data goes too.
+        // No server survives the process that started it; a removed installation's
+        // data goes too, removed by one instance at a time.
         const kept = await handle.sql`select id from connection
           where provider = 'mcp' and status <> 'revoked'`;
-        await stdioLauncher.reconcile(new Set(kept.map((row) => String(row.id))));
+        await stdioLauncher.reconcile(new Set(kept.map((row) => String(row.id))), {
+          volumes: await leading(leases, 'mcp-stdio-data'),
+        });
       }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
@@ -733,14 +775,22 @@ export async function bootstrap(
       sandboxPreviews = previewsFor(handle.sql, connectors, env.MELETE_MASTER_KEY);
       processFactory = connectors;
       // Boot reconciliation, before any attempt can open a session of its own.
+      // One instance at a time reconciles and sweeps; any instance may take over.
       if (sandboxes) {
-        await sandboxes.reconcile(AbortSignal.timeout(120_000));
-        sandboxes.start();
+        const lease = {
+          leads: () => leading(leases, 'sandbox'),
+          signal: () => leases?.signal('sandbox') ?? new AbortController().signal,
+        };
+        const bounded = () => AbortSignal.any([AbortSignal.timeout(120_000), lease.signal()]);
+        const first = await lease.leads();
+        if (first) await sandboxes.reconcile(bounded());
+        sandboxes.start(lease);
         // Sessions left by attempts that ended with the last process are
         // settled now, not when the first timed sweep comes round.
-        void sandboxes.sweep(AbortSignal.timeout(120_000)).catch(() => {
-          process.stderr.write('sandbox sweep at start failed\n');
-        });
+        if (first)
+          void sandboxes.sweep(bounded()).catch(() => {
+            process.stderr.write('sandbox sweep at start failed\n');
+          });
       }
     }
     if (handle) {
@@ -812,6 +862,7 @@ export async function bootstrap(
           workVolume: env.MELETE_WORK_VOLUME,
           probeUrl: env.MELETE_RUNTIME_URL,
           probeKey: env.MELETE_RUNTIME_KEY,
+          instance: instanceOf(instances),
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
           spares: env.MELETE_ENGINE_PREWARM,
           pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
@@ -826,6 +877,20 @@ export async function bootstrap(
           },
         });
         await supervisedRuntime.initialize();
+        // Cells and stdio servers of instances that stopped without cleaning up,
+        // removed by one running instance at a time.
+        const runtime = supervisedRuntime;
+        leftovers = setInterval(() => {
+          void leading(leases, 'stopped-instances')
+            .then(async (leads) => {
+              if (!leads) return;
+              await runtime.removeStopped();
+              if (leases?.signal('stopped-instances').aborted) return;
+              await stdioLauncher?.reconcile(new Set(), { starting: false, volumes: false });
+            })
+            .catch(() => process.stderr.write("removing stopped instances' cells failed\n"));
+        }, 60_000);
+        leftovers.unref();
         // The first reply need not wait for an engine to load either: one is
         // loaded for the model the next attempt would be given.
         const next = await modelSettings?.activeChoice().catch(() => undefined);
@@ -1018,6 +1083,7 @@ export async function bootstrap(
         signIn,
         privacy,
         modelSettings,
+        () => leading(leases, 'learning-drain'),
         spending,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
@@ -1070,7 +1136,10 @@ export async function bootstrap(
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
-      if (handle) blobs = startBlobs(handle.sql, env, options.workers !== false);
+      if (handle)
+        blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
+          leading(leases, 'blob-collector'),
+        );
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -1112,9 +1181,9 @@ export async function bootstrap(
         // A paired computer's screenshots an earlier version kept in job
         // workspaces move to the service's own store, and are tried again until
         // they have; each attempt also moves its own job's first.
-        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, (line) =>
-          process.stderr.write(`${line}\n`),
-        );
+        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, {
+          report: (line) => process.stderr.write(`${line}\n`),
+        });
         await operations.start();
         await triggers.start();
         await runner.start();
@@ -1127,7 +1196,9 @@ export async function bootstrap(
           });
         }
         if (handle && processFactory)
-          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers);
+          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
+            leading(leases, 'process-monitor'),
+          );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a
@@ -1270,9 +1341,10 @@ export async function bootstrap(
  * The blob store this installation is configured for, and its collector, which
  * runs once a day where this process runs workers.
  */
-function startBlobs(sql: Sql, env: Env, workers: boolean) {
+function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean | Promise<boolean>) {
   const store = configuredBlobStore(env);
-  const collector = new BlobCollector({ sql, store });
+  // Every instance may run workers; only the one holding the lease collects.
+  const collector = new BlobCollector({ sql, store, leads });
   if (workers) collector.start();
   return { store, collector };
 }

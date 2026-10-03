@@ -21,6 +21,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { RequestSource } from '../api/listener.ts';
+import { FailureWindow, type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
 import type { DeviceService } from './service.ts';
 
 const tooLarge = (c: Context) =>
@@ -43,27 +44,6 @@ const unauthorized = (c: Context) =>
     401,
   );
 
-/**
- * Wrong codes are counted per address. A code has 31^8 values and lives ten
- * minutes, so this only keeps a guesser from wasting the service's time.
- */
-class PairingThrottle {
-  private readonly failures = new Map<string, number[]>();
-  constructor(
-    private readonly limit = 10,
-    private readonly windowMs = 10 * 60_000,
-  ) {}
-  retryAfter(address: string, now = Date.now()): number {
-    const recent = (this.failures.get(address) ?? []).filter((at) => now - at < this.windowMs);
-    this.failures.set(address, recent);
-    if (recent.length < this.limit) return 0;
-    return Math.ceil(((recent[0] ?? now) + this.windowMs - now) / 1000);
-  }
-  fail(address: string, now = Date.now()) {
-    this.failures.set(address, [...(this.failures.get(address) ?? []), now]);
-  }
-}
-
 const clientAddress = (c: Context): string => {
   const source = c.env as RequestSource | undefined;
   return source?.clientAddress ?? source?.remoteAddress ?? 'unknown';
@@ -74,8 +54,17 @@ const browserAllowed = (device: {
   localCapabilities: { browser?: boolean };
 }) => device.capabilities.browser === true && device.localCapabilities.browser === true;
 
-export function mountDevices(app: Hono, devices: DeviceService) {
-  const throttle = new PairingThrottle();
+/**
+ * Wrong codes are counted per address, in `limits`: Postgres in the service, so
+ * every instance counts the same failures. A code has 31^8 values and lives
+ * ten minutes, so this only keeps a guesser from wasting the service's time.
+ */
+export function mountDevices(
+  app: Hono,
+  devices: DeviceService,
+  limits: LimitStore = new MemoryLimitStore(),
+) {
+  const throttle = new FailureWindow(limits, 'device.pair', 10, 10 * 60_000);
 
   /* ---------- Settings ---------- */
   const spaceOf = (c: Context) => {
@@ -114,7 +103,7 @@ export function mountDevices(app: Hono, devices: DeviceService) {
   /* ---------- the companion ---------- */
   app.post('/device/pair', smallBody, async (c) => {
     const address = clientAddress(c);
-    const wait = throttle.retryAfter(address);
+    const wait = await throttle.retryAfter(address);
     if (wait > 0) {
       c.header('Retry-After', String(wait));
       return c.json(
@@ -125,7 +114,7 @@ export function mountDevices(app: Hono, devices: DeviceService) {
     const input = devicePairRequest.parse(await c.req.json());
     const paired = await devices.pair(input);
     if (!paired) {
-      throttle.fail(address);
+      await throttle.fail(address);
       return c.json(
         {
           error: {

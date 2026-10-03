@@ -130,6 +130,222 @@ Outlook.com accepts only its own sign-in: with your own Microsoft app set in
 calendar connect by signing in with Microsoft
 ([setup](mail-calendar.md#setting-up-your-microsoft-app)).
 
+## The melete command
+
+`bun run melete` looks after an installation from its checkout. Each command
+that judges something prints one line per rule, keyed by a stable id such as
+`disk.free_mb` or `env.master_key`, with what to do next under any rule that is
+not met. `--json` prints the same results as one JSON object for a program
+driving the command; `packages/cli/src/schema.ts` describes its shape.
+
+```bash
+bun run melete init            # configure.ts, then deploy/melete.deploy.json
+bun run melete init --adopt    # describe an installation that is already running
+bun run melete check           # the files alone: no Docker, no network
+bun run melete doctor          # this machine: Docker, disk in MB, memory, ports, images, registry
+bun run melete status          # the running installation, as status.ts reports it
+bun run melete set MELETE_PUBLIC_URL=https://melete.example.net
+bun run melete logs melete --since 1h
+bun run melete backup --estimate && bun run melete backup
+bun run melete deploy --checkout --dry-run
+bun run melete rollback --dry-run
+bun run melete history
+```
+
+| Command | What it does |
+|---|---|
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. |
+| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
+| `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, and the Compose boundary checks. |
+| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
+| `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. |
+| `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
+| `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
+| `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
+| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
+| `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
+| `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
+| `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
+| `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
+
+`--deploy-dir <checkout>/deploy` runs a command against another checkout's
+deployment directory. The exit code says what happened: 0 done or every check
+passed, 1 a check failed, 2 refused with nothing changed, 3 acted but did not
+finish, with the next step printed. `init`, `set`, `deploy`, `rollback`,
+`backup` and `upgrade` hold a lock, `deploy/.melete/lock`, so two of them never
+change the installation at once; a lock left by a process that has ended is
+taken over.
+
+### The deploy file
+
+`deploy/melete.deploy.json` records what an installation is beyond what
+`deploy/.env` says. It holds no secret, so it can be kept in a repository; the
+keys stay in `deploy/.env`. Every key has a default, so `{"contract": 1}` is a
+complete file, and `init` writes each one out:
+
+```json
+{
+  "contract": 1,
+  "project": "melete",
+  "images": { "registry": "ghcr.io/ychampion", "tag": "main", "channel": "main" },
+  "profiles": [],
+  "overlays": [],
+  "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
+  "backup": { "dir": "~/melete-backups", "keep": 3 },
+  "public_ports": false,
+  "database": { "external": false },
+  "blobs": { "store": "local" },
+  "cells": { "hosts": [] }
+}
+```
+
+- `project` is `COMPOSE_PROJECT_NAME`. `images.tag` is `MELETE_IMAGE_TAG`, and
+  `images.registry` is `MELETE_IMAGE_REGISTRY` or its default. Images built on
+  the machine are `"registry": null, "tag": "local", "channel": "local"`;
+  `channel` is `main` for `main` or a commit's short sha and `release` for a
+  release tag. `check` fails when `deploy/.env` runs something else, or names
+  the `local` tag while a registry is set.
+- `profiles` takes `sandbox`; `overlays` takes `browser`, `tailscale` and
+  `tailscale-kernel` (with `tailscale`), which add their `docker-compose.*.yml`
+  files to every Compose command in that order.
+- `disk.min_free_mb` is the free space, in MB, below which `doctor` and
+  `status` report the machine short of disk. A small host sets its own, below
+  1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
+  images it pulls.
+- `backup.dir` is where backups are written, and `backup.keep` how many are
+  kept there.
+- `blobs.store` is `local`, or `s3` with a non-secret `bucket`, an `endpoint`
+  (left out for AWS S3) and an optional `region`; the storage keys stay in
+  `deploy/.env`. With `s3`, every Compose command adds
+  `deploy/docker-compose.blobs-s3.yml`, and `check` fails when `deploy/.env`
+  names another bucket or endpoint, or lacks the keys.
+- `database.external: true` adds `deploy/docker-compose.external-db.yml` to
+  every Compose command: the service uses the server `DATABASE_URL` names, and
+  the bundled postgres stays off. `check` requires the URL to ask for TLS.
+- `cells.hosts` describes container hosts on other machines; `check` fails
+  while the checkout has no `deploy/docker-compose.cells.yml` to run them with.
+- `remote.path` is the checkout on the machine `bun run melete remote` reaches,
+  absolute or under `~/`, and `remote.cli` the command that runs the melete
+  command there, `["bun", "run", "melete"]` by default.
+- A contract number the command does not know, or a key it does not know, is
+  refused rather than guessed at.
+
+## On a cloud VM
+
+Any Linux virtual machine you reach over SSH can run Melete, and the melete
+command drives it from your own computer. The machine needs Docker Engine 28
+or newer with the Compose plugin, Bun, a clone of this repository, and an SSH
+key or agent that signs in without a prompt (`ssh -o BatchMode=yes <host> true`
+works). Put the host name, user, port and key in `~/.ssh/config` and use the
+alias.
+
+Name the checkout there in your `deploy/melete.deploy.json`, or pass
+`--path` each time:
+
+```json
+{ "contract": 1, "remote": { "path": "~/melete" } }
+```
+
+```bash
+bun run melete remote vm1 init --connect-in-app   # configure there; the model key is pasted in Settings later
+bun run melete remote vm1 check
+bun run melete remote vm1 doctor
+bun run melete remote vm1 status --json
+bun run melete remote vm1 deploy --tag main
+bun run melete remote vm1 backup --to ssh://backup-host:~/melete-backups
+bun run melete remote vm1 logs melete --since 1h
+```
+
+Before each command, one SSH call checks that the machine has Bun and a Docker
+engine the account can reach, and that no other account there can write the
+checkout or its `deploy/`; if any check fails, the command is refused and
+nothing on the machine changes. The command then runs in that checkout,
+against its `deploy/`, and its output and exit code come back. Quote a path
+that starts with `~` (`--path '~/melete'`), so your own shell leaves it for the
+remote one.
+
+`bun run melete remote vm1 push` copies the settings that git does not carry:
+`deploy/.env`, `deploy/melete.deploy.json` and the files under `deploy/config/`.
+`deploy/.env` is streamed into place with mode 0600, and its contents are never
+printed or put on a command line. A file that already differs on the machine is
+kept, and the push is refused, because a `deploy` or `set` run there changes
+`deploy/.env`; `--replace` overwrites it, and `--dry-run` lists what would be
+copied. A key belongs in your local `deploy/.env` (`bun run melete set
+--from-env NAME`), followed by a push.
+
+### A managed Postgres database
+
+1. Create a Postgres 17 database at your provider, allow the VM through its
+   firewall, and copy the connection URL. End it with `?sslmode=verify-full`,
+   so the connection is encrypted and the server's certificate is checked.
+   A certificate signed by a public authority is checked as it is. When the
+   provider signs with an authority of its own (its documentation offers the
+   certificate bundle), save that bundle as `deploy/config/database-ca.pem` and
+   run `bun run melete set MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem`.
+   `?sslmode=require` also encrypts, and accepts the server's certificate
+   without a check; `check` reports that as a warning.
+2. Set it, keeping it out of your shell history, and turn the database on in
+   the deploy file:
+
+   ```bash
+   read -rs DATABASE_URL && export DATABASE_URL
+   bun run melete set --from-env DATABASE_URL
+   unset DATABASE_URL
+   ```
+
+   ```json
+   { "contract": 1, "database": { "external": true } }
+   ```
+
+3. `bun run melete check` confirms the URL asks for TLS, and `bun run melete
+   doctor` that the server answers, runs Postgres 17 and encrypts the
+   connection. Then push and start as usual. `POSTGRES_PASSWORD` stays in
+   `deploy/.env` as `init` wrote it, because the base Compose file reads it.
+
+The stack then leaves the bundled postgres off. A one-off `database-client`
+container, the stack's own Postgres 17 image, checks that the server accepts
+connections before the service starts, and runs `pg_dump` and `psql` for
+`backup`, `deploy` and `doctor`. The restriction journal stays on the VM's
+volume, and `melete backup` keeps it beside every dump.
+
+### An S3-compatible bucket
+
+Create a bucket and a key limited to it (AWS S3, Cloudflare R2, MinIO and the
+like), then:
+
+```bash
+bun run melete set MELETE_BLOB_S3_BUCKET=melete-blobs MELETE_BLOB_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+read -rs MELETE_BLOB_S3_ACCESS_KEY_ID && export MELETE_BLOB_S3_ACCESS_KEY_ID
+read -rs MELETE_BLOB_S3_SECRET_ACCESS_KEY && export MELETE_BLOB_S3_SECRET_ACCESS_KEY
+bun run melete set --from-env MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
+unset MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
+```
+
+```json
+{ "contract": 1, "blobs": { "store": "s3", "bucket": "melete-blobs", "endpoint": "https://<account>.r2.cloudflarestorage.com" } }
+```
+
+### Replacing the VM
+
+With the database and the bucket at a provider, the VM holds only the
+settings, the restriction journal and the spaces' files, so a new one takes
+over from a backup:
+
+1. On the old VM, or from your computer through `remote`: `bun run melete
+   backup` (or `--to ssh://host:/path` when the VM is short of disk). Note the
+   image tag `bun run melete history` shows.
+2. On the new VM, clone the checkout at the same commit, and copy the backup's
+   `deploy.env` to `deploy/.env` (mode 0600) and its `melete.deploy.json`, or
+   push your local copies.
+3. `bun run melete restore <backup> --plan` checks the backup and prints the
+   steps. On a new machine they put the newest restriction journal back before
+   the service starts. With an external database that already holds the data,
+   skip the `pg_restore` line; to restore into a new database, point
+   `DATABASE_URL` at it first.
+4. `bun run melete deploy --tag <the same tag>` pulls the images and starts the
+   stack, and `bun run melete status` reports it.
+
 ## Using prebuilt images
 
 Every push to `main` builds the four Melete images in GitHub Actions and
@@ -196,39 +412,75 @@ empty to build from source again: `up -d --build` builds and tags the images
 ### Update
 
 ```bash
-deploy/scripts/update.sh
-# With a docker sandbox, or overlay files, pass the same options Compose was started with:
-deploy/scripts/update.sh --profile sandbox
+bun run melete init --adopt              # once, to write deploy/melete.deploy.json
+bun run melete deploy --checkout --dry-run
+bun run melete deploy --checkout         # the newest main; --tag v0.3.0 for a release
 ```
 
-The script does the update in a safe order:
+`deploy` reads the profiles, overlay files and disk floors from
+`deploy/melete.deploy.json`. Until the new images are all on the machine, each
+step either passes or stops with exit 2 and the running stack as it was:
 
-1. It measures the free space on the filesystem that holds Docker's images,
-   and refuses with nothing changed when it is below 4 GB
-   (`MELETE_UPDATE_MIN_FREE_GB` sets another threshold), naming what to clean.
-2. It fast-forwards the checkout with `git pull --ff-only`, so the Compose file
-   matches the images; a diverged or edited checkout stops it.
-3. It pulls every image first. If any pull fails, it stops and the running
-   containers are not touched.
-4. It starts the new images with `up -d --no-build --wait`, then restarts the
-   `melete` service and waits for health again. The service looks up the
-   engine image's ID when it starts, so a new engine image alone does not
-   reach chats until the service restarts.
-5. Last, it runs `docker image prune -f`, which removes the images the pull
-   replaced. An image a container still uses, such as one an attempt started
-   before the update, is kept.
+1. It takes the lock and runs `check`.
+2. It asks the registry, without pulling, which commit the tag was built from.
+   A moving tag such as `main` is pinned to that commit's own tag, so nothing
+   moves while the update runs. The Compose file must come from the same
+   commit: `--checkout` checks that commit out once the images are here
+   (refusing a checkout with changes outside `deploy/config/`), and
+   `--allow-compose-mismatch` runs the images with the checkout as it is.
+3. It plans: the images whose content differs from what the engine has, and
+   the layers they need. The disk it takes is their compressed size times 2.2
+   plus `disk.pull_margin_mb`, and the plan is refused unless
+   `disk.min_free_mb` is still free after it.
+4. When the new release adds migrations, it dumps the database into
+   `backup.dir` first, or streams it with `--backup-to ssh://host:/path`.
+5. It pulls one image at a time, measuring the disk after each, and stops at
+   the first failure or at the floor. Images already pulled are kept, unused.
+6. It checks out the commit, if asked, and writes `MELETE_IMAGE_TAG`.
 
-The service migrates its database when it starts, so take a
-[backup](#backup-and-restore) before an update you may want to undo. To go
-back, set `MELETE_IMAGE_TAG` to the previous commit's tag, check out that
-commit, and run the `pull` and `up -d --no-build` lines above, then
-`docker compose -f deploy/docker-compose.yml restart melete`.
+Then it starts the new images with `up -d --no-build --pull never --wait`,
+restarts the `melete` service, which looks up the engine image's ID when it
+starts, and waits for health again. It checks `/api/health`, that the database
+has recorded every migration in the new journal, and that no line of
+`bun run melete status` fails that passed before. Only then does it remove the
+stack's own images that no tag names any more; an image another project uses,
+or one a container still runs, is left alone. A failure after the switch exits
+3 and names the way back. Every run is recorded in
+`deploy/.melete/history.jsonl`.
+
+The history line for a run is written the moment `MELETE_IMAGE_TAG` changes,
+so a run that fails or is cut short after that point is on record too. Compose
+reads the shell before `deploy/.env`, so `deploy` and `rollback` are refused in
+a shell that exports `MELETE_IMAGE_TAG` at all, since they write it, and every
+command that acts on the stack is refused when the shell exports
+`MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME` or `MELETE_SANDBOX_DOCKER_IMAGE`
+with a value other than `deploy/.env`'s. With the `sandbox`
+profile, `melete-sandbox:local` follows the new computer image only when it
+was the previous release's published image; an image of your own under that
+name is left alone.
+
+To go back, `bun run melete rollback` undoes the newest run that changed the
+image tag, finished or not: it deploys the images from before that run, and
+returns the checkout with them. When the database records a migration that the
+earlier release does not know, because that run or anything since applied it,
+the older release cannot run on the newer database, so rollback prints the
+restore from the backup taken before the run, and checks that backup is still
+there and whole. It refuses when `deploy/.env` names an image tag other than
+the one that run switched to. A rollback is itself a run, so a second rollback
+goes forward again.
+
+After `melete deploy`, `MELETE_IMAGE_TAG` names the commit's own tag rather
+than `main`. `deploy/scripts/update.sh` does an update in the same order with
+whole-GB floors and a `git pull --ff-only`, for a checkout without the melete
+command; it pulls the tag `deploy/.env` names, so to go back to it, first run
+`bun run melete set MELETE_IMAGE_TAG=main`. `melete deploy` supersedes it.
 
 ### Switch an installation from source builds
 
-Set `MELETE_IMAGE_TAG=main` in `deploy/.env` and run `deploy/scripts/update.sh`
-(with `--profile sandbox` if the installation uses a docker sandbox). After it
-reports the stack healthy, the images built here are no longer used; remove
+Run `bun run melete set MELETE_IMAGE_TAG=main`, then
+`bun run melete deploy --checkout` (list `sandbox` in the deploy file's
+`profiles` if the installation uses a docker sandbox). After it reports the
+stack healthy, the images built here are no longer used; remove
 them and the build cache to recover the space:
 
 ```bash
@@ -237,8 +489,9 @@ docker image rm melete-service:local melete-web:local melete-runtime:local
 ```
 
 Keep `melete-sandbox:local` when spaces already have a **Computer**: their
-connections name that image, and `update.sh` points it at the pulled sandbox
-image on every update so those computers stay current.
+connections name that image, and `melete deploy` (with the `sandbox` profile)
+and `update.sh` point it at the pulled sandbox image on every update so those
+computers stay current.
 
 ### Package visibility
 
@@ -678,10 +931,16 @@ docker compose -f deploy/docker-compose.yml \
 
 ## Sign-in limits
 
-Every limit below lives in the memory of the one Melete process. Restarting
-Melete clears all of them at once: waits end, bursts are full again, and nothing
-is written to Postgres. Each limiter holds at most 1024 keys; further keys share
-one overflow bucket, so new keys can neither evict a live wait nor grow memory.
+Every limit below is counted in Postgres, in `rate_limit_window`, so it holds
+across a restart and across every service instance on the same database: a
+caller who spreads attempts over several instances meets one limit. Each row is
+keyed by a SHA-256 digest of the limiter and its key, so the table names no
+address, account or device, and rows are deleted once their limit has expired.
+Each limited request is one short write transaction, and a sign-in up to three;
+the per-address limit, checked first, bounds how many rows one source can add.
+A service started without a database keeps the limits in its own memory, where
+each limiter holds at most 1024 keys; further keys share one overflow bucket, so
+new keys can neither evict a live wait nor grow memory.
 
 **Whose address counts.** The web proxy sets `X-Melete-Client-Address` on every
 request it forwards to the API. The value is the proxy's own socket peer and
@@ -1397,13 +1656,90 @@ digests can differ between builds, because OS package repositories, build
 timestamps and build tooling change the resulting bytes; compare the recorded
 labels and inventories when rebuilding.
 
+## Running more than one service instance
+
+Several Melete service containers can serve one installation when they share
+one Postgres database and one `MELETE_MASTER_KEY`. A load balancer may send any
+request to any of them.
+
+**What every instance shares through Postgres.**
+
+- Sign-in and request limits ([Sign-in limits](#sign-in-limits)), the MCP
+  server's limits on registrations, tokens, authorization pages and tool calls,
+  and the limit on wrong pairing codes.
+- Sign-ins waiting for the browser to come back: model providers, Google and
+  Microsoft accounts, and remote MCP servers. A sign-in started on one instance
+  finishes on any other. Each one is kept in `signin_pending` for at most 15
+  minutes, sealed with `MELETE_MASTER_KEY` and found by a digest of its state.
+- The key that signs the MCP server's consent page, derived from
+  `MELETE_MASTER_KEY`, so a page shown by one instance is accepted by another.
+- Jobs, attempts, events, memory and everything else the service stores.
+
+**Work one instance does at a time.** The sandbox sweep and reconciliation, the
+learning proposal drain, removing stdio server data for removed connections,
+removing what stopped instances left behind, the blob collector, episode and
+egress record retention and the background process monitor each run on the
+instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
+instance keeps for leases alone, never recycled by age and with TCP keepalives
+of about half a minute. Every check asks Postgres whether that connection holds
+the lock; a held lease is checked every five seconds, and the sandbox sweep and
+reconciliation stop as soon as a check finds the lease lost. When an instance
+stops, its connection to the database ends, or its network to the database
+breaks, another instance takes the lease the next time it checks for that
+work. Leases need a direct connection to Postgres, or a pooler that keeps one
+server connection per client; PgBouncer in transaction mode cannot hold them.
+
+**Instances on one Docker engine.** Each instance records itself in
+`ops_instance` with a heartbeat every 30 seconds and labels every attempt
+container, network and volume it creates, and every stdio server it starts,
+with `com.melete.instance`. At start an instance removes only its own leftovers,
+unlabelled ones from before this label existed, and those of instances that
+stopped. An instance counts as stopped when it stopped cleanly, when its
+heartbeat is older than ten minutes, or when its heartbeat is older than two
+minutes and no container by its name runs on the engine; an instance whose
+database link stalls keeps its cells while its container runs. A configured
+`MELETE_INSTANCE_ID` that names no container on the engine has none to find, so
+such an instance counts as stopped two minutes after its heartbeat stops. While they run,
+one instance removes what a stopped instance left, once a minute.
+
+The instance name is `MELETE_INSTANCE_ID` when set (lower-case letters, digits
+and hyphens), otherwise the container's host name, which Docker keeps across a
+restart of the same container. Set `MELETE_INSTANCE_ID` only where each
+instance has its own environment; replicas started from one Compose service
+share theirs and should use their host names. An instance refuses to start
+when another running process already uses its name, including when both start
+at the same moment, and says so in its log.
+After a crash, a restarted container waits up to 45 seconds at start to tell
+its own earlier run from another process.
+
+Upgrade the running instance before starting a second one beside it: cells
+started by a release without instance labels count as the starting instance's
+own.
+
+**What stays with one instance.**
+
+- A paired computer holds its connection open to one instance, and calls for it
+  are queued in that instance's memory. Run one instance, or send every
+  `/api/device/*` request to the same instance, when computers are paired.
+- Spaces' git repositories and the restriction journal are written from the
+  service's volumes; instances on different hosts need those volumes shared.
+- A stdio MCP server runs on the instance that started it, and each instance
+  counts its own running servers against the limit of 16.
+- Docker sandboxes keep the time each was last used in the memory of the
+  instance that serves them. Which ones background processes keep awake is read
+  from the database on every pass, so a container with running processes is
+  never stopped for idleness, whichever instance started them.
+- Taking over the agent's computer is kept in the memory of the instance that
+  serves it. Run one instance, or send every request for a computer to the same
+  instance, when people take over the agent's computer; otherwise another
+  instance's sweep can suspend a computer while someone is using it.
+
 ## Upgrading
 
 [Upgrading between releases](UPGRADING.md) is its own page: the target
 release's `deploy/scripts/upgrade.ts`, taken out of its tag, prints the whole
 plan with `--dry-run`. An installation that runs the published images updates
-with `deploy/scripts/update.sh` instead
-([Using prebuilt images](#using-prebuilt-images)). The service migrates its database at every boot under an advisory lock, so the
+with `bun run melete deploy` instead ([Update](#update)). The service migrates its database at every boot under an advisory lock, so the
 procedure is a consistent backup, a checkout, a rebuild and a wait for health;
 the backup below is its first half.
 
@@ -1426,7 +1762,69 @@ must outlive rotation belong in a log collector you run beside the stack.
 
 ## Backup and restore
 
-Back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
+```bash
+bun run melete backup --estimate     # sizes, against the free space where the backup goes
+bun run melete backup                # database, journal and settings, online
+bun run melete backup --with-volumes # also /data and /work, with the writers stopped
+bun run melete backup --to ssh://backup-host:/srv/melete-backups
+bun run melete backup --encrypt-to age1...  # every part encrypted with age to that public key
+bun run melete restore ~/melete-backups/melete-20261002T101500Z
+```
+
+**Keep the master key apart from the backups.** `MELETE_MASTER_KEY` in
+`deploy/.env` seals every credential the database holds: connected accounts,
+provider keys added in the app, and the rest. A backup stores `deploy/.env`
+without it and records only its fingerprint, so a backup alone, or the machine
+it is streamed to, cannot open those credentials. Store a copy of the key
+somewhere else you control, such as a password manager. Restoring needs it:
+`restore` accepts the key in the installation's `deploy/.env`, or exported as
+`MELETE_MASTER_KEY` in the terminal (`read -rs MELETE_MASTER_KEY && export
+MELETE_MASTER_KEY`), checks it against the fingerprint, and refuses one that
+differs. Without that key, the restored database's credentials cannot be
+opened, and each account has to be connected again.
+
+**Encryption.** Unencrypted, a backup holds the database (conversations and
+memory) and the other keys in `deploy/.env`, protected by its file modes
+(0700 directory, 0600 files); every backup says so when it is made.
+`--encrypt-to <recipient>` encrypts each part with [age](https://age-encryption.org)
+to an `age1...` public key, or an `ssh-ed25519` or `ssh-rsa` one, before it is
+written, here or over SSH. `--encrypt` encrypts each part with gpg (AES-256)
+under the passphrase exported as `MELETE_BACKUP_PASSPHRASE`. The tool must be
+installed on the machine taking the backup. `SHA256SUMS` lists the encrypted
+files, so `restore` checks a set without opening it, and its steps decrypt
+each part as it is loaded: for age, export `MELETE_BACKUP_IDENTITY` as the path
+of the identity file that opens it; gpg asks for the passphrase.
+
+**The S3 bucket is outside the backup.** With `"blobs": { "store": "s3" }`, the
+files the service keeps by their content live in the bucket, and a backup holds
+only the database's references to them. Protect the bucket at the provider:
+turn on versioning (with a lifecycle rule that expires old versions after the
+time you keep backups), or copy it on the same schedule as the backups, for
+example with `rclone sync` or `aws s3 sync` to a second bucket. A restored
+database expects the files as they were when it was backed up, so keep the
+bucket's history at least as long as the oldest backup you would restore.
+
+Each backup is a new directory, `melete-<time>`, under `backup.dir` from the
+deploy file (`~/melete-backups` by default), readable only by the account that made it. It
+holds the database as a custom-format dump, read back with `pg_restore --list`
+while it is written; the restriction journal on its own, under a timestamped
+name; `deploy/.env` without the master key, the key's fingerprint
+(`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
+and a `SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
+online and small, so the stack keeps running; `--with-volumes` stops the
+writers to archive the volumes and starts them again. `--to` streams every part
+to another machine over SSH and keeps nothing on this disk, for a host short on
+space.
+
+`restore` checks a backup's checksums and prints the steps that restore it,
+following the rules below: only the database volume is replaced, and the
+newest restriction journal is kept. On a machine that never ran the
+installation, the newest journal archive beside the backups goes back before
+the service starts, keeping its file ownership. A backup counts as whole only when
+`SHA256SUMS` lists every file in it and each matches. `backup.keep` never
+removes the backup the last deploy took.
+
+The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
 Stop Melete and runtime work before taking the database and volume snapshot so
 their durable state is consistent. An installation started with an override

@@ -8,8 +8,9 @@
  * Each version refers to its blobs (`blob_ref` owner kind `app_version`), and
  * the space a reference belongs to is read from the app the version belongs to.
  */
+
 import { constants } from 'node:fs';
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import {
   APP_ENTRY,
   APP_LIMITS,
@@ -22,6 +23,7 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import { heldDirectories, holdBeneath, openBeneath, segmentsFor } from '../connectors/files.ts';
 import { newId } from '../ids.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import {
   type BlobKey,
   BlobNotFound,
@@ -81,10 +83,9 @@ export async function readBundle(
   } catch {
     throw new BundleRefused(`${dir} is not a folder in this conversation's workspace`);
   }
-  const base = await realpath(workRoot);
-  // Every folder is held open from the workspace root down, never looked up by
+  // Every folder is held open from the job's workspace down, never looked up by
   // name again: a folder swapped for a link mid-walk is refused, not followed.
-  const top = [jobId, ...segments];
+  const { base, segments: top } = await new LocalWorkspaceFs(workRoot).location(jobId, segments);
   try {
     await (await holdBeneath(base, top)).close();
   } catch {

@@ -12,7 +12,7 @@
  * message answered with one JSON body, so there is no session to hijack and
  * nothing is streamed.
  */
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Context, Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { Sql } from 'postgres';
@@ -24,6 +24,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { ExperienceEffects } from '../experience/effects.ts';
+import { type LimitStore, PostgresLimitStore, WindowLimiter } from '../ops/limiter.ts';
 import { principalContext } from '../principals/authority.ts';
 import { resolveSessionSpace, selectedSpace } from '../principals/session-space.ts';
 import { actorEnvironment, type McpActor } from './actor.ts';
@@ -55,22 +56,20 @@ export type McpServerDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   oauth?: OAuthStoreOptions;
+  /** Where the limits are counted. Left out, in Postgres, so every instance shares them. */
+  limits?: LimitStore;
 };
 
-/** A small fixed-window limit per client address, for the endpoints anyone can call. */
-function limiter(limit: number, windowMs: number) {
-  const seen = new Map<string, { count: number; until: number }>();
-  return (key: string): boolean => {
-    const now = Date.now();
-    const entry = seen.get(key);
-    if (!entry || entry.until <= now) {
-      if (seen.size > 10_000) seen.clear();
-      seen.set(key, { count: 1, until: now + windowMs });
-      return true;
-    }
-    entry.count += 1;
-    return entry.count <= limit;
-  };
+/**
+ * The key consent forms are signed with. Every instance that holds the master
+ * key derives the same one, so a form shown by one instance is accepted by
+ * another, and by the same service after a restart. Without a master key it
+ * lives as long as the process.
+ */
+export function consentKey(masterKey: string | undefined): Buffer {
+  return masterKey
+    ? Buffer.from(hkdfSync('sha256', masterKey, 'melete', 'mcp consent v1', 32))
+    : randomBytes(32);
 }
 
 const clientAddress = (c: Context) => {
@@ -161,13 +160,15 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)
       : undefined;
   const sendConnection = spaceSendConnection({ sql: deps.sql });
-  const consentKey = randomBytes(32);
-  const registrations = limiter(20, 60 * 60_000);
-  const tokenRequests = limiter(120, 60_000);
+  const formKey = consentKey(deps.env.MELETE_MASTER_KEY);
+  // Small fixed windows per client address, for the endpoints anyone can call.
+  const limits = deps.limits ?? new PostgresLimitStore(deps.sql);
+  const registrations = new WindowLimiter(limits, 'mcp.register', 20, 60 * 60_000);
+  const tokenRequests = new WindowLimiter(limits, 'mcp.token', 120, 60_000);
   // Each authorization request may read a metadata document from the internet.
-  const authorizeRequests = limiter(30, 60_000);
+  const authorizeRequests = new WindowLimiter(limits, 'mcp.authorize', 30, 60_000);
   // Per connection: every tool call runs as the person, and some start work.
-  const toolCalls = limiter(TOOL_CALLS_PER_MINUTE, 60_000);
+  const toolCalls = new WindowLimiter(limits, 'mcp.tool_call', TOOL_CALLS_PER_MINUTE, 60_000);
 
   app.get('/.well-known/oauth-authorization-server', (c) =>
     c.json(authorizationServerMetadata(addresses)),
@@ -184,7 +185,7 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   };
 
   app.post('/oauth/register', async (c) => {
-    if (!registrations(clientAddress(c)))
+    if (!(await registrations.allow(clientAddress(c))))
       return oauthError(c, new OAuthError('temporarily_unavailable', 'Try again later.', 429));
     try {
       return c.json(await store.register(await c.req.json().catch(() => null)), 201);
@@ -248,7 +249,7 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
 
   /** Binds a consent form to the session, the space it names, and the exact request it shows. */
   const consentTag = (sessionToken: string, spaceId: string, request: AuthorizeRequest) =>
-    createHmac('sha256', consentKey)
+    createHmac('sha256', formKey)
       .update(
         JSON.stringify([
           sessionToken,
@@ -334,7 +335,7 @@ ${whoIsAsking(client)}
   };
 
   app.get('/oauth/authorize', async (c) => {
-    if (!authorizeRequests(clientAddress(c))) return tooMany(c);
+    if (!(await authorizeRequests.allow(clientAddress(c)))) return tooMany(c);
     const read = await readAuthorize(c.req.query());
     if (read.kind === 'refused')
       return page(
@@ -362,7 +363,7 @@ ${whoIsAsking(client)}
   });
 
   app.post('/oauth/authorize', async (c) => {
-    if (!authorizeRequests(clientAddress(c))) return tooMany(c);
+    if (!(await authorizeRequests.allow(clientAddress(c)))) return tooMany(c);
     const form = (await c.req.parseBody()) as Record<string, string | undefined>;
     const read = await readAuthorize(form);
     if (read.kind === 'refused')
@@ -427,7 +428,7 @@ ${whoIsAsking(client)}
   app.post('/oauth/token', async (c) => {
     c.header('Cache-Control', 'no-store');
     c.header('Pragma', 'no-cache');
-    if (!tokenRequests(clientAddress(c)))
+    if (!(await tokenRequests.allow(clientAddress(c))))
       return oauthError(c, new OAuthError('temporarily_unavailable', 'Try again later.', 429));
     const body = await form(c);
     try {
@@ -578,7 +579,7 @@ ${whoIsAsking(client)}
       case 'tools/call': {
         const name = message.params?.name;
         if (typeof name !== 'string') return c.json(rpcError(id, -32602, 'Name a tool.'));
-        if (!toolCalls(grant.family)) {
+        if (!(await toolCalls.allow(grant.family))) {
           c.header('Retry-After', '60');
           return c.json(
             rpcError(id, -32000, 'Too many tool calls from this assistant. Wait a minute.'),

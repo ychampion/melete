@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   type WaitSpec,
 } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import type { InstanceView } from '../ops/instance.ts';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
 import { attemptEnvironment } from './supervisor.ts';
 
@@ -74,6 +75,8 @@ class Daemon implements DockerApi {
   stale: Array<{ Id: string; Names: string[]; Labels: Record<string, string> }> = [];
   beforeRequest?: (call: Call) => Promise<void>;
   foreignHome = false;
+  /** Service containers on this engine by name, running or stopped; any other name is unknown. */
+  services = new Map<string, boolean>();
 
   async request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
     const call = { method, path, body };
@@ -112,6 +115,12 @@ class Daemon implements DockerApi {
       this.containers.set(id, config);
       return { Id: id };
     }
+    const service = /^\/containers\/([a-z][a-z0-9-]*)\/json$/.exec(path)?.[1];
+    if (service && !this.containers.has(service) && service !== 'self') {
+      const running = this.services.get(service);
+      if (running === undefined) throw new DockerError(404, method, path);
+      return { State: { Running: running } };
+    }
     if (path.endsWith('/json') && path.startsWith('/containers/')) {
       const config = this.containers.get(path.split('/')[2] ?? '');
       if (!config) throw new Error(`Unknown fixture container ${path}`);
@@ -127,8 +136,13 @@ class Daemon implements DockerApi {
 }
 
 const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [];
-async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: number) {
-  const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
+async function setup(
+  pendingWait?: () => Promise<WaitSpec | null>,
+  brokerPort?: number,
+  instance?: InstanceView,
+  shared?: string,
+) {
+  const root = shared ?? (await mkdtemp(join(tmpdir(), 'melete-supervisor-test-')));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
   const events: RuntimeEvent[] = [];
@@ -147,6 +161,7 @@ async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: 
     parkedActions: async () => [],
     pendingWait,
     brokerPort,
+    instance,
     fetch: async (url) => {
       httpCalls.push(url);
       if (mode.unavailable) throw new Error('Not listening yet');
@@ -407,6 +422,140 @@ describe('Docker attempt supervision', () => {
     expect(
       f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
     ).toEqual(['/containers/owned-cell?force=true']);
+  });
+
+  test("a second instance's start leaves the first instance's running cells alone", async () => {
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async () => new Set(['first']),
+    });
+    const cell = (index: number, instance?: string) => ({
+      Id: `cell-of-${instance ?? 'nobody'}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), ...(instance ? { 'com.melete.instance': instance } : {}) },
+    });
+    f.daemon.stale = [cell(1, 'first'), cell(2, 'second'), cell(3, 'stopped'), cell(4)];
+    const spare = (instance: string) => `.spare-${instance}.${'c'.repeat(24)}`;
+    for (const directory of [
+      spare('first'),
+      spare('second'),
+      spare('stopped'),
+      `.spare-${'d'.repeat(24)}`,
+    ])
+      await mkdir(join(f.root, directory));
+    await f.runtime.initialize();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual([
+      '/containers/cell-of-second?force=true',
+      '/containers/cell-of-stopped?force=true',
+      '/containers/cell-of-nobody?force=true',
+    ]);
+    expect((await readdir(f.root)).sort()).toEqual([spare('first')]);
+  });
+
+  test('a running instance removes only the cells of instances that stopped', async () => {
+    const running = new Set(['first']);
+    const f = await setup(undefined, undefined, { id: 'second', running: async () => running });
+    await f.runtime.initialize();
+    const cell = (index: number, instance?: string) => ({
+      Id: `cell-of-${instance ?? 'nobody'}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), ...(instance ? { 'com.melete.instance': instance } : {}) },
+    });
+    f.daemon.stale = [cell(1, 'first'), cell(2, 'second'), cell(4)];
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(f.daemon.calls.filter((call) => call.method === 'DELETE')).toHaveLength(0);
+    running.delete('first');
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual(['/containers/cell-of-first?force=true']);
+  });
+
+  test('an instance whose heartbeat stalled keeps its cells while its service container runs', async () => {
+    // Heartbeats within two minutes, and within ten.
+    const recent = new Set<string>();
+    const lately = new Set(['stalled', 'gone']);
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async (staleAfterMs) => ((staleAfterMs ?? 0) > 120_000 ? lately : recent),
+    });
+    await f.runtime.initialize();
+    f.daemon.services.set('stalled', true);
+    const cell = (index: number, instance: string) => ({
+      Id: `cell-of-${instance}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), 'com.melete.instance': instance },
+    });
+    f.daemon.stale = [cell(1, 'stalled'), cell(2, 'gone'), cell(3, 'long-gone')];
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual(['/containers/cell-of-gone?force=true', '/containers/cell-of-long-gone?force=true']);
+    // Once its service container has stopped too, its cells go.
+    f.daemon.services.set('stalled', false);
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toContain('/containers/cell-of-stalled?force=true');
+  });
+
+  // The claim is an atomic rename by path, as on Linux, where the service runs.
+  // Bun on Windows renames a directory through an open handle, so two renames
+  // of one directory both succeed there.
+  test.skipIf(process.platform === 'win32')(
+    'two instances restoring the same set-aside workspaces at once lose no file',
+    async () => {
+      // Each sees the other running; the instance that set the workspaces aside has stopped.
+      const first = await setup(undefined, undefined, {
+        id: 'first',
+        running: async () => new Set(['second']),
+      });
+      const second = await setup(
+        undefined,
+        undefined,
+        { id: 'second', running: async () => new Set(['first']) },
+        first.root,
+      );
+      const jobs = Array.from({ length: 10 }, (_, index) => identity('job', index));
+      for (const job of jobs) {
+        // A job's workspace, and what a stopped instance set aside while a spare took it over.
+        await mkdir(join(first.root, job));
+        await writeFile(join(first.root, job, 'kept.txt'), job);
+        await mkdir(join(first.root, `.adopt-stopped.${job}`));
+        await writeFile(join(first.root, `.adopt-stopped.${job}`, 'set-aside.txt'), job);
+      }
+      await Promise.all([first.runtime.removeStopped(), second.runtime.removeStopped()]);
+      expect((await readdir(first.root)).filter((entry) => entry.startsWith('.'))).toEqual([]);
+      for (const job of jobs)
+        expect((await readdir(join(first.root, job))).sort()).toEqual([
+          'kept.txt',
+          'set-aside.txt',
+        ]);
+    },
+  );
+
+  test('every cell an instance starts carries its name', async () => {
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async () => new Set(),
+    });
+    await f.runtime.start(bundle(), f.sink, new AbortController().signal);
+    const created = f.daemon.calls.filter(
+      (call) =>
+        call.path === '/networks/create' ||
+        call.path === '/volumes/create' ||
+        call.path.startsWith('/containers/create?'),
+    );
+    expect(created).toHaveLength(3);
+    for (const call of created)
+      expect((call.body as { Labels: Record<string, string> }).Labels['com.melete.instance']).toBe(
+        'second',
+      );
   });
 
   test('a non-durable child cannot start a run and all its resources are removed', async () => {
