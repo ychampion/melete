@@ -201,7 +201,8 @@ export const sandboxAwakeDay = pgTable(
  * service instances never both take a computer over, and an action planned
  * under an older epoch can be told apart. Kept across restarts: a computer a
  * person holds stays theirs until they hand it back. No row means the agent,
- * at epoch 0.
+ * at epoch 0. A hold whose live view has not been open for 30 minutes is
+ * handed back by the sweep.
  */
 export const sandboxControl = pgTable(
   'sandbox_control',
@@ -212,9 +213,8 @@ export const sandboxControl = pgTable(
     /** The person holding it, while `control` is `human`. */
     principalId: text('principal_id').references(() => principal.id, { onDelete: 'set null' }),
     changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When the holder's live view was last open; a hold with no view for long is handed back. */
+    seenAt: timestamp('seen_at', { withTimezone: true }),
   },
-  (t) => [
-    check('sandbox_control_control_check', sql`${t.control} in ('agent', 'human')`),
-    index('sandbox_control_human_idx').on(t.providerSandboxId).where(sql`${t.control} = 'human'`),
-  ],
+  (t) => [check('sandbox_control_control_check', sql`${t.control} in ('agent', 'human')`)],
 );

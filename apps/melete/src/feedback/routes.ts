@@ -68,7 +68,8 @@ export function mountFeedback(
       });
       return c.json(feedbackResponse.parse({ report }), 201);
     } catch (error) {
-      await limiter.refund(scope.actor);
+      // The report's own failure is what the person hears about, not the refund's.
+      await limiter.refund(scope.actor).catch(() => {});
       throw error;
     }
   });

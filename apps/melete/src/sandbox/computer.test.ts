@@ -8,9 +8,10 @@ import { Hono } from 'hono';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { ServiceError } from '../api/errors.ts';
 import { recordId } from '../broker/records.ts';
+import { openDatabase } from '../db/client.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
-import { PostgresComputerControls } from './computer-control.ts';
+import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
 import { seedSessionScope } from './session-fixtures.ts';
 
 const database = await testDatabase();
@@ -43,36 +44,11 @@ function desktop() {
   return { provider, inputs };
 }
 
-async function scene() {
-  if (!database) throw new Error('Postgres unavailable');
-  const sql = database.sql;
-  const ownerId = recordId('own');
-  await sql`insert into owner (id, email) values (${ownerId}, ${`${ownerId}@example.test`}) on conflict do nothing`;
-  await sql`insert into principal (id, email) values (${ownerId}, ${`${ownerId}@example.test`}) on conflict do nothing`;
-  const scope = await seedSessionScope(sql);
-  await sql`update space set owner_principal_id = ${ownerId} where id = ${scope.spaceId}`;
-  await sql`update job set principal_id = ${ownerId}, state = 'running' where id = ${scope.jobId}`;
-  const attemptId = await scope.attempt();
-  const sessionId = recordId('sbx');
-  const sandbox = `melete-sbx-test-${sessionId.toLowerCase()}`;
-  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
-      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
-    values (${sessionId}, ${scope.connectionId}, ${scope.spaceId}, ${scope.jobId}, ${attemptId},
-      ${scope.agentId}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
-      'pause', 'ready', now() + interval '1 hour')`;
-  const { provider, inputs } = desktop();
-  const controls = new PostgresComputerControls(sql);
-  const service = new SandboxComputerService(
-    sql,
-    () => new Map([[scope.connectionId, { adapter: 'docker' as const, provider }]]),
-    { controls },
-  );
-  const parked: string[][] = [];
-  service.onPark = (_job, attempts) => parked.push(attempts);
-  let owner: Owner = { id: ownerId };
+/** The routes of one service instance, as the owner middleware would mount them. */
+function mount(service: SandboxComputerService, getOwner: () => Owner) {
   const app = new Hono();
   app.use(async (c, next) => {
-    c.set('owner' as never, owner as never);
+    c.set('owner' as never, getOwner() as never);
     await next();
   });
   mountSandboxComputers(app as never, service);
@@ -100,9 +76,40 @@ async function scene() {
       },
       { clientAddress: peer },
     );
+  return call;
+}
+
+async function scene(options: { wrap?: (controls: ComputerControls) => ComputerControls } = {}) {
+  if (!database) throw new Error('Postgres unavailable');
+  const sql = database.sql;
+  const ownerId = recordId('own');
+  await sql`insert into owner (id, email) values (${ownerId}, ${`${ownerId}@example.test`}) on conflict do nothing`;
+  await sql`insert into principal (id, email) values (${ownerId}, ${`${ownerId}@example.test`}) on conflict do nothing`;
+  const scope = await seedSessionScope(sql);
+  await sql`update space set owner_principal_id = ${ownerId} where id = ${scope.spaceId}`;
+  await sql`update job set principal_id = ${ownerId}, state = 'running' where id = ${scope.jobId}`;
+  const attemptId = await scope.attempt();
+  const sessionId = recordId('sbx');
+  const sandbox = `melete-sbx-test-${sessionId.toLowerCase()}`;
+  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
+      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${scope.connectionId}, ${scope.spaceId}, ${scope.jobId}, ${attemptId},
+      ${scope.agentId}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
+      'pause', 'ready', now() + interval '1 hour')`;
+  const { provider, inputs } = desktop();
+  const stored = new PostgresComputerControls(sql);
+  const controls = options.wrap ? options.wrap(stored) : stored;
+  const providers = () => new Map([[scope.connectionId, { adapter: 'docker' as const, provider }]]);
+  const service = new SandboxComputerService(sql, providers, { controls });
+  const parked: string[][] = [];
+  service.onPark = (_job, attempts) => parked.push(attempts);
+  let owner: Owner = { id: ownerId };
+  const call = mount(service, () => owner);
   return {
     sql,
     scope,
+    providers,
+    owner: () => owner,
     attemptId,
     sessionId,
     sandbox,
@@ -259,5 +266,54 @@ withDb('the computer a person steers', () => {
       }
     expect(await s.controls.state(s.sandbox)).toEqual({ control: 'agent', epoch: 0 });
     expect(s.parked).toEqual([]);
+  });
+
+  test('a takeover on one instance is seen and handed back on another, and a page showing an older epoch is refused', async () => {
+    if (!database) throw new Error('Postgres unavailable');
+    const s = await scene();
+    const other = openDatabase(database.url);
+    try {
+      const elsewhere = mount(new SandboxComputerService(other.sql, s.providers), s.owner);
+      const path = (operation: string) => `/sandbox/sessions/${s.sessionId}/${operation}`;
+      const taken = await s.call('POST', path('takeover'), { control_epoch: 0 });
+      expect(await taken.json()).toMatchObject({ control: 'human', control_epoch: 1 });
+      const listed = (await (
+        await elsewhere('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)
+      ).json()) as { computers: Array<{ control: string; control_epoch: number }> };
+      expect(listed.computers[0]).toMatchObject({ control: 'human', control_epoch: 1 });
+      // A page still showing the agent's epoch cannot hand it back.
+      const stale = await elsewhere('POST', path('handback'), { control_epoch: 0 });
+      expect([stale.status, await codeOf(stale)]).toEqual([409, 'epoch_changed']);
+      const back = await elsewhere('POST', path('handback'), { control_epoch: 1 });
+      expect(await back.json()).toMatchObject({ control: 'agent', control_epoch: 2 });
+      // Without an epoch, the change is made from the one read now.
+      expect((await s.call('POST', path('takeover'))).status).toBe(200);
+      expect(await s.controls.state(s.sandbox)).toEqual({ control: 'human', epoch: 3 });
+    } finally {
+      await other.close();
+    }
+  });
+
+  test('a live view is closed when who holds the computer cannot be read', async () => {
+    let failing = false;
+    const s = await scene({
+      wrap: (controls) => ({
+        state: (sandbox) =>
+          failing ? Promise.reject(new Error('database unavailable')) : controls.state(sandbox),
+        change: (sandbox, to, options) => controls.change(sandbox, to, options),
+        seen: (sandbox) => controls.seen(sandbox),
+        handBackUnwatched: (afterMs) => controls.handBackUnwatched(afterMs),
+        onChange: (listener) => controls.onChange(listener),
+      }),
+    });
+    const opened = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);
+    const { live_id: liveId } = (await opened.json()) as { live_id: string };
+    failing = true;
+    await Bun.sleep(1500);
+    failing = false;
+    const after = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live/close`, {
+      live_id: liveId,
+    });
+    expect([after.status, await codeOf(after)]).toEqual([410, 'live_closed']);
   });
 });

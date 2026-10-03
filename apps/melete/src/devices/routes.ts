@@ -65,6 +65,13 @@ export function mountDevices(
   limits: LimitStore = new MemoryLimitStore(),
 ) {
   const throttle = new FailureWindow(limits, 'device.pair', 10, 10 * 60_000);
+  /** Best effort: a guess not given back only waits out its window. */
+  const giveBack = (address: string) =>
+    void throttle.release(address).catch((error: unknown) => {
+      process.stderr.write(
+        `pairing guess not given back: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
 
   /* ---------- Settings ---------- */
   const spaceOf = (c: Context) => {
@@ -118,7 +125,7 @@ export function mountDevices(
       paired = await devices.pair(devicePairRequest.parse(await c.req.json()));
     } catch (error) {
       // A request that never reached a code check does not count as a guess.
-      await throttle.release(address);
+      giveBack(address);
       throw error;
     }
     if (!paired) {
@@ -132,7 +139,9 @@ export function mountDevices(
         400,
       );
     }
-    await throttle.release(address);
+    // After the pairing is made: giving the guess back never costs the
+    // computer its token.
+    giveBack(address);
     return c.json(devicePairResponse.parse(paired), 201);
   });
 

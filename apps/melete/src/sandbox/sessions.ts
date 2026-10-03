@@ -35,6 +35,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
 import {
   type ComputerControls,
+  claimForAttempt,
   notHeldByPerson,
   PostgresComputerControls,
 } from './computer-control.ts';
@@ -582,13 +583,11 @@ export class SandboxSessions {
         }
         if (held) {
           // A person who took the computer over keeps it until they hand it
-          // back: no attempt is given it meanwhile.
-          // The control row is held while the computer changes hands, so a
-          // takeover on any instance waits for this, then fences what it began.
-          const [person] = await tx`select 1 from sandbox_control
-            where provider_sandbox_id = ${held.providerSandboxId} and control = 'human'
-            for share`;
-          if (person) throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
+          // back: no attempt is given it meanwhile. Handing it over moves the
+          // control epoch in this transaction, so a takeover read before it,
+          // on any instance, fails rather than parking the job it no longer runs.
+          if (!(await claimForAttempt(tx, held.providerSandboxId)))
+            throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Running, with its processes in it: taken over as it is, on a new
           // row, so nothing is paused or resumed under them.
           adopted = await this.takeOver(tx, held, id, input);
@@ -596,6 +595,9 @@ export class SandboxSessions {
         }
         const paused = kept;
         if (paused) {
+          // A paused computer a person holds is theirs as much as a running one.
+          if (!(await claimForAttempt(tx, paused.providerSandboxId)))
+            throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Closed first: the attempt that suspended it may be the one resuming it.
           await tx`update sandbox_session set status = 'closed', closed_at = now()
             where id = ${paused.id} and status = 'paused'`;
@@ -911,10 +913,13 @@ export class SandboxSessions {
       set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
         held_by = case when held_by = 'processes' then null else held_by end
       where id = ${id} and status = 'ready' and agent_id is not null
-        and persistence in ('pause', 'snapshot')
+        and persistence in ('pause', 'snapshot') and ${notHeldByPerson(this.sql)}
       returning *`;
-    if (!claimed)
+    if (!claimed) {
+      if (await this.heldByPerson((await this.get(id))?.providerSandboxId ?? ''))
+        throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
       throw new SandboxRefusal('workspace_not_live', 'only a ready workspace can be suspended');
+    }
     const row = toRow(claimed);
     const handle = sessionHandle(row);
     const failed = async (error: unknown) => {
@@ -997,20 +1002,38 @@ export class SandboxSessions {
   private async claim(
     id: string,
     statuses: readonly SessionStatus[],
+    unlessHeldByPerson = false,
   ): Promise<{ row: SessionRow; from: SessionStatus } | null> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await this.get(id);
       if (!current || !statuses.includes(current.status)) return null;
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${id} and status = ${current.status}
+          ${unlessHeldByPerson ? this.sql`and ${notHeldByPerson(this.sql)}` : this.sql``}
         returning *`;
+      if (!claimed && unlessHeldByPerson && (await this.heldByPerson(current.providerSandboxId)))
+        return null;
       if (claimed) return { row: toRow(claimed), from: current.status };
     }
     return null;
   }
 
-  async close(id: string, provider: SandboxProvider, signal: AbortSignal): Promise<SessionRow> {
-    const claimed = await this.claim(id, ['opening', 'ready', 'paused', 'closing']);
+  /**
+   * End a session and its sandbox. With `unlessHeldByPerson`, as when an
+   * attempt settles, a computer a person holds is left to them: the check is
+   * part of the statement that takes the row.
+   */
+  async close(
+    id: string,
+    provider: SandboxProvider,
+    signal: AbortSignal,
+    options: { unlessHeldByPerson?: boolean } = {},
+  ): Promise<SessionRow> {
+    const claimed = await this.claim(
+      id,
+      ['opening', 'ready', 'paused', 'closing'],
+      options.unlessHeldByPerson,
+    );
     if (!claimed) {
       const current = await this.get(id);
       if (!current) throw new Error('no such sandbox session');
@@ -1227,6 +1250,8 @@ export class SandboxSessions {
     // A session whose attempt is gone is settled now, not when its own lease
     // would have run out: nothing is left to use it, and while it stays live
     // the agent's workspace is refused to every other attempt.
+    // A person who has had no live view of a computer for long gives it back.
+    if (!only) await this.controls.handBackUnwatched();
     if (!only) await this.expireOrphaned();
     // A workspace its processes hold is kept, or suspended once they end,
     // here and nowhere else: its lease is theirs, not an attempt's.
@@ -1239,6 +1264,7 @@ export class SandboxSessions {
         where status in ('opening', 'ready', 'closing')
           and (lease_expires_at < now() or job_id is null)
           and held_by is distinct from 'processes'
+          and ${notHeldByPerson(this.sql)}
           ${only ? this.sql`and id in ${this.sql(only)}` : this.sql``}
         order by lease_expires_at limit 100`
     ).map(toRow);
@@ -1277,7 +1303,7 @@ export class SandboxSessions {
       }
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${candidate.id as string} and status = ${candidate.status as string}
-          and (lease_expires_at < now() or job_id is null)
+          and (lease_expires_at < now() or job_id is null) and ${notHeldByPerson(this.sql)}
         returning *`;
       if (!claimed) continue;
       const row = toRow(claimed);

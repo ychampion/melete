@@ -19,6 +19,8 @@ const signal = () => AbortSignal.timeout(10_000);
 
 beforeEach(async () => {
   if (handle) await handle.sql`truncate space cascade`;
+  // The fake provider names its sandboxes the same way in every test.
+  if (handle) await handle.sql`delete from sandbox_control`;
 });
 afterAll(async () => handle?.close());
 

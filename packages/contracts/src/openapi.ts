@@ -232,6 +232,7 @@ import { runtimeEvent } from './runtime.ts';
 import {
   sandboxComputerList,
   sandboxComputerQuery,
+  sandboxControlRequest,
   sandboxControlResponse,
 } from './sandbox-computer.ts';
 import {
@@ -2484,8 +2485,14 @@ export function buildOpenApiDocument() {
             description:
               'Requires the owner session and same-origin protection. The control epoch is ' +
               'incremented and the job is parked waiting for input before this answers; every ' +
-              'computer action the agent planned before is refused from then on.',
+              'computer action the agent planned before is refused from then on. With ' +
+              '`control_epoch`, control changes only from that epoch; otherwise 409. Control ' +
+              'returns to the agent after 30 minutes with no live view open.',
             requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: {
+              required: false,
+              content: { 'application/json': { schema: sandboxControlRequest } },
+            },
             responses: {
               '200': jsonResponse('The person holds control', sandboxControlResponse),
               '401': problem('Owner authentication required'),
@@ -2500,8 +2507,13 @@ export function buildOpenApiDocument() {
             tags: ['sandbox'],
             summary: 'Give the computer back to the agent',
             description:
-              'Increments the control epoch again. The job stays parked until the person answers it.',
+              'Increments the control epoch again. The job stays parked until the person answers it. ' +
+              'With `control_epoch`, control changes only from that epoch; otherwise 409.',
             requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: {
+              required: false,
+              content: { 'application/json': { schema: sandboxControlRequest } },
+            },
             responses: {
               '200': jsonResponse('The agent holds control', sandboxControlResponse),
               '401': problem('Owner authentication required'),

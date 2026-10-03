@@ -34,6 +34,7 @@ import {
   SSE_KEEPALIVE,
   sandboxComputerList,
   sandboxComputerQuery,
+  sandboxControlRequest,
   sandboxControlResponse,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -114,7 +115,14 @@ type Channel = {
   pump?: AbortController;
   ended: boolean;
   timer?: ReturnType<typeof setInterval>;
+  /** A tick still reading the database; the next one waits for it. */
+  ticking?: boolean;
+  /** When this view last recorded that the holder is watching. */
+  seenAt?: number;
 };
+
+/** How often an open view records that the person holding the computer is watching. */
+const SEEN_EVERY_MS = 30_000;
 
 /** Browser reads of the stream must come from this API, as its writes already must. */
 function sameOrigin(c: Context): boolean {
@@ -233,15 +241,31 @@ export class SandboxComputerService {
     return computers;
   }
 
-  async control(sessionId: string, operation: 'takeover' | 'handback', principalId: string) {
+  /**
+   * Take the computer over or hand it back, only from the epoch the person
+   * last saw (`seenEpoch`), else the one read before the session is: of two
+   * changes at once, on any instance, one lands and the other is told the
+   * computer moved on. The epoch is read before the session, so a hand-over
+   * to another attempt in between moves it and this takeover fails, rather
+   * than parking a job that no longer runs on the computer.
+   */
+  async control(
+    sessionId: string,
+    operation: 'takeover' | 'handback',
+    principalId: string,
+    seenEpoch?: number,
+  ) {
+    const [located] = await this.sql`select provider_sandbox_id from sandbox_session
+      where id = ${sessionId}`;
+    const before = located
+      ? await this.controls.state(String(located.provider_sandbox_id))
+      : undefined;
     const binding = await this.steerable(sessionId, principalId);
-    const current = await this.controls.state(binding.sandbox);
-    // Only from the epoch just read: of two takeovers or hand-backs at once,
-    // on any instance, one lands and the other is told the computer moved on.
+    const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.sandbox)).epoch;
     const next = await this.controls.change(
       binding.sandbox,
       operation === 'takeover' ? 'human' : 'agent',
-      { from: current.epoch, principalId },
+      { from, principalId },
     );
     if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
@@ -485,11 +509,35 @@ export class SandboxComputerService {
 
   /** Ends the view that has run its course; called every second while it is open. */
   async tick(channel: Channel): Promise<void> {
-    if (channel.ended) return;
+    if (channel.ended || channel.ticking) return;
+    channel.ticking = true;
+    try {
+      await this.tickOnce(channel);
+    } finally {
+      channel.ticking = false;
+    }
+  }
+
+  private async tickOnce(channel: Channel): Promise<void> {
     // Read from the database each second, so a change made on another
     // instance ends this view as one made here does.
-    const held = await this.controls.state(channel.sandbox).catch(() => null);
-    if (!held || channel.ended) return;
+    let held: ComputerControlState;
+    try {
+      held = await this.controls.state(channel.sandbox);
+    } catch (error) {
+      // Without knowing who holds the computer the view cannot be kept honest.
+      process.stderr.write(
+        `computer live view ${channel.sessionId} closed: control could not be read: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      this.finish(channel, 'closed');
+      return;
+    }
+    if (channel.ended) return;
+    // An open view keeps the person's hold; with none for long it is handed back.
+    if (held.control === 'human' && this.now() - (channel.seenAt ?? 0) >= SEEN_EVERY_MS) {
+      channel.seenAt = this.now();
+      await this.controls.seen(channel.sandbox).catch(() => {});
+    }
     if (held.epoch !== channel.epoch) {
       this.finish(channel, 'epoch_changed');
       return;
@@ -569,8 +617,9 @@ export function mountSandboxComputers(app: Hono, service: SandboxComputerService
   for (const operation of ['takeover', 'handback'] as const)
     app.post(`/sandbox/sessions/:id/${operation}`, async (c) => {
       if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
+      const seen = sandboxControlRequest.parse(await c.req.json().catch(() => ({})));
       const changed = await service
-        .control(id(c), operation, c.get('owner').id)
+        .control(id(c), operation, c.get('owner').id, seen.control_epoch)
         .catch((error: unknown) => refused(error));
       return c.json(sandboxControlResponse.parse(changed));
     });

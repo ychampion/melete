@@ -136,4 +136,76 @@ withDb('a computer taken over, across service instances', () => {
       epoch: current.epoch + 1,
     });
   });
+
+  test('a lease sweep on another instance leaves a computer a person holds running', async () => {
+    const { first, two, held, provider } = await setup();
+    const providerFor = () => provider;
+    // No attempt renews it now: its lease runs out while the person drives it.
+    await first.sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
+      where id = ${held.id}`;
+    await two.sweep(providerFor, signal());
+    expect((await two.get(held.id))?.status).toBe('ready');
+    expect(provider.calls.pause + provider.calls.destroy).toBe(0);
+    // Handed back, the next sweep settles it as any expired workspace.
+    await two.controls.change(held.providerSandboxId, 'agent');
+    await two.sweep(providerFor, signal());
+    expect((await two.get(held.id))?.status).toBe('paused');
+  });
+
+  test('a takeover read before the computer went to another attempt is refused, and one made first keeps it from that attempt', async () => {
+    const { first, scope, open, one, two, held } = await setup();
+    // Its attempt ended with background processes running in it.
+    await first.sql`update sandbox_session set held_by = 'processes', attempt_id = null
+      where id = ${held.id}`;
+    await one.controls.change(held.providerSandboxId, 'agent');
+    const read = await one.controls.state(held.providerSandboxId);
+    // Another instance hands the computer to the next attempt meanwhile.
+    const adopted = await open(two, await scope.attempt());
+    expect(adopted.providerSandboxId).toBe(held.providerSandboxId);
+    expect(
+      await one.controls.change(held.providerSandboxId, 'human', { from: read.epoch }),
+    ).toBeNull();
+    // The other way round: taken over first, the computer is not handed on.
+    await first.sql`update sandbox_session set held_by = 'processes', attempt_id = null
+      where id = ${adopted.id}`;
+    const now = await one.controls.state(held.providerSandboxId);
+    expect(
+      await one.controls.change(held.providerSandboxId, 'human', { from: now.epoch }),
+    ).not.toBeNull();
+    const refused = await open(two, await scope.attempt()).catch((error: unknown) => error);
+    expect((refused as SandboxRefusal).code).toBe('workspace_busy');
+  });
+
+  test('a computer held with no live view open for thirty minutes is handed back by the sweep', async () => {
+    const { first, two, held, provider } = await setup();
+    const providerFor = () => provider;
+    await two.sweep(providerFor, signal());
+    expect((await two.controls.state(held.providerSandboxId)).control).toBe('human');
+    await first.sql`update sandbox_control set seen_at = now() - interval '31 minutes',
+      changed_at = now() - interval '31 minutes'
+      where provider_sandbox_id = ${held.providerSandboxId}`;
+    // A view that is open records the person as watching, and keeps it theirs.
+    await two.controls.seen(held.providerSandboxId);
+    await two.sweep(providerFor, signal());
+    expect((await two.controls.state(held.providerSandboxId)).control).toBe('human');
+    await first.sql`update sandbox_control set seen_at = now() - interval '31 minutes'
+      where provider_sandbox_id = ${held.providerSandboxId}`;
+    await two.sweep(providerFor, signal());
+    expect(await two.controls.state(held.providerSandboxId)).toEqual({
+      control: 'agent',
+      epoch: 2,
+    });
+  });
+
+  test('settling acts only if no person holds the computer at that moment', async () => {
+    const { two, held, provider } = await setup();
+    // Read as the agent's before the takeover; the statement that acts checks again.
+    const closed = await two.close(held.id, provider, signal(), { unlessHeldByPerson: true });
+    expect(closed.status).toBe('ready');
+    const suspended = await two
+      .suspendWorkspace(held.id, provider, signal())
+      .catch((error: unknown) => error);
+    expect((suspended as SandboxRefusal).code).toBe('workspace_busy');
+    expect(provider.calls.pause + provider.calls.destroy).toBe(0);
+  });
 });

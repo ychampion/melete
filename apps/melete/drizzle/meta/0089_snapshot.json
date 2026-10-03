@@ -1,5 +1,5 @@
 {
-  "id": "e65fd930-36d1-4b9d-ba33-c7348bc941b9",
+  "id": "da525aa4-04db-47d8-95dc-a51107fa00f8",
   "prevId": "5782e8e8-01b3-44db-b328-4574eb659874",
   "version": "7",
   "dialect": "postgresql",
@@ -12851,26 +12851,15 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {
-        "sandbox_control_human_idx": {
-          "name": "sandbox_control_human_idx",
-          "columns": [
-            {
-              "expression": "provider_sandbox_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"sandbox_control\".\"control\" = 'human'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "sandbox_control_principal_id_principal_id_fk": {
           "name": "sandbox_control_principal_id_principal_id_fk",

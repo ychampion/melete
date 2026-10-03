@@ -168,11 +168,15 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
               }
             }
             // Suspending stops them on this provider: they are ended first,
-            // with the reason, rather than left to be found lost.
+            // with the reason, rather than left to be found lost; not when a
+            // person has taken the computer over since the rows were read.
+            else if (await sessions.heldByPerson(String(row.provider_sandbox_id))) continue;
             else await stopForSuspend(row, provider, signal);
           }
           if (workspace) await sessions.suspendWorkspace(id, provider, signal);
-          else await sessions.close(id, provider, signal);
+          // Checked again in the statement that acts: a takeover that landed
+          // since the rows were read, on any instance, keeps the computer.
+          else await sessions.close(id, provider, signal, { unlessHeldByPerson: true });
         } catch (error) {
           // Recorded on the row; the lease sweep finishes what this could not.
           say(`sandbox session ${id} was not settled when its attempt ended: ${String(error)}`);
