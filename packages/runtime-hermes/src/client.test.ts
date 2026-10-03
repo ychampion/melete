@@ -424,7 +424,25 @@ describe('context assembly', () => {
     expect(renderSoul()).toBe(`${IDENTITY}\n`);
     const system = client.renderSystem(bundle);
     expect(system).not.toContain(IDENTITY);
-    expect(system.indexOf('draft-follow-up')).toBeLessThan(system.indexOf('already knows'));
+    expect(system).toContain('draft-follow-up');
+  });
+
+  test('what is recalled per turn stays out of the cached instructions and follows the prior conversation', () => {
+    // Knowledge is recalled for the latest message, so it changes between turns.
+    // In the system prompt it would end the cached prefix at every turn.
+    expect(client.renderSystem(bundle)).not.toContain('already knows');
+    const turn = structuredClone(bundle);
+    turn.transcript = [{ role: 'user', content: 'Earlier turn', at: '2026-09-10T00:00:00Z' }];
+    turn.inputs.new_user_messages = [
+      { role: 'user', content: 'The newest message', at: '2026-09-11T00:00:00Z' },
+    ];
+    const input = renderInput(turn);
+    expect(input.indexOf('Earlier turn')).toBeLessThan(input.indexOf('already knows'));
+    expect(input.indexOf('already knows')).toBeLessThan(input.indexOf('The newest message'));
+    // Two turns that recall different knowledge share the same instructions.
+    const other = structuredClone(turn);
+    other.knowledge = [];
+    expect(client.renderSystem(other)).toBe(client.renderSystem(turn));
   });
 
   test('the skill index names each skill and how to read it, never its body', () => {
@@ -449,7 +467,7 @@ describe('context assembly', () => {
   });
 
   test('every knowledge excerpt carries where it came from', () => {
-    const system = client.renderSystem(bundle);
+    const system = renderInput(bundle);
     expect(system).toContain('knowledge/landlord-contact.md (user, 2026-09-10, active)');
     // Provenance is shown so it can be given, not so every reply recites it.
     expect(system).toContain('Name a path only when asked where something came from');

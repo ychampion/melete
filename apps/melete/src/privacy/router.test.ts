@@ -458,7 +458,8 @@ describe('cloud requests: redact out, rehydrate back', () => {
       ],
     });
     const anthropic = JSON.parse(captured[1]?.body ?? '{}');
-    expect(anthropic.messages[0].content[0]).toEqual({
+    // The gateway's cache breakpoint on the newest block rides beside the swap.
+    expect(anthropic.messages[0].content[0]).toMatchObject({
       type: 'tool_use',
       id: 'toolu_1',
       name: 'contacts.add',
@@ -540,7 +541,10 @@ describe('cloud requests: redact out, rehydrate back', () => {
     expect(JSON.parse(captured[0]?.body ?? '{}').input[0].content[0].text).toBe(
       'write to ⟦EMAIL_1⟧',
     );
-    expect(JSON.parse(captured[1]?.body ?? '{}').system).toBe('Owner email ⟦EMAIL_1⟧');
+    // The system prompt leaves as one text block carrying the gateway's cache breakpoint.
+    expect(JSON.parse(captured[1]?.body ?? '{}').system).toEqual([
+      { type: 'text', text: 'Owner email ⟦EMAIL_1⟧', cache_control: { type: 'ephemeral' } },
+    ]);
     const deltas = (raw: string, key: 'delta' | 'text') =>
       raw
         .split('\n\n')

@@ -57,7 +57,10 @@ export type CatalogState = (bundle: AttemptBundle, signal?: AbortSignal) => Prom
 
 type RunResult = {
   outcome: AttemptOutcome;
+  /** The broker's catalog after a load the running agent could not take: continue in a new run. */
   loaded?: ToolSpec[];
+  /** The broker's catalog after a load the running agent took: the run went on with it. */
+  live?: ToolSpec[];
   outputTokens: number;
   /** Tool names this run called, in order, including calls the broker refused. */
   called?: string[];
@@ -209,6 +212,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         );
         budget.outputTokens += result.outputTokens;
         called.push(...(result.called ?? []));
+        if (result.live) catalog = result.live;
         final = result.outcome;
         if (
           budget.outputTokens > bundle.budget.max_output_tokens ||
@@ -307,6 +311,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     let buffer = '';
     let outcome: AttemptOutcome | null = null;
     let loaded: ToolSpec[] | undefined;
+    let live: ToolSpec[] | undefined;
     let text = '';
     const completedTools: string[] = [];
     let outputTokens = 0;
@@ -368,16 +373,26 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           if (event.event === 'tool.started') budget.turns++;
           if (event.event === 'tool.completed') {
             completedTools.push(String(event.tool ?? 'unknown'));
-            if (event.tool === 'load_tool' && event.error !== true && this.options.catalogState) {
+            if (event.tool === 'load_tool' && this.options.catalogState) {
+              // Whether a tool loaded is the broker's record, never the model's
+              // words. The plugin first asks the engine to add a loaded tool to
+              // the running agent's list, and the run simply goes on with it.
+              // A load it could not add comes back marked as an error (the
+              // plugin's continues_in_a_new_run), and only then is the run
+              // ended and continued in a fresh one that is built with the tool.
+              // A refused load adds nothing to the broker's catalog either way.
               const current = await beforeDeadline(
                 this.options.catalogState(bundle, signal),
                 budget.deadline,
               );
-              if (current.some((tool) => !catalog.some((old) => old.name === tool.name))) {
-                loaded = current;
-                // Stop explicitly; the model need not obey a textual instruction.
-                // Drain to a terminal frame before another run may execute.
-                await beforeDeadline(this.send(this.client.stop(runId)), budget.deadline);
+              const known = live ?? catalog;
+              if (current.some((tool) => !known.some((old) => old.name === tool.name))) {
+                if (event.error === true) {
+                  loaded = current;
+                  // Stop explicitly; the model need not obey a textual instruction.
+                  // Drain to a terminal frame before another run may execute.
+                  await beforeDeadline(this.send(this.client.stop(runId)), budget.deadline);
+                } else live = current;
               }
             }
           }
@@ -420,6 +435,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       return {
         outcome,
         ...(loaded && !budgetStopped && outcome.kind === 'completed' ? { loaded } : {}),
+        ...(live ? { live } : {}),
         outputTokens,
         called: completedTools,
       };

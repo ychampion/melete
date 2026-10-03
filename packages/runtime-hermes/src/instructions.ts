@@ -7,14 +7,19 @@
  * `instructions` then follow the engine's preamble, so everything here is
  * additive: a conversation's persona on top of that identity, then the part of
  * the attempt Melete owns. The engine contributes its own preamble in addition to
- * the bounded skills and recalled knowledge supplied by the service. The
- * representative Melete scaffolding must remain below 4,000 estimated tokens;
- * its tripwire includes both rendered halves and tool definitions, excluding
- * only transcript content and knowledge excerpt bodies.
+ * the bounded skills and recalled knowledge supplied by the service. At the
+ * baseline window the representative Melete scaffolding must remain below 4,000
+ * estimated tokens; its tripwire includes both rendered halves and tool
+ * definitions, excluding only transcript content and knowledge excerpt bodies.
  *
- * Order matters for prompt caching. The identity never changes, the skills
- * change rarely, the knowledge changes per attempt, and the volatile inputs go
- * last, so the longest stable prefix is as long as it can be.
+ * Order matters for prompt caching. A provider reuses the longest prefix a
+ * request shares with the one before it, so what stays the same from one turn
+ * of a conversation to the next comes first: the identity, the tool definitions
+ * (the engine sends them ahead of the messages), and the instructions, which are
+ * the persona, the skills and the task notes and do not change between turns.
+ * The input then starts with the job and the prior conversation, which only
+ * grows at its end, and everything chosen per turn comes after it: knowledge
+ * recalled for the latest message, what changed, decisions and the new message.
  */
 import {
   APPROVAL_OUTDATED_NOTE,
@@ -47,7 +52,11 @@ export type RunPlacement = {
   workspace?: string;
 };
 
-/** A run's `instructions`: persona, then procedure, then what is already known. */
+/**
+ * A run's `instructions`: persona, then procedure, then the task notes. Nothing
+ * here is chosen per turn, so the system prompt stays a cached prefix from one
+ * turn of a conversation to the next.
+ */
 export function renderInstructions(bundle: AttemptBundle, placement: RunPlacement = {}): string {
   const parts: string[] = [];
   if (bundle.identity) {
@@ -73,20 +82,6 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     // Names and one line each; the bodies stay with the broker until asked for.
     parts.push(
       `# Other skills you can read\n\nBefore doing work one of these describes, read it with ${SKILL_READ_TOOL_NAME} and follow it.\n\n${index.map(indexLine).join('\n')}`,
-    );
-  }
-
-  if (bundle.knowledge.length > 0) {
-    // Provenance travels with every excerpt. A model that cannot see where a
-    // fact came from cannot tell the owner, and an unattributed fact in a
-    // summary is indistinguishable from one the model made up.
-    parts.push(
-      `# What Melete already knows\n\nEach line is a record, not a belief. Name a path only when asked where something came from or when it is disputed.\n\n${bundle.knowledge
-        .map(
-          (entry) =>
-            `- ${entry.handle ? `[${entry.handle}] ` : ''}${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
-        )
-        .join('\n')}`,
     );
   }
 
@@ -196,7 +191,35 @@ export function renderConstraints(constraints: AttemptBundle['job']['constraints
   return lines;
 }
 
-/** The volatile half: the job, and what changed since the last attempt. */
+/**
+ * What Melete already knows that bears on this turn. It is recalled for the
+ * latest message, so it changes from turn to turn and is rendered after the
+ * prior conversation, never in the cached system prompt.
+ *
+ * Provenance travels with every excerpt. A model that cannot see where a fact
+ * came from cannot tell the owner, and an unattributed fact in a summary is
+ * indistinguishable from one the model made up.
+ */
+export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[] {
+  if (knowledge.length === 0) return [];
+  return [
+    '',
+    '## What Melete already knows',
+    '',
+    'Each line is a record, not a belief. Name a path only when asked where something came from or when it is disputed.',
+    '',
+    ...knowledge.map(
+      (entry) =>
+        `- ${entry.handle ? `[${entry.handle}] ` : ''}${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
+    ),
+  ];
+}
+
+/**
+ * The volatile half: the job, the prior conversation, and then what this turn
+ * brings: recalled knowledge, what changed since the last attempt, and the new
+ * message last.
+ */
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
   const constraints = renderConstraints(bundle.job.constraints);
@@ -224,6 +247,7 @@ export function renderInput(bundle: AttemptBundle): string {
   if (bundle.job.progress_summary) {
     lines.push('', '## Where this got to', '', bundle.job.progress_summary);
   }
+  lines.push(...renderKnowledge(bundle.knowledge));
   if (bundle.job.unresolved_questions.length > 0) {
     lines.push(
       '',
