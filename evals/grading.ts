@@ -56,7 +56,15 @@ export type GradeContext = {
   before_trigger?: Snapshot;
   /** What the local form page received for this cell, one entry per submission. */
   form_submissions?: Record<string, string>[];
+  /** In a conversation, questions asked before the graded turn; only later ones are its own. */
+  questions_before?: number;
 };
+
+/** The questions the graded turn asked: in a conversation, those after its earlier turns. */
+export const turnQuestions = (
+  snapshot: Snapshot,
+  context: Pick<GradeContext, 'questions_before'>,
+) => (snapshot.questions ?? []).slice(context.questions_before ?? 0);
 
 /** Actions of one kind on the ledger, in a status, whose payload fields contain these words. */
 export function countCalls(snapshot: Snapshot, expectation: CallExpectation): number {
@@ -106,7 +114,7 @@ export function capabilityChecks(scenario: Scenario, context: GradeContext): Che
         detail: `observed ${count}`,
       });
   }
-  const questions = final.questions ?? [];
+  const questions = turnQuestions(final, context);
   if (declared.question === 'required') {
     checks.push({
       name: 'asked the person one question with ask_person',
@@ -321,7 +329,7 @@ export function grade(scenario: Scenario, context: GradeContext) {
       (snapshot) =>
         snapshot.approvals.length > 0 ||
         (snapshot.state === 'waiting_for_input' &&
-          (!chat || (snapshot.questions?.length ?? 0) > 0)),
+          (!chat || turnQuestions(snapshot, context).length > 0)),
     ) ||
       asks.some((entry) => entry.task))
       ? 1

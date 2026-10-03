@@ -13,7 +13,8 @@
   "attach": {
     "name": "invoice-0412.pdf",
     "pages": [
-      "Bright Pipes Plumbing - Invoice 0412 Labour, 6 hours: $720.00 Parts: $564.50 Total due: $1,284.50 Payment due by 30 October 2026"
+      "Bright Pipes Plumbing - Invoice 0412 Labour, 6 hours: $720.00 Parts: $564.50",
+      "Total due: $1,284.50 Payment due by 30 October 2026"
     ]
   },
   "steps": [],

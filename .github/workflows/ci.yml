@@ -193,7 +193,7 @@ jobs:
       # The real broker, gateway, ledger and fixture destinations around the light engine,
       # with a scripted model: no provider and no secret. A key scenario that stops passing
       # fails the job against the stored scripted baseline. A scenario that needs something
-      # this runner lacks (web search, attachments, Chromium) is skipped by name.
+      # this runner lacks, such as Chromium for the browser scenario, is skipped by name.
       - name: Run the capability suite against its baseline
         run: |
           bun run evals -- --engine light --provider scripted --suite capability --runs 1             --workers 3 --campaign ci-capability --out-dir "$RUNNER_TEMP/evals"             --baseline evals/baselines/scripted.json
