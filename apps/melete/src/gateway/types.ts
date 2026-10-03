@@ -49,8 +49,36 @@ export interface GatewayPrincipal {
    * Each request is further held to its model's window less the output it asks for.
    */
   maxInputTokens?: number;
-  /** Include the explicitly authorized fallback here; the proxy never chooses one. */
+  /**
+   * Every model this principal may be served with: the one it asks for, and
+   * each model in `routes`. The proxy never chooses a model outside this list.
+   */
   allowedModels: { provider: string; model: string }[];
+  /** Models the gateway may serve a call with instead of the one it names. */
+  routes?: GatewayRoutes;
+}
+
+/**
+ * The operator's alternatives for one principal's calls. Each speaks the same
+ * protocol as the model the principal runs on, so a request goes as written.
+ */
+export interface GatewayRoutes {
+  /** Serves a request that carries a picture, for a model that reads none. */
+  vision?: { provider: string; model: string };
+  /** Tried in order when the provider limits, fails or cannot be reached. */
+  fallback?: { provider: string; model: string }[];
+}
+
+/**
+ * Spending caps across every model call this service makes. `admit` is asked
+ * before a call is reserved and refuses it once a limit is reached; `record`
+ * is told what each settled call used.
+ */
+export interface GatewaySpending {
+  /** Throws a GatewayError (402 `spending_limit_reached`) when a limit is reached. */
+  admit(principal: GatewayPrincipal): Promise<void>;
+  /** Records one settled call's usage and cost. Never throws. */
+  record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void>;
 }
 
 export interface GatewayReservationRequest {
@@ -87,6 +115,10 @@ export interface GatewaySettlement {
   stopped?: boolean;
   /** `usage` is the gateway's estimate of a call cut off part way, not the provider's count. */
   usageEstimated?: boolean;
+  /** Why the call went to this model instead of the one the request named. */
+  route?: 'vision' | 'fallback';
+  /** The model the request named, when `route` sent it elsewhere. */
+  routedFrom?: { provider: string; model: string };
 }
 
 export interface GatewayBudget {
@@ -100,6 +132,8 @@ export class GatewayError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /** A sentence for the person, sent as the error's message in place of the code. */
+    readonly detail?: string,
   ) {
     super(code);
   }

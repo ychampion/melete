@@ -210,6 +210,9 @@ export async function seedSpace(
   await sql`insert into activity_record (id, space_id, action_id, kind, effect_class, connection_label, provider, outcome, source, happened_at)
     values (${newId('act')}, ${spaceId}, ${newId('act')}, 'email.send', 'write_external', 'Mail', 'imap',
       'succeeded', 'A deleted chat', now())`;
+  // What one of the space's model calls cost; its amounts outlive the space.
+  await sql`insert into model_usage (id, space_id, principal_id, job_id, purpose, provider, model, status, input_tokens, output_tokens, cost_usd)
+    values (${newId('mu')}, ${spaceId}, ${principalId}, ${jobId}, 'agent', 'fake', 'scripted', 'succeeded', 10, 5, 0.01)`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;

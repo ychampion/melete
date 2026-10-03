@@ -46,7 +46,8 @@ import {
   providersFromEnv,
   providerUrl,
 } from './providers.ts';
-import type { GatewayProvider, SignedInCredential } from './types.ts';
+import { agentRoutes, type ModelRouting, sameModel } from './routing.ts';
+import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
@@ -215,6 +216,55 @@ export class ModelSettingsService {
   ): Promise<{ provider: string; model: string; vision: boolean }> {
     const { provider, model, vision } = await this.active(await this.chosen(db), db);
     return { provider, model, vision };
+  }
+
+  /**
+   * The model the next attempt runs on, as `activeChoice`, told to send its
+   * pictures when the operator configured a vision model that will read them
+   * for it. A model the owner chose in the app is used exactly as chosen.
+   */
+  async routedChoice(
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<{ provider: string; model: string; vision: boolean }> {
+    const chosen = await this.chosen(db);
+    const { provider, model, vision } = await this.active(chosen, db);
+    const routes = agentRoutes(
+      routing,
+      { provider, model },
+      { ownerChose: this.ownerChose({ provider, model }), primaryReadsImages: vision },
+    );
+    return { provider, model, vision: vision || Boolean(routes?.vision) };
+  }
+
+  /**
+   * Whether this model is one the owner chose in the app rather than the
+   * server's default. Agent turns on an owner's choice are never rerouted.
+   */
+  private ownerChose(choice: { provider: string; model: string }): boolean {
+    return !sameModel(choice, {
+      provider: this.env.MELETE_DEFAULT_PROVIDER,
+      model: this.env.MELETE_DEFAULT_MODEL,
+    });
+  }
+
+  /**
+   * The operator's alternatives for an attempt on this model: a vision model
+   * for its pictures when it reads none, and fallbacks. None when the owner
+   * chose the model in the app.
+   */
+  async attemptRoutes(
+    routing: ModelRouting,
+    primary: { provider: string; model: string },
+  ): Promise<GatewayRoutes | undefined> {
+    if (this.ownerChose(primary)) return undefined;
+    const owner = await this.visionSaid(primary.provider, primary.model);
+    const readsImages = effectiveVision(
+      primary.provider,
+      primary.model,
+      owner ?? this.env.MELETE_DEFAULT_MODEL_VISION ?? null,
+    );
+    return agentRoutes(routing, primary, { ownerChose: false, primaryReadsImages: readsImages });
   }
 
   /** The owner's word on this model reading images, given apart from choosing it. */
@@ -670,6 +720,11 @@ export function serviceModelSource(options: {
   env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'>;
   settings?: ModelSettingsService;
   pinned?: { provider?: string; model?: string };
+  /**
+   * The operator's fast model (MELETE_MODEL_FAST), for a short side call. A
+   * model pinned for this use wins over it; it wins over the default.
+   */
+  fast?: ServiceModel | null;
 }): ServiceModelSource {
   const { env, settings } = options;
   const pinned = options.pinned?.provider || options.pinned?.model ? options.pinned : undefined;
@@ -680,6 +735,7 @@ export function serviceModelSource(options: {
           provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
           model: pinned.model || env.MELETE_DEFAULT_MODEL,
         };
+      if (options.fast) return { provider: options.fast.provider, model: options.fast.model };
       return settings
         ? settings.activeChoice()
         : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };

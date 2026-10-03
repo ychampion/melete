@@ -258,6 +258,7 @@ export function mountAuth(
     const publicRoute =
       (c.req.method === 'GET' &&
         (c.req.path === '/health' ||
+          c.req.path === '/health/detail' ||
           c.req.path === '/setup' ||
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||

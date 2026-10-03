@@ -66,6 +66,10 @@ export type ExtractionGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   /** Calls this gateway will admit in total, across the whole scan. */
   maxCalls: number;
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** How hard a reasoning model thinks on an extraction. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 /**
@@ -99,6 +103,8 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     defaultProvider: options.provider,
     timeoutMs: EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 512 * 1024,

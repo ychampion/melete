@@ -22,6 +22,7 @@ import {
   type SignInStart,
   type SignInStatus,
 } from './api.ts';
+import { UsageThisMonth } from './Usage.tsx';
 import './models.css';
 
 /** Where each provider hands out keys, in the words its own console uses. */
@@ -829,6 +830,7 @@ export function ModelsTab({ loaded }: { loaded: Loaded<ModelSettings> }) {
       {settings ? (
         <>
           <ActiveModel settings={settings} onChanged={loaded.set} />
+          <UsageThisMonth />
           {settings.can_edit ? (
             <ModelConnect settings={settings} onChanged={loaded.set} />
           ) : (

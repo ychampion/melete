@@ -22,6 +22,8 @@ import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
 import { ModelSettingsService } from '../gateway/model-settings.ts';
+import { routingFromEnv } from '../gateway/routing.ts';
+import { type SpendingGuard, spendingFromEnv } from '../gateway/spending.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
@@ -59,6 +61,8 @@ export async function startEffectBoundary(
     modelSettings?: ModelSettingsService;
     /** Long work's tools. */
     runs?: BrokerOptions['runs'];
+    /** The installation's spending caps, shared by every gateway of the service. */
+    spending?: SpendingGuard;
   },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -89,13 +93,15 @@ export async function startEffectBoundary(
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;
+  const spending = dependencies.spending ?? spendingFromEnv(handle.sql, env);
+  const routing = routingFromEnv(env);
   try {
     review = await configuredReviewGateway(
       env,
       dependencies.privacy,
       dependencies.signIn ?? providerSignIn(handle.sql, env),
       env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
-      { settings: modelSettings },
+      { settings: modelSettings, spending },
     );
     const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
     if (env.MELETE_GATEWAY_TLS_DIR) {
@@ -133,6 +139,9 @@ export async function startEffectBoundary(
       fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       connectTls: (host) => certificates.get(host),
       privacy: dependencies.privacy,
+      spending,
+      routes: (attempt) => modelSettings.attemptRoutes(routing, attempt),
+      reasoningEffort: env.MELETE_REASONING_EFFORT_AGENT,
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,

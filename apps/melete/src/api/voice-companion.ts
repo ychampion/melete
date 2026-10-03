@@ -37,6 +37,12 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import {
+  type ModelRouting,
+  NO_ROUTING,
+  routingFromEnv,
+  serviceFallback,
+} from '../gateway/routing.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 
 export const COMPANION_LIMITS = {
@@ -299,6 +305,12 @@ export type CompanionGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   /** The service's privacy router. Required: the companion carries the conversation's words. */
   privacy: GatewayOptions['privacy'];
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's fallbacks for a provider that limits or fails. */
+  routing?: ModelRouting;
+  /** How hard a reasoning model thinks on an aside. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 /**
@@ -312,7 +324,12 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
   const budget: GatewayBudget = {
     async reserve(request) {
       const call = principals.get(request.principal);
-      if (!call || request.provider !== call.provider || request.model !== call.model)
+      if (
+        !call ||
+        !request.principal.allowedModels.some(
+          (allowed) => allowed.provider === request.provider && allowed.model === request.model,
+        )
+      )
         throw new GatewayError(403, 'voice_principal_denied');
       if (
         request.estimatedTokens > COMPANION_LIMITS.total_tokens ||
@@ -330,6 +347,8 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     defaultProvider: options.provider,
     timeoutMs: COMPANION_LIMITS.timeout_ms,
     maxRequestBytes: 64 * 1024,
@@ -337,6 +356,7 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'voice_principal_denied');
+      const fallback = serviceFallback(options.routing ?? NO_ROUTING, call);
       const principal: GatewayPrincipal = {
         jobId: call.conversationId,
         attemptId: `voice:${token.slice(0, 8)}`,
@@ -351,7 +371,8 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
         revision: 0,
         maxRequests: 1,
         maxTokens: COMPANION_LIMITS.total_tokens,
-        allowedModels: [{ provider: call.provider, model: call.model }],
+        allowedModels: [{ provider: call.provider, model: call.model }, ...fallback],
+        ...(fallback.length ? { routes: { fallback } } : {}),
       };
       principals.set(principal, call);
       return principal;
@@ -425,15 +446,21 @@ export function configuredVoiceCompanion(
     settings?: ModelSettingsService;
     signIn?: ProviderSignIn;
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ) {
+  const routing = routingFromEnv(env);
   return openVoiceCompanion({
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
-    source: serviceModelSource({ env, settings: connected.settings }),
+    // An aside is short and must come back quickly: the fast model when there is one.
+    source: serviceModelSource({ env, settings: connected.settings, fast: routing.fast }),
     fake,
     privacy,
+    spending: connected.spending,
+    routing,
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
   });
 }

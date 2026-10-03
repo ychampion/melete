@@ -93,6 +93,10 @@ const prefix = (text: string, length: number) => {
  */
 export async function openProposalGateway(options: {
   db: Database;
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** How hard a reasoning model thinks on a proposal. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
@@ -174,6 +178,8 @@ export async function openProposalGateway(options: {
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     defaultProvider: options.provider,
     timeoutMs: PROPOSAL_LIMITS.timeout_ms,
     maxRequestBytes: 8192,

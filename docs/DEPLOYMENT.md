@@ -1184,6 +1184,160 @@ order across chats, routines and quiet work, and the conversation says it is
 waiting and how many other tasks are running. Raise it on a host with memory to
 spare; each running attempt may use up to 2 GB.
 
+## Spending caps
+
+The engine limits above bound one attempt. Spending caps bound what the whole
+installation, and each person on it, may spend on model calls in a day and in a
+month. Every model call the service makes counts: agent turns, routines and
+background jobs, memory reads, voice asides, the auto-review classifier, the
+companies scan and learning proposals. Each settled call is recorded in
+`model_usage` with its tokens and an estimated cost, and the totals are read
+again before every new call.
+
+| Setting | Limit |
+| --- | --- |
+| `MELETE_SPEND_MONTHLY_USD`, `MELETE_SPEND_DAILY_USD` | Dollars the whole installation may spend in a UTC month or day |
+| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend |
+| `MELETE_SPEND_MONTHLY_TOKENS`, `MELETE_SPEND_DAILY_TOKENS` | Input and output tokens for the whole installation |
+| `MELETE_SPEND_PERSON_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_DAILY_TOKENS` | Tokens for one person |
+| `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
+
+Each limit left empty is no limit, which is the default, so an installation
+that sets none behaves as before. A call counts against the person whose job
+it belongs to (the job's author, else the space's owner); a service call
+counts against the owner of the space it reads for.
+
+- At the notice level of any limit, the person sees a quiet line at the top of
+  every page, and Settings › Models shows it beside this month's usage. The
+  service log records `spending: person warning (month)` once per period.
+- At the limit, no new model call is made. The gateway refuses it with
+  `402 spending_limit_reached` and a plain sentence: "This month's limit is
+  reached; it resets on November 1." A call already answering is never cut
+  off; it finishes and is counted. The attempt whose call was refused ends at
+  once with that sentence as its result, a conversation shows it as the turn's
+  answer, a routine rests until its next run, and no new attempt starts until
+  the limit resets.
+- To raise a limit, change the setting in `deploy/.env` and recreate the
+  service; the new limit applies from the next call.
+
+Dollars are estimates from a price table, per million tokens, keyed
+`provider/model` with `*` matching any run of characters. The built-in
+estimates cover the providers Melete serves; a model nothing names is charged
+at a deliberately high $3 in and $15 out, so it is never counted as free, and
+the ChatGPT sign-in and the scripted provider are $0 (their tokens still
+count). Give your real prices with `MELETE_MODEL_PRICES`, which is matched
+before the built-in table:
+
+```bash
+MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":{"input":0.3,"output":1.2},"anthropic/*sonnet*":{"input":3,"output":15,"cached_input":0.3}}'
+```
+
+`cached_input` is the price of input read from the provider's cache; left out,
+it is a tenth of `input`. `GET /usage` returns the signed-in person's and the
+installation's totals, the limits, the notice and this month's calls by model.
+
+Removing a space keeps its calls' amounts, so a limit is not reset by deleting
+a space; which space and job they came from is removed with it.
+
+## Model routing
+
+By default every call uses the model chosen in Settings › Models, else
+`MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL`. Three settings, each
+written `provider/model` (the provider name before the first slash), let
+Melete pick a better model per call:
+
+| Setting | Used for |
+| --- | --- |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
+| `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
+| `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
+
+For example:
+
+```bash
+MELETE_MODEL_FAST=fireworks/accounts/fireworks/models/llama-v3p1-8b-instruct
+MELETE_MODEL_VISION=fireworks/accounts/fireworks/models/qwen2p5-vl-32b-instruct
+MELETE_MODEL_FALLBACK=fireworks/accounts/fireworks/models/deepseek-v3
+```
+
+The rules, in order:
+
+- A model the owner chose in the app always wins for agent turns: those turns
+  are never sent to the vision model or a fallback.
+- A model pinned for one use (`MELETE_MEMORY_MODEL`, `MELETE_REVIEW_MODEL`,
+  `MELETE_COMPANIES_MODEL`) wins over the fast model for that use. Learning
+  proposals keep the default model.
+- Vision stays off unless it is configured: a turn on a model that reads
+  images (by the owner's word in Settings, `MELETE_DEFAULT_MODEL_VISION`, or
+  Melete's catalog) keeps its pictures on that model. Otherwise the engine is
+  only told to send pictures when `MELETE_MODEL_VISION` is set, and each
+  request that carries one goes to that model. A request with a picture takes
+  no fallback, since the fallbacks may not read images.
+- The gateway relays a request as the engine wrote it, so a vision model or
+  fallback is only taken when it speaks the same protocol as the turn's model
+  (chat completions, responses or messages); another is ignored. A fallback
+  without a key is passed over.
+- A request the provider refuses as written (a 400 or 404) is not sent
+  elsewhere.
+
+Each rerouted call is recorded with the model that served it: the trail's
+`model_receipt` carries `route` (`vision` or `fallback`) and `routed_from`, and
+`model_usage` has the same columns. The refused call before a fallback has its
+own receipt.
+
+### Reasoning effort
+
+`MELETE_REASONING_EFFORT_AGENT` (default `medium`) and
+`MELETE_REASONING_EFFORT_SIDE` (default `low`) say how hard a reasoning model
+thinks on agent turns and on the service's side calls: `none`, `low`,
+`medium`, `high`, or `off` to send nothing and keep the provider's default.
+The gateway adds the provider's own parameter, `reasoning.effort` over the
+responses protocol and `reasoning_effort` over chat completions, only for
+model families that accept it (OpenAI o-series, GPT-5 and GPT-6; DeepSeek,
+Qwen 3 and gpt-oss on Fireworks or a compatible endpoint; Gemini 2.5 and
+later), and never over a value the request names itself. Anthropic models get
+none: extended thinking needs every earlier tool-use turn to carry its
+thinking blocks, which a conversation the engine kept without them does not.
+
+## Alerts
+
+The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
+(default `60`) and tells the operator when it turns unhealthy:
+
+- the database does not answer;
+- the runtime that runs attempts does not answer within five seconds;
+- the job queue is stuck: work due more than ten minutes ago has not started;
+- the error rate spikes: over the last fifteen minutes, at least five attempts
+  or model calls and half or more of them failed, were lost, or were refused by
+  the provider.
+
+| Setting | What it does |
+| --- | --- |
+| `MELETE_ALERT_WEBHOOK_URL` | Receives a JSON POST: `text` (a sentence chat webhooks show), `status` (`unhealthy` or `recovered`), `service`, `version`, `checks` and `time` |
+| `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
+| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465` |
+| `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
+| `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
+
+Alerts are off until a webhook or an email address is set. One alert is sent
+when the service turns unhealthy, again every repeat interval while it stays
+so, and one more when it is healthy again.
+
+`GET /health/detail` (through the web server, `/api/health/detail`) returns
+each check with what it found, `200` while all pass and `503` while any fails:
+
+```bash
+curl -fsS -H "Authorization: Bearer $MELETE_OPERATOR_TOKEN" https://melete.example.com/api/health/detail
+```
+
+These checks run inside the service, so they cannot report the service itself
+being down, the host losing power or the network failing. Add an external
+uptime check as well: point a monitor such as UptimeRobot, Better Stack or
+Healthchecks.io at `https://<your host>/api/health` every minute, alerting
+when it fails twice in a row or when the body's `database` is not `ok`. With
+the operator token, a monitor that can send a header can watch
+`/api/health/detail` instead and alert on any non-200 answer.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If
