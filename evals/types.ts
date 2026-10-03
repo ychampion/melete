@@ -36,10 +36,15 @@ export type FixtureTool = {
   /** Results chosen by the value of one argument, such as a URL or a path. */
   results_by?: { argument: string; results: Record<string, JsonValue> };
   /**
-   * Only a call whose argument contains these words gets `result` and
-   * `delay_ms`; any other call gets `otherwise` at once, as a quick command would.
+   * Only a call whose argument matches this pattern (case-insensitive) gets
+   * `result` and `delay_ms`. Any other call gets the first `otherwise` entry
+   * whose pattern matches, or the one without a pattern, at once.
    */
-  when?: { argument: string; contains: string; otherwise: JsonValue };
+  when?: {
+    argument: string;
+    matches: string;
+    otherwise: { matches?: string; result: JsonValue }[];
+  };
   /** How long the call takes, to measure a long command finishing once. */
   delay_ms?: number;
 };

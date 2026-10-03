@@ -201,13 +201,12 @@ export function capabilityConnector(sql: Sql, scenario: Scenario): Connector {
           receipt: receipt(action, { accepted: true, payload }),
         };
       }
-      const matched =
-        !tool.when ||
-        String(payload[tool.when.argument] ?? '')
-          .toLowerCase()
-          .includes(tool.when.contains.toLowerCase());
-      if (!matched && tool.when) {
-        const otherwise = tool.when.otherwise;
+      const said = tool.when ? String(payload[tool.when.argument] ?? '') : '';
+      if (tool.when && !new RegExp(tool.when.matches, 'i').test(said)) {
+        const otherwise =
+          tool.when.otherwise.find(
+            (entry) => entry.matches === undefined || new RegExp(entry.matches, 'i').test(said),
+          )?.result ?? null;
         return {
           outcome: 'succeeded',
           receipt: receipt(

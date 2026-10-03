@@ -17,14 +17,48 @@
       },
       "when": {
         "argument": "command",
-        "contains": "full-check",
-        "otherwise": {
-          "exit_code": 0,
-          "timed_out": false,
-          "duration_ms": 40,
-          "truncated": false,
-          "output": "scripts/full-check.sh: builds the project, then runs the whole test suite. Takes about a minute.\n"
-        }
+        "matches": "(^|[;&|(]\\s*|\\b(bash|sh)\\s+)(\\./)?(/work/)?scripts/full-check\\.sh(\\s|$|;|&|\\|)",
+        "otherwise": [
+          {
+            "matches": "\\b(cat|head|tail|less|more)\\b.*full-check",
+            "result": {
+              "exit_code": 0,
+              "timed_out": false,
+              "duration_ms": 30,
+              "truncated": false,
+              "output": "#!/bin/sh\nset -e\necho \"Building...\"\nmake build >/dev/null && echo \"Building... done\"\nmake test\n"
+            }
+          },
+          {
+            "matches": "\\bls\\b",
+            "result": {
+              "exit_code": 0,
+              "timed_out": false,
+              "duration_ms": 20,
+              "truncated": false,
+              "output": "Makefile\nREADME.md\nscripts\nsrc\ntests\n\nscripts:\nfull-check.sh\n"
+            }
+          },
+          {
+            "matches": "^\\s*pwd\\s*$",
+            "result": {
+              "exit_code": 0,
+              "timed_out": false,
+              "duration_ms": 10,
+              "truncated": false,
+              "output": "/work\n"
+            }
+          },
+          {
+            "result": {
+              "exit_code": 0,
+              "timed_out": false,
+              "duration_ms": 20,
+              "truncated": false,
+              "output": ""
+            }
+          }
+        ]
       }
     }
   ],
@@ -56,10 +90,8 @@
     "calls": [
       {
         "tool": "terminal.run",
-        "where": {
-          "command": "full-check"
-        },
         "receipt": {
+          "duration_ms": "50000",
           "exit_code": "0"
         },
         "min": 1,
@@ -67,10 +99,7 @@
       },
       {
         "tool": "terminal.run",
-        "where": {
-          "command": "full-check"
-        },
-        "max": 2
+        "max": 6
       }
     ],
     "question": "forbidden"

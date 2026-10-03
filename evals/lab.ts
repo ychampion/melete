@@ -535,6 +535,9 @@ export async function openLab(
     for (const [index, text] of (scenario.history ?? []).entries()) {
       if (Number(data.history_posted ?? 0) > index) continue;
       await wake(jobId, index + 1);
+      // A turn whose attempt failed is queued for a retry; let it finish before the next message.
+      for (let retry = 0; retry < 3 && (await snapshot(jobId)).state === 'queued'; retry++)
+        await wake(jobId, (await snapshot(jobId)).attempts + 1);
       const posted = await api(
         `/jobs/${jobId}/input`,
         'POST',
