@@ -1,0 +1,76 @@
+{
+  "id": "web-search",
+  "title": "Look up a release on the web",
+  "summary": "Melete checks the date, searches the web, and answers with the version and its date. The search keeps a receipt and its pages fold into one row of sources.",
+  "match": ["latest stable version", "latest release of"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "I'll check the current date and look up Bun's latest"
+    },
+    {
+      "step": "tool",
+      "delay_ms": 600,
+      "name": "terminal.run",
+      "kind": "sandbox",
+      "title": "Ran `date -u` in its computer",
+      "active_title": "Running `date -u` in its computer",
+      "output": { "text": "Sat Oct  3 17:47:40 UTC 2026" },
+      "output_excerpt": { "text": "Sat Oct  3 17:47:40 UTC 2026", "from": "page", "more": false }
+    },
+    {
+      "step": "text",
+      "delay_ms": 300,
+      "text": " release."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "web.search",
+      "kind": "web",
+      "title": "Searched the web for “Bun latest stable release version”",
+      "active_title": "Searching the web for “Bun latest stable release version”",
+      "input": {
+        "text": "Asked for",
+        "quote": { "text": "Bun latest stable release version", "from": "request" }
+      },
+      "output": { "text": "6 results" },
+      "result": {
+        "query": "Bun latest stable release version",
+        "backend": "duckduckgo",
+        "results": [
+          {
+            "title": "Releases · oven-sh/bun · GitHub",
+            "url": "https://github.com/oven-sh/bun/releases"
+          },
+          {
+            "title": "Upgrade Bun to the latest version | Bun Guides",
+            "url": "https://bun.com/guides/upgrade"
+          },
+          { "title": "Bun 1.4 | Bun Blog", "url": "https://bun.com/blog/bun-v1.4" },
+          { "title": "bun - npm", "url": "https://www.npmjs.com/package/bun" },
+          { "title": "Bun release notes and changelog", "url": "https://releases.example/bun" },
+          {
+            "title": "api.github.com",
+            "url": "https://api.github.com/repos/oven-sh/bun/releases/latest"
+          }
+        ]
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 700,
+      "text": "Bun's latest stable release is **v1.4.2**, published on September 5, 2026. Nothing newer has shipped since; that comes from the official [GitHub releases](https://github.com/oven-sh/bun/releases) for the Bun repository."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Bun's latest stable release is **v1.4.2**, published on September 5, 2026. Nothing newer has shipped since; that comes from the official [GitHub releases](https://github.com/oven-sh/bun/releases) for the Bun repository."
+    }
+  ]
+}
