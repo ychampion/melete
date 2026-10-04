@@ -38,7 +38,7 @@ import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import type { DockerSandboxProvider } from '../../src/sandbox/adapters/docker.ts';
 import { SandboxComputerService } from '../../src/sandbox/computer.ts';
-import { ComputerControls } from '../../src/sandbox/computer-control.ts';
+import { PostgresComputerControls } from '../../src/sandbox/computer-control.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -56,7 +56,7 @@ const runner = jobs
 const broker = handle ? new BrokerService({ sql: handle.sql, connectors: registry }) : null;
 /** The desktops the app can show: filled in by the test that gives a request a computer. */
 const desktops = new Map<string, { adapter: 'docker'; provider: DockerSandboxProvider }>();
-const controls = new ComputerControls();
+const controls = handle ? new PostgresComputerControls(handle.sql) : undefined;
 const sandboxComputers = handle
   ? new SandboxComputerService(handle.sql, () => desktops, { controls })
   : undefined;
@@ -961,11 +961,11 @@ withDb('rooms', () => {
     expect((await at(world.bob, `/sandbox/sessions/${sessionId}/takeover`, 'POST')).status).toBe(
       404,
     );
-    expect(controls.state(sandbox).control).toBe('agent');
+    expect((await controls?.state(sandbox))?.control).toBe('agent');
     expect((await at(world.alice, `/sandbox/sessions/${sessionId}/takeover`, 'POST')).status).toBe(
       200,
     );
-    expect(controls.state(sandbox).control).toBe('human');
+    expect((await controls?.state(sandbox))?.control).toBe('human');
     // Carol, outside the room, finds nothing.
     expect((await at(world.carol, listed)).status).toBe(404);
     expect((await at(world.carol, `/sandbox/sessions/${sessionId}/live`, 'POST')).status).toBe(404);

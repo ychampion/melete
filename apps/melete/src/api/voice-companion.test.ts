@@ -13,6 +13,7 @@ import { ServiceError } from './errors.ts';
 import { mountVoice, type VoicePrivacy } from './voice.ts';
 import {
   CANNOT_FROM_HERE,
+  COMPANION_FORMAT,
   type CompanionContext,
   CUT_OFF_LINE,
   companionBody,
@@ -20,6 +21,7 @@ import {
   ON_SCREEN_LINE,
   openVoiceCompanion,
   parseCompanionReply,
+  readCompanionReply,
   replyText,
   type VoiceCompanion,
   withoutClaims,
@@ -473,5 +475,67 @@ describe('the aside route', () => {
     expect((await limited.post(progress)).status).toBe(429);
     clock += 61_000;
     expect((await limited.post(progress)).status).toBe(200);
+  });
+});
+
+describe('the aside’s answer schema', () => {
+  const input = companionInput(progress, context);
+
+  test('a provider with structured outputs is sent the schema; an unknown endpoint is not', () => {
+    const openai = companionBody({ provider: 'openai', model: 'gpt-6-astra' }, 'system', input);
+    expect(openai).toMatchObject({
+      text: { format: { type: 'json_schema', name: 'voice_aside', strict: true } },
+    });
+    const claude = companionBody(
+      { provider: 'anthropic', model: 'claude-opus-5-5' },
+      'system',
+      input,
+    );
+    expect(claude).toMatchObject({
+      output_config: { format: { type: 'json_schema', schema: COMPANION_FORMAT.schema } },
+    });
+    const compatible = companionBody(
+      { provider: 'openai-compatible', model: 'x' },
+      'system',
+      input,
+    );
+    expect(compatible).not.toHaveProperty('response_format');
+  });
+
+  test('the old failure: a reply cut off at the output limit is never read out', () => {
+    // Recorded: the voice once spoke a cut-off JSON reply aloud.
+    const cut = {
+      choices: [
+        {
+          message: { content: '{"intent":"talk","say":"Two of the three pa' },
+          finish_reason: 'length',
+        },
+      ],
+    };
+    expect(readCompanionReply('chat/completions', cut)).toEqual({
+      intent: 'talk',
+      say: CUT_OFF_LINE,
+    });
+    // Even a cut-off reply that happens to parse is not taken as whole.
+    const parses = {
+      content: [{ type: 'text', text: '{"intent":"stop","say":""}' }],
+      stop_reason: 'max_tokens',
+    };
+    expect(readCompanionReply('messages', parses)).toEqual({ intent: 'talk', say: CUT_OFF_LINE });
+    const whole = {
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          content: [
+            { type: 'output_text', text: '{"intent":"steer","say":"I will pass that on."}' },
+          ],
+        },
+      ],
+    };
+    expect(readCompanionReply('responses', whole)).toEqual({
+      intent: 'steer',
+      say: 'I will pass that on.',
+    });
   });
 });

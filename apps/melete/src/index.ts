@@ -482,7 +482,8 @@ export function createApp(deps: AppDeps) {
       registry: deps.registry,
       limits,
     });
-  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
+  if (deps.db)
+    mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter, limits });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(

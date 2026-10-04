@@ -20,14 +20,13 @@ describe('request limits', () => {
 
   test('wrong codes make a key wait until the oldest one ages out', async () => {
     const window = new FailureWindow(new MemoryLimitStore(), 'test', 3, 10_000);
-    for (const at of [0, 1000, 2000]) {
-      expect(await window.retryAfter('address', at)).toBe(0);
-      await window.fail('address', at);
-    }
-    expect(await window.retryAfter('address', 2500)).toBe(8);
-    expect(await window.retryAfter('other', 2500)).toBe(0);
-    // The first failure ages out at 10 s; the key may try again.
-    expect(await window.retryAfter('address', 10_000)).toBe(0);
+    for (const at of [0, 1000, 2000]) expect(await window.reserve('address', at)).toBe(0);
+    expect(await window.reserve('address', 2500)).toBe(8);
+    expect(await window.reserve('other', 2500)).toBe(0);
+    // A try given back no longer counts; the first ages out at 10 s.
+    await window.release('other', 2600);
+    expect(await window.reserve('address', 10_000)).toBe(0);
+    expect(await window.reserve('address', 10_001)).toBeGreaterThan(0);
   });
 
   test('limiters sharing a store keep their scopes apart', async () => {

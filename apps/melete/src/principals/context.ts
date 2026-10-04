@@ -1,5 +1,10 @@
 import { basename, dirname, join } from 'node:path';
-import { type KnowledgeExcerpt, normalizeAudience, type SkillPayload } from '@melete/contracts';
+import {
+  CONTEXT_LIMITS,
+  type KnowledgeExcerpt,
+  normalizeAudience,
+  type SkillPayload,
+} from '@melete/contracts';
 import { loadSpace, spacePaths } from '@melete/knowledge';
 import { chooseSkills, type LoadedSkill, loadSkills } from '@melete/skills';
 import { and, eq, sql } from 'drizzle-orm';
@@ -79,7 +84,10 @@ export const skillPayloadOf = (skill: LoadedSkill, spaceId: string): SkillPayloa
   ...(skill.source === 'space' ? { space_id: spaceId } : {}),
 });
 
-/** At most three skills for the objective and latest message, from the usable ones. */
+/**
+ * The skills for the objective and latest message, from the usable ones: three
+ * at the baseline window, more for a model whose context budget allows it.
+ */
 export async function selectedSkills(
   tx: Transaction,
   spaceId: string,
@@ -91,6 +99,7 @@ export async function selectedSkills(
   /** What a delivered learned procedure covers; a built-in covering the same work gives way to it. */
   beside?: ProcedureReach,
   keepsMemory = true,
+  maxSkills: number = CONTEXT_LIMITS.max_skills,
 ): Promise<SkillPayload[]> {
   const eligible = await usableSkills(
     tx,
@@ -101,7 +110,7 @@ export async function selectedSkills(
     beside,
     keepsMemory,
   );
-  return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) =>
+  return chooseSkills(objective, latestMessage, eligible, maxSkills).map(({ skill }) =>
     skillPayloadOf(skill, spaceId),
   );
 }
@@ -116,6 +125,7 @@ export async function selectedContext(
   publicCompartment = false,
   beside?: ProcedureReach,
   keepsMemory = true,
+  maxSkills: number = CONTEXT_LIMITS.max_skills,
 ): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
   const skills = await selectedSkills(
     tx,
@@ -127,6 +137,7 @@ export async function selectedContext(
     undefined,
     beside,
     keepsMemory,
+    maxSkills,
   );
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   if (publicCompartment) return { skills, knowledge: [] };

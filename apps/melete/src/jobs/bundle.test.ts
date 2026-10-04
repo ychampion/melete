@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import type { AttemptOutcome, CanonicalMessage, Deliverable } from '@melete/contracts';
+import {
+  type AttemptOutcome,
+  BASELINE_CONTEXT_BUDGET,
+  type CanonicalMessage,
+  contextBudget,
+  type Deliverable,
+} from '@melete/contracts';
+import { estimateInputTokens } from '../gateway/metering.ts';
 import {
   assembleHistory,
   BundleContextLimitError,
@@ -10,6 +17,8 @@ import {
   renderEarlierWork,
   TRANSCRIPT_MAX_CHARACTERS,
   TRANSCRIPT_MAX_MESSAGES,
+  TRANSCRIPT_MAX_WIRE_BYTES,
+  transcriptLimits,
 } from './bundle.ts';
 
 const at = '2026-09-11T08:00:00.000Z';
@@ -307,6 +316,46 @@ describe('durable attempt context', () => {
       boundTranscript([{ role: 'tool', tool_call_id: 'x'.repeat(32_001), content: '{}', at }]),
     ).toThrow(BundleContextLimitError);
   });
+
+  test("a long-context model's budget carries much more of the conversation", () => {
+    const messages = Array.from(
+      { length: 400 },
+      (_, index): CanonicalMessage => ({
+        role: 'user',
+        content: `Message ${index}: ${'details '.repeat(40)}`,
+        at,
+      }),
+    );
+    const small = boundTranscript(messages, transcriptLimits(contextBudget('unlisted-model')));
+    const large = boundTranscript(
+      messages,
+      transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash')),
+    );
+    // The baseline is the bound every model had before.
+    expect(JSON.stringify(small).length).toBeLessThanOrEqual(TRANSCRIPT_MAX_CHARACTERS);
+    expect(small.some((message) => message.content.startsWith('Message 300:'))).toBe(false);
+    // 62,500 tokens of transcript at four characters each holds all four hundred.
+    expect(JSON.stringify(large).length).toBeLessThanOrEqual(62_500 * 4);
+    expect(large).toHaveLength(400);
+    expect(large[0]?.content).toStartWith('Message 0:');
+    // A completed tool identity a small bound refuses fits a large one.
+    const identities = Array.from(
+      { length: 150 },
+      (_, index): CanonicalMessage => ({
+        role: 'tool',
+        tool_call_id: `call-${index}`,
+        content: '{}',
+        at,
+      }),
+    );
+    expect(() => boundTranscript(identities)).toThrow(BundleContextLimitError);
+    expect(
+      boundTranscript(
+        identities,
+        transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash')),
+      ),
+    ).toHaveLength(150);
+  });
 });
 
 describe('persisted completion evidence', () => {
@@ -589,7 +638,7 @@ describe("a room request's history", () => {
         createdAt: new Date(later),
       },
     ];
-    const named = assembleHistory(events, [], 1, new Map([['own_alice', 'Alice']]));
+    const named = assembleHistory(events, [], 1, { names: new Map([['own_alice', 'Alice']]) });
     expect(named.transcript.map((message) => message.name)).toEqual(['Alice', 'Alice']);
     expect(named.inputs.new_user_messages).toEqual([
       { role: 'user', content: 'For six.', name: 'Alice', at: later },
@@ -616,5 +665,118 @@ describe('a room thread beside the request', () => {
       'talk after',
       'more',
     ]);
+  });
+});
+
+describe('the transcript bound holds for text in any script', () => {
+  const large = transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash'));
+  const say = (text: string, count: number) =>
+    Array.from(
+      { length: count },
+      (_, index): CanonicalMessage => ({
+        role: index % 2 ? 'assistant' : 'user',
+        content: `${index}: ${text}`,
+        at,
+      }),
+    );
+
+  test('Chinese text is bounded by the engine estimate, not four characters to the token', () => {
+    const bounded = boundTranscript(
+      say('请帮我查一下这个月的账单，并把结果告诉我。'.repeat(20), 800),
+      large,
+    );
+    const serialized = JSON.stringify(bounded);
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(large.maxTokens);
+    // At four characters to the token it would have kept four times as many.
+    expect(serialized.length).toBeLessThan(large.maxTokens * 2);
+    expect(Buffer.byteLength(JSON.stringify(serialized))).toBeLessThanOrEqual(
+      TRANSCRIPT_MAX_WIRE_BYTES,
+    );
+  });
+
+  test('text heavy with escapes and multi-byte letters stays inside the wire bound', () => {
+    const bounded = boundTranscript(say('"Привет" \\ ไทย\n'.repeat(60), 800), large);
+    const serialized = JSON.stringify(bounded);
+    expect(Buffer.byteLength(JSON.stringify(serialized))).toBeLessThanOrEqual(
+      TRANSCRIPT_MAX_WIRE_BYTES,
+    );
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(large.maxTokens);
+    expect(bounded.at(-1)?.content).toStartWith('799:');
+  });
+
+  test('Latin text keeps exactly the bound it had', () => {
+    const messages = say('plain words '.repeat(50), 200);
+    expect(boundTranscript(messages)).toEqual(
+      boundTranscript(messages, transcriptLimits(BASELINE_CONTEXT_BUDGET)),
+    );
+    expect(JSON.stringify(boundTranscript(messages)).length).toBeGreaterThan(31_000);
+  });
+});
+
+describe("a new message's size comes out of the transcript's room", () => {
+  test('an attached document leaves less room for earlier turns, and the total stays inside the bound', () => {
+    const events = Array.from({ length: 60 }, (_, index) => ({
+      seq: index + 1,
+      type: 'notice' as const,
+      payload: { kind: 'user_message', text: `Earlier ${index}: ${'words '.repeat(60)}` },
+      createdAt: new Date(Date.parse(at) + index * 1000),
+    }));
+    const document = 'A long attached document line. '.repeat(700);
+    const withDocument = [
+      ...events,
+      {
+        seq: 61,
+        type: 'notice' as const,
+        payload: { kind: 'user_message', text: `Please read this.\n${document}` },
+        createdAt: new Date(Date.parse(at) + 61_000),
+      },
+    ];
+    const result = assembleHistory(withDocument, [], 60);
+    const fresh = result.inputs.new_user_messages[0];
+    expect(fresh?.content).toContain(document);
+    // The new message is kept whole in the transcript, and with it the whole
+    // serialized transcript still fits the baseline bound.
+    expect(result.transcript.at(-1)).toEqual(fresh);
+    const serialized = JSON.stringify(result.transcript);
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(
+      BASELINE_CONTEXT_BUDGET.transcript_tokens,
+    );
+    // Without the document, more earlier turns fit.
+    const without = assembleHistory(
+      [
+        ...events,
+        { ...withDocument[60], payload: { kind: 'user_message', text: 'Hi.' } },
+      ] as typeof withDocument,
+      [],
+      60,
+    );
+    // Older turns past the room are kept only as abbreviated placeholders.
+    const kept = (transcript: CanonicalMessage[]) =>
+      transcript.filter((message) => message.content.startsWith('Earlier')).length;
+    expect(kept(without.transcript)).toBeGreaterThan(kept(result.transcript));
+  });
+
+  test('a new message larger than the bound still runs, with the earlier bound as before', () => {
+    const huge = 'x'.repeat(40_000);
+    const result = assembleHistory(
+      [
+        {
+          seq: 1,
+          type: 'tool_result',
+          payload: { call_id: 'call-1', ok: true, result: {} },
+          createdAt: new Date(at),
+        },
+        {
+          seq: 2,
+          type: 'notice',
+          payload: { kind: 'user_message', text: huge },
+          createdAt: new Date(later),
+        },
+      ],
+      [],
+      1,
+    );
+    expect(result.inputs.new_user_messages[0]?.content).toBe(huge);
+    expect(result.transcript.some((message) => message.tool_call_id === 'call-1')).toBe(true);
   });
 });

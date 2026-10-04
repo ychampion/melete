@@ -458,7 +458,8 @@ describe('cloud requests: redact out, rehydrate back', () => {
       ],
     });
     const anthropic = JSON.parse(captured[1]?.body ?? '{}');
-    expect(anthropic.messages[0].content[0]).toEqual({
+    // The gateway's cache breakpoint on the newest block rides beside the swap.
+    expect(anthropic.messages[0].content[0]).toMatchObject({
       type: 'tool_use',
       id: 'toolu_1',
       name: 'contacts.add',
@@ -540,7 +541,10 @@ describe('cloud requests: redact out, rehydrate back', () => {
     expect(JSON.parse(captured[0]?.body ?? '{}').input[0].content[0].text).toBe(
       'write to ⟦EMAIL_1⟧',
     );
-    expect(JSON.parse(captured[1]?.body ?? '{}').system).toBe('Owner email ⟦EMAIL_1⟧');
+    // The system prompt leaves as one text block carrying the gateway's cache breakpoint.
+    expect(JSON.parse(captured[1]?.body ?? '{}').system).toEqual([
+      { type: 'text', text: 'Owner email ⟦EMAIL_1⟧', cache_control: { type: 'ephemeral' } },
+    ]);
     const deltas = (raw: string, key: 'delta' | 'text') =>
       raw
         .split('\n\n')
@@ -635,6 +639,24 @@ describe('private conversations', () => {
     expect(captured[0]?.headers.authorization).toBeUndefined();
     expect(JSON.stringify(captured[0]?.headers)).not.toContain('fw-provider-key');
     expect(settlements[0]?.privacy?.route).toBe('local');
+  });
+
+  test('a private call to the local model goes without its answer schema', async () => {
+    const { captured, post, settlements } = await start({ store: await privateStore(true) });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'Remember I take tea.' }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'memory_extraction', schema: { type: 'object' }, strict: true },
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    const body = JSON.parse(captured[0]?.body ?? '{}');
+    expect(body).not.toHaveProperty('response_format');
+    expect(body.messages[0].content).toBe('Remember I take tea.');
+    expect(settlements[0]?.structured).toBe('stripped');
   });
 
   test('with no local model the request is refused before anything is reserved or sent', async () => {

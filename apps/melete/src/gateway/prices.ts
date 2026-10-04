@@ -11,6 +11,11 @@
  * The defaults are deliberately rounded estimates for the providers Melete
  * serves. A model nothing here names is charged at the conservative `*`
  * entry, so an unknown model never counts as free.
+ *
+ * Input a provider read from its prompt cache, or wrote to it, is charged at
+ * its own price. An entry that names none takes its provider's published share
+ * of the input price (`CACHE_PRICE_SHARE`); a provider not listed there, an
+ * operator's own endpoint included, is assumed to give no discount.
  */
 import { z } from 'zod';
 
@@ -19,9 +24,50 @@ export type ModelPrice = {
   input: number;
   /** Dollars per million output tokens. */
   output: number;
-  /** Dollars per million cached input tokens. Left out, a tenth of `input`. */
+  /** Dollars per million cached input tokens. Left out, the provider's share of `input`. */
   cached_input?: number;
+  /** Dollars per million input tokens written to the cache. Left out, the provider's share of `input`. */
+  cache_write_input?: number;
 };
+
+/**
+ * What a provider charges for input read from, or written to, its prompt cache,
+ * as a share of its ordinary input price: Anthropic a tenth for a read and a
+ * quarter more for a five-minute write; OpenAI's current models, and the
+ * ChatGPT plan served the same way, a tenth; Gemini a tenth. Fireworks prices
+ * each model's cached input on its own, from a fiftieth to a fifth of its input
+ * price; its share is the highest of those, so a model priced by share is never
+ * undercharged, and the default model carries its own listed price below.
+ */
+export const CACHE_PRICE_SHARE: Readonly<Record<string, { read: number; write: number }>> = {
+  anthropic: { read: 0.1, write: 1.25 },
+  openai: { read: 0.1, write: 1 },
+  chatgpt: { read: 0.1, write: 1 },
+  fireworks: { read: 0.2, write: 1 },
+  google: { read: 0.1, write: 1 },
+};
+
+const NO_DISCOUNT = { read: 1, write: 1 } as const;
+
+const shareOf = (provider: string) =>
+  Object.hasOwn(CACHE_PRICE_SHARE, provider)
+    ? (CACHE_PRICE_SHARE[provider] ?? NO_DISCOUNT)
+    : NO_DISCOUNT;
+
+/** The token counts a call's cost and charged input are read from. */
+export type PricedUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens?: number;
+};
+
+/** The input split into what was read from the cache, written to it, and neither. */
+function split(usage: PricedUsage) {
+  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  const written = Math.min(usage.cacheWriteInputTokens ?? 0, usage.inputTokens - cached);
+  return { cached, written, fresh: usage.inputTokens - cached - written };
+}
 
 /** Estimates for the configured providers. Override with MELETE_MODEL_PRICES. */
 export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
@@ -33,6 +79,8 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'chatgpt/*': { input: 0, output: 0 },
   'fireworks/*': { input: 0.9, output: 0.9 },
   'fireworks/*flash*': { input: 0.3, output: 1.2 },
+  // The default model, at its listed price: cached input at a fiftieth.
+  'fireworks/*deepseek-v4p1-flash*': { input: 0.3, output: 1.2, cached_input: 0.006 },
   'fireworks/*deepseek*': { input: 0.6, output: 2.2 },
   'fireworks/*qwen*': { input: 0.5, output: 1.5 },
   'fireworks/*llama*': { input: 0.2, output: 0.6 },
@@ -43,9 +91,9 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'openai/*': { input: 2.5, output: 10, cached_input: 0.25 },
   'openai/*mini*': { input: 0.4, output: 1.6, cached_input: 0.1 },
   'openai/*nano*': { input: 0.1, output: 0.4, cached_input: 0.025 },
-  'google/*': { input: 1.25, output: 10, cached_input: 0.3 },
-  'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.075 },
-  'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.025 },
+  'google/*': { input: 1.25, output: 10, cached_input: 0.125 },
+  'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.03 },
+  'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.01 },
 };
 
 const priceSchema = z
@@ -53,6 +101,7 @@ const priceSchema = z
     input: z.number().nonnegative().finite(),
     output: z.number().nonnegative().finite(),
     cached_input: z.number().nonnegative().finite().optional(),
+    cache_write_input: z.number().nonnegative().finite().optional(),
   })
   .strict();
 
@@ -114,22 +163,51 @@ export class PriceTable {
     return { ...fallback, entry: '*' };
   }
 
+  /** Dollars per million tokens for a cache read and a cache write of this model. */
+  private cachePrices(provider: string, price: ModelPrice): { read: number; write: number } {
+    const share = shareOf(provider);
+    return {
+      read: price.cached_input ?? price.input * share.read,
+      write: price.cache_write_input ?? price.input * share.write,
+    };
+  }
+
   /**
    * Dollars one call cost. `inputTokens` includes any cached input, as the
-   * gateway records it; the cached part is charged at the cached price.
+   * gateway records it; the cached part is charged at the cached price and a
+   * cache write at the write price.
    */
-  cost(
-    provider: string,
-    model: string,
-    usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
-  ): number {
+  cost(provider: string, model: string, usage: PricedUsage): number {
     const price = this.priceFor(provider, model);
-    const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
-    const fresh = usage.inputTokens - cached;
-    const cachedPrice = price.cached_input ?? price.input / 10;
+    const cache = this.cachePrices(provider, price);
+    const { cached, written, fresh } = split(usage);
     const dollars =
-      (fresh * price.input + cached * cachedPrice + usage.outputTokens * price.output) / 1_000_000;
+      (fresh * price.input +
+        cached * cache.read +
+        written * cache.write +
+        usage.outputTokens * price.output) /
+      1_000_000;
     // Kept to the micro-dollar the ledger stores.
     return Math.round(dollars * 1_000_000) / 1_000_000;
+  }
+
+  /**
+   * The input one call is charged for in full-price-equivalent tokens, from the
+   * same prices as its cost: cached input at its cached price, a cache write at
+   * its write price, the rest at full price. A model priced at nothing (a plan
+   * or the scripted provider) takes its provider's share. Rounded up, so a call
+   * with any input is never charged nothing.
+   */
+  chargedInputTokens(provider: string, model: string, usage: PricedUsage): number {
+    const price = this.priceFor(provider, model);
+    const share =
+      price.input > 0
+        ? (() => {
+            const cache = this.cachePrices(provider, price);
+            return { read: cache.read / price.input, write: cache.write / price.input };
+          })()
+        : shareOf(provider);
+    const { cached, written, fresh } = split(usage);
+    return Math.ceil(fresh + cached * share.read + written * share.write);
   }
 }

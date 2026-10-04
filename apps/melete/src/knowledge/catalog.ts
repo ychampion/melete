@@ -1,14 +1,16 @@
-import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
+import type { ToolSpec } from '@melete/contracts';
 import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
 import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
+import { ALWAYS_OFFERED_WEB_TOOLS } from '../broker/catalog.ts';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentAccessIn, offeredTo } from '../experience/access.ts';
+import { attemptContextBudget } from '../jobs/context-budget.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { connectionServesJob, typedAudience } from '../jobs/scopes.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
@@ -64,6 +66,8 @@ export class RuntimeCatalog {
     // agent without the computer gets no engine terminal, and a narrowed agent
     // only its connections' tools. Anything more is offered and then refused.
     const access = await agentAccessIn(tx, claims.job_id);
+    // How much of each kind this attempt's model has room for.
+    const budget = attemptContextBudget(bundle.model.model, bundle.budget);
     const granted = (
       await this.toolsForSpace(claims.space_id, claims.scopes, tx, claims.job_id)
     ).filter((tool) => offeredTo(access, tool));
@@ -75,11 +79,19 @@ export class RuntimeCatalog {
     const terminal = granted.filter(
       (tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id !== null,
     );
+    // Searching and reading the web keep their place the same way, as the
+    // broker's own first catalog keeps them: every agent has them whatever else
+    // its space connects.
+    const web = granted.filter(
+      (tool) =>
+        tool.connection_id !== null &&
+        ALWAYS_OFFERED_WEB_TOOLS.some(
+          (name) => tool.name === name || tool.name.startsWith(`${name}__`),
+        ),
+    );
+    const first = [...terminal, ...web];
     const kept = new Set(
-      [...terminal, ...granted.filter((tool) => !terminal.includes(tool))].slice(
-        0,
-        CONTEXT_LIMITS.max_tools,
-      ),
+      [...first, ...granted.filter((tool) => !first.includes(tool))].slice(0, budget.max_tools),
     );
     const tools = granted.filter((tool) => kept.has(tool));
     const reachable = reachableToolNames(granted, claims.scopes);
@@ -105,19 +117,19 @@ export class RuntimeCatalog {
     );
     // Triggers now only rank: the likeliest few are given in full, and every
     // other usable skill is named in the index for the attempt to read itself.
-    const chosen = chooseSkills(objective, latest, usable, 3).map(({ skill }) =>
+    const chosen = chooseSkills(objective, latest, usable, budget.max_skills).map(({ skill }) =>
       skillPayloadOf(skill, claims.space_id),
     );
     const skills = [
       ...procedures,
       ...chosen.filter((skill) => !procedures.some((kept) => kept.name === skill.name)),
-    ].slice(0, CONTEXT_LIMITS.max_skills);
+    ].slice(0, budget.max_skills);
     const given = new Set(skills.map((skill) => skill.name));
     const skill_index = indexSkills(
       objective,
       latest,
       usable.filter((skill) => !given.has(skill.frontmatter.name)),
-      CONTEXT_LIMITS.skill_index_tokens,
+      budget.skill_index_tokens,
     );
     return { tools, skills, skill_index };
   };

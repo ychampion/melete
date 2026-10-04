@@ -18,11 +18,13 @@ import {
   mediaTokens,
   withAttachedFiles,
 } from './attachments.ts';
+import { applyPromptCaching, promptCacheScope } from './caching.ts';
 import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
+import { PriceTable } from './prices.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -32,6 +34,14 @@ import {
   resolveRoute,
 } from './providers.ts';
 import { providerIsLocal } from './routing.ts';
+import {
+  hasStructuredOutput,
+  namesSchema,
+  refuseStructured,
+  stripStructuredOutput,
+  structuredRefused,
+  supportsStructuredOutput,
+} from './structured.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -44,6 +54,7 @@ import {
   type SignedInCredential,
 } from './types.ts';
 
+export * from './caching.ts';
 export * from './fake.ts';
 export * from './providers.ts';
 export * from './types.ts';
@@ -98,6 +109,16 @@ export interface GatewayOptions {
    * bounded request each, recorded against the job that searched.
    */
   providerSearch?: boolean;
+  /**
+   * The install's own secret the prompt-cache keys are an HMAC under. Without
+   * one, a secret drawn once for the process is used.
+   */
+  promptCacheSecret?: string;
+  /**
+   * The price table that turns cached input into full-price-equivalent tokens.
+   * Left out, the spending guard's own table is used, or the defaults.
+   */
+  prices?: PriceTable;
   /** The files people sent in chat, swapped into a job's requests as files where allowed. */
   attachments?: GatewayAttachments;
 }
@@ -179,6 +200,25 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+/** At most `limit` bytes of a response's text; the rest is not read. */
+async function cappedText(response: Response, limit: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < limit) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit));
+}
+
 export function createModelGateway(options: GatewayOptions): Server {
   // Checked at run time too, for a caller that reached here around the type.
   if (options.privacy !== false && !(options.privacy instanceof PrivacyRouter))
@@ -190,6 +230,10 @@ export function createModelGateway(options: GatewayOptions): Server {
   }
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
+  // One price table for spending and for charged input: the spending guard's.
+  const guardPrices = (options.spending as { prices?: unknown } | undefined)?.prices;
+  const prices =
+    options.prices ?? (guardPrices instanceof PriceTable ? guardPrices : new PriceTable());
   const maxRequestBytes = options.maxRequestBytes ?? GATEWAY_MAX_REQUEST_BYTES;
   const defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
   if (!positiveInteger(defaultMaxTokens))
@@ -355,7 +399,13 @@ export function createModelGateway(options: GatewayOptions): Server {
       // A model on the person's own machine or network keeps its calls: nothing
       // is rerouted or sent to a cloud fallback from it.
       const primaryLocal = providerIsLocal(provider);
-      const candidates: { provider: string; model: string; plain?: boolean }[] = primaryLocal
+      const candidates: {
+        provider: string;
+        model: string;
+        plain?: boolean;
+        /** Sent without its answer schema, after the model refused one. */
+        schemaless?: boolean;
+      }[] = primaryLocal
         ? [{ provider: provider.name, model }]
         : routeCandidates(principal, provider.name, model, carriesPictures);
       const router = options.privacy === false ? null : options.privacy;
@@ -372,7 +422,20 @@ export function createModelGateway(options: GatewayOptions): Server {
         }
         const callProvider = target.provider;
         const callModel = candidate.model;
-        const callBody: Record<string, unknown> = { ...body, model: callModel };
+        const rerouted = callModel !== model || callProvider.name !== provider.name;
+        // An answer schema goes only to a model that takes one. It is left out
+        // for a model that refused one, and for a fallback without structured
+        // outputs; the request is then the prose request it also is.
+        const named: Record<string, unknown> = { ...body, model: callModel };
+        const schemaCarried = hasStructuredOutput(named);
+        let schemaStripped =
+          schemaCarried &&
+          (candidate.schemaless === true ||
+            structuredRefused(callProvider.name, callModel) ||
+            (rerouted && !supportsStructuredOutput(callProvider.name, callModel)));
+        const callBody: Record<string, unknown> = schemaStripped
+          ? stripStructuredOutput(named)
+          : named;
         for (const key of ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
           delete callBody[key];
         callBody[
@@ -392,7 +455,6 @@ export function createModelGateway(options: GatewayOptions): Server {
             effort: options.reasoningEffort,
           });
         const effortAdded = reasoningOf() !== before;
-        const rerouted = callModel !== model || callProvider.name !== provider.name;
         const route: GatewaySettlement['route'] = !rerouted
           ? undefined
           : index === 0
@@ -400,6 +462,7 @@ export function createModelGateway(options: GatewayOptions): Server {
             : 'fallback';
         let encoded: string;
         let inputTokens: number;
+        let cachingHeaders: Record<string, string> = {};
         try {
           // Where this request may go and what it may carry: private conversations
           // go to the person's own model, everything else leaves with its sensitive
@@ -408,12 +471,16 @@ export function createModelGateway(options: GatewayOptions): Server {
           prepared = router
             ? await router.prepare({ principal, provider: callProvider, protocol, body: callBody })
             : null;
-          // The runtime's mark on a screenshot is for the router; it never leaves.
           local = prepared?.local ?? null;
+          // The person's own model is an OpenAI-compatible server that may not
+          // take a schema; a private conversation's call goes to it without one.
+          const routed = prepared?.body ?? callBody;
+          const localSchema = Boolean(local) && hasStructuredOutput(routed);
+          if (localSchema) schemaStripped = true;
           // The runtime's mark on a screenshot is for the router; it never leaves.
           // The person's files go as files where the route and this model allow it.
           const outbound = await withAttachedFiles({
-            body: withoutMarks(prepared?.body ?? callBody),
+            body: withoutMarks(localSchema ? stripStructuredOutput(routed) : routed),
             protocol,
             provider: callProvider.name,
             model: callModel,
@@ -426,6 +493,22 @@ export function createModelGateway(options: GatewayOptions): Server {
             source: options.attachments,
             maxRequestBytes,
           });
+          // The provider's prompt-caching controls, placed on the request as it
+          // will leave, after the person's files are swapped in, so a breakpoint
+          // never lands ahead of a block that is still to change. A model on the
+          // person's own machine, device or network is sent the body as written.
+          cachingHeaders =
+            local ||
+            prepared?.route === 'on_device' ||
+            providerIsLocal(callProvider) ||
+            callProvider.fake
+              ? {}
+              : applyPromptCaching(outbound, {
+                  provider: callProvider.name,
+                  protocol,
+                  scope: promptCacheScope(principal),
+                  ...(options.promptCacheSecret ? { secret: options.promptCacheSecret } : {}),
+                }).headers;
           encoded = JSON.stringify(outbound);
           // A picture is charged as the flat count the engine compacts by, and a
           // document by its pages, not as the base64 text either travels in.
@@ -488,6 +571,7 @@ export function createModelGateway(options: GatewayOptions): Server {
           httpStatus: null,
           ...(prepared ? { privacy: prepared.receipt } : {}),
           ...(stopped ? { stopped } : {}),
+          ...(schemaCarried ? { structured: schemaStripped ? 'stripped' : 'sent' } : {}),
           ...(route ? { route, routedFrom: { provider: provider.name, model } } : {}),
           ...(servedLocally
             ? {
@@ -504,6 +588,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         });
         for (const [name, value] of Object.entries(signedIn?.headers ?? {}))
           headers.set(name, value);
+        for (const [name, value] of Object.entries(cachingHeaders)) headers.set(name, value);
         if (local) {
           if (credential) headers.set('authorization', `Bearer ${credential}`);
           // The router pinned the local model to the address it checked for this request.
@@ -545,8 +630,13 @@ export function createModelGateway(options: GatewayOptions): Server {
         settlement.httpStatus = answer.status;
         heard();
         if (!answer.ok || !answer.body) {
-          // Provider errors may contain injected keys or internal request diagnostics.
-          await answer.body?.cancel();
+          // Provider errors may contain injected keys or internal request
+          // diagnostics. A 400's text is read here only to tell a refused
+          // schema from anything else; it is never passed on.
+          let errorText = '';
+          if (answer.status === 400 && schemaCarried && !schemaStripped)
+            errorText = await cappedText(answer, 16 * 1024);
+          else await answer.body?.cancel();
           settlement.status = 'failed';
           if (signedIn && answer.status === 401)
             callProvider.signedIn?.rejected(signedIn.generation);
@@ -554,6 +644,25 @@ export function createModelGateway(options: GatewayOptions): Server {
             answer.status === 429 ? 429 : 502,
             'provider_rejected_request',
           );
+          // A model that refuses the answer schema is asked once more without
+          // it, every other field kept, and is not sent one again in this
+          // process. That 400 is the schema's, so the effort stays.
+          if (errorText && namesSchema(errorText)) {
+            refuseStructured(callProvider.name, callModel);
+            options.onError?.(
+              new Error(
+                `structured_refused: ${callProvider.name}/${callModel} refused an answer schema`,
+              ),
+            );
+            settlement.structured = 'refused';
+            settlement.latencyMs = Math.round(performance.now() - started);
+            await settle(principal, reservation, settlement);
+            firstFailure ??= failure;
+            reservation = undefined;
+            settlement = undefined;
+            candidates.splice(index + 1, 0, { ...candidate, schemaless: true });
+            continue;
+          }
           // A model that refuses the reasoning control the gateway added is
           // asked once more without it, before anything else is tried.
           if (effortAdded && answer.status === 400 && !local) {
@@ -627,7 +736,21 @@ export function createModelGateway(options: GatewayOptions): Server {
       const rest = redactor.feed(new Uint8Array(), true);
       const tail = streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
       settlement.modelActual = collector.modelActual;
-      settlement.usage = collector.completed ? collector.usage : null;
+      // Cached input in full-price-equivalent tokens, from the price table the
+      // spending caps use; nothing is discounted on the person's own model.
+      settlement.usage =
+        collector.completed && collector.usage
+          ? {
+              ...collector.usage,
+              chargedInputTokens: settlement.servedLocally
+                ? collector.usage.inputTokens
+                : prices.chargedInputTokens(
+                    settlement.provider,
+                    settlement.modelRequested,
+                    collector.usage,
+                  ),
+            }
+          : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
       // A reply cut off before its usage arrived is still billed by the
       // provider. The job keeps its whole reservation charged; the spending

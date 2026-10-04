@@ -283,7 +283,10 @@ def test_discovery_registers_only_broker_returned_schemas(client, broker):
     found = json.loads(ctx.tools[0]["handler"]({"query": "mail"}, task_id="engine", session_id="session"))
     assert found["tools"][0]["name"] == "email.search"
     result = json.loads(ctx.tools[1]["handler"]({"name": "email.search"}, user_task="engine metadata"))
+    # No run is being served, so the tool cannot join a running agent: the
+    # result carries the mark that tells the adapter to continue in a new run.
     assert result["status"] == "tools_loaded"
+    assert result["error"] == "continues_in_a_new_run"
     assert [tool["name"] for tool in ctx.tools] == ["search_tools", "load_tool", "email.search"]
     ctx.tools[2]["handler"]({"query": "invoices"})
     assert broker.requests[-2]["path"] == "/actions"
@@ -293,6 +296,82 @@ def test_discovery_registers_only_broker_returned_schemas(client, broker):
     assert broker.requests[2]["body"] == {"name": "email.search"}
     ctx.tools[1]["handler"]({"name": "email.search"})
     assert len(ctx.tools) == 3
+
+
+class _LiveAgent:
+    """Stands in for the engine's running agent: a tool list and its names."""
+
+    def __init__(self, names):
+        self.valid_tool_names = set(names)
+
+
+def _engine_refresh(monkeypatch, refresh):
+    """Installs a stand-in for the engine module the live refresh calls."""
+    import types
+
+    module = types.ModuleType("tools.mcp_tool_agent")
+    module.refresh_agent_mcp_tools = refresh
+    package = types.ModuleType("tools")
+    package.mcp_tool_agent = module
+    monkeypatch.setitem(sys.modules, "tools", package)
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_agent", module)
+
+
+def test_a_loaded_tool_joins_the_running_agent_without_a_new_run(client, broker, monkeypatch):
+    import melete_runtime_hooks
+
+    agent = _LiveAgent(["search_tools", "load_tool"])
+    calls = []
+
+    def refresh(target, **options):
+        calls.append(options)
+        # The engine reads the live registry; the plugin has just registered the tool.
+        target.valid_tool_names.add("email.search")
+        return {"email.search"}
+
+    _engine_refresh(monkeypatch, refresh)
+    melete_runtime_hooks.bind_agent(agent)
+    try:
+        broker.catalog = [
+            {"name": "search_tools", "description": "Find tools", "connection_id": None},
+            {"name": "load_tool", "description": "Load tools", "connection_id": None},
+        ]
+        ctx = RecordingContext()
+        register(ctx, client)
+        result = json.loads(ctx.tools[1]["handler"]({"name": "email.search"}))
+    finally:
+        melete_runtime_hooks.bind_agent(object())
+    assert result["status"] == "loaded"
+    assert "error" not in result
+    assert result["instruction"] == "email.search is in your tools now. Call it directly."
+    # The engine's own refresh, keeping the earlier tools where they were.
+    assert calls == [{"quiet_mode": True, "preserve_prefix": True}]
+    assert [tool["name"] for tool in ctx.tools] == ["search_tools", "load_tool", "email.search"]
+
+
+def test_a_refresh_that_fails_or_misses_the_tool_falls_back_to_a_new_run(client, broker, monkeypatch, capsys):
+    import melete_runtime_hooks
+
+    def broken(target, **options):
+        raise RuntimeError("engine refresh failed")
+
+    _engine_refresh(monkeypatch, broken)
+    agent = _LiveAgent([])
+    melete_runtime_hooks.bind_agent(agent)
+    try:
+        assert melete_runtime_hooks.refresh_live_tools("email.search") is False
+        assert "the engine refresh failed (RuntimeError)" in capsys.readouterr().err
+        _engine_refresh(monkeypatch, lambda target, **options: set())
+        assert melete_runtime_hooks.refresh_live_tools("email.search") is False
+        assert "does not offer it" in capsys.readouterr().err
+    finally:
+        melete_runtime_hooks.bind_agent(object())
+    # A finished run's agent is not kept alive by the reference.
+    del agent
+    import gc
+
+    gc.collect()
+    assert melete_runtime_hooks.refresh_live_tools("email.search") is False
 
 
 def test_denied_load_cannot_register_a_handler(client, broker):
