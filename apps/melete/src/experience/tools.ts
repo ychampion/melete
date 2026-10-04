@@ -565,6 +565,8 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
     }
     case 'computer.scroll':
       return phrase('Scrolling in its computer', 'Scrolled in its computer');
+    case 'computer.batch':
+      return phrase('Doing a few steps in its computer', 'Did a few steps in its computer');
     case 'exec.run':
     case 'terminal.run':
       return command

@@ -63,6 +63,7 @@ import {
   COMPUTER_TOOLS,
   ComputerPayloadRefusal,
   HumanControlRefusal,
+  MAX_BATCH_ACTIONS,
   runComputerAction,
 } from './sandbox-computer.ts';
 import {
@@ -242,8 +243,13 @@ function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
 export function sandboxDispatchBudgetMs(
   action: Pick<Action, 'canonical_payload'> & Partial<Pick<Action, 'kind'>>,
 ): number {
+  // Each step, then the screenshot taken after the last.
   if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
-    return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
+    return (
+      COMPUTER_BUDGET_MS * (action.kind === 'computer.batch' ? MAX_BATCH_ACTIONS + 1 : 2) +
+      SANDBOX_SYNC_ALLOWANCE_MS +
+      WORKSPACE_WAIT_MS
+    );
   if (action.kind && PROCESS_TOOL_NAMES.has(action.kind))
     return processDispatchBudgetMs(
       { kind: action.kind, canonical_payload: action.canonical_payload },
