@@ -601,7 +601,11 @@ export class ModelSettingsService {
     person: { id: string; guest?: boolean } | null,
     rows: Map<string, KeyRow>,
   ): Promise<SecondaryModel> {
-    const row = person ? await this.secondaryRow(person.id) : null;
+    // Only the installation's owner has a secondary; a stray row for anyone else is not shown.
+    const row =
+      person && (await this.isInstallationOwner(person.id))
+        ? await this.secondaryRow(person.id)
+        : null;
     return {
       model:
         row?.provider && row.model
