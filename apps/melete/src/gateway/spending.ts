@@ -585,6 +585,8 @@ export class SpendingGuard implements GatewaySpending {
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
       if (this.limited) await this.noticeOnce(scope.personId);
+      // The next admission reads the totals with this call in them.
+      else if (this.backgroundLimited) await this.totals(scope.personId, this.now(), true);
     } catch (error) {
       process.stderr.write(
         `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,

@@ -9,6 +9,9 @@ import {
   type HealthDetail,
   HealthMonitor,
   healthDetail,
+  spendAlertsFromEnv,
+  spendRateCheck,
+  spendShareCheck,
   webhookSender,
 } from './monitor.ts';
 
@@ -136,6 +139,43 @@ describe('operator alerts', () => {
     expect(() => loadEnv({ MELETE_ALERT_EMAIL_TO: 'ops@example.net' })).toThrow(
       'MELETE_ALERT_SMTP_URL',
     );
+  });
+
+  test('spending alerts are off until the operator sets one', () => {
+    expect(spendAlertsFromEnv(loadEnv({}))).toBeUndefined();
+    expect(spendAlertsFromEnv(loadEnv({ MELETE_ALERT_SPEND_HOURLY_MULTIPLE: '5' }))).toEqual({
+      hourlyMultiple: 5,
+      minUsd: 1,
+    });
+    expect(
+      spendAlertsFromEnv(
+        loadEnv({ MELETE_ALERT_SPEND_PERSON_PERCENT: '60', MELETE_ALERT_SPEND_MIN_USD: '2.5' }),
+      ),
+    ).toEqual({ personPercent: 60, minUsd: 2.5 });
+  });
+
+  test('an hour far above the usual one alerts, but not below the floor', () => {
+    expect(spendRateCheck(6, 1, 5, 1)).toMatchObject({ name: 'spend_rate', ok: false });
+    expect(spendRateCheck(4, 1, 5, 1).ok).toBe(true);
+    // Below the floor, even a quiet installation's first spending is not an alert.
+    expect(spendRateCheck(0.5, 0, 5, 1).ok).toBe(true);
+    expect(spendRateCheck(1.5, 0, 5, 1).detail).toBe(
+      '$1.50 on model calls in the last hour; the usual hour is $0.00, and the alert is set at 5 times that',
+    );
+  });
+
+  test("one person's share of the day alerts only beside other people, and above the floor", () => {
+    const top = { personId: 'own_a', usd: 9 };
+    expect(spendShareCheck(top, 10, 3, 60, 1)).toMatchObject({ name: 'spend_share', ok: false });
+    expect(spendShareCheck(top, 10, 3, 95, 1).ok).toBe(true);
+    // The only person spending is all of it, which says nothing.
+    expect(spendShareCheck(top, 9, 1, 60, 1).ok).toBe(true);
+    expect(spendShareCheck({ personId: 'own_a', usd: 0.9 }, 1, 2, 60, 1).ok).toBe(true);
+    expect(spendShareCheck(null, 0, 0, 60, 1)).toEqual({
+      name: 'spend_share',
+      ok: true,
+      detail: 'no model spending today',
+    });
   });
 
   test('the detail checks the runtime with a time limit', async () => {
