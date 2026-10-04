@@ -12552,7 +12552,7 @@ export interface paths {
         get?: never;
         /**
          * Choose this account’s secondary model
-         * @description A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says; chats stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.
+         * @description A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says. The person’s own messages stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.
          */
         put: {
             parameters: {
@@ -23607,7 +23607,7 @@ export interface components {
             model: string;
             provider: string;
         };
-        /** @description Which work runs on the secondary. Applies only while a secondary model is set; chats with the person always run on the primary. */
+        /** @description Which work runs on the secondary. Applies only while a secondary model is set. A chat answering the person’s own message always runs on the primary; one a watch or a schedule wakes, with nobody writing, follows `scheduled`. */
         __schema638: {
             scheduled: components["schemas"]["__schema641"];
             side_tasks: components["schemas"]["__schema639"];

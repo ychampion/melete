@@ -21,8 +21,10 @@
  * primary in the spaces they own: short side calls (memory reads and voice
  * asides), on it by default, and scheduled and repeating work, off by
  * default. Work follows the settings of its space's owner, never those of
- * whoever spoke or asked. Chats always run on the primary, and the action
- * reviewer never moves: it is a safety check. With no secondary set,
+ * whoever spoke or asked. An attempt answering a person's own message runs on
+ * the primary; one nobody is waiting on (a routine, a watch, or a chat a watch
+ * woke) follows the scheduled setting. The action reviewer never moves: it is
+ * a safety check. With no secondary set,
  * everything runs as it would without one. Wherever a call goes, the privacy
  * router, spending limits and the gateway's checks still apply.
  *

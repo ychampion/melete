@@ -864,6 +864,16 @@ function SignInPanel({
   );
 }
 
+/**
+ * What Settings says about chats. The person's own messages always run on the
+ * primary; a chat a watch or a schedule wakes, with nobody writing, is
+ * background work and runs where scheduled and repeating jobs do.
+ */
+export const CHATS_WITH_YOU = {
+  name: 'Chats with you',
+  hint: 'Your messages always use the primary. When a watch or schedule wakes a chat, it follows Scheduled and repeating jobs.',
+};
+
 /** The kinds of work a secondary model can take, in the words Settings uses. */
 const WORK: { key: keyof ModelSettings['secondary']['uses']; name: string; hint: string }[] = [
   {
@@ -874,7 +884,7 @@ const WORK: { key: keyof ModelSettings['secondary']['uses']; name: string; hint:
   {
     key: 'scheduled',
     name: 'Scheduled and repeating jobs',
-    hint: 'Routines, and work that wakes on a schedule or an event',
+    hint: 'Routines, and work or chats that wake on a schedule or an event',
   },
 ];
 
@@ -952,8 +962,8 @@ export function SecondaryModel({
       <ul className="models-uses" aria-label="Which model each kind of work uses">
         <li>
           <span className="col" style={{ gap: 2, minWidth: 0 }}>
-            <span className="models-uses-name">Chats with you</span>
-            <span className="models-hint">Always the primary</span>
+            <span className="models-uses-name">{CHATS_WITH_YOU.name}</span>
+            <span className="models-hint">{CHATS_WITH_YOU.hint}</span>
           </span>
           <span className="models-uses-fixed">Primary</span>
         </li>

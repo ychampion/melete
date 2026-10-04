@@ -105,8 +105,9 @@ export const modelRole = z.enum(['primary', 'secondary']);
 export type ModelRole = z.infer<typeof modelRole>;
 
 /**
- * The kinds of work a person may move to their secondary model. Chats with
- * them always run on the primary, so they are not among these.
+ * The kinds of work a person may move to their secondary model. A chat
+ * answering the person's own message always runs on the primary; a chat a
+ * watch or a schedule wakes, with nobody writing, follows `scheduled`.
  */
 export const SECONDARY_WORK = ['side_tasks', 'scheduled'] as const;
 export type SecondaryWork = (typeof SECONDARY_WORK)[number];
@@ -144,8 +145,9 @@ export const secondaryModel = z
       }),
     uses: secondaryModelUses.meta({
       description:
-        'Which work runs on the secondary. Applies only while a secondary model is set; chats ' +
-        'with the person always run on the primary.',
+        'Which work runs on the secondary. Applies only while a secondary model is set. A chat ' +
+        'answering the person’s own message always runs on the primary; one a watch or a ' +
+        'schedule wakes, with nobody writing, follows `scheduled`.',
     }),
     can_edit: z
       .boolean()
