@@ -165,6 +165,8 @@ import {
   saveModelKeyRequest,
   setDefaultModelRequest,
   setModelVisionRequest,
+  setSecondaryModelRequest,
+  setSecondaryUsesRequest,
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
@@ -3649,6 +3651,49 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Only the setup owner changes the model'),
               '409': problem('The model in use has changed since the page loaded'),
+            },
+          },
+        },
+
+        '/model-settings/secondary': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Choose this account’s secondary model',
+            description:
+              'A second model for cheaper work beside the primary. It applies to work in the ' +
+              'owner’s spaces from the next call, as `secondary.uses` says; chats stay on the ' +
+              'primary, and the action reviewer never uses it. The provider must already have a ' +
+              'key or a sign-in.',
+            requestBody: json(setSecondaryModelRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The provider has no key or sign-in yet'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Remove this account’s secondary model, so all its work uses the primary',
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '403': problem('Only the setup owner changes the model'),
+            },
+          },
+        },
+
+        '/model-settings/secondary/uses': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Choose which of this account’s work runs on the secondary model',
+            description:
+              'Each kind left out keeps its setting. The choice is kept while no secondary model is ' +
+              'set, and applies once one is.',
+            requestBody: json(setSecondaryUsesRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
             },
           },
         },

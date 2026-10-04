@@ -93,7 +93,7 @@ import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
-import { ModelSettingsService } from './gateway/model-settings.ts';
+import { ModelSettingsService, type ScheduledWorkRow } from './gateway/model-settings.ts';
 import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
 import {
@@ -156,7 +156,12 @@ import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
-import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
+import {
+  attemptEngine,
+  engineProtocol,
+  providerAddress,
+  servicePrivacyRouter,
+} from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { mountRooms } from './rooms/routes.ts';
@@ -373,6 +378,7 @@ export function createApp(deps: AppDeps) {
         const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
         return installation?.id === actor;
       },
+      ...(modelSettings ? { roles: (actor) => modelSettings.roles(actor) } : {}),
     });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
@@ -1096,6 +1102,8 @@ export async function bootstrap(
         },
       };
       const boundaryForCatalog = effectBoundary;
+      // How the model an attempt runs on is reached, for the privacy checks before it starts.
+      const engineOf = attemptEngine(env, modelSettings);
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1106,11 +1114,15 @@ export async function bootstrap(
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 // Private memory is recalled only into attempts that stay on the person's own model.
-                recallsPrivateMemory: (jobId, attemptId) =>
-                  privacy.recallsPrivateMemory(jobId, attemptId, {
-                    protocol: engineProtocol(env),
-                    providerUrl: providerAddress(env),
-                  }),
+                // Judged by the model the attempt runs on, which may not be the server's default.
+                recallsPrivateMemory: async (jobId, attemptId, model) =>
+                  privacy.recallsPrivateMemory(
+                    jobId,
+                    attemptId,
+                    model
+                      ? await engineOf(model)
+                      : { protocol: engineProtocol(env), providerUrl: providerAddress(env) },
+                  ),
                 // The agent is told when what the person just wrote will not be kept.
                 refusesMemoryRead: (jobId) =>
                   privacy.refusesServiceRead(jobId, {
@@ -1131,6 +1143,7 @@ export async function bootstrap(
         router: () => privacy,
         engineProtocol: engineProtocol(env),
         providerUrl: providerAddress(env),
+        engineFor: engineOf,
         onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
       });
       runner = new AttemptRunner(jobs, gatedRuntime, {
@@ -1141,10 +1154,13 @@ export async function bootstrap(
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
         // A model chosen in the app applies from the next attempt. On the
         // server's default, a configured vision model reads its pictures.
+        // Scheduled work runs on its person's secondary when they chose so.
         ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
           ? {
-              resolveModel: (tx: Parameters<ModelSettingsService['routedChoice']>[1]) =>
-                (modelSettings as ModelSettingsService).routedChoice(routing, tx),
+              resolveModel: (
+                tx: Parameters<ModelSettingsService['routedChoice']>[1],
+                row: ScheduledWorkRow,
+              ) => (modelSettings as ModelSettingsService).routedChoice(routing, tx, row),
             }
           : {}),
         // Past a spending limit no attempt starts, and one cut short ends on it.

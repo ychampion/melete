@@ -91,10 +91,12 @@ export type RunnerOptions = {
   /**
    * The model a new attempt runs on, read when it is claimed, so a model the
    * owner chooses in the app applies from the next attempt without a restart.
-   * Left out, `provider` and `model` decide.
+   * Left out, `provider` and `model` decide. It is given the job, whose
+   * person may have moved scheduled work to their secondary model.
    */
   resolveModel?: (
     tx: Transaction,
+    row: JobRow,
   ) => Promise<{ provider: string; model: string; vision?: boolean }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
@@ -229,7 +231,7 @@ export class AttemptRunner {
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const chosen: { provider: string; model: string; vision?: boolean } =
-        (await this.options.resolveModel?.(tx)) ?? {
+        (await this.options.resolveModel?.(tx, row)) ?? {
           provider: this.options.provider ?? 'stub',
           model: this.options.model ?? 'script',
         };

@@ -52,6 +52,17 @@ export const models = {
       },
     }),
   restoreServerDefault: () => call<ModelSettings>('/model-settings/default', { method: 'DELETE' }),
+  /** Use a model as this account's secondary, for the work set to it. */
+  chooseSecondary: (name: ModelProvider, model: string) =>
+    call<ModelSettings>('/model-settings/secondary', {
+      method: 'PUT',
+      body: { provider: name, model },
+    }),
+  /** No secondary model: all this account's work uses the primary. */
+  removeSecondary: () => call<ModelSettings>('/model-settings/secondary', { method: 'DELETE' }),
+  /** Which of this account's work runs on the secondary model. */
+  setSecondaryUses: (uses: Partial<ModelSettings['secondary']['uses']>) =>
+    call<ModelSettings>('/model-settings/secondary/uses', { method: 'PUT', body: uses }),
   /**
    * Say whether the model in use reads images; null hands it back to Melete's
    * list. The model, and where it came from, stay as they are.

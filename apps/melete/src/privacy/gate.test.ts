@@ -279,3 +279,59 @@ describe('the broker resolves placeholders a payload still carries', () => {
     ]);
   });
 });
+
+describe('the check judges the model the attempt runs on', () => {
+  const LOCAL = 'http://127.0.0.1:11434/v1';
+  // The person confirmed the server's default address is a model they run.
+  const confirmed = { private_space: true, model_on_device_url: LOCAL };
+  const withModel = (n: number, provider: string, model: string) =>
+    ({ ...bundle(n, 'hello'), model: { provider, model, fallback: null } }) as AttemptBundle;
+  const gate = (engineFor?: Parameters<typeof withPrivacyGate>[1]['engineFor']) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set(JOB, { spaceId: SPACE, conversationId: JOB, agentId: null, turnId: 'trn_1' });
+    void store.saveSettings(SPACE, confirmed, null);
+    const router = new PrivacyRouter({
+      store,
+      resolve: async () => [{ address: '93.184.216.34' }],
+    });
+    const started: string[] = [];
+    const gated = withPrivacyGate(
+      {
+        capabilities: async () => ({ streaming: true, tools: true, interrupt: true, version: 't' }),
+        start: async (value) => {
+          started.push(value.attempt.id);
+          return { kind: 'completed', summary: 'done', evidence: [] } satisfies AttemptOutcome;
+        },
+      },
+      {
+        router: () => router,
+        engineProtocol: 'chat/completions',
+        providerUrl: LOCAL,
+        ...(engineFor ? { engineFor } : {}),
+      },
+    );
+    const run = (value: AttemptBundle) =>
+      gated.start(value, { emit: async () => {} }, new AbortController().signal);
+    return { run, started };
+  };
+  const engines = async (model: { provider: string }) =>
+    model.provider === 'openai-compatible'
+      ? { protocol: 'chat/completions' as const, providerUrl: LOCAL }
+      : {
+          protocol: 'chat/completions' as const,
+          providerUrl: 'https://api.fireworks.ai/inference/v1',
+        };
+
+  test('an attempt on a cloud model in a private space asks first, though the default is on-device', async () => {
+    const { run, started } = gate(engines);
+    const result = await run(withModel(1, 'fireworks', 'accounts/fireworks/models/small'));
+    expect(started).toEqual([]);
+    expect(result).toMatchObject({ outcome: { kind: 'waiting_for_input' } });
+  });
+
+  test('an attempt on the confirmed on-device model goes ahead', async () => {
+    const { run, started } = gate(engines);
+    await run(withModel(2, 'openai-compatible', 'llama3.3'));
+    expect(started).toEqual([attemptId(2)]);
+  });
+});
