@@ -55,6 +55,7 @@ import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
+import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
@@ -1080,6 +1081,7 @@ export function HomeScreen() {
           </div>
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
+          <NeedsYouSection now={now} onStart={(text) => start(text)} />
           <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />

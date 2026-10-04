@@ -48,6 +48,8 @@ export const ID_PREFIXES = {
   awaited_reply: 'awr',
   /** A published app. */
   app: 'app',
+  /** One incoming message or calendar change, as it was sorted. */
+  triage_item: 'tri',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

@@ -31,6 +31,7 @@ import {
   type SignalSource,
   SourceError,
 } from '../../src/signals/types.ts';
+import { TriageService } from '../../src/triage/service.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -642,6 +643,15 @@ withDb('signals', () => {
     await poll();
     expect(await events(mailbox, 'mail.received')).toHaveLength(1);
     const { sql } = required(handle);
+    // Sorted for the owner, with a label kept for it.
+    await new TriageService({ sql, classifier: null }).collect();
+    const [sorted] = await sql`select principal_id, space_id, subject_key from triage_item
+      where connection_id = ${mailbox}`;
+    expect(sorted).toBeDefined();
+    await sql`insert into triage_verdict (principal_id, space_id, subject_key, content_hash, verdict,
+        urgency, sentence, reason, model, expires_at)
+      values (${sorted?.principal_id}, ${sorted?.space_id}, ${sorted?.subject_key}, 'h', 'fyi',
+        'normal', 's', 'r', 'fake/fake', now() + interval '7 days')`;
     for (const id of [mailbox, calendarId]) {
       const [row] = await sql`select generation from connection where id = ${id}`;
       await new PolicyService(required(jobs), required(runner)).changeConnection(id, {
@@ -654,8 +664,13 @@ withDb('signals', () => {
           and payload::text like '%Settlement terms%') as observations,
         (select count(*)::int from subject_state where connection_id = ${calendarId}) as kept,
         (select count(*)::int from source_cursor
-          where connection_id in (${mailbox}, ${calendarId})) as cursors`;
-    expect([left?.observations, left?.kept, left?.cursors]).toEqual([0, 0, 0]);
+          where connection_id in (${mailbox}, ${calendarId})) as cursors,
+        (select count(*)::int from triage_item where connection_id = ${mailbox}) as sorted,
+        (select count(*)::int from triage_verdict
+          where subject_key like ${`mail:${mailbox}:%`}) as labels`;
+    expect([left?.observations, left?.kept, left?.cursors, left?.sorted, left?.labels]).toEqual([
+      0, 0, 0, 0, 0,
+    ]);
   }, 60_000);
 
   test('what a read of an older credential found is never delivered or kept', async () => {

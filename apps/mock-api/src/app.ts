@@ -77,6 +77,7 @@ import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountModelsMock } from './models.ts';
+import { mountNeedsYouMock } from './needs-you.ts';
 import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
 import { mountRoomsMock } from './rooms.ts';
@@ -116,6 +117,8 @@ export type AppDeps = {
   computer?: boolean;
   /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
   space?: 'personal' | 'shared';
+  /** Seeded "Needs you" items with the demonstration's seed; off shows the empty list. */
+  needsYou?: boolean;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -188,6 +191,7 @@ export function createMockApp(deps: AppDeps) {
   // Before the experience routes, which answer every operation they do not implement.
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
+  mountNeedsYouMock(app, { seeded: Boolean(deps.seedExperience) && deps.needsYou !== false });
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);

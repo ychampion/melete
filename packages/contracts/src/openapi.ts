@@ -293,6 +293,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { needsYouItemResponse, needsYouList } from './triage.ts';
 import { healthDetailResponse, usageResponse } from './usage.ts';
 import {
   voiceAside,
@@ -3462,6 +3463,50 @@ export function buildOpenApiDocument() {
               '200': jsonResponse('The reply, now dropped', awaitedReply),
               '404': problem('No such awaited reply for this person'),
               '503': problem('Stopping its chase is not connected yet'),
+            },
+          },
+        },
+        '/needs-you': {
+          get: {
+            tags: ['companies'],
+            summary: 'What needs the signed-in person, ranked',
+            description:
+              'New mail and calendar changes from the accounts the person connected, as sorted ' +
+              'by a small model into needs you, for your information, or ignore, together with ' +
+              'what Melete noticed on its own. Only items that need the person are listed, most ' +
+              'pressing first; ones the person dismissed are left out. Sorting only labels: it ' +
+              'never makes anything urgent, starts work or sends anything. Reads only.',
+            responses: {
+              '200': jsonResponse(
+                'What needs the person, and how many items went unsorted today',
+                needsYouList,
+              ),
+            },
+          },
+        },
+        '/needs-you/{id}/ack': {
+          post: {
+            tags: ['companies'],
+            summary: 'Mark a sorted item as seen',
+            description:
+              'For items whose `source` is `triage`. Something Melete noticed on its own is ' +
+              'acknowledged through its own situation routes.',
+            requestParams: idParam('id', 'Sorted item id'),
+            responses: {
+              '200': jsonResponse('The item, now seen', needsYouItemResponse),
+              '404': problem('No such item for this person'),
+            },
+          },
+        },
+        '/needs-you/{id}/dismiss': {
+          post: {
+            tags: ['companies'],
+            summary: 'Dismiss a sorted item: it leaves the list',
+            description: 'For items whose `source` is `triage`. The item is not shown again.',
+            requestParams: idParam('id', 'Sorted item id'),
+            responses: {
+              '200': jsonResponse('The item, now dismissed', needsYouItemResponse),
+              '404': problem('No such item for this person'),
             },
           },
         },

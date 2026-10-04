@@ -374,6 +374,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Where each account's changes were last read, and what was kept about its calendar.
   source_cursor: 'operational',
   subject_state: 'operational',
+  triage_item: 'operational',
+  triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
@@ -712,6 +714,15 @@ describe.if(handle !== null)('removing a space', () => {
         version, origin, last_changed_at)
       values (${`calendar:${seeded.connectionId}:uid:`}, ${seeded.spaceId}, ${seeded.connectionId},
         'calendar_occurrence', '{}'::jsonb, 'v1', 'external_content', now())`;
+    // An incoming message as it was sorted, and the label kept for it.
+    await sql`insert into triage_item (id, space_id, principal_id, connection_id, event_seq, kind,
+        subject_key, content_hash, fields, verdict)
+      values (${`tri_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, ${seeded.connectionId},
+        1, 'mail.received', 'mail:subject', 'hash', '{}'::jsonb, 'fyi')`;
+    await sql`insert into triage_verdict (principal_id, space_id, subject_key, content_hash, verdict,
+        urgency, sentence, reason, model, expires_at)
+      values (${seeded.principalId}, ${seeded.spaceId}, 'mail:subject', 'hash', 'fyi', 'normal', 's',
+        'r', 'fake/fake', now() + interval '7 days')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

@@ -63,6 +63,7 @@ export * from './signals.ts';
 export * from './skills.ts';
 export * from './spaces.ts';
 export * from './style.ts';
+export * from './triage.ts';
 export * from './usage.ts';
 export * from './voice.ts';
 export * from './waiting.ts';

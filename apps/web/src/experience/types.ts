@@ -248,6 +248,9 @@ export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}']
 /** What the person is waiting on: money owed to them, and replies nobody has sent. */
 export type WaitingOn = Ok<paths['/waiting-on'], 'get'>;
 export type WaitingOnEntry = WaitingOn['top'][number];
+/** What needs the person: sorted mail and calendar changes, and what Melete noticed. */
+export type NeedsYou = Ok<paths['/needs-you'], 'get'>;
+export type NeedsYouItem = NeedsYou['items'][number];
 
 /* ---------- problem reports ---------- */
 

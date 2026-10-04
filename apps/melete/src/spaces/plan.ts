@@ -215,6 +215,10 @@ const SPACE_KEYED_OPERATIONAL = [
   // kept about each calendar occurrence. They name connections, which go next.
   'source_cursor',
   'subject_state',
+  // Incoming messages and calendar changes as they were sorted, and the labels
+  // kept for them. They name connections and the space's owner.
+  'triage_item',
+  'triage_verdict',
 ] as const;
 
 /**

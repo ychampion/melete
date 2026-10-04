@@ -395,6 +395,98 @@ a.suggestion:hover {
   }
 }
 
+/* ---------- needs you ---------- */
+
+.needs-you-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.needs-you-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px 14px;
+  min-height: 56px;
+  padding: 10px 0;
+  color: var(--muted);
+}
+.needs-you-row > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.needs-you-row + .needs-you-row {
+  border-top: 1px solid var(--line);
+}
+.needs-you-words {
+  gap: 2px;
+  min-width: 0;
+}
+.needs-you-sentence {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.needs-you-row[data-seen="true"] .needs-you-sentence {
+  font-weight: 400;
+  color: var(--secondary);
+}
+.needs-you-because {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.needs-you-because:hover {
+  color: var(--secondary);
+  text-decoration: underline;
+}
+.needs-you-source {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.needs-you-actions {
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+  gap: 4px;
+}
+.needs-you-empty {
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--secondary);
+}
+/* On a phone the buttons go under the words rather than squeezing them. */
+@media (max-width: 520px) {
+  .needs-you-row {
+    flex-wrap: wrap;
+  }
+  .needs-you-words {
+    flex-basis: calc(100% - 30px);
+  }
+  .needs-you-actions {
+    margin-left: 30px;
+  }
+}
+
 /* ---------- in motion ---------- */
 
 .motion {
