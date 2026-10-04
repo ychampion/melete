@@ -25,6 +25,7 @@
  */
 import { createHmac } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { initializeTestLedger } from '../connectors/test.ts';
 import { openDatabase } from './client.ts';
 import { migrateDatabase } from './migrate.ts';
 
@@ -221,6 +222,8 @@ export type SetUpOptions = {
   provided?: Partial<RoleUrls>;
   /** Tests only: a journal other than the service's own. */
   migrationsFolder?: string;
+  /** The demonstration's test connector keeps a table of its own, made here as the schema's owner. */
+  testConnector?: boolean;
 };
 
 /** Sets up the roles, migrates as the schema owner, grants, and returns the service's addresses. */
@@ -270,6 +273,7 @@ export async function setUpDatabaseRoles(options: SetUpOptions): Promise<RoleUrl
   const migrateHandle = openDatabase(urls.migrate, 2);
   try {
     await migrateDatabase(migrateHandle, options.migrationsFolder);
+    if (options.testConnector) await initializeTestLedger(migrateHandle.sql);
     await grant(migrateHandle.sql, urls);
   } finally {
     await migrateHandle.close();

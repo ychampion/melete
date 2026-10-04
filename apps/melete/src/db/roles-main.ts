@@ -28,6 +28,7 @@ if (import.meta.main) {
   try {
     const urls = await setUpDatabaseRoles({
       operatorUrl,
+      testConnector: process.env.MELETE_ENABLE_TEST_CONNECTOR === 'true',
       provided: {
         migrate: given('MELETE_MIGRATE_DATABASE_URL'),
         api: given('MELETE_API_DATABASE_URL'),

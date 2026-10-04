@@ -84,6 +84,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
       MELETE_DATABASE_ACCESS_DIR: /data/database-access
+      # The demonstration's test connector keeps a table, made here by the schema's owner.
+      MELETE_ENABLE_TEST_CONNECTOR: ${MELETE_ENABLE_TEST_CONNECTOR:-false}
       # Set all three only where the database's administrator made the roles.
       MELETE_MIGRATE_DATABASE_URL: ${MELETE_MIGRATE_DATABASE_URL:-}
       MELETE_API_DATABASE_URL: ${MELETE_API_DATABASE_URL:-}
