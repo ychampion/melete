@@ -25,6 +25,12 @@ export type MemoryRouteOptions = {
    * space's owner provisions nothing.
    */
   provision?: (spaceId: string, principalId: string) => Promise<void>;
+  /**
+   * A space's memory as the service itself holds it, provisioned on first use.
+   * Rooms write their memory, and read what people shared into them, through
+   * it, after checking who is asking themselves.
+   */
+  storageScope?: (spaceId: string) => Promise<MemoryScope>;
 };
 export function createMemoryRouter(options: MemoryRouteOptions) {
   const app = new Hono<{ Variables: { memoryScope: MemoryScope } }>();

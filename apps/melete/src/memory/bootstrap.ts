@@ -31,6 +31,8 @@ type DeploymentMemoryOptions = {
   gateway?: ExtractionGateway;
   /** Why a chat message is private, recorded on what memory learns from it. */
   privacyOrigin: CaptureOptions['privacyOrigin'];
+  /** Why a message said in a room is private; left out, nothing said in a room is kept. */
+  roomPrivacyOrigin?: CaptureOptions['roomPrivacyOrigin'];
 };
 
 const spaceId = prefixedId('sp');
@@ -184,6 +186,35 @@ function resolveJobScope(sql: MemorySql, journal: FileRestrictionJournal) {
   };
 }
 
+/**
+ * A space's memory as the service itself holds it, provisioned the first time
+ * it is used: room memory is written, and a shared detail read, through it.
+ */
+function resolveStorageScope(sql: MemorySql, journal: FileRestrictionJournal) {
+  return async (spaceId: string): Promise<MemoryScope> => {
+    const [row] = await sql`select s.kind, s.removed_at, o.id as owner_id,
+      m.owner_id as memory_owner_id, m.revoked
+      from space s cross join owner o left join memory_spaces m on m.space_id = s.id
+      where s.id = ${spaceId}`;
+    if (
+      !row ||
+      row.removed_at ||
+      row.revoked ||
+      (row.memory_owner_id && row.memory_owner_id !== row.owner_id)
+    )
+      throw new MemoryError('scope_denied');
+    const scope: MemoryScope = {
+      ownerId: row.owner_id,
+      spaceId,
+      publisher: 'service',
+      audience: row.kind === 'personal' ? 'private' : 'space',
+      role: 'owner',
+    };
+    if (!row.memory_owner_id) await provisionNewSpace(sql, journal, scope);
+    return scope;
+  };
+}
+
 /** Complete restore before callers start job workers or bind public listeners. */
 export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   const journal = new FileRestrictionJournal(join(options.restrictionsDir, 'restrictions.jsonl'));
@@ -191,6 +222,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   await provisionCatalog(options.sql);
   let service: Awaited<ReturnType<typeof startMemoryService>> | undefined;
   const scopeForJob = resolveJobScope(options.sql, journal);
+  const storageScope = resolveStorageScope(options.sql, journal);
   let stopCapture: (() => Promise<void>) | undefined;
   const markdown = options.spacesDir
     ? new MarkdownViews(options.sql, options.spacesDir, { name: 'Owner', email: 'owner@localhost' })
@@ -214,6 +246,9 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
       privacyOrigin: options.privacyOrigin,
       scopeForJob,
       onError,
+      ...(options.roomPrivacyOrigin
+        ? { roomScope: storageScope, roomPrivacyOrigin: options.roomPrivacyOrigin }
+        : {}),
     });
   }
   const recompute = options.onJobRecompute
@@ -223,21 +258,18 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
     sql: options.sql,
     journal,
     markdown,
-    // The installation owner holds every space's memory on this path.
+    // The installation owner holds every space's memory on this path; the
+    // space's own person is who may have it provisioned.
     async provision(spaceId, principalId) {
-      const [row] = await options.sql`select o.id as owner_id, m.owner_id as memory_owner_id
+      const [row] = await options.sql`select m.owner_id as memory_owner_id,
+          coalesce(s.owner_principal_id, o.id) as space_owner_id
         from space s cross join owner o left join memory_spaces m on m.space_id = s.id
         where s.id = ${spaceId}`;
-      if (!row || row.owner_id !== principalId || row.memory_owner_id) return;
-      await provisionNewSpace(options.sql, journal, {
-        ownerId: principalId,
-        spaceId,
-        publisher: 'experience',
-        audience: 'private',
-        role: 'owner',
-      });
+      if (!row || row.space_owner_id !== principalId || row.memory_owner_id) return;
+      await storageScope(spaceId);
     },
     resolveScope: resolveOwnerScope(options.sql, journal),
+    storageScope,
   };
   return {
     routes,

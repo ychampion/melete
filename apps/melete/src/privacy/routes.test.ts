@@ -11,7 +11,7 @@ const OWNER = 'own_01J0000000000000000000000O';
 const MEMBER = 'own_01J0000000000000000000000M';
 
 /** The privacy routes as a signed-in person in a shared space reaches them. */
-async function as(principalId: string, role: 'owner' | 'member') {
+async function as(principalId: string, role: 'owner' | 'member' | 'guest') {
   const store = new MemoryPrivacyStore();
   store.scopes.set(CHAT, { spaceId: SPACE, conversationId: CHAT, agentId: null, turnId: 't' });
   // The member's conversation, found to be about therapy.
@@ -37,7 +37,7 @@ async function as(principalId: string, role: 'owner' | 'member') {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sensitive }),
     });
-  return { store, put };
+  return { store, put, app };
 }
 
 describe("clearing a conversation's sensitivity", () => {
@@ -53,6 +53,16 @@ describe("clearing a conversation's sensitivity", () => {
     const { store, put } = await as(MEMBER, 'member');
     expect((await put(null)).status).toBe(200);
     expect(await store.conversation(CHAT)).toMatchObject({ sensitive: null, cleared: true });
+  });
+
+  test("a guest, or any role that is not the owner, is refused the space's privacy settings", async () => {
+    for (const role of ['member', 'guest'] as const) {
+      const { app } = await as(MEMBER, role);
+      const response = await app.request('/privacy/settings');
+      expect([role, response.status]).toEqual([role, 403]);
+    }
+    const { app } = await as(OWNER, 'owner');
+    expect((await app.request('/privacy/settings')).status).toBe(200);
   });
 
   test('marking it sensitive stays open to the owner', async () => {

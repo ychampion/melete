@@ -23,12 +23,18 @@
  * neither repeats nor loses one. A message from a member of a shared space is
  * not kept: memory in a space belongs to its owner, and a member's words are
  * never written into it.
+ *
+ * A room is different: what anyone in it says there is the room's own
+ * material. Each person's message in a room is kept in the room's memory, at
+ * the trust of something another person said, under the name of the person
+ * who said it, and only there (`captureRoom`). Their own words are what they
+ * may later forget from it.
  */
 import type { PgBoss } from 'pg-boss';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
-import { deleteMemorySource, forgetMemory } from './forget.ts';
+import { deleteMemorySource, forgetMemory, mayForgetRoomClaim } from './forget.ts';
 import { lexicalTerms, tsqueryTerm } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
 import { appendMemoryNotices, memoryNotice, memoryReply } from './trace.ts';
@@ -128,6 +134,13 @@ export type CaptureOptions = {
    * cloud requests. Required: capture has no view of its own on privacy.
    */
   privacyOrigin: (jobId: string, text: string) => Promise<string | null>;
+  /**
+   * A room's memory as the service holds it, provisioned on first use. Left
+   * out, together with `roomPrivacyOrigin`, nothing said in a room is kept.
+   */
+  roomScope?: (spaceId: string) => Promise<MemoryScope>;
+  /** Why a message said in a room is private, or null: the privacy router's answer. */
+  roomPrivacyOrigin?: (spaceId: string, text: string) => Promise<string | null>;
   onError?: (code: string) => void;
 };
 
@@ -430,6 +443,7 @@ export function startChatCapture(options: CaptureOptions, intervalMs = 1000) {
   const timer = setInterval(() => {
     if (running) return;
     running = captureChat(options)
+      .then(() => captureRoom(options))
       .then(() => undefined)
       .catch(() => options.onError?.('memory_capture_failed'))
       .finally(() => {
@@ -441,4 +455,158 @@ export function startChatCapture(options: CaptureOptions, intervalMs = 1000) {
     clearInterval(timer);
     await running;
   };
+}
+
+export const ROOM_PUBLISHER = 'room';
+export const ROOM_STREAM = 'room';
+/** The source a room message is kept as: one per message, so deleting it finds it. */
+export const roomSourceIdentity = (messageId: string) => `room_message:${messageId}`;
+
+type RoomPending = {
+  id: string;
+  space_id: string;
+  thread_id: string;
+  author_principal_id: string;
+  text: string;
+  created_at: Date;
+};
+
+/**
+ * Offer every new message said in a room to that room's memory once, whoever
+ * said it. Returns how many were looked at. Without a room scope and a privacy
+ * answer for rooms, nothing said in a room is kept.
+ */
+export async function captureRoom(options: CaptureOptions, limit = 50): Promise<number> {
+  const { sql } = options;
+  if (!options.roomScope || !options.roomPrivacyOrigin) return 0;
+  const rows =
+    await sql`select m.id, m.space_id, m.thread_id, m.author_principal_id, m.text, m.created_at
+    from room_message m join space s on s.id = m.space_id
+    where m.redacted_at is null and m.kind in ('person', 'handoff_result')
+      and s.kind = 'shared' and s.removed_at is null
+      and not exists (select 1 from memory_room_capture c where c.message_id = m.id
+        and (c.outcome <> 'pending' or c.created_at >= clock_timestamp() - ${PENDING_LEASE}::interval))
+    order by m.created_at, m.id limit ${limit}`;
+  let seen = 0;
+  for (const row of rows as unknown as RoomPending[]) {
+    const [claimed] =
+      await sql`insert into memory_room_capture (message_id, space_id, outcome) values (${row.id}, ${row.space_id}, 'pending')
+      on conflict (message_id) do update set created_at = clock_timestamp()
+        where memory_room_capture.outcome = 'pending' and memory_room_capture.created_at < clock_timestamp() - ${PENDING_LEASE}::interval
+      returning message_id`;
+    if (!claimed) continue;
+    seen++;
+    let outcome: string;
+    let sourceId: string | null = null;
+    try {
+      ({ outcome, sourceId } = await captureRoomOne(options, row));
+    } catch (error) {
+      outcome = `failed:${error instanceof MemoryError ? error.code : 'capture_failed'}`;
+      options.onError?.(outcome);
+    }
+    if (outcome !== 'pending')
+      await sql`update memory_room_capture set outcome = ${outcome}, source_id = ${sourceId} where message_id = ${row.id}`;
+  }
+  return seen;
+}
+
+async function captureRoomOne(
+  options: CaptureOptions,
+  row: RoomPending,
+): Promise<{ outcome: string; sourceId: string | null }> {
+  const { sql } = options;
+  const text = (row.text ?? '').trim();
+  if (!text) return { outcome: 'empty', sourceId: null };
+  let scope: MemoryScope;
+  try {
+    const room = await options.roomScope?.(row.space_id);
+    if (room?.audience !== 'space') return { outcome: 'skipped:scope_denied', sourceId: null };
+    scope = { ...room, publisher: ROOM_PUBLISHER };
+  } catch (error) {
+    if (error instanceof MemoryError && error.code === 'restore_pending')
+      return { outcome: 'pending', sourceId: null };
+    if (error instanceof MemoryError && error.code === 'scope_denied')
+      return { outcome: 'skipped:scope_denied', sourceId: null };
+    throw error;
+  }
+  const intent = chatIntent(text);
+  if (intent.kind === 'skip') return { outcome: 'skipped:asked', sourceId: null };
+  if (intent.kind === 'forget')
+    return { outcome: await forgetFromRoom(options, scope, row, intent.target), sourceId: null };
+  const [settings] =
+    await sql`select capture from memory_settings where principal_id = ${row.author_principal_id}`;
+  if (settings && !settings.capture) return { outcome: 'skipped:off', sourceId: null };
+  const privateOrigin = await options.roomPrivacyOrigin?.(row.space_id, text);
+  const evidence = await sql.begin(async (tx) => {
+    // A message its author deleted while this one was read is not kept: the
+    // deletion holds this row while it removes what was kept of it.
+    const [current] = await tx`select redacted_at from room_message where id = ${row.id} for share`;
+    if (!current || current.redacted_at) return null;
+    const saved = await persistEvidence(tx, scope, {
+      stream: ROOM_STREAM,
+      source_identity: roomSourceIdentity(row.id),
+      source_version: '1',
+      source_type: 'message',
+      author: 'member',
+      author_principal_id: row.author_principal_id,
+      event_at: new Date(row.created_at).toISOString(),
+      text: text.slice(0, 64000),
+    });
+    if (privateOrigin)
+      await tx`update memory_sources set private_origin = ${privateOrigin}
+        where id = ${saved.source.source_id} and private_origin is null`;
+    return saved;
+  });
+  if (!evidence) return { outcome: 'skipped:deleted', sourceId: null };
+  if (evidence.source.state !== 'active')
+    return { outcome: 'skipped:suppressed', sourceId: evidence.source.source_id };
+  if (options.boss) {
+    const work =
+      await sql`select id from memory_work where source_id = ${evidence.source.source_id} and status = 'pending'`;
+    for (const item of work)
+      await options.boss.send(
+        MEMORY_EXTRACT_QUEUE,
+        { work_id: item.id, space_id: scope.spaceId },
+        { singletonKey: item.id as string, singletonSeconds: 1 },
+      );
+  }
+  return { outcome: 'remembered', sourceId: evidence.source.source_id };
+}
+
+/**
+ * "Forget that" in a room removes what the speaker's previous kept message in
+ * that thread taught the room. "Forget <something>" removes the one saved
+ * detail it names, when the speaker may forget it here: a room's owner any
+ * detail, anyone else only one that rests on their own words alone. Nothing
+ * less certain is acted on, and a request to forget is never itself kept.
+ */
+async function forgetFromRoom(
+  options: CaptureOptions,
+  scope: MemoryScope,
+  row: RoomPending,
+  target: string | null,
+): Promise<string> {
+  const { sql } = options;
+  if (target === null) {
+    const [previous] = await sql`select c.source_id from memory_room_capture c
+      join room_message m on m.id = c.message_id
+      where m.thread_id = ${row.thread_id} and m.author_principal_id = ${row.author_principal_id}
+        and (m.created_at, m.id) < (${row.created_at}, ${row.id})
+        and c.outcome = 'remembered' and c.source_id is not null
+      order by m.created_at desc, m.id desc limit 1`;
+    if (!previous) return 'forgot:none';
+    await deleteMemorySource(sql, scope, previous.source_id as string, options.journal);
+    return 'forgot';
+  }
+  const matches = await namedDetails(sql, scope, target);
+  if (matches === null) return 'forgot:ask';
+  const allowed: Record<string, unknown>[] = [];
+  for (const claim of matches)
+    if (await mayForgetRoomClaim(sql, scope.spaceId, claim.id as string, row.author_principal_id))
+      allowed.push(claim);
+  if (allowed.length !== 1) return allowed.length ? 'forgot:ask' : 'forgot:none';
+  const [only] = allowed;
+  if (!only) return 'forgot:none';
+  await forgetMemory(sql, scope, { claim_id: only.id }, options.journal);
+  return 'forgot';
 }

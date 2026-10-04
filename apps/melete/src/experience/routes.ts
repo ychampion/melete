@@ -29,7 +29,9 @@ import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
+import { ownsSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import { HandoffService } from '../rooms/handoffs.ts';
 import type { RunService } from '../runs/service.ts';
 import { listActivity } from './activity.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
@@ -116,6 +118,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects);
+  // Work rooms handed the person, shown on their Home and with their approvals.
+  const handoffs = deps.jobs
+    ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })
+    : undefined;
   const planning = new ExperiencePlanning(service, deps.triggers);
   const events = new ExperienceEvents(
     deps.db,
@@ -134,6 +140,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   );
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
+  service.events = events;
+  service.permissions = permissions;
   /** The conversation's own job and the command jobs it started, all the caller's own. */
   const conversationJobs = async (spaceId: string, id: string) => {
     await service.requireThread(spaceId, id);
@@ -163,9 +171,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       if (moved) await planning.retimeSchedules(spaceId, moved);
       return { profile };
     },
-    'GET /home': async (spaceId) => ({
+    'GET /home': async (spaceId, c) => ({
       ...(await home.home(spaceId)),
       routine_results: await planning.recentResults(spaceId),
+      ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
     }),
     'GET /tasks': (spaceId) => home.tasks(spaceId),
     'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
@@ -253,7 +262,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         ? removeMember(deps.db, deps.jobs, spaceId, c.get('owner').id, c.req.param('id') ?? '')
         : unavailable('People in this space are not connected yet.'),
     'GET /search': (spaceId, c) =>
-      home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),
+      home.search(spaceId, c.req.query('q') ?? '', ownsSessionSpace(c.get('sessionSpace'))),
     'GET /plans': (spaceId) => planning.plans(spaceId),
     'POST /plans': (spaceId, _c, input) => planning.create(spaceId, input),
     'GET /plans/{id}': async (spaceId, c) => ({
@@ -363,8 +372,13 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       beliefs?.export(spaceId, c.get('owner').id, c.req.query()) ?? unavailable(NOT_CONNECTED),
     'POST /memory/import': (spaceId, c, input) =>
       beliefs?.import(spaceId, c.get('owner').id, input) ?? unavailable(NOT_CONNECTED),
-    'GET /permissions': (spaceId) =>
-      permissions?.list(spaceId) ?? unavailable('Permissions are not connected yet.'),
+    'GET /permissions': async (spaceId, c) =>
+      permissions
+        ? {
+            ...(await permissions.list(spaceId)),
+            ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
+          }
+        : unavailable('Permissions are not connected yet.'),
     'POST /permissions/{id}': (spaceId, c, input) =>
       permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
       unavailable('Permissions are not connected yet.'),
@@ -594,7 +608,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       const spaceId = c.get('experienceSpaceId');
       if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
-      const member = c.get('sessionSpace')?.role === 'member';
+      // Anyone who is not the space's owner, whatever their role.
+      const member = !ownsSessionSpace(c.get('sessionSpace'));
       const ownerOnly = () =>
         new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
       if (member && SPACE_OWNER_SURFACES.has(key)) throw ownerOnly();

@@ -118,7 +118,7 @@ describe("a message's files in the prompt", () => {
       ],
       [],
       0,
-      new Map([['file_LEASE', '[Page 1]\nRent is due on the first.']]),
+      { fileTexts: new Map([['file_LEASE', '[Page 1]\nRent is due on the first.']]) },
     );
     const message = history.inputs.new_user_messages[0]?.content ?? '';
     expect(message.startsWith('Summarise this')).toBe(true);
