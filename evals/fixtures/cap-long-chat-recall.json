@@ -1,0 +1,43 @@
+{
+  "id": "cap-long-chat-recall",
+  "domain": "files",
+  "title": "Recall a fact from early in a long conversation",
+  "objective": "Help me get my week straight. I will tell you things as I think of them.",
+  "tools": [],
+  "history": [
+    "Quick thing before I forget: my locker at the climbing gym is number 118 and the code is 4471.",
+    "Okay, the week. Monday I have the dentist at 8:30, then a full day of work. I want to get the quarterly report outline done before lunch because the afternoon is all meetings. The first one is with the platform team about the migration timeline, which keeps slipping. I think the real problem is that nobody owns the test environments, so every team waits on every other team. I'm going to suggest we give one person that job for a month and see what happens. Tuesday is calmer. I'd like to block the morning for deep work on the pricing analysis. We have three plans and almost everyone picks the middle one, which is either a sign the middle one is priced right or that the top one is too expensive to consider. I want to look at what people who upgraded had in common in the month before they did it. If there's a pattern, maybe the top plan needs a different story rather than a different price.",
+    "For dinner Tuesday I'm thinking of trying that mushroom risotto again. Last time it came out gluey because I added the stock too fast and stirred too little. This time: warm stock, one ladle at a time, keep it moving, and take it off the heat a minute early because it keeps cooking. Parmesan and a knob of butter at the end, and a squeeze of lemon, which I always forget. Wednesday my sister is in town. She lands around 4 and wants to go to the market by the river before it closes at 7. I should leave work by 3:15 to pick her up. She's been asking about the little ceramics shop near the bridge, so we'll probably end up there too. I need to remember to bring the folding bags because the market stopped giving out plastic ones.",
+    "Also on Wednesday, the car needs its inspection by the end of the month. The garage on Elm Street said they can fit me in early mornings, so maybe Thursday at 7:30 before work. It took about forty minutes last year. If they find anything with the brakes I'll have to leave it there, which means figuring out how to get to the office. Thursday at 10 is the all-hands. I'm presenting five minutes on the support backlog: we cut the median first response from nine hours to under three by routing billing questions to a separate queue. I want one chart, not four. The chart should show the week we made the change and nothing else clever. People remember one picture.",
+    "Thursday evening is climbing with Sam. We're trying the new overhang wall that opened last week. My forearms are still sore from Sunday so I'll warm up properly this time, maybe twenty minutes on the easy traverse before anything steep. Sam wants to try lead climbing next month, so we should book the course, it fills up fast. Friday I'm working from home. In the morning I want to finally write the hiring plan for next quarter: two engineers and one designer. The designer is the harder one because the last two candidates were great at visuals but had never done research with real customers. I want someone who has sat in a room with users and changed their mind afterwards.",
+    "Friday afternoon is free so far. I might take it off and go for a long walk along the coast path if the weather holds. The forecast says sunny until Saturday noon, then rain all weekend. If it rains I'll stay in and finally sort out the photos from the summer trip, there are about two thousand of them and maybe fifty worth keeping. Saturday morning the farmers market, then I promised to help Jonas move his bookshelves. He lives on the fourth floor with no lift, so it'll be a workout. He's paying in pizza, which seems fair. I should bring the drill because his shelves need to be screwed to the wall, the building manager is strict about that.",
+    "Sunday I want to do nothing. Maybe read. I'm halfway through that novel about the lighthouse keeper and it's slow but I like it. The chapters alternate between the keeper in 1902 and his great-granddaughter now, and I keep wanting the modern chapters to be shorter. Work stuff to keep in mind: the vendor contract renews on the 20th and I want to renegotiate the support terms. We pay for 24-hour response and we've never needed it once. Moving to business hours would save about a fifth of the cost. I'll need usage numbers from the last year to make the case.",
+    "Another work thing: the onboarding doc for new engineers is out of date. It still tells people to install a database version we dropped in the spring. I should ask the last two hires what tripped them up most, and fix those first rather than rewriting the whole thing. Personal admin: renew the passport before the spring trip. It expires in May and the office says allow eight weeks. I need new photos, the ones I have are from before the haircut. The form wants a countersignature from someone who has known me for two years, maybe my old manager.",
+    "Health stuff: I keep meaning to stretch every morning. Ten minutes. Hamstrings, hips, shoulders. I did it for two weeks in August and my back felt much better, then I stopped when the project got busy. Maybe I'll tie it to the coffee machine: stretch while it heats up. Money: I want to set up an automatic transfer to savings on payday instead of moving whatever is left at the end of the month, because there is never anything left at the end of the month. Even a small fixed amount would beat that. Also cancel the streaming service I haven't opened since June.",
+    "Gift ideas for Mum's birthday in November: the gardening gloves she mentioned, or a day trip to the botanical gardens with lunch. She'd like the trip more, I think. I'll check whether the glasshouses are open in November, some of them close for winter maintenance. Random note: the plant on the windowsill is drooping. I think I'm overwatering it. The tag said water when the top inch of soil is dry, and I've been watering it every Sunday out of habit whether it needs it or not. Going to try the finger test instead.",
+    "Back to work: for the migration meeting on Monday I want to bring three concrete options with dates, not a discussion. Option one, we freeze features for two weeks. Option two, we migrate one service at a time over six weeks. Option three, we hire a contractor for the test environments. I lean towards option two. One more for the weekend: Jonas also asked if I could look at his bike, the gears skip in the middle of the cassette. Probably just needs the cable tension adjusted, a quarter turn on the barrel adjuster. I'll bring the multitool.",
+    "And Sam texted that the gym changes its opening hours in November, opening at 7 instead of 6 on weekdays. That kills my early session before work, so maybe I'll switch to evenings on Tuesdays and Thursdays. I think that's everything for the week. Remind me later if I forget the inspection, I always forget the inspection.",
+    "Totally different topic: what was my locker code at the climbing gym again?"
+  ],
+  "steps": [],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Your locker code is 4471 (locker 118)."
+  },
+  "source": {
+    "early_message": "Quick thing before I forget: my locker at the climbing gym is number 118 and the code is 4471.",
+    "messages": 13
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["4471"],
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply gives the locker code 4471 the person mentioned at the start of the conversation. Fail if it says it does not know, asks again, or gives another number.",
+  "suite": "capability"
+}
