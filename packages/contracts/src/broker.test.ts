@@ -114,6 +114,14 @@ describe('address keys hold other things too', () => {
     });
   });
 
+  test('a path whose folder looks like an address keeps its case', () => {
+    const { canonical } = canonicalizePayload({
+      from: 'notes/Me@Home.txt',
+      to: 'Archive\\Me@Home.txt',
+    });
+    expect(canonical).toEqual({ from: 'notes/Me@Home.txt', to: 'Archive\\Me@Home.txt' });
+  });
+
   test('addresses are still compared in lower case, and an address list is still a set', () => {
     const { canonical } = canonicalizePayload({
       to: ['Zara <ZARA@Example.COM>', 'b@example.com', 'zara@example.com'],

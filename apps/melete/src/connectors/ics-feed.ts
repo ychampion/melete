@@ -162,13 +162,20 @@ export class IcsFeedConnector implements Connector {
   /** The feed's occurrences in a window, read fresh, a repeating event expanded into its instances. */
   readonly signals: SignalSource = {
     stream: 'calendar',
-    occurrences: async (window) => expandIcs([await this.load()], window),
+    occurrences: async (window, options) =>
+      expandIcs(
+        [await this.load(options?.signal)],
+        window,
+        undefined,
+        options?.self ?? [],
+        options?.zone ?? null,
+      ),
     confirm: async ({ uid, occurrence }) => confirmFromIcs([await this.load()], uid, occurrence),
   };
 
   /** A free/busy read places all-day events in the person's own zone. */
   prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
-    return bindCalendarCheck(payload, ctx.space_id, tx, kind, null);
+    return bindCalendarCheck(payload, ctx, tx, kind);
   }
 
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {

@@ -17,7 +17,13 @@
  * coordination step); none of them writes anything.
  */
 import { createHash } from 'node:crypto';
-import type { Action, DispatchResult, JsonObject, JsonValue } from '@melete/contracts';
+import {
+  type Action,
+  canonicalizePayload,
+  type DispatchResult,
+  type JsonObject,
+  type JsonValue,
+} from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { calendarAddress, instantMs, zonedToUtc } from '../signals/occurrences.ts';
@@ -29,6 +35,7 @@ import {
   SourceError,
 } from '../signals/types.ts';
 import { ConnectorFaultError } from './faults.ts';
+import type { ConnectorContext } from './types.ts';
 
 const DAY_MS = 86_400_000;
 /** The longest window one free/busy read covers. */
@@ -171,14 +178,18 @@ function readWindow(window: CalendarWindow): CalendarWindow {
   };
 }
 
+/** How a free/busy or conflict read is made; see `ReadOptions`. */
+export type ReadWith = { signal?: AbortSignal; self?: readonly string[] };
+
 /** Free and busy time in a window, read fresh from the calendar. */
 export async function freeBusy(
   source: CalendarOccurrences,
   window: CalendarWindow,
   zone: string,
+  options: ReadWith = {},
 ): Promise<FreeBusy> {
   const timeZone = validZone(zone) ? zone : 'UTC';
-  const read = await source.occurrences(readWindow(window));
+  const read = await source.occurrences(readWindow(window), { ...options, zone: timeZone });
   const busy = busyBlocks(read.items, window, timeZone);
   return {
     window,
@@ -192,18 +203,23 @@ export async function freeBusy(
 export type Slot = { start: string; end: string };
 
 /**
- * What a new or moved event at `slot` would land on. `mine` names the event
- * being changed, which never conflicts with itself. `complete` is false when
- * the calendar could not be read to the end, and then no answer is sure.
+ * What a new or moved event at `slot` would land on. `mine` names what never
+ * conflicts with this write: the event it changes, or the event this very
+ * effect already made. `complete` is false when the calendar could not be
+ * read to the end, and then no answer is sure.
  */
 export async function conflictsAt(
   source: CalendarOccurrences,
   slot: Slot,
-  options: { zone: string; mine?: (occurrence: Occurrence) => boolean },
+  options: ReadWith & { zone: string; mine?: (occurrence: Occurrence) => boolean },
 ): Promise<{ conflicts: BusyBlock[]; complete: boolean }> {
   const zone = validZone(options.zone) ? options.zone : 'UTC';
   const window = { from: slot.start, to: slot.end };
-  const read = await source.occurrences(readWindow(window));
+  const read = await source.occurrences(readWindow(window), {
+    zone,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.self ? { self: options.self } : {}),
+  });
   const items = options.mine ? read.items.filter((item) => !options.mine?.(item)) : read.items;
   return { conflicts: busyBlocks(items, window, zone), complete: read.complete };
 }
@@ -222,9 +238,10 @@ export async function calendarConflicts(
   connector: { signals?: SignalSource },
   slot: Slot,
   zone: string,
+  options: ReadWith = {},
 ): Promise<{ conflicts: BusyBlock[]; complete: boolean } | null> {
   const source = calendarSource(connector);
-  return source ? conflictsAt(source, slot, { zone }) : null;
+  return source ? conflictsAt(source, slot, { ...options, zone }) : null;
 }
 
 /** One busy block in plain words, in the person's own zone. */
@@ -251,11 +268,27 @@ export function describeBlock(block: BusyBlock, zone: string): string {
   return `${title} (${day.format(new Date(block.start))}, ${time.format(new Date(block.start))}–${time.format(new Date(block.end))} ${zoneName}${tentative})`;
 }
 
-/** Why a write over busy time was refused, naming what is in the way. */
-export function overlapReason(conflicts: readonly BusyBlock[], zone: string): string {
+/**
+ * Why a write over busy time was refused. It names what is in the way only
+ * when the job may read the calendar itself (`names`); otherwise it says the
+ * time is taken, and nothing about what by. It points to free/busy only when
+ * the job holds it.
+ */
+export function overlapReason(
+  conflicts: readonly BusyBlock[],
+  zone: string,
+  names = true,
+  freebusy = true,
+): string {
   const named = conflicts.slice(0, 3).map((block) => describeBlock(block, zone));
   const more = conflicts.length > 3 ? ` and ${conflicts.length - 3} more` : '';
-  return `That time is already taken by ${named.join(', ')}${more}, so nothing was put on the calendar. Choose a free time (calendar.freebusy shows them), or, only if the person wants both, ask again with double_book and the reason.`;
+  const taken = names
+    ? `That time is already taken by ${named.join(', ')}${more}`
+    : 'That time is already taken';
+  const choose = freebusy
+    ? 'Choose a free time (calendar.freebusy shows them)'
+    : 'Choose another time';
+  return `${taken}, so nothing was put on the calendar. ${choose}, or, only if the person wants both, ask again with double_book and the reason.`;
 }
 
 // --------------------------------------------------------------------------
@@ -264,10 +297,10 @@ export function overlapReason(conflicts: readonly BusyBlock[], zone: string): st
 
 /**
  * What the service found and bound into a calendar write before anyone was
- * asked: the person's time zone, the invited addresses outside the person's
- * own accounts, and (for a double-booking the agent asked for) the busy
- * blocks it would land on. The card shows it; the write is checked again
- * against it at dispatch.
+ * asked: the person's time zone and own addresses, the invited addresses
+ * outside them, whether the job may read what is on the calendar, and (for a
+ * double-booking the agent asked for) the busy blocks it would land on. The
+ * card shows it; the write is checked again against it at dispatch.
  */
 export type CalendarCheck = {
   time_zone: string;
@@ -275,12 +308,18 @@ export type CalendarCheck = {
   conflicts: BusyBlock[];
   /** False when the calendar could not be read before asking. */
   read: boolean;
+  /** True when the job may read the calendar, so what is in the way may be named. */
+  names: boolean;
+  /** The person's own addresses, so an invitation they declined leaves the time free. */
+  self: string[];
 };
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
 /** The check bound into a payload, or null when none was. */
 export function checkOf(payload: JsonObject): CalendarCheck | null {
@@ -288,13 +327,13 @@ export function checkOf(payload: JsonObject): CalendarCheck | null {
   if (!Object.keys(checked).length) return null;
   return {
     time_zone: validZone(checked.time_zone) ? checked.time_zone : 'UTC',
-    outside: Array.isArray(checked.outside)
-      ? checked.outside.filter((value): value is string => typeof value === 'string')
-      : [],
+    outside: strings(checked.outside),
     conflicts: Array.isArray(checked.conflicts)
       ? (checked.conflicts.filter((value) => typeof object(value).ref === 'string') as BusyBlock[])
       : [],
     read: checked.read === true,
+    names: checked.names === true,
+    self: strings(checked.self),
   };
 }
 
@@ -314,73 +353,141 @@ export async function spaceTimeZone(tx: Query, spaceId: string): Promise<string>
   return validZone(row?.time_zone) ? row.time_zone : 'UTC';
 }
 
-const EMAIL = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+/** One plain address, as a guest must be given. */
+const GUEST = /^[^\s@<>"(),;:]+@[^\s@<>"(),;:/\\]+\.[^\s@<>"(),;:/\\]+$/;
+/** Connections that are an account the person signed in to, whose address the provider verified. */
+const SIGNED_IN = new Set(['gmail', 'google_calendar', 'outlook_mail', 'outlook_calendar']);
 
 /**
- * The addresses that are the person's own: the address they sign in with and
- * every account connected in the space (a signed-in calendar or mailbox, a
- * mailbox's sending address, a CalDAV user name that is an address).
+ * The addresses that are the person's own, and nothing wider:
+ * - in their own space, the address they sign in with and each account they
+ *   signed in to and connected there (its address verified by the provider);
+ * - in a room's space, only the accounts the room itself connected for its
+ *   own use (its team accounts), never its owner's or a member's address.
+ * A mailbox or calendar connected with a password can be a shared or list
+ * address, so it never counts: inviting it asks.
  */
-export async function ownAddresses(tx: Query, spaceId: string): Promise<Set<string>> {
+export async function ownAddresses(
+  tx: Query,
+  spaceId: string,
+  jobId: string,
+): Promise<Set<string>> {
   const own = new Set<string>();
-  const [owner] = await tx`select p.email from space s join principal p
-    on p.id = s.owner_principal_id where s.id = ${spaceId} and p.kind = 'person'`;
-  if (typeof owner?.email === 'string') own.add(calendarAddress(owner.email));
-  const rows = await tx`select configuration from connection where space_id = ${spaceId}`;
+  const [where] = await tx`select s.kind, s.owner_principal_id, j.principal_id
+    from job j join space s on s.id = j.space_id where j.id = ${jobId} and s.id = ${spaceId}`;
+  if (!where) return own;
+  const personal = where.kind === 'personal';
+  if (personal) {
+    const principal = where.principal_id ?? where.owner_principal_id;
+    const [person] = await tx`select email from principal
+      where id = ${principal ?? ''} and kind = 'person'`;
+    if (typeof person?.email === 'string') own.add(calendarAddress(person.email));
+  }
+  const rows = await tx`select configuration, shared_use from connection
+    where space_id = ${spaceId} and status = 'active'`;
   for (const row of rows) {
     const configuration = object(row.configuration);
-    for (const value of [
-      configuration.account,
-      configuration.from,
-      object(configuration.mail).from,
-      object(configuration.mail).username,
-      object(configuration.caldav).username,
-      configuration.username,
-    ])
-      if (typeof value === 'string' && EMAIL.test(value.trim())) own.add(calendarAddress(value));
+    if (!SIGNED_IN.has(String(configuration.kind))) continue;
+    if (!personal && row.shared_use !== 'room') continue;
+    if (typeof configuration.account === 'string' && GUEST.test(configuration.account.trim()))
+      own.add(calendarAddress(configuration.account));
   }
   return own;
 }
 
 const WRITES = new Set(['calendar.create', 'calendar.update']);
+/** Holding either lets a job read what is on the calendar, so a refusal may name it. */
+const READS = ['calendar.list', 'calendar.freebusy'];
+
+/** Whether the job may read the calendar, from the grants the broker passed. */
+const mayRead = (granted: readonly string[] | undefined) =>
+  !!granted && READS.some((scope) => granted.includes(scope));
+
+/** Blocks with their titles taken out, for a job that may not read them. */
+const untitled = (blocks: BusyBlock[]) => blocks.map((block) => ({ ...block, title: '' }));
 
 /**
  * Bind a calendar write's check into its payload, under the proposal's
- * transaction (no calendar is read here: `ahead` read it before the lock). A
- * write over busy time that does not ask to double-book is refused here,
- * naming what is in the way. An empty guest list is dropped, so inviting no
- * one stays an event on the person's own calendar.
+ * transaction (no calendar is read here: `ahead` read it before the lock).
+ * Guests must each be one plain address; an empty list is dropped, so
+ * inviting no one stays an event on the person's own calendar. Refusing a
+ * write over busy time is `checkCalendarAhead`'s, after the repeat lookups.
  */
 export async function bindCalendarCheck(
   payload: JsonObject,
-  spaceId: string,
+  ctx: Pick<ConnectorContext, 'space_id' | 'job_id' | 'ahead' | 'granted'>,
   tx: Query,
   kind: string | undefined,
-  ahead: JsonObject | null | undefined,
 ): Promise<JsonObject> {
-  if (kind === 'calendar.freebusy')
-    return validZone(payload.time_zone)
-      ? payload
-      : { ...payload, time_zone: await spaceTimeZone(tx, spaceId) };
+  if (kind === 'calendar.freebusy') {
+    const { checked: _ignored, ...rest } = payload;
+    return {
+      ...rest,
+      time_zone: validZone(payload.time_zone)
+        ? payload.time_zone
+        : await spaceTimeZone(tx, ctx.space_id),
+      checked: { self: [...(await ownAddresses(tx, ctx.space_id, ctx.job_id))] },
+    };
+  }
   if (!kind || !WRITES.has(kind)) return payload;
   const { checked: _ignored, ...rest } = payload;
+  const given = Array.isArray(rest.attendees) ? rest.attendees : [];
+  const malformed = given.filter(
+    (value) => typeof value !== 'string' || !GUEST.test(calendarAddress(value)),
+  );
+  if (malformed.length)
+    throw new BrokerFault(
+      'payload_invalid',
+      `Each guest must be one plain email address, like name@example.com. Not accepted: ${malformed
+        .slice(0, 3)
+        .map((value) => JSON.stringify(value))
+        .join(', ')}.`,
+    );
   const attendees = invited(rest);
   if (attendees.length) rest.attendees = attendees;
   else delete rest.attendees;
-  const zone = await spaceTimeZone(tx, spaceId);
-  const own = await ownAddresses(tx, spaceId);
-  const looked = object(ahead);
+  const zone = await spaceTimeZone(tx, ctx.space_id);
+  const own = await ownAddresses(tx, ctx.space_id, ctx.job_id);
+  const names = mayRead(ctx.granted);
+  const looked = object(ctx.ahead);
   const read = Array.isArray(looked.conflicts) && looked.complete === true;
   const conflicts = read ? (looked.conflicts as BusyBlock[]) : [];
-  if (conflicts.length && !rest.double_book)
-    throw new BrokerFault('payload_invalid', overlapReason(conflicts, zone));
   const check: CalendarCheck = {
     time_zone: zone,
     outside: attendees.filter((address) => !own.has(address)),
-    conflicts: rest.double_book ? conflicts : [],
+    conflicts: rest.double_book ? (names ? conflicts : untitled(conflicts)) : [],
     read,
+    names,
+    self: [...own],
   };
   return { ...rest, checked: check as unknown as JsonValue };
+}
+
+/**
+ * Refuse a new write over busy time that does not ask to double-book, with
+ * what is in the way named when the job may read the calendar. Run after the
+ * broker's repeat lookups, so a repeat of a write that landed is handed back
+ * rather than refused over itself.
+ */
+export function checkCalendarAhead(
+  proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+  ctx: Pick<ConnectorContext, 'ahead' | 'granted'>,
+): void {
+  if (!WRITES.has(proposal.kind) || proposal.canonical_payload.double_book !== undefined) return;
+  const looked = object(ctx.ahead);
+  if (!(Array.isArray(looked.conflicts) && looked.complete === true)) return;
+  const conflicts = looked.conflicts as BusyBlock[];
+  if (!conflicts.length) return;
+  const check = checkOf(proposal.canonical_payload);
+  throw new BrokerFault(
+    'payload_invalid',
+    overlapReason(
+      conflicts,
+      check?.time_zone ?? 'UTC',
+      check?.names === true,
+      ctx.granted?.includes('calendar.freebusy') === true,
+    ),
+  );
 }
 
 /**
@@ -397,41 +504,94 @@ export function calendarAsksFirst(action: Pick<Action, 'kind' | 'canonical_paylo
   return check === null || check.outside.length > 0;
 }
 
+/** A write's payload as compared between two proposals of the same effect. */
+function effectOf(payload: JsonObject): string {
+  const { checked: _ignored, ...rest } = payload;
+  const attendees = invited(rest);
+  if (attendees.length) rest.attendees = attendees;
+  else delete rest.attendees;
+  return canonicalizePayload(rest).json;
+}
+
+/**
+ * The actions in this job that are this same write, already sent or being
+ * sent: the event one of them made is this write's own, never a conflict
+ * with it.
+ */
+export async function sameEffects(
+  sql: Query,
+  proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+  jobId: string,
+  connectionId: string,
+): Promise<Set<string>> {
+  const rows = await sql`select id, canonical_payload from action where job_id = ${jobId}
+    and connection_id = ${connectionId} and kind = ${proposal.kind}
+    and status in ('admitted', 'dispatched', 'succeeded', 'unknown', 'unresolved')`;
+  const wanted = effectOf(proposal.canonical_payload);
+  return new Set(
+    rows
+      .filter((row) => effectOf(object(row.canonical_payload) as JsonObject) === wanted)
+      .map((row) => String(row.id)),
+  );
+}
+
 /**
  * Read the calendar before the proposal's lock, for what a write would land
- * on. Null when it could not be read, which leaves the check to dispatch.
+ * on, leaving out the event it changes and any event this same write already
+ * made. Null when it could not be read, which leaves the check to dispatch.
  */
 export async function calendarAhead(
   source: CalendarOccurrences | null,
-  proposal: { kind: string; canonical_payload: JsonObject },
-  zone: string,
-  mine?: (occurrence: Occurrence) => boolean,
+  proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+  context: {
+    sql: Query;
+    ctx: ConnectorContext;
+    connectionId: string;
+    mine?: (occurrence: Occurrence) => boolean;
+  },
 ): Promise<JsonObject | null> {
   if (!source || !WRITES.has(proposal.kind)) return null;
   const { start, end } = proposal.canonical_payload;
   if (typeof start !== 'string' || typeof end !== 'string') return null;
   if (!(Date.parse(end) > Date.parse(start))) return null;
   try {
-    const found = await conflictsAt(source, { start, end }, { zone, ...(mine ? { mine } : {}) });
+    const { sql, ctx, connectionId, mine } = context;
+    const zone = await spaceTimeZone(sql, ctx.space_id);
+    const self = [...(await ownAddresses(sql, ctx.space_id, ctx.job_id))];
+    const made = await sameEffects(sql, proposal, ctx.job_id, connectionId);
+    const found = await conflictsAt(
+      source,
+      { start, end },
+      {
+        zone,
+        self,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+        mine: (occurrence) =>
+          mine?.(occurrence) === true ||
+          (!!occurrence.melete_action && made.has(occurrence.melete_action)),
+      },
+    );
     return { conflicts: found.conflicts as unknown as JsonValue, complete: found.complete };
   } catch {
     return null;
   }
 }
 
-/**
- * The check a write makes just before it is sent: the calendar is read again,
- * and anything now in the way that the person did not agree to double-book
- * stops it. A calendar that cannot be read stops it too; nothing is written
- * on a guess. Null means the write may go.
- */
 const UNREAD =
   'Melete could not read the calendar to check that this time is free, so nothing was written.';
 
+/**
+ * The check a write makes just before it is sent: the calendar is read again,
+ * and anything now in the way that the person did not agree to double-book
+ * stops it. The event this action itself made (a retried send) is its own. A
+ * calendar that cannot be read stops it too; nothing is written on a guess.
+ * Null means the write may go.
+ */
 export async function clearToWrite(
   source: CalendarOccurrences,
   payload: JsonObject & { start: string; end: string },
   mine?: (occurrence: Occurrence) => boolean,
+  options: { actionId?: string; signal?: AbortSignal } = {},
 ): Promise<DispatchResult | null> {
   const check = checkOf(payload);
   const zone = check?.time_zone ?? 'UTC';
@@ -443,7 +603,14 @@ export async function clearToWrite(
     found = await conflictsAt(
       source,
       { start: payload.start, end: payload.end },
-      { zone, ...(mine ? { mine } : {}) },
+      {
+        zone,
+        ...(check?.self.length ? { self: check.self } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        mine: (occurrence) =>
+          mine?.(occurrence) === true ||
+          (!!options.actionId && occurrence.melete_action === options.actionId),
+      },
     );
   } catch (error) {
     // A refused credential or a request to slow down is the same fault the
@@ -476,6 +643,10 @@ export async function clearToWrite(
   if (!found.complete) return { outcome: 'failed', reason: UNREAD, retryable: true };
   const fresh = found.conflicts.filter((block) => !agreed.has(block.ref));
   return fresh.length
-    ? { outcome: 'failed', reason: overlapReason(fresh, zone), retryable: false }
+    ? {
+        outcome: 'failed',
+        reason: overlapReason(fresh, zone, check?.names === true, check?.names === true),
+        retryable: false,
+      }
     : null;
 }

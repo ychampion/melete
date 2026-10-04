@@ -9,6 +9,7 @@ import type {
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
+import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { confirmFromIcs, expandIcs, instantMs } from '../signals/occurrences.ts';
 import {
@@ -21,11 +22,11 @@ import {
   bindCalendarCheck,
   calendarAhead,
   calendarAsksFirst,
+  checkCalendarAhead,
   clearToWrite,
   freeBusy,
   invited,
   MAX_FREEBUSY_DAYS,
-  spaceTimeZone,
 } from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import type { SecretAccess } from './secrets.ts';
@@ -212,6 +213,8 @@ export const freebusyPayload = z
     start: instant,
     end: instant,
     time_zone: z.string().min(1).max(100).optional(),
+    /** Bound by Melete before the read; never the agent's. */
+    checked: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
   .refine((v) => instantMs(v.end) > instantMs(v.start), { message: '`end` must be after `start`' })
@@ -223,12 +226,19 @@ export const freebusyPayload = z
 export async function freebusyDetail(
   source: CalendarOccurrences,
   payload: z.infer<typeof freebusyPayload>,
+  signal?: AbortSignal,
 ): Promise<JsonObject> {
   const window = {
     from: new Date(instantMs(payload.start)).toISOString(),
     to: new Date(instantMs(payload.end)).toISOString(),
   };
-  const found = await freeBusy(source, window, payload.time_zone ?? 'UTC');
+  const self = payload.checked?.self;
+  const found = await freeBusy(source, window, payload.time_zone ?? 'UTC', {
+    ...(signal ? { signal } : {}),
+    ...(Array.isArray(self)
+      ? { self: self.filter((value): value is string => typeof value === 'string') }
+      : {}),
+  });
   return {
     ...found,
     ...(found.complete
@@ -308,6 +318,11 @@ export const calendarManifest: ConnectorManifest = {
           time_zone: {
             type: 'string',
             description: 'IANA zone for all-day events. Defaults to the person’s own.',
+          },
+          checked: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Filled in by Melete. Leave it out.',
           },
         },
       },
@@ -681,14 +696,20 @@ export class CalendarConnector implements Connector {
    */
   readonly signals: SignalSource = {
     stream: 'calendar',
-    occurrences: async (window) =>
+    occurrences: async (window, options) =>
       expandIcs(
         this.config.mode === 'ics'
           ? [this.config.ics]
-          : (await this.calendarObjects(undefined, { window })).map((object) => object.ics),
+          : (
+              await this.calendarObjects(
+                options?.signal ? ({ signal: options.signal } as ConnectorContext) : undefined,
+                { window },
+              )
+            ).map((object) => object.ics),
         window,
         undefined,
-        this.selfAddresses(),
+        [...this.selfAddresses(), ...(options?.self ?? [])],
+        options?.zone ?? null,
       ),
     confirm: async ({ uid, occurrence }) =>
       confirmFromIcs(
@@ -720,16 +741,32 @@ export class CalendarConnector implements Connector {
   ): Promise<JsonObject | null> {
     if (this.config.mode !== 'caldav') return null;
     const uid = proposal.canonical_payload.uid;
-    return calendarAhead(
-      this.signals as CalendarOccurrences,
-      proposal,
-      await spaceTimeZone(sql, ctx.space_id),
-      CalendarConnector.mine(typeof uid === 'string' ? uid : null),
-    );
+    const mine = CalendarConnector.mine(typeof uid === 'string' ? uid : null);
+    return calendarAhead(this.signals as CalendarOccurrences, proposal, {
+      sql,
+      ctx,
+      connectionId: this.config.id,
+      ...(mine ? { mine } : {}),
+    });
   }
 
-  prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
-    return bindCalendarCheck(payload, ctx.space_id, tx, kind, ctx.ahead);
+  async prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+    // Guests are invited by the account that organises the event; a CalDAV
+    // account whose user name is not an address cannot be named as one.
+    if (
+      (kind === 'calendar.create' || kind === 'calendar.update') &&
+      invited(payload).length &&
+      !this.selfAddresses().length
+    )
+      throw new BrokerFault(
+        'payload_invalid',
+        'This calendar’s account name is not an email address, so it cannot send invitations. Create the event without attendees, or use a calendar signed in with its address.',
+      );
+    return bindCalendarCheck(payload, ctx, tx, kind);
+  }
+
+  checkAhead(proposal: Pick<Action, 'kind' | 'canonical_payload'>, ctx: ConnectorContext) {
+    checkCalendarAhead(proposal, ctx);
   }
 
   asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
@@ -745,7 +782,7 @@ export class CalendarConnector implements Connector {
         try {
           return this.success(
             action,
-            await freebusyDetail(this.signals as CalendarOccurrences, payload),
+            await freebusyDetail(this.signals as CalendarOccurrences, payload, ctx.signal),
           );
         } catch {
           return {
@@ -801,9 +838,14 @@ export class CalendarConnector implements Connector {
         this.signals as CalendarOccurrences,
         payload as JsonObject & WritePayload,
         CalendarConnector.mine(uid),
+        { actionId: action.id, ...(ctx.signal ? { signal: ctx.signal } : {}) },
       );
+      // A change that does not say whether it is a hold keeps what the event is now.
+      const tentative =
+        payload.tentative ??
+        (update ? (await this.currentStatus(update.uid, ctx)) === 'TENTATIVE' : false);
       if (blocked) return blocked;
-      const ics = eventIcs(action, uid, payload, this.selfAddresses()[0] ?? null);
+      const ics = eventIcs(action, uid, { ...payload, tentative }, this.selfAddresses()[0] ?? null);
       const condition: Record<string, string> = update
         ? { 'if-match': update.etag }
         : { 'if-none-match': '*' };
@@ -816,7 +858,7 @@ export class CalendarConnector implements Connector {
       if (response.status >= 200 && response.status < 300)
         return this.success(
           action,
-          writeDetail(uid, response.headers.get('etag'), action, payload),
+          writeDetail(uid, response.headers.get('etag'), action, { ...payload, tentative }),
           uid,
         );
       // Three statuses mean something specific enough to repair rather than
@@ -866,6 +908,21 @@ export class CalendarConnector implements Connector {
             retryable: false,
           };
     }
+  }
+
+  /** The STATUS the event stored under `uid` has now, upper case; null when it has none. */
+  private async currentStatus(uid: string, ctx: ConnectorContext): Promise<string | null> {
+    const response = await this.request('GET', uid, null, ctx);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
+    const calendar = new ICAL.Component(ICAL.parse(await boundedText(response)));
+    const event = calendar
+      .getAllSubcomponents('vevent')
+      .find((component) => new ICAL.Event(component).uid === uid);
+    const status = event?.getFirstPropertyValue('status');
+    return typeof status === 'string' ? status.toUpperCase() : null;
   }
 
   /** The attendees of the event an update rewrites, across every instance stored under its UID. */

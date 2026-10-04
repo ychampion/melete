@@ -46,9 +46,9 @@ import {
   bindCalendarCheck,
   calendarAhead,
   calendarAsksFirst,
+  checkCalendarAhead,
   clearToWrite,
   invited,
-  spaceTimeZone,
 } from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import { signInEnded } from './mail-transport.ts';
@@ -86,6 +86,7 @@ type GraphEvent = {
   recurrence?: { pattern?: { type?: string; interval?: number } } | null;
   singleValueExtendedProperties?: { id?: string; value?: string }[];
   attendees?: { emailAddress?: { address?: string } }[];
+  showAs?: string;
 };
 
 /** A Graph dateTime in UTC ("2026-09-30T09:00:00.0000000") as an instant. */
@@ -110,7 +111,6 @@ export type GraphInstance = GraphEvent & {
   originalStart?: string;
   originalStartTimeZone?: string;
   isAllDay?: boolean;
-  showAs?: string;
   lastModifiedDateTime?: string;
   /** The account's own answer to an invitation. */
   responseStatus?: { response?: string };
@@ -159,6 +159,7 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
     // Free and working elsewhere leave the time open; busy, tentative and away block it.
     transparent: event.showAs === 'free' || event.showAs === 'workingElsewhere',
     declined: event.responseStatus?.response === 'declined',
+    melete_action: mark(event)?.split(' ')[1] ?? null,
   };
 }
 
@@ -234,7 +235,7 @@ export class OutlookCalendarConnector implements Connector {
   /** Every instance touching the window, from Graph's `calendarView`, which expands series itself. */
   readonly signals: SignalSource = {
     stream: 'calendar',
-    occurrences: async (window): Promise<CalendarRead> => {
+    occurrences: async (window, options): Promise<CalendarRead> => {
       const items: Occurrence[] = [];
       let complete = false;
       let link: string | undefined = `${this.config.base}/calendarView?${new URLSearchParams({
@@ -244,12 +245,14 @@ export class OutlookCalendarConnector implements Connector {
         $orderby: 'start/dateTime',
         $select:
           'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime,responseStatus',
+        // Melete's own mark, so an event it wrote is known as its own.
+        $expand: `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`,
       })}`;
       for (let page = 0; page < MAX_OCCURRENCE_PAGES && link; page++) {
         const response = await bearerRequest(
           this.config.access,
           link,
-          { headers: { prefer: PREFER } },
+          { headers: { prefer: PREFER }, ...(options?.signal ? { signal: options.signal } : {}) },
           this.config.fetcher,
         );
         if (!response.ok) throw await sourceError(response);
@@ -421,16 +424,21 @@ export class OutlookCalendarConnector implements Connector {
       proposal.kind === 'calendar.update' && typeof uid === 'string'
         ? await this.find(uid, ctx)
         : null;
-    return calendarAhead(
-      this.signals as CalendarOccurrences,
-      proposal,
-      await spaceTimeZone(sql, ctx.space_id),
-      OutlookCalendarConnector.mine(found),
-    );
+    const mine = OutlookCalendarConnector.mine(found);
+    return calendarAhead(this.signals as CalendarOccurrences, proposal, {
+      sql,
+      ctx,
+      connectionId: this.config.id,
+      ...(mine ? { mine } : {}),
+    });
   }
 
   prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
-    return bindCalendarCheck(payload, ctx.space_id, tx, kind, ctx.ahead);
+    return bindCalendarCheck(payload, ctx, tx, kind);
+  }
+
+  checkAhead(proposal: Pick<Action, 'kind' | 'canonical_payload'>, ctx: ConnectorContext) {
+    checkCalendarAhead(proposal, ctx);
   }
 
   asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
@@ -446,7 +454,7 @@ export class OutlookCalendarConnector implements Connector {
         try {
           return this.success(
             action,
-            await freebusyDetail(this.signals as CalendarOccurrences, payload),
+            await freebusyDetail(this.signals as CalendarOccurrences, payload, ctx.signal),
           );
         } catch {
           return {
@@ -526,6 +534,7 @@ export class OutlookCalendarConnector implements Connector {
         this.signals as CalendarOccurrences,
         payload as JsonObject & WritePayload,
         OutlookCalendarConnector.mine(existing),
+        { actionId: action.id, ...(ctx.signal ? { signal: ctx.signal } : {}) },
       );
       if (blocked) return blocked;
       const guests = invited(payload as JsonObject);
@@ -535,7 +544,9 @@ export class OutlookCalendarConnector implements Connector {
         location: { displayName: payload.location },
         start: { dateTime: utc(payload.start), timeZone: 'UTC' },
         end: { dateTime: utc(payload.end), timeZone: 'UTC' },
-        showAs: payload.tentative ? 'tentative' : 'busy',
+        ...(payload.tentative !== undefined || !update
+          ? { showAs: payload.tentative ? 'tentative' : 'busy' }
+          : {}),
         // Graph invites whoever is listed; a change without a list leaves the guests as they are.
         ...(guests.length
           ? {
@@ -563,7 +574,10 @@ export class OutlookCalendarConnector implements Connector {
         )) as GraphEvent | null;
         return this.success(
           action,
-          writeDetail(uid, toolEtag(written?.['@odata.etag']), action, payload),
+          writeDetail(uid, toolEtag(written?.['@odata.etag']), action, {
+            ...payload,
+            tentative: payload.tentative ?? existing?.showAs === 'tentative',
+          }),
           uid,
         );
       }

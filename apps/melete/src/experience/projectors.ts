@@ -1091,16 +1091,30 @@ export function calendarReasons(kind: string, payload: Record<string, unknown>):
     );
   const doubleBook = object(payload.double_book);
   if (typeof doubleBook.reason === 'string') {
-    const over = array(checked.conflicts).map((block) =>
-      plainText(object(block).title, 'an untitled event'),
-    );
+    const blocks = array(checked.conflicts).map((block) => object(block));
+    // Titles are bound only when this work may read the calendar.
+    const over =
+      checked.names === true
+        ? blocks.map((block) => plainText(block.title, 'an untitled event'))
+        : [];
+    const landsOn = over.length
+      ? `It goes on top of ${over.join(', ')}`
+      : blocks.length
+        ? `It goes on top of ${blocks.length === 1 ? 'something' : `${blocks.length} things`} already on your calendar`
+        : 'It was asked for on top of what is already there';
     reasons.push(
       plainText(
-        `${over.length ? `It goes on top of ${over.join(', ')}` : 'It was asked for on top of what is already there'}. The reason given: ${doubleBook.reason}`,
+        `${landsOn}. The reason given: ${doubleBook.reason}`,
         'It double-books your calendar.',
       ),
     );
   }
+  // Said whenever the calendar could not be read before asking: the check
+  // just before it is added may still stop it.
+  if (checked.read === false)
+    reasons.push(
+      'Melete could not check your calendar for anything already at this time before asking. It checks again just before adding it, and stops if the time is taken.',
+    );
   return reasons;
 }
 
@@ -1130,9 +1144,12 @@ export function calendarFacts(
   if (payload.tentative === true) facts.push({ label: 'Hold', value: 'Marked tentative' });
   const doubleBook = object(payload.double_book);
   if (typeof doubleBook.reason === 'string') {
-    const over = array(checked.conflicts)
-      .map((block) => object(block))
-      .map((block) => plainText(block.title, 'an untitled event'));
+    const over =
+      checked.names === true
+        ? array(checked.conflicts)
+            .map((block) => object(block))
+            .map((block) => plainText(block.title, 'an untitled event'))
+        : [];
     if (over.length) facts.push({ label: 'On top of', value: plainText(over.join(', '), '') });
     facts.push({ label: 'Why both', value: plainText(doubleBook.reason, 'No reason given') });
   }

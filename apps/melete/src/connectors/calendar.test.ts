@@ -539,13 +539,45 @@ describe('calendar truth on CalDAV', () => {
     ]);
   });
 
+  test('moving a hold without saying tentative keeps it a hold', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(fake.config, secret);
+    await connector.execute(
+      mailAction('calendar.create', { ...payload, tentative: true }, 'act_hold'),
+      mailContext('act_hold'),
+    );
+    const moved = await connector.execute(
+      mailAction(
+        'calendar.update',
+        {
+          ...payload,
+          start: '2026-09-12T13:00:00Z',
+          end: '2026-09-12T14:00:00Z',
+          uid: 'act_hold',
+          etag: '"version-1"',
+        },
+        'act_move',
+      ),
+      mailContext('act_move'),
+    );
+    if (moved.outcome !== 'succeeded') throw new Error(moved.outcome);
+    expect(moved.receipt.detail).toMatchObject({ tentative: true });
+    expect(fake.records.get('/calendar/act_hold.ics')?.body).toContain('STATUS:TENTATIVE');
+  });
+
   test('a create over a busy slot is refused with the conflict named, and nothing is written', async () => {
     const fake = caldavDouble();
     const connector = new CalendarConnector(fake.config, secret);
     await connector.execute(mailAction('calendar.create', payload), mailContext());
     const over = mailAction(
       'calendar.create',
-      { ...payload, summary: 'Call', start: '2026-09-12T09:30:00Z', end: '2026-09-12T10:30:00Z' },
+      {
+        ...payload,
+        summary: 'Call',
+        checked: { names: true },
+        start: '2026-09-12T09:30:00Z',
+        end: '2026-09-12T10:30:00Z',
+      },
       'act_over',
     );
     const refused = await connector.execute(over, mailContext('act_over'));

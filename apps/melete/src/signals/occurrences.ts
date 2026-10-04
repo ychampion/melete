@@ -175,8 +175,12 @@ function occurrenceOf(
   start: ICAL.Time,
   end: ICAL.Time,
   self: ReadonlySet<string> = new Set(),
+  floating: string | null = null,
 ): Occurrence {
-  const zone = tzidOf(component, 'dtstart');
+  // A time written with no zone is the person's own wall clock when the
+  // reader knows their zone; the zone stays unnamed in what is kept.
+  const named = tzidOf(component, 'dtstart');
+  const zone = named ?? floating;
   const endZone = tzidOf(component, 'dtend') ?? zone;
   const modified = component.getFirstPropertyValue('last-modified');
   return {
@@ -189,11 +193,12 @@ function occurrenceOf(
     location: textOf(component, 'location'),
     status: statusOf(component.getFirstPropertyValue('status')),
     attendees: attendeesOf(component),
-    time_zone: zone,
+    time_zone: named,
     updated_at:
       modified instanceof ICAL.Time ? new Date(modified.toUnixTime() * 1000).toISOString() : null,
     transparent: textOf(component, 'transp').toUpperCase() === 'TRANSPARENT',
     declined: declinedBySelf(component, self),
+    melete_action: textOf(component, 'x-melete-action-id') || null,
   };
 }
 
@@ -302,6 +307,8 @@ export async function expandIcs(
   budget: ExpansionBudget = EXPANSION_BUDGET,
   /** The calendar's own addresses, so an invitation it declined is known as one. */
   selfAddresses: readonly string[] = [],
+  /** The zone a time written with no zone is read in; UTC when none is given. */
+  floating: string | null = null,
 ): Promise<CalendarRead> {
   const self = new Set(selfAddresses.map(calendarAddress).filter(Boolean));
   const out: Occurrence[] = [];
@@ -348,6 +355,7 @@ export async function expandIcs(
               event.startDate,
               event.endDate,
               self,
+              floating,
             ),
           );
         }
@@ -356,10 +364,10 @@ export async function expandIcs(
       const event = new ICAL.Event(master, { exceptions });
       if (!event.isRecurring()) {
         await spend();
-        keep(occurrenceOf(master, uid, null, event.startDate, event.endDate, self));
+        keep(occurrenceOf(master, uid, null, event.startDate, event.endDate, self, floating));
         continue;
       }
-      const masterZone = tzidOf(master, 'dtstart');
+      const masterZone = tzidOf(master, 'dtstart') ?? floating;
       startNearWindow(event, masterZone, from);
       const seen = new Set<string>();
       const iterator = event.iterator();
@@ -374,7 +382,7 @@ export async function expandIcs(
         const item = details.item.component;
         const key = icalInstant(details.recurrenceId, masterZone);
         seen.add(key);
-        keep(occurrenceOf(item, uid, key, details.startDate, details.endDate, self));
+        keep(occurrenceOf(item, uid, key, details.startDate, details.endDate, self, floating));
       }
       // An instance moved into the window from a date the walk above never
       // reached is still in the window.
@@ -383,7 +391,7 @@ export async function expandIcs(
         if (key === null || seen.has(key)) continue;
         await spend();
         const moved = new ICAL.Event(exception);
-        keep(occurrenceOf(exception, uid, key, moved.startDate, moved.endDate, self));
+        keep(occurrenceOf(exception, uid, key, moved.startDate, moved.endDate, self, floating));
       }
     }
   }

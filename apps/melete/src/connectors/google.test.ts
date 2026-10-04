@@ -543,6 +543,30 @@ describe('Google Calendar through the calendar tools', () => {
     ]);
   });
 
+  test('moving a hold without saying tentative keeps it a hold', async () => {
+    const { google, connector } = await calendar();
+    await connector.execute(
+      mailAction('calendar.create', { ...event, tentative: true }, 'act_hold'),
+      mailContext('act_hold'),
+    );
+    const moved = await connector.execute(
+      mailAction(
+        'calendar.update',
+        {
+          ...event,
+          start: '2026-09-30T13:00:00Z',
+          end: '2026-09-30T14:00:00Z',
+          uid: 'act_hold',
+          etag: '"1"',
+        },
+        'act_move',
+      ),
+      mailContext('act_move'),
+    );
+    expect(moved.outcome).toBe('succeeded');
+    expect(google.events.get(googleEventId('act_hold'))?.status).toBe('tentative');
+  });
+
   test('a create over a busy slot is refused with the conflict named; guests are invited by Google', async () => {
     const { google, connector } = await calendar();
     await connector.execute(
@@ -550,7 +574,11 @@ describe('Google Calendar through the calendar tools', () => {
       mailContext('act_first'),
     );
     const refused = await connector.execute(
-      mailAction('calendar.create', { ...event, summary: 'Call' }, 'act_over'),
+      mailAction(
+        'calendar.create',
+        { ...event, summary: 'Call', checked: { names: true } },
+        'act_over',
+      ),
       mailContext('act_over'),
     );
     expect(refused.outcome === 'failed' ? refused.reason : '').toContain('“Walk with Alex”');

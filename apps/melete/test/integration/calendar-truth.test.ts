@@ -7,9 +7,11 @@
  */
 import { afterAll, afterEach, expect, test } from 'bun:test';
 import type { JsonObject } from '@melete/contracts';
+import { accountToolName } from '../../src/broker/catalog.ts';
 import { BrokerFault } from '../../src/broker/errors.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { CalendarConnector } from '../../src/connectors/calendar.ts';
+import { ownAddresses } from '../../src/connectors/calendar-truth.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { SecretAccess } from '../../src/connectors/secrets.ts';
 import { ExperienceEffects } from '../../src/experience/effects.ts';
@@ -33,11 +35,13 @@ afterAll(async () => {
 /** A CalDAV collection in memory: PUT, GET, DELETE by ETag, and REPORT of everything. */
 function caldavServer() {
   const records = new Map<string, { body: string; etag: string }>();
+  const methods: string[] = [];
   let version = 0;
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
     async fetch(request) {
+      methods.push(request.method);
       const path = new URL(request.url).pathname;
       const existing = records.get(path);
       if (request.method === 'PUT') {
@@ -91,22 +95,21 @@ function caldavServer() {
         '',
       ].join('\r\n'),
     });
-  return { url: `${server.url}calendar/`, records, existingEvent };
+  return { url: `${server.url}calendar/`, records, methods, existingEvent };
 }
 
-async function setup() {
+const ALL = [
+  'calendar.list',
+  'calendar.freebusy',
+  'calendar.create',
+  'calendar.update',
+  'calendar.delete',
+];
+
+async function setup(scopes: string[] = ALL) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const { sql } = fixture;
-  const seed = await seedJob(sql, {
-    scopes: [
-      'calendar.list',
-      'calendar.freebusy',
-      'calendar.create',
-      'calendar.update',
-      'calendar.delete',
-    ],
-    provider: 'caldav',
-  });
+  const seed = await seedJob(sql, { scopes, provider: 'caldav' });
   const dav = caldavServer();
   // The person's own other account, and their time zone.
   await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
@@ -122,7 +125,7 @@ async function setup() {
         spaceId: seed.claims.space_id,
         mode: 'caldav',
         calendarUrl: dav.url,
-        username: 'owner',
+        username: 'me@work.example',
         secretRef: 'sec_calendar',
         allowInsecureLocalForTests: true,
       },
@@ -145,7 +148,7 @@ async function setup() {
     broker,
     new ExperienceEffects(sql, broker, registry),
   );
-  return { ...seed, sql, dav, broker, propose, approveAndRun, permissions };
+  return { ...seed, sql, dav, broker, registry, propose, approveAndRun, permissions };
 }
 
 const event = (start: string, end: string, extra: JsonObject = {}): JsonObject => ({
@@ -321,4 +324,254 @@ databaseTest(
     expect([...ctx.dav.records.keys()]).toEqual([`/calendar/${hold.action_id}.ics`]);
   },
   SLOW,
+);
+
+databaseTest(
+  'nothing is read from a calendar for a proposal that is not authorized',
+  async () => {
+    const own = await setup();
+    const other = await setup();
+    other.dav.existingEvent(
+      'privb',
+      'Another space’s event',
+      '20261109T150000Z',
+      '20261109T160000Z',
+    );
+    // Another space's connection, proposed from this job.
+    own.registry.register(other.connectionId, other.registry.get(other.connectionId) as never);
+    const before = other.dav.methods.length;
+    const elsewhere = await rejectionOf(
+      new BrokerService({ sql: own.sql, connectors: own.registry }).propose(own.claims, {
+        kind: 'calendar.create',
+        connection_id: other.connectionId,
+        payload: event('2026-11-09T15:30:00Z', '2026-11-09T16:30:00Z'),
+      }),
+    );
+    expect((elsewhere as BrokerFault).code).toBe('unknown_connection');
+    expect(other.dav.methods.slice(before)).toEqual([]);
+    // A connection this job may list but not write to.
+    const listOnly = await setup(['calendar.list']);
+    const refused = await rejectionOf(
+      listOnly.propose('calendar.create', event('2026-11-09T15:30:00Z', '2026-11-09T16:30:00Z')),
+    );
+    expect((refused as BrokerFault).code).toBe('scope_denied');
+    expect(listOnly.dav.methods).toEqual([]);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a busy slot is refused, and a double-booking lands, through an account-named tool',
+  async () => {
+    const ctx = await setup();
+    ctx.dav.existingEvent('board', 'Board meeting', '20261109T150000Z', '20261109T160000Z');
+    const alias = accountToolName('calendar.create', ctx.connectionId);
+    const viaAlias = (payload: JsonObject) =>
+      ctx.broker.propose(ctx.claims, { kind: alias, connection_id: ctx.connectionId, payload });
+    const refused = await rejectionOf(
+      viaAlias(event('2026-11-09T15:30:00Z', '2026-11-09T16:30:00Z')),
+    );
+    expect((refused as BrokerFault).message).toContain('“Board meeting”');
+    const both = await viaAlias(
+      event('2026-11-09T15:00:00Z', '2026-11-09T15:45:00Z', {
+        double_book: { reason: 'The person wants both' },
+      }),
+    );
+    expect(both.canonical_payload).toMatchObject({
+      checked: { read: true, conflicts: [{ title: 'Board meeting' }] },
+    });
+    expect((await ctx.approveAndRun(both)).status).toBe('succeeded');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a job that may create but not read events is never told what is in the way',
+  async () => {
+    const ctx = await setup(['calendar.create']);
+    ctx.dav.existingEvent('hr', 'Secret HR review: Sam', '20261109T150000Z', '20261109T160000Z');
+    const refused = await rejectionOf(
+      ctx.propose('calendar.create', event('2026-11-09T15:30:00Z', '2026-11-09T16:30:00Z')),
+    );
+    expect((refused as BrokerFault).code).toBe('payload_invalid');
+    expect((refused as BrokerFault).message).toStartWith('That time is already taken, so nothing');
+    expect((refused as BrokerFault).message).not.toContain('Secret HR');
+    // A double-booking it asks for binds no title either, nor shows one on the card.
+    const both = await ctx.propose(
+      'calendar.create',
+      event('2026-11-09T15:00:00Z', '2026-11-09T15:45:00Z', {
+        double_book: { reason: 'The person wants both' },
+      }),
+    );
+    expect(JSON.stringify(both.canonical_payload)).not.toContain('Secret HR');
+    const card = await ctx.permissions.card(ctx.claims.space_id, String(both.approval_id));
+    expect(JSON.stringify(card)).not.toContain('Secret HR');
+    expect(card.why.join(' ')).toContain('It goes on top of something already on your calendar');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'proposing a booking that already landed hands back that booking',
+  async () => {
+    const ctx = await setup();
+    const request = event('2026-11-13T15:00:00Z', '2026-11-13T16:00:00Z');
+    const first = await ctx.propose('calendar.create', request);
+    expect((await ctx.approveAndRun(first)).status).toBe('succeeded');
+    const again = await ctx.propose('calendar.create', request);
+    expect(again.action_id).toBe(first.action_id);
+    expect(again.repeated).toBe(true);
+    // The same double-booking asked for again is the same action, not a second event.
+    ctx.dav.existingEvent('board', 'Board meeting', '20261114T150000Z', '20261114T160000Z');
+    const twice = event('2026-11-14T15:00:00Z', '2026-11-14T15:30:00Z', {
+      double_book: { reason: 'The person wants both' },
+    });
+    const one = await ctx.propose('calendar.create', twice);
+    expect((await ctx.approveAndRun(one)).status).toBe('succeeded');
+    const two = await ctx.propose('calendar.create', twice);
+    expect(two.action_id).toBe(one.action_id);
+    expect(ctx.dav.records.size).toBe(3);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a guest must be one plain address, refused before anyone is asked',
+  async () => {
+    const ctx = await setup();
+    const refused = await rejectionOf(
+      ctx.propose(
+        'calendar.create',
+        event('2026-11-10T15:00:00Z', '2026-11-10T16:00:00Z', {
+          attendees: ['Bob <bob@x.example>'],
+        }),
+      ),
+    );
+    expect((refused as BrokerFault).code).toBe('payload_invalid');
+    expect((refused as BrokerFault).message).toContain('"Bob <bob@x.example>"');
+    const [{ count }] = (await ctx.sql`select count(*)::int as count from action
+      where job_id = ${ctx.claims.job_id}`) as unknown as [{ count: number }];
+    expect(count).toBe(0);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'the card says when the calendar could not be checked before asking',
+  async () => {
+    const ctx = await setup();
+    // The calendar answers nothing it can read before the proposal.
+    const original = ctx.dav.url;
+    const broken = new CalendarConnector(
+      {
+        id: ctx.connectionId,
+        spaceId: ctx.claims.space_id,
+        mode: 'caldav',
+        calendarUrl: `${original}missing/`,
+        username: 'me@work.example',
+        secretRef: 'sec_calendar',
+        allowInsecureLocalForTests: true,
+      },
+      secret,
+      (async () => new Response(null, { status: 500 })) as unknown as typeof fetch,
+    );
+    const registry = new ConnectorRegistry().register(ctx.connectionId, broken);
+    const asked = await new BrokerService({ sql: ctx.sql, connectors: registry }).propose(
+      ctx.claims,
+      {
+        kind: 'calendar.create',
+        connection_id: ctx.connectionId,
+        payload: event('2026-11-10T15:00:00Z', '2026-11-10T16:00:00Z'),
+      },
+    );
+    expect(asked.canonical_payload).toMatchObject({ checked: { read: false } });
+    const card = await ctx.permissions.card(ctx.claims.space_id, String(asked.approval_id));
+    expect(card.why.join(' ')).toContain('could not check your calendar');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'own addresses are the person’s sign-in and accounts they signed in to, and a room’s own team accounts',
+  async () => {
+    const ctx = await setup();
+    const { sql } = ctx;
+    const space = ctx.claims.space_id;
+    const person = `prn_own_${ctx.connectionId}`;
+    await sql`insert into principal (id, email, kind) values (${person}, ${`me+${ctx.connectionId}@home.example`}, 'person')`;
+    await sql`update space set owner_principal_id = ${person} where id = ${space}`;
+    const add = (
+      id: string,
+      configuration: JsonObject,
+      extra: { status?: string; shared?: string } = {},
+    ) =>
+      sql`insert into connection (id, space_id, provider, label, scopes, configuration, status, shared_use)
+        values (${`${id}_${ctx.connectionId}`}, ${space}, 'imap', 'x', '[]'::jsonb,
+          ${JSON.stringify(configuration)}::jsonb, ${extra.status ?? 'active'}, ${extra.shared ?? 'owner'})`;
+    await add('team', {
+      kind: 'mail',
+      mail: { from: 'team@work.example', username: 'team@work.example' },
+    });
+    await add('gone', { kind: 'gmail', account: 'old@gmail.example' }, { status: 'revoked' });
+    const own = await ownAddresses(sql, space, ctx.claims.job_id);
+    expect([...own].sort()).toEqual([
+      `me+${ctx.connectionId.toLowerCase()}@home.example`,
+      'me@work.example',
+    ]);
+    // In a room's space: only the accounts the room connected for itself.
+    await sql`update space set kind = 'shared' where id = ${space}`;
+    await add(
+      'room',
+      { kind: 'google_calendar', account: 'room-team@work.example' },
+      { shared: 'room' },
+    );
+    const roomOwn = await ownAddresses(sql, space, ctx.claims.job_id);
+    expect([...roomOwn]).toEqual(['room-team@work.example']);
+    await sql`update space set kind = 'personal' where id = ${space}`;
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a calendar that does not answer holds a proposal no longer than the deadline',
+  async () => {
+    const ctx = await setup();
+    const silent = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: (request) =>
+        request.method === 'REPORT'
+          ? new Promise<Response>(() => {})
+          : new Response(null, { status: 405 }),
+    });
+    servers.push(silent);
+    const registry = new ConnectorRegistry().register(
+      ctx.connectionId,
+      new CalendarConnector(
+        {
+          id: ctx.connectionId,
+          spaceId: ctx.claims.space_id,
+          mode: 'caldav',
+          calendarUrl: `${silent.url}calendar/`,
+          username: 'me@work.example',
+          secretRef: 'sec_calendar',
+          allowInsecureLocalForTests: true,
+        },
+        secret,
+      ),
+    );
+    const began = performance.now();
+    const asked = await new BrokerService({ sql: ctx.sql, connectors: registry }).propose(
+      ctx.claims,
+      {
+        kind: 'calendar.create',
+        connection_id: ctx.connectionId,
+        payload: event('2026-11-10T15:00:00Z', '2026-11-10T16:00:00Z'),
+      },
+    );
+    expect(performance.now() - began).toBeLessThan(12_000);
+    expect(asked.status).toBe('needs_approval');
+    expect(asked.canonical_payload).toMatchObject({ checked: { read: false } });
+  },
+  60_000,
 );

@@ -91,7 +91,7 @@ const isEmailField = (key: string): boolean =>
   (EMAIL_ADDRESS_FIELDS as readonly string[]).includes(key.toLowerCase());
 
 /** One address: a local part, `@`, and a host, with no spaces, brackets or path separators. */
-const ADDRESS = /^[^\s@<>]+@[^\s@<>/\\]+$/;
+const ADDRESS = /^[^\s@<>/\\]+@[^\s@<>/\\]+$/;
 
 /**
  * The comparable form of a value under an address key, or null when the value

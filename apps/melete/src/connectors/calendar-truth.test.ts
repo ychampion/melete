@@ -9,11 +9,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { JsonObject } from '@melete/contracts';
 import { calendarReasons } from '../experience/projectors.ts';
+import { expandIcs } from '../signals/occurrences.ts';
 import type { CalendarOccurrences } from '../signals/types.ts';
 import { CalendarConnector } from './calendar.ts';
 import {
   type BusyBlock,
   calendarAsksFirst,
+  checkCalendarAhead,
   clearToWrite,
   conflictsAt,
   freeBusy,
@@ -462,7 +464,15 @@ describe('free/busy from each provider', () => {
 
 describe('a write over busy time', () => {
   const write = (start: string, end: string, extra: JsonObject = {}) =>
-    ({ summary: 'New', start, end, description: '', location: '', ...extra }) as JsonObject & {
+    ({
+      summary: 'New',
+      start,
+      end,
+      description: '',
+      location: '',
+      checked: { names: true },
+      ...extra,
+    }) as JsonObject & {
       start: string;
       end: string;
     };
@@ -483,7 +493,13 @@ describe('a write over busy time', () => {
     const refused = await clearToWrite(
       sourceOf(caldav()),
       write('2026-11-02T14:15:00Z', '2026-11-02T14:45:00Z', {
-        checked: { time_zone: 'America/New_York', outside: [], conflicts: [], read: true },
+        checked: {
+          time_zone: 'America/New_York',
+          outside: [],
+          conflicts: [],
+          read: true,
+          names: true,
+        },
       }),
     );
     const reason = refused && 'reason' in refused ? refused.reason : '';
@@ -517,7 +533,13 @@ describe('a write over busy time', () => {
     expect(conflicts.map((block) => block.title)).toEqual(['Team sync']);
     const agreed = write(slot.start, slot.end, {
       double_book: { reason: 'The person asked to sit in on both' },
-      checked: { time_zone: 'America/New_York', outside: [], conflicts, read: true } as never,
+      checked: {
+        time_zone: 'America/New_York',
+        outside: [],
+        conflicts,
+        read: true,
+        names: true,
+      } as never,
     });
     expect(await clearToWrite(source, agreed)).toBeNull();
     // The same agreement does not cover a time it never named.
@@ -593,7 +615,7 @@ describe('who an event invites', () => {
         action({
           ...base,
           attendees: ['me@work.example'],
-          checked: { time_zone: 'UTC', outside: [], conflicts: [], read: true },
+          checked: { time_zone: 'UTC', outside: [], conflicts: [], read: true, names: true },
         }),
       ),
     ).toBe(false);
@@ -614,11 +636,152 @@ describe('who an event invites', () => {
           { title: 'Team sync', ref: 'x', start: '', end: '', status: 'busy', all_day: false },
         ],
         read: true,
+        names: true,
       },
     };
     expect(calendarAsksFirst(action(payload))).toBe(true);
     expect(calendarReasons('calendar.create', payload).join(' ')).toContain(
       'It goes on top of Team sync. The reason given: The person wants to drop in on both',
     );
+  });
+});
+
+describe('what a refusal and a read may tell', () => {
+  const slot = { start: '2026-11-02T14:15:00Z', end: '2026-11-02T14:45:00Z' };
+  const busySlot = (checked: JsonObject) =>
+    ({
+      summary: 'New',
+      ...slot,
+      description: '',
+      location: '',
+      checked,
+    }) as JsonObject & { start: string; end: string };
+
+  test('a job that may not read the calendar is told the time is taken, never by what', async () => {
+    const refused = await clearToWrite(
+      sourceOf(caldav()),
+      busySlot({ time_zone: 'America/New_York', names: false }),
+    );
+    const reason = refused && 'reason' in refused ? refused.reason : '';
+    expect(reason).toStartWith('That time is already taken, so nothing was put on the calendar.');
+    expect(reason).not.toContain('Team sync');
+    expect(reason).not.toContain('Holiday');
+    expect(reason).not.toContain('9:00');
+    expect(reason).not.toContain('calendar.freebusy');
+    // The same refusal before anyone is asked.
+    const { conflicts } = await conflictsAt(sourceOf(caldav()), slot, { zone: 'UTC' });
+    const ahead = { conflicts: conflicts as never, complete: true };
+    expect(() =>
+      checkCalendarAhead(
+        { kind: 'calendar.create', canonical_payload: busySlot({ names: false }) },
+        { ahead, granted: ['calendar.create'] },
+      ),
+    ).toThrow(/^That time is already taken, so nothing/);
+    expect(() =>
+      checkCalendarAhead(
+        { kind: 'calendar.create', canonical_payload: busySlot({ names: true }) },
+        { ahead, granted: ['calendar.create', 'calendar.freebusy'] },
+      ),
+    ).toThrow(/“Team sync”.*calendar\.freebusy/);
+  });
+
+  test('a time written with no zone is the person’s own wall clock', async () => {
+    const floating = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      ...vevent([
+        'UID:float',
+        'DTSTART:20261109T100000',
+        'DTEND:20261109T110000',
+        'SUMMARY:Standup',
+      ]),
+      'END:VCALENDAR',
+      '',
+    ].join('\r\n');
+    const source: CalendarOccurrences = {
+      occurrences: (window, options) =>
+        expandIcs([floating], window, undefined, [], options?.zone ?? null),
+    };
+    const ny = 'America/New_York';
+    // 10:00 in New York is 15:00Z; 05:00 in New York is 10:00Z.
+    const atTen = await conflictsAt(
+      source,
+      { start: '2026-11-09T15:00:00Z', end: '2026-11-09T16:00:00Z' },
+      { zone: ny },
+    );
+    const atFive = await conflictsAt(
+      source,
+      { start: '2026-11-09T10:00:00Z', end: '2026-11-09T11:00:00Z' },
+      { zone: ny },
+    );
+    expect(atTen.conflicts.map((block) => block.title)).toEqual(['Standup']);
+    expect(atFive.conflicts).toEqual([]);
+  });
+
+  test('an invitation the person declined frees the time even when the account name is not their address', async () => {
+    const declined = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      ...vevent([
+        'UID:pitch',
+        'DTSTART:20261110T150000Z',
+        'DTEND:20261110T160000Z',
+        'SUMMARY:Pitch',
+        'ORGANIZER:mailto:vendor@example.test',
+        'ATTENDEE;PARTSTAT=DECLINED:mailto:me@work.example',
+      ]),
+      'END:VCALENDAR',
+      '',
+    ].join('\r\n');
+    const window = { from: '2026-11-10T00:00:00.000Z', to: '2026-11-11T00:00:00.000Z' };
+    // A feed, read through the feed's own reader, with the person's addresses bound.
+    const { IcsFeedConnector } = await import('./ics-feed.ts');
+    const feed = new IcsFeedConnector(
+      { id: 'con_f', spaceId: 'spc_test', secretRef: 'sec', allowInsecureLocalForTests: true },
+      { withSecret: async (_id, _space, use) => use('https://feed.example.test/me.ics') },
+      {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        transport: (async () => ({ status: 200, body: declined })) as never,
+      },
+    );
+    const unknown = await freeBusy(sourceOf(feed), window, 'UTC');
+    expect(unknown.busy.map((block) => block.title)).toEqual(['Pitch']);
+    const known = await freeBusy(sourceOf(feed), window, 'UTC', { self: ['me@work.example'] });
+    expect(known.busy).toEqual([]);
+  });
+
+  test('a CalDAV account whose name is not an address cannot send invitations', async () => {
+    const connector = new CalendarConnector(
+      {
+        id: 'con_c',
+        spaceId: 'spc_test',
+        mode: 'caldav',
+        calendarUrl: 'https://dav.example.test/c/',
+        username: 'owner',
+        secretRef: 'sec',
+      },
+      secret,
+    );
+    await expect(
+      connector.prepare(
+        {
+          summary: 'Intro',
+          start: '2026-11-09T10:00:00Z',
+          end: '2026-11-09T11:00:00Z',
+          attendees: ['priya@partner.example'],
+        },
+        { job_id: 'job', space_id: 'spc_test', idempotency_key: '', constraints: {} as never },
+        {} as never,
+        'calendar.create',
+      ),
+    ).rejects.toThrow('cannot send invitations');
+  });
+
+  test('the card says when the calendar could not be checked before asking', () => {
+    const base = { summary: 'Focus', start: '2026-11-09T10:00:00Z', end: '2026-11-09T11:00:00Z' };
+    expect(
+      calendarReasons('calendar.create', { ...base, checked: { read: false } }).join(' '),
+    ).toContain('could not check your calendar');
+    expect(calendarReasons('calendar.create', { ...base, checked: { read: true } })).toEqual([]);
   });
 });

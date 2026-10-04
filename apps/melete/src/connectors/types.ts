@@ -37,6 +37,11 @@ export type ConnectorContext = {
    * proposal's lock; handed to `prepare` only. Null when it could not be read.
    */
   ahead?: JsonObject | null;
+  /**
+   * At proposal only: the tools this job may use on this connection, so a
+   * connector can withhold what the job could not read itself.
+   */
+  granted?: readonly string[];
 };
 
 export interface Connector {
@@ -63,6 +68,16 @@ export interface Connector {
     ctx: ConnectorContext,
     sql: Query,
   ): Promise<JsonObject | null>;
+  /**
+   * Refuse a new proposal over what `ahead` read (in `ctx.ahead`). Called
+   * under the proposal's lock after the repeat lookups found nothing, so a
+   * repeated proposal is handed the action it made rather than refused over
+   * it. Throws a `BrokerFault` to refuse.
+   */
+  checkAhead?(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+  ): void | Promise<void>;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**

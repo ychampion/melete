@@ -42,9 +42,9 @@ import {
   bindCalendarCheck,
   calendarAhead,
   calendarAsksFirst,
+  checkCalendarAhead,
   clearToWrite,
   invited,
-  spaceTimeZone,
 } from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import { googleErrorReason } from './google.ts';
@@ -143,6 +143,7 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     declined: (event.attendees ?? []).some(
       (attendee) => attendee.self && attendee.responseStatus === 'declined',
     ),
+    melete_action: event.extendedProperties?.private?.melete_action_id ?? null,
   };
 }
 
@@ -216,7 +217,7 @@ export class GoogleCalendarConnector implements Connector {
    */
   readonly signals: SignalSource = {
     stream: 'calendar',
-    occurrences: async (window): Promise<CalendarRead> => {
+    occurrences: async (window, options): Promise<CalendarRead> => {
       const items: Occurrence[] = [];
       let pageToken: string | undefined;
       for (let page = 0; page < MAX_OCCURRENCE_PAGES; page++) {
@@ -229,7 +230,11 @@ export class GoogleCalendarConnector implements Connector {
           maxResults: '250',
         });
         if (pageToken) query.set('pageToken', pageToken);
-        const response = await this.request('GET', `/events?${query}`);
+        const response = await this.request(
+          'GET',
+          `/events?${query}`,
+          options?.signal ? ({ signal: options.signal } as ConnectorContext) : undefined,
+        );
         if (!response.ok) throw await sourceError(response);
         const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
           items?: GoogleEvent[];
@@ -341,16 +346,22 @@ export class GoogleCalendarConnector implements Connector {
     sql: Query,
   ): Promise<JsonObject | null> {
     const uid = proposal.canonical_payload.uid;
-    return calendarAhead(
-      this.signals as CalendarOccurrences,
-      proposal,
-      await spaceTimeZone(sql, ctx.space_id),
-      GoogleCalendarConnector.mine(typeof uid === 'string' ? uid : null),
-    );
+    return calendarAhead(this.signals as CalendarOccurrences, proposal, {
+      sql,
+      ctx,
+      connectionId: this.config.id,
+      ...(GoogleCalendarConnector.mine(typeof uid === 'string' ? uid : null)
+        ? { mine: GoogleCalendarConnector.mine(typeof uid === 'string' ? uid : null) }
+        : {}),
+    });
   }
 
   prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
-    return bindCalendarCheck(payload, ctx.space_id, tx, kind, ctx.ahead);
+    return bindCalendarCheck(payload, ctx, tx, kind);
+  }
+
+  checkAhead(proposal: Pick<Action, 'kind' | 'canonical_payload'>, ctx: ConnectorContext) {
+    checkCalendarAhead(proposal, ctx);
   }
 
   asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
@@ -366,7 +377,7 @@ export class GoogleCalendarConnector implements Connector {
         try {
           return this.success(
             action,
-            await freebusyDetail(this.signals as CalendarOccurrences, payload),
+            await freebusyDetail(this.signals as CalendarOccurrences, payload, ctx.signal),
           );
         } catch {
           return {
@@ -434,8 +445,13 @@ export class GoogleCalendarConnector implements Connector {
         this.signals as CalendarOccurrences,
         payload as JsonObject & WritePayload,
         GoogleCalendarConnector.mine(uid),
+        { actionId: action.id, ...(ctx.signal ? { signal: ctx.signal } : {}) },
       );
       if (blocked) return blocked;
+      // A change that does not say whether it is a hold keeps what the event is now.
+      const tentative =
+        payload.tentative ??
+        (update ? (await this.event(update.uid, ctx))?.status === 'tentative' : false);
       const guests = invited(payload as JsonObject);
       const body: JsonObject = {
         summary: payload.summary,
@@ -443,7 +459,7 @@ export class GoogleCalendarConnector implements Connector {
         location: payload.location,
         start: { dateTime: payload.start },
         end: { dateTime: payload.end },
-        status: payload.tentative ? 'tentative' : 'confirmed',
+        status: tentative ? 'tentative' : 'confirmed',
         transparency: 'opaque',
         ...(guests.length ? { attendees: guests.map((email) => ({ email })) } : {}),
         extendedProperties: {
@@ -467,7 +483,11 @@ export class GoogleCalendarConnector implements Connector {
         const written = (await boundedJson(response, MAX_RESPONSE_BYTES).catch(
           () => null,
         )) as GoogleEvent | null;
-        return this.success(action, writeDetail(uid, written?.etag ?? null, action, payload), uid);
+        return this.success(
+          action,
+          writeDetail(uid, written?.etag ?? null, action, { ...payload, tentative }),
+          uid,
+        );
       }
       return await this.refused(response);
     } catch (error) {
