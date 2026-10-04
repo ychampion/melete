@@ -23,6 +23,7 @@ import {
 import {
   byStart,
   calendarManifest,
+  changedUid,
   createPayload,
   deletePayload,
   type EventView,
@@ -77,6 +78,7 @@ type GoogleEvent = {
   end?: { dateTime?: string; date?: string; timeZone?: string };
   extendedProperties?: { private?: Record<string, string> };
   attendees?: { email?: string; self?: boolean; resource?: boolean }[];
+  transparency?: string;
 };
 
 /** A Google time as a UTC instant, or the date of an all-day event. */
@@ -117,6 +119,12 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     time_zone: event.start?.timeZone ?? null,
     ref: event.id ?? null,
     updated_at: event.updated && !Number.isNaN(Date.parse(event.updated)) ? event.updated : null,
+    ...(event.transparency === 'transparent'
+      ? { busy: false }
+      : event.transparency === 'opaque'
+        ? { busy: true }
+        : {}),
+    ...(event.extendedProperties?.private?.melete_uid ? { melete: true } : {}),
   };
 }
 
@@ -296,8 +304,7 @@ export class GoogleCalendarConnector implements Connector {
   /** The guests of the event an update rewrites, not counting the calendar's own account. */
   async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
     this.assertContext(action, ctx);
-    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
-    const found = await this.event(updatePayload.parse(action.canonical_payload).uid, ctx);
+    const found = await this.event(changedUid(action), ctx);
     if (!found || found.status === 'cancelled') throw new Error('Calendar event unavailable');
     return (found.attendees ?? []).filter((attendee) => !attendee.self).length;
   }

@@ -180,6 +180,7 @@ export async function startEffectBoundary(
         timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,
         hourlyLimit: env.MELETE_REVIEW_HOURLY_LIMIT,
       },
+      sendHoldMs: env.MELETE_SEND_HOLD_SECONDS * 1000,
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {

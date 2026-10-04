@@ -41,6 +41,7 @@ export function createInternalServer(options: {
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
   runs?: BrokerOptions['runs'];
   autoReview?: BrokerOptions['autoReview'];
+  sendHoldMs?: BrokerOptions['sendHoldMs'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -94,6 +95,7 @@ export function createInternalServer(options: {
       chaseFollowUp: options.chaseFollowUp,
       runs: options.runs,
       autoReview: options.autoReview,
+      sendHoldMs: options.sendHoldMs,
     });
   const app = createBrokerApp({
     broker,

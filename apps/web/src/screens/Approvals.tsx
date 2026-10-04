@@ -37,8 +37,8 @@ const CLASSES: readonly { key: ClassKey; title: string; sub: string; reviewed: b
   {
     key: 'calendar',
     title: 'Events on your own calendar',
-    sub: 'Adding or moving an event with no guests. Agents set to ask before acting still ask.',
-    reviewed: true,
+    sub: 'Adding, moving or removing its own events with no guests, with Undo on each. Anything that touches an important event, or is in the next 4 hours, asks with the reason.',
+    reviewed: false,
   },
   {
     key: 'app_changes',

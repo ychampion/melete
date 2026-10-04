@@ -90,6 +90,13 @@ import {
   type TierDecision,
 } from './auto-review.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
+import {
+  type CalendarCheck,
+  calendarConcern,
+  OWN_CALENDAR_CHANGES,
+  spansOf,
+  windowOf,
+} from './calendar-check.ts';
 import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
@@ -108,6 +115,7 @@ import {
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
+import { eventBefore, heldKind, reversibleProposal } from './reversals.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
@@ -200,6 +208,12 @@ export type BrokerOptions = {
    * before; the service always passes it.
    */
   autoReview?: AutoReviewOptions;
+  /**
+   * How long a message waits after it is cleared to go, so the person can
+   * still cancel it (undo send). Zero sends at once. The service sets it from
+   * `MELETE_SEND_HOLD_SECONDS`.
+   */
+  sendHoldMs?: number;
 };
 
 export type StandingGrantInput = {
@@ -300,9 +314,22 @@ const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
 ]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
-/** Guest counts of the events calendar changes rewrite, taken before a job lock; see `guestsAhead`. */
-type GuestCounts = ReadonlyMap<string, number>;
-const NO_GUESTS: GuestCounts = new Map();
+/**
+ * What a calendar change's own calendar says, taken before a job lock (see
+ * `guestsAhead`): the guests of the event it rewrites, and what the time it
+ * touches holds. A change missing from `calendar` was not checked; one mapped
+ * to null could not be.
+ */
+type GuestCounts = {
+  guests: ReadonlyMap<string, number>;
+  calendar: ReadonlyMap<string, CalendarCheck | null>;
+};
+const NO_GUESTS: GuestCounts = { guests: new Map(), calendar: new Map() };
+/** One calendar change: its connection, its event and the times it names. */
+const changeKey = (connectionId: string, payload: unknown) => {
+  const value = (payload ?? {}) as Record<string, unknown>;
+  return `${connectionId}:${JSON.stringify([value.uid ?? null, value.etag ?? null, value.start ?? null, value.end ?? null])}`;
+};
 /** One event of one calendar connection: the change's connection and the uid it rewrites. */
 const guestKey = (connectionId: string, payload: unknown) =>
   `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
@@ -349,6 +376,9 @@ export function dispositionMessage(
     case 'denied':
       return 'You denied this effect. It was not sent, and it will not be.';
     case 'admitted':
+      // A message waits a few seconds before it goes, so the person can cancel it.
+      if (heldKind(action.kind) && action.retry_after_at)
+        return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left Melete yet; do not send it again.`;
       return `This effect is ${already}admitted and has not been dispatched yet.`;
     case 'dispatched':
       return `This effect was ${already}dispatched and the result has not come back yet.`;
@@ -830,14 +860,25 @@ export class BrokerService implements BrokerOperations {
         true &&
       (await personalSpace(tx, job.space_id));
     const toolAsks = needsApproval(tool) && !inSpace;
-    const tierOf = (doubts: OriginWarning[], existingGuests?: number | null): TierDecision =>
+    const tierOf = (
+      doubts: OriginWarning[],
+      existingGuests?: number | null,
+      calendar?: CalendarCheck | null,
+    ): TierDecision =>
       inSpace && doubts.length === 0
         ? {
             tier: 'sandbox',
             actionClass: 'sandbox',
             reason: 'It stays in your own space, where you can delete it.',
           }
-        : reviewTier({ tool, provider, payload: action.canonical_payload, doubts, existingGuests });
+        : reviewTier({
+            tool,
+            provider,
+            payload: action.canonical_payload,
+            doubts,
+            existingGuests,
+            calendar,
+          });
     // A conversation that read responses to an app asks before changing a file an app shows.
     const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
@@ -918,9 +959,14 @@ export class BrokerService implements BrokerOperations {
       // that was not taken leaves the change with the person.
       const existingGuests =
         CHANGES_EXISTING_EVENT.has(tool.name) && settings.classes.calendar && !agentAsks
-          ? (guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
+          ? (guests.guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
-      const tier = tierOf([...doubts, ...warnings], existingGuests);
+      const checked = changeKey(action.connection_id, action.canonical_payload);
+      const tier = tierOf(
+        [...doubts, ...warnings],
+        existingGuests,
+        guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
+      );
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -939,15 +985,19 @@ export class BrokerService implements BrokerOperations {
                 // an app's responses asks before changing what an app shows.
                 tier.tier === 'apps' && allowed && !agentAsks && !afterResponses && !roomWork
                 ? 'policy_approved'
-                : // An agent set to ask before acting promises that sends, bookings and payments
-                  // wait for the person, so its calendar changes do. A reversible app change is
-                  // none of those, and the person switched that class on themselves.
-                  tier.tier === 'reviewable' &&
-                    allowed &&
-                    !roomWork &&
-                    (!agentAsks || tier.actionClass === 'app_changes')
-                  ? 'review'
-                  : 'person',
+                : // An event on the person's own calendar that touches nothing important
+                  // and can be undone. An agent set to ask before acting still asks.
+                  tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                  ? 'policy_approved'
+                  : // An agent set to ask before acting promises that sends, bookings and payments
+                    // wait for the person, so its calendar changes do. A reversible app change is
+                    // none of those, and the person switched that class on themselves.
+                    tier.tier === 'reviewable' &&
+                      allowed &&
+                      !roomWork &&
+                      (!agentAsks || tier.actionClass === 'app_changes')
+                    ? 'review'
+                    : 'person',
       };
     }
     const policyApproved = auto?.outcome === 'policy_approved';
@@ -962,13 +1012,14 @@ export class BrokerService implements BrokerOperations {
   }
 
   /**
-   * How many guests the event a calendar change rewrites has now, keyed by
-   * `guestKey`, or nothing when the connector cannot say. Asked of the
-   * calendar before the job lock is taken, at every classification, so guests
-   * added after a review still send the change to the person at admission.
-   * Never under the lock: the connector reaches the provider and its sign-in
-   * and secret stores on connections of its own, and a holder of the event
-   * order lock must never wait for one.
+   * What a calendar change's own calendar says now: how many guests the event
+   * it rewrites has (keyed by `guestKey`), and what the time it touches holds
+   * (keyed by `changeKey`), or nothing when the connector cannot say. Asked of
+   * the calendar before the job lock is taken, at every classification, so
+   * guests added or a meeting booked after a review still send the change to
+   * the person at admission. Never under the lock: the connector reaches the
+   * provider and its sign-in and secret stores on connections of its own, and
+   * a holder of the event order lock must never wait for one.
    */
   private async guestsAhead(
     jobId: string,
@@ -984,8 +1035,10 @@ export class BrokerService implements BrokerOperations {
     if (!action) return NO_GUESTS;
     const connector = this.options.connectors.get(action.connection_id);
     const tool = connector && findTool(connector.manifest, action.kind);
-    if (!connector?.existingGuests || !tool || !CHANGES_EXISTING_EVENT.has(tool.name))
-      return NO_GUESTS;
+    if (!connector || !tool || !OWN_CALENDAR_CHANGES.has(tool.name)) return NO_GUESTS;
+    const source = connector.signals?.stream === 'calendar' ? connector.signals : null;
+    const countsGuests = Boolean(connector.existingGuests) && CHANGES_EXISTING_EVENT.has(tool.name);
+    if (!source && !countsGuests) return NO_GUESTS;
     const [job] = await this.sql<LockedJob[]>`select * from job where id = ${jobId}`;
     if (!job) return NO_GUESTS;
     const settings = await loadApprovalSettings(this.sql, job.space_id);
@@ -999,16 +1052,57 @@ export class BrokerService implements BrokerOperations {
       job_id: job.id,
       idempotency_key: id,
     } as Action;
+    const guests = new Map<string, number>();
+    if (countsGuests && connector.existingGuests) {
+      try {
+        const count = await connector.existingGuests(asked, {
+          ...this.context(job, asked),
+          signal: AbortSignal.timeout(EXISTING_GUESTS_TIMEOUT_MS),
+        });
+        if (Number.isInteger(count) && count >= 0)
+          guests.set(guestKey(action.connection_id, action.canonical_payload), count);
+      } catch {
+        // Nobody could say, so the change stays with the person.
+      }
+    }
+    const calendar = new Map<string, CalendarCheck | null>();
+    if (source)
+      calendar.set(
+        changeKey(action.connection_id, action.canonical_payload),
+        await this.calendarCheck(job.space_id, asked, source),
+      );
+    return { guests, calendar };
+  }
+
+  /**
+   * Whether the time a calendar change touches holds anything important, and
+   * whether the change could be undone; null when the calendar could not be
+   * read in time.
+   */
+  private async calendarCheck(
+    spaceId: string,
+    action: Action,
+    source: Extract<NonNullable<Connector['signals']>, { stream: 'calendar' }>,
+  ): Promise<CalendarCheck | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const count = await connector.existingGuests(asked, {
-        ...this.context(job, asked),
-        signal: AbortSignal.timeout(EXISTING_GUESTS_TIMEOUT_MS),
-      });
-      return Number.isInteger(count) && count >= 0
-        ? new Map([[guestKey(action.connection_id, action.canonical_payload), count]])
-        : NO_GUESTS;
+      const reversible = await reversibleProposal(this.sql, spaceId, action);
+      const before =
+        action.kind === 'calendar.create' ? null : await eventBefore(this.sql, spaceId, action);
+      const spans = spansOf(action.kind, action.canonical_payload, before);
+      const window = windowOf(spans);
+      if (!window) return { concern: 'Melete could not tell when this event is.', reversible };
+      const read = await Promise.race([
+        source.occurrences(window),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('timeout')), EXISTING_GUESTS_TIMEOUT_MS);
+        }),
+      ]);
+      return { concern: calendarConcern({ spans, read, now: Date.now() }), reversible };
     } catch {
-      return NO_GUESTS;
+      return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -1163,7 +1257,8 @@ export class BrokerService implements BrokerOperations {
   }
 
   /**
-   * An action auto-review would have put to the reviewer but cannot: the
+   * An action auto-review would have put to the reviewer but cannot, or a
+   * calendar change it sent to the person because of what it touches: the
    * reason goes on record and on the card. Returns the reason, or undefined.
    */
   private async recordPolicyEscalation(
@@ -1172,8 +1267,30 @@ export class BrokerService implements BrokerOperations {
     classified: Admissibility,
   ): Promise<string | undefined> {
     const options = this.options.autoReview;
-    if (!options || classified.auto?.outcome !== 'review') return undefined;
     const { job, action } = context;
+    // A change on the person's own calendar that touches something important
+    // says what, on its card, so they know why they are asked.
+    if (
+      options &&
+      classified.auto?.outcome === 'person' &&
+      classified.auto.tier.tier === 'person' &&
+      OWN_CALENDAR_CHANGES.has(action.kind)
+    ) {
+      await recordReview(tx, {
+        action_id: action.id,
+        job_id: job.id,
+        space_id: job.space_id,
+        attempt_id: context.claims.attempt_id,
+        tier: 'person',
+        action_class: 'calendar',
+        decided_by: 'policy',
+        outcome: 'escalated',
+        risk: null,
+        reason: classified.auto.tier.reason,
+      });
+      return classified.auto.tier.reason;
+    }
+    if (!options || classified.auto?.outcome !== 'review') return undefined;
     const reason = !options.reviewer
       ? 'No reviewer is set up on this installation, so this one is yours to decide.'
       : ((await reviewLimit(
@@ -1921,6 +2038,21 @@ export class BrokerService implements BrokerOperations {
           budget_reservation = ${reservations[0]?.id ?? null}, attempt_id = ${claims.attempt_id}
           where id = ${id}`;
         await this.setStatus(tx, { ...action, attempt_id: claims.attempt_id }, 'admitted');
+        // Undo send: a message waits before it goes, under the same id, so a
+        // restart in the meantime still sends it once and a cancel sends nothing.
+        const hold = this.options.sendHoldMs ?? 0;
+        if (hold > 0 && heldKind(action.kind)) {
+          const until = new Date(Date.now() + hold).toISOString();
+          await tx`update action set retry_after_at = ${until} where id = ${id}`;
+          await appendEvent(
+            tx,
+            job.id,
+            claims.attempt_id,
+            'notice',
+            { action_id: id, phase: 'send_held', until },
+            `broker:held:${id}`,
+          );
+        }
         await appendEvent(
           tx,
           job.id,
@@ -1956,7 +2088,49 @@ export class BrokerService implements BrokerOperations {
     });
     if (result.error) throw result.error;
     if (!result.action) throw new Error('Admission returned no action');
+    this.releaseWhenDue(result.action);
     return result.action;
+  }
+
+  /**
+   * Send a held message the moment its hold ends. The periodic resume does the
+   * same after a restart, when this timer is gone; the action's own status
+   * decides which of them sends it, so it is sent once.
+   */
+  private releaseWhenDue(action: Action) {
+    if (!heldKind(action.kind) || action.status !== 'admitted' || !action.retry_after_at) return;
+    const wait = Math.max(0, Date.parse(action.retry_after_at) - Date.now()) + 25;
+    const timer = setTimeout(() => {
+      void this.dispatch(action.id).catch(() => {
+        process.stderr.write('held message release failed\n');
+      });
+    }, wait);
+    timer.unref?.();
+  }
+
+  /**
+   * Cancel a message that is still held: it ends as failed, with nothing sent
+   * and its budget returned. Null when it is not held any more, because it was
+   * sent, is being sent, or never waited.
+   */
+  async cancelHeld(id: string): Promise<Action | null> {
+    const original = await loadAction(this.sql, id);
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, original.job_id);
+      const action = await loadAction(tx, id, true);
+      if (!heldKind(action.kind) || action.status !== 'admitted' || !action.retry_after_at)
+        return null;
+      await this.setStatus(tx, action, 'failed');
+      await tx`update action set resolved_at = now(), retry_after_at = null,
+        reconciliation = ${JSON.stringify({ reason: 'cancelled before it was sent; nothing left Melete', retryable: false, cancelled: true })}::jsonb
+        where id = ${id}`;
+      await tx`update budget_ledger set settled = 0 where action_id = ${id} and settled is null`;
+      await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+        action_id: id,
+        phase: 'send_cancelled',
+      });
+      return loadAction(tx, id);
+    });
   }
 
   /** A connection serves only the jobs the shared-use rule gives it to; see `jobs/scopes.ts`. */
@@ -2158,7 +2332,10 @@ export class BrokerService implements BrokerOperations {
         }
         // A conversation that was stopped sends nothing more, however long an
         // action of it waited for its destination.
-        if (['cancelled', 'failed', 'completed'].includes(job.state))
+        // A held message was cleared to go before its task finished; only
+        // stopping the task takes it back.
+        const held = heldKind(action.kind) && action.retry_after_at !== null;
+        if (['cancelled', 'failed'].includes(job.state) || (job.state === 'completed' && !held))
           return {
             action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
             context: null,

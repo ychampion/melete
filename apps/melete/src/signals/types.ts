@@ -63,6 +63,12 @@ export type Occurrence = {
   updated_at?: string | null;
   /** The provider's own id for this instance, to look it up again. */
   ref?: string | null;
+  /** False when the event is marked free, so it does not block the time; left out when unknown. */
+  busy?: boolean;
+  /** True when the event is marked important or high priority. */
+  important?: boolean;
+  /** True when Melete itself made the event. */
+  melete?: boolean;
 };
 
 export type CalendarWindow = { from: string; to: string };

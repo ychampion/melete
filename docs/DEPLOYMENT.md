@@ -1375,6 +1375,11 @@ person instead, and so does one proposed while the space's other reviews are
 still running past the limit. Work inside an agent's own sandbox is decided by a
 fixed rule and never calls the model.
 
+A message Melete sends waits `MELETE_SEND_HOLD_SECONDS` (default `20`, from `0`
+to `120`) after it is cleared to go. Its receipt shows Undo for that time, and
+cancelling sends nothing. The wait is kept in the database, so a restart during
+it still sends the message once.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.

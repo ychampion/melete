@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   type Action,
+  type ActivityEntry,
   type CapabilityClaims,
   type ExperienceReceipt,
   type JsonObject,
@@ -13,6 +14,7 @@ import { ServiceError } from '../api/errors.ts';
 import { actionReviewView } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
+import { heldKind, planReversal, UNDO_WINDOW_MS } from '../broker/reversals.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { lockEventOrderIn } from '../db/transaction.ts';
@@ -20,7 +22,14 @@ import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
-import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
+import { listActivity } from './activity.ts';
+import {
+  type ActionRow,
+  draftForReview,
+  object,
+  projectHeldReceipt,
+  projectReceipt,
+} from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
 /** How many messages from assistants may wait for one person's approval at once. */
@@ -249,72 +258,98 @@ export class ExperienceEffects {
 
   async receipt(spaceId: string, source: Action) {
     const { row } = await this.source(spaceId, source.id);
-    const undo = await this.undoHandle(spaceId, source);
+    const connection = {
+      id: String(row.connection_id),
+      label: String(row.label),
+      provider: String(row.provider),
+    };
+    if (heldKind(source.kind) && source.status === 'admitted' && source.retry_after_at)
+      return projectHeldReceipt(actionProjectionRow(source), connection, {
+        until: source.retry_after_at,
+        undo: await this.undoHandle(spaceId, source),
+      });
+    if (
+      heldKind(source.kind) &&
+      source.status === 'failed' &&
+      object(source.reconciliation).cancelled === true
+    )
+      return projectHeldReceipt(actionProjectionRow(source), connection, { cancelled: true });
+    // An undo is not itself undone from its receipt; the change it took back can be made again.
+    const [reversed] = await this
+      .sql`select action_id from experience_undo where reversal_action_id = ${source.id}`;
+    const undo = reversed ? undefined : await this.undoHandle(spaceId, source);
     return projectReceipt(
       actionProjectionRow(source),
-      { id: String(row.connection_id), label: String(row.label), provider: String(row.provider) },
+      connection,
       undo,
       await actionReviewView(this.sql, source.id),
       await actionBecause(this.sql, spaceId, source.id),
+      reversed ? String(reversed.action_id) : undefined,
     );
   }
 
-  private async reversal(
+  /**
+   * What a receipt shows beyond the change itself, for the conversation's
+   * stream: its Undo, the change it took back, or the hold a message waits in.
+   * The stream has already fenced the action to the caller's own work.
+   */
+  async receiptState(
     spaceId: string,
-    source: Action,
+    actionId: string,
   ): Promise<{
-    kind: string;
-    payload: JsonObject;
-    connectionId?: string;
-    validUntil?: string;
-  } | null> {
-    const detail = object(source.receipt?.detail);
-    // A delete went to the trash: undoing it restores everything it took.
-    if (source.kind === 'files.delete' && typeof detail.trash_id === 'string')
+    undo?: { handle: string; valid_until: string };
+    reverses?: string;
+    held?: { until: string } | { cancelled: true };
+  }> {
+    const source = await loadAction(this.sql, actionId);
+    if (this.held(source))
       return {
-        kind: 'files.restore',
-        payload: { trash_id: detail.trash_id },
-        ...(typeof detail.restorable_until === 'string'
-          ? { validUntil: detail.restorable_until }
-          : {}),
+        held: { until: String(source.retry_after_at) },
+        undo: await this.undoHandle(spaceId, source),
       };
-    // So did what a command deleted in the agent's computer; the space's own
-    // Files connection restores it.
-    if (typeof detail.workspace_trash === 'string') {
-      const [files] = await this.sql`select id from connection
-        where space_id = ${spaceId} and provider = 'files' and status = 'active'
-        order by created_at limit 1`;
-      if (!files) return null;
-      return {
-        kind: 'files.restore',
-        payload: { trash_id: detail.workspace_trash },
-        connectionId: String(files.id),
-        ...(typeof detail.workspace_restorable_until === 'string'
-          ? { validUntil: detail.workspace_restorable_until }
-          : {}),
-      };
-    }
     if (
-      source.kind === 'calendar.create' &&
-      typeof detail.uid === 'string' &&
-      typeof detail.etag === 'string'
+      heldKind(source.kind) &&
+      source.status === 'failed' &&
+      object(source.reconciliation).cancelled === true
     )
-      return { kind: 'calendar.delete', payload: { uid: detail.uid, etag: detail.etag } };
-    if (source.kind === 'email.draft')
-      return { kind: 'email.discard', payload: { draft_id: source.id } };
-    return null;
+      return { held: { cancelled: true } };
+    const [reversed] = await this
+      .sql`select action_id from experience_undo where reversal_action_id = ${source.id}`;
+    if (reversed) return { reverses: String(reversed.action_id) };
+    const undo = await this.undoHandle(spaceId, source);
+    return undo ? { undo } : {};
+  }
+
+  /** Whether a message is waiting out its hold, so Undo cancels it rather than reverses it. */
+  private held(source: Action) {
+    return heldKind(source.kind) && source.status === 'admitted' && source.retry_after_at !== null;
+  }
+
+  /** The registry's reversal or compensation for a change that happened. */
+  private reversal(spaceId: string, source: Action) {
+    return planReversal(this.sql, spaceId, source, this.registry.get(source.connection_id));
   }
 
   async undoHandle(spaceId: string, source: Action) {
+    // A held message is undone by cancelling it, until its hold ends.
+    const held = this.held(source);
     const reversal = source.status === 'succeeded' ? await this.reversal(spaceId, source) : null;
     if (
-      !reversal ||
-      !(await this.supports(spaceId, reversal.connectionId ?? source.connection_id, reversal.kind))
+      !held &&
+      (!reversal ||
+        !(await this.supports(
+          spaceId,
+          reversal.connectionId ?? source.connection_id,
+          reversal.kind,
+        )))
     )
       return undefined;
-    const validUntil =
-      reversal.validUntil ??
-      new Date(Date.parse(source.resolved_at ?? source.created_at) + 24 * 3600000).toISOString();
+    const validUntil = held
+      ? String(source.retry_after_at)
+      : (reversal?.validUntil ??
+        new Date(
+          Date.parse(source.resolved_at ?? source.created_at) + UNDO_WINDOW_MS,
+        ).toISOString());
     await this.sql`insert into experience_undo (action_id, handle, valid_until)
       values (${source.id}, ${recordId('undo')}, ${validUntil}) on conflict (action_id) do nothing`;
     const [row] = await this.sql`select * from experience_undo where action_id = ${source.id}
@@ -333,6 +368,15 @@ export class ExperienceEffects {
       join job j on j.id = a.job_id where (u.action_id = ${id} or u.handle = ${id})
       and j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}`;
     const { action: source } = await this.source(spaceId, lookup ? String(lookup.action_id) : id);
+    if (heldKind(source.kind) && source.status !== 'succeeded') {
+      // Undo send: cancelling a held message sends nothing.
+      const cancelled = this.held(source) ? await this.broker.cancelHeld(source.id) : null;
+      if (cancelled) return { receipt: await this.receipt(spaceId, cancelled) };
+      const now = await loadAction(this.sql, source.id);
+      if (now.status === 'failed' && object(now.reconciliation).cancelled === true)
+        return { receipt: await this.receipt(spaceId, now) };
+      return unavailable('The message has already gone, so it cannot be cancelled.');
+    }
     const reversal = await this.reversal(spaceId, source);
     if (!reversal)
       return unavailable(
@@ -388,11 +432,95 @@ export class ExperienceEffects {
     return { receipt: await this.receipt(spaceId, effect) };
   }
 
+  /**
+   * Undo, from Settings → Activity, something a chat the person has since
+   * deleted did. The reversal was kept when the chat went; it runs as an owner
+   * command of its own, through the broker, and is recorded on the entry.
+   */
+  async undoActivity(
+    spaceId: string,
+    principalId: string,
+    id: string,
+  ): Promise<{ entry: ActivityEntry } | NotAvailable> {
+    const entry = async () => {
+      const found = (await listActivity(this.sql, spaceId, principalId)).activity.find(
+        (item) => item.id === id,
+      );
+      if (!found) throw experienceMissing();
+      return { entry: found };
+    };
+    const [record] = await this.sql`select * from activity_record where id = ${id}
+      and space_id = ${spaceId}
+      and coalesce(principal_id, (select id from owner limit 1)) = ${principalId}`;
+    if (!record) throw experienceMissing();
+    if (record.undone_at) return entry();
+    const reversal = object(record.reversal);
+    if (typeof reversal.kind !== 'string' || !record.connection_id)
+      return unavailable('This change has no saved reversal.');
+    if (!record.undo_until || new Date(record.undo_until).getTime() <= Date.now())
+      return unavailable('The time to undo this change has passed.');
+    const connectionId = String(record.connection_id);
+    if (!(await this.supports(spaceId, connectionId, reversal.kind)))
+      return unavailable('Undo is not available with this connection or its current access.');
+    const key = `activity:${id}:undo`;
+    const jobId = await this.sql.begin(async (tx) => {
+      await tx`select id from activity_record where id = ${id} for update`;
+      const [existing] = await tx`select id from job where experience_command_key = ${key}`;
+      if (existing) return String(existing.id);
+      const job = recordId('job');
+      await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch,
+          experience_command_key, constraints, budget)
+        values (${job}, ${spaceId}, ${principalId}, 'Undo the selected change', 'Undo the selected change',
+          'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${recordId('att')}, ${job}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+      return job;
+    });
+    const [existing] = await this
+      .sql`select id from action where job_id = ${jobId} order by created_at limit 1`;
+    let effect = existing
+      ? await loadAction(this.sql, String(existing.id))
+      : await loadAction(
+          this.sql,
+          (
+            await this.broker.propose(await this.claims(jobId, connectionId), {
+              connection_id: connectionId,
+              kind: reversal.kind,
+              payload: object(reversal.payload) as JsonObject,
+              client_ref: 'undo',
+            })
+          ).action_id,
+        );
+    if (effect.status === 'needs_approval') {
+      // This route is the explicit owner decision for these exact reversal bytes.
+      await this.broker.decide(
+        effect.id,
+        { decision: 'approved', payload_hash: effect.payload_hash },
+        undefined,
+        requestPrincipal(),
+      );
+      await this.broker.admit(
+        await this.claims(effect.job_id, effect.connection_id),
+        effect.id,
+        effect.payload_hash,
+      );
+      effect = await this.broker.dispatch(effect.id);
+    }
+    if (effect.status !== 'succeeded')
+      return unavailable('The reversal could not be confirmed. It has not been repeated.');
+    await this.sql`update activity_record set undone_at = coalesce(undone_at, now()),
+      undone_by = coalesce(undone_by, ${effect.id}) where id = ${id}`;
+    await this.endJob(jobId, { kind: 'completed', summary: 'Undid the selected change.' });
+    return entry();
+  }
+
   async draft(spaceId: string, id: string) {
     const { action: source } = await this.source(spaceId, id);
     if (source.kind !== 'email.draft' || source.status !== 'succeeded') throw experienceMissing();
     const [sent] = await this
-      .sql`select s.*, a.status from experience_draft_send s left join action a on a.id = s.send_action_id where draft_action_id = ${id}`;
+      .sql`select s.*, a.status, a.reconciliation from experience_draft_send s left join action a on a.id = s.send_action_id where draft_action_id = ${id}`;
+    // A send cancelled while it was held left nothing; the draft can be sent again.
+    const cancelled = sent?.status === 'failed' && object(sent.reconciliation).cancelled === true;
     const preview = draftForReview(actionProjectionRow(source));
     if (!preview)
       return unavailable(
@@ -404,7 +532,7 @@ export class ExperienceEffects {
         ? ('discarded' as const)
         : sent?.status === 'succeeded'
           ? ('sent' as const)
-          : sent?.status === 'denied'
+          : sent?.status === 'denied' || cancelled
             ? ('denied' as const)
             : sent?.send_action_id
               ? ('awaiting_permission' as const)
@@ -419,13 +547,15 @@ export class ExperienceEffects {
     if (draft.status === 'discarded')
       throw new ServiceError('invalid_request', 'This draft was discarded.', 409);
     // Sending continues the request on record; after a refusal it starts a new one.
-    const [recorded] = await this.sql`select s.send_action_id, a.status, j.experience_command_key
+    const [recorded] = await this.sql`select s.send_action_id, a.status, a.reconciliation,
+      j.experience_command_key
       from experience_draft_send s join action a on a.id = s.send_action_id join job j on j.id = a.job_id
       where s.draft_action_id = ${id}`;
     const retried = `${id}:send:`;
     const retry = !recorded
       ? undefined
-      : recorded.status === 'denied'
+      : recorded.status === 'denied' ||
+          (recorded.status === 'failed' && object(recorded.reconciliation).cancelled === true)
         ? String(recorded.send_action_id)
         : String(recorded.experience_command_key).startsWith(retried)
           ? String(recorded.experience_command_key).slice(retried.length)

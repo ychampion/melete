@@ -143,6 +143,30 @@ function attendeesOf(component: ICAL.Component): number {
   return component.getAllProperties('attendee').length;
 }
 
+/**
+ * What the event says about how much it matters: TRANSP:TRANSPARENT is free
+ * time, PRIORITY 1 to 4 is high, and a category named important or high
+ * priority marks it too. Only what the event states is kept.
+ */
+function marksOf(component: ICAL.Component): { busy?: boolean; important?: boolean } {
+  const transp = String(component.getFirstPropertyValue('transp') ?? '').toUpperCase();
+  const priority = Number(component.getFirstPropertyValue('priority') ?? 0);
+  const categories = component
+    .getAllProperties('categories')
+    .flatMap((property) => property.getValues())
+    .map((value) => String(value).trim().toLowerCase());
+  const important =
+    (Number.isInteger(priority) && priority >= 1 && priority <= 4) ||
+    categories.some((value) => value === 'important' || value === 'high priority');
+  return {
+    ...(transp === 'TRANSPARENT' ? { busy: false } : transp === 'OPAQUE' ? { busy: true } : {}),
+    ...(important ? { important: true } : {}),
+  };
+}
+
+/** Melete names every event it makes by the action that made it. */
+const MELETE_UID = /^act_[A-Za-z0-9_-]+$/;
+
 function textOf(component: ICAL.Component, name: string): string {
   const value = component.getFirstPropertyValue(name);
   return typeof value === 'string' ? value : value == null ? '' : String(value);
@@ -172,6 +196,8 @@ function occurrenceOf(
     time_zone: zone,
     updated_at:
       modified instanceof ICAL.Time ? new Date(modified.toUnixTime() * 1000).toISOString() : null,
+    ...marksOf(component),
+    ...(MELETE_UID.test(uid) ? { melete: true } : {}),
   };
 }
 

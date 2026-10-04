@@ -120,6 +120,13 @@ export const experienceReceipt = z.strictObject({
   where: text,
   when: date,
   undo: z.strictObject({ handle: id, valid_until: date }).optional(),
+  /**
+   * Set while a message waits before it is sent: until then Undo cancels it
+   * and nothing leaves. Gone once it is sent.
+   */
+  sending_until: date.optional(),
+  /** The receipt of the change this one took back, when it is an undo. */
+  reverses: id.optional(),
   /** Present when nobody was asked because auto-review approved it. */
   review: actionReview.optional(),
   /** The beliefs or rule the action rested on, recorded when it was proposed. */
@@ -257,7 +264,14 @@ export const approvalSettings = z.strictObject({
   classes: z.strictObject({
     /** Work in the agent's own workspace: commands, files, its own browser. */
     sandbox: z.boolean(),
-    /** Events on the person's own calendar, after the reviewer approves. */
+    /**
+     * Events on the person's own calendar with no guests, and removing ones
+     * Melete made. They go ahead by a fixed rule when they can be undone and
+     * touch nothing important (a repeating meeting, an event with guests or
+     * marked important, one of the person's own that blocks the time, or
+     * anything in the next few hours); anything important asks, with the
+     * reason. Where the calendar cannot be read for that, the reviewer decides.
+     */
     calendar: z.boolean(),
     /** Reversible changes in connected apps, after the reviewer approves. */
     app_changes: z.boolean(),
@@ -273,7 +287,7 @@ export const approvalSettings = z.strictObject({
 export type ApprovalSettings = z.infer<typeof approvalSettings>;
 export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   mode: 'auto_review',
-  classes: { sandbox: true, calendar: false, app_changes: false, apps: true },
+  classes: { sandbox: true, calendar: true, app_changes: false, apps: true },
 };
 export const approvalSettingsResponse = z.strictObject({
   settings: approvalSettings,
@@ -664,6 +678,10 @@ export const activityEntry = z.strictObject({
   /** The title of the chat or plan it came from. */
   source: z.string().max(200),
   happened_at: date,
+  /** Present while it can still be taken back; `POST /activity/{id}/undo` does it. */
+  undo: z.strictObject({ valid_until: date }).optional(),
+  /** Set once it was taken back. */
+  undone_at: date.optional(),
 });
 export type ActivityEntry = z.infer<typeof activityEntry>;
 export const activityList = z.strictObject({ activity: z.array(activityEntry) });
@@ -1368,6 +1386,11 @@ export const experienceOperations = {
    * deleted, newest first.
    */
   'GET /activity': { response: activityList },
+  /**
+   * Take back something a deleted chat did, while its Undo is offered. It runs
+   * as a change of its own, with a receipt, through the same checks as any other.
+   */
+  'POST /activity/{id}/undo': { response: z.strictObject({ entry: activityEntry }) },
   /** Who is in the space this session uses. */
   'GET /space/members': { response: spaceMembers },
   /**

@@ -559,6 +559,11 @@ export const adapter = {
   deletePlan: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/plans/{id}', path(id))),
   /** What deleted chats and plans did in the person's name. */
   activity: () => guard<ActivityList>(() => api.GET('/activity')),
+  /** Take back something a deleted chat did, while its Undo is offered. */
+  undoActivity: (id: string) =>
+    guard<{ entry: ActivityList['activity'][number] }>(() =>
+      api.POST('/activity/{id}/undo', path(id)),
+    ),
   /** Who is in the space this session uses. */
   spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
   /** The space's owner removes someone from a shared space. */
