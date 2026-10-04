@@ -100,6 +100,32 @@ function registryIsNamed(registry: string): boolean {
   const last = host.split('.').at(-1) ?? '';
   return /[a-z]/.test(last) && host !== 'localhost' && !host.endsWith('.localhost');
 }
+
+/**
+ * The public registries the engine pulls a server's image from. It pulls from
+ * the host's own network and goes wherever a registry sends it (its sign-in
+ * address, its redirects), and a name can resolve to any address, so a
+ * registry anyone could choose would let them point the engine at the host's
+ * own or private ports. An image from another registry runs once it is on the
+ * host.
+ */
+export const MCP_IMAGE_REGISTRIES: readonly string[] = [
+  'docker.io',
+  'index.docker.io',
+  'registry-1.docker.io',
+  'ghcr.io',
+  'quay.io',
+  'gcr.io',
+  'mcr.microsoft.com',
+  'public.ecr.aws',
+  'registry.gitlab.com',
+];
+
+/** Whether the engine may pull this image reference: pinned by digest, from one of `MCP_IMAGE_REGISTRIES`, on its own port. */
+export function pullsFromPublicRegistry(reference: string): boolean {
+  if (!imageReference.safeParse(reference).success) return false;
+  return MCP_IMAGE_REGISTRIES.includes(reference.slice(0, reference.indexOf('/')));
+}
 /** A destination the server may open: a DNS name with at least one dot, and an optional port. */
 export const mcpEgressHost = z
   .string()

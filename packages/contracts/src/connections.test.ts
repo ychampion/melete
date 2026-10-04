@@ -20,7 +20,7 @@ import {
   sandboxCredentialRefusal,
 } from './connections.ts';
 import { connectionView } from './entities.ts';
-import { mcpConnectionConfig } from './mcp.ts';
+import { mcpConnectionConfig, pullsFromPublicRegistry } from './mcp.ts';
 
 const SPACE = 'sp_01J00000000000000000000000';
 
@@ -220,6 +220,25 @@ describe('connection installation requests', () => {
     // Its secrets are named variables in the block; the generic credentials record is refused.
     expect(resolve({ ...mcpStdio, credentials: { password: 'x' } }).ok).toBe(false);
     expect(resolve({ ...mcpStdio, scopes: ['mcp_files.read'] }).ok).toBe(false);
+  });
+
+  test('an image is pulled only from a public registry, however another registry is named', () => {
+    const pinned = (registry: string) => `${registry}/server:1.0@sha256:${'a'.repeat(64)}`;
+    for (const registry of ['ghcr.io', 'docker.io', 'quay.io'])
+      expect([registry, pullsFromPublicRegistry(pinned(registry))]).toEqual([registry, true]);
+    // Each is a valid name that resolves, or can be made to resolve, inside the host's network.
+    for (const registry of [
+      '127.0.0.1.nip.io:2375',
+      '169.254.169.254.nip.io',
+      'metadata.google.internal',
+      'host.docker.internal',
+      'registry.local:5000',
+      'ghcr.io:5000',
+      'ghcr.io.example.net',
+    ])
+      expect([registry, pullsFromPublicRegistry(pinned(registry))]).toEqual([registry, false]);
+    // Still a digest-pinned reference, from a public registry or not.
+    expect(pullsFromPublicRegistry('ghcr.io/example/server:1.0')).toBe(false);
   });
 
   test('endpoints are validated per kind', () => {

@@ -600,8 +600,9 @@ from Gmail, Outlook, IMAP and calendars, and what each observation carries, is
 in [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md).
 
 The language is deliberately too small to hide a decision in: dotted field paths
-into the observation, at most five clauses, all of which must hold, and six
-operators.
+into the observation, at most five clauses in all, and a handful of operators.
+Every clause in `all` must hold, and when there is an `any` group, at least one
+of its clauses.
 
 | Operator | Holds when |
 |---|---|
@@ -610,9 +611,14 @@ operators.
 | `matches` | the text matches the regular expression; a pattern that does not compile is refused when the watch is made |
 | `lt`, `gt` | both sides are numbers, or both are timestamps |
 | `changed` | the field differs from the last observation this watch looked at |
+| `before`, `after` | the field is a time earlier, or later, than now plus the value in seconds (negative for the past) |
+| `older_than` | the field is a time more than the value in seconds ago |
 
-There is no `or`. Two reasons to wake are two watches, which keeps every wake
-traceable to one predicate a person can read.
+There is one `any` group, of two to five clauses, for a reason such as
+"declined or cancelled". Anything wider is two watches, which keeps every wake
+traceable to one predicate a person can read. A time clause takes a whole
+number of seconds, up to a year; anything else is refused when the watch is
+made.
 
 Everything unclear is false: a missing field, a comparison between things that
 are not comparable, a first sighting under `changed`. A watch that cannot tell
@@ -938,8 +944,12 @@ did not record as internal is removed before anything joins it.
 An image names its registry and pins its digest (`ghcr.io/org/server:1.0@sha256:…`),
 and it runs only if the image on the host carries that digest. The registry is
 named by its DNS name: an address, `localhost` or a `.localhost` name is
-refused, since the engine pulls from the host's own network. The runners' own
-images are pinned the same way.
+refused. The engine pulls from the host's own network and goes wherever a
+registry sends it, so it pulls a server's image only from a public registry:
+`docker.io`, `ghcr.io`, `quay.io`, `gcr.io`, `mcr.microsoft.com`,
+`public.ecr.aws` or `registry.gitlab.com`, on its usual port. An image from
+another registry runs once the operator has put it on the host. The runners'
+own images are pinned the same way.
 
 A package runner is prepared in a separate container that holds no secret and
 may reach only its registry (`registry.npmjs.org`, or `pypi.org` and

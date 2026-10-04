@@ -4,8 +4,10 @@ import {
   evaluateWatchClause,
   MAX_WATCH_CLAUSES,
   readWatchField,
+  WATCH_OPERATORS,
   watchClause,
   watchPredicate,
+  watchPredicateProblem,
 } from './watch.ts';
 
 const clause = (field: string, op: string, value: unknown = null) =>
@@ -135,11 +137,15 @@ describe('a whole predicate', () => {
     expect(evaluateWatch(overdue, {})).toBe(false);
   });
 
-  test('the language is small on purpose: at most five clauses and no or', () => {
+  test('the language is small on purpose: at most five clauses, and one or group', () => {
     expect(MAX_WATCH_CLAUSES).toBe(5);
     const six = Array.from({ length: 6 }, () => ({ field: 'a', op: 'eq', value: 1 }));
     expect(() => watchPredicate.parse({ all: six })).toThrow();
     expect(() => watchPredicate.parse({ all: [] })).toThrow();
+    const three = six.slice(0, 3);
+    expect(() => watchPredicate.parse({ all: three, any: three })).toThrow();
+    expect(() => watchPredicate.parse({ any: six.slice(0, 1) })).toThrow();
+    expect(watchPredicate.parse({ any: six.slice(0, 2) }).all).toEqual([]);
     expect(() => watchClause.parse({ field: 'a', op: 'startsWith', value: 'x' })).toThrow();
     expect(() => watchClause.parse({ field: 'items[0]', op: 'eq', value: 1 })).toThrow();
   });
@@ -189,3 +195,84 @@ test('nested repetition matches an adversarial observation within a bounded time
     if (probe.exitCode === null) probe.kill();
   }
 }, 10000);
+
+describe('time, either, and absence', () => {
+  const now = Date.parse('2026-10-05T14:55:00.000Z');
+  const meeting = { start: '2026-10-05T15:00:00.000Z', status: 'declined' };
+
+  test('before and after compare a time with now plus seconds; older_than with now less them', () => {
+    expect(evaluateWatchClause(clause('start', 'before', 600), meeting, null, { now })).toBe(true);
+    expect(evaluateWatchClause(clause('start', 'before', 60), meeting, null, { now })).toBe(false);
+    expect(evaluateWatchClause(clause('start', 'after', 60), meeting, null, { now })).toBe(true);
+    expect(evaluateWatchClause(clause('start', 'after', -60), meeting, null, { now })).toBe(true);
+    expect(evaluateWatchClause(clause('start', 'after', 600), meeting, null, { now })).toBe(false);
+    const sent = { sent_at: '2026-10-01T14:55:00.000Z' };
+    expect(
+      evaluateWatchClause(clause('sent_at', 'older_than', 3 * 86_400), sent, null, { now }),
+    ).toBe(true);
+    expect(
+      evaluateWatchClause(clause('sent_at', 'older_than', 5 * 86_400), sent, null, { now }),
+    ).toBe(false);
+  });
+
+  test('a time clause with no clock, no time, or no whole number of seconds is false', () => {
+    expect(evaluateWatchClause(clause('start', 'before', 600), meeting)).toBe(false);
+    expect(evaluateWatchClause(clause('status', 'before', 600), meeting, null, { now })).toBe(
+      false,
+    );
+    expect(evaluateWatchClause(clause('start', 'before', '600'), meeting, null, { now })).toBe(
+      false,
+    );
+    expect(evaluateWatchClause(clause('start', 'before', 1.5), meeting, null, { now })).toBe(false);
+    expect(
+      evaluateWatchClause(clause('start', 'older_than', -1), { start: '2026-01-01' }, null, {
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  test('any holds when one of its clauses does, beside every clause in all', () => {
+    const either = watchPredicate.parse({
+      all: [{ field: 'start', op: 'before', value: 3600 }],
+      any: [
+        { field: 'status', op: 'eq', value: 'declined' },
+        { field: 'status', op: 'eq', value: 'cancelled' },
+      ],
+    });
+    expect(evaluateWatch(either, meeting, null, { now })).toBe(true);
+    expect(evaluateWatch(either, { ...meeting, status: 'cancelled' }, null, { now })).toBe(true);
+    expect(evaluateWatch(either, { ...meeting, status: 'accepted' }, null, { now })).toBe(false);
+    expect(evaluateWatch(either, meeting, null, {})).toBe(false);
+  });
+
+  test('absent asks the clock what was seen, and nothing else can answer it', () => {
+    const nothing = clause('mail.received', 'absent');
+    expect(evaluateWatchClause(nothing, {}, null, { now, seen: () => false })).toBe(true);
+    expect(evaluateWatchClause(nothing, {}, null, { now, seen: () => true })).toBe(false);
+    expect(evaluateWatchClause(nothing, {}, null, { now })).toBe(false);
+    let asked: number | null = -1;
+    evaluateWatchClause(clause('mail.received', 'absent', 3600), {}, null, {
+      now,
+      seen: (_, since) => {
+        asked = since;
+        return false;
+      },
+    });
+    expect(asked).toBe(now - 3_600_000);
+  });
+
+  test('a trigger may not use absent, and time clauses need whole seconds within a year', () => {
+    expect(WATCH_OPERATORS).not.toContain('absent');
+    const absent = watchPredicate.parse({ all: [{ field: 'mail.received', op: 'absent' }] });
+    expect(watchPredicateProblem(absent, 'trigger')).toContain('absent');
+    expect(watchPredicateProblem(absent, 'clock')).toBeNull();
+    const far = watchPredicate.parse({
+      all: [{ field: 'start', op: 'before', value: 400 * 86_400 }],
+    });
+    expect(watchPredicateProblem(far, 'trigger')).toContain('seconds');
+    const text = watchPredicate.parse({ all: [{ field: 'start', op: 'after', value: 'soon' }] });
+    expect(watchPredicateProblem(text, 'trigger')).toContain('seconds');
+    const fine = watchPredicate.parse({ all: [{ field: 'start', op: 'before', value: -300 }] });
+    expect(watchPredicateProblem(fine, 'trigger')).toBeNull();
+  });
+});

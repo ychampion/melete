@@ -115,6 +115,7 @@ export type OccurrenceFields = Pick<
   OccurrenceField | 'uid' | 'occurrence' | 'time_zone'
 > & {
   ref?: string | null;
+  response?: Occurrence['response'];
   /** How many lookups of an occurrence the read no longer lists have failed so far. */
   unconfirmed?: number;
 };
@@ -143,6 +144,8 @@ export function occurrenceFields(occurrence: Occurrence): OccurrenceFields {
     attendees: occurrence.attendees,
     time_zone: occurrence.time_zone === null ? null : clip(occurrence.time_zone, 100),
     ...(occurrence.ref ? { ref: clip(occurrence.ref, 500) } : {}),
+    // Kept only where the source says, so a source that cannot tell keeps its versions.
+    ...(occurrence.response ? { response: occurrence.response } : {}),
   };
 }
 

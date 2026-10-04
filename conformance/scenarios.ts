@@ -1,5 +1,5 @@
 /**
- * The conformance suite. Eleven scenarios that prove the properties this release
+ * The conformance suite. Twelve scenarios that prove the properties this release
  * claims, run against a compose stack with the `test` connector and a scripted
  * model, so the suite is deterministic and costs nothing.
  *
@@ -192,6 +192,21 @@ export const SCENARIOS: readonly Scenario[] = [
       'safe_send leaves the message awaiting approval, even with a standing rule for that recipient',
       'only the person approving the exact text in Melete sends it, once, through the broker',
       'a refresh rotates the token, and disconnecting ends that assistant alone',
+    ],
+  },
+  {
+    id: 12,
+    slug: 'deadline-fresh-check',
+    title: 'A deadline is checked against fresh state at its time, once',
+    text:
+      'A person sets three deadlines on documents in a scripted source. One is signed before its ' +
+      'time, one is not, and one is moved later before its time comes. Two sweeps run at once at ' +
+      'each moment.',
+    assertions: [
+      'a deadline met before its time is checked at its time and says nothing to anyone',
+      'an unmet deadline is raised exactly once, with its reason, however many sweeps run at its time',
+      'a deadline moved before its time is read and raised at the new time only',
+      'no clock is read before its time, and no model is called',
     ],
   },
 ];

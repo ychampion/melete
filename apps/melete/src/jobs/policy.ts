@@ -355,6 +355,20 @@ export class PolicyService {
             and payload->>'connection_id' = ${id}
             and (${request.kind === 'revoke'}
               or payload->>'event_name' in ${sql.raw(`(${OBSERVATION_NAMES})`)})`);
+        // What Melete noticed in it goes too, with anything still waiting to be
+        // pushed about it: its facts came from the account it no longer stands
+        // for. A switch keeps the deadlines kept on it; they read the account
+        // afresh, as it now is. A revocation takes them.
+        const noticed = sql`select id from situation where connection_id = ${id}
+          or (kind = 'meeting.conflict' and evidence::text like ${`%"calendar:${id}:%`})`;
+        // A switch keeps the deadlines' situations, and what is still to be pushed about them.
+        const removed = sql`select id from situation where id in (${noticed})
+          and (${request.kind === 'revoke'} or kind <> 'deadline.at_risk')`;
+        await tx.execute(sql`update push_intent set dropped_at = now()
+          where situation_id in (${removed}) and sent_at is null and dropped_at is null`);
+        await tx.execute(sql`delete from situation where id in (${removed})`);
+        if (request.kind === 'revoke')
+          await tx.execute(sql`delete from clock where connection_id = ${id}`);
         if (request.kind === 'revoke')
           await tx
             .update(trigger)

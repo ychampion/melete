@@ -17,6 +17,7 @@ import type {
 import {
   type CalendarRead,
   type Occurrence,
+  type OwnResponse,
   type SignalSource,
   sourceError,
 } from '../signals/types.ts';
@@ -77,9 +78,31 @@ type GoogleEvent = {
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
   extendedProperties?: { private?: Record<string, string> };
-  attendees?: { email?: string; self?: boolean; resource?: boolean }[];
+  attendees?: { email?: string; self?: boolean; resource?: boolean; responseStatus?: string }[];
+  organizer?: { email?: string; self?: boolean };
   transparency?: string;
 };
+
+/** The calendar's own answer to an event: organiser, or its own attendee entry's status. */
+function googleResponse(event: GoogleEvent): OwnResponse {
+  if (event.organizer?.self) return 'organizer';
+  const own = (event.attendees ?? []).find((attendee) => attendee.self);
+  // Others are listed but not the person (sent to a list they are on, or the
+  // list was cut short): their answer is not known, so it is not their meeting.
+  if (!own) return event.attendees?.length ? 'unknown' : 'organizer';
+  switch (own.responseStatus) {
+    case 'accepted':
+      return 'accepted';
+    case 'tentative':
+      return 'tentative';
+    case 'declined':
+      return 'declined';
+    case 'needsAction':
+      return 'needs_action';
+    default:
+      return 'unknown';
+  }
+}
 
 /** A Google time as a UTC instant, or the date of an all-day event. */
 function googleTime(value: { dateTime?: string; date?: string } | undefined): string | null {
@@ -119,6 +142,7 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     time_zone: event.start?.timeZone ?? null,
     ref: event.id ?? null,
     updated_at: event.updated && !Number.isNaN(Date.parse(event.updated)) ? event.updated : null,
+    response: googleResponse(event),
     ...(event.transparency === 'transparent'
       ? { busy: false }
       : event.transparency === 'opaque'

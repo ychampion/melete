@@ -21,6 +21,7 @@ import type {
 import {
   type CalendarRead,
   type Occurrence,
+  type OwnResponse,
   type SignalSource,
   sourceError,
 } from '../signals/types.ts';
@@ -100,7 +101,28 @@ export type GraphInstance = GraphEvent & {
   showAs?: string;
   importance?: string;
   lastModifiedDateTime?: string;
+  isOrganizer?: boolean;
+  responseStatus?: { response?: string };
 };
+
+/** The mailbox's own answer to an event, as Graph reports it. */
+function graphResponse(event: GraphInstance): OwnResponse {
+  if (event.isOrganizer) return 'organizer';
+  switch (event.responseStatus?.response) {
+    case 'organizer':
+      return 'organizer';
+    case 'accepted':
+      return 'accepted';
+    case 'tentativelyAccepted':
+      return 'tentative';
+    case 'declined':
+      return 'declined';
+    case 'notResponded':
+      return 'needs_action';
+    default:
+      return 'unknown';
+  }
+}
 
 /**
  * One instance as Graph's `calendarView` lists it. An instance of a series
@@ -138,6 +160,7 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
     attendees: Array.isArray(event.attendees) ? event.attendees.length : 0,
     time_zone: event.originalStartTimeZone ?? null,
     ref: event.id ?? null,
+    response: graphResponse(event),
     updated_at:
       event.lastModifiedDateTime && !Number.isNaN(Date.parse(event.lastModifiedDateTime))
         ? new Date(Date.parse(event.lastModifiedDateTime)).toISOString()
@@ -229,7 +252,7 @@ export class OutlookCalendarConnector implements Connector {
         $top: '100',
         $orderby: 'start/dateTime',
         $select:
-          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,importance,attendees,lastModifiedDateTime',
+          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,importance,attendees,lastModifiedDateTime,isOrganizer,responseStatus',
         $expand: `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`,
       })}`;
       for (let page = 0; page < MAX_OCCURRENCE_PAGES && link; page++) {
@@ -266,7 +289,7 @@ export class OutlookCalendarConnector implements Connector {
         this.config.access,
         `${this.config.base}/events/${encodeURIComponent(ref)}?${new URLSearchParams({
           $select:
-            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime,isOrganizer,responseStatus',
         })}`,
         { headers: { prefer: PREFER } },
         this.config.fetcher,
