@@ -298,6 +298,12 @@ export const connection = pgTable(
      * connections serve its owner whatever this says.
      */
     sharedUse: text('shared_use').notNull().default('owner'),
+    /**
+     * Whether the service watches this mailbox or calendar for changes when no
+     * trigger asks it to. Null is the default: on in a person's own space, off
+     * in a room's until its owners turn it on.
+     */
+    watchChanges: boolean('watch_changes'),
     createdAt: created(),
   },
   (t) => [

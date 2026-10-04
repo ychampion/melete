@@ -87,6 +87,22 @@ export const READ_TIMEOUT_MS = 120_000;
 export const READ_CONCURRENCY = 4;
 /** Most occurrences a read looks up again because it no longer lists them. */
 export const MAX_CONFIRMS = 20;
+/**
+ * How often an account watched by default, with no trigger asking for more,
+ * is read. A trigger that asks for a shorter interval gets it.
+ */
+export const DEFAULT_WATCH_SECONDS = 300;
+
+/** The stream a watched account is read on, by provider: a mailbox's mail, a calendar's occurrences. */
+export const WATCHED_PROVIDERS: Record<string, Stream> = { imap: 'mail', caldav: 'calendar' };
+
+/**
+ * Whether an account is watched when no trigger asks: as the space's owners
+ * set it, and otherwise on in a person's own space and off in a room's.
+ */
+export function watchedByDefault(spaceKind: string, watchChanges: boolean | null): boolean {
+  return watchChanges ?? spaceKind === 'personal';
+}
 
 /** Which stream a trigger's event name is read from. */
 export function streamOf(eventName: string): Stream | null {
@@ -208,6 +224,27 @@ export class SignalPoller {
         spaceId: String(row.space_id),
         stream,
         seconds: Math.min(before?.seconds ?? seconds, seconds),
+      });
+    }
+    // Every connected mailbox and calendar a person keeps in their own space
+    // is watched, with nothing set up; a room's, only when its owners say so.
+    // What it reports still reaches only the work the connection serves.
+    const watched = await this.deps.sql`
+      select c.id, c.space_id, c.provider, c.watch_changes, s.kind
+      from connection c join space s on s.id = c.space_id
+      where c.status = 'active' and s.removed_at is null
+        and c.provider in ${this.deps.sql(Object.keys(WATCHED_PROVIDERS))}`;
+    for (const row of watched) {
+      const watchChanges = row.watch_changes === null ? null : Boolean(row.watch_changes);
+      if (!watchedByDefault(String(row.kind), watchChanges)) continue;
+      const stream = WATCHED_PROVIDERS[String(row.provider)];
+      if (!stream) continue;
+      const key = `${String(row.id)} ${stream}`;
+      const before = wanted.get(key);
+      wanted.set(key, {
+        spaceId: String(row.space_id),
+        stream,
+        seconds: Math.min(before?.seconds ?? DEFAULT_WATCH_SECONDS, DEFAULT_WATCH_SECONDS),
       });
     }
     return wanted;

@@ -1,0 +1,1 @@
+ALTER TABLE "connection" ADD COLUMN "watch_changes" boolean;

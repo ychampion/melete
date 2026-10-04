@@ -479,8 +479,10 @@ withDb('signals', () => {
     expect(kept?.fields).toMatchObject({ start: moved, location: 'Room 2' });
   }, 60_000);
 
-  test('nobody listening means nothing is read and nothing is kept', async () => {
+  test('with watching off, nobody listening means nothing is read and nothing is kept', async () => {
     const { id: calendarId, calendar } = await connectCalendar('Quiet calendar');
+    await required(handle)
+      .sql`update connection set watch_changes = false where id = ${calendarId}`;
     calendar.items = [occurrence(new Date(clock + 86_400_000).toISOString())];
     const row = await required(jobs).create({ space_id: spaceId, title: 'Q', objective: 'Q' });
     const listening = await required(triggers).create(row.id, {

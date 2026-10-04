@@ -12,9 +12,11 @@ import { and, desc, eq, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { builtinLabel } from '../connectors/builtin.ts';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
-import { action, agent, connection, experienceProfile, job, task } from '../db/schema.ts';
+import { action, agent, connection, experienceProfile, job, space, task } from '../db/schema.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
+import { watchedByDefault } from '../signals/poller.ts';
+import { watchable } from '../signals/watching.ts';
 import type { ExperienceEffects } from './effects.ts';
 import { actionLabel, appName, object, plainText, safeUrl, senderAddress } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -191,6 +193,10 @@ export class ExperienceHome {
       // A removed connection stays a row for the ledger, and is no longer something to show.
       .where(and(eq(connection.spaceId, spaceId), ne(connection.status, 'revoked')))
       .orderBy(connection.label);
+    const [parent] = await this.db
+      .select({ kind: space.kind })
+      .from(space)
+      .where(eq(space.id, spaceId));
     return {
       connections: rows.map((row) =>
         experienceConnection.parse({
@@ -212,6 +218,9 @@ export class ExperienceHome {
               ? 'draft_only'
               : 'read_only',
           ...(row.configuration.builtin === undefined ? {} : { builtin: true }),
+          ...(watchable(row.provider)
+            ? { watching: watchedByDefault(parent?.kind ?? 'personal', row.watchChanges) }
+            : {}),
         }),
       ),
     };
