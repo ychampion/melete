@@ -145,6 +145,85 @@ export type OutgoingMail = {
 /** The folders a search can read: where mail arrives, and where the person's own goes. */
 export type MailFolder = 'inbox' | 'sent';
 
+/**
+ * A message read from its headers alone. Signals never need a body, so none is
+ * fetched: the header block is parsed by the same parser as a whole message,
+ * and `text` and `html` are empty.
+ */
+export async function headerMessage(key: number | string, block: string): Promise<MailMessage> {
+  const head = block.replace(/(\r?\n)+$/, '');
+  return toMailMessage(key, await simpleParser(`${head}\r\n\r\n`, { skipImageLinks: true }));
+}
+
+/** A header block from name and value pairs, one header per line whatever a value holds. */
+export function headerBlock(headers: readonly { name: string; value: string }[]): string {
+  return headers
+    .filter((header) => /^[!-9;-~]+$/.test(header.name))
+    .map((header) => `${header.name}: ${header.value.replace(/[\r\n]+/g, ' ')}`)
+    .join('\r\n');
+}
+
+/** Most bytes of headers one message may carry into a signal. */
+export const MAX_HEADER_BYTES = 64 * 1024;
+
+/** How far back a mailbox the server renumbered is read again, in days. */
+export const RESYNC_DAYS = 2;
+
+/** What `imapChanges` needs of an open, read-only inbox. */
+export type ImapInbox = {
+  uidValidity: string;
+  uidNext: number;
+  /** UIDs from `first` on. IMAP answers `n:*` with the last message even below `n`. */
+  uidsFrom(first: number): Promise<number[]>;
+  uidsSince(since: Date): Promise<number[]>;
+  headers(uid: number): Promise<MailMessage | null>;
+};
+
+/**
+ * What arrived in an IMAP inbox since the cursor, by UID.
+ *
+ * The cursor is `<UIDVALIDITY>:<last UID read>`. A first read starts at the
+ * newest message and returns nothing. When the server's UIDVALIDITY changes,
+ * every UID from before means nothing any more, so the last
+ * {@link RESYNC_DAYS} days are read again; a message keeps its key (its
+ * Message-ID) across the renumbering, so one already delivered is not
+ * delivered twice.
+ */
+export async function imapChanges(
+  inbox: ImapInbox,
+  cursor: string | null,
+  options: { limit: number; now?: number },
+): Promise<{ cursor: string; messages: (MailMessage & { key: string; read_key: number })[] }> {
+  const top = Math.max(0, inbox.uidNext - 1);
+  const parsed = cursor ? /^(\d+):(\d+)$/.exec(cursor) : null;
+  if (!parsed) return { cursor: `${inbox.uidValidity}:${top}`, messages: [] };
+  let uids: number[];
+  let last: number;
+  if (parsed[1] !== inbox.uidValidity) {
+    const since = new Date((options.now ?? Date.now()) - RESYNC_DAYS * 86_400_000);
+    uids = [...new Set(await inbox.uidsSince(since))].sort((a, b) => a - b).slice(-options.limit);
+    last = Math.max(top, ...uids);
+  } else {
+    const after = Number(parsed[2]);
+    uids = [...new Set(await inbox.uidsFrom(after + 1))]
+      .filter((uid) => uid > after)
+      .sort((a, b) => a - b)
+      .slice(0, options.limit);
+    last = uids.at(-1) ?? after;
+  }
+  const messages: (MailMessage & { key: string; read_key: number })[] = [];
+  for (const uid of uids) {
+    const message = await inbox.headers(uid);
+    if (!message) continue;
+    messages.push({
+      ...message,
+      key: message.message_id ? `msgid:${message.message_id}` : `imap:${inbox.uidValidity}:${uid}`,
+      read_key: uid,
+    });
+  }
+  return { cursor: `${inbox.uidValidity}:${last}`, messages };
+}
+
 export interface MailTransport {
   /** Newest first. The inbox unless `folder` says otherwise. */
   search(query: string, limit: number, folder?: MailFolder): Promise<MailMessage[]>;
@@ -155,6 +234,21 @@ export interface MailTransport {
   ): Promise<{ messageId: string; sentCopy: boolean; accepted?: string[]; rejected?: string[] }>;
   findSent(messageId: string): Promise<boolean>;
   health(): Promise<void>;
+  /**
+   * What arrived in the inbox since `cursor`, headers only, oldest first; a
+   * null cursor starts from now. A mailbox that cannot say leaves it out.
+   */
+  changes?(
+    cursor: string | null,
+    options: {
+      limit: number;
+      seen?: (key: string) => Promise<boolean>;
+      now?: number;
+    },
+  ): Promise<{
+    cursor: string;
+    messages: (MailMessage & { key: string; read_key: number | string })[];
+  }>;
 }
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -277,6 +371,32 @@ export class ImapSmtpTransport implements MailTransport {
     if (!item) return null;
     if (!item.source || item.source.length > MAX_MESSAGE_BYTES) return null;
     return toMailMessage(uid, await simpleParser(item.source, { skipImageLinks: true }));
+  }
+
+  async changes(cursor: string | null, options: { limit: number; now?: number }) {
+    return this.imap(null, async (client) => {
+      const opened = await client.mailboxOpen(this.config.inbox ?? 'INBOX', { readOnly: true });
+      const search = async (query: Record<string, unknown>) => {
+        const found = await client.search(query, { uid: true });
+        return Array.isArray(found) ? found : [];
+      };
+      return imapChanges(
+        {
+          uidValidity: String(opened.uidValidity),
+          uidNext: Number(opened.uidNext),
+          uidsFrom: (first) => search({ uid: `${first}:*` }),
+          uidsSince: (since) => search({ since }),
+          headers: async (uid) => {
+            const item = await client.fetchOne(uid, { headers: true }, { uid: true });
+            const raw = item ? item.headers : undefined;
+            if (!raw || raw.length > MAX_HEADER_BYTES) return null;
+            return headerMessage(uid, raw.toString('utf8'));
+          },
+        },
+        cursor,
+        options,
+      );
+    });
   }
 
   async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {

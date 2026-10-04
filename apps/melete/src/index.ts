@@ -185,6 +185,7 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
+import { SignalPoller } from './signals/poller.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -673,6 +674,7 @@ export async function bootstrap(
   let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let signalPoller: SignalPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
@@ -713,6 +715,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          signalPoller?.stop(),
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
@@ -1336,6 +1339,10 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+          // New mail and calendar changes in the accounts some live trigger
+          // listens to, read from each account's own change feed.
+          signalPoller = new SignalPoller({ sql: handle.sql, triggers, connectors });
+          await signalPoller.start();
         }
         // Pushes to people's devices, when this installation has its VAPID keys.
         if (handle) {

@@ -188,6 +188,10 @@ const SPACE_KEYED_OPERATIONAL = [
   // Files people sent in chat went with their chats; one uploaded and never
   // sent has no chat. Their bytes go in the blobs phase, by reference.
   'attachment',
+  // Where each connected account's changes were last read, and the few fields
+  // kept about each calendar occurrence. They name connections, which go next.
+  'source_cursor',
+  'subject_state',
 ] as const;
 
 /**
