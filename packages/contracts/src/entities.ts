@@ -83,6 +83,8 @@ export const CONNECTION_PROVIDERS = [
   'apps',
   /** Handoffs from a room's agent, and posts and files a person sends to a room they are in. */
   'room',
+  /** The agent's own working notes, kept in the person's space and shown in Memory. */
+  'notes',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

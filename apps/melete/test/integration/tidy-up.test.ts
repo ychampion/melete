@@ -461,6 +461,10 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
           claim_ids, data_revision)
         values (${`minv_${randomBytes(8).toString('hex')}`}, ${spaceId}, 'correction', ${chat.id},
           '[]'::jsonb, 0)`,
+      memory_agent_notes: () => sql`insert into memory_agent_notes (id, space_id, principal_id,
+          job_id, content)
+        values (${`note_${randomBytes(8).toString('hex')}`}, ${spaceId}, ${ownerId}, ${chat.id},
+          'The portal wants a PDF.')`,
       memory_capture: async () => {
         const [seq] =
           await sql`select coalesce(max(event_seq), 0) + 1000 as next from memory_capture`;
@@ -481,6 +485,11 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     const response = await call(`/conversations/${chat.id}`, 'DELETE');
     expect(response.status).toBe(200);
     expect(await listed()).not.toContain(chat.id);
+    // The agent's note stays, no longer naming the chat, as the capture log does.
+    const [note] =
+      await sql`select job_id from memory_agent_notes where content = 'The portal wants a PDF.'
+      and space_id = ${spaceId}`;
+    expect(note?.job_id).toBeNull();
     for (const table of Object.keys(seeded).filter((name) => name !== 'memory_capture')) {
       const [left] =
         await sql`select count(*)::int as n from ${sql(table)} where job_id = ${chat.id}`;

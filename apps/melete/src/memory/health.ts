@@ -1,4 +1,6 @@
 import type { MemorySql } from './db.ts';
+import type { EmbeddingStatus } from './embedding.ts';
+import type { EmbeddingProvider } from './views.ts';
 
 /** Why the latest message given up was not read, in words an operator can act on. */
 export type MemoryFailure =
@@ -22,6 +24,8 @@ export type MemoryHealth = {
   reason: 'provider_unavailable' | 'provider_slow' | 'daily_budget' | null;
   /** Why the most recent of those was given up; null when none was. */
   failed_reason: MemoryFailure | null;
+  /** Semantic recall's embedder, when the service runs one or was asked to. */
+  embedding?: EmbeddingStatus & { spaces_not_embedded: number };
 };
 
 /**
@@ -74,7 +78,10 @@ export function describeFailure(code: string): MemoryFailure {
  * slowly, or out of reads; and how many were given up in the last day, and why
  * the latest was. Counts only.
  */
-export async function memoryHealth(sql: MemorySql): Promise<MemoryHealth> {
+export async function memoryHealth(
+  sql: MemorySql,
+  embedding?: EmbeddingProvider | null,
+): Promise<MemoryHealth> {
   const [row] = await sql`select count(*)::int as waiting,
       (array_agg(error_code order by retry_at desc))[1] as latest
     from memory_work where status = 'pending' and retry_at is not null
@@ -103,5 +110,25 @@ export async function memoryHealth(sql: MemorySql): Promise<MemoryHealth> {
           ? 'provider_slow'
           : 'provider_unavailable',
     failed_reason: latest ? describeFailure(String(latest.error_code)) : null,
+    ...(embedding ? { embedding: await embeddingHealth(sql, embedding) } : {}),
   };
+}
+
+/** How the embedder is doing, and how many spaces with memory are not yet fully embedded by it. */
+async function embeddingHealth(sql: MemorySql, embedding: EmbeddingProvider) {
+  const [row] = await sql`select count(*)::int as n from memory_spaces p
+    join memory_index_manifest m on m.space_id = p.space_id
+    where p.restore_ready and not p.revoked and p.data_revision > 0
+      and (m.embedding is null or (m.embedding->>'partial')::boolean is true
+        or m.embedding->>'model' is distinct from ${embedding.model})`;
+  const status: EmbeddingStatus = embedding.status?.() ?? {
+    configured: true,
+    model: embedding.model,
+    local: embedding.local === true,
+    last_success_at: null,
+    last_error: null,
+    consecutive_failures: 0,
+    paused_until: null,
+  };
+  return { ...status, spaces_not_embedded: Number(row?.n ?? 0) };
 }

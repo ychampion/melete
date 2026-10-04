@@ -94,6 +94,12 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'google/*': { input: 1.25, output: 10, cached_input: 0.125 },
   'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.03 },
   'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.01 },
+  // Embedding models semantic recall uses: input only, at their listed prices.
+  'fireworks/*embed*': { input: 0.016, output: 0 },
+  'fireworks/nomic-ai/nomic-embed-text-v1.5': { input: 0.008, output: 0 },
+  'openai/text-embedding-3-small': { input: 0.02, output: 0 },
+  'openai/text-embedding-3-large': { input: 0.13, output: 0 },
+  'google/*embedding*': { input: 0.15, output: 0 },
 };
 
 const priceSchema = z

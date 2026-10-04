@@ -105,6 +105,7 @@ export async function startEffectBoundary(
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
       privateContext: ({ spaceId, agentId }, query) =>
         dependencies.privacy.marksPrivate(spaceId, agentId, query),
+      privacyOrigin: (jobId, text) => dependencies.privacy.captureOrigin(jobId, text),
       webSearch: webSearchFromEnv(env, { native: search?.backend }),
       spending,
       searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),

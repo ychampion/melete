@@ -1319,6 +1319,33 @@ such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
 
+### Semantic recall
+
+Memory, and the notes the agent keeps for itself, are also recalled by meaning,
+so "favourite colour" finds what was said about a color. Melete embeds them with
+the default provider's embedding model when it has one (Fireworks
+`nomic-ai/nomic-embed-text-v1.5`, OpenAI `text-embedding-3-small`, Google
+`gemini-embedding-001`), or with the first of those providers that has a key.
+With none, recall stays lexical and nothing fails. `MELETE_EMBEDDING_PROVIDER`
+and `MELETE_EMBEDDING_MODEL` name another model, with
+`MELETE_EMBEDDING_DIMENSIONS` for a model Melete has no default for (an
+`openai-compatible` endpoint, for one); `MELETE_EMBEDDING_MODEL=off` turns it off.
+`MELETE_EMBEDDING_PROVIDER=local` embeds on the server at
+`MELETE_LOCAL_MODEL_URL`, which must be on this machine or network, and then
+needs the model and its dimensions named.
+
+Embeddings follow the privacy settings. A cloud embedder never reads what memory
+learned in a private conversation, nor anything in a space marked private, nor a
+request from a private or sensitive conversation; that memory is recalled by its
+words alone. Everything sent goes through the same redaction as a cloud model
+request, what memory learned privately included. A provider that fails three
+times in a row is left alone for a minute, and `/health` shows it under
+`memory.embedding`. A local embedder reads memory as written. Memory is
+embedded as it is written; memory kept before an embedding model was configured
+is embedded the next time the service starts. Each call is counted in the
+spending caps, charged to the person whose memory it read. Vectors are kept in
+Postgres as JSON and compared in the service, so no database extension is needed.
+
 ### Voice
 
 `ELEVENLABS_API_KEY` turns on speech, transcription, push-to-talk in chat and
