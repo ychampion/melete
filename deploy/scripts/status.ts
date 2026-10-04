@@ -50,7 +50,7 @@ export type StatusFacts = {
   setupNeeded: boolean | null;
 };
 
-export const SERVICES = ['postgres', 'melete', 'runtime', 'web'] as const;
+export const SERVICES = ['postgres', 'melete-cells', 'melete', 'runtime', 'web'] as const;
 const GB = 1024 ** 3;
 /** The documented minimum for a first install, and the space update.sh refuses to pull below. */
 export const MIN_FREE_BYTES = 10 * GB;

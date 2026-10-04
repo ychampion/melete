@@ -256,7 +256,7 @@ describe('the Docker socket group written as DOCKER_GID', () => {
       },
     }).catch((error: unknown) => error);
     expect(failureReport(failure)).toEqual({
-      text: 'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into the service. Start Docker Engine, or link its socket to that path.\n',
+      text: 'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into melete-cells. Start Docker Engine, or link its socket to that path.\n',
       code: 1,
     });
     // Any other failure to stat is unexpected and keeps its stack.

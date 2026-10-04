@@ -1,8 +1,9 @@
 # The Melete service: API, jobs, broker, gateway, connectors, knowledge, events.
 #
-# One process in v0.1 with separate modules and separate database roles. It sits
-# on `edge` for the API, `database` for Postgres, and isolated runtime networks
-# as the cells' only broker/gateway peer.
+# One process with separate modules. It sits on `edge` for the API, `database`
+# for Postgres, `cells` to reach melete-cells, and isolated runtime networks as
+# the cells' only broker/gateway peer. The same image runs melete-cells, the
+# only holder of the Docker socket, and the database-roles setup step.
 
 FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS promoter-node
 FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1
@@ -10,7 +11,7 @@ FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16
 # The trusted promoter uses Node's process permission boundary without file write grants.
 COPY --from=promoter-node /usr/local/bin/node /usr/local/bin/node
 
-# Only the service controls the local engine socket. Runtime containers never receive it.
+# Used on the host side by the operator's checks; in Compose only melete-cells holds the socket.
 COPY --from=docker:27.5.1-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c /usr/local/bin/docker /usr/local/bin/docker
 
 ENV NODE_ENV=production
@@ -61,7 +62,7 @@ COPY conformance/ conformance/
 # Non-root. The service writes only to the mounted volumes.
 RUN groupadd --gid 10001 runtime-work \
     && useradd --uid 10002 --create-home --home-dir /home/melete melete \
-    && mkdir -p /data/spaces /data/artifacts /data/restrictions /work/_probe \
+    && mkdir -p /data/spaces /data/artifacts /data/restrictions /data/database-access /data/cells-key /work/_probe \
     && chown -R melete:melete /data \
     && chown -R melete:runtime-work /work \
     && chmod 2770 /work /work/_probe

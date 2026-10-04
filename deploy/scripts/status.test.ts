@@ -30,7 +30,7 @@ const healthy: StatusFacts = {
     { name: 'postgres:17-alpine', present: true },
     { name: 'ghcr.io/ychampion/melete-service:main', present: true },
   ],
-  services: ['postgres', 'melete', 'runtime', 'web'].map((service) => ({
+  services: ['postgres', 'melete-cells', 'melete', 'runtime', 'web'].map((service) => ({
     service,
     state: 'running',
     health: 'healthy',

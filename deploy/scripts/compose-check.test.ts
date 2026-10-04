@@ -26,7 +26,7 @@ const failures = (file: ComposeFile) =>
 
 describe('the shipped compose file', () => {
   test('requires an explicit Docker socket group without a root default', () => {
-    const service = compose.services?.melete;
+    const service = compose.services?.['melete-cells'];
     expect(service?.group_add?.some((entry) => /^\$\{DOCKER_GID:\?/.test(entry))).toBe(true);
   });
   test('passes every boundary check', () => {
@@ -135,6 +135,80 @@ describe('the image names', () => {
 });
 
 describe('the check catches the mistakes that would matter', () => {
+  test('compose-check: the API has no socket', () => {
+    const name = 'the API has no Docker socket';
+    const mounted = structuredClone(compose);
+    mounted.services?.melete?.volumes?.push('/var/run/docker.sock:/var/run/docker.sock');
+    expect(failures(mounted)).toContain(name);
+    expect(failures(mounted)).toContain('only the cell service holds the Docker socket');
+    const named = structuredClone(compose);
+    if (named.services?.melete?.environment)
+      named.services.melete.environment.MELETE_DOCKER_SOCKET = '/var/run/docker.sock';
+    expect(failures(named)).toContain(name);
+    const grouped = structuredClone(compose);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+    grouped.services?.melete?.group_add?.push('${DOCKER_GID:?run configure}');
+    expect(failures(grouped)).toContain(name);
+    // A second holder elsewhere is caught too, whatever the socket is called there.
+    const elsewhere = structuredClone(compose);
+    elsewhere.services?.web?.volumes?.push({
+      type: 'bind',
+      source: '/run/docker.sock',
+      target: '/engine',
+    });
+    if (elsewhere.services?.web && !elsewhere.services.web.volumes)
+      elsewhere.services.web.volumes = [{ type: 'bind', source: '/run/docker.sock', target: '/x' }];
+    expect(failures(elsewhere)).toContain('only the cell service holds the Docker socket');
+  });
+  test('compose-check: the API connects as a role that can read secrets', () => {
+    const name = 'the API connects as a role that cannot read secrets';
+    const operator = structuredClone(compose);
+    if (operator.services?.melete?.environment)
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+      operator.services.melete.environment.DATABASE_URL = '${DATABASE_URL:?run configure}';
+    expect(failures(operator)).toContain(name);
+    const effects = structuredClone(compose);
+    if (effects.services?.melete?.environment)
+      effects.services.melete.environment.DATABASE_URL_FILE = '/data/database-access/effects.url';
+    expect(failures(effects)).toContain(name);
+    const writable = structuredClone(compose);
+    if (writable.services?.melete?.volumes)
+      writable.services.melete.volumes = writable.services.melete.volumes.map((mount) =>
+        mount === 'database-access:/data/database-access:ro'
+          ? 'database-access:/data/database-access'
+          : mount,
+      );
+    expect(failures(writable)).toContain(name);
+  });
+  test('compose-check: the database roles are missing', () => {
+    const name = 'the database roles are set up before the API starts';
+    const missing = structuredClone(compose);
+    delete missing.services?.['database-roles'];
+    expect(failures(missing)).toContain(name);
+    const unordered = structuredClone(compose);
+    const depends = unordered.services?.melete?.depends_on as Record<string, unknown>;
+    delete depends['database-roles'];
+    expect(failures(unordered)).toContain(name);
+  });
+  test('giving the cell service a credential, a port or another network', () => {
+    const name = 'the cell service is reached by the API alone and holds no credential';
+    const keyed = structuredClone(compose);
+    if (keyed.services?.['melete-cells']?.environment)
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+      keyed.services['melete-cells'].environment.DATABASE_URL = '${DATABASE_URL}';
+    expect(failures(keyed)).toContain(name);
+    const published = structuredClone(compose);
+    if (published.services?.['melete-cells'])
+      published.services['melete-cells'].ports = ['127.0.0.1:8791:8791'];
+    expect(failures(published)).toContain(name);
+    const edged = structuredClone(compose);
+    if (edged.services?.['melete-cells'])
+      edged.services['melete-cells'].networks = ['cells', 'edge'];
+    expect(failures(edged)).toContain(name);
+    const joined = structuredClone(compose);
+    if (joined.services?.web) joined.services.web.networks = ['edge', 'cells'];
+    expect(failures(joined)).toContain(name);
+  });
   test('selecting the stub for ordinary deployments', () => {
     const broken = structuredClone(compose);
     if (broken.services?.melete?.environment)
@@ -350,7 +424,9 @@ describe('the check catches the mistakes that would matter', () => {
   test('every shipped service keeps bounded json-file logs', () => {
     const services = Object.entries(compose.services ?? {});
     expect(services.map(([name]) => name).sort()).toEqual([
+      'database-roles',
       'melete',
+      'melete-cells',
       'postgres',
       'runtime',
       'runtime-image',
