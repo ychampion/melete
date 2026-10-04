@@ -1262,7 +1262,10 @@ export function createFilesConnector(options: FilesOptions): Connector {
     let reason: string;
     let givenCount = 0;
     if (area === 'work') {
-      const given = records ? personGivenReason(records, joined) : null;
+      // Records that could not be read decide nothing: the person is asked.
+      const given = records
+        ? personGivenReason(records, joined)
+        : `Melete could not check whose ${JSON.stringify(joined)} is`;
       givenCount = records ? beneath(records.personInWork, joined).length : 0;
       owner = given ? 'person' : 'agent';
       reason = given ? `${given}.` : "It is in this conversation's own workspace.";
@@ -1279,11 +1282,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
     const shown = `“${segments.at(-1)}”`;
     const files = target.files === 1 ? 'its file' : `its ${target.files} files`;
     const what =
-      target.what === 'file'
-        ? `${shown}${area === 'artifacts' ? ' from your Files' : ', which you gave Melete'}`
-        : area === 'artifacts'
-          ? `the folder ${shown} from your Files, with ${files}`
-          : `the folder ${shown} with ${files}, ${givenCount === 1 ? 'one of which' : `${givenCount} of which`} you gave Melete`;
+      area === 'work' && !records
+        ? `${target.what === 'file' ? shown : `the folder ${shown} with ${files}`} from this conversation's workspace`
+        : target.what === 'file'
+          ? `${shown}${area === 'artifacts' ? ' from your Files' : ', which you gave Melete'}`
+          : area === 'artifacts'
+            ? `the folder ${shown} from your Files, with ${files}`
+            : `the folder ${shown} with ${files}, ${givenCount === 1 ? 'one of which' : `${givenCount} of which`} you gave Melete`;
     const warning = `This deletes ${what}. It can be restored from the trash for ${trashDays} days.`;
     const names = target.items.map((item) => item.path).filter(Boolean);
     return {
