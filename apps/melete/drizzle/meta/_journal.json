@@ -727,6 +727,13 @@
       "idx": 103,
       "version": "7",
       "when": 1789232400083,
+      "tag": "0103_calendar_freebusy_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1789232400084,
       "tag": "0104_watch_changes",
       "breakpoints": true
     }

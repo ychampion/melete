@@ -32,6 +32,16 @@ export type ConnectorContext = {
    * anything that has appeared at that name since.
    */
   only_new?: boolean;
+  /**
+   * What `ahead` read from the destination for this proposal, before the
+   * proposal's lock; handed to `prepare` only. Null when it could not be read.
+   */
+  ahead?: JsonObject | null;
+  /**
+   * At proposal only: the tools this job may use on this connection, so a
+   * connector can withhold what the job could not read itself.
+   */
+  granted?: readonly string[];
 };
 
 export interface Connector {
@@ -46,6 +56,28 @@ export interface Connector {
     tx: Query,
     kind?: string,
   ): Promise<JsonObject>;
+  /**
+   * Read what `prepare` needs from the destination itself, before the
+   * proposal's lock is taken: a calendar write's conflicts, for one. Called
+   * with the raw proposal, outside every transaction, with a deadline; a
+   * throw or null means nothing could be read, and `prepare` must then bind
+   * that and leave the final check to dispatch. Never writes anything.
+   */
+  ahead?(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+    sql: Query,
+  ): Promise<JsonObject | null>;
+  /**
+   * Refuse a new proposal over what `ahead` read (in `ctx.ahead`). Called
+   * under the proposal's lock after the repeat lookups found nothing, so a
+   * repeated proposal is handed the action it made rather than refused over
+   * it. Throws a `BrokerFault` to refuse.
+   */
+  checkAhead?(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+  ): void | Promise<void>;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**

@@ -230,6 +230,23 @@ export async function startFakeMicrosoft(
             : Response.json({ error: { code: 'ErrorItemNotFound' } }, { status: 404 });
         }
       }
+      if (rest === '/calendarView' && request.method === 'GET') {
+        const refused = needs('Calendars.ReadWrite');
+        if (refused) return refused;
+        // Instances as Graph lists them: a stored instance (a series' occurrence
+        // carries its `seriesMasterId`) is listed when it overlaps the window.
+        const from = Date.parse(url.searchParams.get('startDateTime') ?? '');
+        const to = Date.parse(url.searchParams.get('endDateTime') ?? '');
+        const at = (value: unknown) => {
+          const text = String((value as { dateTime?: string } | undefined)?.dateTime ?? '');
+          return Date.parse(/[zZ]|[+-]\d{2}:\d{2}$/.test(text) ? text : `${text}Z`);
+        };
+        return Response.json({
+          value: [...state.events.values()].filter(
+            (event) => at(event.start) < to && at(event.end) > from,
+          ),
+        });
+      }
       if (rest.startsWith('/events')) {
         const refused = needs('Calendars.ReadWrite');
         if (refused) return refused;

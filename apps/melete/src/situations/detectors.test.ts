@@ -3,6 +3,8 @@
  * the person hears, and that words from an account never become Melete's own.
  */
 import { describe, expect, test } from 'bun:test';
+import { googleOccurrence } from '../connectors/google-calendar.ts';
+import { graphOccurrence } from '../connectors/outlook-calendar.ts';
 import {
   answers,
   dueWords,
@@ -209,6 +211,39 @@ describe('dates and invitations', () => {
     expect(
       meetingConflicts([meeting('a', 1, 2, { response: 'organizer' }), meeting('b', 1.5, 3)], now),
     ).toHaveLength(1);
+  });
+
+  test('an invitation whose answer the calendar cannot show is not their meeting', () => {
+    // Sent to a list the person is on: the calendar lists others, never them.
+    const viaList = googleOccurrence({
+      id: 'evt1',
+      status: 'confirmed',
+      start: { dateTime: inHours(3) },
+      end: { dateTime: inHours(4) },
+      organizer: { email: 'stranger@example.test' },
+      attendees: [{ email: 'everyone@lists.example.test', responseStatus: 'needsAction' }],
+    });
+    // An answer Graph reports as none.
+    const unanswered = graphOccurrence({
+      id: 'evt2',
+      subject: 'Sync',
+      start: { dateTime: inHours(3), timeZone: 'UTC' },
+      end: { dateTime: inHours(4), timeZone: 'UTC' },
+      attendees: [{ emailAddress: { address: 'stranger@example.test' } }],
+      isOrganizer: false,
+      responseStatus: { response: 'none' },
+    } as never);
+    for (const occurrence of [viaList, unanswered]) {
+      const response = occurrence?.response;
+      expect(meetingChange('calendar.event.changed', moved({ response }), now, 'UTC')).toBeNull();
+      expect(
+        meetingConflicts([meeting('a', 1, 2), meeting('b', 1.5, 3, { response })], now),
+      ).toHaveLength(0);
+    }
+    // A feed that keeps no answers still counts what it lists.
+    expect(meetingChange('calendar.event.changed', moved(), now, 'UTC')?.title).toBe(
+      'A meeting moved',
+    );
   });
 
   test('a conflict is the same while its meetings stay put, and new once either moves', () => {

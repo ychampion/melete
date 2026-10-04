@@ -9,8 +9,25 @@ import type {
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
-import { confirmFromIcs, expandIcs } from '../signals/occurrences.ts';
-import { type SignalSource, sourceError } from '../signals/types.ts';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
+import { confirmFromIcs, expandIcs, instantMs } from '../signals/occurrences.ts';
+import {
+  type CalendarOccurrences,
+  type Occurrence,
+  type SignalSource,
+  sourceError,
+} from '../signals/types.ts';
+import {
+  bindCalendarCheck,
+  calendarAhead,
+  calendarAsksFirst,
+  checkCalendarAhead,
+  clearToWrite,
+  freeBusy,
+  invited,
+  MAX_FREEBUSY_DAYS,
+} from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -119,6 +136,14 @@ const fields = {
   end: z.iso.datetime({ offset: true }),
   description: z.string().max(50_000).default(''),
   location: z.string().max(2000).default(''),
+  /** Guests to invite, by address. Anyone outside the person's own accounts is asked about first. */
+  attendees: z.array(z.email().max(320)).max(50).optional(),
+  /** A hold: the time is kept, marked tentative, until it is confirmed or released. */
+  tentative: z.boolean().optional(),
+  /** Asked for only when the person wants this on top of something already there. */
+  double_book: z.strictObject({ reason: z.string().trim().min(1).max(500) }).optional(),
+  /** Bound by Melete before anyone is asked (see `bindCalendarCheck`); never the agent's. */
+  checked: z.record(z.string(), z.unknown()).optional(),
 };
 export const createPayload = z
   .object(fields)
@@ -136,6 +161,7 @@ export const updatePayload = z
   })
   .strict()
   .refine((v) => Date.parse(v.end) > Date.parse(v.start));
+export type WritePayload = z.infer<typeof createPayload>;
 export const deletePayload = z.strictObject({
   uid: z.string().regex(/^act_[A-Za-z0-9_-]+$/),
   etag: z
@@ -150,8 +176,78 @@ const properties = {
   end: { type: 'string', format: 'date-time' },
   description: { type: 'string', maxLength: 50000 },
   location: { type: 'string', maxLength: 2000 },
+  attendees: {
+    type: 'array',
+    maxItems: 50,
+    items: { type: 'string', maxLength: 320 },
+    description:
+      'Email addresses to invite. Inviting anyone outside the person’s own accounts asks the person first. Leave it out to put the event on their calendar only.',
+  },
+  tentative: {
+    type: 'boolean',
+    description:
+      'true places a hold: the time is kept and marked tentative. Confirm it later with calendar.update and tentative false, or release it with calendar.delete.',
+  },
+  double_book: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['reason'],
+    properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } },
+    description:
+      'Only when the person wants this on top of an event already there. The person is asked, with the reason.',
+  },
+  checked: {
+    type: 'object',
+    additionalProperties: true,
+    description: 'Filled in by Melete. Leave it out.',
+  },
 };
 
+/**
+ * A free/busy read: a window of at most 62 days, and the zone all-day events are placed in.
+ * The window is `start` and `end`: `from` and `to` are address fields to the
+ * broker, which compares them in lower case.
+ */
+export const freebusyPayload = z
+  .object({
+    start: instant,
+    end: instant,
+    time_zone: z.string().min(1).max(100).optional(),
+    /** Bound by Melete before the read; never the agent's. */
+    checked: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+  .refine((v) => instantMs(v.end) > instantMs(v.start), { message: '`end` must be after `start`' })
+  .refine((v) => instantMs(v.end) - instantMs(v.start) <= MAX_FREEBUSY_DAYS * DAY_MS, {
+    message: `a window of at most ${MAX_FREEBUSY_DAYS} days`,
+  });
+
+/** Free and busy time in a window, as the free/busy tool answers it. */
+export async function freebusyDetail(
+  source: CalendarOccurrences,
+  payload: z.infer<typeof freebusyPayload>,
+  signal?: AbortSignal,
+): Promise<JsonObject> {
+  const window = {
+    from: new Date(instantMs(payload.start)).toISOString(),
+    to: new Date(instantMs(payload.end)).toISOString(),
+  };
+  const self = payload.checked?.self;
+  const found = await freeBusy(source, window, payload.time_zone ?? 'UTC', {
+    ...(signal ? { signal } : {}),
+    ...(Array.isArray(self)
+      ? { self: self.filter((value): value is string => typeof value === 'string') }
+      : {}),
+  });
+  return {
+    ...found,
+    ...(found.complete
+      ? {}
+      : {
+          note: 'The calendar has more events in this window than one read covers. Ask again for a shorter window before treating any time as free.',
+        }),
+  } as unknown as JsonObject;
+}
 export const calendarManifest: ConnectorManifest = {
   name: 'calendar',
   version: '0.1.0',
@@ -209,8 +305,36 @@ export const calendarManifest: ConnectorManifest = {
       requires_approval: false,
     },
     {
+      name: 'calendar.freebusy',
+      description:
+        'When the person is busy and free between `start` and `end` (at most 62 days), every repeating event counted. Each busy block names its event and says busy or tentative; events shown as free and invitations they declined leave the time free. All-day events fill the person’s own day. Check this before proposing or booking a time.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['start', 'end'],
+        properties: {
+          start: { type: 'string', description: 'Start of the window, an ISO date or date-time.' },
+          end: { type: 'string', description: 'End of the window, after `start`.' },
+          time_zone: {
+            type: 'string',
+            description: 'IANA zone for all-day events. Defaults to the person’s own.',
+          },
+          checked: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Filled in by Melete. Leave it out.',
+          },
+        },
+      },
+      effect_class: 'read',
+      required_scopes: ['calendar.freebusy'],
+      verify: false,
+      requires_approval: false,
+    },
+    {
       name: 'calendar.create',
-      description: 'Create an approved CalDAV event whose UID is the action ID.',
+      description:
+        'Create an event whose UID is the action ID. A time already taken is refused, naming what is there. `attendees` invites people; `tentative` places a hold.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -224,7 +348,8 @@ export const calendarManifest: ConnectorManifest = {
     },
     {
       name: 'calendar.update',
-      description: 'Update a Melete-created event by UID and its last observed ETag.',
+      description:
+        'Update a Melete-created event by UID and its last observed ETag. Moving it onto a taken time is refused. `tentative: false` confirms a hold.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -242,6 +367,26 @@ export const calendarManifest: ConnectorManifest = {
     },
   ],
 };
+
+/** The receipt of a create or update: the event, its version, and whether it is a hold or invites anyone. */
+export function writeDetail(
+  uid: string,
+  etag: string | null,
+  action: Pick<Action, 'id'>,
+  payload: WritePayload,
+): JsonObject {
+  const guests = invited(payload as JsonObject);
+  return {
+    uid,
+    etag,
+    action_id: action.id,
+    tentative: payload.tentative === true,
+    ...(guests.length ? { attendees: guests } : {}),
+  };
+}
+
+/** The tools a read-only calendar (an import or a feed) offers. */
+export const READ_TOOLS = new Set(['calendar.list', 'calendar.freebusy']);
 
 export type EventView = {
   uid: string;
@@ -326,7 +471,12 @@ export function parseIcs(ics: string, etag: string | null = null): ParsedEvent[]
   });
 }
 
-function eventIcs(action: Action, uid: string, payload: z.infer<typeof createPayload>): string {
+function eventIcs(
+  action: Action,
+  uid: string,
+  payload: WritePayload,
+  organizer: string | null,
+): string {
   const calendar = new ICAL.Component('vcalendar');
   calendar.updatePropertyWithValue('version', '2.0');
   calendar.updatePropertyWithValue('prodid', '-//Melete//Calendar//EN');
@@ -341,6 +491,18 @@ function eventIcs(action: Action, uid: string, payload: z.infer<typeof createPay
   component.updatePropertyWithValue('summary', payload.summary);
   component.updatePropertyWithValue('description', payload.description);
   component.updatePropertyWithValue('location', payload.location);
+  component.updatePropertyWithValue('status', payload.tentative ? 'TENTATIVE' : 'CONFIRMED');
+  component.updatePropertyWithValue('transp', 'OPAQUE');
+  const guests = invited(payload as JsonObject);
+  if (guests.length && organizer)
+    component.updatePropertyWithValue('organizer', `mailto:${organizer}`);
+  for (const guest of guests) {
+    const attendee = new ICAL.Property('attendee');
+    attendee.setParameter('partstat', 'NEEDS-ACTION');
+    attendee.setParameter('rsvp', 'TRUE');
+    attendee.setValue(`mailto:${guest}`);
+    component.addProperty(attendee);
+  }
   component.updatePropertyWithValue('x-melete-action-id', action.id);
   component.updatePropertyWithValue('x-melete-payload-hash', action.payload_hash);
   calendar.addSubcomponent(component);
@@ -416,7 +578,7 @@ export class CalendarConnector implements Connector {
         ? {
             ...calendarManifest,
             credentials: [],
-            tools: calendarManifest.tools.filter((tool) => tool.name === 'calendar.list'),
+            tools: calendarManifest.tools.filter((tool) => READ_TOOLS.has(tool.name)),
           }
         : calendarManifest;
     this.base = config.mode === 'caldav' ? new URL(config.calendarUrl) : null;
@@ -534,12 +696,20 @@ export class CalendarConnector implements Connector {
    */
   readonly signals: SignalSource = {
     stream: 'calendar',
-    occurrences: async (window) =>
+    occurrences: async (window, options) =>
       expandIcs(
         this.config.mode === 'ics'
           ? [this.config.ics]
-          : (await this.calendarObjects(undefined, { window })).map((object) => object.ics),
+          : (
+              await this.calendarObjects(
+                options?.signal ? ({ signal: options.signal } as ConnectorContext) : undefined,
+                { window },
+              )
+            ).map((object) => object.ics),
         window,
+        undefined,
+        [...this.selfAddresses(), ...(options?.self ?? [])],
+        options?.zone ?? null,
       ),
     confirm: async ({ uid, occurrence }) =>
       confirmFromIcs(
@@ -551,10 +721,77 @@ export class CalendarConnector implements Connector {
       ),
   };
 
+  /** The account's own address, when its user name is one: who organises and who declined. */
+  private selfAddresses(): string[] {
+    return this.config.mode === 'caldav' && /^[^\s@]+@[^\s@]+$/.test(this.config.username)
+      ? [this.config.username]
+      : [];
+  }
+
+  /** The event a change rewrites, which never conflicts with itself. */
+  private static mine(uid: string | null) {
+    return uid ? (occurrence: Occurrence) => occurrence.uid === uid : undefined;
+  }
+
+  /** What a write would land on, read before the proposal's lock. */
+  async ahead(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+    sql: Query,
+  ): Promise<JsonObject | null> {
+    if (this.config.mode !== 'caldav') return null;
+    const uid = proposal.canonical_payload.uid;
+    const mine = CalendarConnector.mine(typeof uid === 'string' ? uid : null);
+    return calendarAhead(this.signals as CalendarOccurrences, proposal, {
+      sql,
+      ctx,
+      connectionId: this.config.id,
+      ...(mine ? { mine } : {}),
+    });
+  }
+
+  async prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+    // Guests are invited by the account that organises the event; a CalDAV
+    // account whose user name is not an address cannot be named as one.
+    if (
+      (kind === 'calendar.create' || kind === 'calendar.update') &&
+      invited(payload).length &&
+      !this.selfAddresses().length
+    )
+      throw new BrokerFault(
+        'payload_invalid',
+        'This calendar’s account name is not an email address, so it cannot send invitations. Create the event without attendees, or use a calendar signed in with its address.',
+      );
+    return bindCalendarCheck(payload, ctx, tx, kind);
+  }
+
+  checkAhead(proposal: Pick<Action, 'kind' | 'canonical_payload'>, ctx: ConnectorContext) {
+    checkCalendarAhead(proposal, ctx);
+  }
+
+  asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
+    return calendarAsksFirst(action);
+  }
+
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let dispatched = false;
     try {
       this.assertContext(action, ctx);
+      if (action.kind === 'calendar.freebusy') {
+        const payload = freebusyPayload.parse(action.canonical_payload);
+        try {
+          return this.success(
+            action,
+            await freebusyDetail(this.signals as CalendarOccurrences, payload, ctx.signal),
+          );
+        } catch {
+          return {
+            outcome: 'failed',
+            reason: 'The calendar could not be read just now.',
+            retryable: true,
+          };
+        }
+      }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
         const window = listWindow(payload);
@@ -597,7 +834,18 @@ export class CalendarConnector implements Connector {
         action.kind === 'calendar.update' ? updatePayload.parse(action.canonical_payload) : null;
       const payload = update ?? createPayload.parse(action.canonical_payload);
       const uid = update?.uid ?? action.id;
-      const ics = eventIcs(action, uid, payload);
+      const blocked = await clearToWrite(
+        this.signals as CalendarOccurrences,
+        payload as JsonObject & WritePayload,
+        CalendarConnector.mine(uid),
+        { actionId: action.id, ...(ctx.signal ? { signal: ctx.signal } : {}) },
+      );
+      // A change that does not say whether it is a hold keeps what the event is now.
+      const tentative =
+        payload.tentative ??
+        (update ? (await this.currentStatus(update.uid, ctx)) === 'TENTATIVE' : false);
+      if (blocked) return blocked;
+      const ics = eventIcs(action, uid, { ...payload, tentative }, this.selfAddresses()[0] ?? null);
       const condition: Record<string, string> = update
         ? { 'if-match': update.etag }
         : { 'if-none-match': '*' };
@@ -610,7 +858,7 @@ export class CalendarConnector implements Connector {
       if (response.status >= 200 && response.status < 300)
         return this.success(
           action,
-          { uid, etag: response.headers.get('etag'), action_id: action.id },
+          writeDetail(uid, response.headers.get('etag'), action, { ...payload, tentative }),
           uid,
         );
       // Three statuses mean something specific enough to repair rather than
@@ -660,6 +908,21 @@ export class CalendarConnector implements Connector {
             retryable: false,
           };
     }
+  }
+
+  /** The STATUS the event stored under `uid` has now, upper case; null when it has none. */
+  private async currentStatus(uid: string, ctx: ConnectorContext): Promise<string | null> {
+    const response = await this.request('GET', uid, null, ctx);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
+    const calendar = new ICAL.Component(ICAL.parse(await boundedText(response)));
+    const event = calendar
+      .getAllSubcomponents('vevent')
+      .find((component) => new ICAL.Event(component).uid === uid);
+    const status = event?.getFirstPropertyValue('status');
+    return typeof status === 'string' ? status.toUpperCase() : null;
   }
 
   /** The attendees of the event an update rewrites, across every instance stored under its UID. */

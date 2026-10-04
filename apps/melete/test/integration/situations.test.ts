@@ -16,6 +16,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
+import { PrincipalService } from '../../src/principals/service.ts';
 import { PushService } from '../../src/push/service.ts';
 import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/webpush.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -1123,5 +1124,105 @@ withDb('situations', () => {
     await withPhone(vic);
     await poll();
     expect((await cursorOf())?.interval_s).toBe(1800);
+  }, 60_000);
+
+  test('leaving a shared space takes the deadlines and situations the person had there', async () => {
+    const { db, sql } = required(handle);
+    const host = await person('host', { start: '00:00', end: '23:59' });
+    const guest = await person('member', { start: '00:00', end: '23:59' });
+    await withPhone(guest);
+    const shared = newId('sp');
+    await db.insert(space).values({
+      id: shared,
+      name: 'Studio',
+      kind: 'shared',
+      gitPath: `/s/${shared}`,
+      ownerPrincipalId: host.id,
+    });
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${host.id}, ${shared}, 'owner'), (${guest.id}, ${shared}, 'member')`;
+    const companyId = newId('co');
+    await sql`insert into company (id, space_id, principal_id, name, domain, first_seen_at, last_seen_at)
+      values (${companyId}, ${shared}, ${guest.id}, 'Acme', 'acme.test', now(), now())`;
+    const commitment = async (minutes: number) => {
+      const id = newId('li');
+      await sql`insert into ledger_item (id, space_id, principal_id, company_id, kind, direction,
+          due_at, status, confidence, evidence, summary, scan_id, dedupe_key)
+        values (${id}, ${shared}, ${guest.id}, ${companyId}, 'refund', 'owed_to_you',
+          ${new Date(clock + minutes * MINUTE).toISOString()}::timestamptz, 'handling', 'high',
+          '[]'::jsonb, 'A refund', 'scn_fixture', ${id})`;
+      await required(situations).acceptCommitment({
+        spaceId: shared,
+        principalId: guest.id,
+        itemId: id,
+        byPerson: true,
+      });
+      return id;
+    };
+    const soon = await commitment(20);
+    const later = await commitment(180);
+    // The nearer one is raised while they are still in the space.
+    const saved = clock;
+    clock += 5 * MINUTE;
+    await required(situations).sweep();
+    expect(await live(guest.id, 'deadline.at_risk')).toHaveLength(1);
+    await new PrincipalService(db, '/s', required(jobs)).revoke(guest.id, shared, guest.id);
+    // Gone from their list, and nothing kept to look at again there.
+    expect(await required(situations).list(guest.id)).toHaveLength(0);
+    const [kept] = await sql`select count(*)::int as n from clock
+      where space_id = ${shared} and principal_id = ${guest.id} and state in ('armed', 'checking')`;
+    expect(kept?.n).toBe(0);
+    const [waiting] = await sql`select count(*)::int as n from push_intent
+      where principal_id = ${guest.id} and sent_at is null and dropped_at is null`;
+    expect(waiting?.n).toBe(0);
+    // The later one's time comes: nothing about a space they left reaches them.
+    const before = delivered.filter((entry) => entry.principal === guest.id).length;
+    clock = saved + 165 * MINUTE;
+    await required(situations).sweep();
+    expect(
+      await sql`select id from situation where principal_id = ${guest.id}
+        and subject_key in ${sql([`ledger:${soon}`, `ledger:${later}`])} and state in ('open', 'routed')`,
+    ).toHaveLength(0);
+    expect(delivered.filter((entry) => entry.principal === guest.id)).toHaveLength(before);
+    clock = saved;
+  }, 60_000);
+
+  test('switching an account’s credential keeps what is still to be pushed about its deadlines', async () => {
+    // Quiet now, so a deadline that is not urgent waits to be pushed.
+    const sid = await person('sid', { start: '08:00', end: '10:00' });
+    await withPhone(sid);
+    const docs = await account(sid, 'test', 'Documents');
+    documentSource(docs, { signed: false });
+    await required(situations).setDeadline({
+      spaceId: sid.spaceId,
+      principalId: sid.id,
+      subjectKey: 'doc:sid',
+      connectionId: docs,
+      title: 'The form is filed',
+      dueAt: new Date(clock + 120 * MINUTE),
+      leadSeconds: 60 * 60,
+      atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
+      personSet: true,
+    });
+    const saved = clock;
+    clock += 60 * MINUTE;
+    await required(situations).sweep();
+    const raised = await live(sid.id, 'deadline.at_risk');
+    expect(raised.map((row) => row.urgency)).toEqual(['soon']);
+    const { sql } = required(handle);
+    const pending = () => sql`select id from push_intent
+      where situation_id = ${String(raised[0]?.id)} and sent_at is null and dropped_at is null`;
+    expect(await pending()).toHaveLength(1);
+    const secretId = newId('sec');
+    await sql`insert into secret (id, space_id, ciphertext) values (${secretId}, ${sid.spaceId}, 'sealed')`;
+    const [current] = await sql`select generation from connection where id = ${docs}`;
+    await new PolicyService(required(jobs), required(runner)).changeConnection(docs, {
+      kind: 'switch',
+      secret_ref: secretId,
+      expected_generation: Number(current?.generation ?? 0),
+    });
+    expect(await live(sid.id, 'deadline.at_risk')).toHaveLength(1);
+    expect(await pending()).toHaveLength(1);
+    clock = saved;
   }, 60_000);
 });

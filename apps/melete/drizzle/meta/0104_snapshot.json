@@ -1,6 +1,6 @@
 {
-  "id": "4b9e75d1-f041-4ef3-836c-f513b0e91b7f",
-  "prevId": "80cbdf1a-6bc4-4303-a626-e8e1c558ca77",
+  "id": "04806098-9c37-4629-8be6-03946cd70729",
+  "prevId": "4b9e75d1-f041-4ef3-836c-f513b0e91b7f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2145,6 +2145,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'owner'"
+        },
+        "watch_changes": {
+          "name": "watch_changes",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -17926,6 +17932,82 @@
           "value": "\"attachment\".\"kind\" in ('image', 'pdf', 'docx', 'xlsx', 'csv', 'text')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.observation_tombstone": {
+      "name": "observation_tombstone",
+      "schema": "",
+      "columns": {
+        "dedup_key": {
+          "name": "dedup_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "observation_tombstone_seen_idx": {
+          "name": "observation_tombstone_seen_idx",
+          "columns": [
+            {
+              "expression": "seen_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "observation_tombstone_connection_idx": {
+          "name": "observation_tombstone_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "observation_tombstone_connection_id_connection_id_fk": {
+          "name": "observation_tombstone_connection_id_connection_id_fk",
+          "tableFrom": "observation_tombstone",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.source_cursor": {
