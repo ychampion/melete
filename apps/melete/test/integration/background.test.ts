@@ -16,6 +16,7 @@ import {
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import postgres from 'postgres';
 import { mountUsage } from '../../src/api/usage.ts';
 import { signCapability } from '../../src/broker/capability.ts';
 import { PostgresGatewayBudget } from '../../src/broker/gateway-budget.ts';
@@ -25,7 +26,12 @@ import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts
 import { PriceTable } from '../../src/gateway/prices.ts';
 import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
 import type { GatewayPrincipal } from '../../src/gateway/types.ts';
-import { rollupUsageDay, usageSeries, utcDay } from '../../src/gateway/usage-day.ts';
+import {
+  rollupFinishedDays,
+  rollupUsageDay,
+  usageSeries,
+  utcDay,
+} from '../../src/gateway/usage-day.ts';
 import { healthDetail } from '../../src/health/monitor.ts';
 import { newId } from '../../src/ids.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
@@ -607,5 +613,22 @@ withDb('background and interactive model calls', () => {
     const [exact] =
       await handle.sql`select round(sum(cost_usd)::numeric, 6)::text as usd, count(*)::int as calls from model_usage`;
     expect({ ...rolled }).toEqual({ ...exact });
+  });
+  test('finished days are labelled in UTC whatever the database session time zone', async () => {
+    const { handle } = fixture();
+    const day = new Date(Date.now() - 3 * 86_400_000);
+    await handle.sql`insert into model_usage (id, created_at, space_id, principal_id, purpose,
+        provider, model, status, cost_usd, class, tier)
+      values (${randomUUID()}, ${`${utcDay(day)}T12:00:00.000Z`}::timestamptz, ${spaceId},
+        ${personId}, 'memory', 'fireworks', ${MODEL}, 'succeeded', 0.25, 'background', 'service')`;
+    const honolulu = postgres(handle.url, { max: 1, connection: { TimeZone: 'Pacific/Honolulu' } });
+    try {
+      await rollupFinishedDays(honolulu);
+    } finally {
+      await honolulu.end();
+    }
+    const [rolled] =
+      await handle.sql`select day, sum(cost_usd)::float8 as usd from usage_day where principal_id = ${personId} group by day`;
+    expect(rolled).toMatchObject({ day: utcDay(day), usd: 0.25 });
   });
 });

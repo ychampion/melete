@@ -23620,7 +23620,7 @@ export interface components {
         __schema641: components["schemas"]["__schema640"];
         /** @description Whether this account may set the secondary model (the owner) */
         __schema642: boolean;
-        /** @description The primary runs on this machine or network and the secondary does not, so work moved to the secondary leaves it. Side calls stay on a local primary either way. */
+        /** @description The primary runs on this machine or network and the secondary does not, so work moved to the secondary leaves it, chats a watch or schedule wakes among it. Side calls stay on a local primary either way. */
         __schema643: boolean;
         __schema644: components["schemas"]["__schema186"] | null;
         __schema645: string;

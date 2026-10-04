@@ -64,10 +64,10 @@ export async function rollupFinishedDays(
   const from = since
     ? new Date(`${since}T00:00:00.000Z`)
     : new Date(today.getTime() - ROLLUP_LOOKBACK_DAYS * DAY_MS);
-  const missing = await sql`select to_char(d, 'YYYY-MM-DD') as day
+  const missing = await sql`select to_char(d at time zone 'UTC', 'YYYY-MM-DD') as day
     from generate_series(${from.toISOString()}::timestamptz,
       ${today.toISOString()}::timestamptz - interval '1 day', interval '1 day') as d
-    where not exists (select 1 from usage_day u where u.day = to_char(d, 'YYYY-MM-DD'))
+    where not exists (select 1 from usage_day u where u.day = to_char(d at time zone 'UTC', 'YYYY-MM-DD'))
       and exists (select 1 from model_usage m
         where m.created_at >= d and m.created_at < d + interval '1 day')`;
   const days = new Set(missing.map((row) => String(row.day)));

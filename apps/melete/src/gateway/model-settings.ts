@@ -304,15 +304,20 @@ export class ModelSettingsService {
       work?.usageClass === 'background'
         ? (await this.routingFor(work.spaceId, routing, db)).background
         : null;
-    if (background)
-      return {
-        ...background,
-        vision: effectiveVision(
-          background.provider,
-          background.model,
-          await this.visionSaid(background.provider, background.model, db),
-        ),
-      };
+    if (background) {
+      // The operator's vision model and fallbacks serve background work on
+      // the secondary as they serve the primary.
+      const reads = effectiveVision(
+        background.provider,
+        background.model,
+        await this.visionSaid(background.provider, background.model, db),
+      );
+      const routes = agentRoutes(routing, background, {
+        ownerChose: false,
+        primaryReadsImages: reads,
+      });
+      return { ...background, vision: reads || Boolean(routes?.vision) };
+    }
     const chosen = await this.chosen(db);
     const { provider, model, vision } = await this.active(chosen, db);
     const routes = agentRoutes(
@@ -337,13 +342,17 @@ export class ModelSettingsService {
   /**
    * The operator's alternatives for an attempt on this model: a vision model
    * for its pictures when it reads none, and fallbacks. None when the owner
-   * chose the model in the app.
+   * chose the model in the app, except for background work on a secondary
+   * model, which keeps them.
    */
   async attemptRoutes(
     routing: ModelRouting,
-    primary: { provider: string; model: string },
+    primary: { provider: string; model: string; usageClass?: 'interactive' | 'background' },
   ): Promise<GatewayRoutes | undefined> {
-    if (this.ownerChose(primary)) return undefined;
+    const onSecondary =
+      primary.usageClass === 'background' &&
+      !sameModel(primary, await this.active(await this.chosen()));
+    if (this.ownerChose(primary) && !onSecondary) return undefined;
     const owner = await this.visionSaid(primary.provider, primary.model);
     const readsImages = effectiveVision(
       primary.provider,

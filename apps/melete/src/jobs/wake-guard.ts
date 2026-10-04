@@ -80,6 +80,7 @@ export async function attemptCause(
         turnId: string | null;
         usageClass: string;
         outcome: string | null;
+        outcomeDetail: unknown;
         endedAt: Date | null;
         leaseStatus: string;
       }
@@ -102,16 +103,17 @@ export async function attemptCause(
         filter (where e.type = 'notice' and e.payload->>'kind' = 'trigger_event'))[1] as trigger_id
     from ${event} e where e.job_id = ${row.id} and e.seq > ${afterSeq}`,
   );
-  // Picking up the same turn counts only when the attempt before was cut off
-  // (still open, lost, superseded, or failed and tried again). One that went
-  // back to rest, asked, finished or stopped at a limit leaves the next wake
-  // to its own cause.
+  // Picking up the same turn counts only when the interactive attempt before
+  // was cut off (still open, lost, superseded, or failed in a way to be tried
+  // again). One that went back to rest, asked, finished, failed for good or
+  // stopped at a limit leaves the next wake to its own cause.
   const cutOff =
     previous !== undefined &&
     (previous.endedAt === null ||
       previous.leaseStatus === 'lost' ||
       previous.outcome === 'fenced' ||
-      previous.outcome === 'failed');
+      (previous.outcome === 'failed' &&
+        (previous.outcomeDetail as { retryable?: unknown } | null)?.retryable === true));
   const continuing =
     cutOff &&
     previous?.usageClass === 'interactive' &&

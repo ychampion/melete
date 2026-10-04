@@ -550,4 +550,38 @@ describeWithDb('a secondary model beside the primary', () => {
     expect(JSON.stringify(prepared.body)).not.toContain('jamie.davis@fastmail.example');
     expect(JSON.stringify(prepared.body)).toContain('⟦EMAIL_');
   }, 60_000);
+  test('background work on the secondary keeps the vision model and the fallbacks', async () => {
+    const api = service();
+    const { owner, spaceId } = await people(api);
+    await api.call(
+      '/model-settings/secondary',
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
+    );
+    await api.call('/model-settings/secondary/uses', owner.cookie, put({ scheduled: 'secondary' }));
+    const VISION = 'accounts/fireworks/models/fixture-vision';
+    const SPARE = 'accounts/fireworks/models/fixture-spare';
+    const routing = {
+      fast: null,
+      vision: { provider: 'fireworks', model: VISION },
+      fallback: [{ provider: 'fireworks', model: SPARE }],
+    };
+    // A woken attempt runs on the secondary, and is told it may send pictures.
+    const woken = await api.settings.routedChoice(routing, database().db, {
+      spaceId,
+      usageClass: 'background',
+    });
+    expect(woken).toMatchObject({ model: SMALL, vision: true });
+    // Its calls may go to the vision model and, when limited, to the fallback.
+    expect(
+      await api.settings.attemptRoutes(routing, {
+        provider: 'fireworks',
+        model: SMALL,
+        usageClass: 'background',
+      }),
+    ).toEqual({
+      vision: { provider: 'fireworks', model: VISION },
+      fallback: [{ provider: 'fireworks', model: SPARE }],
+    });
+  }, 60_000);
 });

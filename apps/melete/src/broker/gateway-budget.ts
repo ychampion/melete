@@ -31,7 +31,9 @@ export class PostgresGatewayBudget implements GatewayBudget {
        * The operator's alternatives for an attempt on this model: a vision
        * model and fallbacks. None for a model the owner chose in the app.
        */
-      routes?: (attempt: ModelChoice) => Promise<GatewayRoutes | undefined>;
+      routes?: (
+        attempt: ModelChoice & { usageClass: 'interactive' | 'background' },
+      ) => Promise<GatewayRoutes | undefined>;
       /**
        * Set, each model call is charged its estimated cost from this price
        * table against the job's dollar limit (`max_usd_est`), beside its
@@ -53,10 +55,13 @@ export class PostgresGatewayBudget implements GatewayBudget {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
         const [attempt] =
-          await tx`select provider, model from attempt where id = ${claims.attempt_id}`;
+          await tx`select provider, model, class from attempt where id = ${claims.attempt_id}`;
         if (!attempt) throw new BrokerFault('stale_epoch');
         const primary = { provider: String(attempt.provider), model: String(attempt.model) };
-        const routes = await this.options.routes?.(primary);
+        const routes = await this.options.routes?.({
+          ...primary,
+          usageClass: attempt.class === 'background' ? 'background' : 'interactive',
+        });
         const allowedModels = allowedWithRoutes(primary, routes);
         return {
           jobId: job.id,

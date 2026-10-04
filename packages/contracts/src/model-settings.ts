@@ -155,7 +155,8 @@ export const secondaryModel = z
     leaves_local_primary: z.boolean().meta({
       description:
         'The primary runs on this machine or network and the secondary does not, so work moved ' +
-        'to the secondary leaves it. Side calls stay on a local primary either way.',
+        'to the secondary leaves it, chats a watch or schedule wakes among it. Side calls stay ' +
+        'on a local primary either way.',
     }),
     updated_at: timestamp.nullable(),
   })

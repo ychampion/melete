@@ -40,6 +40,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import {
+  attemptCause,
   WAKE_GUARD_LIMIT,
   WAKE_GUARD_MESSAGE,
   WAKE_GUARD_QUESTION,
@@ -501,5 +502,60 @@ withDb('the wake guard', () => {
     const scheduled = required(await claim(routineJob));
     await required(runner).commitOutcome(scheduled.claims, done('Two orders overnight.'));
     expect(await classes(routineJob)).toEqual(['interactive', 'background']);
+  });
+  test("a routine's test that is put off leaves its next scheduled run background", async () => {
+    const response = await request('/automations', 'POST', {
+      title: 'Evening check',
+      instruction: 'Check the day of orders',
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+      at: '18:30',
+    });
+    const routine = automationResponse.parse(await response.json()).automation;
+    const [registration] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, routine.id));
+    const routineJob = required(registration).jobId;
+    // The routine is being checked less often, so the next occurrence is put off.
+    await required(handle)
+      .db.update(job)
+      .set({ scheduleSkipRemaining: 1 })
+      .where(eq(job.id, routineJob));
+    expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+    expect((await row(routineJob)).state).toBe('waiting_for_event_or_time');
+    await required(triggers).fireSchedule(routine.id, `occ-${++occurrence}`);
+    const scheduled = required(await claim(routineJob));
+    await required(runner).commitOutcome(scheduled.claims, done('Nothing new.'));
+    expect(await classes(routineJob)).toEqual(['background']);
+  });
+
+  test('only a turn cut off to be tried again carries the person on; a final failure does not', async () => {
+    const created = await required(jobs).create({
+      space_id: spaceId,
+      title: 'Cause check',
+      objective: 'Check what an attempt is caused by',
+    });
+    const turnId = newId('turn');
+    await required(handle)
+      .db.update(job)
+      .set({ currentTurnId: turnId })
+      .where(eq(job.id, created.id));
+    const failed = (retryable: boolean) => ({
+      turnId,
+      usageClass: 'interactive',
+      outcome: 'failed',
+      outcomeDetail: { kind: 'failed', reason: 'x', retryable },
+      endedAt: new Date(),
+      leaseStatus: 'ended',
+    });
+    const cause = (previous: ReturnType<typeof failed>) =>
+      required(jobs).transaction((tx) =>
+        attemptCause(tx, { id: created.id, currentTurnId: turnId }, previous, 1e12),
+      );
+    expect((await cause(failed(true))).usageClass).toBe('interactive');
+    expect((await cause(failed(false))).usageClass).toBe('background');
+    expect((await cause({ ...failed(true), usageClass: 'background' })).usageClass).toBe(
+      'background',
+    );
   });
 });

@@ -874,6 +874,10 @@ export const CHATS_WITH_YOU = {
   hint: 'Your messages always use the primary. When a watch or schedule wakes a chat, it follows Scheduled and repeating jobs.',
 };
 
+/** The warning when scheduled work on a cloud secondary would leave a local primary. */
+export const leavesComputer = (provider: string) =>
+  `Scheduled work, and chats woken by a watch or schedule, will leave this computer and go to ${provider}.`;
+
 /** The kinds of work a secondary model can take, in the words Settings uses. */
 const WORK: { key: keyof ModelSettings['secondary']['uses']; name: string; hint: string }[] = [
   {
@@ -994,7 +998,7 @@ export function SecondaryModel({
             secondary.leaves_local_primary ? (
               <span className="models-warning models-uses-note" role="note">
                 <Icon name="alert" size={14} />
-                {`Scheduled work will leave this computer and go to ${providerLabel(settings, chosen.provider)}.`}
+                {leavesComputer(providerLabel(settings, chosen.provider))}
               </span>
             ) : null}
           </li>
