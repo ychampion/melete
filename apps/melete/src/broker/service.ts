@@ -300,6 +300,8 @@ const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
 ]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
+/** How long a connector's read before a proposal may take; see `readAhead`. */
+const AHEAD_TIMEOUT_MS = 10_000;
 /** Guest counts of the events calendar changes rewrite, taken before a job lock; see `guestsAhead`. */
 type GuestCounts = ReadonlyMap<string, number>;
 const NO_GUESTS: GuestCounts = new Map();
@@ -1012,6 +1014,38 @@ export class BrokerService implements BrokerOperations {
     }
   }
 
+  /**
+   * What a connector reads from the destination before a proposal is
+   * admitted (`Connector.ahead`), outside every lock, with a deadline: the
+   * same rule as `guestsAhead`. Null when the connector reads nothing or the
+   * read failed; `prepare` binds that, and dispatch checks again.
+   */
+  private async readAhead(
+    jobId: string,
+    request: Pick<ProposeActionRequest, 'connection_id' | 'kind' | 'payload'>,
+  ): Promise<JsonObject | null> {
+    const connector = this.options.connectors.get(request.connection_id);
+    const tool = connector && findTool(connector.manifest, request.kind);
+    if (!connector?.ahead || !tool) return null;
+    const [job] = await this.sql<LockedJob[]>`select * from job where id = ${jobId}`;
+    if (!job) return null;
+    try {
+      return await connector.ahead(
+        { kind: tool.name, canonical_payload: request.payload as JsonObject },
+        {
+          job_id: job.id,
+          space_id: job.space_id,
+          idempotency_key: '',
+          constraints: jobConstraints.parse(job.constraints),
+          signal: AbortSignal.timeout(AHEAD_TIMEOUT_MS),
+        },
+        this.sql,
+      );
+    } catch {
+      return null;
+    }
+  }
+
   private approvalRow(row: Record<string, unknown>) {
     return {
       id: row.id as string,
@@ -1345,6 +1379,7 @@ export class BrokerService implements BrokerOperations {
       kind: request.kind,
       canonical_payload: request.payload as Action['canonical_payload'],
     });
+    const ahead = await this.readAhead(claims.job_id, request);
     const proposal = await this.sql
       .begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
@@ -1381,6 +1416,7 @@ export class BrokerService implements BrokerOperations {
                 space_id: job.space_id,
                 idempotency_key: '',
                 constraints: jobConstraints.parse(job.constraints),
+                ahead,
               },
               tx,
               request.kind,

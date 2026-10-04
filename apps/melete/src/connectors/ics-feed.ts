@@ -1,5 +1,12 @@
 import { isIP } from 'node:net';
-import type { Action, ConnectorHealth, DispatchResult, VerifyResult } from '@melete/contracts';
+import type {
+  Action,
+  ConnectorHealth,
+  DispatchResult,
+  JsonObject,
+  VerifyResult,
+} from '@melete/contracts';
+import type { Query } from '../broker/records.ts';
 import { confirmFromIcs, expandIcs } from '../signals/occurrences.ts';
 import type { SignalSource } from '../signals/types.ts';
 import {
@@ -7,7 +14,9 @@ import {
   CalendarConnector,
   calendarManifest,
   MAX_CALENDAR_BYTES,
+  READ_TOOLS,
 } from './calendar.ts';
+import { bindCalendarCheck } from './calendar-truth.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import {
@@ -102,7 +111,7 @@ export class IcsFeedConnector implements Connector {
   readonly manifest = {
     ...calendarManifest,
     credentials: [],
-    tools: calendarManifest.tools.filter((tool) => tool.name === 'calendar.list'),
+    tools: calendarManifest.tools.filter((tool) => READ_TOOLS.has(tool.name)),
   };
 
   constructor(
@@ -156,6 +165,11 @@ export class IcsFeedConnector implements Connector {
     occurrences: async (window) => expandIcs([await this.load()], window),
     confirm: async ({ uid, occurrence }) => confirmFromIcs([await this.load()], uid, occurrence),
   };
+
+  /** A free/busy read places all-day events in the person's own zone. */
+  prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+    return bindCalendarCheck(payload, ctx.space_id, tx, kind, null);
+  }
 
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let ics: string;

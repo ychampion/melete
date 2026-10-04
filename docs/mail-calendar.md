@@ -24,7 +24,7 @@ The consent screen asks for three Google scopes:
 | --- | --- |
 | `gmail.readonly` | `email.search` and `email.read` |
 | `gmail.send` | `email.send`, once each send is approved |
-| `calendar.events` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| `calendar.events` | `calendar.list`, `calendar.freebusy`, `calendar.create`, `calendar.update`, `calendar.delete` |
 
 Drafts stay in Melete's action record, as they do for any mailbox, so no Gmail
 draft scope is asked for. Google lets a person untick a scope on its consent
@@ -91,7 +91,7 @@ The consent screen asks for these Microsoft Graph permissions, all delegated:
 | `User.Read` | The account's own address, which mail is sent from |
 | `Mail.Read` | `email.search` and `email.read` |
 | `Mail.Send` | `email.send`, once each send is approved |
-| `Calendars.ReadWrite` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| `Calendars.ReadWrite` | `calendar.list`, `calendar.freebusy`, `calendar.create`, `calendar.update`, `calendar.delete` |
 | `offline_access` | Staying signed in between uses |
 
 The routes are the Google ones with `microsoft` in place of `google`:
@@ -189,7 +189,7 @@ read`); a sensitive message in any other shape is read like any other message.
 
 ## Calendar
 
-Read-only ICS imports expose only list; direct writes are rejected
+Read-only ICS imports expose only `calendar.list` and `calendar.freebusy`; direct writes are rejected
 (`ICS import unfolds and unescapes fields, preserves recurrence, and rejects
 all writes`). A calendar feed is the same read-only list over an address rather
 than a file: the whole address is sealed, because a published feed address is a
@@ -221,6 +221,64 @@ creates is named by the action that created it, so a second create is refused
 rather than making a second event; an update or removal sends the ETag it read;
 and verification compares the event's recorded action, payload hash and fields
 (`google.test.ts`).
+
+## Free time, conflicts, guests and holds
+
+Every calendar (CalDAV, Google, Outlook, a feed or an imported file) answers
+`calendar.freebusy` for a window of up to 62 days, given as `start` and `end`.
+The answer lists the busy blocks, each with its event's title and `busy` or
+`tentative`, the free stretches between them, the time zone used, and
+`complete`, which is false when the calendar held more than one read covers.
+The blocks come from the same occurrences change-watching reads: Google's
+instances, Graph's `calendarView`, and a CalDAV collection or feed expanded
+within the same budget, so every instance of a repeating event counts. An
+event shown as free (`TRANSP:TRANSPARENT`, Google's `transparent`, Graph's
+`free` or `workingElsewhere`), an invitation the account declined, and a
+cancelled event leave the time free. A tentative event or a hold blocks it. An
+all-day event fills the person's own day, midnight to midnight in the time zone
+of their profile, unless the call names another zone. Touching is not
+overlapping: a meeting ending at 15:00 leaves 15:00 free.
+
+`calendar.create` and `calendar.update` check the calendar twice: when the
+action is proposed, before anyone is asked, and again just before it is sent.
+A time already taken is refused, and the refusal names what is there in the
+person's own zone ("“Board meeting” (Mon, Nov 9, 10:00 AM–11:00 AM EST)"). An
+update never conflicts with the event it changes. A calendar that cannot be
+read stops the write as well; nothing is written on a guess. To put an event
+on top of another on purpose, the agent sends `double_book` with a reason: the
+person is asked, the card names what it goes on top of and why, and at dispatch
+only those events may be in the way.
+
+`attendees` invites people by address. Before anyone is asked, Melete binds
+which of them are outside the person's own accounts (the address they sign in
+with and every account connected in the space). Inviting anyone outside asks,
+and the card names them; inviting no one, or an empty list, is an event on the
+person's own calendar. CalDAV writes each guest as an `ATTENDEE` asked to
+reply, with the account as `ORGANIZER` when its user name is an address;
+Google is told to send the invitations; Graph sends them itself.
+
+`tentative: true` places a hold: the event is marked tentative and keeps the
+time. `calendar.update` with `tentative: false` confirms it, and
+`calendar.delete` releases it, leaving nothing on the calendar. The receipt of
+every create or update says whether it is a hold and whom it invited.
+
+Other code reads the same answers through `calendarConflicts` and `freeBusy` in
+`apps/melete/src/connectors/calendar-truth.ts`.
+
+The tests:
+
+- `free/busy from each provider` in `calendar-truth.test.ts`: Google instances
+  with an all-day day in New York, Graph with tentative, away, free, working
+  elsewhere and declined, and a weekly CalDAV meeting that keeps 9:00 in New
+  York across the clock change;
+- `a create over a busy slot is refused with the conflict named` (unit, for each
+  provider, and through the broker in
+  `apps/melete/test/integration/calendar-truth.test.ts`, which also stops a
+  write when something lands on its time after it was approved);
+- `inviting someone outside asks, naming them`;
+- `a double-booking asks, with its reason and what it lands on, and then goes ahead`;
+- `a tentative hold can be confirmed or released, and a released hold leaves nothing`
+  (CalDAV, Google and Outlook, and through the broker).
 
 ## Noticing new mail and calendar changes
 

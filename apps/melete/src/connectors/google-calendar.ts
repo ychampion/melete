@@ -14,7 +14,9 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import type { Query } from '../broker/records.ts';
 import {
+  type CalendarOccurrences,
   type CalendarRead,
   type Occurrence,
   type SignalSource,
@@ -26,12 +28,24 @@ import {
   createPayload,
   deletePayload,
   type EventView,
+  freebusyDetail,
+  freebusyPayload,
   listDetail,
   listPayload,
   listWindow,
   retryAfterSeconds,
   updatePayload,
+  type WritePayload,
+  writeDetail,
 } from './calendar.ts';
+import {
+  bindCalendarCheck,
+  calendarAhead,
+  calendarAsksFirst,
+  clearToWrite,
+  invited,
+  spaceTimeZone,
+} from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import { googleErrorReason } from './google.ts';
 import { signInEnded } from './mail-transport.ts';
@@ -76,7 +90,15 @@ type GoogleEvent = {
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
   extendedProperties?: { private?: Record<string, string> };
-  attendees?: { email?: string; self?: boolean; resource?: boolean }[];
+  attendees?: {
+    email?: string;
+    self?: boolean;
+    resource?: boolean;
+    organizer?: boolean;
+    responseStatus?: string;
+  }[];
+  /** `transparent` shows the time as free. */
+  transparency?: string;
 };
 
 /** A Google time as a UTC instant, or the date of an all-day event. */
@@ -117,6 +139,10 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     time_zone: event.start?.timeZone ?? null,
     ref: event.id ?? null,
     updated_at: event.updated && !Number.isNaN(Date.parse(event.updated)) ? event.updated : null,
+    transparent: event.transparency === 'transparent',
+    declined: (event.attendees ?? []).some(
+      (attendee) => attendee.self && attendee.responseStatus === 'declined',
+    ),
   };
 }
 
@@ -302,10 +328,54 @@ export class GoogleCalendarConnector implements Connector {
     return (found.attendees ?? []).filter((attendee) => !attendee.self).length;
   }
 
+  /** The event a change rewrites, which never conflicts with itself. */
+  private static mine(uid: string | null) {
+    const id = uid ? googleEventId(uid) : null;
+    return id ? (occurrence: Occurrence) => occurrence.ref === id : undefined;
+  }
+
+  /** What a write would land on, read before the proposal's lock. */
+  async ahead(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+    sql: Query,
+  ): Promise<JsonObject | null> {
+    const uid = proposal.canonical_payload.uid;
+    return calendarAhead(
+      this.signals as CalendarOccurrences,
+      proposal,
+      await spaceTimeZone(sql, ctx.space_id),
+      GoogleCalendarConnector.mine(typeof uid === 'string' ? uid : null),
+    );
+  }
+
+  prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+    return bindCalendarCheck(payload, ctx.space_id, tx, kind, ctx.ahead);
+  }
+
+  asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
+    return calendarAsksFirst(action);
+  }
+
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let dispatched = false;
     try {
       this.assertContext(action, ctx);
+      if (action.kind === 'calendar.freebusy') {
+        const payload = freebusyPayload.parse(action.canonical_payload);
+        try {
+          return this.success(
+            action,
+            await freebusyDetail(this.signals as CalendarOccurrences, payload),
+          );
+        } catch {
+          return {
+            outcome: 'failed',
+            reason: 'The calendar could not be read just now.',
+            retryable: true,
+          };
+        }
+      }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
         const window = listWindow(payload, this.config.now?.() ?? Date.now());
@@ -360,12 +430,22 @@ export class GoogleCalendarConnector implements Connector {
         action.kind === 'calendar.update' ? updatePayload.parse(action.canonical_payload) : null;
       const payload = update ?? createPayload.parse(action.canonical_payload);
       const uid = update?.uid ?? action.id;
+      const blocked = await clearToWrite(
+        this.signals as CalendarOccurrences,
+        payload as JsonObject & WritePayload,
+        GoogleCalendarConnector.mine(uid),
+      );
+      if (blocked) return blocked;
+      const guests = invited(payload as JsonObject);
       const body: JsonObject = {
         summary: payload.summary,
         description: payload.description,
         location: payload.location,
         start: { dateTime: payload.start },
         end: { dateTime: payload.end },
+        status: payload.tentative ? 'tentative' : 'confirmed',
+        transparency: 'opaque',
+        ...(guests.length ? { attendees: guests.map((email) => ({ email })) } : {}),
         extendedProperties: {
           private: {
             melete_uid: uid,
@@ -375,21 +455,19 @@ export class GoogleCalendarConnector implements Connector {
         },
       };
       dispatched = true;
+      // Guests are told by Google itself, and only when there are guests.
+      const notify = guests.length ? '?sendUpdates=all' : '';
       // A create names its event, so the calendar refuses a second one with that name.
       const response = update
-        ? await this.request('PUT', `/events/${googleEventId(uid)}`, ctx, body, {
+        ? await this.request('PUT', `/events/${googleEventId(uid)}${notify}`, ctx, body, {
             'if-match': update.etag,
           })
-        : await this.request('POST', '/events', ctx, { ...body, id: googleEventId(uid) });
+        : await this.request('POST', `/events${notify}`, ctx, { ...body, id: googleEventId(uid) });
       if (response.status >= 200 && response.status < 300) {
         const written = (await boundedJson(response, MAX_RESPONSE_BYTES).catch(
           () => null,
         )) as GoogleEvent | null;
-        return this.success(
-          action,
-          { uid, etag: written?.etag ?? null, action_id: action.id },
-          uid,
-        );
+        return this.success(action, writeDetail(uid, written?.etag ?? null, action, payload), uid);
       }
       return await this.refused(response);
     } catch (error) {

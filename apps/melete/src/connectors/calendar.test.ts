@@ -10,6 +10,7 @@ import {
 import { asConnectorFault } from './faults.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import type { SecretAccess } from './secrets.ts';
+import type { Connector } from './types.ts';
 
 const payload = {
   summary: 'Walk with Alex',
@@ -112,6 +113,26 @@ function caldavDouble() {
   return { records, requests, config, puts: () => puts };
 }
 
+/** Free/busy of a connector over one day, as the tool answers it. */
+async function busyOn(connector: Connector, day: string) {
+  const answer = await connector.execute(
+    mailAction(
+      'calendar.freebusy',
+      {
+        start: day,
+        end: new Date(Date.parse(day) + 86_400_000).toISOString(),
+        time_zone: 'UTC',
+      },
+      'act_fb',
+    ),
+    mailContext('act_fb'),
+  );
+  if (answer.outcome !== 'succeeded') throw new Error(`free/busy ${answer.outcome}`);
+  return (answer.receipt.detail.busy as { title: string; status: string }[]).map(
+    (block) => `${block.title}:${block.status}`,
+  );
+}
+
 describe('calendar faults are typed, so the broker can repair the cause', () => {
   const raised = async (status: number, headers?: Record<string, string>) => {
     const connector = refusingCaldav(status, headers);
@@ -170,7 +191,10 @@ describe('calendar connector', () => {
       { id: 'con_test', spaceId: 'spc_test', mode: 'ics', ics: imported },
       secret,
     );
-    expect(connector.manifest.tools.map((tool) => tool.name)).toEqual(['calendar.list']);
+    expect(connector.manifest.tools.map((tool) => tool.name)).toEqual([
+      'calendar.list',
+      'calendar.freebusy',
+    ]);
     expect(connector.manifest.credentials).toEqual([]);
   });
 
@@ -344,8 +368,9 @@ describe('calendar connector', () => {
       },
       secret,
     );
+    // The free-time check before the write meets the redirect first, so nothing is sent.
     const result = await connector.execute(mailAction('calendar.create', payload), mailContext());
-    expect(result.outcome).toBe('unknown');
+    expect(result.outcome).toBe('failed');
     expect(destinationCalls).toBe(0);
     expect(JSON.stringify(result)).not.toContain('caldav-private-password');
   });
@@ -438,5 +463,95 @@ describe('calendar listing window', () => {
     });
     expect(listPayload.safeParse({ from: '2026-12-01', to: '2026-11-01' }).success).toBe(false);
     expect(listPayload.safeParse({ from: 'next week' }).success).toBe(false);
+  });
+});
+
+describe('calendar truth on CalDAV', () => {
+  test('a tentative hold can be confirmed or released, and a released hold leaves nothing', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(fake.config, secret);
+    const hold = mailAction(
+      'calendar.create',
+      { ...payload, summary: 'Hold: review', tentative: true },
+      'act_hold1',
+    );
+    const held = await connector.execute(hold, mailContext('act_hold1'));
+    if (held.outcome !== 'succeeded') throw new Error(held.outcome);
+    expect(held.receipt.detail).toMatchObject({ tentative: true });
+    expect(fake.records.get('/calendar/act_hold1.ics')?.body).toContain('STATUS:TENTATIVE');
+    expect(await busyOn(connector, '2026-09-12')).toEqual(['Hold: review:tentative']);
+    // Confirmed: the same event, no longer tentative; it does not conflict with itself.
+    const confirm = mailAction(
+      'calendar.update',
+      { ...payload, summary: 'Review', tentative: false, uid: 'act_hold1', etag: '"version-1"' },
+      'act_confirm',
+    );
+    expect((await connector.execute(confirm, mailContext('act_confirm'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(fake.records.get('/calendar/act_hold1.ics')?.body).toContain('STATUS:CONFIRMED');
+    expect(await busyOn(connector, '2026-09-12')).toEqual(['Review:busy']);
+    // A second hold, released: nothing of it is left on the calendar.
+    const other = { ...payload, start: '2026-09-12T14:00:00Z', end: '2026-09-12T15:00:00Z' };
+    const second = await connector.execute(
+      mailAction(
+        'calendar.create',
+        { ...other, summary: 'Hold: lunch', tentative: true },
+        'act_hold2',
+      ),
+      mailContext('act_hold2'),
+    );
+    if (second.outcome !== 'succeeded') throw new Error(second.outcome);
+    const release = mailAction(
+      'calendar.delete',
+      { uid: 'act_hold2', etag: second.receipt.detail.etag ?? null },
+      'act_release',
+    );
+    expect((await connector.execute(release, mailContext('act_release'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(fake.records.has('/calendar/act_hold2.ics')).toBe(false);
+    expect(await busyOn(connector, '2026-09-12')).toEqual(['Review:busy']);
+    const listed = await connector.execute(
+      mailAction('calendar.list', { from: '2026-09-12', to: '2026-09-13' }),
+      mailContext(),
+    );
+    if (listed.outcome !== 'succeeded') throw new Error(listed.outcome);
+    expect((listed.receipt.detail.events as { summary: string }[]).map((e) => e.summary)).toEqual([
+      'Review',
+    ]);
+  });
+
+  test('a create over a busy slot is refused with the conflict named, and nothing is written', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(fake.config, secret);
+    await connector.execute(mailAction('calendar.create', payload), mailContext());
+    const over = mailAction(
+      'calendar.create',
+      { ...payload, summary: 'Call', start: '2026-09-12T09:30:00Z', end: '2026-09-12T10:30:00Z' },
+      'act_over',
+    );
+    const refused = await connector.execute(over, mailContext('act_over'));
+    expect(refused).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(refused.outcome === 'failed' ? refused.reason : '').toContain('“Walk with Alex”');
+    expect(fake.puts()).toBe(1);
+    expect(fake.records.has('/calendar/act_over.ics')).toBe(false);
+  });
+
+  test('guests are written as attendees who are asked to answer', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(
+      { ...fake.config, username: 'me@example.test' },
+      secret,
+    );
+    const made = await connector.execute(
+      mailAction('calendar.create', { ...payload, attendees: ['priya@partner.example'] }),
+      mailContext(),
+    );
+    if (made.outcome !== 'succeeded') throw new Error(made.outcome);
+    expect(made.receipt.detail).toMatchObject({ attendees: ['priya@partner.example'] });
+    const body = fake.records.get('/calendar/act_test.ics')?.body.replace(/\r\n /g, '') ?? '';
+    expect(body).toContain('ORGANIZER:mailto:me@example.test');
+    expect(body).toMatch(/ATTENDEE;[^\r\n]*RSVP=TRUE[^\r\n]*:mailto:priya@partner.example/);
   });
 });

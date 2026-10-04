@@ -16,6 +16,7 @@ import { OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import { type SignedInAccess, signedInAccess } from './signed-in.ts';
+import type { Connector } from './types.ts';
 
 const fakes: FakeMicrosoft[] = [];
 afterAll(async () => {
@@ -86,6 +87,26 @@ async function signedIn(microsoft: FakeMicrosoft) {
     renew: async () => holder.current,
   };
   return holder;
+}
+
+/** Free/busy of a connector over one day, as the tool answers it. */
+async function busyOn(connector: Connector, day: string) {
+  const answer = await connector.execute(
+    mailAction(
+      'calendar.freebusy',
+      {
+        start: day,
+        end: new Date(Date.parse(day) + 86_400_000).toISOString(),
+        time_zone: 'UTC',
+      },
+      'act_fb',
+    ),
+    mailContext('act_fb'),
+  );
+  if (answer.outcome !== 'succeeded') throw new Error(`free/busy ${answer.outcome}`);
+  return (answer.receipt.detail.busy as { title: string; status: string }[]).map(
+    (block) => `${block.title}:${block.status}`,
+  );
 }
 
 describe('signing in with Microsoft', () => {
@@ -379,5 +400,78 @@ describe('Outlook calendar through the calendar tools', () => {
       .catch((error) => error);
     expect(asConnectorFault(thrown)?.kind).toBe('revoked_credential');
     expect((await connector.health()).status).toBe('failing');
+  });
+
+  test('a tentative hold can be confirmed or released, and a released hold leaves nothing', async () => {
+    const { microsoft, connector } = await calendar();
+    const held = await connector.execute(
+      mailAction(
+        'calendar.create',
+        { ...event, summary: 'Hold: review', tentative: true },
+        'act_hold1',
+      ),
+      mailContext('act_hold1'),
+    );
+    if (held.outcome !== 'succeeded') throw new Error(held.outcome);
+    const stored = () => [...microsoft.events.values()].map((e) => `${e.subject}:${e.showAs}`);
+    expect(stored()).toEqual(['Hold: review:tentative']);
+    expect(await busyOn(connector, '2026-09-30')).toEqual(['Hold: review:tentative']);
+    const confirm = mailAction(
+      'calendar.update',
+      { ...event, summary: 'Review', tentative: false, uid: 'act_hold1', etag: '"1"' },
+      'act_confirm',
+    );
+    expect((await connector.execute(confirm, mailContext('act_confirm'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(stored()).toEqual(['Review:busy']);
+    const later = { ...event, start: '2026-09-30T14:00:00Z', end: '2026-09-30T15:00:00Z' };
+    await connector.execute(
+      mailAction(
+        'calendar.create',
+        { ...later, summary: 'Hold: lunch', tentative: true },
+        'act_hold2',
+      ),
+      mailContext('act_hold2'),
+    );
+    const release = mailAction('calendar.delete', { uid: 'act_hold2', etag: '"1"' }, 'act_release');
+    expect((await connector.execute(release, mailContext('act_release'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(stored()).toEqual(['Review:busy']);
+    expect(await busyOn(connector, '2026-09-30')).toEqual(['Review:busy']);
+  });
+
+  test('a create over a busy slot is refused with the conflict named; guests are listed for Graph to invite', async () => {
+    const { microsoft, connector } = await calendar();
+    await connector.execute(
+      mailAction('calendar.create', event, 'act_first'),
+      mailContext('act_first'),
+    );
+    const refused = await connector.execute(
+      mailAction('calendar.create', { ...event, summary: 'Call' }, 'act_over'),
+      mailContext('act_over'),
+    );
+    expect(refused.outcome === 'failed' ? refused.reason : '').toContain('“Walk with Alex”');
+    expect(microsoft.events.size).toBe(1);
+    await connector.execute(
+      mailAction(
+        'calendar.create',
+        {
+          ...event,
+          start: '2026-09-30T11:00:00Z',
+          end: '2026-09-30T12:00:00Z',
+          attendees: ['priya@partner.example'],
+        },
+        'act_invite',
+      ),
+      mailContext('act_invite'),
+    );
+    const invite = [...microsoft.events.values()].find(
+      (e) => e.subject === event.summary && e !== [...microsoft.events.values()][0],
+    );
+    expect(invite?.attendees).toEqual([
+      { emailAddress: { address: 'priya@partner.example' }, type: 'required' },
+    ]);
   });
 });

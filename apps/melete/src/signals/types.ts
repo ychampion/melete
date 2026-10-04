@@ -63,6 +63,10 @@ export type Occurrence = {
   updated_at?: string | null;
   /** The provider's own id for this instance, to look it up again. */
   ref?: string | null;
+  /** Shown as free: the event does not block the time (TRANSP, transparency, showAs). */
+  transparent?: boolean;
+  /** The calendar's own account declined it, so it does not block the time either. */
+  declined?: boolean;
 };
 
 export type CalendarWindow = { from: string; to: string };

@@ -18,7 +18,9 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import type { Query } from '../broker/records.ts';
 import {
+  type CalendarOccurrences,
   type CalendarRead,
   type Occurrence,
   type SignalSource,
@@ -30,12 +32,24 @@ import {
   createPayload,
   deletePayload,
   type EventView,
+  freebusyDetail,
+  freebusyPayload,
   listDetail,
   listPayload,
   listWindow,
   retryAfterSeconds,
   updatePayload,
+  type WritePayload,
+  writeDetail,
 } from './calendar.ts';
+import {
+  bindCalendarCheck,
+  calendarAhead,
+  calendarAsksFirst,
+  clearToWrite,
+  invited,
+  spaceTimeZone,
+} from './calendar-truth.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import { signInEnded } from './mail-transport.ts';
 import { bearerRequest, boundedJson, type SignedInAccess } from './signed-in.ts';
@@ -98,6 +112,8 @@ export type GraphInstance = GraphEvent & {
   isAllDay?: boolean;
   showAs?: string;
   lastModifiedDateTime?: string;
+  /** The account's own answer to an invitation. */
+  responseStatus?: { response?: string };
 };
 
 /**
@@ -140,6 +156,9 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
       event.lastModifiedDateTime && !Number.isNaN(Date.parse(event.lastModifiedDateTime))
         ? new Date(Date.parse(event.lastModifiedDateTime)).toISOString()
         : null,
+    // Free and working elsewhere leave the time open; busy, tentative and away block it.
+    transparent: event.showAs === 'free' || event.showAs === 'workingElsewhere',
+    declined: event.responseStatus?.response === 'declined',
   };
 }
 
@@ -224,7 +243,7 @@ export class OutlookCalendarConnector implements Connector {
         $top: '100',
         $orderby: 'start/dateTime',
         $select:
-          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime,responseStatus',
       })}`;
       for (let page = 0; page < MAX_OCCURRENCE_PAGES && link; page++) {
         const response = await bearerRequest(
@@ -260,7 +279,7 @@ export class OutlookCalendarConnector implements Connector {
         this.config.access,
         `${this.config.base}/events/${encodeURIComponent(ref)}?${new URLSearchParams({
           $select:
-            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime,responseStatus',
         })}`,
         { headers: { prefer: PREFER } },
         this.config.fetcher,
@@ -382,10 +401,61 @@ export class OutlookCalendarConnector implements Connector {
     return found.attendees.length;
   }
 
+  /** The event a change rewrites, by Graph's own id, which never conflicts with itself. */
+  private static mine(found: GraphEvent | null) {
+    return found?.id
+      ? (occurrence: Occurrence) =>
+          occurrence.ref === found.id ||
+          (found.iCalUId !== undefined && occurrence.uid === found.iCalUId)
+      : undefined;
+  }
+
+  /** What a write would land on, read before the proposal's lock. */
+  async ahead(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+    sql: Query,
+  ): Promise<JsonObject | null> {
+    const uid = proposal.canonical_payload.uid;
+    const found =
+      proposal.kind === 'calendar.update' && typeof uid === 'string'
+        ? await this.find(uid, ctx)
+        : null;
+    return calendarAhead(
+      this.signals as CalendarOccurrences,
+      proposal,
+      await spaceTimeZone(sql, ctx.space_id),
+      OutlookCalendarConnector.mine(found),
+    );
+  }
+
+  prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+    return bindCalendarCheck(payload, ctx.space_id, tx, kind, ctx.ahead);
+  }
+
+  asksFirst(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
+    return calendarAsksFirst(action);
+  }
+
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let dispatched = false;
     try {
       this.assertContext(action, ctx);
+      if (action.kind === 'calendar.freebusy') {
+        const payload = freebusyPayload.parse(action.canonical_payload);
+        try {
+          return this.success(
+            action,
+            await freebusyDetail(this.signals as CalendarOccurrences, payload),
+          );
+        } catch {
+          return {
+            outcome: 'failed',
+            reason: 'The calendar could not be read just now.',
+            retryable: true,
+          };
+        }
+      }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
         const window = listWindow(payload, this.config.now?.() ?? Date.now());
@@ -452,12 +522,29 @@ export class OutlookCalendarConnector implements Connector {
             : 'Calendar server rejected the write (409).',
           retryable: false,
         };
+      const blocked = await clearToWrite(
+        this.signals as CalendarOccurrences,
+        payload as JsonObject & WritePayload,
+        OutlookCalendarConnector.mine(existing),
+      );
+      if (blocked) return blocked;
+      const guests = invited(payload as JsonObject);
       const body: JsonObject = {
         subject: payload.summary,
         body: { contentType: 'text', content: payload.description },
         location: { displayName: payload.location },
         start: { dateTime: utc(payload.start), timeZone: 'UTC' },
         end: { dateTime: utc(payload.end), timeZone: 'UTC' },
+        showAs: payload.tentative ? 'tentative' : 'busy',
+        // Graph invites whoever is listed; a change without a list leaves the guests as they are.
+        ...(guests.length
+          ? {
+              attendees: guests.map((address) => ({
+                emailAddress: { address },
+                type: 'required',
+              })),
+            }
+          : {}),
         singleValueExtendedProperties: [
           { id: MELETE_MARK, value: `${uid} ${action.id} ${action.payload_hash}` },
         ],
@@ -476,7 +563,7 @@ export class OutlookCalendarConnector implements Connector {
         )) as GraphEvent | null;
         return this.success(
           action,
-          { uid, etag: toolEtag(written?.['@odata.etag']), action_id: action.id },
+          writeDetail(uid, toolEtag(written?.['@odata.etag']), action, payload),
           uid,
         );
       }

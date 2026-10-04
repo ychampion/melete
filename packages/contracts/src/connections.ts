@@ -284,8 +284,14 @@ export const awsCommandLineCredentials = z
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
-  caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
-  ics: ['calendar.list'],
+  caldav: [
+    'calendar.list',
+    'calendar.freebusy',
+    'calendar.create',
+    'calendar.update',
+    'calendar.delete',
+  ],
+  ics: ['calendar.list', 'calendar.freebusy'],
   sandbox: [
     'terminal.run',
     'computer.screenshot',
@@ -975,6 +981,13 @@ const CALDAV_SCOPES: KindScopes = [
     default: true,
   },
   {
+    scope: 'calendar.freebusy',
+    label: 'See when you are free',
+    effect_class: 'read',
+    asks_first: false,
+    default: true,
+  },
+  {
     scope: 'calendar.create',
     label: 'Create an event',
     effect_class: 'write_external',
@@ -996,7 +1009,9 @@ const CALDAV_SCOPES: KindScopes = [
     default: true,
   },
 ];
-const FEED_SCOPES: KindScopes = CALDAV_SCOPES.filter((scope) => scope.scope === 'calendar.list');
+const FEED_SCOPES: KindScopes = CALDAV_SCOPES.filter(
+  (scope) => scope.scope === 'calendar.list' || scope.scope === 'calendar.freebusy',
+);
 
 /** A mailbox whose servers are known: the person gives the address and an app password. */
 const mailProvider = (

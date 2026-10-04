@@ -15,6 +15,7 @@ import { GoogleCalendarConnector, googleEventId } from './google-calendar.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import { bearerRequest, type SignedInAccess, SignInEnded, signedInAccess } from './signed-in.ts';
+import type { Connector } from './types.ts';
 
 const fakes: FakeGoogle[] = [];
 afterAll(async () => {
@@ -91,6 +92,26 @@ async function signedIn(google: FakeGoogle): Promise<SignedInAccess & { current:
   return holder;
 }
 
+/** Free/busy of a connector over one day, as the tool answers it. */
+async function busyOn(connector: Connector, day: string) {
+  const answer = await connector.execute(
+    mailAction(
+      'calendar.freebusy',
+      {
+        start: day,
+        end: new Date(Date.parse(day) + 86_400_000).toISOString(),
+        time_zone: 'UTC',
+      },
+      'act_fb',
+    ),
+    mailContext('act_fb'),
+  );
+  if (answer.outcome !== 'succeeded') throw new Error(`free/busy ${answer.outcome}`);
+  return (answer.receipt.detail.busy as { title: string; status: string }[]).map(
+    (block) => `${block.title}:${block.status}`,
+  );
+}
+
 describe('signing in with Google', () => {
   test('one consent asks for mail and calendar with PKCE and offline access, and connects both', async () => {
     const google = await fake();
@@ -118,6 +139,7 @@ describe('signing in with Google', () => {
     expect(grant?.mail?.scopes).toContain('email.send');
     expect(grant?.calendar?.scopes).toEqual([
       'calendar.list',
+      'calendar.freebusy',
       'calendar.create',
       'calendar.update',
       'calendar.delete',
@@ -475,5 +497,82 @@ describe('Google Calendar through the calendar tools', () => {
       .catch((error) => error);
     expect(asConnectorFault(thrown)?.kind).toBe('revoked_credential');
     expect((await connector.health()).status).toBe('failing');
+  });
+
+  test('a tentative hold can be confirmed or released, and a released hold leaves nothing', async () => {
+    const { google, connector } = await calendar();
+    const held = await connector.execute(
+      mailAction(
+        'calendar.create',
+        { ...event, summary: 'Hold: review', tentative: true },
+        'act_hold1',
+      ),
+      mailContext('act_hold1'),
+    );
+    if (held.outcome !== 'succeeded') throw new Error(held.outcome);
+    expect(google.events.get(googleEventId('act_hold1'))?.status).toBe('tentative');
+    expect(await busyOn(connector, '2026-09-30')).toEqual(['Hold: review:tentative']);
+    const confirm = mailAction(
+      'calendar.update',
+      { ...event, summary: 'Review', tentative: false, uid: 'act_hold1', etag: '"1"' },
+      'act_confirm',
+    );
+    expect((await connector.execute(confirm, mailContext('act_confirm'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(google.events.get(googleEventId('act_hold1'))?.status).toBe('confirmed');
+    expect(await busyOn(connector, '2026-09-30')).toEqual(['Review:busy']);
+    const later = { ...event, start: '2026-09-30T14:00:00Z', end: '2026-09-30T15:00:00Z' };
+    await connector.execute(
+      mailAction(
+        'calendar.create',
+        { ...later, summary: 'Hold: lunch', tentative: true },
+        'act_hold2',
+      ),
+      mailContext('act_hold2'),
+    );
+    const release = mailAction('calendar.delete', { uid: 'act_hold2', etag: '"1"' }, 'act_release');
+    expect((await connector.execute(release, mailContext('act_release'))).outcome).toBe(
+      'succeeded',
+    );
+    expect(await busyOn(connector, '2026-09-30')).toEqual(['Review:busy']);
+    const listed = await connector.execute(mailAction('calendar.list', {}), mailContext());
+    if (listed.outcome !== 'succeeded') throw new Error(listed.outcome);
+    expect((listed.receipt.detail.events as { summary: string }[]).map((e) => e.summary)).toEqual([
+      'Review',
+    ]);
+  });
+
+  test('a create over a busy slot is refused with the conflict named; guests are invited by Google', async () => {
+    const { google, connector } = await calendar();
+    await connector.execute(
+      mailAction('calendar.create', event, 'act_first'),
+      mailContext('act_first'),
+    );
+    const refused = await connector.execute(
+      mailAction('calendar.create', { ...event, summary: 'Call' }, 'act_over'),
+      mailContext('act_over'),
+    );
+    expect(refused.outcome === 'failed' ? refused.reason : '').toContain('“Walk with Alex”');
+    expect(google.events.has(googleEventId('act_over'))).toBe(false);
+    const invited = await connector.execute(
+      mailAction(
+        'calendar.create',
+        {
+          ...event,
+          start: '2026-09-30T11:00:00Z',
+          end: '2026-09-30T12:00:00Z',
+          attendees: ['priya@partner.example'],
+        },
+        'act_invite',
+      ),
+      mailContext('act_invite'),
+    );
+    expect(invited.outcome).toBe('succeeded');
+    expect(google.events.get(googleEventId('act_invite'))?.attendees).toEqual([
+      { email: 'priya@partner.example' },
+    ]);
+    // Only the event with guests asks Google to tell anyone.
+    expect(google.notified).toEqual([null, 'all']);
   });
 });

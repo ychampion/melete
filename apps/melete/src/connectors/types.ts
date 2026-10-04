@@ -32,6 +32,11 @@ export type ConnectorContext = {
    * anything that has appeared at that name since.
    */
   only_new?: boolean;
+  /**
+   * What `ahead` read from the destination for this proposal, before the
+   * proposal's lock; handed to `prepare` only. Null when it could not be read.
+   */
+  ahead?: JsonObject | null;
 };
 
 export interface Connector {
@@ -46,6 +51,18 @@ export interface Connector {
     tx: Query,
     kind?: string,
   ): Promise<JsonObject>;
+  /**
+   * Read what `prepare` needs from the destination itself, before the
+   * proposal's lock is taken: a calendar write's conflicts, for one. Called
+   * with the raw proposal, outside every transaction, with a deadline; a
+   * throw or null means nothing could be read, and `prepare` must then bind
+   * that and leave the final check to dispatch. Never writes anything.
+   */
+  ahead?(
+    proposal: Pick<Action, 'kind' | 'canonical_payload'>,
+    ctx: ConnectorContext,
+    sql: Query,
+  ): Promise<JsonObject | null>;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**
