@@ -125,6 +125,12 @@ export function workspaceNote(report: SyncOutReport | Error): Record<string, Jso
         )}${report.kept.length > 3 ? '; ...' : ''}. To delete ${report.kept.length === 1 ? 'it' : 'them'}, use files.delete, which asks the person where it has to.`,
     );
   }
+  if (report.evicted?.length) {
+    note.workspace_trash_evicted = report.evicted;
+    sentences.push(
+      `To make room, ${report.evicted.length === 1 ? 'an earlier delete was' : `${report.evicted.length} earlier deletes were`} taken out of the trash and can no longer be restored.`,
+    );
+  }
   if (sentences.length) note.workspace_note = sentences.join(' ');
   return note;
 }
@@ -151,6 +157,35 @@ export function deleteRule(input: {
     if (!input.records) return `Melete could not check whose ${JSON.stringify(relative)} is`;
     return personGivenReason(input.records, relative);
   };
+}
+
+/**
+ * Whether a background process another conversation started is still running
+ * in this computer. A persistent computer is one agent's, on one connection,
+ * in one space; a takeover gives the new conversation a new session row while
+ * the old process keeps the row it started under, so the computer is matched
+ * by those three, as `liveProcesses` does, never by the session row. A
+ * computer of no agent is its session alone. When it cannot be asked, the
+ * answer is yes: deletes are then kept, never applied.
+ */
+export async function othersRunningOn(
+  sql: Sql,
+  session: Pick<SessionRow, 'id' | 'spaceId' | 'agentId' | 'connectionId'>,
+  jobId: string,
+): Promise<boolean> {
+  try {
+    const [row] = session.agentId
+      ? await sql`select count(*)::int as live from sandbox_process
+          where space_id = ${session.spaceId} and agent_id = ${session.agentId}
+            and connection_id = ${session.connectionId}
+            and state in ('starting', 'running') and job_id is distinct from ${jobId}`
+      : await sql`select count(*)::int as live from sandbox_process
+          where session_id = ${session.id}
+            and state in ('starting', 'running') and job_id is distinct from ${jobId}`;
+    return Number(row?.live ?? 0) > 0;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -203,6 +238,8 @@ export type SandboxExecOptions = {
   processes?: SandboxProcesses;
   /** How many days what a command deletes stays in the trash (`MELETE_TRASH_DAYS`). */
   trashDays?: number;
+  /** The most one conversation's trash holds, in bytes (`MELETE_TRASH_MAX_MB`). */
+  trashMaxBytes?: number;
 };
 
 /**
@@ -952,10 +989,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       // may be what removed them.
       if (result.outcome === 'unknown') return outcome;
       const records = await loadFileRecords(sql, ctx.job_id).catch(() => null);
-      const [foreign] = await sql`select count(*)::int as live from sandbox_process
-        where session_id = ${session.id} and state in ('starting', 'running')
-          and job_id is distinct from ${ctx.job_id}`.catch(() => [{ live: 1 }]);
-      const othersRunning = Number(foreign?.live ?? 0) > 0;
+      const othersRunning = await othersRunningOn(sql, session, ctx.job_id);
       const report = await syncOut({
         provider,
         handle: sessionHandle(session),
@@ -967,6 +1001,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
               deletions: {
                 sent,
                 trashDays: options.trashDays,
+                trashMaxBytes: options.trashMaxBytes,
                 keep: deleteRule({ records, othersRunning }),
               },
             }

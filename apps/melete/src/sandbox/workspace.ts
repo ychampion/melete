@@ -64,6 +64,8 @@ export type SyncOutReport = SyncReport & {
   kept: { path: string; reason: string }[];
   /** The trash they went to, restorable until `restorable_until`; null when none went. */
   trash_id: string | null;
+  /** Earlier deletes taken out of the trash to make room. */
+  evicted?: string[];
   restorable_until: string | null;
 };
 
@@ -247,6 +249,8 @@ export type SyncOutOptions = SyncOptions & {
     keep: (relative: string) => string | null;
     /** How many days the trash keeps them (`MELETE_TRASH_DAYS`). */
     trashDays?: number;
+    /** The most the job's trash holds, in bytes (`MELETE_TRASH_MAX_MB`). */
+    trashMaxBytes?: number;
   };
 };
 
@@ -370,7 +374,7 @@ async function deleteLost(
   options: SyncOutOptions,
   lost: string[],
   sandboxFolders: Set<string>,
-): Promise<Pick<SyncOutReport, 'deleted' | 'kept' | 'trash_id' | 'restorable_until'>> {
+): Promise<Pick<SyncOutReport, 'deleted' | 'kept' | 'trash_id' | 'restorable_until' | 'evicted'>> {
   const deletions = options.deletions;
   const kept: { path: string; reason: string }[] = [];
   const none = { deleted: [], kept, trash_id: null, restorable_until: null };
@@ -394,7 +398,11 @@ async function deleteLost(
   const trashed = await moveToTrash(
     await new LocalWorkspaceFs(options.workRoot).trash(options.jobId),
     entries,
-    { days: deletions.trashDays ?? DEFAULT_TRASH_DAYS, folders: [...folders] },
+    {
+      days: deletions.trashDays ?? DEFAULT_TRASH_DAYS,
+      folders: [...folders],
+      ...(deletions.trashMaxBytes ? { maxBytes: deletions.trashMaxBytes } : {}),
+    },
   );
   // A folder that still holds a kept file is not news; a file kept is.
   kept.push(...trashed.kept.filter((entry) => !folders.has(entry.path)));
@@ -403,5 +411,6 @@ async function deleteLost(
     kept,
     trash_id: trashed.trash_id,
     restorable_until: trashed.trash_id ? trashed.restorable_until : null,
+    evicted: trashed.evicted,
   };
 }

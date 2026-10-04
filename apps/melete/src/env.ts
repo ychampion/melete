@@ -747,6 +747,8 @@ const variables = z.object({
   ),
   /** How many days a deleted file stays in the trash, where it can be restored. */
   MELETE_TRASH_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(365).default(7)),
+  /** The most one conversation's trash holds, in MiB; older trash makes room first. */
+  MELETE_TRASH_MAX_MB: unsetWhenBlank(z.coerce.number().int().min(1).max(1048576).default(1024)),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
   /**

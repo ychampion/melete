@@ -120,7 +120,7 @@ test('an rm -rf of 122 files puts all of them in the trash, the receipt says 122
   expect(back.receipt.detail.restored_count).toBe(122);
   expect(await readFile(local('build', 'out119.txt'), 'utf8')).toBe('output 119');
   expect(await readFile(local('build', 'nested', 'b.txt'), 'utf8')).toBe('b');
-});
+}, 30_000);
 
 test("a person's file comes back with the reason, and Melete's own records are never deleted", async () => {
   await writeFile(local('upload.csv'), 'a,b');

@@ -14,7 +14,7 @@ import { type JsonObject, jobConstraints } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
 import { createFilesConnector } from './files.ts';
 import { fileRecords, personGivenReason } from './files-ownership.ts';
-import { filesTrash, moveToTrash, sweepTrash } from './files-trash.ts';
+import { filesTrash, hasTrash, moveToTrash, restoreFromTrash, sweepTrash } from './files-trash.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 
 let root: string;
@@ -366,4 +366,82 @@ test('a file that changed is checked in the trash and moved back, not deleted', 
     { path: 'notes.md', reason: 'it changed after the delete was decided' },
   ]);
   expect(await readFile(work('notes.md'), 'utf8')).toBe('changed since the check');
+});
+
+const workPlace = async () => ({
+  area: 'work' as const,
+  base: await realpath(path.join(root, 'work')),
+  origin: ['job_01'],
+  trash: ['.trash', 'job_01'],
+});
+
+test('the trash keeps to its size: the oldest goes first, and a delete larger than it all is refused', async () => {
+  const place = await workPlace();
+  await writeFile(work('old.bin'), 'a'.repeat(600));
+  const first = await moveToTrash(place, [{ path: 'old.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+    now: new Date(Date.now() - 60_000),
+  });
+  expect(first.trash_id).not.toBeNull();
+  await writeFile(work('new.bin'), 'b'.repeat(600));
+  const second = await moveToTrash(place, [{ path: 'new.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+  });
+  // Both would pass 1000 bytes: the older delete makes room, and says so.
+  expect(second.evicted).toEqual([String(first.trash_id)]);
+  expect(await hasTrash(place, String(first.trash_id))).toBe(false);
+  expect(await hasTrash(place, String(second.trash_id))).toBe(true);
+  // Larger than the whole trash: nothing moves, and the reason says why.
+  await writeFile(work('huge.bin'), 'c'.repeat(1500));
+  const refused = await moveToTrash(place, [{ path: 'huge.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+  });
+  expect(refused).toMatchObject({ trash_id: null, moved: [] });
+  expect(refused.kept[0]?.reason).toContain('the trash holds at most');
+  expect(existsSync(work('huge.bin'))).toBe(true);
+});
+
+test('a move cut short by a crash still restores what reached the trash', async () => {
+  const place = await workPlace();
+  await writeFile(work('a.txt'), 'first');
+  await writeFile(work('b.txt'), 'second');
+  // A crash after the first file moved: the manifest names both, only one is there.
+  const id = 'del_0000000000001_aaaaaaaaaaaa';
+  const items = path.join(root, 'work', '.trash', 'job_01', id, 'items');
+  await mkdir(items, { recursive: true });
+  await writeFile(
+    path.join(root, 'work', '.trash', 'job_01', id, 'manifest.json'),
+    JSON.stringify({
+      version: 1,
+      area: 'work',
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      items: [
+        { path: 'a.txt', item: '0' },
+        { path: 'b.txt', item: '1' },
+      ],
+      folders: [],
+    }),
+  );
+  await writeFile(path.join(items, '0'), 'first');
+  await rm(work('a.txt'));
+  expect(await hasTrash(place, id)).toBe(true);
+  const back = await restoreFromTrash(place, id);
+  expect(back).toEqual({ restored: ['a.txt'], kept: [] });
+  expect(await readFile(work('a.txt'), 'utf8')).toBe('first');
+  expect(await readFile(work('b.txt'), 'utf8')).toBe('second');
+  expect(existsSync(path.join(root, 'work', '.trash', 'job_01', id))).toBe(false);
+});
+
+test('the sweep keeps trash until the time its receipt promised, whatever the setting is now', async () => {
+  await writeFile(work('kept.txt'), 'kept');
+  const { result } = await run({ path: 'kept.txt' });
+  if (result.outcome !== 'succeeded') throw new Error('expected a receipt');
+  const roots = { workRoot: path.join(root, 'work'), spacesRoot: path.join(root, 'spaces') };
+  // Lowered to one day, three days on: the receipt said seven, so it stays.
+  expect(await sweepTrash(roots, 1, Date.now() + 3 * 86_400_000)).toBe(0);
+  expect(await sweepTrash(roots, 1, Date.now() + 8 * 86_400_000)).toBe(1);
 });

@@ -178,7 +178,7 @@ The activity for the same turn has a row for the recall, the skill, the page, th
 
 ## Deleting files
 
-Every delete can be undone. `files.delete` removes one file or folder, in the agent's workspace or the person's Files, by moving it into a trash beside that tree: `<work root>/.trash/<job>/` for the workspace, `<space>/.trash/<job>/` for the person's Files. Nothing there is synced to the agent's computer or mounted in a code runner. The trash is kept for `MELETE_TRASH_DAYS` (7 by default) and then swept. A conversation's trash goes when the conversation is deleted, and a space's goes when the space is emptied.
+Every delete can be undone. `files.delete` removes one file or folder, in the agent's workspace or the person's Files, by moving it into a trash beside that tree: `<work root>/.trash/<job>/` for the workspace, `<space>/.trash/<job>/` for the person's Files. Nothing there is synced to the agent's computer or mounted in a code runner. The trash is kept for `MELETE_TRASH_DAYS` (7 by default) and then swept. A conversation's trash goes when the conversation is deleted, and a space's goes when the space is emptied. Each conversation's trash holds at most `MELETE_TRASH_MAX_MB` (1024 by default). A delete that would pass that limit first takes the oldest trash out, expired trash first, and its receipt says so. A delete larger than the whole limit deletes nothing and says why. The trash's list of what a delete takes is written before anything moves, so a crash part way through still leaves whatever reached the trash restorable.
 
 Before anyone is asked, Melete checks what the delete would take and whose it is, and binds that into the action:
 
@@ -195,7 +195,7 @@ A command on the agent's sandbox computer (`terminal.run`) can delete files in `
 - this command's own sync-in sent it;
 - it is Melete's own, and not under `.melete/`;
 - it is unchanged;
-- no background process that another conversation started is still running on that computer.
+- no background process that another conversation started is still running on that computer (matched by the computer itself, so a process from before a takeover counts).
 
 Any other deleted file is kept, comes back in `/work` on the next command, and is named with the reason. The receipt says how many files went (`workspace_deleted_count`), names the first 50, and gives the `workspace_trash` to restore from, which the receipt's Undo also uses. When the command never started, the same note is in its failure reason.
 

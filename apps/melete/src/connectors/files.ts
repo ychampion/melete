@@ -53,6 +53,8 @@ type FilesOptions = {
   maxBytes?: number;
   /** How many days a delete stays in the trash, restorable (`MELETE_TRASH_DAYS`). */
   trashDays?: number;
+  /** The most one conversation's trash holds, in bytes (`MELETE_TRASH_MAX_MB`). */
+  trashMaxBytes?: number;
   /** Where saved files are recorded, so other conversations' files can be found. */
   sql?: Sql;
   /**
@@ -1432,6 +1434,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           gone.items.map((item) => ({ path: under(item.path), hash: item.hash })),
           {
             days: trashDays,
+            ...(options.trashMaxBytes ? { maxBytes: options.trashMaxBytes } : {}),
             folders: gone.what === 'folder' ? [top, ...gone.folders.map(under)] : [],
           },
         );
@@ -1446,6 +1449,12 @@ export function createFilesConnector(options: FilesOptions): Connector {
           owner: checked.owner === 'agent' ? 'agent' : 'person',
           ...(gone.content_hash ? { content_hash: gone.content_hash } : {}),
           ...(trashed.kept.length ? { kept: trashed.kept.slice(0, NAMED) } : {}),
+          ...(trashed.evicted.length
+            ? {
+                trash_evicted: trashed.evicted,
+                trash_note: `To make room, ${trashed.evicted.length === 1 ? 'an earlier delete was' : `${trashed.evicted.length} earlier deletes were`} taken out of the trash and can no longer be restored.`,
+              }
+            : {}),
           ...(trashed.trash_id
             ? {
                 trash_id: trashed.trash_id,

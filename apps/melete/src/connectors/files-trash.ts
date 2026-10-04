@@ -9,7 +9,13 @@
  * - from the person's Files: `<spacesRoot>/<space>/.trash/<job>/<trash id>/`
  *
  * Each trash folder holds the files as `items/<n>` and a `manifest.json` that
- * says where each came from and until when it is kept. A file is renamed
+ * says where each came from and until when it is kept. The manifest is
+ * written before the first file moves, naming every file the delete means to
+ * take, and again once they have: a crash between leaves a trash that still
+ * restores whatever reached it. Each job's trash holds at most
+ * `MELETE_TRASH_MAX_MB`; a delete that would pass it first evicts the
+ * oldest trash (expired first), and one larger than it alone is refused and
+ * deletes nothing. A file is renamed
  * first and checked after, in the trash, so nothing can change it between
  * the check and the delete; one that is not what was expected goes back to
  * its name. Restoring moves every file back to its own name, never over a
@@ -22,7 +28,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { readdir, rename, rmdir } from 'node:fs/promises';
+import { lstat, readdir, rename, rmdir } from 'node:fs/promises';
 import { segmentsFor } from '../paths.ts';
 import { TRASH_DIRECTORY } from '../runtime/workspace-fs.ts';
 import {
@@ -39,6 +45,8 @@ import {
 
 export { TRASH_DIRECTORY };
 export const DEFAULT_TRASH_DAYS = 7;
+/** The most one job's trash holds, by default. */
+export const DEFAULT_TRASH_MAX_BYTES = 1024 * 1024 * 1024;
 const TRASH_ID = /^del_[0-9]{13}_[0-9a-f]{12}$/;
 const MANIFEST = 'manifest.json';
 const ITEMS = 'items';
@@ -78,10 +86,15 @@ type Manifest = {
 
 export type Trashed = {
   trash_id: string | null;
+  /** Earlier deletes taken out of the trash to make room for this one. */
+  evicted: string[];
   restorable_until: string;
   moved: string[];
   kept: { path: string; reason: string }[];
 };
+
+/** When a trash folder was made, from its id. */
+const madeAt = (id: string) => Number(id.slice(4, 17));
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const codeOf = (error: unknown) => (error as { code?: string } | null)?.code;
@@ -114,6 +127,43 @@ async function writeManifest(directory: HeldDirectory, manifest: Manifest) {
   await rename(directory.at(temporary), directory.at(MANIFEST));
 }
 
+/** What one job's trash holds now: each folder with its size and when it expires. */
+async function trashUsage(place: TrashPlace) {
+  const folders: { id: string; bytes: number; expires: number }[] = [];
+  let held: HeldDirectory;
+  try {
+    held = await holdBeneath(place.base, place.trash);
+  } catch (error) {
+    if (codeOf(error) === 'ENOENT') return folders;
+    throw error;
+  }
+  try {
+    for (const id of await readdir(held.self)) {
+      if (!TRASH_ID.test(id)) continue;
+      const manifest = await readManifest(place, id).catch(() => null);
+      let bytes = 0;
+      const items = await holdBeneath(place.base, [...place.trash, id, ITEMS]).catch(() => null);
+      if (items)
+        try {
+          for (const item of await readdir(items.self))
+            bytes += (await lstat(items.at(item)).catch(() => null))?.size ?? 0;
+        } finally {
+          await items.close();
+        }
+      folders.push({
+        id,
+        bytes,
+        expires: manifest ? Date.parse(manifest.expires_at) : madeAt(id),
+      });
+    }
+  } finally {
+    await held.close();
+  }
+  return folders;
+}
+
+const megabytes = (bytes: number) => `${Math.ceil(bytes / (1024 * 1024))} MB`;
+
 /**
  * Move `entries` into a new trash folder. Each is renamed first, then checked
  * there against the hash it must have; one that differs goes back to its
@@ -124,15 +174,76 @@ async function writeManifest(directory: HeldDirectory, manifest: Manifest) {
 export async function moveToTrash(
   place: TrashPlace,
   entries: readonly TrashEntry[],
-  options: { days: number; folders?: readonly string[]; now?: Date },
+  options: { days: number; folders?: readonly string[]; now?: Date; maxBytes?: number },
 ): Promise<Trashed> {
   const now = options.now ?? new Date();
   const expires = new Date(now.getTime() + options.days * DAY_MS).toISOString();
   const id = `del_${String(now.getTime()).padStart(13, '0')}_${randomBytes(6).toString('hex')}`;
   const moved: { path: string; item: string }[] = [];
   const kept: { path: string; reason: string }[] = [];
+  const evicted: string[] = [];
+  // Room first: what this delete would add, against what the trash may hold.
+  const maxBytes = options.maxBytes ?? DEFAULT_TRASH_MAX_BYTES;
+  let incoming = 0;
+  const sizing = heldDirectories(place.base);
+  try {
+    for (const entry of entries) {
+      const segments = segmentsFor(entry.path);
+      const name = segments.at(-1);
+      if (!name) continue;
+      const folder = await sizing.at([...place.origin, ...segments.slice(0, -1)]).catch(() => null);
+      incoming += folder ? ((await lstat(folder.at(name)).catch(() => null))?.size ?? 0) : 0;
+    }
+  } finally {
+    await sizing.close();
+  }
+  if (incoming > maxBytes) {
+    const reason = `the trash holds at most ${megabytes(maxBytes)} and this delete is ${megabytes(incoming)}, so nothing was deleted; delete it in smaller parts`;
+    return {
+      trash_id: null,
+      evicted,
+      restorable_until: expires,
+      moved: [],
+      kept: entries.map((entry) => ({ path: entry.path, reason })),
+    };
+  }
+  const held = await trashUsage(place);
+  let used = held.reduce((sum, folder) => sum + folder.bytes, 0);
+  if (used + incoming > maxBytes) {
+    const oldest = [...held].sort((a, b) => {
+      const expiredA = a.expires <= now.getTime() ? 0 : 1;
+      const expiredB = b.expires <= now.getTime() ? 0 : 1;
+      return expiredA - expiredB || madeAt(a.id) - madeAt(b.id);
+    });
+    const job = await holdBeneath(place.base, place.trash);
+    try {
+      for (const folder of oldest) {
+        if (used + incoming <= maxBytes) break;
+        await removeIn(job, folder.id);
+        used -= folder.bytes;
+        evicted.push(folder.id);
+      }
+    } finally {
+      await job.close();
+    }
+  }
   const trash = await holdBeneath(place.base, [...place.trash, id, ITEMS], true);
   const origin = heldDirectories(place.base);
+  // Written before anything moves: a crash part way leaves a trash that
+  // restores whatever reached it, rather than files no manifest names.
+  const intent = await holdBeneath(place.base, [...place.trash, id]);
+  try {
+    await writeManifest(intent, {
+      version: 1,
+      area: place.area,
+      created_at: now.toISOString(),
+      expires_at: expires,
+      items: entries.map((entry, index) => ({ path: entry.path, item: String(index) })),
+      folders: [],
+    });
+  } finally {
+    await intent.close();
+  }
   try {
     for (const [index, entry] of entries.entries()) {
       const segments = segmentsFor(entry.path);
@@ -202,7 +313,7 @@ export async function moveToTrash(
         } finally {
           await job.close();
         }
-        return { trash_id: null, restorable_until: expires, moved: [], kept };
+        return { trash_id: null, evicted, restorable_until: expires, moved: [], kept };
       }
       await writeManifest(directory, {
         version: 1,
@@ -215,7 +326,13 @@ export async function moveToTrash(
     } finally {
       await directory.close();
     }
-    return { trash_id: id, restorable_until: expires, moved: moved.map((m) => m.path), kept };
+    return {
+      trash_id: id,
+      evicted,
+      restorable_until: expires,
+      moved: moved.map((m) => m.path),
+      kept,
+    };
   } finally {
     await origin.close();
     await trash.close();
@@ -266,18 +383,35 @@ export async function restoreFromTrash(place: TrashPlace, id: string): Promise<R
   const trash = await holdBeneath(place.base, [...place.trash, id, ITEMS]);
   try {
     for (const folder of manifest.folders ?? []) {
-      const held = await holdBeneath(place.base, [...place.origin, ...segmentsFor(folder)], true);
-      await held.close();
+      // One folder that cannot be made again holds up no other file.
+      try {
+        const held = await holdBeneath(place.base, [...place.origin, ...segmentsFor(folder)], true);
+        await held.close();
+      } catch (error) {
+        kept.push({
+          path: folder,
+          reason: `it could not be made again (${(error as Error).message})`,
+        });
+      }
     }
     for (const entry of manifest.items) {
       const segments = segmentsFor(entry.path);
       const name = segments.at(-1);
       if (!name || !/^[0-9]+$/.test(entry.item)) continue;
-      const parent = await holdBeneath(
-        place.base,
-        [...place.origin, ...segments.slice(0, -1)],
-        true,
-      );
+      // Named before it moved, and never reached the trash (a crash part way,
+      // or put back because it changed): nothing to restore.
+      if (!(await lstat(trash.at(entry.item)).catch(() => null))) continue;
+      let parent: HeldDirectory;
+      try {
+        parent = await holdBeneath(place.base, [...place.origin, ...segments.slice(0, -1)], true);
+      } catch (error) {
+        left.push(entry);
+        kept.push({
+          path: entry.path,
+          reason: `it could not be put back (${(error as Error).message})`,
+        });
+        continue;
+      }
       try {
         await moveWithoutReplacing(trash.at(entry.item), parent.at(name));
         restored.push(entry.path);
@@ -314,9 +448,6 @@ export async function restoreFromTrash(place: TrashPlace, id: string): Promise<R
   return { restored, kept };
 }
 
-/** When a trash folder was made, from its id. */
-const madeAt = (id: string) => Number(id.slice(4, 17));
-
 /**
  * Remove every trash folder kept longer than `days`, in the work root and in
  * every space. Returns how many went. Anything that is not a trash folder is
@@ -342,7 +473,14 @@ export async function sweepTrash(
         const folder = await holdWithin(held, job);
         try {
           for (const id of await readdir(folder.self)) {
-            if (!TRASH_ID.test(id) || now - madeAt(id) < days * DAY_MS) continue;
+            if (!TRASH_ID.test(id)) continue;
+            // Kept until the time its receipt promised, whatever the setting is now.
+            const manifest = await readManifest(
+              { area: 'work', base, origin: [], trash: [...trash, job] },
+              id,
+            ).catch(() => null);
+            const until = manifest ? Date.parse(manifest.expires_at) : madeAt(id) + days * DAY_MS;
+            if (now < until) continue;
             await removeIn(folder, id);
             swept += 1;
           }
