@@ -836,6 +836,7 @@ export async function bootstrap(
         handle.sql,
         env.MELETE_OBSERVATION_RETENTION_DAYS,
         () => leading(leases, 'observation-retention'),
+        env.MELETE_OBSERVATION_TOMBSTONE_DAYS,
       );
       stopEgressRetention = startEgressRetention(
         handle.sql,

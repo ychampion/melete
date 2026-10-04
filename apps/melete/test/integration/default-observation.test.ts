@@ -81,7 +81,13 @@ async function connectMailbox(label: string, inSpace = spaceId, sharedUse = 'own
     label,
     sharedUse,
   });
-  const box = { messages: [] as MailMessage[], reads: 0, fail: null as Error | null };
+  const box = {
+    messages: [] as MailMessage[],
+    reads: 0,
+    fail: null as Error | null,
+    /** Hand every message back on the next read, as a mailbox does after a resync. */
+    rewind: false,
+  };
   const transport: MailTransport = {
     search: async () => [],
     read: async () => null,
@@ -91,7 +97,8 @@ async function connectMailbox(label: string, inSpace = spaceId, sharedUse = 'own
     changes: async (cursor) => {
       box.reads += 1;
       if (box.fail) throw box.fail;
-      const from = cursor === null ? box.messages.length : Number(cursor);
+      const from = cursor === null ? box.messages.length : box.rewind ? 0 : Number(cursor);
+      box.rewind = false;
       const messages = cursor === null ? [] : box.messages.slice(from);
       return {
         cursor: String(box.messages.length),
@@ -375,6 +382,9 @@ withDb('watching connected accounts by default', () => {
     await sequential.runOnce();
     expect(reads()).toBeGreaterThan(3);
     clock += 3_600_000;
+    // Quiet again for the tests after this one.
+    await required(handle)
+      .sql`update connection set watch_changes = false where space_id = ${spaceId}`;
   }, 60_000);
   test('a watched account is read less often in its owner’s night', async () => {
     const { id } = await connectMailbox('Mail read at night');
@@ -389,5 +399,82 @@ withDb('watching connected accounts by default', () => {
     } finally {
       clock = Math.max(saved, clock);
     }
+  }, 60_000);
+  test('a message read again after its observation expired is not delivered twice', async () => {
+    const { id, box } = await connectMailbox('Mail read again later');
+    await poll();
+    box.messages.push(header(30, 'Quarterly numbers'));
+    await poll();
+    expect(await received(id)).toEqual(['Quarterly numbers']);
+    const { sql } = required(handle);
+    await sql`update event set created_at = now() - interval '20 days'
+      where job_id is null and payload->>'connection_id' = ${id}`;
+    await expireObservations(sql, 14);
+    expect(await received(id)).toEqual([]);
+    const [kept] = await sql`select count(*)::int as n from observation_tombstone
+      where connection_id = ${id}`;
+    expect(kept?.n).toBe(1);
+    // The mailbox hands the message back, as after a resync: it is recognised.
+    box.rewind = true;
+    await poll();
+    expect(await received(id)).toEqual([]);
+    // Delivered directly under the same key, it is a duplicate too.
+    const [tombstone] = await sql`select dedup_key from observation_tombstone
+      where connection_id = ${id}`;
+    const again = await required(triggers).deliver({
+      connection_id: id,
+      event_name: 'mail.received',
+      cursor: 'again',
+      dedup_key: String(tombstone?.dedup_key).slice(`connector:${id}:`.length),
+      payload: { subject: 'Quarterly numbers' },
+    });
+    expect(again.duplicate).toBe(true);
+    expect(await received(id)).toEqual([]);
+  }, 60_000);
+
+  test('mail an open wait on an answer may still need is kept while the wait is open', async () => {
+    const { id, box } = await connectMailbox('Mail with an open wait');
+    await poll();
+    box.messages.push(header(40, 'Re: the proposal'));
+    await poll();
+    const { sql } = required(handle);
+    await sql`update event set created_at = now() - interval '18 days'
+      where job_id is null and payload->>'connection_id' = ${id}`;
+    const waitId = newId('task');
+    await sql`insert into awaited_reply (id, space_id, principal_id, message_id, to_address,
+        subject, sent_at, evidence, status, scan_id)
+      values (${waitId}, ${spaceId}, ${ownerId}, '<sent@example.test>', 'friend@example.test',
+        'The proposal', now() - interval '25 days', '{}'::jsonb, 'waiting', 'scan_1')`;
+    await expireObservations(sql, 14);
+    expect(await received(id)).toEqual(['Re: the proposal']);
+    await sql`update awaited_reply set status = 'settled' where id = ${waitId}`;
+    await expireObservations(sql, 14);
+    expect(await received(id)).toEqual([]);
+  }, 60_000);
+
+  test('a request to slow down from one account pauses that account alone', async () => {
+    await required(handle)
+      .sql`update connection set watch_changes = false where space_id = ${spaceId}`;
+    const busy: Awaited<ReturnType<typeof connectMailbox>>[] = [];
+    for (let index = 0; index < 4; index++) {
+      const account = await connectMailbox(`Busy mailbox ${index}`);
+      account.box.fail = new SourceError(429, 900);
+      busy.push(account);
+    }
+    const sequential = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: sources,
+      now: () => clock,
+      concurrency: 1,
+    });
+    const at = clock;
+    await sequential.runOnce();
+    // Every account was read: one account's limit is not the provider's.
+    expect(busy.map((account) => account.box.reads)).toEqual([1, 1, 1, 1]);
+    const due = await required(handle).sql`select next_poll_at from source_cursor
+      where connection_id in ${required(handle).sql(busy.map((account) => account.id))}`;
+    for (const row of due) expect(new Date(row.next_poll_at).getTime()).toBe(at + 900_000);
+    clock += 3_600_000;
   }, 60_000);
 });

@@ -347,6 +347,7 @@ export class PolicyService {
         // say nothing about the next one; a revoked one is read no more.
         await tx.execute(sql`delete from source_cursor where connection_id = ${id}`);
         await tx.execute(sql`delete from subject_state where connection_id = ${id}`);
+        await tx.execute(sql`delete from observation_tombstone where connection_id = ${id}`);
         // So do the mail and calendar observations read from it that no job
         // took in: headers, titles and places from an account the connection
         // no longer stands for. A revocation takes everything it reported.

@@ -63,6 +63,7 @@ import {
   vanished,
 } from './observations.ts';
 import { CalendarTooLarge } from './occurrences.ts';
+import { delivered as wasDelivered } from './retention.ts';
 import type { Lookup, SignalSource } from './types.ts';
 
 export type Stream = SignalSource['stream'];
@@ -166,7 +167,9 @@ export const BREAKER_PAUSE_SECONDS = 300;
 function providerTrouble(error: unknown): boolean {
   if (error instanceof ReadTimeout) return true;
   const status = (error as { status?: unknown } | null)?.status;
-  return typeof status === 'number' && (status === 429 || status >= 500);
+  // A request to slow down (429, or a Retry-After) is about one account and
+  // pauses that account alone.
+  return typeof status === 'number' && status >= 500;
 }
 
 /** The provider an account is read from: its kind of connection, and the server where it names one. */
@@ -232,7 +235,7 @@ export class SignalPoller {
    */
   private readonly breakers = new Map<
     string,
-    { failures: number; openUntil: number; pause: number }
+    { failing: Set<string>; openUntil: number; pause: number }
   >();
 
   /** Until when a provider's reads are paused, or null when they are not. */
@@ -241,23 +244,26 @@ export class SignalPoller {
     return breaker && breaker.openUntil > this.now() ? breaker.openUntil : null;
   }
 
-  private providerFailed(providerKey: string, error: unknown) {
+  /**
+   * A timeout or a server error, at as many different accounts in a row as
+   * the threshold, says the provider itself is in trouble: its reads pause.
+   */
+  private providerFailed(providerKey: string, connectionId: string, error: unknown) {
     if (!providerTrouble(error)) return;
-    const breaker = this.breakers.get(providerKey) ?? { failures: 0, openUntil: 0, pause: 0 };
-    breaker.failures += 1;
-    if (breaker.failures >= BREAKER_THRESHOLD) {
+    const breaker = this.breakers.get(providerKey) ?? {
+      failing: new Set<string>(),
+      openUntil: 0,
+      pause: 0,
+    };
+    breaker.failing.add(connectionId);
+    if (breaker.failing.size >= BREAKER_THRESHOLD) {
       breaker.pause = Math.min(
         MAX_POLL_SECONDS,
         breaker.pause ? breaker.pause * 2 : BREAKER_PAUSE_SECONDS,
       );
-      const said = (error as { retryAfter?: unknown } | null)?.retryAfter;
-      const pause =
-        typeof said === 'number' && said > breaker.pause
-          ? Math.min(MAX_RETRY_AFTER_SECONDS, said)
-          : breaker.pause;
-      breaker.openUntil = this.now() + pause * 1000;
-      breaker.failures = 0;
-      process.stderr.write(`signals: provider_paused ${pause}s\n`);
+      breaker.openUntil = this.now() + breaker.pause * 1000;
+      breaker.failing.clear();
+      process.stderr.write(`signals: provider_paused ${breaker.pause}s\n`);
     }
     this.breakers.set(providerKey, breaker);
   }
@@ -529,7 +535,7 @@ export class SignalPoller {
           : asked !== null
             ? Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(asked, row.interval_s))
             : backoff;
-      this.providerFailed(row.provider_key, error);
+      this.providerFailed(row.provider_key, row.connection_id, error);
       await this.deps.sql`update source_cursor
         set failures = failures + 1, last_error = ${failureWords(error)},
           next_poll_at = ${new Date(this.now() + wait * 1000).toISOString()}::timestamptz
@@ -614,11 +620,8 @@ export class SignalPoller {
       const read = await source.changes(typeof saved === 'string' ? saved : null, {
         limit: MAIL_READ_LIMIT,
         now: this.now(),
-        seen: async (key) => {
-          const [found] = await this.deps.sql`select 1 from event
-            where dedup_key = ${`connector:${row.connection_id}:${mailDedupKey(key)}`}`;
-          return Boolean(found);
-        },
+        seen: (key) =>
+          wasDelivered(this.deps.sql, `connector:${row.connection_id}:${mailDedupKey(key)}`),
       });
       const readAt = new Date(this.now()).toISOString();
       const observations: Observation[] = [];

@@ -555,6 +555,36 @@ describe('reading less of each provider', () => {
     );
   });
 
+  test('a Graph delta it no longer honours is read again from two days back, not from when watching began', async () => {
+    const base = 'https://graph.example/v1.0/me';
+    const graph = provider((url) => {
+      if (!url.pathname.endsWith('/inbox/messages/delta')) return undefined;
+      if (url.searchParams.get('$deltatoken') === 'old') return { status: 410, body: {} };
+      return {
+        body: {
+          value: [],
+          '@odata.deltaLink': `${base}/mailFolders/inbox/messages/delta?$deltatoken=new`,
+        },
+      };
+    });
+    const transport = new OutlookMailTransport({
+      base,
+      from: 'me@example.test',
+      access,
+      fetcher: graph.fetcher,
+    });
+    await transport.changes(
+      JSON.stringify({
+        link: `${base}/mailFolders/inbox/messages/delta?$deltatoken=old`,
+        since: '2026-07-01T00:00:00.000Z',
+      }),
+      { limit: 50, now: Date.parse('2026-10-05T12:00:00Z') },
+    );
+    expect(graph.asked[1]?.searchParams.get('$filter')).toBe(
+      'receivedDateTime ge 2026-10-03T12:00:00Z',
+    );
+  });
+
   test('CalDAV is asked only for the window, or for one event by its UID', async () => {
     const bodies: string[] = [];
     const fetcher = (async (_input: string | URL | Request, init?: RequestInit) => {

@@ -16,6 +16,7 @@ import {
   type MailMessage,
   type MailTransport,
   type OutgoingMail,
+  RESYNC_DAYS,
   toMailMessage,
 } from './mail-transport.ts';
 import {
@@ -236,7 +237,16 @@ export class OutlookMailTransport implements MailTransport {
       );
       if (response.status === 410) {
         await response.body?.cancel().catch(() => {});
-        link = start(state.since);
+        // Read again from no further back than RESYNC_DAYS: what came before
+        // was read already, and its keys outlive it.
+        link = start(
+          new Date(
+            Math.max(
+              Date.parse(state.since),
+              (options.now ?? Date.now()) - RESYNC_DAYS * 86_400_000,
+            ),
+          ).toISOString(),
+        );
         continue;
       }
       if (!response.ok) throw await sourceError(response);

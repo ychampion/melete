@@ -834,6 +834,13 @@ const variables = z.object({
   MELETE_OBSERVATION_RETENTION_DAYS: unsetWhenBlank(
     z.coerce.number().int().min(1).max(3650).default(14),
   ),
+  /**
+   * How many days the delivery key of an expired observation is kept, so the
+   * same message read again is not delivered twice. It holds no content.
+   */
+  MELETE_OBSERVATION_TOMBSTONE_DAYS: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(3650).default(180),
+  ),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
   /**
