@@ -8,9 +8,12 @@ import { PriceTable, parseModelPrices } from './prices.ts';
 import {
   agentRoutes,
   allowedWithRoutes,
+  type ModelRouting,
+  NO_ROUTING,
   parseModelChoice,
   routingFromEnv,
   routingWarnings,
+  withPersonRoles,
 } from './routing.ts';
 import type {
   GatewayPrincipal,
@@ -464,5 +467,30 @@ describe("a model on the owner's own machine keeps its calls", () => {
       expect.stringContaining('MELETE_MODEL_FAST names the provider "fireworkz"'),
       expect.stringContaining('MELETE_MODEL_FALLBACK names openai-compatible'),
     ]);
+  });
+});
+
+describe('a person’s secondary in the routing roles', () => {
+  const operator: ModelRouting = {
+    fast: { provider: 'fireworks', model: 'fast' },
+    vision: { provider: 'fireworks', model: 'eyes' },
+    fallback: [{ provider: 'fireworks', model: 'backup' }],
+  };
+  const secondary = { provider: 'fireworks', model: 'small' };
+
+  test('with no secondary the operator’s roles stand as they are', () => {
+    expect(withPersonRoles(operator, {})).toEqual(operator);
+  });
+
+  test('it fills only fast and background, never vision or fallback', () => {
+    expect(withPersonRoles(operator, { fast: secondary, background: secondary })).toEqual({
+      ...operator,
+      fast: secondary,
+      background: secondary,
+    });
+    expect(withPersonRoles(NO_ROUTING, { background: secondary })).toEqual({
+      ...NO_ROUTING,
+      background: secondary,
+    });
   });
 });

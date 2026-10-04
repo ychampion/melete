@@ -75,7 +75,15 @@ import {
   providersFromEnv,
   providerUrl,
 } from './providers.ts';
-import { addressIsLocal, agentRoutes, type ModelRouting, sameModel } from './routing.ts';
+import {
+  addressIsLocal,
+  agentRoutes,
+  type ModelRouting,
+  NO_ROUTING,
+  type PersonRoles,
+  sameModel,
+  withPersonRoles,
+} from './routing.ts';
 import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
@@ -280,21 +288,24 @@ export class ModelSettingsService {
    * The model the next attempt runs on, as `activeChoice`, told to send its
    * pictures when the operator configured a vision model that will read them
    * for it. A model the owner chose in the app is used exactly as chosen.
+   * Scheduled work runs on the `background` role when one is filled.
    */
   async routedChoice(
     routing: ModelRouting,
     db: Runner = this.options.db,
     work?: ScheduledWorkRow,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    // A person's scheduled work runs on their secondary when they said so.
-    const secondary = work ? await this.scheduledSecondary(work, db) : null;
-    if (secondary)
+    const background =
+      work && (await this.isScheduled(work, db))
+        ? (await this.routingFor(work.spaceId, routing, db)).background
+        : null;
+    if (background)
       return {
-        ...secondary,
+        ...background,
         vision: effectiveVision(
-          secondary.provider,
-          secondary.model,
-          await this.visionSaid(secondary.provider, secondary.model, db),
+          background.provider,
+          background.model,
+          await this.visionSaid(background.provider, background.model, db),
         ),
       };
     const chosen = await this.chosen(db);
@@ -677,21 +688,33 @@ export class ModelSettingsService {
   }
 
   /**
-   * The secondary model this person's work of this kind runs on, or null for
-   * the primary: none is set, the person kept this work on the primary, or
-   * its provider has no credential now.
+   * The roles the owner's secondary model fills for work in this space: `fast`
+   * for short side calls and `background` for scheduled work, each only when
+   * they moved that work to it. None when the space is not the owner's, no
+   * secondary is set, or its provider has no credential now. Work follows its
+   * space's owner, never whoever spoke or asked, and only the installation's
+   * owner chooses models on its keys.
    */
-  async secondaryFor(
-    principalId: string | null | undefined,
-    work: SecondaryWork,
-    db: Runner = this.options.db,
-  ): Promise<ServiceModel | null> {
-    if (!principalId || !(await this.isInstallationOwner(principalId, db))) return null;
+  async personRoles(spaceId: string, db: Runner = this.options.db): Promise<PersonRoles> {
+    const principalId = await this.spaceOwner(spaceId, db);
+    if (!principalId || !(await this.isInstallationOwner(principalId, db))) return {};
     const row = await this.secondaryRow(principalId, db);
-    if (!row?.provider || !row.model) return null;
-    if ((work === 'side_tasks' ? row.sideTasks : row.scheduled) !== 'secondary') return null;
-    if (!(await this.connected(row.provider, await this.keyRows(db)))) return null;
-    return { provider: row.provider, model: row.model };
+    if (!row?.provider || !row.model) return {};
+    if (!(await this.connected(row.provider, await this.keyRows(db)))) return {};
+    const choice = { provider: row.provider, model: row.model };
+    return {
+      ...(row.sideTasks === 'secondary' ? { fast: choice } : {}),
+      ...(row.scheduled === 'secondary' ? { background: choice } : {}),
+    };
+  }
+
+  /** The operator's routing for work in this space, with the roles the owner's secondary fills. */
+  async routingFor(
+    spaceId: string,
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<ModelRouting> {
+    return withPersonRoles(routing, await this.personRoles(spaceId, db));
   }
 
   /** The primary model and this person's secondary, as usage labels them. */
@@ -707,15 +730,6 @@ export class ModelSettingsService {
     };
   }
 
-  /**
-   * The secondary a short side call about work in this space runs on: that of
-   * the space's owner, never that of whoever is speaking or asked. Null for
-   * the usual model.
-   */
-  async sideTaskModel(whose: SideCallOwner): Promise<ServiceModel | null> {
-    return this.secondaryFor(await this.spaceOwner(whose.spaceId), 'side_tasks');
-  }
-
   /** Whose settings work in a space follows: the space's owner. */
   private async spaceOwner(spaceId: string, db: Runner = this.options.db) {
     const [row] = await db
@@ -726,24 +740,18 @@ export class ModelSettingsService {
   }
 
   /**
-   * The secondary an attempt of this job runs on, when it is scheduled or
-   * repeating work (a routine, or work that wakes on a trigger) and the owner
-   * of its space moved that work to their secondary. A chat is never moved.
+   * Whether this job is scheduled or repeating work, which the `background`
+   * role takes: a routine, or work that wakes on a trigger. A chat never is.
    */
-  private async scheduledSecondary(
-    work: ScheduledWorkRow,
-    db: Runner,
-  ): Promise<ServiceModel | null> {
-    if (work.kind === 'chat') return null;
-    if (work.kind !== 'routine') {
-      const [standing] = await db
-        .select({ id: trigger.id })
-        .from(trigger)
-        .where(and(eq(trigger.jobId, work.id), eq(trigger.enabled, true)))
-        .limit(1);
-      if (!standing) return null;
-    }
-    return this.secondaryFor(await this.spaceOwner(work.spaceId, db), 'scheduled', db);
+  private async isScheduled(work: ScheduledWorkRow, db: Runner): Promise<boolean> {
+    if (work.kind === 'chat') return false;
+    if (work.kind === 'routine') return true;
+    const [standing] = await db
+      .select({ id: trigger.id })
+      .from(trigger)
+      .where(and(eq(trigger.jobId, work.id), eq(trigger.enabled, true)))
+      .limit(1);
+    return Boolean(standing);
   }
 
   async saveKey(
@@ -1130,16 +1138,23 @@ export function serviceModelSource(options: {
           provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
           model: pinned.model || env.MELETE_DEFAULT_MODEL,
         };
-      // The person's own secondary, when this short call is about their work.
-      const secondary = sideTask && settings && whose ? await settings.sideTaskModel(whose) : null;
-      if (secondary) return secondary;
+      // The fast role: the operator's, or the space owner's secondary filling it.
+      const fast =
+        sideTask && settings && whose
+          ? (
+              await settings.routingFor(whose.spaceId, {
+                ...NO_ROUTING,
+                fast: options.fast ?? null,
+              })
+            ).fast
+          : options.fast;
       const chosen = settings
         ? await settings.activeChoice()
         : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
       // A model on the owner's own machine or network keeps the side calls on
       // it; the fast model is for a cloud model's.
-      if (options.fast && !(await local(chosen.provider)))
-        return { provider: options.fast.provider, model: options.fast.model };
+      if (fast && !(await local(chosen.provider)))
+        return { provider: fast.provider, model: fast.model };
       return { provider: chosen.provider, model: chosen.model };
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),
