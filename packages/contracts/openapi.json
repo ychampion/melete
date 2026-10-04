@@ -20375,7 +20375,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema186"
+                  "$ref": "#/components/schemas/__schema188"
                 }
               }
             }
@@ -20441,7 +20441,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema186"
+                  "$ref": "#/components/schemas/__schema188"
                 }
               }
             }
