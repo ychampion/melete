@@ -84,7 +84,7 @@ const definitions: Array<{
   {
     name: 'fill',
     description:
-      'Fill one visible field by exact accessible label. To repeat an earlier edit, observe again and pass that observation id as after_observation. Authentication fields require human control.',
+      'Fill one visible field by exact accessible label. To repeat an earlier edit, observe again and pass that observation id as after_observation. Authentication fields require human control. Returns an observation of the page after it, with its submit intents.',
     effect: 'write_reversible',
     properties: {
       label: text,
@@ -96,7 +96,7 @@ const definitions: Array<{
   {
     name: 'click',
     description:
-      'Click one reversible control by exact role and name. To repeat an earlier click, observe again and pass that observation id as after_observation. Consequential controls require browser.submit.',
+      'Click one reversible control by exact role and name. To repeat an earlier click, observe again and pass that observation id as after_observation. Consequential controls require browser.submit. Returns an observation of the page after it.',
     effect: 'write_reversible',
     properties: { role: text, name: text, after_observation: observationProperty },
     required: ['role', 'name'],
@@ -104,7 +104,7 @@ const definitions: Array<{
   {
     name: 'select',
     description:
-      'Select a visible choice by exact accessible label. To repeat an earlier choice, observe again and pass that observation id as after_observation.',
+      'Select a visible choice by exact accessible label. To repeat an earlier choice, observe again and pass that observation id as after_observation. Returns an observation of the page after it.',
     effect: 'write_reversible',
     properties: { label: text, value: text, after_observation: observationProperty },
     required: ['label', 'value'],

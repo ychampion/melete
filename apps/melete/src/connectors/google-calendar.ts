@@ -15,6 +15,12 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  type CalendarRead,
+  type Occurrence,
+  type SignalSource,
+  sourceError,
+} from '../signals/types.ts';
+import {
   byStart,
   calendarManifest,
   createPayload,
@@ -60,15 +66,62 @@ type GoogleEvent = {
   status?: string;
   etag?: string;
   iCalUID?: string;
+  recurringEventId?: string;
+  originalStartTime?: { dateTime?: string; date?: string };
+  updated?: string;
   summary?: string;
   description?: string;
   location?: string;
   recurrence?: string[];
-  start?: { dateTime?: string; date?: string };
-  end?: { dateTime?: string; date?: string };
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
   extendedProperties?: { private?: Record<string, string> };
-  attendees?: { email?: string; self?: boolean }[];
+  attendees?: { email?: string; self?: boolean; resource?: boolean }[];
 };
+
+/** A Google time as a UTC instant, or the date of an all-day event. */
+function googleTime(value: { dateTime?: string; date?: string } | undefined): string | null {
+  if (value?.date && /^\d{4}-\d{2}-\d{2}$/.test(value.date)) return value.date;
+  const at = Date.parse(value?.dateTime ?? '');
+  return Number.isNaN(at) ? null : new Date(at).toISOString();
+}
+
+/**
+ * One instance as Google lists it with `singleEvents`: a repeating event's
+ * instances carry the series' iCalUID and the start they were scheduled at,
+ * which stays put when one is moved. A cancelled instance may carry nothing
+ * else, and is placed at that original start.
+ */
+export function googleOccurrence(event: GoogleEvent): Occurrence | null {
+  const original = googleTime(event.originalStartTime);
+  const start = googleTime(event.start) ?? original;
+  if (!start) return null;
+  const uid = event.iCalUID ?? event.id;
+  if (!uid) return null;
+  return {
+    uid,
+    occurrence: event.recurringEventId ? original : null,
+    title: event.summary ?? '',
+    start,
+    end: googleTime(event.end) ?? start,
+    all_day: Boolean(event.start?.date ?? (!event.start && event.originalStartTime?.date)),
+    location: event.location ?? '',
+    status:
+      event.status === 'cancelled'
+        ? 'cancelled'
+        : event.status === 'tentative'
+          ? 'tentative'
+          : 'confirmed',
+    attendees: (event.attendees ?? []).filter((attendee) => !attendee.self && !attendee.resource)
+      .length,
+    time_zone: event.start?.timeZone ?? null,
+    ref: event.id ?? null,
+    updated_at: event.updated && !Number.isNaN(Date.parse(event.updated)) ? event.updated : null,
+  };
+}
+
+/** Most pages of instances one read walks through. */
+const MAX_OCCURRENCE_PAGES = 8;
 
 function eventView(event: GoogleEvent): EventView {
   const marks = event.extendedProperties?.private ?? {};
@@ -130,6 +183,56 @@ export class GoogleCalendarConnector implements Connector {
       this.config.fetcher,
     );
   }
+
+  /**
+   * Every instance touching the window, cancelled ones included, so that a
+   * cancellation is seen as one rather than as a disappearance.
+   */
+  readonly signals: SignalSource = {
+    stream: 'calendar',
+    occurrences: async (window): Promise<CalendarRead> => {
+      const items: Occurrence[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < MAX_OCCURRENCE_PAGES; page++) {
+        const query = new URLSearchParams({
+          singleEvents: 'true',
+          showDeleted: 'true',
+          orderBy: 'startTime',
+          timeMin: window.from,
+          timeMax: window.to,
+          maxResults: '250',
+        });
+        if (pageToken) query.set('pageToken', pageToken);
+        const response = await this.request('GET', `/events?${query}`);
+        if (!response.ok) throw await sourceError(response);
+        const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
+          items?: GoogleEvent[];
+          nextPageToken?: string;
+        } | null;
+        for (const event of listed?.items ?? []) {
+          const occurrence = googleOccurrence(event);
+          if (occurrence) items.push(occurrence);
+        }
+        pageToken = listed?.nextPageToken || undefined;
+        if (!pageToken) return { items, complete: true };
+      }
+      return { items, complete: false };
+    },
+    // An instance no longer listed is looked up by its own id: gone, or moved.
+    confirm: async ({ ref }) => {
+      if (!ref || !/^[A-Za-z0-9_]{1,1024}$/.test(ref)) return 'unknown';
+      const response = await this.request('GET', `/events/${ref}`);
+      if (response.status === 404 || response.status === 410) {
+        await response.body?.cancel().catch(() => {});
+        return 'gone';
+      }
+      if (!response.ok) throw await sourceError(response);
+      const found = googleOccurrence(
+        (await boundedJson(response, MAX_RESPONSE_BYTES)) as GoogleEvent,
+      );
+      return found ?? 'unknown';
+    },
+  };
 
   private success(action: Action, detail: JsonObject, uid: string | null = null): DispatchResult {
     return {

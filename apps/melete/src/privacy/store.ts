@@ -127,9 +127,22 @@ export type ScreenshotSource =
   | { kind: 'computer' }
   | { kind: 'device'; deviceId: string; cloudScreenshots: boolean | null };
 
-/** The tools whose succeeded actions are screenshots. */
-export const SCREENSHOT_TOOLS = [
+/**
+ * The tools whose succeeded actions are screenshots: the agent's own
+ * computer's, whose every step but a screenshot ends with one, then a paired
+ * computer's.
+ */
+const OWN_COMPUTER_SCREENSHOTS = [
   'computer.screenshot',
+  'computer.open',
+  'computer.click',
+  'computer.type',
+  'computer.key',
+  'computer.scroll',
+  'computer.batch',
+] as const;
+export const SCREENSHOT_TOOLS = [
+  ...OWN_COMPUTER_SCREENSHOTS,
   'device.screenshot',
   'device.browser_screenshot',
 ] as const;
@@ -446,7 +459,8 @@ export class PostgresPrivacyStore implements PrivacyStore {
       where a.id = ${actionId} and a.job_id = ${jobId} and a.status = 'succeeded'
         and a.kind in ${this.sql([...SCREENSHOT_TOOLS])}`;
     if (!row) return null;
-    if (row.kind === 'computer.screenshot') return { kind: 'computer' };
+    if ((OWN_COMPUTER_SCREENSHOTS as readonly string[]).includes(row.kind))
+      return { kind: 'computer' };
     if (typeof row.device_id !== 'string') return null;
     return {
       kind: 'device',

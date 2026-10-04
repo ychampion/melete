@@ -169,6 +169,13 @@ async function installCalendar(spaceId: string, label: string) {
   registry.register(id, fixtureCalendar());
   return id;
 }
+/** A mailbox the space's owner connected; nothing reads it here but the reply poller's query. */
+async function installMailbox(spaceId: string, label: string) {
+  const id = recordId('conn');
+  await database().sql`insert into connection (id, space_id, provider, label)
+    values (${id}, ${spaceId}, 'imap', ${label})`;
+  return id;
+}
 const calendarTools = async (claims: CapabilityClaims) =>
   (await database().broker.discovery.available(claims))
     .map((tool) => tool.name)
@@ -354,7 +361,7 @@ withDb('a member of a shared space', () => {
   test("a member's job cannot watch a connection the owner installed, and a trigger made before hears nothing from it", async () => {
     const { sql, jobs, runner } = database();
     const triggers = new TriggerService(jobs, runner);
-    const mailbox = await installCalendar(world.sharedId, 'Owner mailbox');
+    const mailbox = await installMailbox(world.sharedId, 'Owner mailbox');
     const spec = {
       kind: 'event' as const,
       connection_id: mailbox,

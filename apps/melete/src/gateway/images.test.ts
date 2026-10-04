@@ -99,6 +99,44 @@ describe('pictures a request carries', () => {
     );
   });
 
+  test('hold the cap when one turn takes several computer steps, each with its picture', () => {
+    // One assistant turn with four steps, as parallel calls and a batch make
+    // routine: each result carries the screenshot taken after it.
+    const steps = ['computer.click', 'computer.type', 'computer.key', 'computer.batch'];
+    const turn = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: steps.map((name, i) => ({
+          id: `s${i}`,
+          type: 'function',
+          function: { name, arguments: '{"step":1}' },
+        })),
+      },
+      ...steps.map((_, i) => ({
+        role: 'tool',
+        tool_call_id: `s${i}`,
+        content: [
+          { type: 'text', text: `{"status":"succeeded","action_id":"act_STEP${i}"}` },
+          chatImage(picture(1024)),
+        ],
+      })),
+    ];
+    // Sent as is, the request is past the cap and refused.
+    expect(MAX_REQUEST_IMAGES).toBe(3);
+    expect(() => countImages({ messages: turn })).toThrow(new GatewayError(413, 'too_many_images'));
+    // The pinned engine retires every tool picture but the newest three on each
+    // request it sends (agent/context_compressor.py
+    // evict_stale_outbound_tool_images, called from turn_request_assembly.py and
+    // chat_completion_helpers.py), leaving the older result's text in its place.
+    const sent = turn.map((message, i) =>
+      i > 0 && i <= steps.length - MAX_REQUEST_IMAGES
+        ? { ...message, content: [{ type: 'text', text: '[screenshot removed]' }] }
+        : message,
+    );
+    expect(countImages({ messages: sent })).toBe(MAX_REQUEST_IMAGES);
+  });
+
   test('are replaced by text in their own protocol, leaving the input untouched', () => {
     const body = {
       input: [{ type: 'function_call_output', output: [responsesImage('AAAA')] }],

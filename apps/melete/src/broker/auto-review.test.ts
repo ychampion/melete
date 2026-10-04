@@ -3,6 +3,7 @@ import type { ConnectorTool, JsonObject, OriginWarning } from '@melete/contracts
 import {
   changesPersonFiles,
   escalationReason,
+  publicPage,
   reviewerApproves,
   reviewTier,
 } from './auto-review.ts';
@@ -184,6 +185,92 @@ describe('reviewTier', () => {
 
   test('spending wins over every other reading', () => {
     expect(tier(tool('files.buy', 'spend'), 'files').reason).toBe('It spends money.');
+  });
+});
+
+describe("opening a page in the agent's own browser", () => {
+  const open = tool('computer.open', 'write_reversible');
+  const batch = tool('computer.batch', 'write_reversible');
+  const unvouched = (field: string): OriginWarning => ({ ...doubt, field });
+
+  test('a public page is sandbox work wherever its address came from', () => {
+    for (const url of [
+      'https://www.random.org/',
+      'http://example.com/path?q=1',
+      'https://8.8.8.8/',
+    ])
+      expect(tier(open, 'sandbox', { step: 1, url }, [unvouched('url')])).toMatchObject({
+        tier: 'sandbox',
+        actionClass: 'sandbox',
+      });
+    // An open step of a batch counts the same.
+    expect(
+      tier(
+        batch,
+        'sandbox',
+        {
+          step: 2,
+          actions: [
+            { action: 'open', url: 'https://example.com/form' },
+            { action: 'click', x: 1, y: 1 },
+          ],
+        },
+        [unvouched('actions[0].url')],
+      ).tier,
+    ).toBe('sandbox');
+  });
+
+  test('a private or signed-in address, or another doubted value, still asks', () => {
+    for (const url of [
+      'http://localhost:3000/',
+      'http://127.0.0.1/admin',
+      'http://10.0.0.5/',
+      'http://192.168.1.1/',
+      'http://[::1]/',
+      'http://printer.local/',
+      'http://intranet/',
+      'https://user:secret@example.com/',
+      'https://example.com/reset?token=abc',
+      'file:///etc/passwd',
+    ])
+      expect(tier(open, 'sandbox', { step: 1, url }, [unvouched('url')]).tier).toBe('person');
+    // Only the address of an open step is let through, and only in the sandbox.
+    expect(
+      tier(
+        batch,
+        'sandbox',
+        { step: 1, actions: [{ action: 'type', url: 'https://example.com/' }] },
+        [unvouched('actions[0].url')],
+      ).tier,
+    ).toBe('person');
+    expect(
+      tier(open, 'sandbox', { step: 1, url: 'https://example.com/' }, [unvouched('to')]).tier,
+    ).toBe('person');
+    expect(
+      tier(tool('computer.open', 'write_reversible'), 'app', { url: 'https://example.com/' }, [
+        unvouched('url'),
+      ]).tier,
+    ).toBe('person');
+  });
+
+  test('a credential typed into the page still asks, as it always did', () => {
+    expect(
+      tier(
+        batch,
+        'sandbox',
+        { step: 1, actions: [{ action: 'open', url: 'https://example.com/' }], password: 'x' },
+        [unvouched('actions[0].url')],
+      ).tier,
+    ).toBe('person');
+  });
+
+  test('a public page is an http or https address on the open internet', () => {
+    expect(publicPage('https://example.com')).toBe(true);
+    expect(publicPage('https://example.com./')).toBe(true);
+    expect(publicPage('https://localhost/')).toBe(false);
+    expect(publicPage('https://169.254.169.254/latest/meta-data')).toBe(false);
+    expect(publicPage('not a url')).toBe(false);
+    expect(publicPage(42)).toBe(false);
   });
 });
 

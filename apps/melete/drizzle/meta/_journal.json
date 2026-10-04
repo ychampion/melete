@@ -699,7 +699,14 @@
       "idx": 99,
       "version": "7",
       "when": 1789232400079,
-      "tag": "0099_background_meter",
+      "tag": "0099_signals",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1789232400080,
+      "tag": "0100_background_meter",
       "breakpoints": true
     }
   ]

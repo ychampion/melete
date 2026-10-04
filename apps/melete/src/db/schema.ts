@@ -604,6 +604,11 @@ export const event = pgTable(
   (t) => [
     uniqueIndex('event_dedup_idx').on(t.dedupKey),
     index('event_job_seq_idx').on(t.jobId, t.seq),
+    // What a connection reported and no job owns, found by its connection when
+    // the connection is revoked or its space removed.
+    index('event_connector_observation_idx')
+      .on(sql`(${t.payload}->>'connection_id')`)
+      .where(sql`${t.jobId} is null and ${t.payload}->>'kind' = 'connector_event'`),
   ],
 );
 

@@ -370,6 +370,9 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_process: 'operational',
   sandbox_session: 'operational',
   egress_record: 'operational',
+  // Where each account's changes were last read, and what was kept about its calendar.
+  source_cursor: 'operational',
+  subject_state: 'operational',
   sandbox_awake_day: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
@@ -701,6 +704,13 @@ describe.if(handle !== null)('removing a space', () => {
     await sql`insert into attachment (id, space_id, principal_id, name, media_type, kind, size, blob_key)
       values (${`file_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'notes.txt',
         'text/plain', 'text', 5, ${`sha256/${'0'.repeat(64)}`})`;
+    // Where a connected calendar was last read, and one occurrence kept from it.
+    await sql`insert into source_cursor (connection_id, stream, space_id, cursor)
+      values (${seeded.connectionId}, 'calendar', ${seeded.spaceId}, '{}'::jsonb)`;
+    await sql`insert into subject_state (subject_key, space_id, connection_id, type, fields,
+        version, origin, last_changed_at)
+      values (${`calendar:${seeded.connectionId}:uid:`}, ${seeded.spaceId}, ${seeded.connectionId},
+        'calendar_occurrence', '{}'::jsonb, 'v1', 'external_content', now())`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

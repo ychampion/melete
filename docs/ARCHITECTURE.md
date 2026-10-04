@@ -431,4 +431,6 @@ engine; [LEARNING](LEARNING.md) the correction-to-procedure loop;
 [the browser worker](browser-worker.md) the out-of-cell browser;
 [DEPLOYMENT](DEPLOYMENT.md) operations on the Linux stack;
 [RUNS](RUNS.md) long work in shifts and the record it keeps;
+[SITUATIONAL-AWARENESS](SITUATIONAL-AWARENESS.md) how changes in connected
+mail and calendars reach the work waiting for them;
 [ENGINEERING](ENGINEERING.md) the seven provable properties.

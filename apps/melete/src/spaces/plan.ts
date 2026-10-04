@@ -106,6 +106,11 @@ export async function sweepOperational(
         state = case when state in ('running', 'settled') then 'settled' else state end
       where personal_job_id in (select id from job where space_id = ${spaceId})`;
     await tx`delete from job where space_id = ${spaceId}`;
+    // What the space's connections reported that no job took in: mail headers,
+    // calendar titles and places. A job's own copies went with the job.
+    await tx`delete from event
+      where job_id is null and payload->>'kind' = 'connector_event'
+        and payload->>'connection_id' in (select id from connection where space_id = ${spaceId})`;
     // What the space's model calls cost stays counted against its person, so
     // removing a space does not reset a spending limit; which space and job
     // they came from goes with the space.
@@ -206,6 +211,10 @@ const SPACE_KEYED_OPERATIONAL = [
   // Files people sent in chat went with their chats; one uploaded and never
   // sent has no chat. Their bytes go in the blobs phase, by reference.
   'attachment',
+  // Where each connected account's changes were last read, and the few fields
+  // kept about each calendar occurrence. They name connections, which go next.
+  'source_cursor',
+  'subject_state',
 ] as const;
 
 /**
