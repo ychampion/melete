@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { experienceProfile } from '../db/schema.ts';
+import { mcpActorOf } from '../mcp-server/actor.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
@@ -64,6 +65,11 @@ export type CompaniesDeps = {
   now?: () => Date;
   /** Model calls one person's scans may make in a day. Left out, there is no daily limit. */
   dailyCalls?: number;
+  /**
+   * An item was taken up: by the person in Melete, or by an outside assistant
+   * acting for them. Its due date becomes a deadline Melete keeps.
+   */
+  accepted?: (owner: Owner, itemId: string, byPerson: boolean) => Promise<void>;
 };
 
 /**
@@ -316,8 +322,14 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
         throw error;
       }
       await store.setJob(found.owner, found.item.id, result.job_id);
-      return { job_id: result.job_id, status: 201 as const };
+      return { job_id: result.job_id, status: 201 as const, owner: found.owner };
     });
+    // Taken up just now. Only the person themselves, not an assistant they
+    // connected, makes its due date one that may reach them at any hour.
+    if (answer.status === 201 && 'owner' in answer && deps.accepted)
+      await deps.accepted(answer.owner, id, !mcpActorOf(c.env)).catch(() => {
+        process.stderr.write('companies: accept_hook_failed\n');
+      });
     return c.json({ job_id: answer.job_id }, answer.status);
   });
 

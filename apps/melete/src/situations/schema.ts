@@ -51,8 +51,14 @@ export const situation = pgTable(
     subjectKey: text('subject_key').notNull(),
     /** The account it was read from, when it came from one. */
     connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
-    /** Kind, subject and moment, hashed: one live situation per key. */
+    /** Space, person, kind, subject and moment, hashed: one live situation per key. */
     key: text('key').notNull(),
+    /**
+     * What makes the latest sighting what it is (a meeting's times, a pair's
+     * times, a due time). The same again changes nothing, and a dismissed
+     * situation comes back only with a different one.
+     */
+    fingerprint: text('fingerprint').notNull().default(''),
     /** `normal` (Home only), `soon`, or `urgent`. */
     urgency: text('urgency').notNull().default('normal'),
     /** The deadline behind it was one the person set or accepted. Only then can it be urgent. */
@@ -88,6 +94,7 @@ export const situation = pgTable(
   (t) => [
     uniqueIndex('situation_live_key_idx').on(t.key).where(sql`${t.state} in ('open', 'routed')`),
     index('situation_principal_idx').on(t.principalId, t.state, t.createdAt),
+    index('situation_key_idx').on(t.key, t.createdAt),
     index('situation_space_idx').on(t.spaceId),
     index('situation_subject_idx').on(t.subjectKey),
     index('situation_connection_idx').on(t.connectionId),
@@ -153,9 +160,9 @@ export const clock = pgTable(
     firedAt: timestamp('fired_at', { withTimezone: true }),
   },
   (t) => [
-    // One live clock per rule per subject.
+    // One live clock per person, rule and subject.
     uniqueIndex('clock_live_idx')
-      .on(t.rule, t.subjectKey)
+      .on(t.spaceId, t.principalId, t.rule, t.subjectKey)
       .where(sql`${t.state} in ('armed', 'checking')`),
     index('clock_due_idx').on(t.fireAt).where(sql`${t.state} in ('armed', 'checking')`),
     index('clock_space_idx').on(t.spaceId),

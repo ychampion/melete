@@ -663,7 +663,16 @@ export class TriggerService {
         const row = await this.jobs.lock(tx, registration.jobId);
         if (row?.spaceId === source.spaceId) await this.registerWait(tx, row);
       }
-      for (const observe of this.observers) await observe(tx, value, received.seq);
+      // Each observer in a savepoint of its own: one that fails is undone and
+      // reported, and the delivery, and every wake it made, still commits.
+      for (const observe of this.observers)
+        try {
+          await tx.transaction((inner) => observe(inner, value, received.seq));
+        } catch (error) {
+          process.stderr.write(
+            `triggers: observer_failed ${error instanceof Error ? error.name : 'error'}\n`,
+          );
+        }
       return { seq: received.seq, duplicate: false };
     });
   }

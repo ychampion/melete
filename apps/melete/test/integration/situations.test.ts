@@ -21,7 +21,7 @@ import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/w
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { SignalPoller } from '../../src/signals/poller.ts';
 import type { NewMail, Occurrence, SignalSource } from '../../src/signals/types.ts';
-import { spokenTime } from '../../src/situations/detectors.ts';
+import { meetingConflicts, spokenTime } from '../../src/situations/detectors.ts';
 import { SituationService, type SubjectReader } from '../../src/situations/service.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -314,13 +314,22 @@ withDb('situations', () => {
     clock = due - 2 * MINUTE;
     await required(situations).sweep();
     expect(await live(cy.id)).toHaveLength(0);
-    // It could not be read before its time: missed, and still nothing raised.
+    // It could not be read before its time: missed. The person is told that,
+    // plainly, and never that it is undone.
     clock = due - MINUTE;
+    await required(situations).sweep();
+    expect(await live(cy.id)).toHaveLength(0);
+    clock = due;
     await required(situations).sweep();
     const [settled] = await required(handle)
       .sql`select state, note from clock where subject_key = 'doc:nda'`;
     expect(settled?.state).toBe('missed');
-    expect(await live(cy.id)).toHaveLength(0);
+    const told = await live(cy.id);
+    expect(told.map((row) => [row.kind, row.urgency])).toEqual([['deadline.at_risk', 'soon']]);
+    expect(told[0]?.reason).toBe(
+      `Melete couldn't check this before it was due ${spokenTime(new Date(due).toISOString(), 'UTC')}.`,
+    );
+    expect(String(told[0]?.reason)).not.toContain('not done');
   }, 60_000);
 
   test('an urgent deadline the person set pushes now, even in quiet hours; one they didn’t set waits', async () => {
@@ -379,6 +388,7 @@ withDb('situations', () => {
 
   test('a meeting moved twice has one live clock, at its new time', async () => {
     const eve = await person('eve', { start: '08:00', end: '22:00' });
+    await withPhone(eve);
     const calendarId = await account(eve, 'caldav', 'Work calendar');
     const calendar = calendarSource(calendarId);
     const start = clock + 48 * 60 * MINUTE;
@@ -415,6 +425,7 @@ withDb('situations', () => {
 
   test('a cancelled meeting’s clocks are cleared', async () => {
     const fay = await person('fay', { start: '08:00', end: '22:00' });
+    await withPhone(fay);
     const calendarId = await account(fay, 'caldav', 'Work calendar');
     const calendar = calendarSource(calendarId);
     calendar.items = [meeting('offsite', clock + 72 * 60 * MINUTE)];
@@ -443,6 +454,7 @@ withDb('situations', () => {
 
   test('a conflict between two meetings is one situation, not two, and ends when they part', async () => {
     const gus = await person('gus', { start: '08:00', end: '22:00' });
+    await withPhone(gus);
     const work = await account(gus, 'caldav', 'Work');
     const home = await account(gus, 'caldav', 'Home');
     const workCalendar = calendarSource(work);
@@ -459,6 +471,31 @@ withDb('situations', () => {
     expect(conflicts[0]?.reason).toBe(
       `Both are on your calendar at ${spokenTime(new Date(at + 30 * MINUTE).toISOString(), 'UTC')}.`,
     );
+    // Read again and again, unchanged, it is the same situation, not rewritten.
+    expect(conflicts[0]?.sightings).toBe(1);
+    const stamp = new Date(conflicts[0]?.updated_at).getTime();
+    await poll();
+    const unchanged = await live(gus.id, 'meeting.conflict');
+    expect([unchanged[0]?.sightings, new Date(unchanged[0]?.updated_at).getTime()]).toEqual([
+      1,
+      stamp,
+    ]);
+    // Dismissed, it stays dismissed while the meetings stay put: no new row, no new push.
+    const pushes = async () => {
+      const [row] = await required(handle).sql`select count(*)::int as n from push_intent
+        where principal_id = ${gus.id}`;
+      return Number(row?.n ?? 0);
+    };
+    const pushedBefore = await pushes();
+    await required(situations).dismiss(gus.id, String(conflicts[0]?.id));
+    await poll();
+    await poll();
+    expect(await live(gus.id, 'meeting.conflict')).toHaveLength(0);
+    expect(await pushes()).toBe(pushedBefore);
+    // A material change, the dentist moved but still overlapping, brings it back.
+    homeCalendar.items = [meeting('dentist', at + 45 * MINUTE, { attendees: 0 })];
+    await poll();
+    expect(await live(gus.id, 'meeting.conflict')).toHaveLength(1);
     // The dentist moves to the evening: the overlap is over.
     homeCalendar.items = [meeting('dentist', at + 4 * 60 * MINUTE, { attendees: 0 })];
     await poll();
@@ -498,6 +535,18 @@ withDb('situations', () => {
     const [wakes] = await required(handle).sql`select count(*)::int as n from event
       where job_id = ${row.id} and payload->>'kind' = 'trigger_event'`;
     expect(wakes?.n).toBe(1);
+    // The attempt the situation woke is counted against it, as the meter reads it.
+    required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: woke.leaseEpoch,
+        expected_version: woke.stateVersion,
+        reason: 'event',
+      }),
+    );
+    const [attempt] = await required(handle).sql`select situation_id, class from attempt
+      where job_id = ${row.id} order by epoch desc limit 1`;
+    expect([attempt?.situation_id, attempt?.class]).toEqual([raised[0]?.id, 'background']);
     // A second move folds into the same situation.
     const later = clock + 5 * 60 * MINUTE;
     const earlier = clock + 4 * 60 * MINUTE;
@@ -608,6 +657,7 @@ withDb('situations', () => {
 
   test('revoking an account takes what was noticed in it and its clocks', async () => {
     const kit = await person('kit', { start: '08:00', end: '22:00' });
+    await withPhone(kit);
     const calendarId = await account(kit, 'caldav', 'Work');
     const calendar = calendarSource(calendarId);
     calendar.items = [
@@ -622,6 +672,9 @@ withDb('situations', () => {
     ];
     await poll();
     expect((await live(kit.id)).length).toBeGreaterThan(0);
+    const [queued] = await required(handle).sql`select count(*)::int as n from push_intent
+      where principal_id = ${kit.id} and sent_at is null and dropped_at is null`;
+    expect(queued?.n).toBeGreaterThan(0);
     await required(situations).setDeadline({
       spaceId: kit.spaceId,
       principalId: kit.id,
@@ -645,7 +698,400 @@ withDb('situations', () => {
     const { sql } = required(handle);
     const [left] = await sql`select
         (select count(*)::int from situation where principal_id = ${kit.id}) as situations,
-        (select count(*)::int from clock where connection_id = ${calendarId}) as clocks`;
-    expect([left?.situations, left?.clocks]).toEqual([0, 0]);
+        (select count(*)::int from clock where connection_id = ${calendarId}) as clocks,
+        (select count(*)::int from push_intent where principal_id = ${kit.id}
+          and sent_at is null and dropped_at is null) as waiting`;
+    expect([left?.situations, left?.clocks, left?.waiting]).toEqual([0, 0, 0]);
+    const sentBefore = delivered.length;
+    await push.dispatch(kit.id, new Date(clock + 60 * MINUTE));
+    expect(delivered.slice(sentBefore).filter((entry) => entry.principal === kit.id)).toHaveLength(
+      0,
+    );
+  }, 60_000);
+  test('a whole day of pushes keeps every lane to its cap, whatever spills', async () => {
+    // 08:00–22:00 UTC; a soon situation every eleven minutes from 08:00 to 19:00.
+    const lu = await person('lu', { start: '08:00', end: '22:00' });
+    await withPhone(lu);
+    const mo = await person('mo', { start: '08:00', end: '22:00' });
+    await withPhone(mo);
+    const { sql } = required(handle);
+    const situationFor = async (who: Person, urgency: 'soon' | 'urgent', at: Date) => {
+      const id = newId('sit');
+      await sql`insert into situation (id, space_id, principal_id, kind, subject_key, key, urgency,
+          person_set, title, reason, because, origin, created_at)
+        values (${id}, ${who.spaceId}, ${who.id}, 'meeting.changed', ${`subject:${id}`},
+          ${`key:${id}`}, ${urgency}, ${urgency === 'urgent'}, 'A meeting moved', 'It moved.',
+          '["event:1"]'::jsonb, 'external_content', ${at.toISOString()}::timestamptz)`;
+      await sql`insert into push_intent (id, principal_id, kind, title, body, because, url,
+          dedup_key, urgency, person_set, situation_id, created_at)
+        values (${newId('pint')}, ${who.id}, 'situation', 'A meeting moved', 'It moved.',
+          'Because it moved.', '/#/', ${`situation:${id}`}, ${urgency}, ${urgency === 'urgent'},
+          ${id}, ${at.toISOString()}::timestamptz)`;
+    };
+    const day = (who: Person) => delivered.filter((entry) => entry.principal === who.id).length;
+    for (const [who, urgency] of [
+      [lu, 'soon'],
+      [mo, 'urgent'],
+    ] as const) {
+      for (let minute = 8 * 60; minute <= 19 * 60; minute += 11) {
+        const at = new Date(Date.UTC(2026, 10, 3, 0, minute));
+        await situationFor(who, urgency, at);
+        await push.dispatch(who.id, new Date(at.getTime() + 90_000));
+      }
+    }
+    // Soon: six in its own lane, then four in the normal lane. Urgent: three, then the same.
+    expect(day(lu)).toBe(6 + 4);
+    expect(day(mo)).toBe(3 + 6 + 4);
+  }, 120_000);
+
+  test('a fresh read is refused when the account is being revoked, is elsewhere, or serves someone else', async () => {
+    const nan = await person('nan', { start: '08:00', end: '22:00' });
+    const ola = await person('ola', { start: '08:00', end: '22:00' });
+    const docs = await account(nan, 'test', 'Documents');
+    const doc = documentSource(docs, { signed: false });
+    const due = clock + 30 * MINUTE;
+    const deadline = (who: Person, connectionId: string, subjectKey: string) =>
+      required(situations).setDeadline({
+        spaceId: who.spaceId,
+        principalId: who.id,
+        subjectKey,
+        connectionId,
+        title: 'The lease is signed',
+        dueAt: new Date(due),
+        leadSeconds: 5 * 60,
+        atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
+        personSet: true,
+      });
+    // Another person's account, from their own space: refused when it is set.
+    await expect(deadline(ola, docs, 'doc:nan-lease')).rejects.toThrow();
+    const kept = await deadline(nan, docs, 'doc:nan-lease');
+    // A revocation in progress: nothing is read and nothing is raised.
+    const { sql } = required(handle);
+    await sql`update connection set status = 'disabled', key_change = 'revoke' where id = ${docs}`;
+    clock = due - 5 * MINUTE;
+    await required(situations).sweep();
+    expect(doc.reads).toBe(0);
+    expect(await live(nan.id)).toHaveLength(0);
+    // Once it is back, and its credential changes while it is being read, what was read is dropped.
+    await sql`update connection set status = 'active', key_change = null where id = ${docs}`;
+    await sql`update clock set state = 'armed', fire_at = ${new Date(clock).toISOString()}::timestamptz
+      where id = ${kept.id}`;
+    const source = required(sources.get(docs)?.subjects);
+    sources.set(docs, {
+      subjects: {
+        read: async (subject) => {
+          await sql`update connection set generation = generation + 1 where id = ${docs}`;
+          return source.read(subject);
+        },
+      },
+    });
+    await required(situations).sweep();
+    expect(doc.reads).toBe(1);
+    expect(await live(nan.id)).toHaveLength(0);
+    expect(await armed('doc:nan-lease')).toHaveLength(1);
+  }, 60_000);
+
+  test('two people keeping a deadline on the same subject each keep their own', async () => {
+    const sam = await person('sam', { start: '08:00', end: '22:00' });
+    const tia = await person('tia', { start: '08:00', end: '22:00' });
+    const due = clock + 30 * MINUTE;
+    for (const who of [sam, tia]) {
+      const docs = await account(who, 'test', 'Documents');
+      documentSource(docs, { signed: false });
+      await required(situations).setDeadline({
+        spaceId: who.spaceId,
+        principalId: who.id,
+        subjectKey: 'doc:shared',
+        connectionId: docs,
+        title: 'The plan is signed',
+        dueAt: new Date(due),
+        leadSeconds: 5 * 60,
+        atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
+        personSet: true,
+      });
+    }
+    expect((await armed('doc:shared')).map((row) => row.principal_id).sort()).toEqual(
+      [sam.id, tia.id].sort(),
+    );
+    clock = due - 5 * MINUTE;
+    await required(situations).sweep();
+    expect(await live(sam.id, 'deadline.at_risk')).toHaveLength(1);
+    expect(await live(tia.id, 'deadline.at_risk')).toHaveLength(1);
+  }, 60_000);
+
+  test('a meeting that moves while its deadline is being checked leaves one clock, at the new time', async () => {
+    const pia = await person('pia', { start: '08:00', end: '22:00' });
+    await withPhone(pia);
+    const calendarId = await account(pia, 'caldav', 'Work');
+    const calendar = calendarSource(calendarId);
+    const start = clock + 48 * 60 * MINUTE;
+    calendar.items = [meeting('board-pia', start)];
+    await poll();
+    await poll();
+    const subject = await keyOf(calendarId, 'board-pia');
+    await required(situations).setDeadline({
+      spaceId: pia.spaceId,
+      principalId: pia.id,
+      subjectKey: subject,
+      connectionId: calendarId,
+      title: 'The board deck is ready',
+      anchor: { field: 'start', offset_s: -3600 },
+      leadSeconds: 15 * 60,
+      atRisk: { all: [{ field: 'status', op: 'eq', value: 'confirmed' }] },
+      personSet: true,
+    });
+    // The look starts; the calendar is slow to answer, and the meeting moves meanwhile.
+    const signals = required(sources.get(calendarId)?.signals);
+    let release: () => void = () => {};
+    let asked = false;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (signals.stream !== 'calendar' || !signals.confirm) throw new Error('calendar expected');
+    const confirm = signals.confirm.bind(signals);
+    signals.confirm = async (wanted) => {
+      asked = true;
+      await gate;
+      return confirm(wanted);
+    };
+    const saved = clock;
+    clock = start - 75 * MINUTE;
+    const looking = required(situations).sweep();
+    for (let wait = 0; !asked && wait < 200; wait++) await new Promise((r) => setTimeout(r, 25));
+    expect(asked).toBe(true);
+    const moved = start + 3 * 60 * MINUTE;
+    calendar.items = [meeting('board-pia', moved)];
+    await poll();
+    release();
+    await looking;
+    signals.confirm = confirm;
+    expect(await live(pia.id, 'deadline.at_risk')).toHaveLength(0);
+    const clocks = await armed(subject);
+    expect(clocks).toHaveLength(1);
+    expect(new Date(clocks[0]?.fire_at).getTime()).toBe(moved - 60 * MINUTE - 15 * MINUTE);
+    // Moved again with no read of the calendar between: the fresh look itself finds it.
+    const third = moved + 60 * MINUTE;
+    calendar.items = [meeting('board-pia', third)];
+    clock = moved - 75 * MINUTE;
+    await required(situations).sweep();
+    expect(await live(pia.id, 'deadline.at_risk')).toHaveLength(0);
+    const after = await armed(subject);
+    expect(after).toHaveLength(1);
+    expect(new Date(after[0]?.fire_at).getTime()).toBe(third - 60 * MINUTE - 15 * MINUTE);
+    clock = saved;
+  }, 60_000);
+
+  test('switching an account’s credential keeps the deadlines kept on it', async () => {
+    const quin = await person('quin', { start: '08:00', end: '22:00' });
+    const docs = await account(quin, 'test', 'Documents');
+    documentSource(docs, { signed: false });
+    await required(situations).setDeadline({
+      spaceId: quin.spaceId,
+      principalId: quin.id,
+      subjectKey: 'doc:quin',
+      connectionId: docs,
+      title: 'The form is filed',
+      dueAt: new Date(clock + 60 * MINUTE),
+      leadSeconds: 5 * 60,
+      atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
+      personSet: true,
+    });
+    const { sql } = required(handle);
+    const secretId = newId('sec');
+    await sql`insert into secret (id, space_id, ciphertext) values (${secretId}, ${quin.spaceId}, 'sealed')`;
+    const [current] = await sql`select generation from connection where id = ${docs}`;
+    await new PolicyService(required(jobs), required(runner)).changeConnection(docs, {
+      kind: 'switch',
+      secret_ref: secretId,
+      expected_generation: Number(current?.generation ?? 0),
+    });
+    expect(await armed('doc:quin')).toHaveLength(1);
+  }, 60_000);
+
+  test('a detector that fails undoes only itself: the observation is delivered and work still wakes', async () => {
+    const ray = await person('ray', { start: '08:00', end: '22:00' });
+    const mailbox = await account(ray, 'imap', 'Inbox');
+    const box = { messages: [] as NewMail[] };
+    sources.set(mailbox, {
+      signals: {
+        stream: 'mail',
+        changes: async (cursor, options) => {
+          if (cursor === null) return { cursor: '0', messages: [] };
+          const messages = box.messages.slice(Number(cursor), Number(cursor) + options.limit);
+          return { cursor: String(Number(cursor) + messages.length), messages };
+        },
+      },
+    });
+    const row = await required(jobs).create({ space_id: ray.spaceId, title: 'R', objective: 'R' });
+    const made = await required(triggers).create(row.id, {
+      kind: 'event',
+      connection_id: mailbox,
+      event_name: 'mail.received',
+      poll_seconds: 300,
+    });
+    await waitingOn(row, made.id);
+    await poll();
+    const failing = async () => {
+      throw new Error('detector fault');
+    };
+    required(triggers).observers.unshift(failing);
+    box.messages.push({
+      uid: 1,
+      message_id: '<ray@example.test>',
+      from: 'someone@example.test',
+      from_addresses: ['someone@example.test'],
+      to: 'ray@example.test',
+      to_addresses: ['ray@example.test'],
+      subject: 'Hello',
+      text: '',
+      html: '',
+      date: new Date(clock).toISOString(),
+      key: 'msgid:<ray@example.test>',
+      read_key: 1,
+    });
+    try {
+      await poll();
+    } finally {
+      required(triggers).observers.splice(required(triggers).observers.indexOf(failing), 1);
+    }
+    const [seen] = await required(handle).sql`select count(*)::int as n from event
+      where payload->>'kind' = 'connector_event' and payload->>'connection_id' = ${mailbox}`;
+    expect(seen?.n).toBe(1);
+    expect((await required(jobs).get(row.id)).state).toBe('queued');
+  }, 60_000);
+
+  test('a wait answered before its clock was set, or found before Melete watched the mailbox, is not raised', async () => {
+    const sue = await person('sue', { start: '08:00', end: '22:00' });
+    const mailbox = await account(sue, 'imap', 'Inbox');
+    const box = { messages: [] as NewMail[] };
+    sources.set(mailbox, {
+      signals: {
+        stream: 'mail',
+        changes: async (cursor, options) => {
+          if (cursor === null) return { cursor: '0', messages: [] };
+          const messages = box.messages.slice(Number(cursor), Number(cursor) + options.limit);
+          return { cursor: String(Number(cursor) + messages.length), messages };
+        },
+      },
+    });
+    // Some work listens to the mailbox, so it is read before any wait exists.
+    const row = await required(jobs).create({ space_id: sue.spaceId, title: 'S', objective: 'S' });
+    await required(triggers).create(row.id, {
+      kind: 'event',
+      connection_id: mailbox,
+      event_name: 'mail.received',
+      poll_seconds: 300,
+    });
+    await poll();
+    box.messages.push({
+      uid: 1,
+      message_id: '<re@acme.test>',
+      from: 'ana@acme.test',
+      from_addresses: ['ana@acme.test'],
+      to: 'sue@example.test',
+      to_addresses: ['sue@example.test'],
+      subject: 'Re: Invoice',
+      text: '',
+      html: '',
+      date: new Date(clock).toISOString(),
+      in_reply_to: '<ask@sue.test>',
+      key: 'msgid:<re@acme.test>',
+      read_key: 1,
+    });
+    await poll();
+    const { sql } = required(handle);
+    const wait = async (messageId: string, foundAt: Date) => {
+      const id = newId('awr');
+      await sql`insert into awaited_reply (id, space_id, principal_id, message_id, to_address,
+          subject, sent_at, evidence, status, scan_id, created_at)
+        values (${id}, ${sue.spaceId}, ${sue.id}, ${messageId}, 'ana@acme.test', 'Invoice',
+          ${new Date(clock - 4 * 86_400_000).toISOString()}::timestamptz, '{}'::jsonb, 'found',
+          'scn_fixture', ${foundAt.toISOString()}::timestamptz)`;
+      return id;
+    };
+    // Answered already: the answer was read before the scan listed the wait.
+    const answered = await wait('<ask@sue.test>', new Date());
+    // Found two days ago, before Melete watched this mailbox: silence proves nothing.
+    const unwatched = await wait('<other@sue.test>', new Date(Date.now() - 2 * 86_400_000));
+    await required(situations).sweep();
+    clock += 11 * MINUTE;
+    await poll();
+    await required(situations).sweep();
+    expect(await live(sue.id, 'reply.overdue')).toHaveLength(0);
+    const settled = await sql`select subject_key, state from clock
+      where subject_key in (${`awaited:${answered}`}, ${`awaited:${unwatched}`}) order by subject_key`;
+    expect(settled.map((entry) => entry.state).sort()).toEqual(['cleared', 'met']);
+  }, 60_000);
+
+  test('a conflict reaches linked work only when that work may read both calendars', async () => {
+    const { sql } = required(handle);
+    const uma = await person('uma', { start: '08:00', end: '22:00' });
+    await withPhone(uma);
+    // A shared space Uma owns; work asked of the room may not use her own calendars.
+    const shared = newId('sp');
+    await sql`insert into space (id, name, git_path, kind, owner_principal_id)
+      values (${shared}, 'Studio', ${`/s/${shared}`}, 'shared', ${uma.id})`;
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${uma.id}, ${shared}, 'owner')`;
+    const calendarId = newId('conn');
+    await sql`insert into connection (id, space_id, provider, label, shared_use)
+      values (${calendarId}, ${shared}, 'caldav', 'Uma', 'owner')`;
+    const calendar = calendarSource(calendarId);
+    const at = clock + 5 * 60 * MINUTE;
+    calendar.items = [meeting('crit', at), meeting('lunch', at + 2 * 60 * MINUTE)];
+    await poll();
+    await poll();
+    const first = await keyOf(calendarId, 'crit');
+    const second = await keyOf(calendarId, 'lunch');
+    const kept = (key: string, start: number) => ({
+      subjectKey: key,
+      connectionId: calendarId,
+      uid: key,
+      title: key,
+      start: new Date(start).toISOString(),
+      end: new Date(start + 60 * MINUTE).toISOString(),
+      allDay: false,
+      status: 'confirmed',
+      attendees: 2,
+    });
+    const [conflict] = meetingConflicts([kept(first, at), kept(second, at + 30 * MINUTE)], clock);
+    const roomWork = await required(jobs).create({
+      space_id: shared,
+      title: 'Room',
+      objective: 'Room',
+    });
+    await sql`update job set audience = 'room', principal_id = ${uma.id} where id = ${roomWork.id}`;
+    const ownWork = await required(jobs).create({
+      space_id: shared,
+      title: 'Own',
+      objective: 'Own',
+    });
+    await sql`update job set principal_id = ${uma.id} where id = ${ownWork.id}`;
+    await required(jobs).transaction(async (tx) => {
+      await required(situations).link(tx, String(conflict?.subjectKey), roomWork.id, 'watch');
+      await required(situations).link(tx, String(conflict?.subjectKey), ownWork.id, 'watch');
+    });
+    calendar.items = [meeting('crit', at), meeting('lunch', at + 30 * MINUTE)];
+    await poll();
+    const [raised] = await sql`select routed_job_ids from situation
+      where space_id = ${shared} and kind = 'meeting.conflict'`;
+    expect(raised?.routed_job_ids).toEqual([ownWork.id]);
+  }, 60_000);
+
+  test('a calendar is read for the detectors only while there is someone to tell, and less at night', async () => {
+    // Their day is 08:00–10:00 UTC; the test's afternoon is their night.
+    const vic = await person('vic', { start: '08:00', end: '10:00' });
+    const calendarId = await account(vic, 'caldav', 'Work');
+    calendarSource(calendarId);
+    const cursorOf = async () => {
+      const [row] = await required(handle).sql`select interval_s from source_cursor
+        where connection_id = ${calendarId} and stream = 'calendar'`;
+      return row;
+    };
+    await poll();
+    expect(await cursorOf()).toBeUndefined();
+    await withPhone(vic);
+    await poll();
+    expect((await cursorOf())?.interval_s).toBe(1800);
   }, 60_000);
 });

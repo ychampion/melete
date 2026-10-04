@@ -10,13 +10,14 @@
  * Words from an account (a meeting's title, its place, a subject line) are
  * outside content. They travel in `evidence`, as fields, and never in a
  * situation's title or reason, so an invitation titled "URGENT: call me" says
- * nothing in Melete's voice.
+ * nothing in Melete's voice. An invitation the person has not accepted is not
+ * their meeting: it raises nothing.
  */
 import { createHash } from 'node:crypto';
 import { SITUATION_KINDS, type Urgency } from '@melete/contracts';
 import { registrableDomain } from '../companies/messages.ts';
 import { baseSubject, isPersonalDomain } from '../companies/waiting.ts';
-import { instantMs } from '../signals/occurrences.ts';
+import { instantMs, zonedToUtc } from '../signals/occurrences.ts';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -28,18 +29,35 @@ export const MAX_CONFLICTS = 50;
 /** A deadline this close, set or accepted by the person, may break their quiet. */
 export const URGENT_LEAD_SECONDS = 15 * 60;
 
-/** One live situation per key: its kind, what it is about, and the moment it belongs to. */
-export const situationKey = (kind: string, subjectKey: string, window = '') =>
+/** Whose a situation is: one person, in one space. Keys never cross them. */
+export type Scope = { spaceId: string; principalId: string };
+
+/**
+ * One live situation per key: whose it is, its kind, what it is about, and
+ * the moment it belongs to. Two people watching the same document each have
+ * their own.
+ */
+export const situationKey = (scope: Scope, kind: string, subjectKey: string, window = '') =>
   createHash('sha256')
-    .update(`${kind}\u0000${subjectKey}\u0000${window}`)
+    .update([scope.spaceId, scope.principalId, kind, subjectKey, window].join('\u0000'))
     .digest('hex')
     .slice(0, 40);
+
+/** A short hash of what makes a sighting materially different from the last one. */
+export const fingerprintOf = (parts: readonly unknown[]) =>
+  createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24);
 
 /** What a detector says should be raised. */
 export type Finding = {
   kind: string;
   subjectKey: string;
   window: string;
+  /**
+   * What makes this sighting what it is. The same fingerprint again changes
+   * nothing, and a situation the person dismissed comes back only with a
+   * different one: the meeting moved, the overlap changed.
+   */
+  fingerprint: string;
   urgency: Urgency;
   title: string;
   reason: string;
@@ -51,6 +69,7 @@ export type Finding = {
 const ORDER: Record<Urgency, number> = { normal: 0, soon: 1, urgent: 2 };
 export const higher = (left: Urgency, right: Urgency): Urgency =>
   ORDER[left] >= ORDER[right] ? left : right;
+export const louder = (left: Urgency, right: Urgency): boolean => ORDER[left] > ORDER[right];
 
 /**
  * How soon a deadline's person hears. Urgent only when the person set or
@@ -87,6 +106,58 @@ export function spokenTime(iso: string, timeZone: string): string {
   }
 }
 
+/** A calendar date as the person reads it: "Sat, Oct 10". The date is the date; no zone moves it. */
+export function spokenDate(date: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${date.slice(0, 10)}T12:00:00Z`));
+}
+
+/**
+ * When a deadline given only as a date is due: the end of that day where the
+ * person is, so a commitment due on the 10th is due until their midnight.
+ */
+export function endOfLocalDay(date: string, timeZone: string): number {
+  const [year = 1970, month = 1, day = 1] = date.slice(0, 10).split('-').map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  const wall = {
+    year: next.getUTCFullYear(),
+    month: next.getUTCMonth() + 1,
+    day: next.getUTCDate(),
+    hour: 0,
+    minute: 0,
+    second: 0,
+  };
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return zonedToUtc(wall, timeZone);
+  } catch {
+    return zonedToUtc(wall, 'UTC');
+  }
+}
+
+/** The words for when a deadline is due: a time, or for a date alone, the day. */
+export function dueWords(due: string, timeZone: string, dateOnly: string | null): string {
+  return dateOnly ? spokenDate(dateOnly) : spokenTime(due, timeZone);
+}
+
+/**
+ * Whether an event is the person's own meeting: one they organise or
+ * accepted. An invitation they have not answered, said maybe to, or declined
+ * is not; a source that cannot say (a feed) counts what it lists.
+ */
+export function ownMeeting(response: unknown): boolean {
+  return (
+    response === undefined ||
+    response === null ||
+    response === 'organizer' ||
+    response === 'accepted'
+  );
+}
+
 type CalendarPayload = {
   about?: { key?: unknown };
   title?: unknown;
@@ -96,6 +167,7 @@ type CalendarPayload = {
   location?: unknown;
   status?: unknown;
   attendees?: unknown;
+  response?: unknown;
   changed?: unknown;
   previous?: Record<string, unknown>;
   reason?: unknown;
@@ -112,8 +184,8 @@ const timed = (value: unknown) => {
 /**
  * `meeting.changed`: a meeting with other people moved, changed place, or was
  * cancelled, and it starts (or was to start) within a day. A change further
- * out is left to the calendar. An all-day event, or one with nobody else on
- * it, is not a meeting.
+ * out is left to the calendar. An all-day event, one with nobody else on it,
+ * or an invitation the person has not accepted is not a meeting.
  */
 export function meetingChange(
   eventName: string,
@@ -122,7 +194,7 @@ export function meetingChange(
   timeZone: string,
 ): Finding | null {
   const subjectKey = text(payload.about?.key);
-  if (!subjectKey || payload.all_day === true) return null;
+  if (!subjectKey || payload.all_day === true || !ownMeeting(payload.response)) return null;
   const others = Math.max(
     Number(payload.attendees ?? 0) || 0,
     Number(payload.previous?.attendees ?? 0) || 0,
@@ -155,6 +227,7 @@ export function meetingChange(
     kind: SITUATION_KINDS.meetingChanged,
     subjectKey,
     window: '',
+    fingerprint: fingerprintOf([start, end, text(payload.location), cancelled]),
     urgency: 'soon',
     title,
     reason,
@@ -184,20 +257,23 @@ export type KeptMeeting = {
   allDay: boolean;
   status: string;
   attendees: number;
+  response?: string | null;
 };
 
-export type Conflict = Finding & { pair: [string, string] };
+export type Conflict = Finding & { pair: [string, string]; connections: string[] };
 
 /**
- * `meeting.conflict`: two meetings on the person's calendars overlap. Both
- * are timed, confirmed, not over, and at least one has other people on it.
- * The same event seen on two calendars (the same uid, or the same title at
- * the same times) is one meeting, not a conflict. A pair is named in a fixed
- * order, so the same overlap found from either side is one situation.
+ * `meeting.conflict`: two of the person's meetings overlap. Both are timed,
+ * confirmed, theirs (organised or accepted), not over, and at least one has
+ * other people on it. The same event seen on two calendars (the same uid, or
+ * the same title at the same times) is one meeting, not a conflict. A pair is
+ * named in a fixed order, so the same overlap found from either side is one
+ * situation; its fingerprint is both meetings' times, so moving either one is
+ * a new sighting.
  */
 export function meetingConflicts(meetings: readonly KeptMeeting[], now: number): Conflict[] {
   const live = meetings
-    .filter((m) => !m.allDay && m.status === 'confirmed')
+    .filter((m) => !m.allDay && m.status === 'confirmed' && ownMeeting(m.response))
     .map((m) => ({ ...m, from: timed(m.start), to: timed(m.end) }))
     .filter(
       (m): m is typeof m & { from: number; to: number } =>
@@ -216,19 +292,23 @@ export function meetingConflicts(meetings: readonly KeptMeeting[], now: number):
       if (first.from === second.from && first.to === second.to && first.title === second.title)
         continue;
       if (first.attendees < 1 && second.attendees < 1) continue;
-      const pair = [first.subjectKey, second.subjectKey].sort() as [string, string];
+      const ordered = [first, second].sort((a, b) => a.subjectKey.localeCompare(b.subjectKey));
+      const pair = ordered.map((m) => m.subjectKey) as [string, string];
       const earliest = Math.min(first.from, second.from);
       found.push({
         pair,
+        connections: [...new Set(ordered.map((m) => m.connectionId))],
         kind: SITUATION_KINDS.meetingConflict,
         subjectKey: `conflict:${createHash('sha256').update(pair.join('\u0000')).digest('hex').slice(0, 40)}`,
         window: '',
+        fingerprint: fingerprintOf(ordered.map((m) => [m.start, m.end])),
         urgency: earliest - now <= DAY ? 'soon' : 'normal',
         title: 'Two meetings overlap',
         reason: '',
         evidence: {
-          meetings: [first, second].map((m) => ({
+          meetings: ordered.map((m) => ({
             subject_key: m.subjectKey,
+            connection_id: m.connectionId,
             title: m.title,
             start: m.start,
             end: m.end,

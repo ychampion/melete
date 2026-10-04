@@ -453,7 +453,9 @@ export class PushService {
 
   /**
    * Pushes this person has had today, in their own day, in each lane. A batch
-   * counts in the lane it went out in, which its fastest intent names.
+   * counts in the lane it actually went out in, which may be below the one its
+   * intents asked for: what spilled past a lane's cap counts against the
+   * lane that took it, so no lane's cap can be stepped round.
    */
   private async sentToday(principalId: string, day: DayWindow, now: Date): Promise<SentToday> {
     const today = localTime(now, day.timeZone).day;
@@ -461,7 +463,7 @@ export class PushService {
       .selectDistinct({
         batchId: pushIntent.batchId,
         sentAt: pushIntent.sentAt,
-        urgency: pushIntent.urgency,
+        lane: pushIntent.sentLane,
       })
       .from(pushIntent)
       .where(
@@ -475,7 +477,8 @@ export class PushService {
     for (const row of rows) {
       if (!row.sentAt || !row.batchId || localTime(row.sentAt, day.timeZone).day !== today)
         continue;
-      const lane = (row.urgency in rank ? row.urgency : 'normal') as keyof SentToday;
+      // Pushes sent before lanes were recorded went out in the normal lane.
+      const lane = (row.lane && row.lane in rank ? row.lane : 'normal') as keyof SentToday;
       const before = lanes.get(row.batchId);
       if (!before || rank[lane] > rank[before]) lanes.set(row.batchId, lane);
     }
@@ -496,6 +499,12 @@ export class PushService {
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
       'situation',
     ];
+    // A situation that was resolved, dismissed or removed has nothing left to say.
+    await this.db.execute(sql`update push_intent p set dropped_at = now()
+      where p.principal_id = ${principalId} and p.kind = 'situation'
+        and p.sent_at is null and p.dropped_at is null
+        and not exists (select 1 from situation x where x.id = p.situation_id
+          and x.state in ('open', 'routed'))`);
     const waiting = on.length
       ? await this.db
           .select()
@@ -561,7 +570,7 @@ export class PushService {
     if (!outcomes.includes('sent')) return 'failed';
     await this.db
       .update(pushIntent)
-      .set({ sentAt: now, batchId: newId('pbat') })
+      .set({ sentAt: now, batchId: newId('pbat'), sentLane: plan.urgency })
       .where(inArray(pushIntent.id, plan.ids));
     return 'sent';
   }

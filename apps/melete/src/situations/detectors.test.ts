@@ -5,6 +5,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   answers,
+  dueWords,
+  endOfLocalDay,
   type KeptMeeting,
   meetingChange,
   meetingConflicts,
@@ -133,15 +135,63 @@ describe('urgency', () => {
     expect(urgencyFor({ personSet: true, leadSeconds: 300, ceiling: 'normal' })).toBe('normal');
   });
 
-  test('a key names kind, subject and window', () => {
+  test('a key names the person, the space, the kind, the subject and the window', () => {
     const due = '2026-10-05T15:00:00.000Z';
-    expect(situationKey('deadline.at_risk', 'doc:a', due)).toBe(
-      situationKey('deadline.at_risk', 'doc:a', due),
+    const sam = { spaceId: 'sp_a', principalId: 'own_sam' };
+    const tia = { spaceId: 'sp_a', principalId: 'own_tia' };
+    expect(situationKey(sam, 'deadline.at_risk', 'doc:a', due)).toBe(
+      situationKey(sam, 'deadline.at_risk', 'doc:a', due),
     );
-    expect(situationKey('deadline.at_risk', 'doc:a', due)).not.toBe(
-      situationKey('deadline.at_risk', 'doc:a', '2026-10-05T16:00:00.000Z'),
+    expect(situationKey(sam, 'deadline.at_risk', 'doc:a', due)).not.toBe(
+      situationKey(tia, 'deadline.at_risk', 'doc:a', due),
     );
-    expect(situationKey('meeting.changed', 'doc:a')).toHaveLength(40);
+    expect(situationKey(sam, 'deadline.at_risk', 'doc:a', due)).not.toBe(
+      situationKey({ ...sam, spaceId: 'sp_b' }, 'deadline.at_risk', 'doc:a', due),
+    );
+    expect(situationKey(sam, 'deadline.at_risk', 'doc:a', due)).not.toBe(
+      situationKey(sam, 'deadline.at_risk', 'doc:a', '2026-10-05T16:00:00.000Z'),
+    );
+    expect(situationKey(sam, 'meeting.changed', 'doc:a')).toHaveLength(40);
+  });
+});
+
+describe('dates and invitations', () => {
+  test('a commitment due on a date is due until that day ends where the person is, and named by its day', () => {
+    // 2026-10-10 is a Saturday. Midnight UTC would read as Friday afternoon in Los Angeles.
+    const due = endOfLocalDay('2026-10-10', 'America/Los_Angeles');
+    expect(new Date(due).toISOString()).toBe('2026-10-11T07:00:00.000Z');
+    expect(dueWords(new Date(due).toISOString(), 'America/Los_Angeles', '2026-10-10')).toBe(
+      'Sat, Oct 10',
+    );
+    expect(new Date(endOfLocalDay('2026-10-10', 'Asia/Tokyo')).toISOString()).toBe(
+      '2026-10-10T15:00:00.000Z',
+    );
+  });
+
+  test('an invitation the person has not accepted is not their meeting', () => {
+    for (const response of ['needs_action', 'declined', 'tentative'])
+      expect(meetingChange('calendar.event.changed', moved({ response }), now, 'UTC')).toBeNull();
+    expect(
+      meetingChange('calendar.event.changed', moved({ response: 'accepted' }), now, 'UTC')?.title,
+    ).toBe('A meeting moved');
+    expect(
+      meetingConflicts(
+        [meeting('a', 1, 2), meeting('b', 1.5, 3, { response: 'needs_action' })],
+        now,
+      ),
+    ).toHaveLength(0);
+    expect(
+      meetingConflicts([meeting('a', 1, 2, { response: 'organizer' }), meeting('b', 1.5, 3)], now),
+    ).toHaveLength(1);
+  });
+
+  test('a conflict is the same while its meetings stay put, and new once either moves', () => {
+    const [before] = meetingConflicts([meeting('a', 1, 2), meeting('b', 1.5, 3)], now);
+    const [same] = meetingConflicts([meeting('b', 1.5, 3), meeting('a', 1, 2)], now);
+    const [moved] = meetingConflicts([meeting('a', 1, 2), meeting('b', 1.75, 3)], now);
+    expect(same?.fingerprint).toBe(before?.fingerprint);
+    expect(moved?.subjectKey).toBe(before?.subjectKey);
+    expect(moved?.fingerprint).not.toBe(before?.fingerprint);
   });
 });
 

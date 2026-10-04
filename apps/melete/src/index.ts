@@ -421,11 +421,12 @@ export function createApp(deps: AppDeps) {
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
-  if (deps.jobs && deps.triggers)
-    mountSituations(
-      app,
-      deps.situations ?? new SituationService({ jobs: deps.jobs, triggers: deps.triggers }),
-    );
+  const noticing =
+    deps.situations ??
+    (deps.jobs && deps.triggers
+      ? new SituationService({ jobs: deps.jobs, triggers: deps.triggers })
+      : undefined);
+  if (noticing) mountSituations(app, noticing);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -499,6 +500,17 @@ export function createApp(deps: AppDeps) {
         modelSettings,
         spending: deps.spending,
       }),
+      ...(noticing
+        ? {
+            accepted: (owner, itemId, byPerson) =>
+              noticing.acceptCommitment({
+                spaceId: owner.spaceId,
+                principalId: owner.principalId,
+                itemId,
+                byPerson,
+              }),
+          }
+        : {}),
       ...deps.companies,
     });
   if (deps.db && deps.sql)
@@ -1521,6 +1533,7 @@ export async function bootstrap(
     db: handle?.db ?? null,
     jobs,
     triggers,
+    situations,
     approvals,
     events,
     submissions,

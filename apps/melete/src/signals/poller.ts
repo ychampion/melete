@@ -561,8 +561,7 @@ export class SignalPoller {
     // from what was just kept. A failure here never fails the read.
     if (this.deps.afterCalendarRead)
       await this.deps.afterCalendarRead(row.connection_id).catch(() => {
-        process.stderr.write(`signals: after_read_failed ${row.connection_id}
-`);
+        process.stderr.write(`signals: after_read_failed ${row.connection_id}\n`);
       });
     return { cursor: { window_end: diff.window_end }, delivered, note: diff.note ?? null };
   }
