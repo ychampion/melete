@@ -294,6 +294,7 @@ export const CONNECTION_KIND_SCOPES = {
     'computer.type',
     'computer.key',
     'computer.scroll',
+    'computer.batch',
     'process.start',
     'process.list',
     'process.read',
@@ -1290,6 +1291,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           ['computer.type', 'Type into the sandbox'],
           ['computer.key', 'Press keys in the sandbox'],
           ['computer.scroll', "Scroll the sandbox's screen"],
+          ['computer.batch', 'Do a few steps in the sandbox at once'],
         ] as const
       ).map(([scope, label]) => ({
         scope,

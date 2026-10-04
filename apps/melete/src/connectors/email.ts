@@ -8,6 +8,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
+import type { SignalSource } from '../signals/types.ts';
 import {
   credentialRefused,
   type EmailConnection,
@@ -197,6 +198,27 @@ export function sensitiveInboxMessage(message: MailMessage): boolean {
   );
 }
 
+/** Words that on their own say a subject is about signing in or a code. */
+const CODE_WORDS =
+  /\b(?:otp|passcodes?|pass[ -]codes?|2fa|mfa|two[ -]?(?:factor|step)|one[ -]?time|verif(?:y|ied|ication|ying)|authenticat\w*|(?:security|access|login|log[ -]?in|sign[ -]?in|confirmation|auth) codes?)\b/i;
+/** Words that, beside a number, say the number is a code. */
+const NEAR_CODE =
+  /\b(?:codes?|pins?|otp|token|password|log[ -]?ins?|sign[ -]?ins?|confirm\w*|security|verif\w*|2fa)\b/i;
+/** A 4–8 digit number, written whole or in two groups, or with a short letter prefix (G-482910). */
+const CODE_NUMBER = /(?:^|[^\d])(?:[A-Z]{1,3}-)?(?:\d{4,8}|\d{3}[ -]\d{3,4})(?![\d])/;
+
+/**
+ * Whether a message's headers look like a sign-in code, a verification or a
+ * password reset. Signals read headers only, so the subject alone decides, and
+ * the rule leans to withholding: a code mail missed costs little, a code
+ * quoted into a wake costs a lot.
+ */
+export function withheldFromSignals(message: MailMessage): boolean {
+  if (sensitiveInboxMessage(message)) return true;
+  const subject = message.subject.normalize('NFKC');
+  return CODE_WORDS.test(subject) || (CODE_NUMBER.test(subject) && NEAR_CODE.test(subject));
+}
+
 export function emailMessageId(actionId: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(actionId)) throw new Error('Invalid action identity');
   return `<${actionId}@melete.local>`;
@@ -228,6 +250,24 @@ export class EmailConnector implements Connector {
         work(transport(imap, password)),
       );
   }
+
+  /**
+   * New mail for the signal poller: headers only, read from the mailbox's own
+   * change feed. The inbox hygiene the tools apply holds, and a subject that
+   * looks like a sign-in code or a verification is withheld as well.
+   */
+  readonly signals: SignalSource = {
+    stream: 'mail',
+    changes: (cursor, options) =>
+      this.use(async (transport) => {
+        if (!transport.changes) throw new Error('This mailbox cannot list what changed');
+        const read = await transport.changes(cursor, options);
+        return {
+          cursor: read.cursor,
+          messages: read.messages.filter((message) => !withheldFromSignals(message)),
+        };
+      }),
+  };
 
   private assertContext(action: Action, ctx: ConnectorContext): void {
     if (

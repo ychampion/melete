@@ -110,7 +110,7 @@ import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } fro
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
-import { readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
+import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -677,7 +677,10 @@ export class BrokerService implements BrokerOperations {
     const workRoot = this.options.workRoot;
     if (!workRoot || !SCREENSHOT_TOOLS.includes(action.kind) || action.status !== 'succeeded')
       throw new BrokerFault('action_not_found');
-    if (action.kind !== 'computer.screenshot' && !(await this.deviceScreenShared(action)))
+    if (
+      !OWN_COMPUTER_PICTURE_TOOLS.includes(action.kind) &&
+      !(await this.deviceScreenShared(action))
+    )
       return { withheld: true, reason: DEVICE_SCREEN_WITHHELD };
     const bytes = await readScreenshot(workRoot, action);
     if (!bytes) throw new BrokerFault('action_not_found');
@@ -2125,8 +2128,8 @@ export class BrokerService implements BrokerOperations {
     const guests = await this.guestsAhead(original.job_id, original);
     // Marked before the row can read `dispatched`, so recovery never takes a
     // dispatch this process is about to send, or is still waiting on, for one
-    // whose sender is gone. Cleared once the connector has answered, a late
-    // answer included.
+    // whose sender is gone. Cleared once the connector's answer is recorded, a
+    // late answer included.
     const prior = this.inFlight.has(id);
     this.inFlight.add(id);
     const release = () => {
@@ -2266,21 +2269,46 @@ export class BrokerService implements BrokerOperations {
         },
       ),
     );
-    void execution.then(release, release);
+    // The mark stays until the connector's answer is recorded, not merely
+    // received: between the two the row still reads `dispatched`, and an
+    // abandoned-action sweep in that gap would settle a delivered action as
+    // unknown.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), budgetMs);
     });
-    const result = await Promise.race([execution, timeout]);
-    clearTimeout(timer);
+    let result: Awaited<typeof execution> | 'timeout';
+    try {
+      result = await Promise.race([execution, timeout]);
+    } catch (error) {
+      release();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     if (result === 'timeout') {
       controller.abort();
-      const unknown = await this.recordResult(id, uncertainResult(readOnly, 'timed out', question));
-      // A cooperative abort is not proof of non-delivery; a later receipt is still a fact.
-      void execution.then((late) => this.settleRepair(prepared.action, late)).catch(() => {});
-      return unknown;
+      try {
+        const unknown = await this.recordResult(
+          id,
+          uncertainResult(readOnly, 'timed out', question),
+        );
+        // A cooperative abort is not proof of non-delivery; a later receipt is still a fact.
+        void execution
+          .then((late) => this.settleRepair(prepared.action, late))
+          .catch(() => {})
+          .finally(release);
+        return unknown;
+      } catch (error) {
+        void execution.finally(release).catch(() => {});
+        throw error;
+      }
     }
-    return this.settleRepair(prepared.action, result);
+    try {
+      return await this.settleRepair(prepared.action, result);
+    } finally {
+      release();
+    }
   }
 
   /**

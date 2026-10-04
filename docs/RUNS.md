@@ -180,7 +180,11 @@ standing work.
   `{ kind: "schedule", cron, timezone? }`, `{ kind: "event", connection_id,
   event_name }` for anything new on one of the space's active connections, or
   `{ kind: "watch", connection_id, event_name, predicate }` for only the
-  observations that pass a watch's test. A new wake replaces the old one.
+  observations that pass a watch's test. The event name is one the connection
+  reports, such as `mail.received` or `calendar.event.changed`
+  ([SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)), and the connection
+  must serve the run under the space's sharing rule; anything else is refused.
+  A new wake replaces the old one.
   `"drop_trigger"` stops it standing and goes on now. Helpers cannot stand.
 - The time zone defaults to the person's profile time zone. A schedule the
   person sets (`POST /runs` with `repeat`) may wake the work at most every 5
@@ -235,6 +239,9 @@ in step with what the run asked for.
 | Tool | Offered to | Effect |
 | --- | --- | --- |
 | `run.start` | conversations | starts a run tied to the conversation, optionally repeating on a schedule |
+| `run.list` | conversations | lists the person's own runs in the space (open ones, or all with `include_ended`): id, title, status, schedule and next run |
+| `run.pause`, `run.resume` | conversations | pause or resume one of the person's own runs, named by id or title, as the Runs page does |
+| `run.stop` | conversations | turns one of the person's own runs off: it is paused at once, with a receipt that `run.resume` undoes; removing it for good is the person's own Stop |
 | `run.log` | runs and helpers | adds to the record; a `report` also notifies the person; `dead_end` marks an approach not to repeat |
 | `run.try` | runs and helpers | runs a try in the sandbox and records its measured value |
 | `run.delegate` | runs | starts a helper; refused once the shift has given its result |
@@ -242,7 +249,20 @@ in step with what the run asked for.
 | `run.finish` | runs and helpers | records the result, with the actions it rests on; the work completes, or its result is checked first; a check gives its `verdict` here |
 
 They are native broker tools, pinned in the attempt's core catalog for the
-kinds of job their scopes are given to. Effects outside Melete go through the
+kinds of job their scopes are given to. `run.list`, `run.pause`, `run.resume` and `run.stop`
+act for the person who asked the turn: in a room, the member whose request it
+is, never the room. They reach that person's own runs in the space, the ones
+the Runs page shows them, and in a room also the runs the room's requests
+started that the room lets them manage: those their own requests started, or
+all of them for an owner of the room, as a room's Stop allows. Another
+member's work is not listed and not found by id or by title, and a member who
+has left reaches nothing. They act at once without asking, because nothing
+they do is permanent: words the model read in a page, a file or an email could
+ask it to "stop every routine", so `run.stop` only pauses, and removing work
+for good stays with the person (Stop on its card, confirmed by name). What
+`run.list` returns is marked as data, not instructions. A repeating `run.start` answers with the
+schedule in words and its next time, and tells the model there is nothing to
+wait for, so it ends the reply instead of waiting for the first shift. Effects outside Melete go through the
 broker and the person's approval rules exactly as in a conversation. Runs and
 helpers read public web pages the way conversations do, unless the space turned
 that off or the space or agent is private.
@@ -264,7 +284,9 @@ measuring again is how a value is confirmed.
 try, the helpers, any question, and what standing work waits for. `POST /runs/{id}/message` answers a question,
 wakes a resting run, is read at the next shift of a working one, or takes a
 finished run up again. Pause lets a shift under way finish and starts no new
-one; Stop ends the run and its helpers. A run that goes a day without an
+one; Stop ends the run and its helpers. Work that repeats is also listed on the Automations
+page beside the routines made there, with its schedule, next time, Pause and
+Stop. A run that goes a day without an
 update gets a short one written from its record. Progress notifications go
 out at most once every 30 minutes for a run; the rest stay in the record and
 the view. The result, a change to what standing work waits for, and a report

@@ -25,7 +25,22 @@ export type FileRecords = {
   madeInFiles: Map<string, string>;
 };
 
-type RecordRow = { kind: string; canonical_payload: unknown; receipt: unknown };
+type RecordRow = {
+  kind: string;
+  canonical_payload: unknown;
+  receipt: unknown;
+  /** The action's status; a row without one is taken as settled. */
+  status?: string;
+};
+
+/**
+ * Statuses of an action that may have changed the files although it has not
+ * settled: admitted or sent, or sent and its outcome not known. Such an action
+ * counts where it makes a file the person's or takes away Melete's claim to
+ * one, and never where it would make a file Melete's or stop one being the
+ * person's: what is not known is decided by the person.
+ */
+const UNSETTLED = new Set(['admitted', 'dispatched', 'unknown', 'unresolved']);
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -53,6 +68,8 @@ export function fileRecords(rows: readonly RecordRow[]): FileRecords {
   const personInWork = new Set<string>();
   const madeInFiles = new Map<string, string>();
   for (const row of rows) {
+    const settled = row.status === undefined || row.status === 'succeeded';
+    if (!settled && !UNSETTLED.has(String(row.status))) continue;
     const payload = object(row.canonical_payload);
     const detail = object(object(row.receipt).detail);
     const hash = typeof detail.content_hash === 'string' ? detail.content_hash : null;
@@ -67,6 +84,13 @@ export function fileRecords(rows: readonly RecordRow[]): FileRecords {
       const toArea = (payload.to_area ?? payload.area) === 'artifacts' ? 'artifacts' : 'work';
       // A file in the person's Files that this conversation did not make is theirs.
       const theirs = area === 'work' ? personInWork.has(from) : !madeInFiles.has(from);
+      if (!settled) {
+        // It may be at either name: the person's at both, Melete's at neither.
+        if (toArea === 'work' && theirs) personInWork.add(to);
+        madeInFiles.delete(from);
+        madeInFiles.delete(to);
+        continue;
+      }
       if (area === 'work') personInWork.delete(from);
       else madeInFiles.delete(from);
       if (toArea === 'work') {
@@ -78,11 +102,14 @@ export function fileRecords(rows: readonly RecordRow[]): FileRecords {
       if (!written || area !== 'artifacts') continue;
       // Only a write that made a new file makes it Melete's; one that saved
       // over a file there leaves it the person's.
-      if (detail.created === true && hash) madeInFiles.set(written, hash);
+      if (settled && detail.created === true && hash) madeInFiles.set(written, hash);
       else madeInFiles.delete(written);
     } else if (row.kind === 'files.delete') {
       const gone = normal(payload.path);
-      if (!gone) continue;
+      // Until it settles, a delete changes nothing: what it may not have
+      // taken is still whoever's it was, and what it took is gone. (It is
+      // also the delete being checked, which must not change its own answer.)
+      if (!gone || !settled) continue;
       if (area === 'work')
         for (const path of beneath(personInWork, gone)) personInWork.delete(path);
       else for (const path of beneath(madeInFiles.keys(), gone)) madeInFiles.delete(path);
@@ -91,10 +118,11 @@ export function fileRecords(rows: readonly RecordRow[]): FileRecords {
   return { personInWork, madeInFiles };
 }
 
-/** This conversation's file records, in the order they settled. */
+/** This conversation's file records, in the order they settled; unsettled ones as `fileRecords` says. */
 export async function loadFileRecords(tx: Query, jobId: string): Promise<FileRecords> {
-  const rows = await tx`select kind, canonical_payload, receipt from action
-    where job_id = ${jobId} and status = 'succeeded'
+  const rows = await tx`select kind, canonical_payload, receipt, status from action
+    where job_id = ${jobId}
+      and status in ('succeeded', 'admitted', 'dispatched', 'unknown', 'unresolved')
       and kind in ('files.write', 'files.move', 'files.save_attachment', 'files.delete')
     order by resolved_at nulls last, created_at, id`;
   return fileRecords(rows as unknown as RecordRow[]);

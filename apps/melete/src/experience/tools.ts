@@ -581,6 +581,8 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
     }
     case 'computer.scroll':
       return phrase('Scrolling in its computer', 'Scrolled in its computer');
+    case 'computer.batch':
+      return phrase('Doing a few steps in its computer', 'Did a few steps in its computer');
     case 'exec.run':
     case 'terminal.run':
       return command
@@ -852,6 +854,14 @@ const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   compose: ['tool', 'Working through several steps', 'Worked through several steps'],
   'job.wait': ['tool', 'Scheduling a follow-up', 'Scheduled a follow-up'],
   'run.start': ['tool', 'Starting work in the background', 'Started work in the background'],
+  'run.list': [
+    'tool',
+    'Looking through your background work',
+    'Looked through your background work',
+  ],
+  'run.pause': ['tool', 'Pausing background work', 'Paused background work'],
+  'run.resume': ['tool', 'Resuming background work', 'Resumed background work'],
+  'run.stop': ['tool', 'Stopping background work', 'Stopped background work'],
   'run.log': ['tool', 'Noting progress', 'Noted progress'],
   'run.try': ['sandbox', 'Trying something and measuring it', 'Tried something and measured it'],
   'run.delegate': ['tool', 'Handing part to a helper', 'Handed part to a helper'],
