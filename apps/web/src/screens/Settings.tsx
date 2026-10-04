@@ -129,6 +129,9 @@ function WatchSwitch({
   const [saving, setSaving] = useState(false);
   const on = connection.watching === true;
   const title = 'Watch this account for changes';
+  const reads = /calendar/i.test(connection.app)
+    ? 'Melete notices meetings that are added, moved or cancelled, reading only when and where they are.'
+    : 'Melete notices new mail, reading only who wrote and the subject line.';
   return (
     <div
       className="row"
@@ -142,15 +145,15 @@ function WatchSwitch({
       <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-          {on ? 'On' : 'Off'} · Melete notices new mail and meetings that move, reading only who
-          wrote, the subject line, and when and where a meeting is.
+          {on ? 'On' : 'Off'} · {reads}
         </span>
       </span>
+      {/* Kept enabled while saving, so the switch keeps its focus for the keyboard. */}
       <Toggle
         on={on}
-        disabled={saving}
         label={`${title}: ${connection.label}`}
         onChange={(next) => {
+          if (saving) return;
           setSaving(true);
           void adapter.watchConnection(connection.id, next).then((r) => {
             setSaving(false);
