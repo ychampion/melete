@@ -299,10 +299,26 @@ async function capture(
   provider: DockerSandboxProvider,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
-): Promise<Record<string, JsonValue>> {
+): Promise<Record<string, JsonValue>>;
+async function capture(
+  options: { action: Action; jobId: string; workRoot: string },
+  provider: DockerSandboxProvider,
+  handle: ReturnType<typeof sessionHandle>,
+  signal: AbortSignal,
+  /** Asked once the picture is in hand; true discards it unsaved. */
+  takenOver: () => Promise<boolean>,
+): Promise<Record<string, JsonValue> | null>;
+async function capture(
+  options: { action: Action; jobId: string; workRoot: string },
+  provider: DockerSandboxProvider,
+  handle: ReturnType<typeof sessionHandle>,
+  signal: AbortSignal,
+  takenOver?: () => Promise<boolean>,
+): Promise<Record<string, JsonValue> | null> {
   const answer = await provider.computer(handle, { kind: 'screenshot' }, signal);
   const size = pngSize(answer);
   if (!size) throw new Error('the desktop did not answer with an image');
+  if (takenOver && (await takenOver())) return null;
   const path = `.melete/computer/${options.action.id}.png`;
   await new LocalWorkspaceFs(options.workRoot).write(options.jobId, path, answer, 0o644);
   return {
@@ -399,11 +415,25 @@ export async function runComputerAction(options: {
         ...(stopped ? { stopped } : {}),
       }
     : { ...base, ...(steps[0] ?? {}) };
-  if (base.control_changed) return { ...done, screenshot: 'not taken: a person took control' };
+  const notTaken = {
+    ...done,
+    control_changed: true,
+    screenshot: 'not taken: a person took control',
+  };
+  if (base.control_changed) return notTaken;
   const settle = options.settleMs ?? (commands.at(-1)?.kind === 'open' ? 0 : SETTLE_MS);
   if (settle > 0) await Bun.sleep(settle);
+  // A person who takes the computer while the screen settles, or while it is
+  // captured, is never shown to the model: checked before the capture and
+  // again before the picture is kept.
+  const takenOver = async () => {
+    const now = await controls.state(session.providerSandboxId);
+    return now.control === 'human' || now.epoch !== held.epoch;
+  };
+  if (await takenOver()) return notTaken;
   try {
-    return { ...done, ...(await capture(options, provider, handle, signal)) };
+    const picture = await capture(options, provider, handle, signal, takenOver);
+    return picture ? { ...done, ...picture } : notTaken;
   } catch (error) {
     return { ...done, screenshot: `not taken: ${said(error)}` };
   }

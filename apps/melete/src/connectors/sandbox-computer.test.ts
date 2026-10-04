@@ -453,3 +453,58 @@ test('a person who takes the computer during a batch stops the rest, and nothing
   expect(detail.stopped).toContain('a person took control');
   expect(detail.screenshot).toBe('not taken: a person took control');
 });
+
+test('a person who takes the computer while the screen settles is not captured', async () => {
+  const { session, sandbox, provider, seen } = fixture({ screenshot: png(1024, 768) });
+  const root = await workRoot();
+  const step = runComputerAction({
+    action: action('computer.click', { x: 1, y: 1 }, 'act_SETTLE1'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 100,
+  });
+  setTimeout(() => void controls.change(sandbox, 'human'), 10);
+  const detail = await step;
+  expect(seen.map((command) => command.kind)).toEqual(['click']);
+  expect(detail).toMatchObject({
+    computer: 'click',
+    control_changed: true,
+    screenshot: 'not taken: a person took control',
+  });
+  expect(detail.path).toBeUndefined();
+});
+
+test('a person who takes the computer while it is captured is not kept or shown', async () => {
+  const { session, sandbox } = fixture();
+  const seen: string[] = [];
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      seen.push(command.kind);
+      if (command.kind !== 'screenshot') return new TextEncoder().encode('{}');
+      await controls.change(sandbox, 'human');
+      return png(1024, 768);
+    },
+  } as unknown as DockerSandboxProvider;
+  const root = await workRoot();
+  const detail = await runComputerAction({
+    action: action('computer.key', { keys: ['Tab'] }, 'act_CAPTURE1'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(seen).toEqual(['key', 'screenshot']);
+  expect(detail).toMatchObject({ screenshot: 'not taken: a person took control' });
+  expect(detail.path).toBeUndefined();
+  await expect(
+    readFile(path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CAPTURE1.png')),
+  ).rejects.toThrow();
+});

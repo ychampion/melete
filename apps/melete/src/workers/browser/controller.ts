@@ -10,7 +10,12 @@ import {
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
 import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
-import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
+import {
+  BrowserFault,
+  type BrowserSession,
+  BrowserSessions,
+  type BrowserSessionsOptions,
+} from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
 // These declarations describe only code evaluated inside Chromium. They do not add DOM globals
@@ -628,17 +633,16 @@ export class BrowserController {
           return this.observe(command);
         // A step that stayed on the same page still shows what it did, submit
         // intents with the values now in the form included, so the next step
-        // needs no separate look. A page it cannot observe says only that.
-        try {
-          return await this.observe(command);
-        } catch (error) {
-          if (!(error instanceof BrowserFault)) throw error;
-        }
-        return {
-          session_id: session.id,
-          control_epoch: session.control_epoch,
-          result: { changed: false },
-        };
+        // needs no separate look.
+        return observedAfterStep(
+          () => this.observe(command),
+          () => this.sessions.requireSession(command.session_id, command.job_id),
+          {
+            session_id: session.id,
+            control_epoch: session.control_epoch,
+            result: { changed: false },
+          },
+        );
       })
       .catch((error) => {
         if (commitStarted && this.network?.commitDispatched)
@@ -646,5 +650,35 @@ export class BrowserController {
         if (error instanceof BrowserNetworkError) throw new BrowserFault(error.code);
         throw error;
       });
+  }
+}
+
+/** Said when a person takes the browser between a step and the look after it. */
+export const TAKEN_OVER_AFTER_STEP =
+  'The step ran, then a person took control of the browser. Wait until they hand it back, then observe the page.';
+
+/**
+ * The look after a step that stayed on its page. A page that cannot be
+ * observed (a sign-in field shows, or it is too large) answers what it did
+ * before such a look existed. A person who took the browser meanwhile is said
+ * so, with the epoch they hold now: the step ran, and nothing more of the page
+ * is shown.
+ */
+export async function observedAfterStep(
+  look: () => Promise<BrowserCommandResult>,
+  current: () => Pick<BrowserSession, 'id' | 'control_epoch'>,
+  unobserved: BrowserCommandResult,
+): Promise<BrowserCommandResult> {
+  try {
+    return await look();
+  } catch (error) {
+    if (!(error instanceof BrowserFault)) throw error;
+    if (error.reason !== 'human_control') return unobserved;
+    const now = current();
+    return {
+      session_id: now.id,
+      control_epoch: now.control_epoch,
+      result: { changed: false, human_control: true, note: TAKEN_OVER_AFTER_STEP },
+    };
   }
 }
