@@ -9,6 +9,9 @@ import {
   compactionThresholdTokens,
   DEFAULT_COMPACTION_MAX_TOKENS,
   DEFAULT_ENGINE_MAX_TURNS,
+  DELEGATION_ENV,
+  DELEGATION_LIMITS,
+  delegationFits,
   engineCompactionTrigger,
   engineConfigEnvironment,
   engineContextWindow,
@@ -102,7 +105,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
 
 test('this change turns nothing else on', () => {
   const config = renderEngineConfig(base) as Record<string, Record<string, unknown>>;
-  expect(config.platform_toolsets).toEqual({ api_server: ['melete'] });
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'todo'] });
   expect(config.tools).toEqual({ tool_search: { enabled: 'off' } });
   expect(config.terminal).toBeUndefined();
 });
@@ -298,14 +301,14 @@ test('a catalog with one sandbox terminal pins the engine terminal to the sandbo
   const sandbox = { name: 'terminal.run', connection_id: 'conn_sandbox' };
   const features = attemptEngineFeatures([{ name: 'react', connection_id: null }, sandbox]);
   expect(features).toEqual({
-    toolsets: ['melete', 'terminal_tools'],
+    toolsets: ['melete', 'todo', 'terminal_tools'],
     terminalBackend: 'melete_sandbox',
   });
   const config = renderEngineConfig({ ...base, features }) as Record<
     string,
     Record<string, unknown>
   >;
-  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal_tools'] });
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'todo', 'terminal_tools'] });
   expect(config.terminal).toEqual({ backend: 'melete_sandbox', cwd: '/work' });
   expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBe('melete_sandbox');
 });
@@ -326,4 +329,44 @@ test('no sandbox, or two, leaves the engine without a terminal', () => {
     expect(config.terminal).toBeUndefined();
     expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBeUndefined();
   }
+});
+
+/** The job default and a conversation turn's budget, as the job service sets them. */
+const ROUTINE_BUDGET = { max_turns: 20, max_output_tokens: 8000 };
+const CONVERSATION = { max_turns: 200, max_output_tokens: 400_000 };
+
+test('helpers are offered only to a budget that leaves the parent its answer', () => {
+  expect(delegationFits(undefined)).toBe(false);
+  expect(delegationFits(ROUTINE_BUDGET)).toBe(false);
+  expect(delegationFits({ max_turns: 200, max_output_tokens: 8000 })).toBe(false);
+  expect(delegationFits(CONVERSATION)).toBe(true);
+  // A routine on the job default keeps the image's configuration: no helpers.
+  expect(attemptEngineFeatures([], ROUTINE_BUDGET)).toEqual({});
+  expect(
+    engineConfigEnvironment({ ...base, features: attemptEngineFeatures([], ROUTINE_BUDGET) })[
+      DELEGATION_ENV
+    ],
+  ).toBeUndefined();
+  const chat = attemptEngineFeatures([], CONVERSATION);
+  expect(chat).toEqual({ toolsets: ['melete', 'todo', 'delegation'] });
+  expect(engineConfigEnvironment({ ...base, features: chat })[DELEGATION_ENV]).toBe('1');
+  const config = renderEngineConfig({ ...base, features: chat }) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'todo', 'delegation'] });
+  // With a sandbox, both.
+  const sandbox = { name: 'terminal.run', connection_id: 'conn_sandbox' };
+  expect(attemptEngineFeatures([sandbox], CONVERSATION).toolsets).toEqual([
+    'melete',
+    'todo',
+    'delegation',
+    'terminal_tools',
+  ]);
+});
+
+test('a helper that hangs is ended well inside a conversation turn', () => {
+  const config = renderEngineConfig(base) as Record<string, Record<string, unknown>>;
+  expect(config.delegation).toEqual(DELEGATION_LIMITS);
+  expect(DELEGATION_LIMITS.child_timeout_seconds * 1000).toBeLessThan(30 * 60_000);
 });

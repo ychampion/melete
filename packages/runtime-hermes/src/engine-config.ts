@@ -35,26 +35,54 @@ export const SANDBOX_TERMINAL_TOOL = 'terminal.run';
  */
 export const SANDBOX_TERMINAL_TOOLSET = 'terminal_tools';
 
+/** The engine's helpers, offered only to an attempt whose budget can carry them. */
+export const DELEGATION_TOOLSET = 'delegation';
+
+/** Says whether an attempt's engine is built with helpers: `1`, or absent. */
+export const DELEGATION_ENV = 'MELETE_ENGINE_DELEGATION';
+
 /**
- * The engine features an attempt's catalog calls for. A space with one active
- * sandbox connection is offered exactly one `terminal.run`, and then the
- * engine's own terminal is built and pinned to the sandbox backend, which
- * forwards every command to the broker. Anything else keeps today's
- * configuration: no terminal at all, and never a local one.
+ * The smallest budget helpers are offered with: a conversation turn's. Helper
+ * model calls are charged to the job like the parent's, so three helpers of
+ * fifty turns each would spend a routine's twenty calls and leave the parent
+ * none to answer with. A conversation keeps fifty calls of its own beside them.
+ */
+export const DELEGATION_MIN_BUDGET = { max_turns: 200, max_output_tokens: 400_000 } as const;
+
+/** Whether a budget can carry helpers and still leave the parent its answer. */
+export function delegationFits(budget?: { max_turns: number; max_output_tokens: number }): boolean {
+  return (
+    !!budget &&
+    budget.max_turns >= DELEGATION_MIN_BUDGET.max_turns &&
+    budget.max_output_tokens >= DELEGATION_MIN_BUDGET.max_output_tokens
+  );
+}
+
+/**
+ * The engine features an attempt's catalog and budget call for. A space with
+ * one active sandbox connection is offered exactly one `terminal.run`, and then
+ * the engine's own terminal is built and pinned to the sandbox backend, which
+ * forwards every command to the broker. A budget the size of a conversation
+ * turn's also gets the engine's helpers. Anything else keeps the image's
+ * configuration: no terminal at all, never a local one, and no helpers.
  */
 export function attemptEngineFeatures(
   tools: readonly { name: string; connection_id: string | null }[],
+  budget?: { max_turns: number; max_output_tokens: number },
 ): Partial<EngineFeatures> {
+  const toolsets = [...DEFAULT_FEATURES.toolsets];
+  if (delegationFits(budget)) toolsets.push(DELEGATION_TOOLSET);
   const connections = new Set(
     tools
       .filter((tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id)
       .map((tool) => tool.connection_id),
   );
-  if (connections.size !== 1) return {};
-  return {
-    toolsets: [...DEFAULT_FEATURES.toolsets, SANDBOX_TERMINAL_TOOLSET],
-    terminalBackend: 'melete_sandbox',
-  };
+  if (connections.size === 1)
+    return {
+      toolsets: [...toolsets, SANDBOX_TERMINAL_TOOLSET],
+      terminalBackend: 'melete_sandbox',
+    };
+  return toolsets.length === DEFAULT_FEATURES.toolsets.length ? {} : { toolsets };
 }
 
 /**
@@ -63,7 +91,7 @@ export function attemptEngineFeatures(
  * reproduces that configuration exactly.
  */
 export type EngineFeatures = {
-  /** Toolsets the API-server agent is built with. Naming only the plugin's toolset is what turns every built-in off. */
+  /** Toolsets the API-server agent is built with. An explicit list replaces the engine's default, so a built-in not named here is off. */
   toolsets: readonly string[];
   /** Absent while no terminal toolset is built. */
   terminalBackend: TerminalBackend | null;
@@ -129,8 +157,55 @@ export const DEFAULT_BROKER_URL = 'http://melete:8788';
 /** The engine home's skills directory is filled from this path; it must not exist. */
 export const BUNDLED_SKILLS_DIR = '/opt/melete-runtime/no-bundled-skills';
 
+/**
+ * The engine's own toolsets an attempt may be built with, beside the plugin's.
+ * Each acts only inside the engine process, so nothing it does can reach a
+ * file, the network, a shell or a credential except through the broker:
+ *
+ * - `todo`, on for every attempt, keeps a task list in the agent's memory for
+ *   multi-step work. It reads and writes nothing else (tools/todo_tool.py).
+ * - `delegation`, on only for a budget that fits (`delegationFits`), runs
+ *   helpers with their own context inside the same run. A helper is built with
+ *   the parent's toolsets minus delegation, the engine's question tool and
+ *   memory (tools/delegate_tool_toolsets.py). The broker tools that speak to
+ *   the person, park the job or start more work (`ask_person`, `say`, `react`,
+ *   `job.wait`, `search_tools`, `load_tool` and `run.*`) are left out of its
+ *   list and refused by the plugin if called anyway; a helper reports what the
+ *   person needs, and the parent decides. Everything else a helper does is a
+ *   broker tool call on this attempt's capability, under the same approvals and
+ *   action budget, and its model calls go through the same gateway with the
+ *   same metering header, which is keyed on the gateway's address
+ *   (agent/agent_init.py). It speaks as Melete: the delegation seam in
+ *   patches/observer_bridge.py builds it with the engine home's SOUL.md, keeps
+ *   the delegation inside the turn (at the pin its results would arrive after
+ *   the attempt ended), and hands the parent any action a helper left waiting
+ *   for approval.
+ *
+ * Everything else stays off. Files, the terminal, the web, the browser, code
+ * execution, vision and memory each act outside the engine, and Melete offers
+ * them as broker tools instead. Session search stays off too: an engine home
+ * lives for one attempt, so it could only find the conversation already in
+ * front of the model, while earlier ones are recalled by Melete.
+ */
+export const ENGINE_BUILTIN_TOOLSETS = ['todo'] as const;
+
+/**
+ * Bounds on helpers. Three at a time, one level deep, fifty turns each, and
+ * ten minutes each: a helper that hangs ends with a timed-out result to the
+ * parent, well inside a conversation turn's thirty minutes. What they may spend
+ * is still the job's own accounting.
+ */
+export const DELEGATION_LIMITS = {
+  max_concurrent_children: 3,
+  max_spawn_depth: 1,
+  orchestrator_enabled: false,
+  max_iterations: 50,
+  child_timeout_seconds: 600,
+  subagent_auto_approve: false,
+} as const;
+
 const DEFAULT_FEATURES: EngineFeatures = {
-  toolsets: ['melete'],
+  toolsets: ['melete', ...ENGINE_BUILTIN_TOOLSETS],
   terminalBackend: null,
 };
 
@@ -254,6 +329,9 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     // loads its files out of the engine home whatever the toolset list says.
     memory: { memory_enabled: false, user_profile_enabled: false, provider: '' },
     curator: { enabled: false },
+    // Read by tools/delegate_tool_config.py. No provider or model is named, so
+    // a helper runs on the attempt's own model through the same gateway.
+    delegation: { ...DELEGATION_LIMITS },
     checkpoints: { enabled: false },
     // The engine is updated by pinning a new release. Its own check runs git
     // against the source checkout, in the background of every start.
@@ -328,6 +406,8 @@ export function engineConfigEnvironment(options: EngineConfigOptions): Record<st
     // The engine reads its backend from here as well as from the file; the
     // boot script writes the terminal section from it and refuses any other.
     ...(terminal ? { TERMINAL_ENV: terminal } : {}),
+    // The boot script adds the helpers' toolset from it, and refuses any other value.
+    ...(options.features?.toolsets?.includes(DELEGATION_TOOLSET) ? { [DELEGATION_ENV]: '1' } : {}),
     MELETE_ENGINE_MAX_TURNS: String(options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS),
     MELETE_ENGINE_CONTEXT_LENGTH: String(contextWindow),
     MELETE_ENGINE_COMPACTION_THRESHOLD: String(

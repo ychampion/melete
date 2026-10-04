@@ -276,3 +276,69 @@ def refresh_live_tools(name: str) -> bool:
         if name in (getattr(agent, "valid_tool_names", None) or ()):
             return True
     return _fallback(name, "the refreshed tool list does not offer it")
+
+
+# Helpers. A helper the engine runs for `delegate_task` inherits the parent's
+# broker tools, but the ones that speak to the person, park the job or start
+# more helpers stay with the parent: a helper that needs the person says so in
+# its summary, and the parent decides whether to ask. The engine marks a
+# helper's execution with a context variable that reaches its tool threads.
+_PARENT_ONLY = frozenset(("ask_person", "say", "react", "job.wait", "search_tools", "load_tool"))
+
+
+def parent_only(name: str) -> bool:
+    """A broker tool only the agent that delegated may call."""
+    return name in _PARENT_ONLY or name.startswith("run.")
+
+
+def in_helper() -> bool:
+    """True while the engine is running a delegated helper on this thread."""
+    try:
+        from agent.delegation_context import is_delegated_child_context
+    except Exception:  # noqa: BLE001 - outside the engine there are no helpers
+        return False
+    return bool(is_delegated_child_context())
+
+
+def hide_parent_only(agent: Any) -> None:
+    """Leave the parent-only tools out of a helper's list as it is built."""
+    kept = [tool for tool in (getattr(agent, "tools", None) or [])
+            if not parent_only(str((tool.get("function") or {}).get("name", "")))]
+    agent.tools = kept
+    agent.valid_tool_names = {tool["function"]["name"] for tool in kept}
+
+
+# Actions a helper proposed that parked for the person's approval. A delegation
+# runs inside the parent's turn, so the list is taken when that call returns
+# and handed to the parent beside the helpers' summaries.
+_helper_parked: list[dict] = []
+_helper_parked_lock = threading.Lock()
+
+HELPER_PARKED_NOTE = (
+    "A helper proposed these actions. They have NOT happened: each is waiting "
+    "for the person's decision. Do not retry them or say they are done. Say "
+    "what you are waiting on and end your turn."
+)
+
+
+def note_helper_parked(action_id: Any, tool: str) -> None:
+    with _helper_parked_lock:
+        _helper_parked.append({"action_id": action_id, "tool": tool})
+
+
+def attach_helper_parked(result: Any) -> Any:
+    """The delegation's result, with what its helpers left waiting for approval."""
+    with _helper_parked_lock:
+        parked = list(_helper_parked)
+        _helper_parked.clear()
+    if not parked:
+        return result
+    try:
+        data = json.loads(result) if isinstance(result, str) else result
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        data = {"result": result}
+    data["awaiting_approval"] = parked
+    data["awaiting_approval_note"] = HELPER_PARKED_NOTE
+    return json.dumps(data, ensure_ascii=False)

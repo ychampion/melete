@@ -284,9 +284,13 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
    * Starts a spare engine for this model, when prewarming is on and none is
    * held, so the next attempt does not wait for the engine to load.
    */
-  warm(model: AttemptBundle['model'], tools: AttemptBundle['tools'] = []): void {
+  warm(
+    model: AttemptBundle['model'],
+    tools: AttemptBundle['tools'] = [],
+    budget?: AttemptBundle['budget'],
+  ): void {
     if (!this.prewarm || this.spare || this.shutdown.signal.aborted) return;
-    const config = this.engineConfig(model, attemptEngineFeatures(tools));
+    const config = this.engineConfig(model, attemptEngineFeatures(tools, budget));
     const abandoned = new AbortController();
     const engine = this.startSpare(config, abandoned.signal).catch((error: unknown) => {
       process.stderr.write(
@@ -596,7 +600,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     // Nothing of a paired computer's screen is in it when the engine starts.
     await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
     const token = randomBytes(32).toString('base64url');
-    const features = attemptEngineFeatures(bundle.tools);
+    const features = attemptEngineFeatures(bundle.tools, bundle.budget);
     const config = this.engineConfig(bundle.model, features, bundle.attempt.token);
     const attempt: Record<string, string> = {
       ...attemptEnvironment(bundle, this.options.brokerUrl, token),
@@ -657,7 +661,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
             await owned.stop();
           } finally {
             // The next attempt most likely has this one's configuration.
-            this.warm(bundle.model, bundle.tools);
+            this.warm(bundle.model, bundle.tools, bundle.budget);
           }
         },
       };

@@ -192,3 +192,24 @@ def test_boot_config_says_whether_the_model_sees_pictures(tmp_path, monkeypatch,
 def test_boot_refuses_a_vision_answer_it_cannot_read(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_SUPPORTS_VISION": "yes"})
+
+
+def test_helpers_are_built_only_when_the_attempt_asks_for_them(tmp_path, monkeypatch):
+    template = {**TEMPLATE, "platform_toolsets": {"api_server": ["melete", "todo"]}}
+    written = boot(tmp_path, monkeypatch, template, BASE_ENVIRONMENT)
+    assert written["platform_toolsets"]["api_server"] == ["melete", "todo"]
+    written = boot(tmp_path, monkeypatch, template, {
+        **BASE_ENVIRONMENT, "MELETE_ENGINE_DELEGATION": "1", "TERMINAL_ENV": "melete_sandbox"})
+    assert written["platform_toolsets"]["api_server"] == ["melete", "todo", "delegation", "terminal_tools"]
+    # An image copy that somehow named them loses them unless asked.
+    monkeypatch.delenv("MELETE_ENGINE_DELEGATION")
+    monkeypatch.delenv("TERMINAL_ENV")
+    stale = {**TEMPLATE, "platform_toolsets": {"api_server": ["melete", "todo", "delegation"]}}
+    written = boot(tmp_path, monkeypatch, stale, BASE_ENVIRONMENT)
+    assert written["platform_toolsets"]["api_server"] == ["melete", "todo"]
+
+
+@pytest.mark.parametrize("value", ["0", "true", "yes"])
+def test_helpers_take_only_the_value_the_renderer_writes(tmp_path, monkeypatch, value):
+    with pytest.raises(SystemExit):
+        boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_DELEGATION": value})
