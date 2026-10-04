@@ -383,6 +383,24 @@ withDb('web search', () => {
       expect(refused).toBeInstanceOf(BrokerFault);
       expect((refused as BrokerFault).code).toBe('scope_denied');
       expect((refused as BrokerFault).message).toBe(SEARCH_KEPT_PRIVATE);
+      // Nothing is recorded as tried, but the conversation shows the search was held back.
+      expect(
+        await handle.db.select().from(action).where(eq(action.jobId, sensitive.job_id)),
+      ).toEqual([]);
+      const traces = await handle.sql`select attempt_id, payload from event
+        where job_id = ${sensitive.job_id} and type = 'notice' and payload->>'kind' = 'tool_trace'`;
+      expect(traces).toHaveLength(1);
+      expect(traces[0]?.attempt_id).toBe(sensitive.attempt_id);
+      expect(traces[0]?.payload.call).toMatchObject({
+        kind: 'web',
+        title: 'Search held back: this chat is private',
+        status: 'done',
+        input_summary: null,
+        output_summary: {
+          text: 'Nothing was sent to a search service, because this conversation is private.',
+        },
+      });
+      expect(JSON.stringify(traces[0]?.payload)).not.toContain('clinics');
 
       await store.saveSettings(spaceId, { private_space: true }, null);
       try {

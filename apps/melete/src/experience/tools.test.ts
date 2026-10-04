@@ -141,6 +141,30 @@ describe('broker actions', () => {
     expect(actionLabel(open(true))).toBe('Opened a page in its computer');
   });
 
+  test('a web search keeps a receipt naming what was searched; other reads do not', () => {
+    const web = { id: 'conn_web', label: 'Web', provider: 'web', spaceId: 'sp_1' } as never;
+    const search = row('web.search', {
+      effectClass: 'read',
+      status: 'succeeded',
+      resolvedAt: later,
+      canonicalPayload: { query: 'Bun latest stable release' },
+      receipt: { detail: { query: 'Bun latest stable release', backend: 'duckduckgo' } },
+    });
+    expect(projectReceipt(search, web)).toMatchObject({
+      id: search.id,
+      what: 'Searched the web for “Bun latest stable release”',
+      where: 'Web',
+      when: later.toISOString(),
+    });
+    expect(projectReceipt({ ...search, status: 'failed' }, web)).toBeNull();
+    const page = row('web.fetch', {
+      effectClass: 'read',
+      status: 'succeeded',
+      receipt: { detail: { url: 'https://example.test/' } },
+    });
+    expect(projectReceipt(page, web)).toBeNull();
+  });
+
   test('unknown, unresolved, failed and denied each say plainly what happened', () => {
     const send = row('email.send', { effectClass: 'write_external' });
     const status = (raw: string) => actionCall({ action: send, connection: mail, raw, at: later });

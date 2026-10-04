@@ -6,7 +6,12 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
-import { agentResponse, conversationResponse, type ExperienceEvent } from '@melete/contracts';
+import {
+  agentResponse,
+  conversationResponse,
+  type ExperienceEvent,
+  TOOL_TRACE_NOTICE,
+} from '@melete/contracts';
 import { session } from '../../src/db/auth-schema.ts';
 import { event, owner, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -165,5 +170,54 @@ withDb('messages between tool calls', () => {
       ]);
       // Reasoning never joins the answer, and nothing is said twice.
       expect(page.events.filter((entry) => entry.item.type === 'reasoning')).toEqual([]);
+    });
+
+  for (const passes of [1, 2])
+    test(`work the engine traces before its call is proposed ends the message too, in ${passes} pass${passes === 1 ? '' : 'es'}`, async () => {
+      const db = required(handle).db;
+      const { chat, attemptId, claims } = await conversationWithAttempt('Which Bun is current?');
+      const raw = async (type: string, payload: Record<string, unknown>) => {
+        await db.insert(event).values({
+          jobId: chat.id,
+          attemptId,
+          type,
+          payload,
+          dedupKey: `interim-fixture:${randomBytes(8).toString('hex')}`,
+        });
+      };
+      const projection = new ExperienceEvents(db);
+      const at = new Date().toISOString();
+      await raw('text_delta', { text: "I'll check the date and look up Bun's latest" });
+      await raw('text_delta', { text: ' release.' });
+      // The engine's own command is traced first; the model's call follows it.
+      await raw('notice', {
+        kind: TOOL_TRACE_NOTICE,
+        call: {
+          id: 'sandbox:1',
+          kind: 'sandbox',
+          title: 'Ran `date`',
+          status: 'done',
+          started_at: at,
+          ended_at: at,
+          input_summary: null,
+          output_summary: null,
+          detail: null,
+          parent: null,
+        },
+      });
+      if (passes === 2) await projection.page(spaceId, 0, chat.id, 200);
+      await raw('tool_call_proposed', { tool: 'terminal', call_id: 'c1', arguments: {} });
+      await raw('tool_result', { call_id: 'c1', ok: true, result: {} });
+      await raw('text_delta', { text: 'Bun 1.4.2 is the latest.' });
+      await required(runner).commitOutcome(claims, {
+        kind: 'completed',
+        summary: 'Found it.',
+        evidence: [],
+      });
+      const page = await projection.page(spaceId, 0, chat.id, 200);
+      expect(messages(page.events)).toEqual([
+        "I'll check the date and look up Bun's latest release.",
+        '\n\nBun 1.4.2 is the latest.',
+      ]);
     });
 });
