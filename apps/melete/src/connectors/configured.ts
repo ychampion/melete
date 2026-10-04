@@ -63,6 +63,7 @@ import {
   storedStdioConnection,
 } from './mcp-stdio.ts';
 import { type MicrosoftEndpoints, microsoftEndpoints, microsoftIssuer } from './microsoft.ts';
+import { createNotesConnector } from './notes.ts';
 import { OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
 import { ConnectorRegistry } from './registry.ts';
@@ -222,6 +223,12 @@ export type ConnectorOptions = {
    * pages beyond what a job was explicitly given. Without it, none is.
    */
   privateContext?: PrivateContext;
+  /**
+   * Why what is written in a job is private, as memory records it: the agent's
+   * notes from a private conversation are read back only on the person's own
+   * model. Without it, every note is treated as private.
+   */
+  privacyOrigin?: (jobId: string, text: string) => Promise<string | null>;
   /** Where `web.search` searches; without one, the keyless search only. */
   webSearch?: WebSearch;
   /** A hosted reader for a public page `web.fetch` got no text from; without one, none. */
@@ -402,6 +409,11 @@ export class ConnectorFactory {
         sql: options.sql,
         workRoot: options.workRoot,
         spacesRoot: options.spacesRoot,
+      });
+    if (row.provider === 'notes')
+      return createNotesConnector({
+        sql: options.sql,
+        ...(options.privacyOrigin ? { privacyOrigin: options.privacyOrigin } : {}),
       });
     if (row.provider === 'artifacts')
       return createArtifactsConnector({
@@ -845,6 +857,7 @@ type ConnectorExtras = {
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
   privateContext?: PrivateContext;
+  privacyOrigin?: ConnectorOptions['privacyOrigin'];
   webSearch?: WebSearch;
   searchPrivacy?: SearchPrivacy;
   attachments?: SentFiles;
@@ -908,6 +921,7 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     privateContext: extra.privateContext,
+    ...(extra.privacyOrigin ? { privacyOrigin: extra.privacyOrigin } : {}),
     // Configured search keys apply even where no model gateway searches.
     webSearch: extra.webSearch ?? webSearchFromEnv(env),
     webExtract: webExtractFromEnv(env),

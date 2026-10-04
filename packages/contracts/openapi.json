@@ -4921,6 +4921,128 @@
         }
       }
     },
+    "/memory/notes": {
+      "get": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "GET /memory/notes",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "notes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "$ref": "#/components/schemas/__schema249"
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 2000
+                              },
+                              "created": {
+                                "$ref": "#/components/schemas/__schema253"
+                              },
+                              "chat": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "$ref": "#/components/schemas/__schema249"
+                                      },
+                                      "title": {
+                                        "type": "string",
+                                        "maxLength": 400
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "title"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "text",
+                              "created",
+                              "chat"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "notes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema255"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/memory/notes/{id}": {
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /memory/notes/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema286"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema255"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/memory/settings": {
       "get": {
         "tags": [
@@ -17329,7 +17451,8 @@
                       "device",
                       "command_line",
                       "apps",
-                      "room"
+                      "room",
+                      "notes"
                     ]
                   },
                   "label": {
@@ -39042,7 +39165,8 @@
           "device",
           "command_line",
           "apps",
-          "room"
+          "room",
+          "notes"
         ]
       },
       "__schema491": {

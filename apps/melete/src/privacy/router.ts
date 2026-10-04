@@ -568,6 +568,26 @@ export class PrivacyRouter {
   }
 
   /**
+   * Whether a cloud embedder may read this job's words to recall memory by
+   * meaning: not in a space or agent marked private, nor in a conversation
+   * found sensitive, nor a request about a sensitive topic. Such a request is
+   * recalled by its words alone, on this machine. What is sent is still
+   * redacted by the embedder.
+   */
+  async cloudEmbedsRequest(jobId: string, text = ''): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return false;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (settings.privateSpace) return false;
+    if (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) return false;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    if (conversation?.sensitive) return false;
+    return !text || classify(text, settings.topics) === null;
+  }
+
+  /**
    * Why a message said in a room is private, or null: the room is marked
    * private, or the message is about a sensitive topic. A room message may
    * reach no request at all, so it is read by its room rather than a job.

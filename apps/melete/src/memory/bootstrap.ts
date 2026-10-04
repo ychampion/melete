@@ -13,6 +13,7 @@ import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, restoreMemory } from './restore.ts';
 import type { MemoryRouteOptions } from './routes.ts';
 import { startMemoryService } from './service.ts';
+import type { EmbeddingProvider } from './views.ts';
 
 type DeploymentMemoryOptions = {
   sql: MemorySql;
@@ -33,6 +34,8 @@ type DeploymentMemoryOptions = {
   privacyOrigin: CaptureOptions['privacyOrigin'];
   /** Why a message said in a room is private; left out, nothing said in a room is kept. */
   roomPrivacyOrigin?: CaptureOptions['roomPrivacyOrigin'];
+  /** Semantic recall's embedder; left out, recall stays lexical. */
+  embedding?: EmbeddingProvider;
 };
 
 const spaceId = prefixedId('sp');
@@ -236,6 +239,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
       journal,
       markdown,
       gateway: options.gateway,
+      ...(options.embedding ? { embedding: options.embedding } : {}),
       onError,
     });
     // What a person says in chat is offered to their memory with no step of theirs.

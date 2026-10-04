@@ -219,12 +219,36 @@ owner's corrections.
 The storage paths are defined in `memory/schema.ts`, `db.ts`, `views.ts`
 and `markdown.ts`; the tests above and below exercise them.
 
-Recall uses native Postgres lexical search and optionally an injected embedding
-provider. Candidates still cross authoritative revision, source, suppression
-and audience checks (`lexical and dense candidates are independent and
-incompatible embeddings fail closed`). The comparison fixture uses scripted
-three-dimensional embeddings, so it checks the independence and fail-closed
-rules rather than retrieval quality.
+Recall uses native Postgres lexical search and, when an embedding model is
+configured ([DEPLOYMENT](DEPLOYMENT.md), "Semantic recall"), ranks by meaning
+beside it: the two candidate sets are merged before ranking, and only semantic
+candidates nearly as close as the closest are kept. Candidates still cross
+authoritative revision, source, suppression and audience checks. Vectors of
+another embedding are never compared, and an embedder that is missing, slow or
+failing leaves recall lexical rather than unavailable (`lexical and dense
+candidates are independent and incompatible embeddings fall back to lexical`).
+Each index build embeds only the revisions it has no vector for. A cloud
+embedder never reads memory learned in a private conversation or anything in a
+space marked private, and the details the privacy settings detect are swapped
+for their kind first; a local one reads memory as written (`semantic recall` in
+`test/integration/semantic-recall.test.ts`). On a held-out set of 24
+paraphrases ("favourite colour" for a `color` claim), recall@3 with
+`nomic-embed-text-v1.5` was 0.83 to 0.92 against 0.08 for words alone; set
+`MELETE_LIVE_EMBEDDINGS=1` with a Fireworks key to run it.
+
+### The agent's own notes
+
+The agent keeps notes for itself with the `notes.write` tool: something it found
+out or worked out in one chat that will help in a later one. A note is never the
+person's statement. It comes back to the agent, when a later request matches it
+by words or meaning, labelled as its own note at `inferred` trust, and the
+person sees each one in Memory as Melete's note and can delete it. Notes are
+kept only in a person's own space and are read back only into their own work
+there, as private memory is: never for a reader of a shared space, a public
+compartment or an agent set not to read memory. A note written in a private
+conversation is read back only into requests that stay on the person's own
+model, and a cloud embedder never reads it. One person keeps at most 500 notes
+in a space; the oldest go first.
 
 A request is matched by any of its meaningful words, ranked by how many match
 and how closely, so "Email Ana the agenda for Thursday" finds the claim on

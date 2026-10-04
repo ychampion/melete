@@ -687,6 +687,13 @@
       "when": 1789232400077,
       "tag": "0097_sandbox_control",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1789232400078,
+      "tag": "0098_agent_notes",
+      "breakpoints": true
     }
   ]
 }

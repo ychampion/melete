@@ -902,6 +902,20 @@ export const memoryItemList = z.strictObject({
   next: id.nullable().optional(),
 });
 /**
+ * A note Melete kept for itself in a chat with the person: something it found
+ * out or worked out, in its own words. It is never the person's statement and
+ * is recalled to Melete labelled as its own note. The person can delete it.
+ */
+export const agentNote = z.strictObject({
+  id,
+  text: z.string().max(2000),
+  created: date,
+  /** The chat it was written in, while that chat still exists. */
+  chat: z.strictObject({ id, title: z.string().max(400) }).nullable(),
+});
+export type AgentNote = z.infer<typeof agentNote>;
+export const agentNoteList = z.strictObject({ notes: z.array(agentNote) });
+/**
  * A person's own memory settings. Memory is on unless they turn it off; off,
  * nothing new they say in chat is kept, and "forget ..." still works.
  */
@@ -1269,6 +1283,9 @@ export const experienceOperations = {
   'PATCH /memory/items/{id}': { request: memoryItemEdit, response: experienceOk },
   'DELETE /memory/items/{id}': { response: experienceOk },
   'GET /memory/items/{id}/why': { response: memoryExplanation },
+  /** Notes Melete kept for itself in chats with the person, newest first. */
+  'GET /memory/notes': { response: agentNoteList },
+  'DELETE /memory/notes/{id}': { response: experienceOk },
   'GET /memory/settings': { response: memorySettings },
   'PUT /memory/settings': { request: memorySettings, response: memorySettings },
   'GET /web/settings': { response: webReadStatus },

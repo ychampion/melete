@@ -25,7 +25,9 @@ import {
   type MemoryTx,
   newId,
 } from './db.ts';
+import { onceForQueries } from './embedding.ts';
 import { lockEventOrder, notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
+import { recallNotes } from './notes.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
 import { attemptRecallQuery, effectiveAudience, type RecallOptions, recall } from './recall.ts';
 
@@ -329,6 +331,12 @@ export function withMemoryRuntime(
      * a refusal tells the agent a message was not kept.
      */
     refusesMemoryRead?: (jobId: string) => Promise<boolean>;
+    /**
+     * Whether this job's words may be read by a cloud embedder: false for a
+     * conversation that must stay private. Left out, a cloud embedder never
+     * reads a request, and recall stays lexical; a local one always may.
+     */
+    embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
   } = {},
 ): RuntimeAdapter {
   return {
@@ -348,6 +356,16 @@ export function withMemoryRuntime(
         where j.id = ${bundle.attempt.job_id}`;
       const readsMemory = persona?.reads_memory !== false;
       const withheld = !readsMemory;
+      // The request is embedded only where its words may go: on the person's
+      // own model, or a cloud embedder for a conversation that need not stay private.
+      const embedding =
+        options.embedding &&
+        (options.embedding.local ||
+          (!privateOrigin &&
+            (await options.embedsQuery?.(bundle.attempt.job_id, attemptRecallQuery(bundle))) ===
+              true))
+          ? onceForQueries(options.embedding)
+          : undefined;
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -356,7 +374,7 @@ export function withMemoryRuntime(
             bundle.attempt.id,
             bundle.attempt.job_id,
             attemptRecallQuery(bundle),
-            { ...options, privateOrigin, withheld },
+            { ...options, embedding, privateOrigin, withheld },
           );
         for (let retry = 0; retry < 3; retry++) {
           const startedAt = new Date();
@@ -366,6 +384,7 @@ export function withMemoryRuntime(
             catalog: options.catalog,
             privateOrigin,
             withheld,
+            embedding,
           });
           try {
             const context = await recordAttemptContext(
@@ -386,6 +405,17 @@ export function withMemoryRuntime(
         throw new MemoryError('stale_context');
       };
       const prepared = await prepare();
+      // The agent's own notes from earlier chats, labelled as its own. A note
+      // that cannot be read now is simply not handed over this time.
+      const notes = readsMemory
+        ? await recallNotes(sql, scope, {
+            query: attemptRecallQuery(bundle),
+            jobId: bundle.attempt.job_id,
+            privateOrigin,
+            withheld,
+            embedding,
+          }).catch(() => [])
+        : [];
       const [job] =
         await sql`select constraints, revision from job where id = ${bundle.attempt.job_id} and space_id = ${scope.spaceId}`;
       if (
@@ -430,7 +460,7 @@ export function withMemoryRuntime(
             ? since.evidence
             : since.evidence.filter((item) => item.kind !== 'source'),
         },
-        knowledge: readsMemory ? prepared.knowledge : [],
+        knowledge: readsMemory ? [...prepared.knowledge, ...notes] : [],
       };
       const controller = new AbortController();
       const unregister = registerMemoryAttempt(bundle.attempt.id, controller, () => {

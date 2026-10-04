@@ -111,6 +111,7 @@ const journey = late ? await database() : null;
         'apps',
         'artifacts',
         'files',
+        'notes',
         'room',
         'web',
       ]);
@@ -122,6 +123,7 @@ const journey = late ? await database() : null;
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Apps', true],
         ['Files', true],
+        ['Notes', true],
         ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
@@ -265,7 +267,16 @@ const journey = late ? await database() : null;
     let webId = '';
     try {
       // Speech and transcription are two rows of the generation provider.
-      const expected = ['apps', 'artifacts', 'files', 'generation', 'generation', 'room', 'web'];
+      const expected = [
+        'apps',
+        'artifacts',
+        'files',
+        'generation',
+        'generation',
+        'notes',
+        'room',
+        'web',
+      ];
       expect(await providers(personal)).toEqual(expected);
       // A grant the owner already made is kept as it is, never doubled.
       expect(await providers(seeded)).toEqual(expected);
@@ -350,8 +361,8 @@ const journey = late ? await database() : null;
       const ownerConnections = (
         await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
       ).map((row) => row.id);
-      // Files, the web, saved results, apps and the person's own room tools.
-      expect(ownerConnections).toHaveLength(5);
+      // Files, the web, saved results, apps, the agent's own notes and the person's own room tools.
+      expect(ownerConnections).toHaveLength(6);
 
       const login = await running.app.request('/login', {
         method: 'POST',
@@ -368,6 +379,7 @@ const journey = late ? await database() : null;
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Apps', true],
         ['Files', true],
+        ['Notes', true],
         ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
@@ -461,12 +473,20 @@ const journey = late ? await database() : null;
       const [theirs] =
         await fixture.sql`select id from space where owner_principal_id = ${account3}`;
       if (!theirs) throw new Error('A provisioned account has no space');
-      expect(await providers(theirs.id)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
-      // A person's own space gets Apps and their own room tools, and no hand-off.
+      expect(await providers(theirs.id)).toEqual([
+        'apps',
+        'artifacts',
+        'files',
+        'notes',
+        'room',
+        'web',
+      ]);
+      // A person's own space gets Apps, the agent's own notes and their own room tools, and no hand-off.
       expect(await defaults(theirs.id)).toEqual([
         ['apps', expect.arrayContaining(['apps.publish'])],
         'artifacts',
         'files',
+        'notes',
         ['rooms', ['room.list', 'room.post', 'room.add_file']],
         'web',
       ]);

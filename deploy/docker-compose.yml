@@ -127,6 +127,10 @@ services:
       MELETE_MEMORY_MODEL: ${MELETE_MEMORY_MODEL:-}
       MELETE_MEMORY_PROVIDER: ${MELETE_MEMORY_PROVIDER:-}
       MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-200}
+      # Semantic recall (docs/DEPLOYMENT.md, "Semantic recall"). Empty uses the default provider's embedding model.
+      MELETE_EMBEDDING_PROVIDER: ${MELETE_EMBEDDING_PROVIDER:-}
+      MELETE_EMBEDDING_MODEL: ${MELETE_EMBEDDING_MODEL:-}
+      MELETE_EMBEDDING_DIMENSIONS: ${MELETE_EMBEDDING_DIMENSIONS:-}
       # Auto-review of reversible actions (docs/DEPLOYMENT.md, "Auto-review"). Empty uses the default model.
       MELETE_REVIEW_MODEL: ${MELETE_REVIEW_MODEL:-}
       MELETE_REVIEW_PROVIDER: ${MELETE_REVIEW_PROVIDER:-}
