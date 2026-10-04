@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 import type { Action, ConnectorHealth, DispatchResult, VerifyResult } from '@melete/contracts';
-import { expandIcs } from '../signals/occurrences.ts';
+import { confirmFromIcs, expandIcs } from '../signals/occurrences.ts';
 import type { SignalSource } from '../signals/types.ts';
 import {
   boundedText,
@@ -154,6 +154,7 @@ export class IcsFeedConnector implements Connector {
   readonly signals: SignalSource = {
     stream: 'calendar',
     occurrences: async (window) => expandIcs([await this.load()], window),
+    confirm: async ({ uid, occurrence }) => confirmFromIcs([await this.load()], uid, occurrence),
   };
 
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {

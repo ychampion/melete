@@ -9,8 +9,8 @@ import type {
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
-import { expandIcs } from '../signals/occurrences.ts';
-import type { SignalSource } from '../signals/types.ts';
+import { confirmFromIcs, expandIcs } from '../signals/occurrences.ts';
+import { type SignalSource, sourceError } from '../signals/types.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -376,6 +376,32 @@ export async function boundedText(response: Response): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+const xmlText = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+/** An instant as CalDAV's time-range wants it: `20261005T120000Z`. */
+const caldavTime = (iso: string) =>
+  new Date(Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00Z` : iso))
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}/, '');
+
+/**
+ * Narrows a REPORT to the events touching a window, which the server works
+ * out with their recurrence rules, or to one event by its UID, so a large
+ * calendar is never read whole.
+ */
+function eventFilter(only: { window?: ListWindow; uid?: string }): string {
+  if (only.uid !== undefined)
+    return `<c:prop-filter name="UID"><c:text-match collation="i;octet">${xmlText(only.uid)}</c:text-match></c:prop-filter>`;
+  if (only.window)
+    return `<c:time-range start="${caldavTime(only.window.from)}" end="${caldavTime(only.window.to)}"/>`;
+  return '';
+}
+
 export class CalendarConnector implements Connector {
   readonly manifest: ConnectorManifest;
   private readonly base: URL | null;
@@ -467,18 +493,16 @@ export class CalendarConnector implements Connector {
   /** Every calendar object the collection holds, as iCalendar text with its ETag. */
   private async calendarObjects(
     ctx?: ConnectorContext,
+    only: { window?: ListWindow; uid?: string } = {},
   ): Promise<{ ics: string; etag: string | null }[]> {
     const response = await this.request(
       'REPORT',
       null,
-      '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter></c:calendar-query>',
+      `<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">${eventFilter(only)}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`,
       ctx,
       { depth: '1', 'content-type': 'application/xml; charset=utf-8' },
     );
-    if (response.status !== 207) {
-      await response.body?.cancel();
-      throw new Error('CalDAV listing unavailable');
-    }
+    if (response.status !== 207) throw await sourceError(response);
     const xml = await boundedText(response);
     if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('XML declarations are not accepted');
     const parsed: unknown = new XMLParser({
@@ -514,8 +538,16 @@ export class CalendarConnector implements Connector {
       expandIcs(
         this.config.mode === 'ics'
           ? [this.config.ics]
-          : (await this.calendarObjects()).map((object) => object.ics),
+          : (await this.calendarObjects(undefined, { window })).map((object) => object.ics),
         window,
+      ),
+    confirm: async ({ uid, occurrence }) =>
+      confirmFromIcs(
+        this.config.mode === 'ics'
+          ? [this.config.ics]
+          : (await this.calendarObjects(undefined, { uid })).map((object) => object.ics),
+        uid,
+        occurrence,
       ),
   };
 
@@ -531,7 +563,7 @@ export class CalendarConnector implements Connector {
           return this.success(action, listDetail(listed.events, window, listed.truncated, true));
         }
         const events: ParsedEvent[] = [];
-        for (const object of await this.calendarObjects(ctx))
+        for (const object of await this.calendarObjects(ctx, { window }))
           events.push(...parseIcs(object.ics, object.etag));
         const listed = eventsInWindow(events, window, payload.limit);
         return this.success(action, listDetail(listed.events, window, listed.truncated, false));

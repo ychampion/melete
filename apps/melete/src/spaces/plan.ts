@@ -106,6 +106,11 @@ export async function sweepOperational(
         state = case when state in ('running', 'settled') then 'settled' else state end
       where personal_job_id in (select id from job where space_id = ${spaceId})`;
     await tx`delete from job where space_id = ${spaceId}`;
+    // What the space's connections reported that no job took in: mail headers,
+    // calendar titles and places. A job's own copies went with the job.
+    await tx`delete from event
+      where job_id is null and payload->>'kind' = 'connector_event'
+        and payload->>'connection_id' in (select id from connection where space_id = ${spaceId})`;
     // What the space's model calls cost stays counted against its person, so
     // removing a space does not reset a spending limit; which space and job
     // they came from goes with the space.

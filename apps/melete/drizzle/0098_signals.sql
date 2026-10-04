@@ -7,6 +7,7 @@ CREATE TABLE "source_cursor" (
 	"interval_s" integer DEFAULT 300 NOT NULL,
 	"last_ok_at" timestamp with time zone,
 	"failures" integer DEFAULT 0 NOT NULL,
+	"last_error" text,
 	"push_state" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "source_cursor_connection_id_stream_pk" PRIMARY KEY("connection_id","stream"),
@@ -31,4 +32,7 @@ ALTER TABLE "source_cursor" ADD CONSTRAINT "source_cursor_space_id_space_id_fk" 
 ALTER TABLE "subject_state" ADD CONSTRAINT "subject_state_space_id_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."space"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subject_state" ADD CONSTRAINT "subject_state_connection_id_connection_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."connection"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "source_cursor_due_idx" ON "source_cursor" USING btree ("next_poll_at");--> statement-breakpoint
-CREATE INDEX "subject_state_connection_idx" ON "subject_state" USING btree ("connection_id","type");
+CREATE INDEX "source_cursor_space_idx" ON "source_cursor" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "subject_state_connection_idx" ON "subject_state" USING btree ("connection_id","type");--> statement-breakpoint
+CREATE INDEX "subject_state_space_idx" ON "subject_state" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "event_connector_observation_idx" ON "event" USING btree (("payload"->>'connection_id')) WHERE "event"."job_id" is null and "event"."payload"->>'kind' = 'connector_event';

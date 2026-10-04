@@ -5,6 +5,7 @@
  * hygiene. Messages are addressed by Gmail's own id instead of an IMAP UID.
  */
 import { simpleParser } from 'mailparser';
+import { retryAfterOf } from '../signals/types.ts';
 import {
   composeMail,
   headerBlock,
@@ -36,6 +37,8 @@ export class GmailError extends Error {
   constructor(
     readonly status: number,
     readonly authenticationFailed = status === 401,
+    /** Seconds Gmail asked to be left alone for, from Retry-After. */
+    readonly retryAfter: number | null = null,
   ) {
     super(`gmail_${status}`);
   }
@@ -64,8 +67,9 @@ export class GmailApiTransport implements MailTransport {
       return null;
     }
     if (!response.ok) {
+      const retryAfter = retryAfterOf(response);
       await response.body?.cancel().catch(() => {});
-      throw new GmailError(response.status);
+      throw new GmailError(response.status, response.status === 401, retryAfter);
     }
     return boundedJson(response, limit);
   }

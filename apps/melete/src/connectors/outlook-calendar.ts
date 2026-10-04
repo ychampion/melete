@@ -18,7 +18,12 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
-import type { CalendarRead, Occurrence, SignalSource } from '../signals/types.ts';
+import {
+  type CalendarRead,
+  type Occurrence,
+  type SignalSource,
+  sourceError,
+} from '../signals/types.ts';
 import {
   byStart,
   calendarManifest,
@@ -130,6 +135,7 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
         : 'confirmed',
     attendees: Array.isArray(event.attendees) ? event.attendees.length : 0,
     time_zone: event.originalStartTimeZone ?? null,
+    ref: event.id ?? null,
     updated_at:
       event.lastModifiedDateTime && !Number.isNaN(Date.parse(event.lastModifiedDateTime))
         ? new Date(Date.parse(event.lastModifiedDateTime)).toISOString()
@@ -227,10 +233,7 @@ export class OutlookCalendarConnector implements Connector {
           { headers: { prefer: PREFER } },
           this.config.fetcher,
         );
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => {});
-          throw new Error(`Calendar listing unavailable (${response.status})`);
-        }
+        if (!response.ok) throw await sourceError(response);
         const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
           value?: GraphInstance[];
           '@odata.nextLink'?: unknown;
@@ -249,6 +252,28 @@ export class OutlookCalendarConnector implements Connector {
           typeof next === 'string' && next.startsWith(`${this.config.base}/`) ? next : undefined;
       }
       return { items, complete };
+    },
+    // An instance no longer listed is looked up by its own id: gone, or moved.
+    confirm: async ({ ref }) => {
+      if (!ref || !/^[A-Za-z0-9=_-]{1,1024}$/.test(ref)) return 'unknown';
+      const response = await bearerRequest(
+        this.config.access,
+        `${this.config.base}/events/${encodeURIComponent(ref)}?${new URLSearchParams({
+          $select:
+            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+        })}`,
+        { headers: { prefer: PREFER } },
+        this.config.fetcher,
+      );
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {});
+        return 'gone';
+      }
+      if (!response.ok) throw await sourceError(response);
+      return (
+        graphOccurrence((await boundedJson(response, MAX_RESPONSE_BYTES)) as GraphInstance) ??
+        'unknown'
+      );
     },
   };
 

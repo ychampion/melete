@@ -15,6 +15,7 @@ import { connection, owner, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
@@ -22,8 +23,14 @@ import { TriggerService } from '../../src/jobs/triggers.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { CalendarTooLarge } from '../../src/signals/occurrences.ts';
 import { SignalPoller } from '../../src/signals/poller.ts';
-import type { NewMail, Occurrence, SignalSource } from '../../src/signals/types.ts';
+import {
+  type NewMail,
+  type Occurrence,
+  type SignalSource,
+  SourceError,
+} from '../../src/signals/types.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -493,5 +500,239 @@ withDb('signals', () => {
         (select count(*)::int from subject_state where connection_id = ${calendarId}) as kept,
         (select count(*)::int from source_cursor where connection_id = ${calendarId}) as cursors`;
     expect([left?.kept, left?.cursors]).toEqual([0, 0]);
+  }, 60_000);
+  /** A job waiting on one event of one connection. */
+  async function listen(connectionId: string, eventName: string) {
+    const row = await required(jobs).create({ space_id: spaceId, title: 'L', objective: 'L' });
+    const made = await required(triggers).create(row.id, {
+      kind: 'event',
+      connection_id: connectionId,
+      event_name: eventName,
+      poll_seconds: 300,
+    });
+    return waitingOn(row, made.id);
+  }
+  const cursorOf = async (connectionId: string) => {
+    const [row] = await required(handle).sql`select * from source_cursor
+      where connection_id = ${connectionId}`;
+    return row;
+  };
+  const keptOf = async (connectionId: string) => {
+    const [row] = await required(handle).sql`select count(*)::int as n from subject_state
+      where connection_id = ${connectionId}`;
+    return Number(row?.n ?? 0);
+  };
+
+  test('an over-long id, or one item that cannot be delivered, never stops an account', async () => {
+    const { id: calendarId, calendar } = await connectCalendar('Invitations');
+    await listen(calendarId, 'calendar.event.created');
+    await poll();
+    const day = (offset: number) => new Date(clock + offset * 86_400_000).toISOString();
+    calendar.items = [
+      occurrence(day(2), { uid: `${'x'.repeat(4096)}@spam.example`, occurrence: null }),
+      occurrence(day(3), { uid: 'innocent@example.test', occurrence: null }),
+    ];
+    await poll();
+    expect((await events(calendarId, 'calendar.event.created')).map((item) => item.title)).toEqual([
+      'Design review',
+      'Design review',
+    ]);
+    expect((await cursorOf(calendarId))?.failures).toBe(0);
+
+    const { id: mailbox, box } = await connectMailbox('Inbox with odd mail');
+    await listen(mailbox, 'mail.received');
+    await poll();
+    const odd = mail(1, 'a@example.test', 'Odd');
+    box.messages.push(
+      {
+        ...odd,
+        message_id: `<${'y'.repeat(64 * 1024)}@x>`,
+        key: `msgid:<${'y'.repeat(64 * 1024)}@x>`,
+      },
+      mail(2, 'b@example.test', 'Fine'),
+    );
+    await poll();
+    expect((await events(mailbox, 'mail.received')).map((item) => item.subject)).toEqual([
+      'Odd',
+      'Fine',
+    ]);
+
+    // A delivery that fails for one item: that item is skipped, the next delivered.
+    const failing = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: {
+        jobs: required(triggers).jobs,
+        deliver: async (input, options) => {
+          if (input.payload.subject === 'Broken') throw new Error('this item cannot be stored');
+          return required(triggers).deliver(input, options);
+        },
+      },
+      connectors: sources,
+      now: () => clock,
+    });
+    box.messages.push(mail(3, 'c@example.test', 'Broken'), mail(4, 'd@example.test', 'After'));
+    await failing.runOnce();
+    clock += 3_600_000;
+    expect((await events(mailbox, 'mail.received')).map((item) => item.subject)).toEqual([
+      'Odd',
+      'Fine',
+      'After',
+    ]);
+    expect((await cursorOf(mailbox))?.failures).toBe(0);
+  }, 60_000);
+
+  test('a second instance without the connector neither forgets the account nor misses its changes', async () => {
+    const { id: calendarId, calendar } = await connectCalendar('Shared calendar');
+    await listen(calendarId, 'calendar.event.changed');
+    const start = new Date(clock + 2 * 86_400_000).toISOString();
+    calendar.items = [occurrence(start)];
+    await poll(); // the first instance starts watching
+    expect(await keptOf(calendarId)).toBe(1);
+    const elsewhere = new Map<string, { signals: SignalSource }>();
+    const other = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: elsewhere,
+      now: () => clock,
+    });
+    calendar.items = [occurrence(new Date(Date.parse(start) + 3_600_000).toISOString())];
+    await other.runOnce();
+    // Skipped there, and nothing forgotten.
+    expect(await cursorOf(calendarId)).toBeDefined();
+    expect(await keptOf(calendarId)).toBe(1);
+    expect(await events(calendarId, 'calendar.event.changed')).toHaveLength(0);
+    clock += 3_600_000;
+    // An instance that can open the connection reads it.
+    const opening = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: elsewhere,
+      load: async (id) => sources.get(id),
+      now: () => clock,
+    });
+    await opening.runOnce();
+    clock += 3_600_000;
+    expect(await events(calendarId, 'calendar.event.changed')).toHaveLength(1);
+    // And an instance that does not lead reads nothing at all.
+    let asked = 0;
+    const follower = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: {
+        get: (id) => {
+          asked += 1;
+          return sources.get(id);
+        },
+      },
+      leads: async () => false,
+      now: () => clock,
+    });
+    expect(await follower.tick()).toBeNull();
+    expect(asked).toBe(0);
+  }, 60_000);
+
+  test('revoking a connection removes what was read from it, in the same step', async () => {
+    const { id: mailbox, box } = await connectMailbox('Private mail');
+    await listen(mailbox, 'mail.received');
+    const { id: calendarId, calendar } = await connectCalendar('Private calendar');
+    await listen(calendarId, 'calendar.event.created');
+    calendar.items = [occurrence(new Date(clock + 86_400_000).toISOString())];
+    await poll();
+    box.messages.push(mail(1, 'counsel@firm.example', 'Settlement terms (private)'));
+    await poll();
+    expect(await events(mailbox, 'mail.received')).toHaveLength(1);
+    const { sql } = required(handle);
+    for (const id of [mailbox, calendarId]) {
+      const [row] = await sql`select generation from connection where id = ${id}`;
+      await new PolicyService(required(jobs), required(runner)).changeConnection(id, {
+        kind: 'revoke',
+        expected_generation: Number(row?.generation ?? 0),
+      });
+    }
+    const [left] = await sql`select
+        (select count(*)::int from event where job_id is null
+          and payload::text like '%Settlement terms%') as observations,
+        (select count(*)::int from subject_state where connection_id = ${calendarId}) as kept,
+        (select count(*)::int from source_cursor
+          where connection_id in (${mailbox}, ${calendarId})) as cursors`;
+    expect([left?.observations, left?.kept, left?.cursors]).toEqual([0, 0, 0]);
+  }, 60_000);
+
+  test('what a read of an older credential found is never delivered or kept', async () => {
+    const { id: calendarId, calendar } = await connectCalendar('Switching calendar');
+    await listen(calendarId, 'calendar.event.created');
+    await poll();
+    const { sql } = required(handle);
+    const read = calendar.items;
+    sources.set(calendarId, {
+      signals: {
+        stream: 'calendar',
+        occurrences: async () => {
+          // The credential is switched while this read is under way.
+          await sql`update connection set generation = generation + 1 where id = ${calendarId}`;
+          return {
+            items: [...read, occurrence(new Date(clock + 86_400_000).toISOString())],
+            complete: true,
+          };
+        },
+      },
+    });
+    await poll();
+    expect(await events(calendarId, 'calendar.event.created')).toHaveLength(0);
+    expect(await keptOf(calendarId)).toBe(0);
+  }, 60_000);
+
+  test('a provider asking for time is left alone that long; a stuck or oversized read is skipped with a reason', async () => {
+    const { id: calendarId } = await connectCalendar('Busy calendar');
+    await listen(calendarId, 'calendar.event.changed');
+    const behaviour: { now: 'slow' | 'busy' | 'large' } = { now: 'busy' };
+    sources.set(calendarId, {
+      signals: {
+        stream: 'calendar',
+        occurrences: async () => {
+          if (behaviour.now === 'busy') throw new SourceError(429, 900);
+          if (behaviour.now === 'large') throw new CalendarTooLarge();
+          return new Promise(() => {});
+        },
+      },
+    });
+    const poller = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: sources,
+      now: () => clock,
+      readTimeoutMs: 200,
+    });
+    const at = clock;
+    await poller.runOnce();
+    let row = await cursorOf(calendarId);
+    expect(new Date(row?.next_poll_at).getTime()).toBe(at + 900_000);
+    expect(row?.last_error).toContain('slow down');
+
+    clock += 3_600_000;
+    behaviour.now = 'slow';
+    await poller.runOnce();
+    row = await cursorOf(calendarId);
+    expect(row?.last_error).toContain('too long');
+    expect(row?.failures).toBe(2);
+
+    clock += 3_600_000;
+    behaviour.now = 'large';
+    await poller.runOnce();
+    row = await cursorOf(calendarId);
+    expect(row?.last_error).toContain('repeating events');
+    clock += 3_600_000;
+  }, 60_000);
+
+  test('an account read every minute rewrites its cursor only when something about it changes', async () => {
+    const { id: calendarId } = await connectCalendar('Steady calendar');
+    await listen(calendarId, 'calendar.event.changed');
+    await required(poller).refresh();
+    const [before] = await required(handle).sql`select xmin::text as version from source_cursor
+      where connection_id = ${calendarId}`;
+    await required(poller).refresh();
+    const [after] = await required(handle).sql`select xmin::text as version from source_cursor
+      where connection_id = ${calendarId}`;
+    expect(after?.version).toBe(before?.version);
   }, 60_000);
 });

@@ -13,7 +13,13 @@
  * winter. An all-day event keeps its date.
  */
 import ICAL from 'ical.js';
-import type { CalendarRead, CalendarWindow, Occurrence, OccurrenceStatus } from './types.ts';
+import type {
+  CalendarRead,
+  CalendarWindow,
+  Confirmed,
+  Occurrence,
+  OccurrenceStatus,
+} from './types.ts';
 
 /** Most instances a series is walked through looking for those inside the window. */
 export const MAX_EXPANSION_STEPS = 5000;
@@ -54,19 +60,26 @@ function zoneOffset(zone: string, at: number): number {
 }
 
 /**
- * A wall-clock time in an IANA zone as a UTC instant. A time that does not
- * exist (inside a spring-forward gap) lands just after the gap, and one that
- * happens twice (in the autumn) takes the first, as calendars do.
+ * A wall-clock time in an IANA zone as a UTC instant. A time that happens twice
+ * (in the autumn) takes the first. A time that does not exist (inside a
+ * spring-forward gap) is read with the offset in force before the gap, as
+ * RFC 5545 says, so 02:30 on the morning New York springs forward is 03:30
+ * daylight time.
  */
 export function zonedToUtc(
   wall: { year: number; month: number; day: number; hour: number; minute: number; second: number },
   zone: string,
 ): number {
   const guess = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second);
-  const first = zoneOffset(zone, guess);
-  const utc = guess - first;
-  const second = zoneOffset(zone, utc);
-  return second === first ? utc : guess - second;
+  // The offsets on either side of any change near this time.
+  const offsets = [
+    ...new Set([zoneOffset(zone, guess - 86_400_000), zoneOffset(zone, guess + 86_400_000)]),
+  ];
+  const valid = offsets
+    .filter((offset) => zoneOffset(zone, guess - offset) === offset)
+    .map((offset) => guess - offset);
+  if (valid.length) return Math.min(...valid);
+  return guess - Math.min(...offsets);
 }
 
 const pad = (value: number, length = 2) => String(value).padStart(length, '0');
@@ -170,19 +183,126 @@ function recurrenceKey(component: ICAL.Component): string | null {
 }
 
 /**
+ * How much one read may spend expanding repeating events, across every series
+ * in it: instances walked, occurrences kept, and time. A feed is written by
+ * whoever publishes it, and a calendar collects other people's invitations, so
+ * neither decides how long the service works on it.
+ */
+export type ExpansionBudget = { steps: number; occurrences: number; ms: number };
+export const EXPANSION_BUDGET: ExpansionBudget = {
+  steps: 20_000,
+  occurrences: MAX_OCCURRENCES,
+  ms: 2_000,
+};
+/** How many instances are walked between two yields to other work. */
+const YIELD_EVERY = 250;
+
+/** A calendar a read cannot finish within its budget. It is skipped, and the reason is kept. */
+export class CalendarTooLarge extends Error {
+  readonly code = 'calendar_too_large';
+  constructor() {
+    super(
+      'This calendar has more repeating events than one read can check, so its changes are skipped until it is smaller.',
+    );
+  }
+}
+
+const SECONDS: Record<string, number> = {
+  SECONDLY: 1,
+  MINUTELY: 60,
+  HOURLY: 3600,
+  DAILY: 86_400,
+  WEEKLY: 604_800,
+};
+
+/**
+ * Move a long-running series' first instance up to just before the window,
+ * by a whole number of its periods, so an old daily meeting is walked from
+ * this week rather than from the year it began. The instances it yields are
+ * the same ones, at the same wall-clock times, under the same recurrence ids.
+ * A rule with COUNT is left alone: its last instance depends on where it began.
+ */
+function startNearWindow(event: ICAL.Event, zone: string | null, from: number): void {
+  const rules = event.component.getAllProperties('rrule');
+  if (rules.length !== 1) return;
+  const rule = rules[0]?.getFirstValue() as ICAL.Recur | undefined;
+  if (!rule || rule.count || !rule.freq) return;
+  const interval = Math.max(1, rule.interval || 1);
+  const start = event.startDate;
+  const began = instantMs(icalInstant(start, zone));
+  // Two days of margin, for a change of offset and for an instance under way.
+  const gap = from - began - 2 * 86_400_000;
+  if (!(gap > 0)) return;
+  const moved = start.clone();
+  const unit = SECONDS[rule.freq];
+  if (unit) {
+    const periods = Math.floor(gap / (unit * 1000 * interval)) * interval;
+    if (periods <= 0) return;
+    if (unit >= 86_400) moved.adjust((periods * unit) / 86_400, 0, 0, 0);
+    else moved.adjust(0, 0, 0, periods * unit);
+  } else if (rule.freq === 'MONTHLY' || rule.freq === 'YEARLY') {
+    if (start.day > 28) return;
+    const step = rule.freq === 'YEARLY' ? 12 * interval : interval;
+    const months = Math.floor(gap / (31 * 86_400_000) / step) * step;
+    if (months <= 0) return;
+    const total = start.month - 1 + months;
+    moved.year = start.year + Math.floor(total / 12);
+    moved.month = (total % 12) + 1;
+  } else return;
+  const duration = event.duration;
+  const endZone = tzidOf(event.component, 'dtend');
+  const hadEnd = Boolean(event.component.getFirstProperty('dtend'));
+  event.startDate = moved;
+  // Setting a time drops the zone it was written in; it is put back.
+  if (zone) event.component.getFirstProperty('dtstart')?.setParameter('tzid', zone);
+  if (hadEnd) {
+    const end = moved.clone();
+    end.addDuration(duration);
+    event.endDate = end;
+    if (endZone) event.component.getFirstProperty('dtend')?.setParameter('tzid', endZone);
+  }
+}
+
+/**
  * Every occurrence touching the window in one or more iCalendar objects, as a
  * CalDAV collection or a feed holds them. A series is expanded; an instance
  * someone changed replaces the one it overrides, wherever it was moved to; an
  * instance whose series this calendar does not hold (an invitation to one
  * meeting of a series) stands alone.
+ *
+ * The whole read shares one budget and yields to other work as it goes. A
+ * calendar that would exceed it is refused with {@link CalendarTooLarge}
+ * rather than read in part.
  */
-export function expandIcs(texts: readonly string[], window: CalendarWindow): CalendarRead {
+export async function expandIcs(
+  texts: readonly string[],
+  window: CalendarWindow,
+  budget: ExpansionBudget = EXPANSION_BUDGET,
+): Promise<CalendarRead> {
   const out: Occurrence[] = [];
+  const began = performance.now();
+  const from = instantMs(window.from);
+  const to = instantMs(window.to);
+  let steps = 0;
+  const spend = async () => {
+    steps += 1;
+    if (steps > budget.steps) throw new CalendarTooLarge();
+    if (steps % YIELD_EVERY === 0) {
+      if (performance.now() - began > budget.ms) throw new CalendarTooLarge();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  const keep = (occurrence: Occurrence) => {
+    if (!touches(occurrence.start, occurrence.end, window)) return;
+    if (out.length >= budget.occurrences) throw new CalendarTooLarge();
+    out.push(occurrence);
+  };
   for (const text of texts) {
     const root = new ICAL.Component(ICAL.parse(text));
     if (root.name !== 'vcalendar') throw new Error('Expected VCALENDAR');
     const byUid = new Map<string, { master?: ICAL.Component; exceptions: ICAL.Component[] }>();
     for (const component of root.getAllSubcomponents('vevent')) {
+      await spend();
       const uid = textOf(component, 'uid');
       if (!uid || !component.getFirstProperty('dtstart')) continue;
       const entry = byUid.get(uid) ?? { exceptions: [] };
@@ -193,29 +313,26 @@ export function expandIcs(texts: readonly string[], window: CalendarWindow): Cal
     for (const [uid, { master, exceptions }] of byUid) {
       if (!master) {
         for (const exception of exceptions) {
+          await spend();
           const event = new ICAL.Event(exception);
-          const occurrence = occurrenceOf(
-            exception,
-            uid,
-            recurrenceKey(exception),
-            event.startDate,
-            event.endDate,
+          keep(
+            occurrenceOf(exception, uid, recurrenceKey(exception), event.startDate, event.endDate),
           );
-          if (touches(occurrence.start, occurrence.end, window)) out.push(occurrence);
         }
         continue;
       }
       const event = new ICAL.Event(master, { exceptions });
       if (!event.isRecurring()) {
-        const occurrence = occurrenceOf(master, uid, null, event.startDate, event.endDate);
-        if (touches(occurrence.start, occurrence.end, window)) out.push(occurrence);
+        await spend();
+        keep(occurrenceOf(master, uid, null, event.startDate, event.endDate));
         continue;
       }
-      const seen = new Set<string>();
-      const to = instantMs(window.to);
-      const iterator = event.iterator();
       const masterZone = tzidOf(master, 'dtstart');
+      startNearWindow(event, masterZone, from);
+      const seen = new Set<string>();
+      const iterator = event.iterator();
       for (let step = 0; step < MAX_EXPANSION_STEPS; step++) {
+        await spend();
         const next = iterator.next();
         if (!next) break;
         // The rule's own times are in the series' zone; past the window's end
@@ -225,20 +342,64 @@ export function expandIcs(texts: readonly string[], window: CalendarWindow): Cal
         const item = details.item.component;
         const key = icalInstant(details.recurrenceId, masterZone);
         seen.add(key);
-        const occurrence = occurrenceOf(item, uid, key, details.startDate, details.endDate);
-        if (touches(occurrence.start, occurrence.end, window)) out.push(occurrence);
+        keep(occurrenceOf(item, uid, key, details.startDate, details.endDate));
       }
       // An instance moved into the window from a date the walk above never
       // reached is still in the window.
       for (const exception of exceptions) {
         const key = recurrenceKey(exception);
         if (key === null || seen.has(key)) continue;
+        await spend();
         const moved = new ICAL.Event(exception);
-        const occurrence = occurrenceOf(exception, uid, key, moved.startDate, moved.endDate);
-        if (touches(occurrence.start, occurrence.end, window)) out.push(occurrence);
+        keep(occurrenceOf(exception, uid, key, moved.startDate, moved.endDate));
       }
     }
   }
   out.sort((a, b) => instantMs(a.start) - instantMs(b.start) || a.uid.localeCompare(b.uid));
-  return { items: out.slice(0, MAX_OCCURRENCES), complete: out.length <= MAX_OCCURRENCES };
+  return { items: out, complete: true };
+}
+
+/**
+ * What became of one occurrence, read from the calendar objects that hold its
+ * event: `gone` when the event is not there at all or the instance was
+ * removed (EXDATE), the occurrence where it now is when a single event or a
+ * changed instance moved, and `unknown` otherwise.
+ */
+export function confirmFromIcs(
+  texts: readonly string[],
+  uid: string,
+  occurrence: string | null,
+): Confirmed {
+  let master: ICAL.Component | undefined;
+  const exceptions: ICAL.Component[] = [];
+  for (const text of texts) {
+    const root = new ICAL.Component(ICAL.parse(text));
+    for (const component of root.getAllSubcomponents('vevent')) {
+      if (textOf(component, 'uid') !== uid || !component.getFirstProperty('dtstart')) continue;
+      if (component.getFirstProperty('recurrence-id')) exceptions.push(component);
+      else master = component;
+    }
+  }
+  if (!master && !exceptions.length) return 'gone';
+  if (occurrence === null) {
+    if (!master || master.getFirstProperty('rrule')) return 'unknown';
+    const event = new ICAL.Event(master);
+    return occurrenceOf(master, uid, null, event.startDate, event.endDate);
+  }
+  const changed = exceptions.find((exception) => recurrenceKey(exception) === occurrence);
+  if (changed) {
+    const event = new ICAL.Event(changed);
+    return occurrenceOf(changed, uid, occurrence, event.startDate, event.endDate);
+  }
+  if (!master) return 'gone';
+  for (const property of master.getAllProperties('exdate')) {
+    const zone = property.getParameter('tzid');
+    for (const value of property.getValues())
+      if (
+        value instanceof ICAL.Time &&
+        icalInstant(value, typeof zone === 'string' ? zone : null) === occurrence
+      )
+        return 'gone';
+  }
+  return 'unknown';
 }

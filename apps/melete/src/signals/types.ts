@@ -61,6 +61,8 @@ export type Occurrence = {
   time_zone: string | null;
   /** When the provider says the event last changed, if it says. */
   updated_at?: string | null;
+  /** The provider's own id for this instance, to look it up again. */
+  ref?: string | null;
 };
 
 export type CalendarWindow = { from: string; to: string };
@@ -70,11 +72,56 @@ export type CalendarWindow = { from: string; to: string };
  * the end of the window (too many occurrences to list), and then nothing past
  * the last occurrence it did list is taken as removed.
  */
-export type CalendarRead = { items: readonly Occurrence[]; complete: boolean };
+export type CalendarRead = {
+  items: readonly Occurrence[];
+  complete: boolean;
+};
+
+/**
+ * What became of an occurrence a read no longer lists: where it is now (moved
+ * out of the window, perhaps), `gone` when the provider says it no longer
+ * exists or was cancelled, or `unknown`.
+ */
+export type Confirmed = Occurrence | 'gone' | 'unknown';
 
 /** A calendar that can list the occurrences touching a window. */
 export interface CalendarOccurrences {
   occurrences(window: CalendarWindow): Promise<CalendarRead>;
+  /** Look one occurrence up again by the provider's own id. */
+  confirm?(occurrence: {
+    uid: string;
+    occurrence: string | null;
+    ref: string | null;
+  }): Promise<Confirmed>;
+}
+
+/** A provider asking to be left alone, or answering with an error, as the poller reads it. */
+export class SourceError extends Error {
+  constructor(
+    readonly status: number,
+    /** Seconds the provider asked for, from Retry-After. */
+    readonly retryAfter: number | null = null,
+  ) {
+    super(`source_${status}`);
+  }
+}
+
+/** Retry-After as seconds, from a number or an HTTP date; null when absent or unreadable. */
+export function retryAfterOf(response: Response): number | null {
+  const header = response.headers.get('retry-after');
+  if (!header) return null;
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(Math.ceil(seconds), 86_400);
+  const at = Date.parse(header);
+  return Number.isNaN(at)
+    ? null
+    : Math.max(0, Math.min(Math.ceil((at - Date.now()) / 1000), 86_400));
+}
+
+/** The error a failed provider answer becomes, its body discarded. */
+export async function sourceError(response: Response): Promise<SourceError> {
+  await response.body?.cancel().catch(() => {});
+  return new SourceError(response.status, retryAfterOf(response));
 }
 
 export type SignalSource =

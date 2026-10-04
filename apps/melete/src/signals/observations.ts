@@ -20,7 +20,7 @@ import {
 } from '@melete/contracts';
 import { messageSender, messageSenderDomain } from '../companies/replies.ts';
 import { instantMs } from './occurrences.ts';
-import type { CalendarRead, NewMail, Occurrence } from './types.ts';
+import type { CalendarRead, Confirmed, NewMail, Occurrence } from './types.ts';
 
 /** What an observation's words are: the account's own record, or text someone else wrote. */
 export type ObservationOrigin = 'verified_connector' | 'external_content';
@@ -37,6 +37,18 @@ const clip = (value: string, length: number) =>
   value.length > length ? `${value.slice(0, length - 1)}…` : value;
 
 /**
+ * A provider's id as it may appear in an indexed key: a fixed-length hash. An
+ * id is whatever the provider or a sender chose, of any length, and an
+ * over-long one must never stop an account's reads. The id itself travels,
+ * clipped, in the observation.
+ */
+export const keyOf = (value: string) =>
+  createHash('sha256').update(value).digest('hex').slice(0, 40);
+
+/** The dedup key a message is delivered under, from the key its source gave it. */
+export const mailDedupKey = (key: string) => `${MAIL_RECEIVED}:${keyOf(key)}`;
+
+/**
  * A new message as an observation. The words in it were written by whoever
  * sent it, so it is marked as outside content, and only the headers a watch
  * can test travel: who sent it, to how many, its subject line, when.
@@ -49,14 +61,15 @@ export function mailObservation(
   const receivedAt = message.date ?? readAt;
   return {
     event_name: MAIL_RECEIVED,
-    dedup_key: `${MAIL_RECEIVED}:${message.key}`,
+    dedup_key: mailDedupKey(message.key),
     payload: {
       kind: MAIL_RECEIVED,
-      about: { type: 'mail_message', key: `mail:${connectionId}:${message.key}` },
+      about: { type: 'mail_message', key: `mail:${connectionId}:${keyOf(message.key)}` },
       occurred_at: receivedAt,
       origin: 'external_content',
-      message_id: message.message_id,
-      read_key: message.read_key,
+      message_id: message.message_id === null ? null : clip(message.message_id, 500),
+      read_key:
+        typeof message.read_key === 'string' ? clip(message.read_key, 600) : message.read_key,
       from: clip(message.from, 300),
       sender: messageSender({
         messageId: message.key,
@@ -100,7 +113,7 @@ type OccurrenceField = (typeof OCCURRENCE_FIELDS)[number];
 export type OccurrenceFields = Pick<
   Occurrence,
   OccurrenceField | 'uid' | 'occurrence' | 'time_zone'
->;
+> & { ref?: string | null };
 
 /** The row kept for one occurrence between reads. */
 export type KeptOccurrence = { subject_key: string; version: string; fields: OccurrenceFields };
@@ -108,11 +121,11 @@ export type KeptOccurrence = { subject_key: string; version: string; fields: Occ
 export const occurrenceKey = (
   connectionId: string,
   occurrence: Pick<Occurrence, 'uid' | 'occurrence'>,
-) => `calendar:${connectionId}:${occurrence.uid}:${occurrence.occurrence ?? ''}`;
+) => `calendar:${connectionId}:${keyOf(`${occurrence.uid}\u0000${occurrence.occurrence ?? ''}`)}`;
 
 export function occurrenceFields(occurrence: Occurrence): OccurrenceFields {
   return {
-    uid: occurrence.uid,
+    uid: clip(occurrence.uid, 500),
     occurrence: occurrence.occurrence,
     title: clip(occurrence.title, 300),
     start: occurrence.start,
@@ -121,7 +134,8 @@ export function occurrenceFields(occurrence: Occurrence): OccurrenceFields {
     location: clip(occurrence.location, 300),
     status: occurrence.status,
     attendees: occurrence.attendees,
-    time_zone: occurrence.time_zone,
+    time_zone: occurrence.time_zone === null ? null : clip(occurrence.time_zone, 100),
+    ...(occurrence.ref ? { ref: clip(occurrence.ref, 500) } : {}),
   };
 }
 
@@ -188,7 +202,9 @@ function observation(
  *   their previous values. One whose status turned to cancelled is
  *   `cancelled`.
  * - A kept occurrence that has not ended and that the read no longer holds,
- *   though it lies inside what both reads covered, was removed: `cancelled`.
+ *   though it lies inside what both reads covered, is reported only on what a
+ *   lookup says: `cancelled` when the provider says it is gone, `changed` when
+ *   it was moved (out of the window, say), and nothing when it cannot tell.
  *   Kept occurrences that have ended are let go quietly.
  */
 export function diffCalendar(input: {
@@ -198,6 +214,8 @@ export function diffCalendar(input: {
   previous: CalendarCursor;
   window: { from: string; to: string };
   now: number;
+  /** What a lookup said about each occurrence the read no longer lists; missing means unknown. */
+  confirmed?: ReadonlyMap<string, Confirmed>;
 }): CalendarDiff {
   const { connectionId, previous, now } = input;
   const at = new Date(now).toISOString();
@@ -249,28 +267,92 @@ export function diffCalendar(input: {
         }),
       );
   }
+  const handled = new Set<string>();
+  for (const row of vanished({ ...input, seen, horizon })) {
+    handled.add(row.subject_key);
+    const answer = input.confirmed?.get(row.subject_key) ?? 'unknown';
+    if (answer === 'gone') {
+      out.remove.push(row.subject_key);
+      out.observations.push(
+        observation(
+          connectionId,
+          CALENDAR_EVENTS.cancelled,
+          row.subject_key,
+          `removed-${row.version}`,
+          row.fields,
+          at,
+          { reason: 'removed' },
+        ),
+      );
+      continue;
+    }
+    if (answer === 'unknown') {
+      // Not listed, and nothing says why: it may have moved past the window.
+      // Saying nothing is better than a cancellation that did not happen.
+      out.remove.push(row.subject_key);
+      continue;
+    }
+    // Found elsewhere: it moved out of the window, or was cancelled there.
+    const fields: OccurrenceFields = {
+      ...occurrenceFields(answer),
+      ...(row.fields.ref ? { ref: row.fields.ref } : {}),
+    };
+    const version = fieldsVersion(fields);
+    out.upsert.push({ subject_key: row.subject_key, version, fields });
+    if (version === row.version) continue;
+    const changed = OCCURRENCE_FIELDS.filter(
+      (field) => JSON.stringify(row.fields[field]) !== JSON.stringify(fields[field]),
+    );
+    if (fields.status === 'cancelled')
+      out.observations.push(
+        observation(connectionId, CALENDAR_EVENTS.cancelled, row.subject_key, version, fields, at, {
+          reason: 'cancelled',
+        }),
+      );
+    else if (changed.length)
+      out.observations.push(
+        observation(connectionId, CALENDAR_EVENTS.changed, row.subject_key, version, fields, at, {
+          changed: [...changed],
+          previous: Object.fromEntries(
+            changed.map((field) => [field, row.fields[field] ?? null]),
+          ) as JsonObject,
+        }),
+      );
+  }
   for (const [key, row] of kept) {
-    if (seen.has(key)) continue;
+    if (seen.has(key) || handled.has(key)) continue;
     // Past what this read could see: nothing is known about it either way.
     if (instantMs(row.fields.start) >= instantMs(horizon)) continue;
-    const ends = Math.max(instantMs(row.fields.end), instantMs(row.fields.start));
+    // Ended, already cancelled, or never news: let it go quietly.
     out.remove.push(key);
-    if (ends <= now || covered === null) continue;
-    if (row.fields.status === 'cancelled') continue;
-    if (instantMs(row.fields.start) >= covered) continue;
-    out.observations.push(
-      observation(
-        connectionId,
-        CALENDAR_EVENTS.cancelled,
-        key,
-        `removed-${row.version}`,
-        row.fields,
-        at,
-        {
-          reason: 'removed',
-        },
-      ),
-    );
   }
   return out;
+}
+
+/**
+ * The kept occurrences a read no longer lists although it should have: not
+ * yet ended, not already cancelled, and inside what both this read and the
+ * last one covered. Each is looked up before anything is said about it.
+ */
+export function vanished(input: {
+  connectionId: string;
+  kept: readonly KeptOccurrence[];
+  read: CalendarRead;
+  previous: CalendarCursor;
+  window: { from: string; to: string };
+  now: number;
+  seen?: ReadonlySet<string>;
+  horizon?: string;
+}): KeptOccurrence[] {
+  if (!input.previous) return [];
+  const horizon = instantMs(input.horizon ?? readHorizon(input.read, input.window));
+  const covered = Math.min(instantMs(input.previous.window_end), horizon);
+  const seen =
+    input.seen ?? new Set(input.read.items.map((item) => occurrenceKey(input.connectionId, item)));
+  return input.kept.filter((row) => {
+    if (seen.has(row.subject_key) || row.fields.status === 'cancelled') return false;
+    const start = instantMs(row.fields.start);
+    const ends = Math.max(instantMs(row.fields.end), start);
+    return ends > input.now && start < covered && start < horizon;
+  });
 }

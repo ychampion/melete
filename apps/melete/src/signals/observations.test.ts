@@ -3,11 +3,14 @@ import {
   diffCalendar,
   fieldsVersion,
   type KeptOccurrence,
+  keyOf,
+  mailDedupKey,
   mailObservation,
   occurrenceFields,
   occurrenceKey,
+  vanished,
 } from './observations.ts';
-import type { Occurrence } from './types.ts';
+import type { Confirmed, Occurrence } from './types.ts';
 
 const CONNECTION = 'conn_calendar01';
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
@@ -37,6 +40,7 @@ const diff = (input: {
   read: Occurrence[];
   previous?: string | null;
   complete?: boolean;
+  confirmed?: Map<string, Confirmed>;
 }) =>
   diffCalendar({
     connectionId: CONNECTION,
@@ -45,6 +49,7 @@ const diff = (input: {
     previous: input.previous === null ? null : { window_end: input.previous ?? WINDOW.to },
     window: WINDOW,
     now: NOW,
+    ...(input.confirmed ? { confirmed: input.confirmed } : {}),
   });
 
 describe('calendar observations', () => {
@@ -97,7 +102,7 @@ describe('calendar observations', () => {
     expect(result.upsert).toHaveLength(2);
   });
 
-  test('a cancelled status is a cancellation; an occurrence gone from the read is one too', () => {
+  test('a cancelled status is a cancellation; an occurrence the provider says is gone is one too', () => {
     const cancelled = diff({
       kept: [kept(occurrence())],
       read: [occurrence({ status: 'cancelled' })],
@@ -105,11 +110,62 @@ describe('calendar observations', () => {
     expect(cancelled.observations.map((item) => [item.event_name, item.payload.reason])).toEqual([
       ['calendar.event.cancelled', 'cancelled'],
     ]);
-    const removed = diff({ kept: [kept(occurrence())], read: [] });
+    const key = occurrenceKey(CONNECTION, occurrence());
+    const removed = diff({
+      kept: [kept(occurrence())],
+      read: [],
+      confirmed: new Map<string, Confirmed>([[key, 'gone']]),
+    });
     expect(removed.observations.map((item) => [item.event_name, item.payload.reason])).toEqual([
       ['calendar.event.cancelled', 'removed'],
     ]);
-    expect(removed.remove).toEqual([occurrenceKey(CONNECTION, occurrence())]);
+    expect(removed.remove).toEqual([key]);
+  });
+
+  test('a meeting moved past the window is a change, never a cancellation', () => {
+    const key = occurrenceKey(CONNECTION, occurrence());
+    const moved = occurrence({
+      start: '2026-11-20T16:00:00.000Z',
+      end: '2026-11-20T16:15:00.000Z',
+    });
+    const result = diff({
+      kept: [kept(occurrence())],
+      read: [],
+      confirmed: new Map<string, Confirmed>([[key, moved]]),
+    });
+    expect(result.observations.map((item) => [item.event_name, item.payload.changed])).toEqual([
+      ['calendar.event.changed', ['start', 'end']],
+    ]);
+    // Kept where it now is, so the next read, which cannot see it, asks nothing.
+    expect(result.upsert.map((entry) => entry.fields.start)).toEqual(['2026-11-20T16:00:00.000Z']);
+    expect(
+      vanished({
+        connectionId: CONNECTION,
+        kept: result.upsert,
+        read: { items: [], complete: true },
+        previous: { window_end: WINDOW.to },
+        window: WINDOW,
+        now: NOW,
+      }),
+    ).toEqual([]);
+  });
+
+  test('an occurrence nobody can account for leaves quietly', () => {
+    const result = diff({ kept: [kept(occurrence())], read: [] });
+    expect(result.observations).toEqual([]);
+    expect(result.remove).toEqual([occurrenceKey(CONNECTION, occurrence())]);
+  });
+
+  test('a provider id of any length makes a key of fixed length', () => {
+    const long = occurrence({ uid: 'x'.repeat(4096) });
+    const result = diff({ read: [long, occurrence()], previous: '2026-10-17T12:00:00.000Z' });
+    expect(result.observations).toHaveLength(2);
+    for (const item of result.observations) {
+      expect(item.dedup_key.length).toBeLessThan(200);
+      expect(String((item.payload.about as { key: string }).key).length).toBeLessThan(200);
+    }
+    expect(String(result.observations[0]?.payload.uid).length).toBeLessThanOrEqual(500);
+    expect(occurrenceKey(CONNECTION, long)).not.toBe(occurrenceKey(CONNECTION, occurrence()));
   });
 
   test('an occurrence that has ended leaves quietly', () => {
@@ -155,10 +211,13 @@ describe('mail observations', () => {
     );
     expect(observed).toEqual({
       event_name: 'mail.received',
-      dedup_key: 'mail.received:msgid:<a1@shop.example>',
+      dedup_key: mailDedupKey('msgid:<a1@shop.example>'),
       payload: {
         kind: 'mail.received',
-        about: { type: 'mail_message', key: 'mail:conn_mail00001:msgid:<a1@shop.example>' },
+        about: {
+          type: 'mail_message',
+          key: `mail:conn_mail00001:${keyOf('msgid:<a1@shop.example>')}`,
+        },
         occurred_at: '2026-10-05T11:59:00.000Z',
         origin: 'external_content',
         message_id: '<a1@shop.example>',
@@ -174,5 +233,25 @@ describe('mail observations', () => {
       },
     });
     expect(JSON.stringify(observed)).not.toContain('Secret body text');
+  });
+
+  test('a Message-ID of any length makes a key of fixed length', () => {
+    const id = `<${'a'.repeat(64 * 1024)}@x>`;
+    const observed = mailObservation(
+      'conn_mail00001',
+      {
+        key: `msgid:${id}`,
+        read_key: 7,
+        message_id: id,
+        from: 'a@example.test',
+        to: '',
+        subject: 'Hello',
+        text: '',
+        html: '',
+      },
+      '2026-10-05T12:00:00.000Z',
+    );
+    expect(observed.dedup_key.length).toBeLessThan(200);
+    expect(String(observed.payload.message_id).length).toBeLessThanOrEqual(500);
   });
 });

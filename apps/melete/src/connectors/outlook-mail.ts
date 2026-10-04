@@ -6,6 +6,7 @@
  * addressed by Graph's own id.
  */
 import { simpleParser } from 'mailparser';
+import { sourceError } from '../signals/types.ts';
 import {
   composeMail,
   headerBlock,
@@ -201,9 +202,14 @@ export class OutlookMailTransport implements MailTransport {
     cursor: string | null,
     options: { limit: number; seen?: (key: string) => Promise<boolean>; now?: number },
   ) {
-    const start = `${this.options.base}/mailFolders/inbox/messages/delta?${new URLSearchParams({
-      $select: 'id,receivedDateTime',
-    })}`;
+    // The delta starts at the time watching began, not at the start of the
+    // inbox, so a large inbox is not walked before the first news.
+    const start = (since: string) =>
+      `${this.options.base}/mailFolders/inbox/messages/delta?${new URLSearchParams({
+        $select: 'id,receivedDateTime',
+        $filter: `receivedDateTime ge ${new Date(since).toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
+      })}`;
+    const began = new Date(options.now ?? Date.now()).toISOString();
     let state: { link: string; since: string };
     try {
       const parsed = cursor ? (JSON.parse(cursor) as { link?: unknown; since?: unknown }) : null;
@@ -214,9 +220,9 @@ export class OutlookMailTransport implements MailTransport {
         typeof parsed.since === 'string' &&
         !Number.isNaN(Date.parse(parsed.since))
           ? { link: parsed.link, since: parsed.since }
-          : { link: start, since: new Date(options.now ?? Date.now()).toISOString() };
+          : { link: start(began), since: began };
     } catch {
-      state = { link: start, since: new Date(options.now ?? Date.now()).toISOString() };
+      state = { link: start(began), since: began };
     }
     const since = Date.parse(state.since);
     const ids: string[] = [];
@@ -230,13 +236,10 @@ export class OutlookMailTransport implements MailTransport {
       );
       if (response.status === 410) {
         await response.body?.cancel().catch(() => {});
-        link = start;
+        link = start(state.since);
         continue;
       }
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => {});
-        throw new GraphError(response.status);
-      }
+      if (!response.ok) throw await sourceError(response);
       const body = (await boundedJson(response, MAX_LIST_RESPONSE_BYTES)) as {
         value?: Record<string, unknown>[];
         '@odata.nextLink'?: unknown;

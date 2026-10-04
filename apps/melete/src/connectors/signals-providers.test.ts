@@ -4,12 +4,15 @@
  * delta and an IMAP inbox by UID, including a server that renumbered it.
  */
 import { describe, expect, test } from 'bun:test';
-import { EmailConnector } from './email.ts';
+import { SourceError } from '../signals/types.ts';
+import { CalendarConnector } from './calendar.ts';
+import { EmailConnector, withheldFromSignals } from './email.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { GoogleCalendarConnector, googleOccurrence } from './google-calendar.ts';
 import { type ImapInbox, imapChanges, type MailMessage } from './mail-transport.ts';
 import { graphOccurrence, OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
+import type { SecretAccess } from './secrets.ts';
 import type { SignedInAccess } from './signed-in.ts';
 
 const access: SignedInAccess = { token: async () => 'token', renew: async () => 'token' };
@@ -496,3 +499,171 @@ function message(subject: string): MailMessage {
     html: '',
   };
 }
+
+describe('one-time codes never become observations', () => {
+  const CODE_SUBJECTS = [
+    '482910 is your Instagram code',
+    'Your Amazon code: 482910',
+    'Your code is 123456',
+    'Confirm your login: 123456',
+    'Your Uber code 4821',
+    'Your temporary PIN: 8812',
+    'G-482910 is your Google verification code',
+    'Your verification code',
+    'Your one-time passcode',
+    'Sign-in attempt: 553 120',
+    'Your 2FA token 90817263',
+    'Use 7741 to log in',
+  ];
+  const KEPT_SUBJECTS = [
+    'Invoice 7731 is overdue',
+    'Lunch on Friday?',
+    'Q3 planning notes',
+    'Your order has shipped',
+  ];
+
+  test('every code-shaped subject is withheld, and ordinary mail is not', () => {
+    for (const subject of CODE_SUBJECTS)
+      expect([subject, withheldFromSignals(message(subject))]).toEqual([subject, true]);
+    for (const subject of KEPT_SUBJECTS)
+      expect([subject, withheldFromSignals(message(subject))]).toEqual([subject, false]);
+  });
+});
+
+describe('reading less of each provider', () => {
+  test('the first Graph mail delta starts at the time watching began', async () => {
+    const base = 'https://graph.example/v1.0/me';
+    const graph = provider((url) =>
+      url.pathname.endsWith('/inbox/messages/delta')
+        ? {
+            body: {
+              value: [],
+              '@odata.deltaLink': `${base}/mailFolders/inbox/messages/delta?$deltatoken=x`,
+            },
+          }
+        : undefined,
+    );
+    const transport = new OutlookMailTransport({
+      base,
+      from: 'me@example.test',
+      access,
+      fetcher: graph.fetcher,
+    });
+    await transport.changes(null, { limit: 50, now: Date.parse('2026-10-05T12:00:00Z') });
+    expect(graph.asked[0]?.searchParams.get('$filter')).toBe(
+      'receivedDateTime ge 2026-10-05T12:00:00Z',
+    );
+  });
+
+  test('CalDAV is asked only for the window, or for one event by its UID', async () => {
+    const bodies: string[] = [];
+    const fetcher = (async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+      return new Response('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"></d:multistatus>', {
+        status: 207,
+      });
+    }) as typeof fetch;
+    const connector = new CalendarConnector(
+      {
+        id: 'conn_caldav0001',
+        spaceId: 'sp_test0001',
+        mode: 'caldav',
+        calendarUrl: 'https://dav.example/cal/',
+        username: 'me',
+        secretRef: 'sec_1',
+      },
+      { withSecret: async (_ref, _space, work) => work('password') } as SecretAccess,
+      fetcher,
+    );
+    if (connector.signals?.stream !== 'calendar') throw new Error('expected a calendar');
+    expect(await connector.signals.occurrences(WINDOW)).toEqual({ items: [], complete: true });
+    expect(bodies[0]).toContain('<c:time-range start="20261005T120000Z" end="20261019T120000Z"/>');
+    expect(
+      await connector.signals.confirm?.({ uid: 'a&b@example.test', occurrence: null, ref: null }),
+    ).toBe('gone');
+    expect(bodies[1]).toContain(
+      '<c:text-match collation="i;octet">a&amp;b@example.test</c:text-match>',
+    );
+  });
+
+  test('Google and Graph look an instance up by its own id: gone, or where it moved', async () => {
+    const google = provider((url) => {
+      if (url.pathname.endsWith('/events/deleted_20261006')) return { status: 410 };
+      if (url.pathname.endsWith('/events/moved_20261006'))
+        return {
+          body: {
+            id: 'moved_20261006',
+            iCalUID: 'moved@google.com',
+            recurringEventId: 'moved',
+            status: 'confirmed',
+            summary: 'Standup',
+            originalStartTime: { dateTime: '2026-10-06T16:00:00Z' },
+            start: { dateTime: '2026-11-30T16:00:00Z' },
+            end: { dateTime: '2026-11-30T16:15:00Z' },
+          },
+        };
+      return undefined;
+    });
+    const calendar = new GoogleCalendarConnector({
+      id: 'conn_google0001',
+      spaceId: 'sp_test0001',
+      base: 'https://calendar.example/calendar/v3/calendars/primary',
+      access,
+      fetcher: google.fetcher,
+    });
+    if (calendar.signals?.stream !== 'calendar') throw new Error('expected a calendar');
+    expect(
+      await calendar.signals.confirm?.({ uid: 'x', occurrence: null, ref: 'deleted_20261006' }),
+    ).toBe('gone');
+    expect(
+      await calendar.signals.confirm?.({ uid: 'x', occurrence: null, ref: 'moved_20261006' }),
+    ).toMatchObject({ start: '2026-11-30T16:00:00.000Z', occurrence: '2026-10-06T16:00:00.000Z' });
+
+    const base = 'https://graph.example/v1.0/me';
+    const graph = provider((url) =>
+      url.pathname.endsWith('/events/AAMk-gone') ? { status: 404 } : undefined,
+    );
+    const outlook = new OutlookCalendarConnector({
+      id: 'conn_outlook001',
+      spaceId: 'sp_test0001',
+      base,
+      access,
+      fetcher: graph.fetcher,
+    });
+    if (outlook.signals?.stream !== 'calendar') throw new Error('expected a calendar');
+    expect(await outlook.signals.confirm?.({ uid: 'x', occurrence: null, ref: 'AAMk-gone' })).toBe(
+      'gone',
+    );
+  });
+
+  test('a provider asking for time says how long, and a listing that fails says its status', async () => {
+    const gmail = new GmailApiTransport({
+      base: 'https://gmail.example/gmail/v1/users/me',
+      from: 'me@example.test',
+      access,
+      fetcher: (async () =>
+        new Response('{}', {
+          status: 429,
+          headers: { 'retry-after': '900' },
+        })) as unknown as typeof fetch,
+    });
+    expect(
+      await gmail.changes('5000', { limit: 50 }).catch((error: unknown) => error),
+    ).toMatchObject({ status: 429, retryAfter: 900 });
+    const google = new GoogleCalendarConnector({
+      id: 'conn_google0001',
+      spaceId: 'sp_test0001',
+      base: 'https://calendar.example/calendar/v3/calendars/primary',
+      access,
+      fetcher: (async () =>
+        new Response('{}', {
+          status: 503,
+          headers: { 'retry-after': '120' },
+        })) as unknown as typeof fetch,
+    });
+    if (google.signals?.stream !== 'calendar') throw new Error('expected a calendar');
+    const failed = await google.signals.occurrences(WINDOW).catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(SourceError);
+    expect(failed).toMatchObject({ status: 503, retryAfter: 120 });
+  });
+});

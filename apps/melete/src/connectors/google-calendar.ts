@@ -14,7 +14,12 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
-import type { CalendarRead, Occurrence, SignalSource } from '../signals/types.ts';
+import {
+  type CalendarRead,
+  type Occurrence,
+  type SignalSource,
+  sourceError,
+} from '../signals/types.ts';
 import {
   byStart,
   calendarManifest,
@@ -110,6 +115,7 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     attendees: (event.attendees ?? []).filter((attendee) => !attendee.self && !attendee.resource)
       .length,
     time_zone: event.start?.timeZone ?? null,
+    ref: event.id ?? null,
     updated_at: event.updated && !Number.isNaN(Date.parse(event.updated)) ? event.updated : null,
   };
 }
@@ -198,10 +204,7 @@ export class GoogleCalendarConnector implements Connector {
         });
         if (pageToken) query.set('pageToken', pageToken);
         const response = await this.request('GET', `/events?${query}`);
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => {});
-          throw new Error(`Calendar listing unavailable (${response.status})`);
-        }
+        if (!response.ok) throw await sourceError(response);
         const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
           items?: GoogleEvent[];
           nextPageToken?: string;
@@ -214,6 +217,20 @@ export class GoogleCalendarConnector implements Connector {
         if (!pageToken) return { items, complete: true };
       }
       return { items, complete: false };
+    },
+    // An instance no longer listed is looked up by its own id: gone, or moved.
+    confirm: async ({ ref }) => {
+      if (!ref || !/^[A-Za-z0-9_]{1,1024}$/.test(ref)) return 'unknown';
+      const response = await this.request('GET', `/events/${ref}`);
+      if (response.status === 404 || response.status === 410) {
+        await response.body?.cancel().catch(() => {});
+        return 'gone';
+      }
+      if (!response.ok) throw await sourceError(response);
+      const found = googleOccurrence(
+        (await boundedJson(response, MAX_RESPONSE_BYTES)) as GoogleEvent,
+      );
+      return found ?? 'unknown';
     },
   };
 

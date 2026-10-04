@@ -1,5 +1,5 @@
 {
-  "id": "7245da36-dec8-427b-bbee-f2cd07a07ea2",
+  "id": "e148ca7a-bad8-4f81-ac88-fde5740acdc9",
   "prevId": "ccf3b7bb-93de-421b-88ad-ac9c9748690d",
   "version": "7",
   "dialect": "postgresql",
@@ -2274,6 +2274,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "event_connector_observation_idx": {
+          "name": "event_connector_observation_idx",
+          "columns": [
+            {
+              "expression": "(\"payload\"->>'connection_id')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"event\".\"job_id\" is null and \"event\".\"payload\"->>'kind' = 'connector_event'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -17511,6 +17527,12 @@
           "notNull": true,
           "default": 0
         },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "push_state": {
           "name": "push_state",
           "type": "jsonb",
@@ -17531,6 +17553,21 @@
           "columns": [
             {
               "expression": "next_poll_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "source_cursor_space_idx": {
+          "name": "source_cursor_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -17665,6 +17702,21 @@
             },
             {
               "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subject_state_space_idx": {
+          "name": "subject_state_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

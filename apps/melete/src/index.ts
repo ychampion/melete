@@ -1340,8 +1340,40 @@ export async function bootstrap(
           });
           await companyReplies.start();
           // New mail and calendar changes in the accounts some live trigger
-          // listens to, read from each account's own change feed.
-          signalPoller = new SignalPoller({ sql: handle.sql, triggers, connectors });
+          // listens to, read from each account's own change feed, by one
+          // instance at a time. A connection installed through another
+          // instance is opened here when it is first due.
+          const sql = handle.sql;
+          signalPoller = new SignalPoller({
+            sql,
+            triggers,
+            connectors,
+            leads: () => leading(leases, 'signal-poller'),
+            load: async (id) => {
+              const [row] = await sql`select id, space_id, provider, secret_ref, configuration
+                from connection where id = ${id} and status = 'active'`;
+              if (!row) return undefined;
+              const factory = connectorFactoryFor(connectors, () =>
+                connectorOptionsFromEnv(sql, env),
+              );
+              const opened = await factory.open({
+                id: String(row.id),
+                spaceId: String(row.space_id),
+                provider: String(row.provider),
+                secretRef: row.secret_ref === null ? null : String(row.secret_ref),
+                configuration: row.configuration as Record<string, unknown> | null,
+              });
+              if (!opened) return undefined;
+              // Opened meanwhile by a request on this instance: keep that one.
+              const present = connectors.get(id);
+              if (present) {
+                await opened.close?.();
+                return present;
+              }
+              factory.register(connectors, id, opened);
+              return opened;
+            },
+          });
           await signalPoller.start();
         }
         // Pushes to people's devices, when this installation has its VAPID keys.

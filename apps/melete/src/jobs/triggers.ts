@@ -569,15 +569,33 @@ export class TriggerService {
     );
   }
 
-  async deliver(input: EventDelivery): Promise<{ seq: number; duplicate: boolean }> {
+  /**
+   * `generation`, when given, is the connection's generation when what is
+   * delivered was read: a revocation or a switch of credential since then
+   * means it came from an account the connection no longer stands for, and it
+   * is refused.
+   */
+  async deliver(
+    input: EventDelivery,
+    options: { generation?: number } = {},
+  ): Promise<{ seq: number; duplicate: boolean }> {
     const value = eventDelivery.parse(input);
     return this.jobs.transaction(async (tx) => {
+      // Shared with other deliveries, exclusive of a revocation or a switch:
+      // what a revocation removes cannot be written back behind it.
       const [source] = await tx
         .select()
         .from(connection)
-        .where(eq(connection.id, value.connection_id));
+        .where(eq(connection.id, value.connection_id))
+        .for('share');
       if (source?.status !== 'active')
         throw new ServiceError('unknown_connection', 'Connection is not active.', 404);
+      if (options.generation !== undefined && source.generation !== options.generation)
+        throw new ServiceError(
+          'connection_changed',
+          'The connection changed while it was being read.',
+          409,
+        );
       const dedupKey = `connector:${value.connection_id}:${value.dedup_key}`;
       const [existing] = await tx
         .select({ seq: event.seq })

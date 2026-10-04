@@ -42,6 +42,8 @@ export const sourceCursor = pgTable(
     intervalSeconds: integer('interval_s').notNull().default(300),
     lastOkAt: timestamp('last_ok_at', { withTimezone: true }),
     failures: integer('failures').notNull().default(0),
+    /** Why the last read failed, in words a person can read; null after a read that worked. */
+    lastError: text('last_error'),
     /** Provider push subscriptions, once a source has them. */
     pushState: jsonb('push_state'),
     createdAt: created(),
@@ -49,6 +51,7 @@ export const sourceCursor = pgTable(
   (table) => [
     primaryKey({ columns: [table.connectionId, table.stream] }),
     index('source_cursor_due_idx').on(table.nextPollAt),
+    index('source_cursor_space_idx').on(table.spaceId),
     check('source_cursor_stream_check', sql`${table.stream} in ('mail', 'calendar')`),
     check('source_cursor_interval_check', sql`${table.intervalSeconds} > 0`),
   ],
@@ -74,5 +77,8 @@ export const subjectState = pgTable(
     lastChangedAt: timestamp('last_changed_at', { withTimezone: true }).notNull(),
     createdAt: created(),
   },
-  (table) => [index('subject_state_connection_idx').on(table.connectionId, table.type)],
+  (table) => [
+    index('subject_state_connection_idx').on(table.connectionId, table.type),
+    index('subject_state_space_idx').on(table.spaceId),
+  ],
 );
