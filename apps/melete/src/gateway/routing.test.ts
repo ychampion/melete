@@ -8,9 +8,12 @@ import { PriceTable, parseModelPrices } from './prices.ts';
 import {
   agentRoutes,
   allowedWithRoutes,
+  type ModelRouting,
+  NO_ROUTING,
   parseModelChoice,
   routingFromEnv,
   routingWarnings,
+  withPersonRoles,
 } from './routing.ts';
 import type {
   GatewayPrincipal,
@@ -464,5 +467,53 @@ describe("a model on the owner's own machine keeps its calls", () => {
       expect.stringContaining('MELETE_MODEL_FAST names the provider "fireworkz"'),
       expect.stringContaining('MELETE_MODEL_FALLBACK names openai-compatible'),
     ]);
+  });
+});
+
+describe('a person’s secondary in the routing roles', () => {
+  const operator: ModelRouting = {
+    fast: { provider: 'fireworks', model: 'fast' },
+    vision: { provider: 'fireworks', model: 'eyes' },
+    fallback: [{ provider: 'fireworks', model: 'backup' }],
+  };
+  const secondary = { provider: 'fireworks', model: 'small' };
+
+  test('with no secondary the operator’s roles stand as they are', () => {
+    expect(withPersonRoles(operator, {})).toEqual(operator);
+  });
+
+  test('it fills only fast and background, never vision or fallback', () => {
+    expect(withPersonRoles(operator, { fast: secondary, background: secondary })).toEqual({
+      ...operator,
+      fast: secondary,
+      background: secondary,
+    });
+    expect(withPersonRoles(NO_ROUTING, { background: secondary })).toEqual({
+      ...NO_ROUTING,
+      background: secondary,
+    });
+  });
+});
+
+describe('a safety check stays off the secondary', () => {
+  const env = { MELETE_DEFAULT_PROVIDER: STRONG.provider, MELETE_DEFAULT_MODEL: STRONG.model };
+  const fast = { provider: 'fireworks', model: 'accounts/fireworks/models/llama-8b' };
+  const secondary = { provider: 'fireworks', model: 'accounts/fireworks/models/small' };
+  // Settings whose space owner has put side tasks on the secondary.
+  const settings = {
+    routingFor: async (_spaceId: string, routing: ModelRouting) => ({
+      ...routing,
+      fast: secondary,
+    }),
+    activeChoice: async () => ({ ...STRONG, vision: false }),
+    servesLocally: async () => false,
+  } as unknown as ModelSettingsService;
+
+  test('sideTask: false keeps the operator’s fast model even when the space is passed', async () => {
+    const guarded = serviceModelSource({ env, settings, fast, sideTask: false });
+    expect(await guarded.current({ spaceId: 'sp_owner' })).toEqual(fast);
+    // Without the flag the same call would take the secondary.
+    const ordinary = serviceModelSource({ env, settings, fast });
+    expect(await ordinary.current({ spaceId: 'sp_owner' })).toEqual(secondary);
   });
 });

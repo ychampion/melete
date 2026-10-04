@@ -35,8 +35,16 @@ export type ConnectorContext = {
 
 export interface Connector {
   manifest: ConnectorManifest;
-  /** Resolve trusted resource identities before hashing an approval payload. */
-  prepare?(payload: JsonObject, ctx: ConnectorContext, tx: Query): Promise<JsonObject>;
+  /**
+   * Resolve trusted resource identities before hashing an approval payload.
+   * `kind` is the tool asked for, for tools whose payloads look alike.
+   */
+  prepare?(
+    payload: JsonObject,
+    ctx: ConnectorContext,
+    tx: Query,
+    kind?: string,
+  ): Promise<JsonObject>;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**
