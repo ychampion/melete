@@ -416,7 +416,11 @@ export class PrivacyRouter {
       cache: state.cache,
       extra: (text) => state.ner.get(text),
     });
-    const redacted = redactor.body(outbound, protocol);
+    const redacted = withPlaceholderNote(
+      redactor.body(outbound, protocol),
+      protocol,
+      redactor.used,
+    );
     const receipt = receiptFor('cloud', redactor.used, localDetection);
     if (state.vault.changed && scope.conversationId && scope.spaceId) {
       state.vault.changed = false;
@@ -836,6 +840,62 @@ function receiptFor(
     placeholders: [...used],
     ...(localDetection && localDetection !== 'off' ? { local_detection: localDetection } : {}),
   };
+}
+
+/**
+ * What a placeholder is, said to the model whenever a request carries one. Without it some
+ * models read ⟦EMAIL_1⟧ as a blank to fill and ask the person for the "actual" value. Replies,
+ * tool-call arguments included, are rehydrated from this conversation's vault on the way back,
+ * so the placeholder itself is what the model should write. The example is a placeholder this
+ * request already carries; no value is named.
+ */
+export function placeholderNote(example: string): string {
+  return `Some details here appear as placeholders such as ${example}. Each one stands for a real value the person gave, which Melete holds. Use a placeholder exactly as written wherever its value belongs, in replies and in tool-call arguments such as a recipient: Melete puts the real value back before anything is shown or sent. Never ask the person for the value behind a placeholder.`;
+}
+
+/** The request with the placeholder note at the end of its system instructions. */
+function withPlaceholderNote(
+  body: Record<string, unknown>,
+  protocol: Protocol,
+  used: ReadonlySet<string>,
+): Record<string, unknown> {
+  const [example] = used;
+  if (!example) return body;
+  const note = placeholderNote(example);
+  const appended = (system: unknown): unknown => {
+    if (typeof system === 'string')
+      return system
+        ? `${system}
+
+${note}`
+        : note;
+    if (Array.isArray(system)) return [...system, { type: 'text', text: note }];
+    return note;
+  };
+  if (protocol === 'messages') return { ...body, system: appended(body.system) };
+  if (protocol === 'responses')
+    return {
+      ...body,
+      instructions: Array.isArray(body.instructions)
+        ? [...body.instructions, { role: 'developer', content: note }]
+        : appended(body.instructions),
+    };
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const first = messages[0] as { role?: unknown; content?: unknown } | undefined;
+  if (first && (first.role === 'system' || first.role === 'developer'))
+    return {
+      ...body,
+      messages: [
+        {
+          ...first,
+          content: Array.isArray(first.content)
+            ? appended(first.content)
+            : appended(typeof first.content === 'string' ? first.content : ''),
+        },
+        ...messages.slice(1),
+      ],
+    };
+  return { ...body, messages: [{ role: 'system', content: note }, ...messages] };
 }
 
 function declinedText(): string {
