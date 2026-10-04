@@ -44,7 +44,9 @@ if (import.meta.main) {
     process.exit(2);
   }
   const { openDatabase } = await import('../db/client.ts');
-  const url = process.env.DATABASE_URL;
+  const { withFileSettings } = await import('../env.ts');
+  // In the service's container the address is a file the database's setup step wrote.
+  const url = withFileSettings(process.env).DATABASE_URL;
   if (!url) {
     process.stderr.write('Set DATABASE_URL to the database this Melete uses.\n');
     process.exit(2);

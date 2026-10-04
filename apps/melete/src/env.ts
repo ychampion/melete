@@ -3,6 +3,7 @@
  * is validated once at start-up, so a missing master key is a clear message on
  * boot rather than a decryption failure three hours into a job.
  */
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
@@ -122,6 +123,17 @@ const variables = z.object({
       isPostgresUrl,
       'must be a postgres:// address, for example postgres://melete:password@postgres:5432/melete',
     )
+    .optional(),
+  /**
+   * The database role the code that dispatches effects uses: the one role that
+   * may read the `secret` table. Set, DATABASE_URL is the service's own role, which
+   * cannot; the database's setup step creates both and runs the migrations, so
+   * the service checks the roles and the journal instead of migrating
+   * (docs/DEPLOYMENT.md, "Database roles"). Left unset, one role does all of it.
+   */
+  MELETE_EFFECTS_DATABASE_URL: z
+    .string()
+    .refine(isPostgresUrl, 'must be a postgres:// address')
     .optional(),
   /**
    * Web Push: this installation's VAPID key pair, base64url, written once by
@@ -285,6 +297,13 @@ const variables = z.object({
   MELETE_RUNTIME_KEY: z.string().min(32).optional(),
   MELETE_RUNTIME_IMAGE: z.string().default('melete-runtime:local'),
   MELETE_DOCKER_SOCKET: z.string().default('/var/run/docker.sock'),
+  /**
+   * The cell service that holds the Docker socket, when the service does not
+   * (`http://melete-cells:8791` in Compose), and the key it was given. Set, the
+   * service reaches the engine only through it.
+   */
+  MELETE_CELLS_URL: z.string().url().optional(),
+  MELETE_CELLS_KEY: z.string().min(32).optional(),
   MELETE_COMPOSE_PROJECT: z
     .string()
     .regex(/^[a-z0-9][a-z0-9_-]*$/)
@@ -853,6 +872,35 @@ export type Env = z.infer<typeof envSchema>;
 export type EnvResult = { ok: true; env: Env } | { ok: false; issues: string[] };
 
 /** Parse without throwing, so the caller decides how loudly to fail. */
+/**
+ * Settings that may be given as a file instead (`NAME_FILE`), for values a
+ * setup step writes into a volume rather than an operator into deploy/.env.
+ */
+export const FILE_SETTINGS = [
+  'DATABASE_URL',
+  'MELETE_EFFECTS_DATABASE_URL',
+  'MELETE_CELLS_KEY',
+] as const;
+
+/** The source with each `NAME_FILE` read into `NAME`, where `NAME` itself is unset. */
+export function withFileSettings(
+  source: Record<string, string | undefined>,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): Record<string, string | undefined> {
+  const out = { ...source };
+  for (const name of FILE_SETTINGS) {
+    const path = source[`${name}_FILE`]?.trim();
+    if (!path || source[name]?.trim()) continue;
+    try {
+      out[name] = read(path).trim();
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String(error.code) : 'unreadable';
+      throw new Error(`${name}_FILE names ${path}, which could not be read (${code})`);
+    }
+  }
+  return out;
+}
+
 export function readEnv(source: Record<string, string | undefined> = process.env): EnvResult {
   const parsed = envSchema.safeParse(source);
   if (parsed.success) return { ok: true, env: parsed.data };
@@ -864,7 +912,8 @@ export function readEnv(source: Record<string, string | undefined> = process.env
 
 /** Start-up path: a bad environment stops the process before it accepts traffic. */
 export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
-  const result = readEnv(source);
+  // Only the process that starts reads the files; a check of the settings does not.
+  const result = readEnv(withFileSettings(source));
   if (!result.ok) {
     throw new Error(`invalid environment:\n  ${result.issues.join('\n  ')}`);
   }

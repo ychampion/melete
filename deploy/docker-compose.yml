@@ -1,6 +1,7 @@
 # Linux deployment. Run from the repository root using the README commands.
 #
 # The four Melete images are built here from source and named melete-*:local.
+# The service image also runs melete-cells and the database-roles step.
 # With MELETE_IMAGE_TAG set (deploy/.env), the same services name the published
 # images instead, ghcr.io/ychampion/melete-*:<tag> or MELETE_IMAGE_REGISTRY's,
 # which `docker compose pull` fetches and `up --no-build` starts without a build
@@ -30,6 +31,11 @@ networks:
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
       com.docker.network.bridge.gateway_mode_ipv6: isolated
+  # The service's one way to the Docker engine: melete-cells holds the socket and
+  # answers only the service, here, with the fixed container profiles.
+  cells:
+    driver: bridge
+    internal: true
 
 volumes:
   pgdata:
@@ -39,6 +45,10 @@ volumes:
   runtime-home:
   # Keep this independently of database snapshots: removals must survive restore.
   restrictions:
+  # The service's two database addresses, written by database-roles on every start.
+  database-access:
+  # The key the service presents to melete-cells, written by melete-cells once.
+  cells-key:
 
 services:
   postgres:
@@ -58,6 +68,69 @@ services:
       timeout: 5s
       retries: 30
 
+  # Runs before the service on every start, with the operator's DATABASE_URL:
+  # creates the database roles, hands the schema to melete_migrate, runs every
+  # migration as it, grants, and writes the service's two addresses into
+  # database-access. The service is never given DATABASE_URL itself, and its
+  # own role cannot read the secret table (docs/DEPLOYMENT.md, "Database roles").
+  database-roles:
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
+    restart: "no"
+    logging: *bounded-logs
+    networks: [database]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
+      MELETE_DATABASE_ACCESS_DIR: /data/database-access
+      # The demonstration's test connector keeps a table, made here by the schema's owner.
+      MELETE_ENABLE_TEST_CONNECTOR: ${MELETE_ENABLE_TEST_CONNECTOR:-false}
+      # Set all three only where the database's administrator made the roles.
+      MELETE_MIGRATE_DATABASE_URL: ${MELETE_MIGRATE_DATABASE_URL:-}
+      MELETE_API_DATABASE_URL: ${MELETE_API_DATABASE_URL:-}
+      MELETE_EFFECTS_DATABASE_URL: ${MELETE_EFFECTS_DATABASE_URL:-}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - database-access:/data/database-access
+    command: ["bun", "run", "apps/melete/src/db/roles-main.ts"]
+
+  # The only holder of the Docker socket. It starts attempt cells, agents'
+  # computers and stdio MCP servers from fixed profiles, for the service alone,
+  # and refuses any other image, mount, privilege or network. It has no
+  # database address and no service key.
+  melete-cells:
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
+    restart: unless-stopped
+    logging: *bounded-logs
+    networks: [cells]
+    environment:
+      MELETE_DOCKER_SOCKET: /var/run/docker.sock
+      MELETE_CELLS_BIND: 0.0.0.0:8791
+      MELETE_CELLS_KEY_FILE: /data/cells-key/key
+      MELETE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-melete}
+      MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
+      MELETE_RUNTIME_IMAGE: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-runtime:${MELETE_IMAGE_TAG:-local}"
+      MELETE_SANDBOX_PROJECT: ${MELETE_SANDBOX_PROJECT:-}
+      MELETE_SANDBOX_DOCKER_IMAGE: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
+      MELETE_MCP_NODE_IMAGE: ${MELETE_MCP_NODE_IMAGE:-}
+      MELETE_MCP_PYTHON_IMAGE: ${MELETE_MCP_PYTHON_IMAGE:-}
+    group_add: ["${DOCKER_GID:?run bun run deploy/scripts/configure.ts}"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - cells-key:/data/cells-key
+      # The cell service only. No other service and no cell is given this socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["bun", "run", "apps/melete/src/cells/main.ts"]
+    healthcheck:
+      test: ["CMD", "bun", "-e", "process.exit((await fetch('http://127.0.0.1:8791/health')).ok?0:1)"]
+      interval: 2s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+
   melete:
     image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
     build:
@@ -71,18 +144,29 @@ services:
         gw_priority: 1
       database: {}
       internal: {}
+      cells: {}
     depends_on:
       postgres:
         condition: service_healthy
       runtime-image:
         condition: service_completed_successfully
+      database-roles:
+        condition: service_completed_successfully
+      melete-cells:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 8787
       MELETE_API_BIND: melete-api
       # The only peer believed about a browser's address, for login limits.
       MELETE_TRUSTED_PROXY: web
-      DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
+      # Its own role, which cannot read the secret table, and the effects role,
+      # which can, as database-roles wrote them. Never the operator's address.
+      DATABASE_URL_FILE: /data/database-access/api.url
+      MELETE_EFFECTS_DATABASE_URL_FILE: /data/database-access/effects.url
+      # The engine, through the cell service; the service has no socket.
+      MELETE_CELLS_URL: http://melete-cells:8791
+      MELETE_CELLS_KEY_FILE: /data/cells-key/key
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?run bun run deploy/scripts/configure.ts}
@@ -107,7 +191,6 @@ services:
       MELETE_RUNTIME_URL: http://runtime:8790
       MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_RUNTIME_IMAGE: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-runtime:${MELETE_IMAGE_TAG:-local}"
-      MELETE_DOCKER_SOCKET: /var/run/docker.sock
       MELETE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-melete}
       MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
       MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fireworks}
@@ -255,15 +338,15 @@ services:
       OPENAI_COMPAT_OAUTH_SCOPES: ${OPENAI_COMPAT_OAUTH_SCOPES:-}
       OPENAI_COMPAT_OAUTH_REDIRECT_URL: ${OPENAI_COMPAT_OAUTH_REDIRECT_URL:-}
       OPENAI_COMPAT_OAUTH_LABEL: ${OPENAI_COMPAT_OAUTH_LABEL:-}
-    group_add: ["10001", "${DOCKER_GID:?run bun run deploy/scripts/configure.ts}"]
+    group_add: ["10001"]
     volumes:
       - spaces:/data/spaces
       - artifacts:/data/artifacts
       - work:/work
       - restrictions:/data/restrictions
       - ./config:/etc/melete:ro
-      # Trusted supervisor only. No runtime cell is given this socket.
-      - /var/run/docker.sock:/var/run/docker.sock
+      - database-access:/data/database-access:ro
+      - cells-key:/data/cells-key:ro
     ports:
       - "127.0.0.1:${MELETE_PORT:-3100}:8787"
     healthcheck:

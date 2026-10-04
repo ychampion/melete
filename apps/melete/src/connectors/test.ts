@@ -26,6 +26,9 @@ export interface TestDestinationLedger {
 
 /** Separate destination state survives a broker restart and an acknowledgement loss. */
 export async function initializeTestLedger(sql: Sql): Promise<void> {
+  // With separate database roles the setup step made it, and the service's role may not.
+  const [found] = await sql`select to_regclass('test_destination_ledger') is not null as present`;
+  if (found?.present) return;
   await sql`
     CREATE TABLE IF NOT EXISTS test_destination_ledger (
       action_id text PRIMARY KEY,

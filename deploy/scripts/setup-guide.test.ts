@@ -86,7 +86,10 @@ describe('what the status report must say', () => {
 describe('the setup-guide workflow', () => {
   const source = readFileSync(join(root, '.github/workflows/setup-guide.yml'), 'utf8');
   const workflow = parse(source) as {
-    on: { pull_request: { paths: string[] }; push: { branches: string[] } };
+    on: {
+      pull_request: { paths: string[] };
+      workflow_run: { workflows: string[]; types: string[]; branches: string[] };
+    };
     permissions: Record<string, string>;
     jobs: Record<string, { 'timeout-minutes'?: number; steps: { uses?: string; run?: string }[] }>;
   };
@@ -96,7 +99,19 @@ describe('the setup-guide workflow', () => {
     expect(workflow.on.pull_request.paths).toEqual(
       expect.arrayContaining([GUIDE, 'deploy/**', '.github/workflows/setup-guide.yml']),
     );
-    expect(workflow.on.push.branches).toEqual(['main']);
+    // On main, after the Images workflow published that commit's images, never before.
+    expect(workflow.on.workflow_run).toEqual({
+      workflows: ['Images'],
+      types: ['completed'],
+      branches: ['main'],
+    });
+  });
+
+  test("a pull request's guide runs that pull request's images under the names the guide pulls", () => {
+    const runs = steps.map((step) => step.run ?? '').join('\n');
+    expect(source).toContain("'localhost:5000'");
+    expect(runs).toContain('-f deploy/Dockerfile.melete -t localhost:5000/melete-service:main');
+    expect(runs).toContain('localhost:5000/melete-$image:main');
   });
 
   test('is read-only, pinned, time-limited and reads no secret', () => {
