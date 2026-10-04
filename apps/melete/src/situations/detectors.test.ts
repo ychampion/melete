@@ -134,9 +134,14 @@ describe('urgency', () => {
   });
 
   test('a key names kind, subject and window', () => {
-    expect(situationKey('k', 's', 'w')).toBe(situationKey('k', 's', 'w'));
-    expect(situationKey('k', 's', 'w')).not.toBe(situationKey('k', 's', 'w2'));
-    expect(situationKey('k', 's')).toHaveLength(40);
+    const due = '2026-10-05T15:00:00.000Z';
+    expect(situationKey('deadline.at_risk', 'doc:a', due)).toBe(
+      situationKey('deadline.at_risk', 'doc:a', due),
+    );
+    expect(situationKey('deadline.at_risk', 'doc:a', due)).not.toBe(
+      situationKey('deadline.at_risk', 'doc:a', '2026-10-05T16:00:00.000Z'),
+    );
+    expect(situationKey('meeting.changed', 'doc:a')).toHaveLength(40);
   });
 });
 
