@@ -1786,10 +1786,16 @@ read-only, and `melete-cells` starts only these fixed profiles:
 Each runs as its profile's non-root user on a read-only root, with every
 capability dropped and no privilege escalation. `melete-cells` refuses any
 other image, a host path, a volume driver, privileged mode, an added
-capability, a device, host networking or another namespace, and any request to
-act on a container, network or volume no profile owns, the database's
-included (`melete-cells refuses a container outside its profiles`). It passes a
-container's inspection back without its environment. `bun run compose:check`
+capability, a device, host networking or another namespace, a Compose or
+other profile's label on a container it creates, and any request to change,
+start, stop, enter or remove a container, network or volume no profile owns,
+the database's included (`melete-cells refuses a container outside its
+profiles`). Only the Compose `melete` service, never a profile's container,
+may join a cell's network. Any container may be inspected, since the service
+finds its own id and labels that way: a profile's container comes back
+without its environment, and any other container with only its id, name,
+image, state and labels (`an inspection of a container no profile owns keeps
+only its state and labels`). `bun run compose:check`
 fails if the service has the socket, if any service but `melete-cells` mounts
 it, or if `melete-cells` is given a credential or another network.
 

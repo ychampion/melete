@@ -40,7 +40,9 @@ socket. One small service,
 starts containers for the service only in fixed shapes: an attempt's engine, an
 agent's computer and an MCP server, each unprivileged on a read-only root with
 its own network and volumes. Any other image, host path, privilege or network
-is refused, and so is any request on a container it did not start
+is refused, and so is any request to change, start, stop, enter or remove a
+container it did not start; reading another container's state and labels is
+the one thing allowed, without its settings, mounts or addresses
 (`melete-cells refuses a container outside its profiles`;
 `compose-check: the API has no socket`). The service's own database role cannot
 read the `secret` table, which holds each connected account's credentials

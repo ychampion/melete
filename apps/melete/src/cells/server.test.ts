@@ -27,6 +27,17 @@ function start() {
           },
         },
       });
+    if (path.endsWith('/containers/postgres/json'))
+      return Response.json({
+        Id: 'postgres',
+        Config: {
+          Env: ['POSTGRES_PASSWORD=x'],
+          Labels: { 'com.docker.compose.service': 'postgres' },
+        },
+        Mounts: [{ Source: '/var/lib/docker/volumes/melete_pgdata/_data' }],
+        NetworkSettings: { Networks: { melete_database: { IPAddress: '172.20.0.2' } } },
+        HostConfig: { NetworkMode: 'melete_database' },
+      });
     if (/\/containers\/[^/]+\/json$/.test(path) || /\/images\//.test(path))
       return new Response('{}', { status: 404 });
     passed.push(`${method} ${path}`);
@@ -94,6 +105,18 @@ describe('the cell service', () => {
     )) as { Config: Record<string, unknown> };
     expect(found.Config.Env).toBeUndefined();
     expect(found.Config.Labels).toBeDefined();
+  });
+
+  test("passes back another service's inspection with its labels and state only", async () => {
+    const { url } = start();
+    const found = (await new DockerSocketApi({ url, key: KEY }).request(
+      'GET',
+      '/containers/postgres/json',
+    )) as Record<string, unknown>;
+    expect(found).toEqual({
+      Id: 'postgres',
+      Config: { Labels: { 'com.docker.compose.service': 'postgres' } },
+    });
   });
 
   test("carries a server's attached streams both ways, for a server's container only", async () => {

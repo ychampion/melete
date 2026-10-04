@@ -15,9 +15,15 @@ the API and holds the credentials, has no socket: it asks `melete-cells` for
 containers, and `melete-cells` starts only fixed profiles (an attempt's
 engine, an agent's computer, a stdio MCP server), each non-root on a read-only
 root with every capability dropped, and refuses any other image, host path,
-volume driver, privilege, device, namespace or network, and any request on a
-container it did not start (`melete-cells refuses a container outside its
-profiles`; [cells/policy.ts](../apps/melete/src/cells/policy.ts)). A fault in
+volume driver, privilege, device, namespace, network or reserved label, and any
+request to change, start, stop, enter or remove a container it did not start
+(`melete-cells refuses a container outside its profiles`;
+[cells/policy.ts](../apps/melete/src/cells/policy.ts)). Any container can be
+inspected, because the service finds its own id and labels that way; for a
+container no profile owns the answer is its id, name, image, state and labels
+only, without its environment, host settings, mounts or network addresses
+(`an inspection of a container no profile owns keeps only its state and
+labels`). A fault in
 the API therefore reaches containers only in those shapes, not the host.
 `melete-cells` itself sits **inside the host trust boundary**: a compromise of
 it is a compromise of the host. Runtime attempts never receive the socket.

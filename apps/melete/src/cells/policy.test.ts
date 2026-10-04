@@ -537,6 +537,100 @@ describe('melete-cells refuses a container outside its profiles', () => {
       expect((await engine.ask(method, target)).allow).toBe(false);
   });
 
+  test('refuses a profile container labelled as a Compose service, and never takes one for the service', async () => {
+    const engine = new Engine();
+    const mcpLabels = {
+      'com.melete.mcp-launcher': 'v1',
+      'com.melete.project': PROJECT,
+      'com.melete.connection': 'conn_01J00000000000000000000000',
+    };
+    const disguised = {
+      ...mcpLabels,
+      'com.docker.compose.project': PROJECT,
+      'com.docker.compose.service': 'melete',
+    };
+    const name = `${PROJECT}-mcp-conn_01j00000000000000000000000`;
+    const body = (labels: Record<string, string>) =>
+      stdioContainerBody({
+        image: SERVER_ID,
+        command: { image: SERVER_ID },
+        labels,
+        mounts: [],
+        env: [],
+        interactive: true,
+        workdir: '/data',
+      });
+    // The same server, labelled honestly, is accepted.
+    expect(
+      (await engine.ask('POST', `/containers/create?name=${name}`, body(mcpLabels))).allow,
+    ).toBe(true);
+    expect(
+      (await engine.ask('POST', `/containers/create?name=${name}`, body(disguised))).allow,
+    ).toBe(false);
+    expect(
+      (
+        await engine.ask('POST', `/containers/create?name=${name}`, {
+          ...body({ ...mcpLabels, 'com.melete.sandbox': 'v1' }),
+        })
+      ).allow,
+    ).toBe(false);
+    // Had one been made some other way, it still cannot join a cell's network as the service.
+    engine.containers.set('disguised', {
+      Id: 'disguised',
+      Name: '/x',
+      Labels: disguised,
+      Running: true,
+    });
+    const network = await engineWithAttemptNetwork();
+    network.containers.set('disguised', {
+      Id: 'disguised',
+      Name: '/x',
+      Labels: disguised,
+      Running: true,
+    });
+    expect(
+      (
+        await network.ask('POST', `/networks/${ATTEMPT}-net/connect`, {
+          Container: 'disguised',
+          EndpointConfig: { Aliases: ['melete'] },
+        })
+      ).allow,
+    ).toBe(false);
+  });
+
+  test('an inspection of a container no profile owns keeps only its state and labels', async () => {
+    const engine = new Engine();
+    expect(await engine.ask('GET', '/containers/postgres/json')).toEqual({
+      allow: true,
+      redact: 'foreign',
+    });
+    expect(await engine.ask('GET', '/containers/self/json')).toEqual({
+      allow: true,
+      redact: 'foreign',
+    });
+    expect((await engine.ask('GET', '/containers/missing/json')).allow).toBe(false);
+    const inspected = {
+      Id: 'postgres',
+      Name: '/melete-postgres-1',
+      Image: 'sha256:x',
+      State: { Running: true },
+      Config: {
+        Env: ['POSTGRES_PASSWORD=x'],
+        Labels: { 'com.docker.compose.service': 'postgres' },
+      },
+      HostConfig: { Binds: ['/srv/pg:/var/lib/postgresql/data'] },
+      Mounts: [{ Source: '/var/lib/docker/volumes/melete_pgdata/_data' }],
+      NetworkSettings: { Networks: { melete_database: { IPAddress: '172.20.0.2' } } },
+    };
+    expect(redactContainer(inspected, 'foreign')).toEqual({
+      Id: 'postgres',
+      Name: '/melete-postgres-1',
+      Image: 'sha256:x',
+      State: { Running: true },
+      Config: { Labels: { 'com.docker.compose.service': 'postgres' } },
+    });
+  });
+
   test("a container's inspection is passed back without its environment", () => {
     expect(
       redactContainer({ Id: 'x', Args: ['--password=x'], Config: { Env: ['A=1'], Labels: {} } }),

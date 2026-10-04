@@ -156,8 +156,8 @@ export function startCellsServer(options: CellsServerOptions) {
         ...(raw?.length ? { body: raw } : {}),
         signal: request.signal,
       });
-      if (verdict.redact === 'container' && answer.ok) {
-        const value = redactContainer(await answer.json());
+      if (verdict.redact && answer.ok) {
+        const value = redactContainer(await answer.json(), verdict.redact);
         return new Response(JSON.stringify(value), {
           status: answer.status,
           headers: { 'content-type': 'application/json' },

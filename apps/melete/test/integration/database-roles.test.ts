@@ -191,6 +191,31 @@ describe('database roles', () => {
     }
   });
 
+  test('a sweep stopped between connections and secrets leaves the secret to its resumed run', async () => {
+    if (!server) return;
+    const operatorUrl = await freshDatabase();
+    const { spaceId } = await currentMainDeployment(operatorUrl);
+    const urls = await setUpDatabaseRoles({ operatorUrl });
+    const api = connect(urls.api);
+    const effects = connect(urls.effects);
+    useEffectsPool(effects.sql);
+    try {
+      const secrets = new PostgresSecretRepository(api.sql);
+      // The phase's first statement committed and the process stopped before the second.
+      await api.sql.begin(async (tx) => {
+        await tx`delete from agent where space_id = ${spaceId}`;
+        await tx`delete from connection where space_id = ${spaceId}`;
+      });
+      // The removal's verification counts it, so the removal cannot finish over it.
+      expect(await secrets.countSpace(spaceId)).toBe(1);
+      // A removal resumes at the phase it was in, which runs the whole sweep again.
+      await sweepPrincipals(api.sql, spaceId);
+      expect(await secrets.countSpace(spaceId)).toBe(0);
+    } finally {
+      useEffectsPool(undefined);
+    }
+  });
+
   test('a service role that can read secrets is refused at start', async () => {
     if (!server) return;
     const operatorUrl = await freshDatabase();

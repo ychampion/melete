@@ -67,7 +67,7 @@ export type CellsRequest = {
 };
 
 export type Verdict =
-  | { allow: true; redact?: 'container' }
+  | { allow: true; redact?: 'container' | 'foreign' }
   | { allow: false; status: number; reason: string };
 
 const OWNERS: Record<Profile, { owner: string; project: 'compose' | 'sandbox'; label: string }> = {
@@ -95,6 +95,11 @@ const SERVICE_ALIASES: Record<Profile, string> = {
 };
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/;
+
+/** Labels the engine, Compose or a profile give meaning to; a profile container may carry only its own owner's. */
+const OWNER_LABELS = new Set(Object.values(OWNERS).map(({ owner }) => owner));
+const reservedLabel = (key: string) =>
+  key.startsWith('com.docker.') || key.startsWith('org.opencontainers.');
 const refuse = (reason: string, status = 403): Verdict => ({ allow: false, status, reason });
 const allow: Verdict = { allow: true };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -216,6 +221,11 @@ async function judgeCreate(
   const labels = isRecord(body.Labels) ? (body.Labels as Labels) : null;
   const profile = profileOf(labels, config);
   if (!profile) return refuse('the container carries no profile of this installation');
+  // A Compose label would let a profile container pass for one of the stack's services.
+  const reserved = Object.keys(labels ?? {}).filter(
+    (key) => reservedLabel(key) || (OWNER_LABELS.has(key) && key !== OWNERS[profile].owner),
+  );
+  if (reserved.length) return refuse(`a profile container does not carry ${reserved.join(', ')}`);
   if (!containerName(profile, name, config))
     return refuse(`the ${profile} profile does not create a container named ${name || '(none)'}`);
   if (body.User !== PROFILE_USERS[profile])
@@ -353,7 +363,9 @@ async function isService(container: string, config: CellsPolicyConfig, lookup: C
   const labels = found?.Config?.Labels ?? {};
   return (
     labels['com.docker.compose.project'] === config.project &&
-    labels['com.docker.compose.service'] === 'melete'
+    labels['com.docker.compose.service'] === 'melete' &&
+    // Never a container made through a profile, whatever else it is labelled.
+    !Object.keys(labels).some((key) => OWNER_LABELS.has(key))
   );
 }
 
@@ -425,7 +437,17 @@ export async function judge(
     if (method === 'POST' && id === 'create' && action === undefined)
       return judgeCreate(request, config, lookup);
     if (!id || !ID.test(id)) return refuse('a malformed container name');
-    if (method === 'GET' && action === 'json') return { allow: true, redact: 'container' };
+    if (method === 'GET' && action === 'json') {
+      // Any container may be inspected, the service's own included, which is how it
+      // finds its id and labels; one no profile owns comes back with its state and
+      // labels only, never its mounts, host settings or networks.
+      const found = await lookup.container(id);
+      if (!found) return refuse('no such container', 404);
+      return {
+        allow: true,
+        redact: profileOf(found.Config?.Labels, config) ? 'container' : 'foreign',
+      };
+    }
     const profile = await containerProfile(id, config, lookup);
     if (!profile) {
       // Docker answers 404 for a container that is not there; the client expects the same.
@@ -595,11 +617,27 @@ export async function judge(
   return refuse(`${method} ${path} is not part of any profile`);
 }
 
-/** A container's inspection without its environment, which may hold another service's secrets. */
-export function redactContainer(value: unknown): unknown {
+/**
+ * A container's inspection without its environment, which may hold another
+ * service's secrets. For a container no profile owns (`foreign`), only its id,
+ * name, state, image and labels are kept: not its mounts, host settings or
+ * network addresses.
+ */
+export function redactContainer(
+  value: unknown,
+  kind: 'container' | 'foreign' = 'container',
+): unknown {
   if (!isRecord(value)) return value;
   const config = isRecord(value.Config) ? { ...value.Config } : undefined;
   if (config) delete config.Env;
   const { Args: _args, ...rest } = value;
+  if (kind === 'foreign')
+    return {
+      Id: rest.Id,
+      Name: rest.Name,
+      Image: rest.Image,
+      State: rest.State,
+      Config: { Labels: isRecord(config?.Labels) ? config.Labels : {} },
+    };
   return config ? { ...rest, Config: config } : rest;
 }
