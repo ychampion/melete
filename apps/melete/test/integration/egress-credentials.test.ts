@@ -307,4 +307,85 @@ withDb('where an account is offered', () => {
       where id = ${claims.job_id}`;
     expect(await ask()).toBeNull();
   });
+
+  test("a room's own account serves the requests made of the room, and no one's own work there", async () => {
+    const { claims, credentials, sql, connectionId } = await setup({ holdSeconds: 0 });
+    const room = claims.space_id;
+    const person = async (kind: 'person' | 'guest' | 'room') => {
+      const id = recordId('own');
+      await sql`insert into principal (id, email, kind)
+        values (${id}, ${`${id.toLowerCase()}@example.test`}, ${kind})`;
+      return id;
+    };
+    const [owner, member, guest, agent] = await Promise.all([
+      person('person'),
+      person('person'),
+      person('guest'),
+      person('room'),
+    ]);
+    // The seeded space is a room the owner made, and its account one the owner added for the room.
+    await sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${owner}
+      where id = ${room}`;
+    await sql`update connection set shared_use = 'room' where id = ${connectionId}`;
+    // The seeded job is a request the member made of the room's agent.
+    await sql`update job set audience = 'room', principal_id = ${agent},
+      requested_by_principal_id = ${member} where id = ${claims.job_id}`;
+    const job = async (
+      space: string,
+      principal: string,
+      audience: 'principal' | 'room',
+      requestedBy: string | null = null,
+    ) => {
+      const id = recordId('job');
+      await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
+          constraints, principal_id, audience, requested_by_principal_id)
+        values (${id}, ${space}, 'Fixture', 'Push the branch', 'running', 1, '{}'::jsonb,
+          '{"public_compartment": false, "allowed_domains": []}'::jsonb, ${principal}, ${audience},
+          ${requestedBy})`;
+      return id;
+    };
+    const ask = (jobId: string, space = room) =>
+      credentials.find({
+        space,
+        attribution: {
+          kind: 'command',
+          sessionId: 'sbx_one',
+          jobId,
+          attemptId: claims.attempt_id,
+          actionId: 'act_cmd',
+        },
+        host: HOST,
+      });
+
+    // The room's request gets the team's account, and the room's computer is set up for it.
+    expect((await ask(claims.job_id))?.connectionId).toBe(connectionId);
+    expect(await credentials.computer(room)).not.toBeNull();
+    expect(await credentials.hosts(room)).toContain(HOST);
+
+    // A member's own work in the room, the owner's own, and a guest's own get nothing.
+    for (const principal of [member, owner, guest])
+      expect(await ask(await job(room, principal, 'principal'))).toBeNull();
+
+    // Another room's request gets nothing: not through this room's computer, nor its own.
+    const other = recordId('sp');
+    await sql`insert into space (id, name, git_path, kind, audience, owner_principal_id)
+      values (${other}, 'Another room', ${`spaces/${other}`}, 'shared', 'space', ${owner})`;
+    const elsewhere = await job(other, agent, 'room', member);
+    expect(await ask(elsewhere)).toBeNull();
+    expect(await ask(elsewhere, other)).toBeNull();
+    expect(await credentials.computer(other)).toBeNull();
+
+    // An account in the room kept for its owner's own work never reaches a room's computer.
+    await sql`update connection set shared_use = 'owner' where id = ${connectionId}`;
+    expect(await ask(claims.job_id)).toBeNull();
+    expect(await ask(await job(room, owner, 'principal'))).toBeNull();
+    expect(await credentials.computer(room)).toBeNull();
+    expect(await credentials.hosts(room)).toEqual([]);
+
+    // A public compartment is refused even the room's own account.
+    await sql`update connection set shared_use = 'room' where id = ${connectionId}`;
+    await sql`update job set constraints = constraints || '{"public_compartment": true}'::jsonb
+      where id = ${claims.job_id}`;
+    expect(await ask(claims.job_id)).toBeNull();
+  });
 });

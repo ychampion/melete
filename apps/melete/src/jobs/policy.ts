@@ -62,8 +62,12 @@ export class PolicyService {
     generation: number,
     connectionId: string | null,
     reason: ContextInvalidated['reason'],
+    /** Only these jobs of the space; left out, every job in it. */
+    only?: readonly string[],
   ): Promise<ContextInvalidated[]> {
-    const affected = await tx.select({ id: job.id }).from(job).where(eq(job.spaceId, spaceId));
+    const affected = (
+      await tx.select({ id: job.id }).from(job).where(eq(job.spaceId, spaceId))
+    ).filter((candidate) => !only || only.includes(candidate.id));
     const controls: ContextInvalidated[] = [];
     for (const candidate of affected) {
       const row = await this.jobs.lock(tx, candidate.id);
