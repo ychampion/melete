@@ -29,8 +29,11 @@ checks read configuration; scenario 6 is what establishes live enforcement, on
 the host where it runs.
 
 Outside that boundary sit the service and the workers it supervises. The API,
-broker and trusted connectors share a process, and that process holds the Docker
-socket, which is host-root equivalent. The browser worker and MCP servers run
+broker and trusted connectors share a process. That process has no Docker
+socket: `melete-cells` holds it, which is host-root equivalent, and starts only
+fixed container profiles for the service (`melete-cells refuses a container
+outside its profiles`). The service's database role cannot read sealed
+credentials (`as melete_api, SELECT on secret fails`). The browser worker and MCP servers run
 outside the container and are bounded by the broker rather than by the
 container's network.
 

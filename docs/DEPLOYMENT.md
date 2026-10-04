@@ -302,6 +302,13 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
    doctor` that the server answers, runs Postgres 17 and encrypts the
    connection. Then push and start as usual. `POSTGRES_PASSWORD` stays in
    `deploy/.env` as `init` wrote it, because the base Compose file reads it.
+4. At each start, `database-roles` creates the service's three
+   [database roles](#database-roles) on that server, as the user
+   `DATABASE_URL` names. That user must be allowed to create roles; a
+   provider's administrator user usually is. Where it is not, the database's
+   administrator creates them once, and `deploy/.env` names them, as
+   [Roles an administrator creates](#roles-an-administrator-creates) shows.
+   `bun run melete check` says which of the two the installation uses.
 
 The stack then leaves the bundled postgres off. A one-off `database-client`
 container, the stack's own Postgres 17 image, checks that the server accepts
@@ -593,7 +600,7 @@ prefix it with `MSYS_NO_PATHCONV=1`.
 
 ### How the stack reaches Docker Desktop
 
-The Compose files are unchanged. The `melete` service mounts
+The Compose files are unchanged. The `melete-cells` service mounts
 `/var/run/docker.sock`, and Compose passes that path to the engine as written
 ([compose-go](https://github.com/compose-spec/compose-go/blob/main/paths/unix.go)
 keeps an absolute Unix path for a Windows client talking to a Linux engine).
@@ -603,7 +610,7 @@ is root ([Docker Desktop's socket permissions](https://github.com/docker/for-win
 The Windows host has no such file, so `configure.ts` starts one container from
 the stack's pinned Postgres image, with no network, reads the socket's group and
 mode as a container sees them, and writes that group as `DOCKER_GID`: `0` on
-current Docker Desktop releases. The service is added to that group and
+current Docker Desktop releases. `melete-cells` is added to that group and
 otherwise runs as its own unprivileged user. A socket only root may write to is
 refused, because the service could not use it. On Linux with Docker Engine,
 `configure.ts` reads the host's own socket as before.
@@ -1756,8 +1763,30 @@ already rejected stays rejected.
 
 ## Isolation and image provenance
 
-The trusted `melete` service has the Docker socket so it can supervise attempt
-containers. Possession of that socket belongs inside the trusted host boundary.
+The Docker socket is held by one service, `melete-cells`, and by nothing else
+in the stack. Possession of the socket is host-root equivalent, so
+`melete-cells` holds nothing else: no database address, no master key, no model
+or connector key. The `melete` service, which serves the API and holds those,
+has no socket. It asks `melete-cells`, on a private network the two share
+alone, with a key `melete-cells` writes once into a volume the service mounts
+read-only, and `melete-cells` starts only these fixed profiles:
+
+| Profile | Image | Network | Storage |
+| --- | --- | --- | --- |
+| An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
+| An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
+| A stdio MCP server | one pulled from a registry by digest, or the runner images below | none, or its own internal network | its own volumes |
+
+Each runs as its profile's non-root user on a read-only root, with every
+capability dropped and no privilege escalation. `melete-cells` refuses any
+other image, a host path, a volume driver, privileged mode, an added
+capability, a device, host networking or another namespace, and any request to
+act on a container, network or volume no profile owns, the database's
+included (`melete-cells refuses a container outside its profiles`). It passes a
+container's inspection back without its environment. `bun run compose:check`
+fails if the service has the socket, if any service but `melete-cells` mounts
+it, or if `melete-cells` is given a credential or another network.
+
 The runtime cells have no socket, run as UID 10001, and use a read-only root
 filesystem, dropped capabilities, and resource limits.
 
@@ -1772,8 +1801,8 @@ macOS, Windows and rootless Docker hosts are outside them, as is a kernel
 exploit. See the [threat model](THREAT-MODEL.md) for the boundary and what
 rests on it.
 
-Plugins and other stdio MCP servers run in containers the same service starts
-through the same socket, one per connection, with a volume of their own and no
+Plugins and other stdio MCP servers run in containers `melete-cells` starts
+for the service, under the MCP profile above, one per connection, with a volume of their own and no
 network unless their owner named a destination; [CONNECTORS](CONNECTORS.md#where-a-server-runs)
 describes each restriction. The service pulls their images on first use, so
 the host needs to reach the registries the catalog names. These settings
@@ -1803,6 +1832,65 @@ These checks reproduce source identity and enforce dependency locks. Image
 digests can differ between builds, because OS package repositories, build
 timestamps and build tooling change the resulting bytes; compare the recorded
 labels and inventories when rebuilding.
+
+## Database roles
+
+The service runs under three Postgres roles:
+
+| Role | What it may do |
+| --- | --- |
+| `melete_migrate` | Owns the schema and runs the migrations. The service is never given it. |
+| `melete_api` | The service's own role. It reads and writes every table but `secret`, which holds each connected account's sealed credentials, and cannot read that one at all. It owns the wake queue's schema. |
+| `melete_effects` | The role of the code that opens a sealed credential to act through an account: it reads and writes `secret` and nothing else. |
+
+`database-roles` sets them up before the service starts, every time the stack
+starts. It is given `DATABASE_URL`, the operator's address in `deploy/.env`,
+and only it is. It creates the roles (or resets their passwords), hands every
+table the operator's user owns to `melete_migrate`, runs the migrations as
+`melete_migrate`, grants the other two what the table above says, and writes
+the service's two addresses into the `database-access` volume, which the
+service mounts read-only. Each role's password is derived from `DATABASE_URL`,
+so every host of one installation derives the same ones, and a new host after a
+restore needs nothing copied.
+
+The service checks at start that every migration of its release has run and
+that its own role cannot read `secret`, and refuses to start otherwise. An
+upgrade needs no change to `deploy/.env`: the first start of the new release
+creates the roles and hands over the existing tables, with their data, in the
+same step (`an upgrade from the current main's deployment, with data, works
+and keeps secrets readable for effects`). A restore loads the dump as the
+operator's user with `--no-owner`, and the next start hands the tables over
+again. `bun run compose:check` fails if the service is given `DATABASE_URL`,
+reads another role's address, or starts without `database-roles` first.
+
+### Roles an administrator creates
+
+Some managed databases do not let their application user create roles. There,
+the database's administrator creates them once:
+
+```sql
+create role melete_migrate login password '<first password>';
+create role melete_api login password '<second password>';
+create role melete_effects login password '<third password>';
+grant create on database melete to melete_migrate;
+grant create on schema public to melete_migrate;
+grant melete_migrate, melete_api to <the user DATABASE_URL names>;
+```
+
+Then set the three addresses, each to the same server and database as
+`DATABASE_URL`, with the same `sslmode`:
+
+```bash
+read -rs MELETE_MIGRATE_DATABASE_URL && export MELETE_MIGRATE_DATABASE_URL
+read -rs MELETE_API_DATABASE_URL && export MELETE_API_DATABASE_URL
+read -rs MELETE_EFFECTS_DATABASE_URL && export MELETE_EFFECTS_DATABASE_URL
+bun run melete set --from-env MELETE_MIGRATE_DATABASE_URL MELETE_API_DATABASE_URL MELETE_EFFECTS_DATABASE_URL
+```
+
+`database-roles` then uses those roles as given and creates none.
+`bun run melete check` refuses the setting when only some of the three are set,
+when one names another server or database, or when the service's role is
+`DATABASE_URL`'s own user.
 
 ## Running more than one service instance
 

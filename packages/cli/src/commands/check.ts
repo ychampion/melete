@@ -346,7 +346,71 @@ export function judgeDatabaseUrl(
           },
     );
   }
+  results.push(judgeDatabaseRoles(url, env));
   return results;
+}
+
+/** The addresses an administrator gives when database-roles may not create the roles itself. */
+export const ROLE_SETTINGS = [
+  'MELETE_MIGRATE_DATABASE_URL',
+  'MELETE_API_DATABASE_URL',
+  'MELETE_EFFECTS_DATABASE_URL',
+] as const;
+
+/**
+ * How an external database gets the service's three roles: made at start by
+ * DATABASE_URL's user, or made by the database's administrator and named in
+ * deploy/.env. Only role names and hosts are ever printed.
+ */
+export function judgeDatabaseRoles(operator: URL, env: Record<string, string>): Result {
+  const given = ROLE_SETTINGS.filter((name) => env[name]?.trim());
+  if (given.length === 0)
+    return {
+      id: 'database.roles',
+      level: 'ok',
+      detail: `At each start, database-roles creates the roles melete_migrate, melete_api and melete_effects on ${operator.hostname} as ${decodeURIComponent(operator.username)}, which must be allowed to create roles. Where your provider's user may not, the database's administrator creates them, and deploy/.env names them in ${ROLE_SETTINGS.join(', ')} (docs/DEPLOYMENT.md, "Database roles").`,
+    };
+  if (given.length !== ROLE_SETTINGS.length)
+    return {
+      id: 'database.roles',
+      level: 'fail',
+      detail: `deploy/.env sets ${given.join(', ')} but not ${ROLE_SETTINGS.filter((name) => !given.includes(name)).join(', ')}; the roles are made all together, here or by the administrator.`,
+      fix: `Set all three of ${ROLE_SETTINGS.join(', ')} with bun run melete set --from-env, or remove all three.`,
+    };
+  const problems: string[] = [];
+  const users = new Set<string>();
+  for (const name of ROLE_SETTINGS) {
+    let url: URL;
+    try {
+      url = new URL(env[name]?.trim() ?? '');
+    } catch {
+      problems.push(`${name} is not a postgres:// URL`);
+      continue;
+    }
+    users.add(url.username);
+    if (url.host !== operator.host || url.pathname !== operator.pathname)
+      problems.push(
+        `${name} names ${url.hostname}${url.pathname}, not the server and database DATABASE_URL names`,
+      );
+    if (!TLS_MODES.has(url.searchParams.get('sslmode') ?? ''))
+      problems.push(`${name} does not ask for TLS`);
+    if (url.username === operator.username)
+      problems.push(`${name} is DATABASE_URL's own user, which can read every table`);
+  }
+  if (users.size !== ROLE_SETTINGS.length)
+    problems.push('the three roles must be three different users');
+  return problems.length
+    ? {
+        id: 'database.roles',
+        level: 'fail',
+        detail: `${problems.join('; ')}.`,
+        fix: 'Create the three roles as docs/DEPLOYMENT.md, "Database roles", shows, then set each address with bun run melete set --from-env.',
+      }
+    : {
+        id: 'database.roles',
+        level: 'ok',
+        detail: `The administrator's roles are used: ${ROLE_SETTINGS.map((name) => decodeURIComponent(new URL(env[name] ?? '').username)).join(', ')}. database-roles checks at each start that the service's role cannot read secrets.`,
+      };
 }
 
 /** The bucket settings deploy/.env holds, judged against the contract's `blobs`. */

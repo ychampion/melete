@@ -11,12 +11,16 @@ existing file. Start with
 `docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300`.
 The README explains provider configuration and the first sign-in.
 
-The service receives `/var/run/docker.sock`. This grants **host-root equivalent**
-authority: it can instruct Docker to start privileged containers or mount host
-filesystems. The service and its trusted supervisor are inside the host trust
-boundary. Running the service as a non-root user with the socket's group does not
-contain a compromised service. Attempt containers receive no Docker socket and
-are launched with the separately tested isolation flags.
+`melete-cells` receives `/var/run/docker.sock`, and no other service does. The
+socket grants **host-root equivalent** authority, so `melete-cells` holds no
+database address and no service key, answers only the `melete` service on a
+private network with its key, and starts only the fixed attempt, computer and
+MCP server profiles (`apps/melete/src/cells/policy.ts`). The `melete` service
+has no socket, and its database role cannot read sealed credentials;
+`database-roles` sets the roles up and migrates before it starts
+([docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md#database-roles)). Attempt containers
+receive no Docker socket and are launched with the separately tested isolation
+flags.
 
 The static Compose checks and launch argument tests run without Docker. A live
 image build and runtime network test still require a Docker host; neither is

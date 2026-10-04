@@ -60,10 +60,11 @@ import { McpSignIns } from '../connectors/mcp-sign-in.ts';
 import { microsoftProvider } from '../connectors/microsoft.ts';
 import { isPublicEndpoint, publicOnlyFetch } from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { PostgresSecretRepository } from '../connectors/secrets.ts';
 import type { SignedInCredential } from '../connectors/signed-in.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
-import { connection, owner, secret, space } from '../db/schema.ts';
+import { connection, owner, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { COMMAND_LINE_SERVICE, commandLineAccount } from '../egress/adapters/accounts.ts';
 import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
@@ -523,9 +524,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       // Nothing points at a secret sealed for an installation that was refused,
       // and nothing else would ever remove it before the space itself goes.
       if (secretRef)
-        await deps.db
-          .delete(secret)
-          .where(and(eq(secret.id, secretRef), eq(secret.spaceId, spaceId)))
+        await new PostgresSecretRepository(deps.sql)
+          .forget(secretRef, spaceId)
           .catch((cleanup: unknown) =>
             console.error(
               `connections: a refused installation's secret was not removed (${cleanup instanceof Error ? cleanup.name : 'error'})`,

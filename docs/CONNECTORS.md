@@ -824,8 +824,8 @@ and an unclassified tool is an external write.
 Stdio servers run only where attempts run in containers
 (`MELETE_RUNTIME_ADAPTER=docker`); elsewhere the kind and the catalog are not
 offered and installation answers `400`. The service reaches the Docker engine
-through the socket its runtime supervisor already uses and gives each
-connection:
+through `melete-cells`, as its runtime supervisor does, which starts a server
+only in this shape and gives each connection:
 
 - one container at a time, as uid 10001, on a read-only root filesystem, with
   every capability dropped, `no-new-privileges`, Docker's default seccomp
