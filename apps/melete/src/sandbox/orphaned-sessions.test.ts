@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { testDatabase } from '../../test/helpers/database.ts';
-import { ComputerControls } from './computer-control.ts';
+import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
 import { FakeSandboxProvider } from './fake.ts';
 import { SandboxRefusal } from './manifest.ts';
 import { seedSessionScope, sessionSpec } from './session-fixtures.ts';
@@ -19,13 +19,16 @@ const signal = () => AbortSignal.timeout(10_000);
 
 beforeEach(async () => {
   if (handle) await handle.sql`truncate space cascade`;
+  // The fake provider names its sandboxes the same way in every test.
+  if (handle) await handle.sql`delete from sandbox_control`;
 });
 afterAll(async () => handle?.close());
 
 withDb('a workspace whose attempt is gone', () => {
-  const setup = async (controls = new ComputerControls()) => {
+  const setup = async (given?: ComputerControls) => {
     if (!handle) throw new Error('Postgres is unavailable');
     const sql = handle.sql;
+    const controls = given ?? new PostgresComputerControls(sql);
     const scope = await seedSessionScope(sql);
     const provider = new FakeSandboxProvider();
     // A long lease: nothing here may rely on it running out.
@@ -117,12 +120,13 @@ withDb('a workspace whose attempt is gone', () => {
   });
 
   test('a computer a person took over stays theirs until they hand it back', async () => {
-    const controls = new ComputerControls();
+    if (!handle) throw new Error('Postgres is unavailable');
+    const controls = new PostgresComputerControls(handle.sql);
     const { sql, scope, provider, sessions, open, providerFor } = await setup(controls);
     const first = await scope.attempt();
     const held = await open(first);
     // Taking over passes control to the person and ends the agent's attempt.
-    controls.change(held.providerSandboxId, 'human');
+    await controls.change(held.providerSandboxId, 'human');
     await sql`update attempt set outcome = 'fenced', ended_at = now(), lease_expires_at = null,
       lease_status = 'ended' where id = ${first}`;
     const wiring = startSandboxes({
@@ -148,7 +152,7 @@ withDb('a workspace whose attempt is gone', () => {
     expect(await refusal(open(await scope.attempt()))).toBe('workspace_busy');
     // Handed back, with no attempt left holding it: the next sweep suspends
     // it, and the next attempt resumes it.
-    controls.change(held.providerSandboxId, 'agent');
+    await controls.change(held.providerSandboxId, 'agent');
     await sessions.sweep(providerFor, signal());
     expect((await sessions.get(held.id))?.status).toBe('paused');
     expect(await open(await scope.attempt())).toMatchObject({ status: 'ready', resumed: true });

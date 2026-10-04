@@ -19,6 +19,7 @@ import { calendarManifest } from './calendar.ts';
 import { emailManifest } from './email.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
+import { roomManifest } from './room.ts';
 import { sandboxExecManifest } from './sandbox-exec.ts';
 import { webManifest } from './web.ts';
 
@@ -42,6 +43,9 @@ describe('default connections', () => {
       // Speech and transcription: two rows of the one generation provider.
       'generation',
       'generation',
+      // A person's own tools for rooms they are in, and a room's request's hand-off.
+      'room',
+      'room',
       'sandbox',
       'web',
     ]);
@@ -51,6 +55,14 @@ describe('default connections', () => {
       expect(manifest.credentials).toEqual([]);
       expect([...builtin.scopes].sort()).toEqual(toolNames(manifest));
     }
+    // The two room rows split one connector's tools by the kind of space they serve.
+    const room = BUILTIN_CONNECTIONS.filter((builtin) => builtin.provider === 'room');
+    expect(room.map((builtin) => [builtin.key, builtin.spaceKind])).toEqual([
+      ['rooms', 'personal'],
+      ['room_handoff', 'shared'],
+    ]);
+    expect(room.flatMap((builtin) => builtin.scopes).sort()).toEqual(toolNames(roomManifest));
+    expect(roomManifest.credentials).toEqual([]);
     for (const credentialed of [emailManifest, calendarManifest])
       expect(credentialed.credentials.length).toBeGreaterThan(0);
   });
@@ -135,6 +147,7 @@ describe('default connections', () => {
       artifactsManifest,
       appsManifest,
       execManifest,
+      roomManifest,
     ])
       for (const tool of manifest.tools)
         if (tool.effect_class === 'write_external' || tool.effect_class === 'spend')
@@ -173,10 +186,27 @@ describe('default connections', () => {
       BUILTIN_CONNECTIONS.filter((builtin) => builtin.when?.(environment) ?? true).map(
         (builtin) => builtin.key,
       );
-    expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts', 'apps']);
+    expect(wanted(builtinEnvironment(base))).toEqual([
+      'files',
+      'web',
+      'artifacts',
+      'apps',
+      'rooms',
+      'room_handoff',
+    ]);
     expect(
       wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
-    ).toEqual(['files', 'web', 'artifacts', 'apps', 'generation', 'transcription', 'exec']);
+    ).toEqual([
+      'files',
+      'web',
+      'artifacts',
+      'apps',
+      'generation',
+      'transcription',
+      'exec',
+      'rooms',
+      'room_handoff',
+    ]);
   });
 });
 

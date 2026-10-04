@@ -23,7 +23,7 @@ import {
   DOCKER_DESKTOP,
   type DockerSandboxProvider,
 } from '../sandbox/adapters/docker.ts';
-import { computerControls } from '../sandbox/computer-control.ts';
+import type { ComputerControls } from '../sandbox/computer-control.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import { sessionHandle } from '../sandbox/sessions.ts';
 
@@ -223,12 +223,14 @@ export async function runComputerAction(options: {
   workRoot: string;
   session: SessionRow;
   provider: DockerSandboxProvider;
+  /** Who drives each computer, as every service instance sees it. */
+  controls: ComputerControls;
   signal: AbortSignal;
 }): Promise<Record<string, JsonValue>> {
-  const { action, session, provider, signal } = options;
+  const { action, session, provider, signal, controls } = options;
   const command = desktopCommandFor(action);
   const handle = sessionHandle(session);
-  const held = computerControls.state(session.providerSandboxId);
+  const held = await controls.state(session.providerSandboxId);
   if (held.control === 'human')
     throw new HumanControlRefusal(
       'a person has taken control of this computer; wait until they hand it back, then take a fresh screenshot',
@@ -241,7 +243,7 @@ export async function runComputerAction(options: {
   };
   const answer = await provider.computer(handle, command, signal);
   // Checked again after the action: a takeover that landed while it ran is said so.
-  if (computerControls.state(session.providerSandboxId).epoch !== held.epoch)
+  if ((await controls.state(session.providerSandboxId)).epoch !== held.epoch)
     base.control_changed = true;
   if (command.kind !== 'screenshot') return { ...base, ...infoOf(answer) };
   const size = pngSize(answer);

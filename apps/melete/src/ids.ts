@@ -26,6 +26,11 @@ export function newId(
     | 'pbat'
     | 'rune'
     | 'apg'
+    | 'rth'
+    | 'rmg'
+    | 'rsh'
+    | 'rin'
+    | 'rho'
     | 'file',
 ): string {
   let value = (BigInt(Date.now()) << 80n) | BigInt(`0x${randomBytes(10).toString('hex')}`);

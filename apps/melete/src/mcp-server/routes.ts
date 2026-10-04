@@ -86,6 +86,18 @@ const escapeHtml = (value: string) =>
   );
 
 /** The one page this service renders: plain, framed by nobody, submitting only to itself and the client. */
+/** What `signedIn` answers for a guest account, which never connects an assistant. */
+const GUEST = Symbol('guest');
+function guestRefused(c: Context) {
+  return page(
+    c,
+    'Cannot connect',
+    '<h1>Cannot connect</h1><p>A guest account uses only the rooms it was invited to, and cannot connect an assistant.</p>',
+    undefined,
+    403,
+  );
+}
+
 function page(c: Context, title: string, body: string, formTarget?: string, status = 200) {
   c.header('Content-Type', 'text/html; charset=utf-8');
   c.header('X-Frame-Options', 'DENY');
@@ -268,6 +280,9 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
     const token = getCookie(c, SESSION_COOKIE);
     const active = token ? await activeSession(deps.db, token) : undefined;
     if (!active || !token) return undefined;
+    // An assistant acts as a person in a space of theirs. A guest has neither:
+    // they use only the rooms they were invited to.
+    if (active.owner.kind !== 'person') return GUEST;
     // The space the grant will act in: the one this session has selected.
     const space = await resolveSessionSpace(
       deps.db,
@@ -283,7 +298,7 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
     c: Context,
     request: AuthorizeRequest,
     client: McpClientRecord,
-    session: NonNullable<Awaited<ReturnType<typeof signedIn>>>,
+    session: Exclude<Awaited<ReturnType<typeof signedIn>>, undefined | typeof GUEST>,
     tag: string,
   ) => {
     const returnHost = new URL(request.redirectUri).host;
@@ -347,6 +362,7 @@ ${whoIsAsking(client)}
       );
     if (read.kind === 'back') return c.redirect(read.url, 302);
     const session = await signedIn(c);
+    if (session === GUEST) return guestRefused(c);
     if (!session)
       return page(
         c,
@@ -376,6 +392,7 @@ ${whoIsAsking(client)}
       );
     if (read.kind === 'back') return c.redirect(read.url, 302);
     const session = await signedIn(c);
+    if (session === GUEST) return guestRefused(c);
     // A session that has since moved to another space was not shown this one.
     const expected = session ? consentTag(session.token, session.space.spaceId, read.request) : '';
     const given = form.consent ?? '';

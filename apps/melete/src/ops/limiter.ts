@@ -163,7 +163,13 @@ export class WindowLimiter {
   }
 }
 
-/** Failures in a sliding window per key; at `limit` the key waits for the oldest to age out. */
+/**
+ * Tries in a sliding window per key; at `limit` the key waits for the oldest
+ * to age out. A try is reserved before the work it guards, in the same locked
+ * step that checks the count, so concurrent tries on any number of instances
+ * never pass the limit between a check and a count. A try that should not
+ * count (a correct code, a report that was not stored) is given back.
+ */
 export class FailureWindow {
   constructor(
     private readonly store: LimitStore,
@@ -176,21 +182,19 @@ export class FailureWindow {
     return (failures ?? []).filter((at) => now - at < this.windowMs);
   }
 
-  /** Seconds to wait before another try, or 0. */
-  retryAfter(key: string, now = Date.now()): Promise<number> {
-    return this.store.update<number[], number>(this.scope, key, now, (failures) => {
-      const recent = this.recent(failures, now);
-      const wait =
-        recent.length < this.limit
-          ? 0
-          : Math.ceil(((recent[0] ?? now) + this.windowMs - now) / 1000);
-      return this.keep(recent, wait);
+  /** Counts one try and answers 0, or answers the seconds to wait and counts nothing. */
+  reserve(key: string, now = Date.now()): Promise<number> {
+    return this.store.update<number[], number>(this.scope, key, now, (tries) => {
+      const recent = this.recent(tries, now);
+      if (recent.length < this.limit) return this.keep([...recent, now], 0);
+      return this.keep(recent, Math.ceil(((recent[0] ?? now) + this.windowMs - now) / 1000));
     });
   }
 
-  fail(key: string, now = Date.now()): Promise<void> {
-    return this.store.update<number[], void>(this.scope, key, now, (failures) =>
-      this.keep([...this.recent(failures, now), now], undefined),
+  /** Gives back the newest counted try. */
+  release(key: string, now = Date.now()): Promise<void> {
+    return this.store.update<number[], void>(this.scope, key, now, (tries) =>
+      this.keep(this.recent(tries, now).slice(0, -1), undefined),
     );
   }
 

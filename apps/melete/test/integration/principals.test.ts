@@ -607,6 +607,8 @@ withDb('principal and shared-space authority', () => {
     expect(regranted.claims.membership_generation).toBe(2);
     expect(regranted.bundle.skills).toHaveLength(3);
     const [parent] = await handle.db.select().from(space).where(eq(space.id, sharedId));
-    expect(parent?.policyGeneration).toBe(1);
+    // Every change of who is in the space moves it on: the grant, the
+    // revocation and the regrant each fence what was read under the roster before.
+    expect(parent?.policyGeneration).toBe(3);
   }, 30_000);
 });

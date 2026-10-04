@@ -68,6 +68,13 @@ export type Receipt = Success<Ok<paths['/conversations/{id}/receipts'], 'get'>>[
 export type Draft = Success<Ok<paths['/conversations/{id}/drafts'], 'get'>>['drafts'][number];
 export type SendOutcome = Success<Ok<paths['/drafts/{id}/send'], 'post'>>;
 export type Permission = Success<Ok<paths['/permissions'], 'get'>>['permissions'][number];
+/**
+ * A task a room handed the person to run with their own setup, or the result
+ * of one that waits for them to share it with the room or keep it.
+ */
+export type RoomHandoff = NonNullable<
+  Success<Ok<paths['/permissions'], 'get'>>['handoffs']
+>[number];
 export type PermissionOption = Permission['options'][number];
 export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];

@@ -69,6 +69,12 @@ export const memorySources = pgTable(
     // Declared by the importer. A message the owner typed and a message somebody
     // else sent are the same source type and a very different trust class.
     author: text('author').notNull().default('owner'),
+    /**
+     * Who wrote it, when that is a person on this installation: a member of a
+     * room whose words became the room's memory. Their own words are what they
+     * may forget there.
+     */
+    authorPrincipalId: text('author_principal_id'),
     originTrust: text('origin_trust').notNull().default('inferred'),
     // The zone Tier 0 resolves relative dates against, captured at import time.
     timeZone: text('time_zone'),
@@ -88,7 +94,7 @@ export const memorySources = pgTable(
     ),
     uniqueIndex('memory_source_sequence').on(t.spaceId, t.publisher, t.stream, t.streamSequence),
     check('memory_source_state', sql`${t.state} in ('active','suppressed','deleted','revoked')`),
-    check('memory_source_author', sql`${t.author} in ('owner','external')`),
+    check('memory_source_author', sql`${t.author} in ('owner','external','member')`),
     check(
       'memory_source_trust',
       sql`${t.originTrust} in ('owner','verified_connector','external_content','inferred')`,
@@ -652,3 +658,47 @@ export const memoryActionBasis = pgTable('memory_action_basis', {
   items: jsonb('items').notNull(),
   recordedAt: instant('recorded_at').notNull().defaultNow(),
 });
+
+/**
+ * A person's own saved detail, shared into a room they are in. It is a
+ * reference, not a copy: the room reads the detail's current value from the
+ * person's own memory, so forgetting it there takes it out of every room at
+ * once. Like every memory table it is removed with its spaces by name.
+ */
+export const memoryRoomGrant = pgTable(
+  'memory_room_grant',
+  {
+    id: text('id').primaryKey(),
+    claimId: text('claim_id').notNull(),
+    /** The personal space the detail lives in. */
+    sourceSpaceId: text('source_space_id').notNull(),
+    roomSpaceId: text('room_space_id').notNull(),
+    grantedBy: text('granted_by').notNull(),
+    /** Kept out of the room's work while a guest is in the room. */
+    membersOnly: boolean('members_only').notNull().default(true),
+    createdAt: created(),
+    revokedAt: instant('revoked_at'),
+  },
+  (t) => [
+    uniqueIndex('memory_room_grant_active')
+      .on(t.claimId, t.roomSpaceId)
+      .where(sql`${t.revokedAt} is null`),
+    index('memory_room_grant_room').on(t.roomSpaceId),
+    index('memory_room_grant_source').on(t.sourceSpaceId, t.claimId),
+  ],
+);
+/**
+ * One row per room message the capture loop has looked at, whatever it
+ * decided, so a restart neither repeats nor loses one.
+ */
+export const memoryRoomCapture = pgTable(
+  'memory_room_capture',
+  {
+    messageId: text('message_id').primaryKey(),
+    spaceId: text('space_id').notNull(),
+    outcome: text('outcome').notNull(),
+    sourceId: text('source_id'),
+    createdAt: created(),
+  },
+  (t) => [index('memory_room_capture_source').on(t.sourceId)],
+);

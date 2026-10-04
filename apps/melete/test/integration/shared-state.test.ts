@@ -7,12 +7,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:tes
 import { randomBytes } from 'node:crypto';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { loadEnv } from '../../src/env.ts';
+import { FeedbackLimiter } from '../../src/feedback/rate-limit.ts';
 import { PostgresCredentialRepository, ProviderSignIn } from '../../src/gateway/credentials.ts';
 import { type FakeIssuer, startFakeIssuer } from '../../src/gateway/fixtures/fake-oauth.ts';
 import { chatgptIssuer } from '../../src/gateway/oauth.ts';
 import { createApp } from '../../src/index.ts';
 import { InstanceRegistry } from '../../src/ops/instance.ts';
 import { LEASE_SPACE, Leases, leaseConnection } from '../../src/ops/leader.ts';
+import { FailureWindow, PostgresLimitStore } from '../../src/ops/limiter.ts';
 import { PostgresSignInStore, signInKey } from '../../src/ops/signin-store.ts';
 import type { SandboxSessions } from '../../src/sandbox/sessions.ts';
 import { startSandboxes } from '../../src/sandbox/wiring.ts';
@@ -77,6 +79,23 @@ describeWithDb('two service instances on one database', () => {
   afterAll(async () => {
     await other?.close();
     await handle?.close();
+  });
+
+  test('a try is counted before the work it guards, so concurrent tries on two instances stop at the limit', async () => {
+    const [one, two] = pools();
+    const stores = [new PostgresLimitStore(one.sql), new PostgresLimitStore(two.sql)];
+    // Wrong pairing codes: twenty guesses at once, half through each instance.
+    const windows = stores.map((store) => new FailureWindow(store, 'device.pair', 10, 600_000));
+    const waits = await Promise.all(
+      Array.from({ length: 20 }, (_, index) => windows[index % 2]?.reserve('198.51.100.20') ?? 0),
+    );
+    expect(waits.filter((wait) => wait === 0)).toHaveLength(10);
+    // Problem reports: the same budget whichever instance takes them.
+    const limiters = stores.map((store) => new FeedbackLimiter(undefined, 5, 600_000, store));
+    const sent = await Promise.all(
+      Array.from({ length: 12 }, (_, index) => limiters[index % 2]?.admit('own_reporter') ?? 0),
+    );
+    expect(sent.filter((wait) => wait === 0)).toHaveLength(5);
   });
 
   test('limits hold across two instances on one database', async () => {

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Action } from '@melete/contracts';
 import type { DesktopCommand, DockerSandboxProvider } from '../sandbox/adapters/docker.ts';
-import { computerControls } from '../sandbox/computer-control.ts';
+import { MemoryComputerControls } from '../sandbox/computer-control.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import {
   COMPUTER_TOOL_NAMES,
@@ -26,6 +26,7 @@ import {
 } from './sandbox-exec.ts';
 import { PROCESS_TOOL_NAMES } from './sandbox-process.ts';
 
+const controls = new MemoryComputerControls();
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -163,6 +164,7 @@ test('a screenshot is kept in the job workspace and the receipt says where, how 
     workRoot: root,
     session,
     provider,
+    controls,
     signal: AbortSignal.timeout(5_000),
   });
   expect(detail).toMatchObject({
@@ -193,6 +195,7 @@ test('a screenshot that is not an image is an error, not a receipt', async () =>
       workRoot: await workRoot(),
       session,
       provider,
+      controls,
       signal: AbortSignal.timeout(5_000),
     }),
   ).rejects.toThrow('did not answer with an image');
@@ -207,14 +210,14 @@ test('while a person holds the computer every agent action is refused, and after
       workRoot: '/nowhere',
       session,
       provider,
+      controls,
       signal: AbortSignal.timeout(5_000),
     });
-  computerControls.change(sandbox, 'human');
+  await controls.change(sandbox, 'human');
   await expect(run()).rejects.toBeInstanceOf(HumanControlRefusal);
   expect(seen).toEqual([]);
-  const back = computerControls.change(sandbox, 'agent');
-  expect(await run()).toMatchObject({ computer: 'click', control_epoch: back.epoch });
-  computerControls.forget(sandbox);
+  const back = await controls.change(sandbox, 'agent');
+  expect(await run()).toMatchObject({ computer: 'click', control_epoch: back?.epoch });
 });
 
 test('a takeover that lands while an action runs is said so in its receipt', async () => {
@@ -222,7 +225,7 @@ test('a takeover that lands while an action runs is said so in its receipt', asy
   const provider = {
     desktop: true,
     async computer() {
-      computerControls.change(sandbox, 'human');
+      await controls.change(sandbox, 'human');
       return new TextEncoder().encode('{}');
     },
   } as unknown as DockerSandboxProvider;
@@ -232,8 +235,8 @@ test('a takeover that lands while an action runs is said so in its receipt', asy
     workRoot: '/nowhere',
     session,
     provider,
+    controls,
     signal: AbortSignal.timeout(5_000),
   });
   expect(detail.control_changed).toBe(true);
-  computerControls.forget(sandbox);
 });

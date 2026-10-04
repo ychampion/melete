@@ -65,6 +65,13 @@ export function mountDevices(
   limits: LimitStore = new MemoryLimitStore(),
 ) {
   const throttle = new FailureWindow(limits, 'device.pair', 10, 10 * 60_000);
+  /** Best effort: a guess not given back only waits out its window. */
+  const giveBack = (address: string) =>
+    void throttle.release(address).catch((error: unknown) => {
+      process.stderr.write(
+        `pairing guess not given back: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
 
   /* ---------- Settings ---------- */
   const spaceOf = (c: Context) => {
@@ -103,7 +110,9 @@ export function mountDevices(
   /* ---------- the companion ---------- */
   app.post('/device/pair', smallBody, async (c) => {
     const address = clientAddress(c);
-    const wait = await throttle.retryAfter(address);
+    // The try is counted before the code is checked, so concurrent guesses on
+    // any instance stop at the limit; a correct code is given back.
+    const wait = await throttle.reserve(address);
     if (wait > 0) {
       c.header('Retry-After', String(wait));
       return c.json(
@@ -111,10 +120,15 @@ export function mountDevices(
         429,
       );
     }
-    const input = devicePairRequest.parse(await c.req.json());
-    const paired = await devices.pair(input);
+    let paired: Awaited<ReturnType<DeviceService['pair']>>;
+    try {
+      paired = await devices.pair(devicePairRequest.parse(await c.req.json()));
+    } catch (error) {
+      // A request that never reached a code check does not count as a guess.
+      giveBack(address);
+      throw error;
+    }
     if (!paired) {
-      await throttle.fail(address);
       return c.json(
         {
           error: {
@@ -125,6 +139,9 @@ export function mountDevices(
         400,
       );
     }
+    // After the pairing is made: giving the guess back never costs the
+    // computer its token.
+    giveBack(address);
     return c.json(devicePairResponse.parse(paired), 201);
   });
 

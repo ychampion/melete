@@ -368,8 +368,9 @@ sent, undone or steered.
 Inside a shared space, a job's memory and connections follow the job's
 principal too. A member's job recalls what the space shares with its members,
 never what is private to the owner, on every memory deployment. A shared
-space's connections, built-in tools included, serve its owner unless marked
-for the room. A member's own job is offered none of them, cannot act through
+space's connections serve its owner unless marked for the room, and the
+built-in tools a room is given are marked for the room's requests. A member's
+own job is offered none of them, cannot act through
 them, and cannot watch what they receive, and the broker checks this again
 before anything is sent. Every answer to a permission records the person who
 gave it; one made with the operator's approval key is recorded as the service's.
@@ -720,12 +721,12 @@ was open before too, since the question showed file counts and not code. A
 conversation that read an app's responses, or that is set to ask before
 acting, still asks for every publish.
 
-## Attacker 10: a page served from the agent's computer
+## Attacker 11: a page served from the agent's computer
 
 A person can preview a web server a background process runs in the agent's
 computer (see [sandbox-docker](sandbox-docker.md#previewing-a-server)). The
 server and its pages were written by the agent, and may be hostile in the same
-ways an app may. The aims are those of Attacker 9, plus two of its own: to use
+ways an app may. The aims are those of Attacker 10, plus two of its own: to use
 the preview to reach something else on the computer's network, and to reach
 another person's computer.
 
@@ -769,6 +770,161 @@ ends the preview on its next request.
 WebRTC and name lookups are open to a previewed page as they are to an app.
 The preview shows what the agent's own server serves, to the person who asked
 for it.
+## Attacker 12: another member of a room
+
+A room is a shared space where several people talk to one agent (see
+[ROOMS](ROOMS.md)). Another member may be hostile. The aims are to read what a
+person keeps outside the room, to make the room's agent act on someone else's
+behalf, to steer or withdraw someone else's request, and to keep reading after
+being removed.
+
+The room's agent acts as the room's own principal, not as any member. That
+principal has no password and never holds a session: sign-in refuses it before
+any password is checked, at the cost of an unknown email, and a session written
+for it by any other means is not accepted. It is never listed among people or a
+room's members, and it is never added to a room. Its membership generation is
+the room's roster generation, bumped with every change of who is in the room,
+so a capability minted before the change is refused at the broker.
+
+Every speaker is shown, to people and to the agent, as their chosen name
+followed by the handle the room gives them in angle brackets. The handle is
+derived from the room and the person's account, both made by the service, so
+nobody chooses it or takes another's, and it is what identifies a speaker; the
+agent is told the name before it is self-chosen. A name is one line of plain
+text without `<`, `>` or `@`, so it cannot pass for a handle or an email, and
+where a name enters the agent's input it is quoted; characters that read as
+`<`, `>` or `@` are refused as well. No label carries any part of an email;
+people who are not guests see emails only in the room's list of people. Each ask is its own request job, recorded with the person who asked, and only
+that person's words reach it: another member's message starts their own request
+or none, never touches someone else's, and so never withdraws their pending
+permission. A request reads the room's own material and the thread with each
+speaker's name, and acts only through the room's tools and the connections
+marked for the room. Nothing from a member's personal space reaches it.
+
+Every room route checks, on each request, that the caller is in the room now.
+A room's requests belong to the room's principal, so every personal surface
+(chats, plans, approvals, the job and event routes) hides them by its existing
+own-job rule; three paths admit room readers on purpose: a request's files, the
+room computer's view (owners alone take it over), and the room's own routes. A
+thread's live stream checks membership before every frame and closes when the
+reader is removed. Removing someone, or their leaving, fences work in flight,
+which starts again with the new roster; the requests they asked end.
+[rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
+these as a test, including the room computer through the service's own routes.
+
+A room's memory holds what its people said there, each piece of evidence under
+the person who said it, at `external_content` trust, so a member's words never
+raise what an approval card trusts. A room's requests recall the room's shared
+details and never a `private` one, the room owner's included. A person's own
+memory reaches a room only through a share they made of one detail: a
+reference read through one narrow path while the share stands, they are still
+in the room and the detail is still remembered at its source, and capped at
+`external_content` trust. Forgetting the detail at its source invalidates any
+room attempt that held it. Members-only shares stay out while a guest is in the
+room. Only a room's owners forget another person's words from its memory; a
+person deletes only their own messages, and the deletion scrubs the copies the
+service made of them. Every such removal is journaled and replayed on restore
+([rooms-memory.test.ts](../apps/melete/test/integration/rooms-memory.test.ts)).
+
+A guest is invited by an owner for a number of days, through a link that works
+once and names only the room; only the SHA-256 of its token is stored, and the
+token travels in request bodies and the link's fragment, never in a path. A link
+never sets the password of an account that already exists: a guest already here
+accepts while signed in, and a full account is added by an owner instead. A
+guest's sign-in reaches only the room routes, its own account and a room's files
+and computer view; every other route refuses it before it runs, so a surface
+that was never taught about guests never serves one. The public routes that read
+a sign-in themselves refuse a guest too: a guest connects no assistant, an
+assistant's access names only a person, and no space of their own is ever made
+for anyone but a person. Memory scopes refuse a guest and anyone whose place has
+run out. A sweep that cannot end one guest's place says so and goes on to the
+next. Owner-only checks ask
+whether the signed-in person owns the space rather than whether it is a member, so a new
+role is never taken for an owner. A guest never answers a permission, has no
+people list and starts no work of their own. Adding a guest fences the room's
+work like any other change of who is in it, and members-only shares leave the
+agent's next attempt. When the invite's time is up the guest reads nothing from
+that moment, and the expiry sweep ends the membership through the removal path.
+[room-guests.test.ts](../apps/melete/test/integration/room-guests.test.ts) holds
+each of these as a test.
+
+A room's permissions are answered only by the people the room's rule names: the
+person who asked (the default), any member who is not a guest, or the room's
+owners. The broker checks the rule when it records an answer, whichever route
+the answer came by, against the room's people at that moment: an answer that
+names nobody, the service's own approval key, a guest, the room's principal,
+anyone the rule leaves out and anyone outside the room are all refused, a Deny
+included. A guest's request is answered by the room's owners. Auto-review
+never answers a room's permission, and no standing rule or scope covers room
+work. An answer names the card's version and the exact content's hash, so
+it covers only what the person saw, and it is recorded as theirs. A room never
+makes a standing rule. A recipient, address or amount counts as the asker's
+only when they typed it in their own request; a value another member typed is
+shown on the asker's card as that member's, with a warning, and no saved rule
+admits it. Auto-review judges a room's action against the asker's own words,
+and sees other members' messages labelled with their names. A decision push
+reaches only the people who may answer. Marking a connection for the room is an
+owner's act, and fences work in the room like a change of who is in it. A new
+file saved in a room's space waits for the room's rule: only a person's own
+space lets one through unasked. An app published from a room waits for the
+room's rule too, whatever the space's publishing setting. A connection that
+carries a person's own account serves only their own space, so a room's request
+cannot act through it under any rule; the room hands that person the task.
+[room-approvals.test.ts](../apps/melete/test/integration/room-approvals.test.ts)
+holds each of these as a test.
+
+Nothing crosses between a room and a person's own space except through the
+built-in room connection, and each crossing is a person's own act. A room's
+request cannot reach anyone's mail, files or memory; it can only hand a person a
+task. The person sees the whole task and accepts it by its hash, so what runs in
+their own space is exactly the text they read, run as their own agent, Melete,
+so it asks before acting wherever their agent would, and recorded as coming from the room:
+an address or amount it names carries a warning on their own card, and no
+standing rule they made admits it. The result reaches the room only when they
+approve that exact text, also by its hash; keeping it private tells the room
+only that they kept it, and a decline or an unanswered handoff tells the room
+nothing more. A result is held with the handoff only while it waits for that
+choice: sharing, keeping, seven days without an answer, the person forgetting
+anything in their own memory, or removing their space clears it, and a cleared
+result cannot be shared. A guest's request hands nothing to anyone, a person
+has at most three handoffs from one room waiting, and a handoff whose request
+was stopped or ended is withdrawn. Only the person a handoff names sees or answers it. From their own
+work a person posts to a room, or copies a checked file into its files, only
+with their approval of the exact room, thread and text or file, and only while
+they are in the room: membership is read again when the action is proposed,
+admitted and carried out. A file never replaces a different one of the same
+name in the room. A person's work lists only the rooms they are in and is
+refused, without detail, for any other
+([room-handoffs.test.ts](../apps/melete/test/integration/room-handoffs.test.ts)).
+
+A chat platform reaches a room through the same three doors as the web: a
+message coming in, the room's frames going out, and an answer to a permission.
+Behind each door the room runs the same checks it runs for the web. A platform
+account counts only through a link, kept per platform, to a person or guest
+here; it is checked on every message, answer and outgoing frame. The platform's
+adapter makes a link after the platform's own sign-in proves who holds the
+account: that proof is the platform's, and the adapter is trusted to have it.
+An account with no link is refused and is never made a guest, a link is never
+moved to another person, the room's own principal takes none, and one
+platform's link means nothing on another. A person lists and removes their own
+links, and a new password, set by them or through a reset, removes them all, as
+it signs out their sessions. One platform's ids for its messages never reach
+another platform, and each platform's submission ids are kept apart from the
+web's. A platform's display name is dropped: speakers carry the
+room's label, and a button press answers only for the person its account is
+linked to, under the room's rule. Frames go out to one linked person at a time,
+and stop the moment that person leaves the room or the account is unlinked
+([room-surface.test.ts](../apps/melete/test/integration/room-surface.test.ts)).
+
+What remains: what a member says in a room stays in the room after they leave,
+unless they delete it first or an owner forgets it. The words of a deleted
+message stay in any answer the agent already gave that quoted them, and in the
+agent's working session for the request that read them.
+Under the default rule a member answers the permissions of their own request,
+so a member can have the room's agent act through the room's connections with
+their own approval; owners who want to see every such action choose the
+`owners` rule. Isolation between a room and the rest of the installation is an
+application check, as it is between accounts.
 
 ## Credentials, host and storage
 
