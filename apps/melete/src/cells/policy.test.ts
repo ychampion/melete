@@ -355,11 +355,33 @@ describe('melete-cells accepts the fixed profiles the service uses', () => {
     for (const reference of [
       DEFAULT_STDIO_IMAGES.node,
       `ghcr.io/example/server:1.0@sha256:${'1'.repeat(64)}`,
+      `docker.io/library/node:22-alpine@sha256:${'1'.repeat(64)}`,
     ])
       expect(
         (await engine.ask('POST', `/images/create?fromImage=${encodeURIComponent(reference)}`))
           .allow,
       ).toBe(true);
+  });
+
+  test('pulls only from a public registry, whatever address another registry name resolves to', async () => {
+    const engine = new Engine();
+    // The engine resolves the name on the host and follows the registry's sign-in
+    // address and redirects, so each of these could reach the host's own ports.
+    for (const registry of [
+      '127.0.0.1.nip.io:2375',
+      '169.254.169.254.nip.io',
+      'metadata.google.internal',
+      'host.docker.internal:5432',
+      'registry.example.net',
+      'ghcr.io:8443',
+    ]) {
+      const reference = `${registry}/x@sha256:${'1'.repeat(64)}`;
+      expect([
+        registry,
+        (await engine.ask('POST', `/images/create?fromImage=${encodeURIComponent(reference)}`))
+          .allow,
+      ]).toEqual([registry, false]);
+    }
   });
 });
 

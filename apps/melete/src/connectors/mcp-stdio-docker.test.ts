@@ -353,6 +353,23 @@ describe('the Docker stdio launcher', () => {
     expect(engine.created()).toHaveLength(0);
   });
 
+  test('an image from another registry is never pulled, and runs once it is on the host', async () => {
+    // A valid name the engine would resolve on the host, to the host itself.
+    const local = `127.0.0.1.nip.io:2375/notes@${DIGEST}`;
+    const engine = new FakeEngine();
+    await expect(launcherFor(engine).start(spec({ source: local }), signal())).rejects.toThrow(
+      'runs once it is on this host',
+    );
+    expect(engine.pulls).toEqual([]);
+    expect(engine.created()).toHaveLength(0);
+    // Put there by the operator, it runs without a pull.
+    engine.images.set(local, DIGEST);
+    const channel = await launcherFor(engine).start(spec({ source: local }), signal());
+    expect(engine.pulls).toEqual([]);
+    expect(engine.created()).toHaveLength(1);
+    await openLineMcpTransport(channel).close();
+  });
+
   test('npx fetches into a package volume the server can only read, with no secret and no config', async () => {
     const engine = new FakeEngine();
     const proxy = new RecordingProxy();
