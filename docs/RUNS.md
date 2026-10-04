@@ -187,7 +187,11 @@ standing work.
   minutes. A schedule the work sets for itself (`run.start` from a
   conversation, or `run.checkpoint`) may wake it at most once an hour; a
   tighter one is refused with that minimum, because every wake costs model
-  calls nobody chose. Waking on a connection or a watch is not limited.
+  calls nobody chose. Waking on a connection or a watch has no minimum gap,
+  but work woken 30 times in a row within an hour with nothing to show for it
+  (no report, question, action or draft) is paused before its next wake starts,
+  and the person is told once; resuming it starts the count again
+  ([Background work and what it costs](BACKGROUND-COMPUTE.md)).
 - When the work itself sets, changes or drops what it waits for, the person
   is told once in plain words ("I'll check this every weekday at 9:00."): a
   `report` entry in the record and a notification, sent whatever the spacing

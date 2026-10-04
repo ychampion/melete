@@ -6,7 +6,7 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
-import { type AttemptOutcome, runResponse } from '@melete/contracts';
+import { type AttemptOutcome, jobBudget, runResponse } from '@melete/contracts';
 import { and, eq, like, sql } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { attempt, event, job, owner, pushIntent, space, trigger } from '../../src/db/schema.ts';
@@ -17,7 +17,11 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
-import { WAKE_GUARD_LIMIT, WAKE_GUARD_MESSAGE } from '../../src/jobs/wake-guard.ts';
+import {
+  WAKE_GUARD_LIMIT,
+  WAKE_GUARD_MESSAGE,
+  WAKE_GUARD_QUESTION,
+} from '../../src/jobs/wake-guard.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -221,5 +225,63 @@ withDb('the wake guard', () => {
     for (let wake = 0; wake < WAKE_GUARD_LIMIT - 1; wake++) await quietWake(run.id);
     expect((await row(run.id)).paused).toBe(false);
     expect((await told(run.id)).notices).toHaveLength(0);
+  });
+  test('other work woken thirty times with nothing to show asks the person, and their answer carries on', async () => {
+    const created = await required(jobs).create({
+      space_id: spaceId,
+      title: 'Watch the shared inbox',
+      objective: 'Watch the shared inbox for the signed lease',
+    });
+    await required(handle)
+      .db.update(job)
+      .set({
+        principalId: ownerId,
+        budget: { ...jobBudget.parse(created.budget), max_attempts: 1000 },
+      })
+      .where(eq(job.id, created.id));
+    const timer: AttemptOutcome = {
+      kind: 'waiting_for_event_or_time',
+      wait: { kind: 'timer', wake_at: new Date(Date.now() + 3_600_000).toISOString() },
+    };
+    // The work asks which inbox, the person answers, and then a timer wakes it, again and again.
+    const opening = required(await claim(created.id));
+    await required(runner).commitOutcome(opening.claims, {
+      kind: 'waiting_for_input',
+      question: 'Which inbox?',
+    });
+    await required(jobs).input(
+      created.id,
+      'The shared one; tell me when the lease comes back signed',
+    );
+    const asked = required(await claim(created.id));
+    await required(runner).commitOutcome(asked.claims, timer);
+    for (let wake = 0; wake < WAKE_GUARD_LIMIT; wake++) {
+      const shift = required(await claim(created.id));
+      await required(runner).commitOutcome(shift.claims, timer);
+    }
+    expect(await claim(created.id)).toBeNull();
+    const stopped = await row(created.id);
+    expect(stopped.state).toBe('waiting_for_input');
+    expect(stopped.paused).toBe(false);
+    expect(stopped.wait).toEqual({ kind: 'user_input', question: WAKE_GUARD_QUESTION });
+    const once = await told(created.id);
+    expect(once.notices).toHaveLength(1);
+    expect(once.pushes).toHaveLength(1);
+    expect(once.pushes[0]).toMatchObject({
+      body: WAKE_GUARD_QUESTION,
+      url: `/#/chat/${created.id}`,
+    });
+    // The person's answer runs, and the work goes on from a fresh count.
+    await required(jobs).input(created.id, 'Yes, keep going');
+    const answered = required(await claim(created.id));
+    const [cause] = await required(handle)
+      .db.select({ usageClass: attempt.usageClass })
+      .from(attempt)
+      .where(eq(attempt.id, answered.claims.attempt_id));
+    expect(cause?.usageClass).toBe('interactive');
+    await required(runner).commitOutcome(answered.claims, timer);
+    const next = required(await claim(created.id));
+    await required(runner).commitOutcome(next.claims, timer);
+    expect((await told(created.id)).notices).toHaveLength(1);
   });
 });

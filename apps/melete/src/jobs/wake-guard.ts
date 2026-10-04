@@ -11,10 +11,12 @@
  *
  * The wake guard is always on. Work woken `WAKE_GUARD_LIMIT` times in a row
  * within an hour, each time going back to rest with nothing to show for it
- * (no report, no question, no action, no draft), is paused before the next
- * wake starts anything, and the person is told once, in plain words. It is a
- * guard against a loop, not a budget: one wake that shows something resets
- * it, and resuming the work starts it again from nothing.
+ * (no report, no question, no action, no draft), is stopped before the next
+ * wake does anything, and the person is told once, in plain words. A run or
+ * a routine is paused, the way the person pauses it; anything else (a
+ * conversation an agent left watching, say) asks the person instead, so
+ * their next message carries on from it. It is a guard against a loop, not a
+ * budget: one wake that shows something resets it, and so does resuming.
  */
 import { isRunKind } from '@melete/contracts';
 import { and, eq, sql } from 'drizzle-orm';
@@ -31,6 +33,12 @@ export const WAKE_GUARD_WINDOW_MS = 60 * 60_000;
 
 /** What the person reads when the guard pauses their work. */
 export const WAKE_GUARD_MESSAGE = `It woke ${WAKE_GUARD_LIMIT} times in the last hour with nothing new to show, so it is paused. Resume it when you want it to keep going.`;
+
+/** What the person is asked when the guard stops work it does not pause. */
+export const WAKE_GUARD_QUESTION = `This woke ${WAKE_GUARD_LIMIT} times in the last hour with nothing new to show, so it has stopped for now. Should it keep going?`;
+
+/** Work the guard pauses, which the person resumes; anything else asks them. */
+export const guardPauses = (kind: string) => isRunKind(kind) || kind === 'routine';
 
 /** Kinds of run entry a person sees as a result. */
 const SHOWN_RUN_ENTRIES = ['report', 'proposed', 'finished'];
@@ -108,14 +116,26 @@ export async function pauseForWakes(tx: Transaction, row: JobRow): Promise<void>
     .update(trigger)
     .set({ enabled: false })
     .where(and(eq(trigger.jobId, row.id), eq(trigger.enabled, true)));
-  const key = `wake-guard:${row.id}:${row.leaseEpoch}`;
+  await tellOnce(tx, row, WAKE_GUARD_MESSAGE, `wake-guard:${row.id}:${row.leaseEpoch}`);
+}
+
+/**
+ * Tells the person what the guard did, once per `key`: a notice on the work
+ * and a notification.
+ */
+export async function tellOnce(
+  tx: Transaction,
+  row: JobRow,
+  message: string,
+  key: string,
+): Promise<void> {
   const told = await appendEvent(tx, {
     jobId: row.id,
     type: 'notice',
     payload: {
       kind: isRunKind(row.kind) ? 'run_paused' : 'paused',
       reason: 'wake_guard',
-      message: WAKE_GUARD_MESSAGE,
+      message,
     },
     dedupKey: key,
   });
@@ -132,7 +152,7 @@ export async function pauseForWakes(tx: Transaction, row: JobRow): Promise<void>
       principalId: person.id,
       kind: 'progress',
       title: clip(`${row.title}: paused`, 120),
-      body: WAKE_GUARD_MESSAGE,
+      body: message,
       because: 'Because it kept waking with nothing to show.',
       url: isRunKind(row.kind) ? `/#/runs/${row.id}` : `/#/chat/${row.id}`,
       dedupKey: key,

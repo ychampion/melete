@@ -1522,6 +1522,9 @@ again before every new call.
 | `MELETE_SPEND_MONTHLY_TOKENS`, `MELETE_SPEND_DAILY_TOKENS` | Input and output tokens for the whole installation |
 | `MELETE_SPEND_PERSON_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_DAILY_TOKENS` | Tokens for one person |
 | `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
+| `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD`, `MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD` | Dollars one person's background calls may spend |
+| `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_BACKGROUND_DAILY_TOKENS` | Tokens for one person's background calls |
+| `MELETE_JOB_USD_COUNTS_MODELS` | `true` counts each job's model calls against its dollar limit (`max_usd_est`), beside its actions (default `false`) |
 
 Each limit left empty is no limit, which is the default, so an installation
 that sets none behaves as before. A call counts against the person who caused
@@ -1585,6 +1588,25 @@ for its owner alone.
 
 Removing a space keeps its calls' amounts, so a limit is not reset by deleting
 a space; which space and job they came from is removed with it.
+
+Each call is also recorded as `interactive`, when a person was waiting on it,
+or `background`, when nobody was, with the step that made it and the trigger
+behind it. The background limits above count a person's background calls alone
+and hold back only those: at a background limit, background work starts
+nothing new and ends with "Background work has reached today's limit; it
+starts again on October 16 at 00:00 UTC. Your own messages still go through.",
+while the person's own messages keep running. Each finished UTC day is rolled
+up into `usage_day` within the hour, by one instance, and `GET /usage` adds the
+month by purpose and by step, the last 30 days, and, for the owner, background
+cost per active person-day over the last week.
+[Background work and what it costs](BACKGROUND-COMPUTE.md) covers it in full.
+
+With `MELETE_JOB_USD_COUNTS_MODELS=true`, a model call is charged its
+estimated cost against its job's dollar limit as well. A call is admitted while
+the limit is not yet spent and charged when it reports, so one call may finish
+past the limit; the next is refused, as an action past the limit is. Jobs carry
+a $1 limit by default, so turn this on together with the dollar limits your
+installation gives its jobs.
 
 ## Model routing
 
@@ -1671,7 +1693,13 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 - the job queue is stuck: work due more than ten minutes ago has not started;
 - the error rate spikes: over the last fifteen minutes, at least five attempts
   or model calls and half or more of them failed, were lost, or were refused by
-  the provider.
+  the provider;
+- where set, spending runs high: the last hour's model calls cost more than
+  `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` times the installation's usual hour (the
+  median hour of the week before), or one person accounts for more than
+  `MELETE_ALERT_SPEND_PERSON_PERCENT` percent of today's spending while others
+  spend too. Neither fires below `MELETE_ALERT_SPEND_MIN_USD` (default `1`)
+  dollars. These checks are `spend_rate` and `spend_share`.
 
 | Setting | What it does |
 | --- | --- |
@@ -1680,6 +1708,9 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465` |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
+| `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` | Alert when the last hour's spending is above this many times the usual hour (off unless set) |
+| `MELETE_ALERT_SPEND_PERSON_PERCENT` | Alert when one person is above this percent of today's spending (off unless set) |
+| `MELETE_ALERT_SPEND_MIN_USD` | The fewest dollars either spending alert fires at (default `1`) |
 
 Alerts are off until a webhook or an email address is set. One alert is sent
 when the service turns unhealthy, again every repeat interval while it stays

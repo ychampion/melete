@@ -77,9 +77,12 @@ import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 import {
   attemptCause,
   emptyWakes,
+  guardPauses,
   pauseForWakes,
+  tellOnce,
   usageClassOf,
   WAKE_GUARD_LIMIT,
+  WAKE_GUARD_QUESTION,
 } from './wake-guard.ts';
 import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
@@ -241,9 +244,12 @@ export class AttemptRunner {
         .orderBy(desc(attempt.epoch))
         .limit(1);
       const cause = await attemptCause(tx, row, previous, previous?.inputCursor ?? 0);
-      // Work that keeps waking with nothing to show is paused before this
-      // wake starts anything, and the person is told once.
-      if (cause.usageClass === 'background' && (await emptyWakes(tx, row.id)) >= WAKE_GUARD_LIMIT) {
+      // Work that keeps waking with nothing to show is stopped before this
+      // wake does anything, and the person is told once: a run or a routine
+      // is paused here; anything else asks the person, below.
+      const guarded =
+        cause.usageClass === 'background' && (await emptyWakes(tx, row.id)) >= WAKE_GUARD_LIMIT;
+      if (guarded && guardPauses(row.kind)) {
         await pauseForWakes(tx, row);
         return null;
       }
@@ -387,6 +393,14 @@ export class AttemptRunner {
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
         await this.finish(tx, row, attemptId, settled);
+        return null;
+      }
+      if (guarded) {
+        await this.finish(tx, row, attemptId, {
+          kind: 'waiting_for_input',
+          question: WAKE_GUARD_QUESTION,
+        });
+        await tellOnce(tx, row, WAKE_GUARD_QUESTION, `wake-guard:${row.id}:${attemptId}`);
         return null;
       }
       // Past a spending limit no engine is started: the turn, routine run or
