@@ -516,4 +516,29 @@ withDb('sorting what came in', () => {
       await labeller.close();
     }
   });
+
+  test('when an observation goes, its item and its label go with it', async () => {
+    if (!handle) return;
+    const { classifier: labeller } = await classifier();
+    try {
+      await inbox().seedInbox(connectionId);
+      const service = new TriageService({ sql: handle.sql, classifier: labeller });
+      await service.run();
+      expect((await service.needsYou(personId)).items).toHaveLength(3);
+      // Turning watching off (or expiry) deletes the account's observations.
+      await handle.sql`delete from event where job_id is null
+        and payload->>'connection_id' = ${connectionId}`;
+      const [left] = await handle.sql`select (select count(*)::int from triage_item) as items,
+        (select count(*)::int from triage_verdict) as labels`;
+      expect(left).toEqual({ items: 0, labels: 0 });
+      expect(await service.needsYou(personId)).toEqual({
+        items: [],
+        unsorted: 0,
+        unsorted_reason: null,
+      });
+      expect(await service.run()).toMatchObject({ collected: 0, calls: 0 });
+    } finally {
+      await labeller.close();
+    }
+  });
 });

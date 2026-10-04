@@ -14,7 +14,8 @@
  * a shared cache would say who receives what.
  *
  * Neither table holds a message body: only the small header and calendar
- * fields the observation itself carries.
+ * fields the observation itself carries. Both are tied to the observation they
+ * came from and are deleted with it, so nothing outlives what it was read from.
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -29,7 +30,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { connection, principal, space } from '../db/schema.ts';
+import { connection, event, principal, space } from '../db/schema.ts';
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -44,8 +45,14 @@ export const triageItem = pgTable(
       .notNull()
       .references(() => principal.id, { onDelete: 'cascade' }),
     connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
-    /** The observation's event sequence number: its `event:<seq>` handle. */
-    eventSeq: bigint('event_seq', { mode: 'number' }).notNull(),
+    /**
+     * The observation's event sequence number: its `event:<seq>` handle. When
+     * the observation goes (it expires, or watching the account is turned
+     * off), the item goes with it.
+     */
+    eventSeq: bigint('event_seq', { mode: 'number' })
+      .notNull()
+      .references(() => event.seq, { onDelete: 'cascade' }),
     /** The observation's kind: `mail.received`, `calendar.event.changed` and so on. */
     kind: text('kind').notNull(),
     /** What it is about: a message, or a calendar occurrence (the same key `subject_state` uses). */
@@ -79,6 +86,8 @@ export const triageItem = pgTable(
       .on(table.principalId, table.spaceId)
       .where(sql`${table.verdict} is null`),
     index('triage_item_space_idx').on(table.spaceId),
+    // Deleting an observation finds what was read from it.
+    index('triage_item_seq_idx').on(table.eventSeq),
     check(
       'triage_item_verdict_check',
       sql`${table.verdict} is null or ${table.verdict} in ('needs_you', 'fyi', 'ignore')`,
@@ -98,6 +107,13 @@ export const triageVerdict = pgTable(
     spaceId: text('space_id')
       .notNull()
       .references(() => space.id, { onDelete: 'cascade' }),
+    /**
+     * The newest observation the label was read from or reused for. The label,
+     * with its reason and sentence, goes when that observation does.
+     */
+    eventSeq: bigint('event_seq', { mode: 'number' })
+      .notNull()
+      .references(() => event.seq, { onDelete: 'cascade' }),
     /** The account the labelled item was read from; its labels go when it is revoked. */
     connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
     subjectKey: text('subject_key').notNull(),
@@ -117,6 +133,7 @@ export const triageVerdict = pgTable(
     index('triage_verdict_expires_idx').on(table.expiresAt),
     index('triage_verdict_space_idx').on(table.spaceId),
     index('triage_verdict_connection_idx').on(table.connectionId),
+    index('triage_verdict_seq_idx').on(table.eventSeq),
     check('triage_verdict_verdict_check', sql`${table.verdict} in ('needs_you', 'fyi', 'ignore')`),
     check('triage_verdict_urgency_check', sql`${table.urgency} in ('normal', 'soon')`),
   ],

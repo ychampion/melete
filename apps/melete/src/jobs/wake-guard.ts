@@ -66,7 +66,12 @@ const PROGRESS_RUN_ENTRIES = [
 /** The notice a person's own start of work leaves, read as its next attempt's cause. */
 export const PERSON_STARTED = 'person_started';
 
-export type AttemptCause = { usageClass: UsageClass; triggerId: string | null };
+export type AttemptCause = {
+  usageClass: UsageClass;
+  triggerId: string | null;
+  /** The situation that woke it, when a situation handed it the wake. */
+  situationId: string | null;
+};
 
 /**
  * Why the attempt about to start on `row` is starting. `afterSeq` is the
@@ -92,6 +97,7 @@ export async function attemptCause(
     decided: boolean;
     started: boolean;
     trigger_id: string | null;
+    situation_id: string | null;
   }>(
     sql`select
       coalesce(bool_or(e.type = 'notice' and e.payload->>'kind' = 'user_message'), false) as said,
@@ -100,7 +106,10 @@ export async function attemptCause(
         where a.id = e.payload->>'approval_id')), false) as decided,
       coalesce(bool_or(e.type = 'notice' and e.payload->>'kind' = ${PERSON_STARTED}), false) as started,
       (array_agg(e.payload->>'trigger_id' order by e.seq desc)
-        filter (where e.type = 'notice' and e.payload->>'kind' = 'trigger_event'))[1] as trigger_id
+        filter (where e.type = 'notice' and e.payload->>'kind' = 'trigger_event'))[1] as trigger_id,
+      (array_agg(e.payload->'event'->>'situation_id' order by e.seq desc)
+        filter (where e.type = 'notice' and e.payload->>'kind' = 'trigger_event'
+          and e.payload->'event' ? 'situation_id'))[1] as situation_id
     from ${event} e where e.job_id = ${row.id} and e.seq > ${afterSeq}`,
   );
   // Picking up the same turn counts only when the interactive attempt before
@@ -125,6 +134,7 @@ export async function attemptCause(
         ? 'interactive'
         : 'background',
     triggerId: inputs?.trigger_id ?? null,
+    situationId: inputs?.situation_id ?? null,
   };
 }
 

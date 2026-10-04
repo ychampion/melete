@@ -90,6 +90,8 @@ export type SpendingScope = {
   tier: UsageTier;
   /** The trigger whose event woke the work that makes the call. */
   triggerId: string | null;
+  /** The situation that woke that work, when one did. */
+  situationId: string | null;
 };
 
 export type SpendingTotals = { usd: number; tokens: number };
@@ -329,19 +331,20 @@ export class SpendingGuard implements GatewaySpending {
     principal: GatewayPrincipal,
     jobId: string | null,
     purpose: string,
-  ): Promise<{ usageClass: UsageClass; triggerId: string | null }> {
+  ): Promise<{ usageClass: UsageClass; triggerId: string | null; situationId: string | null }> {
     const turn = principal.privacy.kind === 'job' || TURN_PURPOSES.has(purpose);
-    if (!turn) return { usageClass: serviceClass(purpose), triggerId: null };
+    if (!turn) return { usageClass: serviceClass(purpose), triggerId: null, situationId: null };
     const [own] = await this
-      .sql`select class, trigger_id from attempt where id = ${principal.attemptId}`;
+      .sql`select class, trigger_id, situation_id from attempt where id = ${principal.attemptId}`;
     const [row] =
       own || !jobId
         ? [own]
-        : await this.sql`select class, trigger_id from attempt where job_id = ${jobId}
+        : await this.sql`select class, trigger_id, situation_id from attempt where job_id = ${jobId}
             order by epoch desc limit 1`;
     return {
       usageClass: row?.class === 'background' ? 'background' : 'interactive',
       triggerId: row?.trigger_id ? String(row.trigger_id) : null,
+      situationId: row?.situation_id ? String(row.situation_id) : null,
     };
   }
 
@@ -611,7 +614,7 @@ export class SpendingGuard implements GatewaySpending {
       await this.sql`insert into model_usage (id, created_at, space_id, principal_id, job_id,
           purpose, provider, model, model_actual, route, routed_from, status,
           input_tokens, output_tokens, cached_input_tokens, cost_usd, usage_estimated,
-          class, tier, trigger_id, charged_input_tokens, cache_write_tokens)
+          class, tier, trigger_id, situation_id, charged_input_tokens, cache_write_tokens)
         values (${randomUUID()}, ${this.now().toISOString()}::timestamptz, ${scope.spaceId}, ${scope.personId}, ${scope.jobId},
           ${scope.purpose}, ${served.provider}, ${served.model}, ${settlement.modelActual},
           ${settlement.route ?? null},
@@ -619,7 +622,7 @@ export class SpendingGuard implements GatewaySpending {
           ${settlement.status}, ${usage?.inputTokens ?? 0}, ${usage?.outputTokens ?? 0},
           ${usage?.cachedInputTokens ?? 0}, ${cost},
           ${settlement.usage === null || settlement.usageEstimated === true},
-          ${scope.usageClass}, ${scope.tier}, ${scope.triggerId},
+          ${scope.usageClass}, ${scope.tier}, ${scope.triggerId}, ${scope.situationId},
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
       if (this.limited) await this.noticeOnce(scope.personId);

@@ -111,7 +111,7 @@ import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { QuestionService } from './jobs/questions.ts';
-import { queueCreatesSchema, startQueue } from './jobs/queue.ts';
+import { QUEUES, queueCreatesSchema, startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
@@ -196,6 +196,8 @@ import {
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
 import { SignalPoller } from './signals/poller.ts';
+import { mountSituations } from './situations/routes.ts';
+import { SituationService } from './situations/service.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -224,6 +226,7 @@ export type AppDeps = {
   limits?: LimitStore;
   jobs?: JobService;
   triggers?: TriggerService;
+  situations?: SituationService;
   approvals?: ApprovalService;
   events?: EventStream;
   submissions?: SubmissionService;
@@ -424,6 +427,12 @@ export function createApp(deps: AppDeps) {
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
+  const noticing =
+    deps.situations ??
+    (deps.jobs && deps.triggers
+      ? new SituationService({ jobs: deps.jobs, triggers: deps.triggers })
+      : undefined);
+  if (noticing) mountSituations(app, noticing);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -436,7 +445,15 @@ export function createApp(deps: AppDeps) {
       : defaultPrivacyRouter());
   // Before the experience routes, which answer every operation they do not implement.
   if (deps.sql)
-    mountNeedsYou(app, deps.triage ?? new TriageService({ sql: deps.sql, classifier: null }));
+    mountNeedsYou(
+      app,
+      deps.triage ??
+        new TriageService({
+          sql: deps.sql,
+          classifier: null,
+          ...(noticing ? { situations: (principalId) => noticing.list(principalId) } : {}),
+        }),
+    );
   if (deps.sql && deps.attachments)
     mountNeedsYouSource(app, {
       sql: deps.sql,
@@ -505,6 +522,17 @@ export function createApp(deps: AppDeps) {
         modelSettings,
         spending: deps.spending,
       }),
+      ...(noticing
+        ? {
+            accepted: (owner, itemId, byPerson) =>
+              noticing.acceptCommitment({
+                spaceId: owner.spaceId,
+                principalId: owner.principalId,
+                itemId,
+                byPerson,
+              }),
+          }
+        : {}),
       ...deps.companies,
     });
   if (deps.db && deps.sql)
@@ -667,6 +695,7 @@ export async function bootstrap(
   let runs: RunService | undefined;
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
+  let situations: SituationService | undefined;
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
@@ -747,6 +776,7 @@ export async function bootstrap(
           companyReplies?.stop(),
           signalPoller?.stop(),
           triage?.stop(),
+          situations?.stop(QUEUES.clockSweep),
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
@@ -1286,6 +1316,11 @@ export async function bootstrap(
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
       if (runs) runs.triggers = triggers;
+      // What Melete notices on its own: the built-in detectors read each
+      // observation as it is delivered, and clocks look again at deadlines.
+      const noticing = new SituationService({ jobs, triggers, detectors: env.MELETE_DETECTORS });
+      situations = noticing;
+      triggers.observers.push((tx, delivery, seq) => noticing.observe(tx, delivery, seq));
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
@@ -1421,37 +1456,49 @@ export async function bootstrap(
           // instance at a time. A connection installed through another
           // instance is opened here when it is first due.
           const sql = handle.sql;
+          const load = async (id: string) => {
+            const [row] = await sql`select id, space_id, provider, secret_ref, configuration
+                from connection where id = ${id} and status = 'active'`;
+            if (!row) return undefined;
+            const factory = connectorFactoryFor(connectors, () =>
+              connectorOptionsFromEnv(sql, env),
+            );
+            const opened = await factory.open({
+              id: String(row.id),
+              spaceId: String(row.space_id),
+              provider: String(row.provider),
+              secretRef: row.secret_ref === null ? null : String(row.secret_ref),
+              configuration: row.configuration as Record<string, unknown> | null,
+            });
+            if (!opened) return undefined;
+            // Opened meanwhile by a request on this instance: keep that one.
+            const present = connectors.get(id);
+            if (present) {
+              await opened.close?.();
+              return present;
+            }
+            factory.register(connectors, id, opened);
+            return opened;
+          };
+          const noticing = situations;
           signalPoller = new SignalPoller({
             sql,
             triggers,
             connectors,
             leads: () => leading(leases, 'signal-poller'),
-            load: async (id) => {
-              const [row] = await sql`select id, space_id, provider, secret_ref, configuration
-                from connection where id = ${id} and status = 'active'`;
-              if (!row) return undefined;
-              const factory = connectorFactoryFor(connectors, () =>
-                connectorOptionsFromEnv(sql, env),
-              );
-              const opened = await factory.open({
-                id: String(row.id),
-                spaceId: String(row.space_id),
-                provider: String(row.provider),
-                secretRef: row.secret_ref === null ? null : String(row.secret_ref),
-                configuration: row.configuration as Record<string, unknown> | null,
-              });
-              if (!opened) return undefined;
-              // Opened meanwhile by a request on this instance: keep that one.
-              const present = connectors.get(id);
-              if (present) {
-                await opened.close?.();
-                return present;
-              }
-              factory.register(connectors, id, opened);
-              return opened;
-            },
+            load,
+            ...(noticing
+              ? {
+                  detectorDemand: () => noticing.demand(),
+                  afterCalendarRead: (id: string) => noticing.afterCalendarRead(id),
+                }
+              : {}),
           });
           await signalPoller.start();
+          if (noticing) {
+            noticing.deps.connectors = connectors;
+            noticing.deps.load = load;
+          }
         }
         // New mail and calendar changes sorted into needs you, for your
         // information, or ignore, by one instance at a time. Sorting only labels.
@@ -1466,6 +1513,8 @@ export async function bootstrap(
             sql: handle.sql,
             classifier: triageClassifier,
             spending,
+            // What Melete noticed on its own is ranked with the sorted items.
+            situations: async (principalId) => (await situations?.list(principalId)) ?? [],
             leads: () => leading(leases, 'triage'),
             intervalSeconds: env.MELETE_TRIAGE_INTERVAL_SECONDS,
             onError: (error) =>
@@ -1476,12 +1525,15 @@ export async function bootstrap(
         }
         // Pushes to people's devices, when this installation has its VAPID keys.
         if (handle) {
-          pushDispatcher = new PushDispatcher(
-            new PushService(handle.db, pushConfig(env)),
-            triggers.jobs.boss,
-          );
+          const push = new PushService(handle.db, pushConfig(env));
+          pushDispatcher = new PushDispatcher(push, triggers.jobs.boss);
           await pushDispatcher.start();
+          // An urgent situation is pushed as soon as it is raised.
+          if (situations && push.enabled)
+            situations.deps.notify = (principalId) => push.dispatch(principalId, new Date());
         }
+        // Clocks are looked at every minute, and in between when one is close.
+        await situations?.start(QUEUES.clockSweep);
       }
       if (options.workers === false) await replies?.recover();
       if (options.workers === false) await operations.recover();
@@ -1530,6 +1582,7 @@ export async function bootstrap(
     db: handle?.db ?? null,
     jobs,
     triggers,
+    situations,
     approvals,
     events,
     submissions,

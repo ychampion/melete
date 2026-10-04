@@ -344,6 +344,7 @@ export class AttemptRunner {
         inputCursor: Number(latest?.seq ?? 0),
         usageClass: cause.usageClass,
         triggerId: cause.triggerId,
+        situationId: cause.situationId,
       });
       await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its

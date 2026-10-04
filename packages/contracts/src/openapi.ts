@@ -287,6 +287,7 @@ import {
   sandboxControlRequest,
   sandboxControlResponse,
 } from './sandbox-computer.ts';
+import { situationList, situationResponse } from './situations.ts';
 import {
   deleteSpaceRequest,
   spaceRemoval,
@@ -1299,6 +1300,7 @@ export function buildOpenApiDocument() {
         { name: 'companies' },
         { name: 'voice' },
         { name: 'push' },
+        { name: 'situations' },
         { name: 'assistants' },
         { name: 'feedback' },
       ],
@@ -1353,6 +1355,35 @@ export function buildOpenApiDocument() {
             summary: 'Change what Melete pushes and how often',
             requestBody: json(pushSettingsUpdate),
             responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+        },
+        '/situations': {
+          get: {
+            tags: ['situations'],
+            summary: 'What Melete noticed that may need this person, still live, newest first',
+            responses: { '200': jsonResponse('Situations', situationList) },
+          },
+        },
+        '/situations/{id}/ack': {
+          post: {
+            tags: ['situations'],
+            summary: 'Say the person saw it; nothing more is pushed about it',
+            requestParams: idParam('id', 'Situation id'),
+            responses: {
+              '200': jsonResponse('Seen', situationResponse),
+              '404': problem('No such situation for this person'),
+            },
+          },
+        },
+        '/situations/{id}/dismiss': {
+          post: {
+            tags: ['situations'],
+            summary: 'Say it was not useful; it is closed',
+            requestParams: idParam('id', 'Situation id'),
+            responses: {
+              '200': jsonResponse('Dismissed', situationResponse),
+              '404': problem('No such situation for this person'),
+            },
           },
         },
         '/episodes': {

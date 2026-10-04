@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { experienceProfile } from '../db/schema.ts';
+import { mcpActorOf } from '../mcp-server/actor.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
@@ -64,6 +65,11 @@ export type CompaniesDeps = {
   now?: () => Date;
   /** Model calls one person's scans may make in a day. Left out, there is no daily limit. */
   dailyCalls?: number;
+  /**
+   * An item was taken up: by the person in Melete, or by an outside assistant
+   * acting for them. Its due date becomes a deadline Melete keeps.
+   */
+  accepted?: (owner: Owner, itemId: string, byPerson: boolean) => Promise<void>;
 };
 
 /**
@@ -296,7 +302,8 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       // already names a job is already being handled, so the job it names is the
       // answer and the playbook is not asked again — the same rule the rest of
       // the product follows about never saying the same thing twice.
-      if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
+      if (found.item.job_id)
+        return { job_id: found.item.job_id, status: 200 as const, owner: found.owner };
       // Which mailbox the message would leave from is the installation's to decide,
       // not the caller's: it is looked up from the space the item was found in.
       const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
@@ -316,8 +323,15 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
         throw error;
       }
       await store.setJob(found.owner, found.item.id, result.job_id);
-      return { job_id: result.job_id, status: 201 as const };
+      return { job_id: result.job_id, status: 201 as const, owner: found.owner };
     });
+    // Taken up, now or again. Only the person themselves, not an assistant
+    // they connected, makes its due date one that may reach them at any hour;
+    // pressing again moves its deadline to the due date the item has now.
+    if (deps.accepted)
+      await deps.accepted(answer.owner, id, !mcpActorOf(c.env)).catch(() => {
+        process.stderr.write('companies: accept_hook_failed\n');
+      });
     return c.json({ job_id: answer.job_id }, answer.status);
   });
 

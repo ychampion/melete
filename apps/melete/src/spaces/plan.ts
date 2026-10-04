@@ -215,6 +215,11 @@ const SPACE_KEYED_OPERATIONAL = [
   // kept about each calendar occurrence. They name connections, which go next.
   'source_cursor',
   'subject_state',
+  // What Melete noticed in the space, the times it keeps to look again, and
+  // which work cares about what. Clocks and situations name connections.
+  'subject_link',
+  'situation',
+  'clock',
   // Incoming messages and calendar changes as they were sorted, and the labels
   // kept for them. They name connections and the space's owner.
   'triage_item',

@@ -210,6 +210,10 @@ export class TriageService {
           continue;
         }
         await this.label(item, row as unknown as Label, 'cache', String(row.model));
+        // The label now lives as long as this newer copy of what it was read from.
+        await sql`update triage_verdict set event_seq = greatest(event_seq, ${item.event_seq})
+          where principal_id = ${item.principal_id} and space_id = ${item.space_id}
+            and subject_key = ${item.subject_key} and content_hash = ${item.content_hash}`;
         result.fromCache++;
       }
       if (!left.length) continue;
@@ -302,15 +306,16 @@ export class TriageService {
   private async remember(item: ItemRow, label: Label, model: string) {
     const now = this.now();
     await this.deps
-      .sql`insert into triage_verdict (principal_id, space_id, connection_id, subject_key,
+      .sql`insert into triage_verdict (principal_id, space_id, connection_id, event_seq, subject_key,
         content_hash, verdict, urgency, sentence, reason, model, expires_at)
-      values (${item.principal_id}, ${item.space_id}, ${item.connection_id}, ${item.subject_key},
+      values (${item.principal_id}, ${item.space_id}, ${item.connection_id}, ${item.event_seq},
+        ${item.subject_key},
         ${item.content_hash},
         ${label.verdict}, ${label.urgency === 'soon' ? 'soon' : 'normal'},
         ${label.sentence || plainSentence(item.kind, item.fields)}, ${label.reason}, ${model},
         ${new Date(now.getTime() + VERDICT_TTL_MS).toISOString()})
       on conflict (principal_id, space_id, subject_key, content_hash) do update
-        set verdict = excluded.verdict, urgency = excluded.urgency, sentence = excluded.sentence,
+        set event_seq = excluded.event_seq, verdict = excluded.verdict, urgency = excluded.urgency, sentence = excluded.sentence,
           reason = excluded.reason, model = excluded.model, expires_at = excluded.expires_at`;
   }
 

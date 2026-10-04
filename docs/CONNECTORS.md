@@ -600,8 +600,9 @@ from Gmail, Outlook, IMAP and calendars, and what each observation carries, is
 in [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md).
 
 The language is deliberately too small to hide a decision in: dotted field paths
-into the observation, at most five clauses, all of which must hold, and six
-operators.
+into the observation, at most five clauses in all, and a handful of operators.
+Every clause in `all` must hold, and when there is an `any` group, at least one
+of its clauses.
 
 | Operator | Holds when |
 |---|---|
@@ -610,9 +611,14 @@ operators.
 | `matches` | the text matches the regular expression; a pattern that does not compile is refused when the watch is made |
 | `lt`, `gt` | both sides are numbers, or both are timestamps |
 | `changed` | the field differs from the last observation this watch looked at |
+| `before`, `after` | the field is a time earlier, or later, than now plus the value in seconds (negative for the past) |
+| `older_than` | the field is a time more than the value in seconds ago |
 
-There is no `or`. Two reasons to wake are two watches, which keeps every wake
-traceable to one predicate a person can read.
+There is one `any` group, of two to five clauses, for a reason such as
+"declined or cancelled". Anything wider is two watches, which keeps every wake
+traceable to one predicate a person can read. A time clause takes a whole
+number of seconds, up to a year; anything else is refused when the watch is
+made.
 
 Everything unclear is false: a missing field, a comparison between things that
 are not comparable, a first sighting under `changed`. A watch that cannot tell

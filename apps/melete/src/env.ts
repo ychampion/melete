@@ -289,6 +289,16 @@ const variables = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Melete's built-in detectors: meetings that move or overlap, deadlines at
+   * risk, messages still waiting on an answer. On by default; `false` turns
+   * them off for the installation, and connected calendars are then read only
+   * when some work listens to them.
+   */
+  MELETE_DETECTORS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')

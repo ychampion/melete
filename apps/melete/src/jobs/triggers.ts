@@ -17,6 +17,7 @@ import {
   type WatchObservation,
   type WatchPredicate,
   waitSpec,
+  watchPredicateProblem,
 } from '@melete/contracts';
 import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
@@ -71,7 +72,9 @@ export function checkTriggerSpec(jobs: Pick<JobService, 'boss'>, spec: TriggerSp
   // A pattern that does not compile would silently never match, which reads
   // to a person as "the watch is broken" long after they set it. Refuse it now.
   if (spec.kind === 'watch') {
-    for (const clause of spec.predicate.all) {
+    const problem = watchPredicateProblem(spec.predicate, 'trigger');
+    if (problem) throw new ServiceError('invalid_predicate', problem, 400);
+    for (const clause of [...spec.predicate.all, ...(spec.predicate.any ?? [])]) {
       if (clause.op !== 'matches') continue;
       try {
         if (typeof clause.value !== 'string') throw new Error('pattern must be text');
@@ -121,6 +124,32 @@ export function checkEventSource(provider: string, eventName: string): void {
     400,
   );
 }
+
+/**
+ * A watch that names one subject (`about.key` equal to a key) links its job to
+ * that subject, so a situation about the subject reaches the job too.
+ */
+export async function linkWatchedSubject(
+  tx: Transaction,
+  jobId: string,
+  spec: TriggerSpec,
+): Promise<void> {
+  if (spec.kind !== 'watch') return;
+  for (const clause of spec.predicate.all) {
+    if (clause.field !== 'about.key' || clause.op !== 'eq' || typeof clause.value !== 'string')
+      continue;
+    await tx.execute(sql`insert into subject_link (subject_key, job_id, space_id, role)
+      select ${clause.value}, j.id, j.space_id, 'watch' from job j where j.id = ${jobId}
+      on conflict (subject_key, job_id) do nothing`);
+  }
+}
+
+/** Runs inside the transaction that delivered an observation, after the waiting work heard it. */
+export type ObservationHook = (
+  tx: Transaction,
+  delivery: EventDelivery,
+  seq: number,
+) => Promise<void>;
 
 type WatchScan = {
   job_id: string;
@@ -311,6 +340,8 @@ export async function createProcessWatch(
 
 export class TriggerService {
   private started = false;
+  /** Called for each new observation, in its delivery's transaction (situations' detectors). */
+  readonly observers: ObservationHook[] = [];
 
   constructor(
     readonly jobs: JobService,
@@ -358,6 +389,7 @@ export class TriggerService {
         .values({ id: newId('trg'), jobId, kind: spec.kind, spec, cursor: String(start?.seq ?? 0) })
         .returning();
       if (!created) throw new Error('trigger insert returned no row');
+      await linkWatchedSubject(tx, jobId, spec);
       await appendEvent(tx, {
         jobId,
         type: 'notice',
@@ -401,7 +433,8 @@ export class TriggerService {
       const observed = jsonObject.safeParse(payload.payload);
       const observation = observed.success ? observed.data : {};
       examined = candidate;
-      if (evaluateWatch(predicate, observation, previous)) {
+      // Time clauses read the clock when the observation is tested.
+      if (evaluateWatch(predicate, observation, previous, { now: Date.now() })) {
         matched = candidate;
         break;
       }
@@ -630,6 +663,16 @@ export class TriggerService {
         const row = await this.jobs.lock(tx, registration.jobId);
         if (row?.spaceId === source.spaceId) await this.registerWait(tx, row);
       }
+      // Each observer in a savepoint of its own: one that fails is undone and
+      // reported, and the delivery, and every wake it made, still commits.
+      for (const observe of this.observers)
+        try {
+          await tx.transaction((inner) => observe(inner, value, received.seq));
+        } catch (error) {
+          process.stderr.write(
+            `triggers: observer_failed ${error instanceof Error ? error.name : 'error'}\n`,
+          );
+        }
       return { seq: received.seq, duplicate: false };
     });
   }

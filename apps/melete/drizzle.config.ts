@@ -28,6 +28,7 @@ export default defineConfig({
     './src/attachments/schema.ts',
     './src/signals/schema.ts',
     './src/triage/schema.ts',
+    './src/situations/schema.ts',
   ],
   out: './drizzle',
   strict: true,
