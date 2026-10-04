@@ -4,11 +4,30 @@
  * agent has a shell and a desktop without anyone installing one.
  */
 import type { SandboxConnectionConfig } from '@melete/contracts';
+import type { DockerEndpoint } from '../runtime/cell-host-local.ts';
+
+/**
+ * How this service reaches the engine: through the cell service when one is
+ * configured (MELETE_CELLS_URL with its key), and otherwise over the socket.
+ */
+export function dockerEndpoint(env: {
+  MELETE_DOCKER_SOCKET: string;
+  MELETE_CELLS_URL?: string | undefined;
+  MELETE_CELLS_KEY?: string | undefined;
+}): DockerEndpoint {
+  if (!env.MELETE_CELLS_URL) return env.MELETE_DOCKER_SOCKET;
+  if (!env.MELETE_CELLS_KEY) throw new Error('MELETE_CELLS_URL needs MELETE_CELLS_KEY');
+  return { url: env.MELETE_CELLS_URL, key: env.MELETE_CELLS_KEY };
+}
+
 import { DOCKER_SANDBOX_DEFAULTS, type DockerSandboxSettings } from './adapters/docker.ts';
 
 export type DockerSandboxEnv = {
   MELETE_RUNTIME_ADAPTER: string;
   MELETE_DOCKER_SOCKET: string;
+  /** Set when the cell service holds the socket; the service then reaches the engine through it. */
+  MELETE_CELLS_URL?: string;
+  MELETE_CELLS_KEY?: string;
   MELETE_SANDBOX_PROVIDER?: 'docker';
   MELETE_SANDBOX_PROJECT?: string;
   MELETE_SANDBOX_DOCKER_IMAGE?: string;
@@ -42,7 +61,7 @@ export function dockerSandboxSettings(
 ): DockerSandboxSettings {
   const selfId = serviceContainerId(env, hostname);
   return {
-    socket: env.MELETE_DOCKER_SOCKET,
+    socket: dockerEndpoint(env),
     project: env.MELETE_SANDBOX_PROJECT ?? '',
     cpus: env.MELETE_SANDBOX_DOCKER_CPUS ?? DOCKER_SANDBOX_DEFAULTS.cpus,
     memoryMb: env.MELETE_SANDBOX_DOCKER_MEMORY_MB ?? DOCKER_SANDBOX_DEFAULTS.memoryMb,

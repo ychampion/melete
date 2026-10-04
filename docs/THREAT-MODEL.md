@@ -6,15 +6,31 @@ of evidence appear throughout: fixture tests, which check a gate against the
 inputs they supply, and the live probes of conformance scenario 6, which check
 the deployed container boundary on a Linux Docker host.
 
-The service container mounts the host Docker socket to supervise attempt
-containers. Socket access is **host-root equivalent**: the service can ask the
-Docker daemon to launch privileged containers and mount host filesystems. Its
-non-root UID and selected socket group do not reduce that authority. The trusted
-supervisor and service therefore sit **inside the host trust boundary**. A
-compromised service can compromise the host; the attempt sandbox does not contain
-that compromise. Runtime attempts never receive the socket. Compose requires an
-explicit `DOCKER_GID` matching its host ownership, and the supervisor's launch
-argument tests check the restrictions applied to each runtime.
+The host Docker socket is **host-root equivalent**: whoever holds it can ask
+the Docker daemon to launch privileged containers and mount host filesystems.
+In a Compose installation one service holds it, `melete-cells`, which has no
+database address and no service key and answers only the `melete` service, on
+a network the two share alone, with a key. The `melete` service, which serves
+the API and holds the credentials, has no socket: it asks `melete-cells` for
+containers, and `melete-cells` starts only fixed profiles (an attempt's
+engine, an agent's computer, a stdio MCP server), each non-root on a read-only
+root with every capability dropped, and refuses any other image, host path,
+volume driver, privilege, device, namespace, network or reserved label, and any
+request to change, start, stop, enter or remove a container it did not start
+(`melete-cells refuses a container outside its profiles`;
+[cells/policy.ts](../apps/melete/src/cells/policy.ts)). Any container can be
+inspected, because the service finds its own id and labels that way; for a
+container no profile owns the answer is its id, name, image, state and labels
+only, without its environment, host settings, mounts or network addresses
+(`an inspection of a container no profile owns keeps only its state and
+labels`). A fault in
+the API therefore reaches containers only in those shapes, not the host.
+`melete-cells` itself sits **inside the host trust boundary**: a compromise of
+it is a compromise of the host. Runtime attempts never receive the socket.
+`bun run compose:check` fails when the API has the socket or another service
+mounts it, Compose requires an explicit `DOCKER_GID` for `melete-cells`, and
+the supervisor's launch argument tests check the restrictions applied to each
+runtime.
 
 ## Attacker 1: hostile content in email or on a web page
 
@@ -382,7 +398,9 @@ rows of a space rather than of a person, so a shared space offers them to its
 owner only. A file whose job row was deleted is scoped by its space alone.
 Accounts share one service process, one database role and one master key;
 isolation between them is an application check, not an operating-system or
-database boundary.
+database boundary. That role is `melete_api`, which cannot read the `secret`
+table of connected accounts' credentials
+([Database roles](DEPLOYMENT.md#database-roles)).
 
 ## Attacker 8: an assistant connected over MCP
 
@@ -941,7 +959,16 @@ the setup owner manages sign-in, and only from the same origin` and `a
 returned address with another state, or another path, finishes nothing`.
 The broker, API and connectors share one trusted service process. It holds the
 master key and decrypts credentials in ordinary process memory at dispatch, so a
-compromise of that process, or of the host, exposes them.
+compromise of that process, or of the host, exposes them. Its database role,
+`melete_api`, cannot read the `secret` table that holds them sealed (`as
+melete_api, SELECT on secret fails`); only the secret store reads it, on a
+second pool as `melete_effects`, and the service refuses to start if its own
+role can (`a service role that can read secrets is refused at start`). A query
+the service runs as its own role, a forgotten clause or an injected one
+included, therefore never returns a row of `secret`. The process holds both
+roles' addresses and the master key, so code running in it reaches both; and
+model provider keys and sign-in tokens, the privacy vault and the relay's
+certificate authority key are sealed in tables its own role can read.
 
 Memory restrictions are checked in Postgres before recall, not merely in a
 filesystem search index. `source and space revocation invalidate delivered

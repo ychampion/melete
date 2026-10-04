@@ -45,14 +45,40 @@ export class DockerError extends Error {
   }
 }
 
-/** Only this trusted service has the socket; no cell receives it or a Docker client. */
+/**
+ * Where the engine is reached: the path of its socket, or the cell service
+ * (`melete-cells`) that holds the socket and accepts only fixed container
+ * profiles, at its address with the key it was given.
+ */
+export type DockerEndpoint = string | { url: string; key: string };
+
+/** One name per endpoint, for keeping one client per engine in a process. */
+export const endpointName = (endpoint: DockerEndpoint): string =>
+  typeof endpoint === 'string' ? endpoint : endpoint.url;
+
+/**
+ * A request to the engine's API at `path` (with its version prefix, or
+ * `/version`), over the socket or through the cell service.
+ */
+export function dockerFetch(
+  endpoint: DockerEndpoint,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  if (typeof endpoint === 'string')
+    return fetch(`http://localhost${path}`, { ...init, unix: endpoint });
+  const headers = new Headers(init.headers);
+  headers.set('authorization', `Bearer ${endpoint.key}`);
+  return fetch(`${endpoint.url.replace(/\/+$/, '')}/docker${path}`, { ...init, headers });
+}
+
+/** Only this trusted service reaches the engine; no cell receives it or a Docker client. */
 export class DockerSocketApi implements DockerApi, DockerVersionSource {
-  constructor(private readonly socket: string) {}
+  constructor(private readonly socket: DockerEndpoint) {}
 
   /** Unversioned, so an engine too old for the API below can still say which one it is. */
   async version(): Promise<unknown> {
-    const response = await fetch('http://localhost/version', {
-      unix: this.socket,
+    const response = await dockerFetch(this.socket, '/version', {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new DockerError(response.status, 'GET', '/version');
@@ -60,8 +86,7 @@ export class DockerSocketApi implements DockerApi, DockerVersionSource {
   }
 
   async request(method: Method, path: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`http://localhost/v${DOCKER_API_VERSION}${path}`, {
-      unix: this.socket,
+    const response = await dockerFetch(this.socket, `/v${DOCKER_API_VERSION}${path}`, {
       method,
       ...(body === undefined
         ? {}

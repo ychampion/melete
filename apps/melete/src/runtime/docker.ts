@@ -21,13 +21,22 @@ import { moveJobScreens } from '../devices/screens.ts';
 import { modelApiMode } from '../gateway/providers.ts';
 import type { InstanceView } from '../ops/instance.ts';
 import type { CellHandle, CellHost } from './cell-host.ts';
-import { type DockerApi, DockerError, DockerSocketApi, LocalCellHost } from './cell-host-local.ts';
+import {
+  type DockerApi,
+  type DockerEndpoint,
+  DockerError,
+  DockerSocketApi,
+  LocalCellHost,
+} from './cell-host-local.ts';
 
 export {
   ATTEMPT_LOG_CONFIG,
   type DockerApi,
+  type DockerEndpoint,
   DockerError,
   DockerSocketApi,
+  dockerFetch,
+  endpointName,
 } from './cell-host-local.ts';
 
 /**
@@ -51,7 +60,8 @@ const SPARE_UNUSABLE_EXIT = 3;
 export type DockerRuntimeOptions = {
   project: string;
   image: string;
-  socket: string;
+  /** The engine's socket, or the cell service that holds it. */
+  socket: DockerEndpoint;
   workRoot: string;
   workVolume: string;
   probeUrl: string;

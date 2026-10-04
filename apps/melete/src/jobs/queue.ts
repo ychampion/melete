@@ -99,11 +99,27 @@ export function queueConnection(connectionString: string): {
 }
 
 /**
- * Start pg-boss against the same connection string the service uses. The
- * schema is created on first start; nothing is scheduled here.
+ * Whether the queue creates its own schema: yes with one database role; no
+ * with separate roles, where the database's setup step creates the schema for
+ * the service's role, which may not create schemas (db/roles.ts).
  */
-export async function startQueue(connectionString: string): Promise<QueueHandle> {
-  const boss = new PgBoss({ ...queueConnection(connectionString), schema: 'pgboss', max: 4 });
+export const queueCreatesSchema = (env: { MELETE_EFFECTS_DATABASE_URL?: string | undefined }) =>
+  !env.MELETE_EFFECTS_DATABASE_URL;
+
+/**
+ * Start pg-boss against the same connection string the service uses. The
+ * tables are created on first start; nothing is scheduled here.
+ */
+export async function startQueue(
+  connectionString: string,
+  { createSchema = true }: { createSchema?: boolean } = {},
+): Promise<QueueHandle> {
+  const boss = new PgBoss({
+    ...queueConnection(connectionString),
+    schema: 'pgboss',
+    max: 4,
+    createSchema,
+  });
   boss.on('error', (error) => process.stderr.write(`pg-boss: ${error.message}\n`));
   try {
     await boss.start();

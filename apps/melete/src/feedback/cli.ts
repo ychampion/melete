@@ -10,6 +10,7 @@
  */
 import { type FeedbackStatus, feedbackStatus } from '@melete/contracts';
 import { openDatabase } from '../db/client.ts';
+import { withFileSettings } from '../env.ts';
 import { reportLine, reportMarkdown } from './markdown.ts';
 import { FeedbackStore } from './service.ts';
 
@@ -31,7 +32,8 @@ async function main(argv: string[]): Promise<void> {
   }
   if (command !== 'list' && command !== 'show' && !command.startsWith('--'))
     fail(`Unknown command "${command}".\n\n${USAGE}`);
-  const url = process.env.DATABASE_URL;
+  // In the service's container the address is a file the database's setup step wrote.
+  const url = withFileSettings(process.env).DATABASE_URL;
   if (!url) fail('Set DATABASE_URL to the database the service uses.');
   const handle = openDatabase(url, 1);
   try {

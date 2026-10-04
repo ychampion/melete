@@ -9,7 +9,14 @@ import {
   DEFAULT_ENGINE_MAX_TURNS,
 } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
-import { brokerUrlForBind, demonstrationWarnings, envSchema, loadEnv, readEnv } from './env.ts';
+import {
+  brokerUrlForBind,
+  demonstrationWarnings,
+  envSchema,
+  FILE_SETTINGS,
+  loadEnv,
+  readEnv,
+} from './env.ts';
 
 const bundle: AttemptBundle = {
   attempt: {
@@ -58,7 +65,7 @@ function composeServiceEnvironment(): Record<string, string> {
   const compose = parse(
     readFileSync(join(import.meta.dir, '../../../deploy/docker-compose.yml'), 'utf8'),
   ) as { services: { melete: { environment: Record<string, string | number | boolean> } } };
-  return Object.fromEntries(
+  const environment: Record<string, string> = Object.fromEntries(
     Object.entries(compose.services.melete.environment).map(([key, value]) => [
       key,
       String(value).replace(/\$\{[A-Z0-9_]+:([-?])([^}]*)\}/g, (_match, kind, fallback) =>
@@ -66,6 +73,18 @@ function composeServiceEnvironment(): Record<string, string> {
       ),
     ]),
   );
+  // What the service reads from the files the setup step and the cell service write.
+  const written: Record<string, string> = {
+    DATABASE_URL: GENERATED_DATABASE_URL,
+    MELETE_EFFECTS_DATABASE_URL: GENERATED_DATABASE_URL,
+    MELETE_CELLS_KEY: 'x'.repeat(64),
+  };
+  for (const name of FILE_SETTINGS)
+    if (`${name}_FILE` in environment) {
+      delete environment[`${name}_FILE`];
+      environment[name] = written[name] ?? '';
+    }
+  return environment;
 }
 
 describe('the model defaults', () => {

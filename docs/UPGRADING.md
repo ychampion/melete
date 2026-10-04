@@ -23,12 +23,22 @@ upgraded in order of their tags; moving to an older tag is a
   running are kept under the previous version's name. With `--browser`, the
   browser worker's image, `<project>-browser:latest`, is kept and tagged the
   same way.
-- **The database schema** is migrated by the service itself. At every boot,
-  before the API listens, the service takes a Postgres advisory lock and applies
-  whatever its migration journal has that the database has not recorded. A
-  second boot, or the slower of two services starting at once, finds nothing to
-  do. Because the API does not listen until this finishes, a health check cannot
-  pass ahead of the migrations.
+- **The database schema** is migrated by the `database-roles` step, which runs
+  before the service at every start. It takes a Postgres advisory lock and
+  applies, as the schema's owner, whatever the migration journal has that the
+  database has not recorded. A second start, or the slower of two starting at
+  once, finds nothing to do. The service starts only after it has finished, and
+  checks that every migration of its release is recorded before the API
+  listens, so a health check cannot pass ahead of the migrations.
+- **The database roles** are set up by the same step: the first start of a
+  release that has them creates `melete_migrate`, `melete_api` and
+  `melete_effects` and hands the existing tables, with their data, to
+  `melete_migrate` ([Database roles](DEPLOYMENT.md#database-roles)).
+  `deploy/.env` gains nothing; the service's addresses are written into the
+  `database-access` volume.
+- **The Docker socket** moves from the `melete` service to `melete-cells`, a
+  new service from the same image ([Isolation and image
+  provenance](DEPLOYMENT.md#isolation-and-image-provenance)).
 
 Migrations only go forward. There is no down migration: returning to the
 previous release means restoring the database backup taken before the upgrade.
@@ -36,6 +46,8 @@ That is why the backup comes first and is never skipped.
 
 The volumes (`spaces`, `artifacts`, `work`, `runtime-home`, `restrictions`) and
 `deploy/.env` are not changed by an upgrade. No step removes a volume.
+`database-access` and `cells-key` are written by the stack itself and hold nothing
+a backup needs.
 
 An installation running the tailnet override also has `tailscale-state`, which
 holds the node's key. Keeping it is optional: nothing you have written is in it,

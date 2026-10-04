@@ -10,6 +10,11 @@
 # postgres service stays off, and the service leaves the private database
 # network, which nothing else joins.
 #
+# database-roles creates the service's roles on that server with DATABASE_URL's
+# user, which must be allowed to create roles (most providers' administrator
+# user is). Where it is not, the administrator creates them and deploy/.env
+# names them (docs/DEPLOYMENT.md, "Database roles"); `melete check` says how.
+#
 # database-client is the stack's own Postgres image with the database's address.
 # On `up` it waits up to a minute for the server to accept connections, and the
 # service starts only once it has; `melete backup`, `deploy` and `doctor` run
@@ -38,6 +43,16 @@ services:
       - -c
       - 'case "$$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="$${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; for attempt in $$(seq 30); do pg_isready --quiet --dbname="$$DATABASE_URL" --timeout=5 && exit 0; sleep 2; done; echo "The database at DATABASE_URL did not accept connections." >&2; exit 1'
 
+  database-roles:
+    environment:
+      NODE_EXTRA_CA_CERTS: ${MELETE_DATABASE_CA_FILE:-}
+    networks: !override [edge]
+    volumes:
+      - ./config:/etc/melete:ro
+    depends_on: !override
+      database-client:
+        condition: service_completed_successfully
+
   melete:
     environment:
       # The provider's own authority, trusted by the service's database clients too.
@@ -47,8 +62,13 @@ services:
         aliases: [melete-api]
         gw_priority: 1
       internal: {}
+      cells: {}
     depends_on: !override
       database-client:
         condition: service_completed_successfully
       runtime-image:
         condition: service_completed_successfully
+      database-roles:
+        condition: service_completed_successfully
+      melete-cells:
+        condition: service_healthy

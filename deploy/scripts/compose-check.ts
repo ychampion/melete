@@ -52,6 +52,7 @@ export type ComposeService = {
   pid?: string;
   ipc?: string;
   entrypoint?: string | string[];
+  command?: string | string[];
   depends_on?: string[] | Record<string, unknown>;
   logging?: ComposeLogging;
 };
@@ -68,6 +69,37 @@ export type CheckResult = {
 };
 
 const RUNTIME = 'runtime';
+/** The only service that holds the Docker socket. */
+export const CELLS = 'melete-cells';
+/** The step that creates the database roles, migrates and writes the service's addresses. */
+export const DATABASE_ROLES = 'database-roles';
+/** Where database-roles leaves the service's two addresses. */
+const ACCESS_VOLUME = 'database-access';
+
+/** The settings melete-cells may be given: none of them is a credential. */
+export const CELLS_SETTINGS = [
+  'MELETE_DOCKER_SOCKET',
+  'MELETE_CELLS_BIND',
+  'MELETE_CELLS_KEY_FILE',
+  'MELETE_COMPOSE_PROJECT',
+  'MELETE_WORK_VOLUME',
+  'MELETE_RUNTIME_IMAGE',
+  'MELETE_SANDBOX_PROJECT',
+  'MELETE_SANDBOX_DOCKER_IMAGE',
+  'MELETE_MCP_NODE_IMAGE',
+  'MELETE_MCP_PYTHON_IMAGE',
+];
+
+type Mount = NonNullable<ComposeService['volumes']>[number];
+const mountSource = (mount: Mount) =>
+  typeof mount === 'string' ? (mount.split(':')[0] ?? '') : (mount.source ?? '');
+const mountTarget = (mount: Mount) =>
+  typeof mount === 'string' ? (mount.split(':')[1] ?? '') : (mount.target ?? '');
+const mountReadOnly = (mount: Mount) =>
+  typeof mount === 'string' ? mount.split(':')[2] === 'ro' : mount.read_only === true;
+/** Whether a mount gives the container the engine's socket, whatever it is called there. */
+export const socketMount = (mount: Mount) =>
+  /docker\.sock/.test(mountSource(mount)) || /docker\.sock/.test(mountTarget(mount));
 
 /** Every sandbox setting the service reads, from its own schema. */
 export const SANDBOX_SETTINGS = Object.keys(envSchema.in.shape).filter(
@@ -169,10 +201,93 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   // check keeps from ever running a job, and the authority check below keeps
   // credential-free. Their build-only image check is restored further down.
   const service = compose.services?.melete;
+  const cells = compose.services?.[CELLS];
   say(
     'the Docker socket group is explicitly required',
-    (service?.group_add ?? []).some((entry) => /^\$\{DOCKER_GID:\?/.test(entry)) === true,
-    'DOCKER_GID must be explicitly set to the host socket group; no root-group default',
+    (cells?.group_add ?? []).some((entry) => /^\$\{DOCKER_GID:\?/.test(entry)) === true,
+    `${CELLS} needs DOCKER_GID explicitly set to the host socket group; no root-group default`,
+  );
+  // The socket is host root. The API holds none: it asks melete-cells, which
+  // accepts only the fixed container profiles (apps/melete/src/cells/policy.ts).
+  const holders = Object.entries(compose.services ?? {})
+    .filter(([, entry]) => (entry.volumes ?? []).some(socketMount))
+    .map(([name]) => name);
+  say(
+    'the API has no Docker socket',
+    service !== undefined &&
+      !(service.volumes ?? []).some(socketMount) &&
+      !('MELETE_DOCKER_SOCKET' in (service.environment ?? {})) &&
+      !(service.group_add ?? []).some((entry) => entry.includes('DOCKER_GID')) &&
+      service.environment?.MELETE_CELLS_URL === `http://${CELLS}:8791` &&
+      typeof service.environment?.MELETE_CELLS_KEY_FILE === 'string',
+    `melete must not mount the socket, name it, or join its group; it reaches the engine at MELETE_CELLS_URL=http://${CELLS}:8791 with MELETE_CELLS_KEY_FILE`,
+  );
+  say(
+    'only the cell service holds the Docker socket',
+    holders.length === 1 && holders[0] === CELLS,
+    `services that mount the socket: ${holders.join(', ') || 'none'}; exactly ${CELLS} must`,
+  );
+  const cellsNetworks = networkNames(cells);
+  const cellsPeers = Object.entries(compose.services ?? {})
+    .filter(([, entry]) => networkNames(entry).includes('cells'))
+    .map(([name]) => name)
+    .sort();
+  const cellsSettings = Object.keys(cells?.environment ?? {});
+  say(
+    'the cell service is reached by the API alone and holds no credential',
+    cells !== undefined &&
+      compose.networks?.cells?.internal === true &&
+      cellsNetworks.length === 1 &&
+      cellsNetworks[0] === 'cells' &&
+      cellsPeers.join(',') === [CELLS, 'melete'].sort().join(',') &&
+      (cells.ports ?? []).length === 0 &&
+      !cells.privileged &&
+      !cells.network_mode &&
+      cells.env_file === undefined &&
+      cellsSettings.every((name) => CELLS_SETTINGS.includes(name)) &&
+      (cells.cap_drop ?? []).includes('ALL') &&
+      (cells.security_opt ?? []).some((o) => o.replace(/\s/g, '') === 'no-new-privileges:true'),
+    `${CELLS} must sit alone with melete on the internal cells network, publish nothing, drop every capability, and take only ${CELLS_SETTINGS.join(', ')} (it has ${cellsSettings.join(', ')})`,
+  );
+  // The API's database role cannot read the secret table; only the setup step has
+  // the operator's address, and the service reads the two addresses it wrote.
+  const roles = compose.services?.[DATABASE_ROLES];
+  const rolesCommand = Array.isArray(roles?.command)
+    ? roles.command.join(' ')
+    : String(roles?.command ?? '');
+  const accessMount = (entry: ComposeService | undefined, readOnly: boolean) =>
+    (entry?.volumes ?? []).some(
+      (mount) =>
+        mountSource(mount) === ACCESS_VOLUME &&
+        mountTarget(mount) === '/data/database-access' &&
+        mountReadOnly(mount) === readOnly,
+    );
+  const dependsOn = (entry: ComposeService | undefined, name: string, condition: string) =>
+    !Array.isArray(entry?.depends_on) &&
+    (entry?.depends_on as Record<string, { condition?: string }> | undefined)?.[name]?.condition ===
+      condition;
+  say(
+    'the database roles are set up before the API starts',
+    roles !== undefined &&
+      rolesCommand.endsWith('apps/melete/src/db/roles-main.ts') &&
+      roles.environment?.MELETE_DATABASE_ACCESS_DIR === '/data/database-access' &&
+      /^\$\{DATABASE_URL:\?/.test(String(roles.environment?.DATABASE_URL ?? '')) &&
+      accessMount(roles, false) &&
+      dependsOn(service, DATABASE_ROLES, 'service_completed_successfully'),
+    `${DATABASE_ROLES} must run apps/melete/src/db/roles-main.ts with DATABASE_URL, write ${ACCESS_VOLUME}, and melete must wait for it to complete`,
+  );
+  const serviceEnvironment = service?.environment ?? {};
+  say(
+    'the API connects as a role that cannot read secrets',
+    service !== undefined &&
+      !('DATABASE_URL' in serviceEnvironment) &&
+      !('POSTGRES_PASSWORD' in serviceEnvironment) &&
+      !('MELETE_MIGRATE_DATABASE_URL' in serviceEnvironment) &&
+      !('MELETE_API_DATABASE_URL' in serviceEnvironment) &&
+      serviceEnvironment.DATABASE_URL_FILE === '/data/database-access/api.url' &&
+      serviceEnvironment.MELETE_EFFECTS_DATABASE_URL_FILE === '/data/database-access/effects.url' &&
+      accessMount(service, true),
+    `melete must read DATABASE_URL_FILE=/data/database-access/api.url and MELETE_EFFECTS_DATABASE_URL_FILE=/data/database-access/effects.url from ${ACCESS_VOLUME}, read-only, and be given neither the operator's DATABASE_URL nor any other role's address`,
   );
   say(
     'the default service supervises attempts itself',
@@ -301,7 +416,7 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'postgres must sit on the separate internal database network and publish no port',
   );
   const peers = Object.entries(compose.services ?? {})
-    .filter(([name, service]) => name !== RUNTIME && networkNames(service).includes('internal'))
+    .filter(([name, entry]) => name !== RUNTIME && networkNames(entry).includes('internal'))
     .map(([name]) => name);
   say(
     "the broker is the runtime network's only peer",
