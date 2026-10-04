@@ -84,6 +84,9 @@ export type CalendarRead = {
  */
 export type Confirmed = Occurrence | 'gone' | 'unknown';
 
+/** A lookup that could not be made this time: the occurrence is kept and asked about again. */
+export type Lookup = Confirmed | 'failed';
+
 /** A calendar that can list the occurrences touching a window. */
 export interface CalendarOccurrences {
   occurrences(window: CalendarWindow): Promise<CalendarRead>;

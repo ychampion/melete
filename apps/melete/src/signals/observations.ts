@@ -20,7 +20,7 @@ import {
 } from '@melete/contracts';
 import { messageSender, messageSenderDomain } from '../companies/replies.ts';
 import { instantMs } from './occurrences.ts';
-import type { CalendarRead, Confirmed, NewMail, Occurrence } from './types.ts';
+import type { CalendarRead, Lookup, NewMail, Occurrence } from './types.ts';
 
 /** What an observation's words are: the account's own record, or text someone else wrote. */
 export type ObservationOrigin = 'verified_connector' | 'external_content';
@@ -113,7 +113,14 @@ type OccurrenceField = (typeof OCCURRENCE_FIELDS)[number];
 export type OccurrenceFields = Pick<
   Occurrence,
   OccurrenceField | 'uid' | 'occurrence' | 'time_zone'
-> & { ref?: string | null };
+> & {
+  ref?: string | null;
+  /** How many lookups of an occurrence the read no longer lists have failed so far. */
+  unconfirmed?: number;
+};
+
+/** How many failed lookups an unlisted occurrence is kept through before it is let go. */
+export const MAX_UNCONFIRMED = 3;
 
 /** The row kept for one occurrence between reads. */
 export type KeptOccurrence = { subject_key: string; version: string; fields: OccurrenceFields };
@@ -157,6 +164,8 @@ export type CalendarDiff = {
   remove: string[];
   /** How far this read saw, for the next read's cursor. */
   window_end: string;
+  /** Something about this read worth telling the person, in plain words. */
+  note?: string;
 };
 
 function readHorizon(read: CalendarRead, window: { to: string }): string {
@@ -215,7 +224,7 @@ export function diffCalendar(input: {
   window: { from: string; to: string };
   now: number;
   /** What a lookup said about each occurrence the read no longer lists; missing means unknown. */
-  confirmed?: ReadonlyMap<string, Confirmed>;
+  confirmed?: ReadonlyMap<string, Lookup>;
 }): CalendarDiff {
   const { connectionId, previous, now } = input;
   const at = new Date(now).toISOString();
@@ -270,7 +279,24 @@ export function diffCalendar(input: {
   const handled = new Set<string>();
   for (const row of vanished({ ...input, seen, horizon })) {
     handled.add(row.subject_key);
-    const answer = input.confirmed?.get(row.subject_key) ?? 'unknown';
+    const { unconfirmed = 0, ...last } = row.fields;
+    const answer = input.confirmed?.get(row.subject_key);
+    // Not looked up this time, or the lookup failed: kept, and asked about
+    // again on the next read. Only a failure counts toward letting it go.
+    if (answer === undefined || answer === 'failed') {
+      const tries = unconfirmed + (answer === 'failed' ? 1 : 0);
+      if (tries >= MAX_UNCONFIRMED) {
+        out.remove.push(row.subject_key);
+        out.note =
+          'A meeting this calendar stopped listing could not be checked with the calendar, so whether it was cancelled is not known.';
+        continue;
+      }
+      if (tries !== unconfirmed) {
+        const fields = { ...last, unconfirmed: tries };
+        out.upsert.push({ subject_key: row.subject_key, version: fieldsVersion(fields), fields });
+      }
+      continue;
+    }
     if (answer === 'gone') {
       out.remove.push(row.subject_key);
       out.observations.push(
@@ -278,8 +304,8 @@ export function diffCalendar(input: {
           connectionId,
           CALENDAR_EVENTS.cancelled,
           row.subject_key,
-          `removed-${row.version}`,
-          row.fields,
+          `removed-${fieldsVersion(last)}`,
+          last,
           at,
           { reason: 'removed' },
         ),
@@ -325,6 +351,9 @@ export function diffCalendar(input: {
     if (instantMs(row.fields.start) >= instantMs(horizon)) continue;
     // Ended, already cancelled, or never news: let it go quietly.
     out.remove.push(key);
+    if (row.fields.unconfirmed)
+      out.note =
+        'A meeting this calendar stopped listing started before the calendar could confirm whether it was cancelled.';
   }
   return out;
 }

@@ -10,7 +10,7 @@ import {
   occurrenceKey,
   vanished,
 } from './observations.ts';
-import type { Confirmed, Occurrence } from './types.ts';
+import type { Confirmed, Lookup, Occurrence } from './types.ts';
 
 const CONNECTION = 'conn_calendar01';
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
@@ -40,7 +40,7 @@ const diff = (input: {
   read: Occurrence[];
   previous?: string | null;
   complete?: boolean;
-  confirmed?: Map<string, Confirmed>;
+  confirmed?: Map<string, Lookup>;
 }) =>
   diffCalendar({
     connectionId: CONNECTION,
@@ -151,9 +151,62 @@ describe('calendar observations', () => {
   });
 
   test('an occurrence nobody can account for leaves quietly', () => {
-    const result = diff({ kept: [kept(occurrence())], read: [] });
+    const key = occurrenceKey(CONNECTION, occurrence());
+    const result = diff({
+      kept: [kept(occurrence())],
+      read: [],
+      confirmed: new Map<string, Lookup>([[key, 'unknown']]),
+    });
     expect(result.observations).toEqual([]);
-    expect(result.remove).toEqual([occurrenceKey(CONNECTION, occurrence())]);
+    expect(result.remove).toEqual([key]);
+  });
+
+  test('an occurrence whose lookup failed is kept and asked about again, and let go after three failures', () => {
+    const key = occurrenceKey(CONNECTION, occurrence());
+    let rows = [kept(occurrence())];
+    for (const tries of [1, 2]) {
+      const result = diff({
+        kept: rows,
+        read: [],
+        confirmed: new Map<string, Lookup>([[key, 'failed']]),
+      });
+      expect(result.observations).toEqual([]);
+      expect(result.remove).toEqual([]);
+      expect(result.upsert.map((entry) => entry.fields.unconfirmed)).toEqual([tries]);
+      rows = result.upsert;
+    }
+    // Past the lookup cap, nothing was asked: kept as it was, no try counted.
+    const skipped = diff({ kept: rows, read: [] });
+    expect([skipped.upsert, skipped.remove, skipped.observations]).toEqual([[], [], []]);
+    // Then the calendar says it is gone: one cancellation, without the count in it.
+    const gone = diff({
+      kept: rows,
+      read: [],
+      confirmed: new Map<string, Lookup>([[key, 'gone']]),
+    });
+    expect(gone.observations.map((item) => [item.event_name, item.payload.reason])).toEqual([
+      ['calendar.event.cancelled', 'removed'],
+    ]);
+    expect(gone.observations[0]?.payload.unconfirmed).toBeUndefined();
+    // Or a third failure: let go, and the person is told why.
+    const third = diff({
+      kept: rows,
+      read: [],
+      confirmed: new Map<string, Lookup>([[key, 'failed']]),
+    });
+    expect([third.observations, third.remove]).toEqual([[], [key]]);
+    expect(third.note).toContain('could not be checked');
+  });
+
+  test('an unconfirmed occurrence whose start has passed is let go, with a reason', () => {
+    const over = occurrence({ start: '2026-10-05T09:00:00.000Z', end: '2026-10-05T10:00:00.000Z' });
+    const row = kept(over);
+    const result = diff({
+      kept: [{ ...row, fields: { ...row.fields, unconfirmed: 1 } }],
+      read: [],
+    });
+    expect([result.observations, result.remove]).toEqual([[], [row.subject_key]]);
+    expect(result.note).toContain('started before');
   });
 
   test('a provider id of any length makes a key of fixed length', () => {

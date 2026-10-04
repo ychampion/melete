@@ -724,6 +724,43 @@ withDb('signals', () => {
     clock += 3_600_000;
   }, 60_000);
 
+  test('a meeting whose lookup fails is asked about again, and its cancellation arrives on the next read', async () => {
+    const { id: calendarId, calendar } = await connectCalendar('Flaky calendar');
+    await listen(calendarId, 'calendar.event.cancelled');
+    const meeting = occurrence(new Date(clock + 2 * 86_400_000).toISOString());
+    calendar.items = [meeting];
+    let lookups = 0;
+    sources.set(calendarId, {
+      signals: {
+        stream: 'calendar',
+        occurrences: async () => ({ items: calendar.items, complete: true }),
+        confirm: async () => {
+          lookups += 1;
+          if (lookups === 1) throw new SourceError(503, null);
+          return 'gone';
+        },
+      },
+    });
+    await poll(); // where watching starts
+    calendar.items = [];
+    await poll(); // the meeting is no longer listed, and the lookup fails
+    expect(lookups).toBe(1);
+    expect(await events(calendarId, 'calendar.event.cancelled')).toHaveLength(0);
+    const [kept] = await required(handle).sql`select fields from subject_state
+      where connection_id = ${calendarId}`;
+    const fields = kept?.fields as { unconfirmed?: number } | undefined;
+    expect(fields?.unconfirmed).toBe(1);
+    await poll(); // asked again: the calendar says it is gone
+    expect(lookups).toBe(2);
+    const cancelled = await events(calendarId, 'calendar.event.cancelled');
+    expect(cancelled.map((item) => [item.reason, item.title, item.unconfirmed])).toEqual([
+      ['removed', 'Design review', undefined],
+    ]);
+    expect(await keptOf(calendarId)).toBe(0);
+    await poll();
+    expect(await events(calendarId, 'calendar.event.cancelled')).toHaveLength(1);
+  }, 60_000);
+
   test('an account read every minute rewrites its cursor only when something about it changes', async () => {
     const { id: calendarId } = await connectCalendar('Steady calendar');
     await listen(calendarId, 'calendar.event.changed');

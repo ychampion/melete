@@ -62,7 +62,7 @@ import {
   vanished,
 } from './observations.ts';
 import { CalendarTooLarge } from './occurrences.ts';
-import type { Confirmed, SignalSource } from './types.ts';
+import type { Lookup, SignalSource } from './types.ts';
 
 export type Stream = SignalSource['stream'];
 
@@ -340,7 +340,7 @@ export class SignalPoller {
         }),
       ]);
       await this.deps.sql`update source_cursor
-        set cursor = ${JSON.stringify(read.cursor)}::jsonb, failures = 0, last_error = null,
+        set cursor = ${JSON.stringify(read.cursor)}::jsonb, failures = 0, last_error = ${read.note ?? null},
           last_ok_at = ${new Date(this.now()).toISOString()}::timestamptz,
           next_poll_at = ${new Date(this.now() + row.interval_s * 1000).toISOString()}::timestamptz
         where connection_id = ${row.connection_id} and stream = ${row.stream}`;
@@ -441,7 +441,7 @@ export class SignalPoller {
     row: CursorRow,
     source: SignalSource,
     context: ReadContext,
-  ): Promise<{ cursor: object; delivered: number }> {
+  ): Promise<{ cursor: object; delivered: number; note?: string | null }> {
     if (source.stream === 'mail') {
       const saved = (row.cursor as { value?: unknown } | null)?.value;
       const read = await source.changes(typeof saved === 'string' ? saved : null, {
@@ -486,8 +486,11 @@ export class SignalPoller {
     const input = { connectionId: row.connection_id, kept, read, previous, window, now };
     // Before anything is said about an occurrence the read no longer lists, it
     // is looked up again: moved out of the window is not cancelled.
-    const confirmed = new Map<string, Confirmed>();
-    for (const entry of vanished(input).slice(0, MAX_CONFIRMS)) {
+    const confirmed = new Map<string, Lookup>();
+    const unlisted = vanished(input);
+    // A calendar that cannot look anything up can never say: nothing is said.
+    if (!source.confirm) for (const entry of unlisted) confirmed.set(entry.subject_key, 'unknown');
+    for (const entry of unlisted.slice(0, MAX_CONFIRMS)) {
       if (!source.confirm) break;
       try {
         confirmed.set(
@@ -499,7 +502,7 @@ export class SignalPoller {
           }),
         );
       } catch {
-        confirmed.set(entry.subject_key, 'unknown');
+        confirmed.set(entry.subject_key, 'failed');
       }
     }
     const diff = diffCalendar({ ...input, confirmed });
@@ -535,7 +538,7 @@ export class SignalPoller {
         await tx`delete from subject_state
           where connection_id = ${row.connection_id} and subject_key in ${tx(diff.remove)}`;
     });
-    return { cursor: { window_end: diff.window_end }, delivered };
+    return { cursor: { window_end: diff.window_end }, delivered, note: diff.note ?? null };
   }
 
   /** Reads on the service's own periodic scheduling, pg-boss, once a minute, when leading. */
