@@ -13,18 +13,20 @@
  * Files arrive with mode 0o644 or 0o755 and nothing else: an executable bit is
  * kept, and set-id, sticky, group- and world-writable bits never cross.
  *
- * A file the sandbox no longer has is deleted here only when this same
- * command's sync-in sent it, it has not changed here since, and the caller
- * says it is Melete's own (`SyncOutOptions.deletions`). Any other is kept,
- * goes back on the next sync-in, and the report says which and why, so a
- * command is never told it deleted something that then comes back.
+ * A file the sandbox no longer has is moved to the job's trash here only when
+ * this same command's sync-in sent it, the caller says it is Melete's own
+ * (`SyncOutOptions.deletions`), and, checked in the trash, it is still what
+ * was sent. Any other is kept, goes back on the next sync-in, and the report
+ * says which and why, so a command is never told it deleted something that
+ * then comes back. What went to the trash can be restored (files-trash.ts).
  */
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, readdir, rmdir, unlink } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { recordId } from '../broker/records.ts';
 import { type HeldDirectory, holdBeneath, holdWithin, openIn } from '../connectors/files.ts';
+import { DEFAULT_TRASH_DAYS, moveToTrash } from '../connectors/files-trash.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import {
   LocalWorkspaceFs,
@@ -56,10 +58,13 @@ export type SyncInReport = SyncReport & {
   sent: Map<string, SentFile>;
 };
 export type SyncOutReport = SyncReport & {
-  /** Files the command deleted that are deleted here too. */
+  /** Files the command deleted that went to the trash here too. */
   deleted: string[];
   /** Files the command deleted that are kept here, and go back on the next sync-in. */
   kept: { path: string; reason: string }[];
+  /** The trash they went to, restorable until `restorable_until`; null when none went. */
+  trash_id: string | null;
+  restorable_until: string | null;
 };
 
 type WorkspaceLimits = { maxFiles: number; maxTotalBytes: number; maxFileBytes: number };
@@ -240,6 +245,8 @@ export type SyncOutOptions = SyncOptions & {
   deletions?: {
     sent: ReadonlyMap<string, SentFile>;
     keep: (relative: string) => string | null;
+    /** How many days the trash keeps them (`MELETE_TRASH_DAYS`). */
+    trashDays?: number;
   };
 };
 
@@ -348,91 +355,53 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const lost = [...(options.deletions?.sent.keys() ?? [])]
     .filter((relative) => !listed.has(relative))
     .sort();
-  const { deleted, kept } = options.deletions
+  const outcome = options.deletions
     ? await deleteLost(options, lost, new Set(directories.map((segments) => segments.join('/'))))
-    : { deleted: [], kept: [] };
-  return { files: fetched.length, directories: directories.length, bytes, deleted, kept };
+    : { deleted: [], kept: [], trash_id: null, restorable_until: null };
+  return { files: fetched.length, directories: directories.length, bytes, ...outcome };
 }
 
 /**
- * Delete here the files the command deleted in the sandbox, where the rules
- * allow, and then each folder that held one, if the sandbox no longer has it
- * and nothing else is in it. Every open goes through held folders.
+ * Move to the job's trash the files the command deleted in the sandbox, where
+ * the rules allow, and then each folder that held one, if the sandbox no
+ * longer has it and nothing else is left in it.
  */
 async function deleteLost(
   options: SyncOutOptions,
   lost: string[],
   sandboxFolders: Set<string>,
-): Promise<Pick<SyncOutReport, 'deleted' | 'kept'>> {
+): Promise<Pick<SyncOutReport, 'deleted' | 'kept' | 'trash_id' | 'restorable_until'>> {
   const deletions = options.deletions;
-  const deleted: string[] = [];
   const kept: { path: string; reason: string }[] = [];
-  if (!deletions || !lost.length) return { deleted, kept };
-  const folders = await new LocalWorkspaceFs(options.workRoot).folders(options.jobId);
-  try {
-    for (const relative of lost) {
-      const reason = deletions.keep(relative);
-      if (reason) {
-        kept.push({ path: relative, reason });
-        continue;
-      }
-      const segments = portable(relative);
-      const name = segments.at(-1) as string;
-      const sent = deletions.sent.get(relative);
-      try {
-        const folder = await folders.at(segments.slice(0, -1));
-        const handle = await openIn(folder, name, constants.O_RDONLY);
-        let same = false;
-        try {
-          const stat = await handle.stat();
-          same =
-            stat.isFile() &&
-            stat.size === sent?.size &&
-            digest(await handle.readFile()) === sent.hash;
-        } finally {
-          await handle.close();
-        }
-        if (!same) {
-          kept.push({
-            path: relative,
-            reason: 'it changed in the workspace while the command ran',
-          });
-          continue;
-        }
-        await unlink(folder.at(name));
-        deleted.push(relative);
-      } catch (error) {
-        // Gone here already: nothing to delete and nothing to put back.
-        if ((error as { code?: string }).code === 'ENOENT') continue;
-        kept.push({
-          path: relative,
-          reason: `it could not be deleted (${(error as Error).message})`,
-        });
-      }
-    }
-    const emptied = new Set<string>();
-    for (const relative of deleted) {
-      const segments = portable(relative);
-      for (let depth = segments.length - 1; depth > 0; depth -= 1) {
-        const folder = segments.slice(0, depth).join('/');
-        if (!sandboxFolders.has(folder)) emptied.add(folder);
-      }
-    }
-    const deepestFirst = [...emptied].sort(
-      (a, b) => b.split('/').length - a.split('/').length || (a < b ? -1 : 1),
-    );
-    for (const relative of deepestFirst) {
-      const segments = portable(relative);
-      try {
-        const parent = await folders.at(segments.slice(0, -1));
-        // Removes only an empty folder; one with anything left in it stays.
-        await rmdir(parent.at(segments.at(-1) as string));
-      } catch {
-        // Not empty, or gone already.
-      }
-    }
-  } finally {
-    await folders.close();
+  const none = { deleted: [], kept, trash_id: null, restorable_until: null };
+  if (!deletions || !lost.length) return none;
+  const entries: { path: string; hash: string }[] = [];
+  for (const relative of lost) {
+    const reason = deletions.keep(relative);
+    const sent = deletions.sent.get(relative);
+    if (reason || !sent) kept.push({ path: relative, reason: reason ?? 'it was not sent' });
+    else entries.push({ path: portable(relative).join('/'), hash: sent.hash });
   }
-  return { deleted, kept };
+  if (!entries.length) return none;
+  const folders = new Set<string>();
+  for (const entry of entries) {
+    const segments = entry.path.split('/');
+    for (let depth = segments.length - 1; depth > 0; depth -= 1) {
+      const folder = segments.slice(0, depth).join('/');
+      if (!sandboxFolders.has(folder)) folders.add(folder);
+    }
+  }
+  const trashed = await moveToTrash(
+    await new LocalWorkspaceFs(options.workRoot).trash(options.jobId),
+    entries,
+    { days: deletions.trashDays ?? DEFAULT_TRASH_DAYS, folders: [...folders] },
+  );
+  // A folder that still holds a kept file is not news; a file kept is.
+  kept.push(...trashed.kept.filter((entry) => !folders.has(entry.path)));
+  return {
+    deleted: trashed.moved,
+    kept,
+    trash_id: trashed.trash_id,
+    restorable_until: trashed.trash_id ? trashed.restorable_until : null,
+  };
 }

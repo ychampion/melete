@@ -26,6 +26,7 @@ import {
   ARTIFACT_MIME,
   type ArtifactExpectation,
   type ConnectorManifest,
+  type DispatchResult,
   EXEC_LIMITS,
   type ExecEnvName,
   type JsonValue,
@@ -64,7 +65,7 @@ import {
   syncIn,
   syncOut,
 } from '../sandbox/workspace.ts';
-import { loadFileRecords, personGivenReason } from './files-ownership.ts';
+import { type FileRecords, loadFileRecords, personGivenReason } from './files-ownership.ts';
 import {
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOLS,
@@ -84,9 +85,11 @@ import type { Connector, ConnectorContext } from './types.ts';
 const NAMED_PATHS = 50;
 
 /**
- * What a command did to the workspace that the agent must hear: files it
- * deleted that are gone, files it deleted that were put back and why, or a
- * read-back that failed. Said on the command's receipt, never left silent.
+ * What a command did to the workspace that the agent and the person must
+ * hear: how many files it deleted (now in the trash, with how to put them
+ * back), which it deleted that were put back and why, or a read-back that
+ * failed. Said on the command's receipt, or in its reason when it failed,
+ * never left silent.
  */
 export function workspaceNote(report: SyncOutReport | Error): Record<string, JsonValue> {
   if (report instanceof Error)
@@ -94,20 +97,79 @@ export function workspaceNote(report: SyncOutReport | Error): Record<string, Jso
       workspace_note: `What the command changed in /work was not read back into the workspace (${report.message}). Check before relying on it.`,
     };
   const note: Record<string, JsonValue> = {};
-  if (report.deleted.length) note.workspace_deleted = report.deleted.slice(0, NAMED_PATHS);
+  const sentences: string[] = [];
+  if (report.deleted.length) {
+    note.workspace_deleted_count = report.deleted.length;
+    note.workspace_deleted = report.deleted.slice(0, NAMED_PATHS);
+    if (report.trash_id) {
+      note.workspace_trash = report.trash_id;
+      if (report.restorable_until) note.workspace_restorable_until = report.restorable_until;
+    }
+    const count = report.deleted.length === 1 ? 'a file' : `${report.deleted.length} files`;
+    sentences.push(
+      `The command deleted ${count} from the workspace${report.deleted.length > NAMED_PATHS ? ` (the first ${NAMED_PATHS} are listed)` : ''}. ${report.deleted.length === 1 ? 'It is' : 'They are'} in the trash${report.restorable_until ? ` until ${report.restorable_until.slice(0, 10)}` : ''}; files.restore with trash_id ${report.trash_id} puts ${report.deleted.length === 1 ? 'it' : 'them all'} back.`,
+    );
+  }
   if (report.kept.length) {
+    note.workspace_restored_count = report.kept.length;
     note.workspace_restored = report.kept
       .slice(0, NAMED_PATHS)
       .map((entry) => ({ path: entry.path, reason: entry.reason }));
     const count = report.kept.length === 1 ? 'a file' : `${report.kept.length} files`;
-    note.workspace_note = `The command deleted ${count} that will be back in /work on your next command: ${report.kept
-      .slice(0, 3)
-      .map((entry) => entry.reason)
-      .join(
-        '; ',
-      )}${report.kept.length > 3 ? '; ...' : ''}. A command cannot delete the person's files; use files.delete, which asks them.`;
+    sentences.push(
+      `The command deleted ${count} that will be back in /work on your next command: ${report.kept
+        .slice(0, 3)
+        .map((entry) => entry.reason)
+        .join(
+          '; ',
+        )}${report.kept.length > 3 ? '; ...' : ''}. To delete ${report.kept.length === 1 ? 'it' : 'them'}, use files.delete, which asks the person where it has to.`,
+    );
   }
+  if (sentences.length) note.workspace_note = sentences.join(' ');
   return note;
+}
+
+/** Melete's own records in a workspace: stored command output, process output, screenshots. */
+const SERVICE_RECORDS = /^\.melete(?:\/|$)/;
+
+/**
+ * Why a file a command deleted is kept rather than moved to the trash, or
+ * null when it may go: never Melete's own records, nothing while a process
+ * another conversation started is still running on the computer (it, not
+ * this command, may be what removed the file), and never a file the person
+ * gave.
+ */
+export function deleteRule(input: {
+  records: FileRecords | null;
+  othersRunning: boolean;
+}): (relative: string) => string | null {
+  return (relative) => {
+    if (SERVICE_RECORDS.test(relative))
+      return `${JSON.stringify(relative)} is one of Melete's own records`;
+    if (input.othersRunning)
+      return 'a background process another conversation started is still running on this computer, so its deletes are not applied';
+    if (!input.records) return `Melete could not check whose ${JSON.stringify(relative)} is`;
+    return personGivenReason(input.records, relative);
+  };
+}
+
+/**
+ * The outcome with what the read-back found: on the receipt when the command
+ * ran, and in the reason when it never started and has no receipt.
+ */
+export function withWorkspaceNote<T extends DispatchResult>(
+  outcome: T,
+  note: Record<string, JsonValue>,
+): T {
+  if (!Object.keys(note).length) return outcome;
+  if (outcome.outcome === 'succeeded')
+    return {
+      ...outcome,
+      receipt: { ...outcome.receipt, detail: { ...outcome.receipt.detail, ...note } },
+    };
+  if (outcome.outcome === 'failed')
+    return { ...outcome, reason: `${outcome.reason}. ${String(note.workspace_note ?? '')}` };
+  return outcome;
 }
 
 export type SandboxExecOptions = {
@@ -139,6 +201,8 @@ export type SandboxExecOptions = {
   workspaceWaitMs?: number;
   /** Background processes in the agent's computer; without it the process tools refuse. */
   processes?: SandboxProcesses;
+  /** How many days what a command deletes stays in the trash (`MELETE_TRASH_DAYS`). */
+  trashDays?: number;
 };
 
 /**
@@ -879,11 +943,18 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       await sessions.renew(session.id).catch(() => {});
       // The workspace is read back after every command, so a file that lives
       // only in the sandbox at completion is a wrong answer, not a slow one.
-      // A file the command deleted is deleted here too when it is Melete's
-      // own; one the person gave is kept and comes back, and the receipt says
-      // so either way.
+      // A file the command deleted goes to the trash here too when it is
+      // Melete's own; one the person gave is kept and comes back, and the
+      // receipt says so either way. Only names this command's own sync-in
+      // sent can go, and none while a process another conversation started
+      // is still running in this computer: that process, not this command,
+      // may be what removed them.
       if (result.outcome === 'unknown') return outcome;
       const records = await loadFileRecords(sql, ctx.job_id).catch(() => null);
+      const [foreign] = await sql`select count(*)::int as live from sandbox_process
+        where session_id = ${session.id} and state in ('starting', 'running')
+          and job_id is distinct from ${ctx.job_id}`.catch(() => [{ live: 1 }]);
+      const othersRunning = Number(foreign?.live ?? 0) > 0;
       const report = await syncOut({
         provider,
         handle: sessionHandle(session),
@@ -894,20 +965,13 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           ? {
               deletions: {
                 sent,
-                keep: (relative: string) =>
-                  records
-                    ? personGivenReason(records, relative)
-                    : `Melete could not check whose ${JSON.stringify(relative)} is`,
+                trashDays: options.trashDays,
+                keep: deleteRule({ records, othersRunning }),
               },
             }
           : {}),
       }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
-      const note = workspaceNote(report);
-      if (outcome.outcome !== 'succeeded' || !Object.keys(note).length) return outcome;
-      return {
-        ...outcome,
-        receipt: { ...outcome.receipt, detail: { ...outcome.receipt.detail, ...note } },
-      };
+      return withWorkspaceNote(outcome, workspaceNote(report));
     },
 
     verify,

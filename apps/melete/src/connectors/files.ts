@@ -34,7 +34,15 @@ import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import { noLinks, segmentsFor } from '../paths.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ConnectorFaultError } from './faults.ts';
-import { loadFileRecords, personGivenReason } from './files-ownership.ts';
+import { beneath, loadFileRecords, personGivenReason } from './files-ownership.ts';
+import {
+  DEFAULT_TRASH_DAYS,
+  filesTrash,
+  hasTrash,
+  moveToTrash,
+  restoreFromTrash,
+  type TrashPlace,
+} from './files-trash.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
 
@@ -43,6 +51,8 @@ type FilesOptions = {
   workRoot: string;
   spacesRoot: string;
   maxBytes?: number;
+  /** How many days a delete stays in the trash, restorable (`MELETE_TRASH_DAYS`). */
+  trashDays?: number;
   /** Where saved files are recorded, so other conversations' files can be found. */
   sql?: Sql;
   /**
@@ -598,7 +608,7 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.delete',
       description:
-        "Delete a file or folder. What you made in this conversation goes at once; the person's own files (in their Files, or ones they gave you) ask them first. A command on your computer cannot delete the person's files.",
+        "Delete a file or folder into the trash, restorable for days with files.restore. What you made in this conversation goes at once; the person's own files (in their Files, or ones they gave you) ask them first.",
       input_schema: inputSchema(
         {
           path: pathSchema,
@@ -609,6 +619,19 @@ export const filesManifest: ConnectorManifest = {
       ),
       effect_class: 'write_reversible',
       required_scopes: ['files.delete'],
+      verify: true,
+      requires_approval: false,
+    },
+    {
+      name: 'files.restore',
+      description:
+        'Restore what one delete put in the trash, by the trash_id on its receipt: every file goes back to its own path, never over a file that took the path since.',
+      input_schema: inputSchema(
+        { trash_id: { type: 'string', pattern: '^del_[0-9]{13}_[0-9a-f]{12}$' } },
+        ['trash_id'],
+      ),
+      effect_class: 'write_reversible',
+      required_scopes: ['files.restore'],
       verify: true,
       requires_approval: false,
     },
@@ -637,7 +660,7 @@ export const filesManifest: ConnectorManifest = {
  * the system will not make one (another owner's file, another filesystem),
  * the name is checked and the file renamed.
  */
-async function moveWithoutReplacing(from: string, to: string): Promise<void> {
+export async function moveWithoutReplacing(from: string, to: string): Promise<void> {
   try {
     await link(from, to);
   } catch (error) {
@@ -677,6 +700,8 @@ async function readableToAgent(directory: HeldDirectory, name: string): Promise<
 /** A file of a job: the trusted root, the names under it, and the path they make. */
 type Located = { base: string; segments: string[]; target: string };
 
+/** How many names a delete's card and receipt list; the count says the rest. */
+const NAMED = 20;
 /** The most entries one `files.delete` takes: a bigger folder is deleted in parts. */
 export const DELETE_ENTRIES = 2000;
 /** Files up to this size are named by their content in a delete's check; larger ones by size and time. */
@@ -691,6 +716,10 @@ export type DeleteTarget = {
   state: string;
   /** For a file, its content hash (null when it is too large to read for this). */
   content_hash: string | null;
+  /** Each entry it takes, relative to it ('' for a file itself), with its content hash where read. */
+  items: { path: string; hash: string | null }[];
+  /** Each folder inside it, relative to it, deepest last. */
+  folders: string[];
 };
 
 /** One file's part of a delete's state, read through a held directory without following a link. */
@@ -722,10 +751,14 @@ async function inspectEntry(directory: HeldDirectory, name: string): Promise<Del
       bytes: state.size,
       state: digest(`file\0${state.size}\0${state.line}`),
       content_hash: state.hash,
+      items: [{ path: '', hash: state.hash }],
+      folders: [],
     };
   }
   if (!stat.isDirectory()) throw new Error('only a file or a folder can be deleted');
   const lines: string[] = [];
+  const items: DeleteTarget['items'] = [];
+  const folders: string[] = [];
   let files = 0;
   let bytes = 0;
   const visit = async (held: HeldDirectory, prefix: string) => {
@@ -740,6 +773,7 @@ async function inspectEntry(directory: HeldDirectory, name: string): Promise<Del
       const found = await lstat(held.at(entry));
       if (found.isDirectory() && !found.isSymbolicLink()) {
         lines.push(`${relative}/`);
+        folders.push(relative);
         const inner = await holdWithin(held, entry);
         try {
           await visit(inner, `${relative}/`);
@@ -751,7 +785,11 @@ async function inspectEntry(directory: HeldDirectory, name: string): Promise<Del
         files += 1;
         bytes += state.size;
         lines.push(`${relative}\0${state.size}\0${state.line}`);
-      } else lines.push(`${relative}\0other`);
+        items.push({ path: relative, hash: state.hash });
+      } else {
+        lines.push(`${relative}\0other`);
+        items.push({ path: relative, hash: null });
+      }
     }
   };
   const folder = await holdWithin(directory, name);
@@ -766,6 +804,8 @@ async function inspectEntry(directory: HeldDirectory, name: string): Promise<Del
     bytes,
     state: digest(`folder\0${lines.join('\n')}`),
     content_hash: null,
+    items,
+    folders,
   };
 }
 
@@ -1148,6 +1188,32 @@ export function createFilesConnector(options: FilesOptions): Connector {
     }
   };
 
+  const trashDays = options.trashDays ?? DEFAULT_TRASH_DAYS;
+  /** Where an area's trash is, for one job. */
+  const trashPlace = async (area: Area, ctx: ConnectorContext, jobId = ctx.job_id) =>
+    area === 'work'
+      ? workspace.trash(jobId)
+      : filesTrash(await realpath(options.spacesRoot), ctx.space_id, jobId);
+  /**
+   * The trash a restore reaches: this job's own, and, for an undo the person
+   * asked for from a receipt, the conversation the receipt came from.
+   */
+  const restorePlaces = async (ctx: ConnectorContext): Promise<TrashPlace[]> => {
+    // Job ids to look in, not a path: each place comes from `trashPlace`.
+    const jobs: string[] = [];
+    jobs.push(ctx.job_id);
+    if (options.sql) {
+      const [row] =
+        await options.sql`select experience_parent_id from job where id = ${ctx.job_id}`;
+      if (row?.experience_parent_id) jobs.push(String(row.experience_parent_id));
+    }
+    const places: TrashPlace[] = [];
+    for (const job of jobs)
+      for (const area of ['work', 'artifacts'] as const)
+        places.push(await trashPlace(area, ctx, job));
+    return places;
+  };
+
   /**
    * What a delete would take and whose it is, checked before anyone is asked
    * and bound into the payload: the card shows it, `asksFirst` reads it, and
@@ -1165,6 +1231,10 @@ export function createFilesConnector(options: FilesOptions): Connector {
       throw new Error(`a whole area cannot be deleted; name a file or folder in ${area}`);
     if (area === 'artifacts' && segments[0] === FROM_CHATS)
       throw new Error('a file saved in another conversation is deleted from that conversation');
+    if (area === 'work' && segments[0] === '.melete')
+      throw new Error(
+        "Melete's own records (stored command output and screenshots) are not deleted this way",
+      );
     const located = await resolveFile(ctx, area, relative);
     const name = path.basename(located.target);
     let target: DeleteTarget;
@@ -1184,8 +1254,10 @@ export function createFilesConnector(options: FilesOptions): Connector {
     const joined = segments.join('/');
     let owner: 'agent' | 'person';
     let reason: string;
+    let givenCount = 0;
     if (area === 'work') {
       const given = records ? personGivenReason(records, joined) : null;
+      givenCount = records ? beneath(records.personInWork, joined).length : 0;
       owner = given ? 'person' : 'agent';
       reason = given ? `${given}.` : "It is in this conversation's own workspace.";
     } else {
@@ -1199,11 +1271,15 @@ export function createFilesConnector(options: FilesOptions): Connector {
         : "It is in the person's Files.";
     }
     const shown = `“${segments.at(-1)}”`;
-    const where = area === 'artifacts' ? ' from your Files' : ', which you gave Melete';
-    const warning =
+    const files = target.files === 1 ? 'its file' : `its ${target.files} files`;
+    const what =
       target.what === 'file'
-        ? `This permanently deletes ${shown}${where}. It cannot be undone.`
-        : `This permanently deletes the folder ${shown}${where}, with the ${target.files === 1 ? 'file' : `${target.files} files`} in it. It cannot be undone.`;
+        ? `${shown}${area === 'artifacts' ? ' from your Files' : ', which you gave Melete'}`
+        : area === 'artifacts'
+          ? `the folder ${shown} from your Files, with ${files}`
+          : `the folder ${shown} with ${files}, ${givenCount === 1 ? 'one of which' : `${givenCount} of which`} you gave Melete`;
+    const warning = `This deletes ${what}. It can be restored from the trash for ${trashDays} days.`;
+    const names = target.items.map((item) => item.path).filter(Boolean);
     return {
       owner,
       what: target.what,
@@ -1211,6 +1287,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
       bytes: target.bytes,
       state: target.state,
       ...(target.content_hash ? { content_hash: target.content_hash } : {}),
+      ...(target.what === 'folder' ? { names: names.slice(0, NAMED) } : {}),
       reason,
       ...(owner === 'person' ? { warning } : {}),
     };
@@ -1333,25 +1410,63 @@ export function createFilesConnector(options: FilesOptions): Connector {
         let gone: DeleteTarget;
         try {
           gone = await inspectEntry(directory, name).catch(absent);
-          // What the person agreed to, or what was found to be Melete's own,
-          // is what goes; anything else there now is asked about again.
-          if (gone.state !== checked.state)
-            throw new Error(
-              `${JSON.stringify(relative)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now`,
-            );
-          await removeIn(directory, name);
         } finally {
           await directory.close();
         }
-        hash = gone.state;
+        // What the person agreed to, or what was found to be Melete's own, is
+        // what goes; anything else there now is asked about again.
+        if (gone.state !== checked.state)
+          throw new Error(
+            `${JSON.stringify(relative)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now`,
+          );
+        // Only the entries listed in that check go, each checked again in the
+        // trash; one added since stays, with its folder.
+        const top = segmentsFor(relative).join('/');
+        const under = (inner: string) => (inner ? `${top}/${inner}` : top);
+        const trashed = await moveToTrash(
+          await trashPlace(area, ctx),
+          gone.items.map((item) => ({ path: under(item.path), hash: item.hash })),
+          {
+            days: trashDays,
+            folders: gone.what === 'folder' ? [top, ...gone.folders.map(under)] : [],
+          },
+        );
+        hash = trashed.trash_id ?? gone.state;
         detail = {
           path: relative,
           area,
           deleted: gone.what,
-          files: gone.files,
+          deleted_count: trashed.moved.length,
+          deleted_names: trashed.moved.slice(0, NAMED),
           bytes: gone.bytes,
           owner: checked.owner === 'agent' ? 'agent' : 'person',
           ...(gone.content_hash ? { content_hash: gone.content_hash } : {}),
+          ...(trashed.kept.length ? { kept: trashed.kept.slice(0, NAMED) } : {}),
+          ...(trashed.trash_id
+            ? {
+                trash_id: trashed.trash_id,
+                restorable_until: trashed.restorable_until,
+                note: `In the trash until ${trashed.restorable_until.slice(0, 10)}; files.restore with trash_id ${trashed.trash_id} puts it all back.`,
+              }
+            : {}),
+        };
+      } else if (action.kind === 'files.restore') {
+        const id = requiredString(payload, 'trash_id');
+        let place: TrashPlace | null = null;
+        for (const candidate of await restorePlaces(ctx))
+          if (await hasTrash(candidate, id)) {
+            place = candidate;
+            break;
+          }
+        if (!place) throw new Error(`there is nothing in the trash under ${JSON.stringify(id)}`);
+        const back = await restoreFromTrash(place, id);
+        hash = id;
+        detail = {
+          trash_id: id,
+          area: place.area,
+          restored_count: back.restored.length,
+          restored_names: back.restored.slice(0, NAMED),
+          ...(back.kept.length ? { kept: back.kept.slice(0, NAMED) } : {}),
         };
       } else if (action.kind === 'files.move') {
         const from = requiredString(payload, 'from');
@@ -1486,6 +1601,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           // that appeared since is theirs, and is not replaced unasked. An
           // approval or a standing permission to save files covers replacing.
           const onlyNew = area === 'artifacts' && ctx.only_new === true;
+          let madeNow = false;
           const directory = await holdBeneath(base, segments.slice(0, -1), true);
           try {
             const name = path.basename(target);
@@ -1507,6 +1623,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
                 "the person's Files already have a file with that name; saving over it needs the person to approve",
               );
             });
+            madeNow = file !== null && onlyNew;
             if (file)
               try {
                 await openedAt(file, target);
@@ -1535,7 +1652,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             content_hash: hash,
             bytes: Buffer.byteLength(content),
             // Made new in the person's Files: Melete's own until it changes (files-ownership.ts).
-            ...(onlyNew ? { created: true } : {}),
+            ...(madeNow ? { created: true } : {}),
           };
           // A declared write is an artifact, and an artifact is checked here,
           // by trusted service code over the bytes that were actually written,
@@ -1571,6 +1688,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
       const payload = action.canonical_payload;
       if (action.kind === 'files.save_attachment') return verifySaved(action, ctx);
       if (action.kind === 'files.delete') return verifyDeleted(action, ctx);
+      if (action.kind === 'files.restore') {
+        const id = requiredString(payload, 'trash_id');
+        for (const place of await restorePlaces(ctx))
+          if (await hasTrash(place, id))
+            return { decision: 'undecided', reason: 'some of it is still in the trash' };
+        const evidence = { trash_id: id, restored: true };
+        return { decision: 'succeeded', evidence, receipt: receiptFor(action, evidence, id) };
+      }
       if (action.kind !== 'files.write' && action.kind !== 'files.move') {
         return { decision: 'unsupported', reason: 'file reads have no effect to verify' };
       }

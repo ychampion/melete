@@ -357,6 +357,9 @@ function deleteFacts(payload: Record<string, unknown>) {
   const checked = object(payload.checked);
   const files = typeof checked.files === 'number' ? checked.files : null;
   const bytes = typeof checked.bytes === 'number' ? checked.bytes : null;
+  const names = Array.isArray(checked.names)
+    ? checked.names.filter((name): name is string => typeof name === 'string')
+    : [];
   return [
     ...(typeof payload.path === 'string'
       ? [
@@ -370,8 +373,22 @@ function deleteFacts(payload: Record<string, unknown>) {
       ? [{ label: 'Files in it', value: String(files) }]
       : []),
     ...(bytes !== null ? [{ label: 'Size', value: appBytes(bytes) }] : []),
+    ...(names.length
+      ? [
+          {
+            label: 'Inside',
+            value: plainText(
+              `${names.join(', ')}${files !== null && files > names.length ? `, and ${files - names.length} more` : ''}`,
+              'Its files',
+            ),
+          },
+        ]
+      : []),
+    ...(typeof checked.reason === 'string'
+      ? [{ label: 'Why you are asked', value: plainText(checked.reason, 'It is yours.') }]
+      : []),
     ...(typeof checked.warning === 'string'
-      ? [{ label: 'Warning', value: plainText(checked.warning, 'It cannot be undone.') }]
+      ? [{ label: 'Warning', value: plainText(checked.warning, 'It goes to the trash.') }]
       : []),
   ];
 }

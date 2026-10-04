@@ -530,6 +530,46 @@ test('a permission to save a file names the file and carries its exact text', ()
   expect(move({ from: 'a.png', to: 'a.png', area: 'artifacts', to_area: 'work' })).toBe(
     'Move “a.png” out of your Files',
   );
+  // A delete names the folder, lists what is in it with a count of the rest,
+  // says why it asks, and that it can be restored.
+  const deleting = projectPermission({
+    id: 'apr_delete',
+    version: 'v1',
+    action: {
+      ...write,
+      kind: 'files.delete',
+      canonicalPayload: {
+        path: 'reports',
+        area: 'artifacts',
+        checked: {
+          owner: 'person',
+          what: 'folder',
+          files: 42,
+          bytes: 2048,
+          names: ['q1.pdf', 'q2.pdf'],
+          reason: "It is in the person's Files.",
+          warning: 'This deletes the folder “reports” from your Files, with its 42 files.',
+        },
+      },
+    },
+    connection: files,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-30T04:00:00.000Z'),
+  });
+  expect(deleting.what).toBe('Delete the folder “reports” from your Files');
+  expect(deleting.preview?.facts).toEqual(
+    expect.arrayContaining([
+      { label: 'Folder', value: 'reports' },
+      { label: 'Files in it', value: '42' },
+      { label: 'Inside', value: 'q1.pdf, q2.pdf, and 40 more' },
+      { label: 'Why you are asked', value: "It is in the person's Files." },
+      {
+        label: 'Warning',
+        value: 'This deletes the folder “reports” from your Files, with its 42 files.',
+      },
+    ]),
+  );
   expect(shown.file).toEqual({
     path: 'plans/email-and-admin.md',
     bytes: Buffer.byteLength(content, 'utf8'),

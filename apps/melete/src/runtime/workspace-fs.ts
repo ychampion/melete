@@ -34,6 +34,7 @@ import {
   openIn,
   pathCheck,
 } from '../connectors/files.ts';
+import type { TrashPlace } from '../connectors/files-trash.ts';
 import { noLinks, removeConfined, segmentsFor } from '../paths.ts';
 
 export interface WorkspaceFs {
@@ -105,6 +106,9 @@ function checkJob(jobId: string): void {
 
 const missing = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
+
+/** Where deletes keep what they took, beside the job workspaces (connectors/files-trash.ts). */
+export const TRASH_DIRECTORY = '.trash';
 
 /** A spare's own workspace directory, until an attempt's job takes it over. */
 export const SPARE_DIRECTORY = '.spare-';
@@ -213,6 +217,17 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     return { base: await this.jobDirectory(job, create), segments };
   }
 
+  /** Where a delete from the job's workspace keeps what it took, restorable. */
+  async trash(job: string): Promise<TrashPlace> {
+    checkJob(job);
+    return {
+      area: 'work',
+      base: await realpath(this.workRoot),
+      origin: [job],
+      trash: [TRASH_DIRECTORY, job],
+    };
+  }
+
   /** The job's folders, each held while files in it are opened (`heldDirectories`). */
   async folders(job: string, create = false) {
     return heldDirectories(await this.jobDirectory(job, create), create);
@@ -265,6 +280,9 @@ export class LocalWorkspaceFs implements WorkspaceFs {
 
   async remove(job: string, beforeRetry?: () => Promise<void>): Promise<void> {
     await removeConfined(this.workRoot, job, beforeRetry);
+    // What the job deleted goes with it: its trash is beside the workspace.
+    checkJob(job);
+    await removeConfined(join(this.workRoot, TRASH_DIRECTORY), job, beforeRetry);
   }
 
   async remaining(job: string): Promise<string | null> {

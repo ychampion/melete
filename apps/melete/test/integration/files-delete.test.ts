@@ -10,9 +10,12 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { JsonObject } from '@melete/contracts';
+import { saveApprovalSettings } from '../../src/broker/auto-review.ts';
+import { loadAction } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -28,7 +31,14 @@ async function setup() {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const { sql } = fixture;
   const seed = await seedJob(sql, {
-    scopes: ['files.write', 'files.read', 'files.list', 'files.move', 'files.delete'],
+    scopes: [
+      'files.write',
+      'files.read',
+      'files.list',
+      'files.move',
+      'files.delete',
+      'files.restore',
+    ],
     provider: 'files',
   });
   const roots = await mkdtemp(path.join(tmpdir(), 'melete-files-delete-'));
@@ -45,7 +55,7 @@ async function setup() {
     broker.propose(seed.claims, { kind, connection_id: seed.connectionId, payload });
   const work = (name: string) => path.join(workRoot, seed.claims.job_id, name);
   const files = (name: string) => path.join(spacesRoot, seed.claims.space_id, 'artifacts', name);
-  return { ...seed, sql, broker, propose, work, files };
+  return { ...seed, sql, broker, registry, propose, work, files };
 }
 
 databaseTest(
@@ -63,7 +73,7 @@ databaseTest(
       path: 'smoke-test',
       area: 'work',
       deleted: 'folder',
-      files: 1,
+      deleted_count: 1,
       owner: 'agent',
     });
     // A new file it saved in the person's Files is its own too, while unchanged.
@@ -88,7 +98,8 @@ databaseTest(
     expect(declined.canonical_payload).toMatchObject({
       checked: {
         owner: 'person',
-        warning: 'This permanently deletes “report.pdf” from your Files. It cannot be undone.',
+        warning:
+          'This deletes “report.pdf” from your Files. It can be restored from the trash for 7 days.',
       },
     });
     await ctx.broker.decide(declined.action_id, {
@@ -118,7 +129,7 @@ databaseTest(
       checked: {
         owner: 'person',
         warning:
-          'This permanently deletes “upload.csv”, which you gave Melete. It cannot be undone.',
+          'This deletes “upload.csv”, which you gave Melete. It can be restored from the trash for 7 days.',
       },
     });
     expect(existsSync(other.work('upload.csv'))).toBe(true);
@@ -152,6 +163,55 @@ databaseTest(
     );
     expect(String((refused as Error).message)).toContain('changed after this delete was decided');
     expect(await readFile(ctx.files('plan.md'), 'utf8')).toBe('rewritten since');
+  },
+  SLOW,
+);
+
+databaseTest(
+  "the receipt's Undo restores everything a delete took",
+  async () => {
+    const ctx = await setup();
+    for (let n = 0; n < 3; n += 1)
+      await ctx.propose('files.write', { path: `smoke-test/f${n}.md`, content: `file ${n}` });
+    const deleted = await ctx.propose('files.delete', { path: 'smoke-test' });
+    expect(deleted.status).toBe('succeeded');
+    expect(existsSync(ctx.work('smoke-test'))).toBe(false);
+    const effects = new ExperienceEffects(ctx.sql, ctx.broker, ctx.registry);
+    const receipt = await effects.receipt(
+      ctx.claims.space_id,
+      await loadAction(ctx.sql, deleted.action_id),
+    );
+    expect(receipt?.undo?.handle).toBeTruthy();
+    const undone = await effects.undo(ctx.claims.space_id, receipt?.undo?.handle ?? '');
+    if ('reason' in undone) throw new Error(undone.reason);
+    for (let n = 0; n < 3; n += 1)
+      expect(await readFile(ctx.work(`smoke-test/f${n}.md`), 'utf8')).toBe(`file ${n}`);
+  },
+  SLOW,
+);
+
+databaseTest(
+  "with the workspace switch off, deleting Melete's own files asks too",
+  async () => {
+    const ctx = await setup();
+    await ctx.propose('files.write', { path: 'scratch.md', content: 'mine' });
+    await saveApprovalSettings(ctx.sql, ctx.claims.space_id, {
+      mode: 'auto_review',
+      classes: { sandbox: false },
+    });
+    const reviewing = new BrokerService({
+      sql: ctx.sql,
+      connectors: ctx.registry,
+      autoReview: { reviewer: null },
+    });
+    const proposal = await reviewing.propose(ctx.claims, {
+      kind: 'files.delete',
+      connection_id: ctx.connectionId,
+      payload: { path: 'scratch.md' },
+    });
+    expect(proposal.canonical_payload).toMatchObject({ checked: { owner: 'agent' } });
+    expect(proposal.status).toBe('needs_approval');
+    expect(await readFile(ctx.work('scratch.md'), 'utf8')).toBe('mine');
   },
   SLOW,
 );

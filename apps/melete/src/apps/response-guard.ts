@@ -14,6 +14,7 @@ const WORKSPACE_WRITES = new Set([
   'files.write',
   'files.move',
   'files.delete',
+  'files.restore',
   'exec.run',
   'exec.python',
   'terminal.run',
