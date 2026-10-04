@@ -1026,6 +1026,12 @@ leaves a printed one working. Choosing a new password signs the account out
 everywhere, connected apps included. Only a digest of each token is stored, and
 attempts to use one are limited per client address.
 
+Room invites work the same way. A guest's invite link uses `MELETE_PUBLIC_URL`
+when it is set; without it, the owner is given a path to open on the address
+people use for this installation. Only a digest of each invite's token is
+stored, and the token rides in the link's fragment, which no server log sees.
+A guest whose invite has run out is taken out of the room within a minute.
+
 ## Providers
 
 `configure.ts` writes a production configuration by default: a real provider,
@@ -1782,8 +1788,9 @@ request to any of them.
 **Work one instance does at a time.** The sandbox sweep and reconciliation, the
 learning proposal drain, removing stdio server data for removed connections,
 removing what stopped instances left behind, the blob collector, episode and
-egress record retention, the background process monitor and the health alerts
-each run on the instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
+egress record retention, the background process monitor, the health alerts and
+the sweep that ends room guests' places when their time is up each run on the
+instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
 instance keeps for leases alone, never recycled by age and with TCP keepalives
 of about half a minute. Every check asks Postgres whether that connection holds
 the lock; a held lease is checked every five seconds, and the sandbox sweep and

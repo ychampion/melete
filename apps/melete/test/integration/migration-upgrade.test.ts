@@ -196,13 +196,14 @@ databaseTest(
         agt_personal: null,
         agt_shared: [],
       });
-      // Each space also gains Melete: everything in a personal space, nothing
-      // in a shared one until its owner chooses.
+      // Each space also gains Melete with every connection in reach. A shared
+      // space becomes a room, whose rule for connections already keeps the
+      // owner's own to the owner; an agent someone narrowed keeps its list.
       const melete =
         await fixture.sql`select space_id, name, allowed_connection_ids from agent where is_default order by space_id`;
       expect(melete.map((row) => [row.space_id, row.name, row.allowed_connection_ids])).toEqual([
         ['spc_personal', 'Melete', null],
-        ['spc_shared', 'Melete', []],
+        ['spc_shared', 'Melete', null],
       ]);
     } finally {
       await fixture.close();

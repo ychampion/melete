@@ -2,13 +2,19 @@ import { sql } from 'drizzle-orm';
 import type { Query } from '../broker/records.ts';
 import type { Transaction } from '../db/transaction.ts';
 
-/** The active turn pins its agent; changing the header selects the following turn. */
+/**
+ * The active turn pins its agent; changing the header selects the following
+ * turn. An agent deleted since answers no more, so its work is read as the
+ * space's own agent's, Melete's, as deleting it moves its chats there.
+ */
 export async function agentAccess(tx: Query, jobId: string) {
   const [row] =
     await tx`select j.kind, j.paused, j.current_turn_id, coalesce(t.agent_id, j.agent_id) as bound_agent_id, a.id, a.allowed_connection_ids, a.asks_before_acting,
       a.uses_computer, a.reads_memory, a.writes_memory
     from job j left join experience_turn t on t.id = j.current_turn_id
-    left join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
+    left join agent b on b.id = coalesce(t.agent_id, j.agent_id) and b.space_id = j.space_id
+    left join agent a on a.space_id = j.space_id
+      and case when b.deleted_at is null then a.id = b.id else a.is_default end
     where j.id = ${jobId}`;
   return accessOf(row);
 }
@@ -20,7 +26,9 @@ export async function agentAccessIn(tx: Transaction, jobId: string): Promise<Age
   >(sql`select j.kind, j.paused, j.current_turn_id, coalesce(t.agent_id, j.agent_id) as bound_agent_id, a.id, a.allowed_connection_ids, a.asks_before_acting,
       a.uses_computer, a.reads_memory, a.writes_memory
     from job j left join experience_turn t on t.id = j.current_turn_id
-    left join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
+    left join agent b on b.id = coalesce(t.agent_id, j.agent_id) and b.space_id = j.space_id
+    left join agent a on a.space_id = j.space_id
+      and case when b.deleted_at is null then a.id = b.id else a.is_default end
     where j.id = ${jobId}`);
   return accessOf(row);
 }

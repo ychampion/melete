@@ -66,6 +66,7 @@ import { type MicrosoftEndpoints, microsoftEndpoints, microsoftIssuer } from './
 import { OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
 import { ConnectorRegistry } from './registry.ts';
+import { createRoomConnector } from './room.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
@@ -396,6 +397,12 @@ export class ConnectorFactory {
       return row.configuration?.builtin && !options.cellIsolated
         ? undefined
         : createExecConnector(options);
+    if (row.provider === 'room')
+      return createRoomConnector({
+        sql: options.sql,
+        workRoot: options.workRoot,
+        spacesRoot: options.spacesRoot,
+      });
     if (row.provider === 'artifacts')
       return createArtifactsConnector({
         sql: options.sql,

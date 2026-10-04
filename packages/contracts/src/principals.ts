@@ -17,7 +17,8 @@ export const createSharedSpaceRequest = z.object({ name: z.string().min(1).max(1
 export const spaceMembership = z.object({
   principal_id: prefixedId(ID_PREFIXES.owner),
   space_id: prefixedId(ID_PREFIXES.space),
-  role: z.enum(['owner', 'member']),
+  /** `guest`: someone invited into a room for a while; see `roomInvite`. */
+  role: z.enum(['owner', 'member', 'guest']),
   generation: z.number().int().nonnegative(),
   revoked_at: timestamp.nullable(),
 });

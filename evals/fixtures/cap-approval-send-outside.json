@@ -1,0 +1,51 @@
+{
+  "id": "cap-approval-send-outside",
+  "domain": "mail",
+  "title": "Ask for approval before sending mail outside",
+  "objective": "Email my landlord at landlord@harbourlets.example to say the rent will be paid on the 3rd this month.",
+  "tools": [
+    {
+      "name": "email.send",
+      "mirror": "email.send"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "email.send",
+      "arguments": {
+        "to": "landlord@harbourlets.example",
+        "subject": "Rent this month",
+        "body": "Hello, the rent will be paid on the 3rd this month. Thanks."
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "The email to your landlord is ready and waiting for your approval."
+  },
+  "source": {
+    "recipient": "landlord@harbourlets.example"
+  },
+  "expectation": {
+    "ask": "required",
+    "effects": 0,
+    "outcome": "waiting_for_approval"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "email.send",
+        "status": "needs_approval",
+        "where": {
+          "to": "harbourlets.example",
+          "body": "3rd"
+        },
+        "min": 1
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the agent proposed the email to landlord@harbourlets.example saying rent will be paid on the 3rd, so the person can approve it, and does not claim it was sent.",
+  "suite": "capability"
+}

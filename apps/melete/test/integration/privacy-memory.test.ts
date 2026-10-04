@@ -7,7 +7,7 @@
  * as a second line, any cloud request its wording turns up in.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { ExtractionProposal } from '@melete/contracts';
+import { type AttemptBundle, attemptBundle, type ExtractionProposal } from '@melete/contracts';
 import { openDatabase } from '../../src/db/client.ts';
 import { ExperienceMemory } from '../../src/experience/memory.ts';
 import {
@@ -20,6 +20,11 @@ import { QUEUES } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { captureChat } from '../../src/memory/capture.ts';
+import {
+  NOT_REMEMBERED_NOTE,
+  newMessagesNotRemembered,
+  withMemoryRuntime,
+} from '../../src/memory/context.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { openMemoryGateway } from '../../src/memory/gateway.ts';
 import { recall } from '../../src/memory/recall.ts';
@@ -215,6 +220,28 @@ withDb('memory keeps private conversations private', () => {
         join memory_sources s on s.id = w.source_id join memory_source_content b on b.source_id = s.id
         where b.content like 'I cried%'`;
       expect(kept).toMatchObject({ status: 'rejected', error_code: 'extraction_kept_private' });
+      // The agent answering that turn is told nothing from it was remembered;
+      // an ordinary conversation's agent is not.
+      const latestTurn = async (jobId: string) => {
+        const rows = await db.sql`select payload->>'text' as text, created_at from event
+          where job_id = ${jobId} and type = 'notice' and payload->>'kind' = 'user_message'
+          order by seq desc limit 1`;
+        return {
+          attempt: { id: 'att_x', job_id: jobId, epoch: 1, revision: 1, token: 't' },
+          inputs: {
+            new_user_messages: rows.map((row) => ({
+              role: 'user' as const,
+              content: row.text as string,
+              at: new Date(row.created_at as string).toISOString(),
+            })),
+            approval_results: [],
+            trigger_events: [],
+            repair_briefs: [],
+          },
+        };
+      };
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(therapy))).toBe(true);
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(ordinary))).toBe(false);
 
       // 2. With a local model, the private message is read there, and only there.
       await updateSettings(router, scope.spaceId, {
@@ -223,6 +250,8 @@ withDb('memory keeps private conversations private', () => {
       await say(db, therapy, 'The doctor has me on lithium at night now.');
       await settle();
       expect(toLocal.join('\n')).toContain('lithium at night');
+      // Read on the local model, so that turn's agent is not told otherwise.
+      expect(await newMessagesNotRemembered(db.sql, scope, await latestTurn(therapy))).toBe(false);
       expect(toCloud.join('\n')).not.toContain('lithium');
       const learned = await db.sql`select c.key, b.content from memory_claims c
         join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
@@ -287,6 +316,168 @@ withDb('memory keeps private conversations private', () => {
       expect(prepared.route).toBe('cloud');
       expect(JSON.stringify(prepared.body)).not.toContain('lithium');
       expect(JSON.stringify(prepared.body)).toContain('⟦PRIVATE_');
+    } finally {
+      await opened.close();
+      await journal.close();
+    }
+  });
+});
+
+withDb('the agent is told when a private message will not be kept', () => {
+  test('decided when the turn starts, before memory has read the message', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    const router = new PrivacyRouter({
+      store: new PostgresPrivacyStore(db.sql, () => 'a'.repeat(64)),
+      resolve: async () => [{ address: '93.184.216.34' }],
+    });
+    const opened = await openMemoryGateway({
+      privacy: router,
+      sql: db.sql,
+      provider: 'fake',
+      model: 'fake-scripted-v1',
+      providers: [fakeProvider],
+      dailyCalls: 100,
+      fake: (body, attemptId, protocol) =>
+        createScriptedProvider([{ text: propose(body) }])(body, attemptId, protocol),
+    });
+    /** The memory worker: capture what was said, then read it. Not run until a step says so. */
+    const readByMemory = async () => {
+      await captureChat({
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+        privacyOrigin: (jobId, text) => router.captureOrigin(jobId, text),
+      });
+      const work =
+        await db.sql`select id from memory_work where space_id = ${scope.spaceId} and status = 'pending'`;
+      for (const row of work)
+        await runExtractionWork(
+          { sql: db.sql, boss: db.boss, journal: journal.journal, gateway: opened.gateway },
+          row.id as string,
+        );
+    };
+    /** What the turn answering the person's latest message is told, as the runtime receives it. */
+    const objectiveFor = async (jobId: string): Promise<string> => {
+      // Each turn is a new lease on the conversation, as a claim makes it.
+      const [job] = await db.sql`update job set lease_epoch = lease_epoch + 1
+        where id = ${jobId} returning revision, lease_epoch`;
+      const attemptId = newId('att');
+      await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${jobId}, ${job?.lease_epoch}, 'scripted-v1', 'fake', 'fake-scripted-v1')`;
+      const [message] = await db.sql`select payload->>'text' as text, created_at from event
+        where job_id = ${jobId} and type = 'notice' and payload->>'kind' = 'user_message'
+        order by seq desc limit 1`;
+      let objective = '';
+      const runtime = {
+        async capabilities() {
+          return { version: 'scripted-v1', tools: false, streaming: true, interrupt: true };
+        },
+        async start(bundle: AttemptBundle) {
+          objective = bundle.job.objective;
+          return { kind: 'completed' as const, summary: 'Done.', evidence: [] };
+        },
+      };
+      await withMemoryRuntime(runtime, db.sql, scopeFor(db, owner), {
+        refusesMemoryRead: (id) => router.refusesServiceRead(id, { protocol: 'chat/completions' }),
+      }).start(
+        attemptBundle.parse({
+          attempt: {
+            id: attemptId,
+            job_id: jobId,
+            epoch: Number(job?.lease_epoch),
+            revision: Number(job?.revision),
+            token: 'fixture-only',
+          },
+          job: {
+            title: 'Chat',
+            objective: 'Help with what the person asks',
+            constraints: {},
+            progress_summary: '',
+            unresolved_questions: [],
+            deliverable: {},
+          },
+          inputs: {
+            new_user_messages: [
+              {
+                role: 'user',
+                content: message?.text as string,
+                at: new Date(message?.created_at as string).toISOString(),
+              },
+            ],
+            approval_results: [],
+            trigger_events: [],
+          },
+          transcript: [],
+          tools: [],
+          skills: [],
+          knowledge: [],
+          workspace: { mount: '/work', files: [] },
+          budget: { max_turns: 1, max_output_tokens: 100, max_wall_ms: 1000, max_actions: 0 },
+          model: { provider: 'fake', model: 'fake-scripted-v1', fallback: null },
+        }),
+        { async emit() {} },
+        new AbortController().signal,
+      );
+      return objective;
+    };
+    const workFor = async (text: string) =>
+      (
+        await db.sql`select w.status, w.error_code from memory_work w
+          join memory_source_content b on b.source_id = w.source_id where b.content = ${text}`
+      )[0];
+    try {
+      // 1. A private conversation with no local model: the turn is told at once,
+      //    before memory has even captured the message.
+      const therapy = await conversation(scope);
+      await router.store.updateConversation(therapy, scope.spaceId, { sensitive: 'therapy' });
+      await say(db, therapy, 'Remember that I cried at work again.');
+      expect(await objectiveFor(therapy)).toContain(NOT_REMEMBERED_NOTE);
+      // ...and memory then refuses it, as the turn was told.
+      await readByMemory();
+      expect(await workFor('Remember that I cried at work again.')).toMatchObject({
+        status: 'rejected',
+        error_code: 'extraction_kept_private',
+      });
+
+      // 2. Once the person agrees to a redacted version, a new message is read,
+      //    so the turn is not told otherwise, and memory does keep it.
+      await router.store.updateConversation(therapy, scope.spaceId, { consent: 'allowed' });
+      await say(db, therapy, 'Remember that for flights I prefer an aisle seat.');
+      expect(await objectiveFor(therapy)).not.toContain(NOT_REMEMBERED_NOTE);
+      await readByMemory();
+      expect(await workFor('Remember that for flights I prefer an aisle seat.')).toMatchObject({
+        status: 'done',
+      });
+
+      // 3. A message memory refused before the person agreed stays unread, and
+      //    the turn that resumes it after they agree is told so.
+      const finances = await conversation(scope);
+      await router.store.updateConversation(finances, scope.spaceId, { sensitive: 'finance' });
+      await say(db, finances, 'Please remember my window seat preference.');
+      await readByMemory();
+      await router.store.updateConversation(finances, scope.spaceId, { consent: 'allowed' });
+      expect(await objectiveFor(finances)).toContain(NOT_REMEMBERED_NOTE);
+
+      // 3b. The live order: the person writes, agrees to a redacted version, and
+      //     the turn starts before memory has read the message. Memory then reads
+      //     it under that agreement and keeps it, so the turn is not told otherwise.
+      const budget = await conversation(scope);
+      await router.store.updateConversation(budget, scope.spaceId, { sensitive: 'finance' });
+      await say(db, budget, 'Remember that I prefer an aisle seat on long flights.');
+      await router.store.updateConversation(budget, scope.spaceId, { consent: 'allowed' });
+      expect(await objectiveFor(budget)).not.toContain(NOT_REMEMBERED_NOTE);
+      await readByMemory();
+      expect(await workFor('Remember that I prefer an aisle seat on long flights.')).toMatchObject({
+        status: 'done',
+      });
+
+      // 4. An ordinary conversation is never told.
+      const ordinary = await conversation(scope);
+      await say(db, ordinary, 'Remember that I like a window seat on trains.');
+      expect(await objectiveFor(ordinary)).not.toContain(NOT_REMEMBERED_NOTE);
     } finally {
       await opened.close();
       await journal.close();

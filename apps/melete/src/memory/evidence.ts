@@ -20,7 +20,7 @@ import { originTrustOf } from './trust.ts';
 export const EXTRACTOR_POLICY = 'memory-extract-v1';
 export const SEGMENT_CHARACTERS = 16000;
 export function toSource(row: Record<string, unknown>): SourceEvent {
-  const author = (row.author as 'owner' | 'external' | undefined) ?? 'owner';
+  const author = (row.author as SourceEvent['author'] | undefined) ?? 'owner';
   return sourceEvent.parse({
     author,
     origin_trust:
@@ -52,11 +52,20 @@ export async function stageSegment(tx: MemoryTx, source: SourceEvent, length: nu
   return id;
 }
 
+/**
+ * Words a person in a room said there, kept in the room's memory under their
+ * name. Only the service writes these; no ingest request can claim a member.
+ */
+export type MemberEvidence = Omit<IngestSourceRequest, 'author'> & {
+  author: 'member';
+  author_principal_id: string;
+};
+
 /** Called in the caller's transaction so correction evidence and revisions commit together. */
 export async function persistEvidence(
   tx: MemoryTx,
   scope: MemoryScope,
-  input: IngestSourceRequest,
+  input: IngestSourceRequest | MemberEvidence,
   ownerEdit = false,
 ) {
   const space = await lockSpace(tx, scope);
@@ -100,10 +109,10 @@ export async function persistEvidence(
   const trust = originTrustOf({ source_type: sourceType, author });
   const [row] =
     await tx`insert into memory_sources (id, space_id, owner_id, publisher, stream, source_identity, source_version, stream_sequence,
-    source_type, event_at, audience, state, eligibility_generation, content_length, author, origin_trust, time_zone)
+    source_type, event_at, audience, state, eligibility_generation, content_length, author, origin_trust, time_zone, author_principal_id)
     values (${newId('src')}, ${scope.spaceId}, ${scope.ownerId}, ${scope.publisher}, ${input.stream}, ${input.source_identity}, ${input.source_version},
     ${stream?.committed_sequence}, ${sourceType}, ${input.event_at}, ${scope.audience}, ${state}, ${space.eligibility_generation}, ${input.text.length},
-    ${author}, ${trust}, ${input.time_zone ?? null}) returning *`;
+    ${author}, ${trust}, ${input.time_zone ?? null}, ${input.author === 'member' && !ownerEdit ? input.author_principal_id : null}) returning *`;
   if (!row) throw new MemoryError('source_not_persisted');
   const source = toSource(row);
   if (state === 'active') {

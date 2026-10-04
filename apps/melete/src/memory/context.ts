@@ -13,18 +13,77 @@ import { lockJob } from '../broker/records.ts';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
+import { sharedRevisionEligible, withSharedItems } from '../rooms/shares.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
-import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
+import {
+  iso,
+  lockSpace,
+  MemoryError,
+  type MemoryScope,
+  type MemorySql,
+  type MemoryTx,
+  newId,
+} from './db.ts';
 import { lockEventOrder, notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
-import {
-  asKnowledge,
-  attemptRecallQuery,
-  effectiveAudience,
-  type RecallOptions,
-  recall,
-} from './recall.ts';
+import { attemptRecallQuery, effectiveAudience, type RecallOptions, recall } from './recall.ts';
+
+/**
+ * Whether an attempt may hold this revision: one of its space's own, or a
+ * detail someone shared into its room that the room may still read.
+ */
+async function heldRevision(tx: MemoryTx, scope: MemoryScope, claimId: string, revision: number) {
+  return (
+    (await eligibleRevision(tx, scope, claimId, revision)) ||
+    (await sharedRevisionEligible(tx, scope.spaceId, claimId, revision))
+  );
+}
+
+/**
+ * What the agent is told when memory could not keep what the person just
+ * wrote. Without it the agent only knows that Melete remembers what the person
+ * says on its own, and answers "got it" to a request to remember.
+ */
+export const NOT_REMEMBERED_NOTE =
+  'Memory has not kept what the person wrote in this turn and will not: this conversation is private and there is no local model set up to read it. If they asked you to remember something, tell them plainly that it was not saved; never say it was saved or that you will remember it.';
+
+/**
+ * Whether memory will not keep this attempt's new messages because they came
+ * from a private conversation with no local model to read them on. Decided
+ * when the bundle is built, before memory has read anything, from two facts:
+ * - `refusesRead`: the privacy router's own answer, the one memory's read
+ *   would get, that a read of this conversation is refused now (private, no
+ *   local model, and no agreement to a redacted cloud request);
+ * - memory's record that it already refused one of these messages
+ *   (`extraction_kept_private`), which covers a message read before the
+ *   person agreed: it is not read again.
+ * A message still waiting while reads are allowed may yet be kept, so it does
+ * not count.
+ */
+export async function newMessagesNotRemembered(
+  sql: MemorySql,
+  scope: MemoryScope,
+  bundle: Pick<AttemptBundle, 'attempt' | 'inputs'>,
+  refusesRead?: (jobId: string) => Promise<boolean>,
+): Promise<boolean> {
+  const times = bundle.inputs.new_user_messages.flatMap((message) =>
+    message.at ? [Date.parse(message.at)] : [],
+  );
+  if (!times.length) return false;
+  if (refusesRead && (await refusesRead(bundle.attempt.job_id))) return true;
+  // `at` is the message event's time cut to milliseconds, so the earliest one
+  // is at or just before that event.
+  const since = new Date(Math.min(...times)).toISOString();
+  const [row] = await sql`select 1 from memory_capture c
+    join event e on e.seq = c.event_seq
+    join memory_work w on w.source_id = c.source_id
+    where c.job_id = ${bundle.attempt.job_id} and w.space_id = ${scope.spaceId}
+      and w.status = 'rejected' and w.error_code = 'extraction_kept_private'
+      and e.created_at >= ${since}::timestamptz
+    limit 1`;
+  return Boolean(row);
+}
 
 export async function recordAttemptContext(
   sql: MemorySql,
@@ -56,7 +115,7 @@ export async function recordAttemptContext(
       throw new MemoryError('stale_context');
     if (audience.publicCompartment && result.items.length) throw new MemoryError('scope_denied');
     for (const item of result.items)
-      if (!(await eligibleRevision(tx, scope, item.claim_id, item.revision)))
+      if (!(await heldRevision(tx, scope, item.claim_id, item.revision)))
         throw new MemoryError('stale_context');
     const [prior] = await tx`select id from memory_contexts where attempt_id = ${attemptId}`;
     if (prior) throw new MemoryError('context_already_recorded');
@@ -183,7 +242,7 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
     )
       throw new MemoryError('context_invalidated');
     for (const item of row.items as ContextRecord['items']) {
-      if (!(await eligibleRevision(tx, scope, item.claim_id, item.revision)))
+      if (!(await heldRevision(tx, scope, item.claim_id, item.revision)))
         throw new MemoryError('context_invalidated');
       const [head] = await tx`select head_revision from memory_claims where id = ${item.claim_id}`;
       if (head?.head_revision !== item.revision) throw new MemoryError('context_invalidated');
@@ -231,9 +290,18 @@ export async function assembleAttemptKnowledge(
         includeProfile: true,
       },
     );
+    // A room's request is also handed what people shared into the room.
+    const recalled = await withSharedItems(sql, scope, jobId, result);
     try {
-      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result, startedAt);
-      return { knowledge: result.items.map(asKnowledge), context, recall: result };
+      const context = await recordAttemptContext(
+        sql,
+        scope,
+        attemptId,
+        jobId,
+        recalled.recall,
+        startedAt,
+      );
+      return { knowledge: recalled.knowledge, context, recall: recalled.recall };
     } catch (error) {
       if (!(error instanceof MemoryError) || error.code !== 'stale_context' || retry === 2)
         throw error;
@@ -255,6 +323,12 @@ export function withMemoryRuntime(
      * out, it never is.
      */
     recallsPrivateMemory?: (jobId: string, attemptId: string) => Promise<boolean>;
+    /**
+     * Whether memory's read of this job's conversation would be refused now,
+     * as the privacy router decides it. Left out, only memory's own record of
+     * a refusal tells the agent a message was not kept.
+     */
+    refusesMemoryRead?: (jobId: string) => Promise<boolean>;
   } = {},
 ): RuntimeAdapter {
   return {
@@ -330,9 +404,21 @@ export function withMemoryRuntime(
           (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id)));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const since = (assembled ?? bundle).since_last;
+      const unremembered = await newMessagesNotRemembered(
+        sql,
+        scope,
+        bundle,
+        options.refusesMemoryRead,
+      );
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
-        job: { ...bundle.job, constraints: job.constraints },
+        job: {
+          ...bundle.job,
+          constraints: job.constraints,
+          objective: unremembered
+            ? [bundle.job.objective, NOT_REMEMBERED_NOTE].filter(Boolean).join('\n\n')
+            : bundle.job.objective,
+        },
         inputs: { ...(assembled ?? bundle).inputs, repair_briefs: briefs },
         // The delta brief carries the same briefs as the inputs. The delta is
         // what an attempt reads to say what it did last time, and a correction

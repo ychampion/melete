@@ -147,16 +147,121 @@ describe('the replies a real model gave', () => {
     expect(said.slice(span?.start, span?.end)).toBe(span?.quote ?? '');
   });
 
-  test('a quote that is not in the message is left as written, to be refused as not verbatim', () => {
-    const { proposals } = readExtractionReply(
+  test('a quote that is not in the message is refused with that reason', () => {
+    const { proposals, dropped } = readExtractionReply(
       claim({ op: 'add' }, { start: 0, end: 10, quote: 'I love spreadsheets' }),
       evidence,
     );
-    expect(proposals[0]?.sources[0]).toMatchObject({
-      start: 0,
-      end: 10,
-      quote: 'I love spreadsheets',
+    expect(proposals).toEqual([]);
+    expect(dropped).toEqual([{ index: 0, detail: 'sources: quote not found in the source' }]);
+  });
+});
+
+describe('a structured answer, as a schema-held model returns it', () => {
+  // The message sits at 120 in its source; the model is shown only this segment.
+  const said =
+    'Thanks! Also, my sister Maya lives in Lisbon now. Remember that I take tea, not coffee.';
+  const evidence = {
+    source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    source_version: '3',
+    start: 120,
+    text: said,
+  };
+  const unused = {
+    claim_id: null,
+    expected_revision: null,
+    domain_key: null,
+    content: null,
+    kind: null,
+    factual_status: null,
+    valid_from: null,
+    valid_until: null,
+  };
+
+  test('quotes only, with the unused fields null: offsets come from the segment', () => {
+    // Recorded shape of a strict json_schema answer to EXTRACTION_FORMAT.
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          ...unused,
+          op: 'add',
+          domain_key: 'person.maya.city',
+          content: 'Maya lives in Lisbon',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '2026-10-01T09:00:00Z',
+          sources: [{ quote: 'my sister Maya lives in Lisbon' }],
+        },
+        {
+          ...unused,
+          op: 'retract',
+          claim_id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          expected_revision: 2,
+          sources: [{ quote: 'I take tea, not coffee' }],
+        },
+        { ...unused, op: 'no-op', sources: [{ quote: 'Thanks!' }] },
+      ],
     });
+    const { proposals, dropped } = readExtractionReply(reply, evidence);
+    expect(dropped).toEqual([]);
+    expect(proposals.map((proposal) => proposal.op)).toEqual(['add', 'retract', 'no-op']);
+    for (const proposal of proposals)
+      for (const span of proposal.sources) {
+        expect(span).toMatchObject({ source_id: evidence.source_id, source_version: '3' });
+        expect(said.slice(span.start - 120, span.end - 120)).toBe(span.quote);
+      }
+    expect(proposals[0]?.sources[0]).toMatchObject({ start: 134, end: 164 });
+    expect(proposals[1]).not.toHaveProperty('content');
+  });
+
+  test('the old failure: offsets the model counted wrong are replaced by where the quote is', () => {
+    // Recorded prose-mode answer: right words, offsets counted from the wrong place.
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'add',
+          expected_revision: null,
+          domain_key: 'pref.drink',
+          content: 'Takes tea, not coffee',
+          kind: 'preference',
+          factual_status: 'attributed',
+          valid_from: '2026-10-01T09:00:00Z',
+          valid_until: null,
+          sources: [{ ...evidence, start: 0, end: 22, quote: 'I take tea, not coffee' }],
+        },
+      ],
+    });
+    const span = readExtractionReply(reply, evidence).proposals[0]?.sources[0];
+    expect(span).toMatchObject({
+      start: 120 + said.indexOf('I take'),
+      quote: 'I take tea, not coffee',
+    });
+  });
+
+  test('a loosely copied quote cites the segment’s own characters', () => {
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          ...unused,
+          op: 'add',
+          domain_key: 'person.maya.city',
+          content: 'Maya lives in Lisbon',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '2026-10-01T09:00:00Z',
+          sources: [{ quote: 'My  sister maya lives in Lisbon.' }],
+        },
+      ],
+    });
+    const span = readExtractionReply(reply, evidence).proposals[0]?.sources[0];
+    expect(span?.quote).toBe('my sister Maya lives in Lisbon');
+  });
+
+  test('the old failure: a reply cut off mid-document is unreadable, never a partial read', () => {
+    // Recorded: the output limit hit inside the second proposal.
+    const cut =
+      '{"proposals":[{"op":"no-op","sources":[{"quote":"Thanks!"}]},{"op":"add","domain_key":"person.maya.city","content":"Maya li';
+    expect(code(() => readExtractionReply(cut, evidence))).toBe('extraction_unreadable');
   });
 });
 
@@ -248,5 +353,67 @@ describe('a list the person adds to', () => {
     expect(
       keepListItems([answer], [{ domain_key: 'preferences.mailing_list', content: 'None' }]),
     ).toEqual([answer]);
+  });
+});
+
+describe('a structured extraction full of filler', () => {
+  const said = 'Thanks! My sister Maya lives in Lisbon now.';
+  const evidence = {
+    source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    source_version: '1',
+    start: 0,
+    text: said,
+  };
+
+  test('fields an operation does not use are dropped, "" and 0 included', () => {
+    // Recorded shape: the unused fields filled with "" and 0 instead of null.
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'add',
+          claim_id: '',
+          expected_revision: 0,
+          domain_key: 'person.maya.city',
+          content: 'Maya lives in Lisbon',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '2026-10-01T09:00:00Z',
+          valid_until: '',
+          sources: [{ quote: 'My sister Maya lives in Lisbon' }],
+        },
+        {
+          op: 'no-op',
+          claim_id: '',
+          expected_revision: 0,
+          domain_key: '',
+          content: '',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '',
+          valid_until: '',
+          sources: [{ quote: 'Thanks!' }],
+        },
+      ],
+    });
+    const { proposals, dropped } = readExtractionReply(reply, evidence);
+    expect(dropped).toEqual([]);
+    expect(proposals[0]).toMatchObject({ op: 'add', expected_revision: null, valid_until: null });
+    expect(proposals[0]).not.toHaveProperty('claim_id');
+    expect(Object.keys(proposals[1] ?? {}).sort()).toEqual(['op', 'sources']);
+  });
+
+  test('one quote that is not there drops that proposal only', () => {
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'no-op',
+          sources: [{ quote: 'I never said this' }],
+        },
+        { op: 'no-op', sources: [{ quote: 'Thanks!' }] },
+      ],
+    });
+    const { proposals, dropped } = readExtractionReply(reply, evidence);
+    expect(dropped.map((item) => item.index)).toEqual([0]);
+    expect(proposals).toHaveLength(1);
   });
 });

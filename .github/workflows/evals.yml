@@ -1,0 +1,112 @@
+# The capability suite against real models, started by hand. It reads the FIREWORKS_API_KEY
+# repository secret when there is one and skips with a notice when there is not, so it never
+# blocks anything. Spend is capped by the budget input across every model in the run.
+# deploy/scripts/ci-workflow.test.ts checks this file.
+name: Capability evaluations
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Fireworks model ids, separated by spaces (each must be priced in evals/state.ts)
+        default: accounts/fireworks/models/deepseek-v4p1-flash accounts/fireworks/models/kimi-k3
+      runs:
+        description: Repetitions of each scenario per model
+        default: '1'
+      budget:
+        description: Spend cap in US dollars for the whole run, graders included
+        default: '5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-models:
+    name: Capability suite on real models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: melete_test
+          POSTGRES_PASSWORD: melete_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U melete_test -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+    steps:
+      - name: Check for the provider key
+        id: key
+        run: |
+          if [ -z "$FIREWORKS_API_KEY" ]; then
+            echo "::notice::No FIREWORKS_API_KEY secret is set; the real-model suite was skipped."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: steps.key.outputs.present == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Cache Bun's downloads
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
+      # One campaign per model on one shared spend ledger, then one table across the models and
+      # the comparison with the stored baseline. A key scenario that regresses fails the run.
+      - name: Run the suite on each model
+        if: steps.key.outputs.present == 'true'
+        env:
+          MODELS: ${{ inputs.models }}
+          RUNS: ${{ inputs.runs }}
+          BUDGET: ${{ inputs.budget }}
+        run: |
+          out="$RUNNER_TEMP/evals"
+          artifacts=()
+          for model in $MODELS; do
+            campaign="capability-$(basename "$model")-${GITHUB_RUN_ID}"
+            bun run evals -- --engine light --provider fireworks --model "$model" \
+              --suite capability --runs "$RUNS" --workers 3 --budget "$BUDGET" \
+              --campaign "$campaign" --out-dir "$out" || true
+            artifacts+=("$out/$campaign.json")
+          done
+          bun run evals/summary.ts "${artifacts[@]}" --baseline evals/baselines/fireworks.json \
+            | tee "$out/summary.md"
+          cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      # Fixture replies and checks only: the destinations are synthetic and the key never
+      # reaches the results.
+      - name: Keep the results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capability-evals-${{ github.run_id }}
+          path: ${{ runner.temp }}/evals/
+          if-no-files-found: warn
+          retention-days: 14

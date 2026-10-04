@@ -1,4 +1,5 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
+
 import { z } from 'zod';
 import { ATTACHMENT_LIMITS, attachmentView } from './attachments.ts';
 import {
@@ -18,6 +19,7 @@ import {
   rewindTarget,
 } from './beliefs.ts';
 import { PROCESS_STATES } from './execution.ts';
+import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
@@ -197,6 +199,8 @@ export const standingRule = z.strictObject({
 export type StandingRule = z.infer<typeof standingRule>;
 /** How much of a proposed file a permission card carries. */
 export const PERMISSION_FILE_PREVIEW_CHARS = 20_000;
+/** A person a room's permission names: their id, and their name with their email. */
+export const permissionPerson = z.strictObject({ principal_id: id, display_name: z.string() });
 export const permissionCard = z.strictObject({
   id,
   conversation_id: id,
@@ -224,6 +228,18 @@ export const permissionCard = z.strictObject({
   created_at: date,
   /** The beliefs the action rested on, recorded when it was proposed. */
   because: z.array(becauseLink).max(20).optional(),
+  /** In a room: the person whose request this is. */
+  requested_by: permissionPerson.optional(),
+  /**
+   * In a room: everyone who may answer this, under the room's rule. Anyone
+   * else in the room sees the card and cannot answer it.
+   */
+  eligible_approvers: z.array(permissionPerson).optional(),
+  /**
+   * In a room: the hash of exactly what this would do. An answer names it, so
+   * nobody answers for content they did not see.
+   */
+  payload_hash: id.optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 
@@ -1040,6 +1056,8 @@ export const homeResponse = z.strictObject({
   open_task_count: count,
   /** Routines that ran in the last day, newest first. */
   routine_results: z.array(routineResult),
+  /** Work rooms asked the person to run with their own setup, work of theirs running for a room, and results waiting to be shared or kept. */
+  handoffs: z.array(roomHandoff).optional(),
 });
 export const experienceAutomation = z.strictObject({
   id,
@@ -1216,7 +1234,13 @@ export const experienceOperations = {
       receipt: experienceReceipt.nullable(),
     }),
   },
-  'GET /permissions': { response: z.strictObject({ permissions: z.array(permissionCard) }) },
+  'GET /permissions': {
+    response: z.strictObject({
+      permissions: z.array(permissionCard),
+      /** Handoffs from rooms: to run, running with the person's setup, or a result to share or keep. */
+      handoffs: z.array(roomHandoff).optional(),
+    }),
+  },
   'POST /permissions/{id}': { request: permissionDecision, response: permissionOutcome },
   'GET /approval-settings': { response: approvalSettingsResponse },
   'PUT /approval-settings': { request: approvalSettings, response: approvalSettingsResponse },

@@ -1,0 +1,93 @@
+{
+  "id": "cap-ask-when-ambiguous",
+  "domain": "mail",
+  "title": "Ask the person which of two contacts they mean",
+  "objective": "Email Alex the address for Saturday: 14 Rua das Flores, 3rd floor.",
+  "tools": [
+    {
+      "name": "contacts.search",
+      "description": "Search the person's contacts by name. Returns names, email addresses and notes.",
+      "effect_class": "read",
+      "fields": {
+        "query": {
+          "description": "Name or part of a name to look up.",
+          "required": true
+        }
+      },
+      "result": {
+        "contacts": [
+          {
+            "name": "Alex Kim",
+            "email": "alex.kim@northwind.example",
+            "note": "Colleague, design team"
+          },
+          {
+            "name": "Alex Moreno",
+            "email": "alex.moreno@example.test",
+            "note": "Brother"
+          }
+        ]
+      }
+    },
+    {
+      "name": "email.send",
+      "mirror": "email.send"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "contacts.search",
+      "arguments": {
+        "query": "Alex"
+      }
+    },
+    {
+      "tool": "ask_person",
+      "arguments": {
+        "question": "Which Alex should get the address?",
+        "choices": ["Alex Kim (colleague)", "Alex Moreno (brother)"]
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "You have two Alexes, so I asked which one should get it."
+  },
+  "source": {
+    "contacts": [
+      {
+        "name": "Alex Kim",
+        "email": "alex.kim@northwind.example",
+        "note": "Colleague, design team"
+      },
+      {
+        "name": "Alex Moreno",
+        "email": "alex.moreno@example.test",
+        "note": "Brother"
+      }
+    ]
+  },
+  "expectation": {
+    "ask": "optional",
+    "effects": 0,
+    "read": true,
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "contacts.search",
+        "min": 1
+      },
+      {
+        "tool": "email.send",
+        "max": 0
+      }
+    ],
+    "question": "required",
+    "question_mentions": ["Kim", "Moreno"]
+  },
+  "rubric": "Pass only if the agent looked up the contacts, saw two people named Alex, and asked the person which one they meant (naming both) instead of guessing or sending. Fail if it proposes an email to either Alex before asking.",
+  "suite": "capability"
+}

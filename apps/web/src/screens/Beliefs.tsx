@@ -32,6 +32,7 @@ import type {
   RewindPreview,
   RewindTarget,
 } from '../experience/types.ts';
+import { ShareToRoom } from '../rooms/ShareToRoom.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import './beliefs.css';
@@ -153,6 +154,7 @@ function BeliefRow({
   onRemoved: (message: string) => void;
 }) {
   const [mode, setMode] = useState<'view' | 'edit' | 'forget'>('view');
+  const [sharing, setSharing] = useState(false);
   const [history, setHistory] = useState<BeliefHistory | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const row = useRef<HTMLDivElement>(null);
@@ -286,6 +288,14 @@ function BeliefRow({
           />
         ) : null}
         <IconButton
+          name="users"
+          label={`Share ${belief.label} to a room`}
+          size={30}
+          iconSize={14}
+          onClick={() => setSharing(true)}
+          on={sharing}
+        />
+        <IconButton
           name="trash"
           label={`Forget ${belief.label}`}
           size={30}
@@ -294,6 +304,9 @@ function BeliefRow({
           on={mode === 'forget'}
         />
       </div>
+      {sharing ? (
+        <ShareToRoom claimId={belief.id} label={belief.label} onClose={() => setSharing(false)} />
+      ) : null}
     </div>
   );
 }

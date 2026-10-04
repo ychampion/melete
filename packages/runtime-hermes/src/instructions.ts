@@ -283,8 +283,15 @@ export function renderInput(bundle: AttemptBundle): string {
   for (const event of bundle.inputs.trigger_events) {
     lines.push('', '## Something happened', '', JSON.stringify(event));
   }
+  // In a room each message names who said it; anywhere else it is the owner's.
   for (const message of bundle.inputs.new_user_messages) {
-    lines.push('', '## From the person', '', message.content);
+    lines.push(
+      '',
+      // A name is quoted, so it reads as a name and never as part of the heading.
+      message.name ? `## From ${JSON.stringify(message.name)}` : '## From the person',
+      '',
+      message.content,
+    );
   }
 
   return lines.join('\n');

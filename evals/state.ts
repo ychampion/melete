@@ -3,17 +3,63 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CellResult } from './types.ts';
 
 export const MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
-export const PRICE = { input: 0.22, cached: 0.007, output: 0.66 };
-export const PRICE_SOURCE = 'https://app.fireworks.ai/models/fireworks/deepseek-v4p1-flash';
+export type Price = {
+  input: number;
+  cached: number;
+  output: number;
+  source: string;
+  checked_on: string;
+};
+/**
+ * Fireworks serverless prices per million tokens. Only a model listed here can
+ * be spent on: a request for any other is refused before it leaves.
+ */
+export const PRICES: Record<string, Price> = {
+  [MODEL]: {
+    input: 0.22,
+    cached: 0.007,
+    output: 0.66,
+    source: 'https://app.fireworks.ai/models/fireworks/deepseek-v4p1-flash',
+    checked_on: '2026-09-12',
+  },
+  'accounts/fireworks/models/kimi-k3': {
+    input: 3,
+    cached: 0.3,
+    output: 15,
+    source: 'https://fireworks.ai/models/fireworks/kimi-k3',
+    checked_on: '2026-10-03',
+  },
+  'accounts/fireworks/models/qwen3p8-max': {
+    input: 2,
+    cached: 0.25,
+    output: 6,
+    source: 'https://fireworks.ai/models/fireworks/qwen3p8-max',
+    checked_on: '2026-10-03',
+  },
+};
+const DEFAULT_PRICE = PRICES[MODEL] as Price;
+export const PRICE = {
+  input: DEFAULT_PRICE.input,
+  cached: DEFAULT_PRICE.cached,
+  output: DEFAULT_PRICE.output,
+};
+export const PRICE_SOURCE = DEFAULT_PRICE.source;
+export const priceOf = (model: string): Price | undefined =>
+  Object.hasOwn(PRICES, model) ? PRICES[model] : undefined;
 export const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 export class BudgetExceeded extends Error {}
 export class State {
   readonly db: Database;
   cell = 'preflight';
+  /** The models this campaign may spend on: the agent's and the grader's. */
+  readonly models: ReadonlySet<string>;
   constructor(
     path: string,
     readonly limit: number,
+    models: readonly string[] = [MODEL],
   ) {
+    for (const model of models) if (!priceOf(model)) throw new Error(`Unpriced model: ${model}`);
+    this.models = new Set(models);
     if (!Number.isFinite(limit) || limit <= 0 || limit > 50)
       throw new Error('Budget must be greater than zero and at most $50');
     this.db = new Database(path, { create: true });
@@ -63,16 +109,16 @@ export class State {
       .immediate();
   }
   reserve(body: Record<string, unknown>, role: string) {
-    if (body.model !== MODEL)
-      throw new Error(
-        'Unpriced model refused: this campaign only prices the requested Fireworks model',
-      );
+    const model = String(body.model);
+    const price = priceOf(model);
+    if (!price || !this.models.has(model))
+      throw new Error('Unpriced model refused: this campaign only prices its requested models');
     if (body.n !== undefined && body.n !== 1) throw new Error('Multiple completions refused');
     const max = Number(body.max_tokens ?? body.max_completion_tokens);
     if (!Number.isSafeInteger(max) || max < 1 || max > 8192)
       throw new Error('Unbounded completion refused');
     const input = Buffer.byteLength(JSON.stringify(body), 'utf8') + 4096;
-    const reserved = (input * PRICE.input + max * PRICE.output) / 1e6;
+    const reserved = (input * price.input + max * price.output) / 1e6;
     const id = randomUUID();
     this.db
       .transaction(() => {
@@ -80,7 +126,7 @@ export class State {
           throw new BudgetExceeded('Campaign spend cap reached');
         this.db
           .query('INSERT INTO calls(id,cell,role,reserved,request_hash,model) VALUES (?,?,?,?,?,?)')
-          .run(id, this.cell, role, reserved, sha256(JSON.stringify(body)), MODEL);
+          .run(id, this.cell, role, reserved, sha256(JSON.stringify(body)), model);
       })
       .immediate();
     return id;
@@ -118,8 +164,12 @@ export class State {
       typeof cached === 'number' &&
       [input, output, cached].every((n) => Number.isSafeInteger(n) && n >= 0) &&
       cached <= input;
+    const requested = this.db
+      .query<{ model: string }, [string]>('SELECT model FROM calls WHERE id=?')
+      .get(id)?.model;
+    const price = priceOf(requested ?? '') ?? DEFAULT_PRICE;
     const cost = valid
-      ? ((input - cached) * PRICE.input + cached * PRICE.cached + output * PRICE.output) / 1e6
+      ? ((input - cached) * price.input + cached * price.cached + output * price.output) / 1e6
       : null;
     this.db
       .query(
@@ -165,6 +215,29 @@ export class State {
       data: JSON.parse(row.data) as Record<string, unknown>,
       result: row.result ? (JSON.parse(row.result) as CellResult) : null,
     };
+  }
+  /**
+   * Forget the progress of this campaign's unfinished cells. Only for a stack
+   * whose database ended with the last process: their jobs no longer exist, and
+   * no effect they reached can be repeated, because their destination went with it.
+   */
+  resetUnfinished(prefix: string) {
+    this.db
+      .query('DELETE FROM cells WHERE result IS NULL AND substr(key,1,length(?1))=?1')
+      .run(prefix);
+  }
+  /** Spend per model and role, from settled usage or the retained reservation. */
+  spend(cellPrefix = '') {
+    return this.db
+      .query<
+        { model: string; role: string; calls: number; cost: number; input: number; output: number },
+        [string]
+      >(
+        `SELECT model, role, count(*) AS calls, coalesce(sum(coalesce(settled,reserved)),0) AS cost,
+          coalesce(sum(input_tokens),0) AS input, coalesce(sum(output_tokens),0) AS output
+         FROM calls WHERE substr(cell,1,length(?1))=?1 GROUP BY model, role ORDER BY model, role`,
+      )
+      .all(cellPrefix);
   }
   update(key: string, phase: string, data: Record<string, unknown>) {
     this.db

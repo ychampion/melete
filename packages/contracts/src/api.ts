@@ -47,6 +47,8 @@ export const healthResponse = z.object({
           'provider_slow',
           'daily_budget',
           'unreadable_answer',
+          'answer_cut_off',
+          'answer_refused',
           'too_large',
           'no_memory_model',
           'other',
@@ -80,6 +82,8 @@ export const signedInOwner = z.object({
   id: z.string(),
   email: z.email(),
   created_at: timestamp,
+  /** `guest`: an invited account that uses only the rooms it was invited to. */
+  kind: z.enum(['person', 'guest']).optional(),
 });
 export const ownerResponse = z.object({ owner: signedInOwner });
 /** Whether this installation still needs its first account: true until an owner exists. */

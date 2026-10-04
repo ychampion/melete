@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { canonicalizePayload, ID_PREFIXES } from '@melete/contracts';
 import { createInternalServer } from '../apps/melete/src/broker/internal-server.ts';
 import { pendingRuntimeWait } from '../apps/melete/src/broker/runtime-wait.ts';
+import { browserManifest } from '../apps/melete/src/connectors/browser.ts';
 import { ConnectorRegistry } from '../apps/melete/src/connectors/registry.ts';
 import { loadEnv } from '../apps/melete/src/env.ts';
 import { newId } from '../apps/melete/src/ids.ts';
@@ -13,13 +15,42 @@ import { FileRestrictionJournal, restoreMemory } from '../apps/melete/src/memory
 import { buildViews } from '../apps/melete/src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE } from '../apps/melete/src/memory/work.ts';
 import { defaultPrivacyRouter } from '../apps/melete/src/privacy/index.ts';
+import {
+  type BrowserFixture,
+  capabilityConnector,
+  capabilityScopes,
+  openBrowserFixture,
+  usesBrowser,
+} from './capability.ts';
 import { fixtureConnector, initializeDestination, SCOPES } from './destination.ts';
 import type { GradeContext, Snapshot } from './grading.ts';
 import { ScriptedModel } from './scripted.ts';
-import { API_PORT, BROKER_PORT, ContainerRuntime, openStack, PRIVATE } from './stack.ts';
+import {
+  API_PORT,
+  BROKER_PORT,
+  ContainerRuntime,
+  LightRuntime,
+  openStack,
+  PRIVATE,
+  type Stack,
+} from './stack.ts';
 import { MODEL, type State } from './state.ts';
 import { meteredTransport } from './transport.ts';
 import type { Domain, Scenario } from './types.ts';
+
+/** A job title from the request, cut at a word and marked, so no half word reads as a fact. */
+export function titleOf(objective: string, limit = 100) {
+  if (objective.length <= limit) return objective;
+  const cut = objective.slice(0, limit - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), 1)).trimEnd()}…`;
+}
+
+/** The objective and history with the local page's address filled in. */
+export function withFixtureAddress(text: string, formUrl: string | undefined) {
+  if (!text.includes('{{form_url}}')) return text;
+  if (!formUrl) throw new Error('This scenario needs the local form page');
+  return text.replaceAll('{{form_url}}', formUrl);
+}
 
 const json = <T>(value: unknown): T => JSON.parse(JSON.stringify(value)) as T;
 export async function openLab(
@@ -27,7 +58,9 @@ export async function openLab(
   provider: 'fireworks' | 'scripted',
   apiKey?: string,
   slot = 0,
-  sharedStack?: Awaited<ReturnType<typeof openStack>>,
+  sharedStack?: Stack,
+  corpus: readonly Scenario[] = [],
+  model = MODEL,
 ) {
   if (provider === 'fireworks' && !apiKey) throw new Error('Fireworks requires FIREWORKS_API_KEY');
   const base = sharedStack ?? (await openStack());
@@ -37,7 +70,8 @@ export async function openLab(
   const connectors = new ConnectorRegistry();
   const scripted = new ScriptedModel();
   let core: Awaited<ReturnType<typeof bootstrap>>;
-  const runtime = new ContainerRuntime(
+  const Runtime = stack.engine === 'light' ? LightRuntime : ContainerRuntime;
+  const runtime = new Runtime(
     stack,
     async (bundle) => {
       if (!core.handle) throw new Error('Lab database is unavailable');
@@ -54,11 +88,15 @@ export async function openLab(
     MELETE_CAPABILITY_KEY: stack.secrets.capability,
     MELETE_APPROVAL_KEY: stack.secrets.approval,
     MELETE_RUNTIME_ADAPTER: 'external',
-    MELETE_DEFAULT_PROVIDER: provider,
-    MELETE_DEFAULT_MODEL: provider === 'fireworks' ? MODEL : 'scripted',
+    // The scripted transport answers under the Fireworks route name, which the
+    // service accepts; the gateway's fetch, not the name, decides where it goes.
+    MELETE_DEFAULT_PROVIDER: 'fireworks',
+    MELETE_DEFAULT_MODEL: provider === 'fireworks' ? model : 'scripted',
     MELETE_SPACES_DIR: resolve(PRIVATE, 'spaces'),
     MELETE_ARTIFACTS_DIR: resolve(PRIVATE, 'artifacts'),
     MELETE_WORK_DIR: '/work',
+    // Workers share one database; each is its own service instance.
+    MELETE_INSTANCE_ID: `evals-${slot}-${process.pid}`,
   });
   core = await bootstrap({ env, runtime, workers: false });
   if (!core.handle || !core.runner || !core.jobs || !core.queue)
@@ -67,7 +105,16 @@ export async function openLab(
   // Fixture evidence is seeded deterministically; paid inference belongs to the evaluated turns.
   await core.memory?.stop();
   await queue.boss.offWork(MEMORY_EXTRACT_QUEUE);
-  runner.options.scopes = SCOPES;
+  runner.options.scopes = [
+    ...SCOPES,
+    ...capabilityScopes(corpus),
+    ...(corpus.some(usesBrowser) ? browserManifest.tools.map((tool) => tool.name) : []),
+  ];
+  let browser: BrowserFixture | undefined;
+  const browserFixture = async () => {
+    browser ??= await openBrowserFixture(sql, resolve(PRIVATE, `browser-${slot}`));
+    return browser;
+  };
   const sql = handle.sql;
   await initializeDestination(sql);
   await sql`CREATE TABLE IF NOT EXISTS eval_runtime_event (
@@ -95,10 +142,10 @@ export async function openLab(
     capabilityKey: stack.secrets.capability,
     approvalKey: stack.secrets.approval,
     boss: queue.boss,
-    defaultProvider: provider,
+    defaultProvider: 'fireworks',
     providers: [
       {
-        name: provider,
+        name: 'fireworks',
         baseUrl:
           provider === 'fireworks'
             ? 'https://api.fireworks.ai/inference/v1/'
@@ -156,6 +203,17 @@ export async function openLab(
       String(row.id),
       fixtureConnector(sql, String(row.label).slice(5) as Domain),
     );
+  const capabilityRows =
+    await sql`SELECT id, label, space_id FROM connection WHERE (provider='test' AND label LIKE 'eval-cap:%') OR (provider='web' AND label LIKE 'eval-browser:%')`;
+  for (const row of capabilityRows) {
+    const label = String(row.label);
+    if (label.startsWith('eval-browser:')) {
+      connectors.register(String(row.id), (await browserFixture()).connector(String(row.space_id)));
+      continue;
+    }
+    const scenario = corpus.find((entry) => entry.id === label.slice('eval-cap:'.length));
+    if (scenario) connectors.register(String(row.id), capabilityConnector(sql, scenario));
+  }
   await boundary.broker.recoverDispatched();
   await runner.recover();
 
@@ -174,6 +232,8 @@ export async function openLab(
       await sql`SELECT payload FROM event WHERE job_id=${jobId} AND payload->>'phase'='model_receipt' ORDER BY seq`;
     const reactions =
       await sql`SELECT payload FROM event WHERE job_id=${jobId} AND type='reaction' AND payload->>'by'='assistant' ORDER BY seq`;
+    const questions =
+      await sql`SELECT payload FROM event WHERE job_id=${jobId} AND payload->>'kind'='person_question_requested' ORDER BY seq`;
     const attempts =
       await sql`SELECT id,epoch,outcome,outcome_detail FROM attempt WHERE job_id=${jobId} ORDER BY epoch`;
     const latest = attempts.at(-1);
@@ -207,6 +267,15 @@ export async function openLab(
       attempts: attempts.length,
       delivered_memory: delivered?.knowledge ?? [],
       reactions: reactions.map((entry) => entry.payload),
+      questions: questions.map((entry) => {
+        const question = (
+          entry.payload as { question?: { text?: string; options?: { label: string }[] } }
+        ).question;
+        return {
+          text: String(question?.text ?? ''),
+          choices: (question?.options ?? []).map((option) => String(option.label)),
+        };
+      }),
     });
   }
   async function wake(jobId: string, minimumAttempts: number) {
@@ -346,20 +415,57 @@ export async function openLab(
       },
     };
   }
+  /** A PDF uploaded through the service's own attachment store, as the person's, for a message. */
+  async function attachFile(spaceId: string, file: NonNullable<Scenario['attach']>) {
+    if (!core.blobs) throw new Error('The service has no blob store for attachments');
+    const { AttachmentService } = await import('../apps/melete/src/attachments/store.ts');
+    const { pdfWith } = await import('../apps/melete/src/attachments/fixtures.ts');
+    const service = new AttachmentService(sql, core.blobs);
+    const view = await service.upload(
+      { spaceId, principalId: ownerId },
+      { name: file.name, mediaType: 'application/pdf', bytes: pdfWith(file.pages) },
+    );
+    return view.id;
+  }
   async function run(scenario: Scenario, cellKey: string): Promise<GradeContext> {
     scripted.scenario = scenario;
     let cell = state.get(cellKey);
     const spaceId = cell.space_id ?? newId(ID_PREFIXES.space);
     state.identities(cellKey, spaceId);
     await sql`INSERT INTO space(id,name,git_path) VALUES(${spaceId},${scenario.title},${`evals/${spaceId}`}) ON CONFLICT DO NOTHING`;
-    let [connection] =
-      await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND provider='test' AND label=${`eval:${scenario.domain}`}`;
+    const capability = !!scenario.tools;
+    const label = capability ? `eval-cap:${scenario.id}` : `eval:${scenario.domain}`;
+    // A capability scenario with no tools of its own gets no fixture connection at all.
+    const connectionless = capability && !scenario.tools?.length;
+    let [connection] = connectionless
+      ? [{ id: '' }]
+      : await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND provider='test' AND label=${label}`;
     if (!connection) {
       const id = newId(ID_PREFIXES.connection);
-      await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${'test'},${`eval:${scenario.domain}`},${JSON.stringify(SCOPES)}::jsonb)`;
-      connectors.register(id, fixtureConnector(sql, scenario.domain));
+      const scopes = capability ? capabilityScopes([scenario]) : SCOPES;
+      await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${'test'},${label},${JSON.stringify(scopes)}::jsonb)`;
+      connectors.register(
+        id,
+        capability ? capabilityConnector(sql, scenario) : fixtureConnector(sql, scenario.domain),
+      );
       connection = { id };
     }
+    const formRun = createHash('sha256').update(cellKey).digest('hex').slice(0, 16);
+    let formUrl: string | undefined;
+    if (usesBrowser(scenario)) {
+      const fixture = await browserFixture();
+      formUrl = `${fixture.origin}/rsvp?run=${formRun}`;
+      const browserLabel = `eval-browser:${scenario.id}`;
+      const [existingBrowser] =
+        await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND provider='web' AND label=${browserLabel}`;
+      if (!existingBrowser) {
+        const id = newId(ID_PREFIXES.connection);
+        // The catalog offers a connector only on a connection of its own provider.
+        await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${browserManifest.provider},${browserLabel},${JSON.stringify(browserManifest.tools.map((tool) => tool.name))}::jsonb)`;
+        connectors.register(id, fixture.connector(spaceId));
+      }
+    }
+    const objective = withFixtureAddress(scenario.objective, formUrl);
     let memory = await seedMemory(
       spaceId,
       scenario,
@@ -373,9 +479,12 @@ export async function openLab(
         'POST',
         {
           space_id: spaceId,
-          title: scenario.objective.slice(0, 100),
-          objective: scenario.objective,
-          constraints: { deliverable: { kind: 'none' } },
+          title: capability ? titleOf(objective) : objective.slice(0, 100),
+          objective,
+          constraints: {
+            deliverable: { kind: 'none' },
+            ...(formUrl ? { allowed_domains: ['127.0.0.1'] } : {}),
+          },
           budget: {
             max_turns: 40,
             max_output_tokens: 24000,
@@ -391,6 +500,10 @@ export async function openLab(
       if (created.status !== 201 && created.status !== 200 && created.status !== 202)
         throw new Error(`Job creation returned HTTP ${created.status}`);
       jobId = String((created.value.job as { id: string }).id);
+      // A long conversation goes on after each reply, which only a chat does. The
+      // conversation route needs a personal-space session this lab does not make,
+      // so the job it created is marked as one before its first turn.
+      if (scenario.history?.length) await sql`UPDATE job SET kind='chat' WHERE id=${jobId}`;
       if (process.env.EVALS_CRASH_AT === 'after_submission') process.exit(77);
       state.identities(cellKey, spaceId, jobId);
     }
@@ -421,8 +534,43 @@ export async function openLab(
       ON CONFLICT(job_id) DO UPDATE SET scenario=excluded.scenario,memory_scope=excluded.memory_scope`;
     cell = state.get(cellKey);
     let data = cell.data;
+    // A long conversation is held turn by turn, as a person would: each message
+    // waits for its reply, and the last one is the turn the scenario grades.
+    for (const [index, text] of (scenario.history ?? []).entries()) {
+      if (Number(data.history_posted ?? 0) > index) continue;
+      await wake(jobId, index + 1);
+      if (index === (scenario.history?.length ?? 0) - 1)
+        data = { ...data, questions_before: (await snapshot(jobId)).questions?.length ?? 0 };
+      // A turn whose attempt failed is queued for a retry; let it finish before the next message.
+      for (let retry = 0; retry < 3 && (await snapshot(jobId)).state === 'queued'; retry++)
+        await wake(jobId, (await snapshot(jobId)).attempts + 1);
+      const posted = await api(
+        `/jobs/${jobId}/input`,
+        'POST',
+        {
+          text: withFixtureAddress(text, formUrl),
+          ...(scenario.attach && index === (scenario.history?.length ?? 0) - 1
+            ? { attachments: [await attachFile(spaceId, scenario.attach)] }
+            : {}),
+        },
+        `${cellKey}:history:${index}`,
+      );
+      if (posted.status !== 200 && posted.status !== 201 && posted.status !== 202)
+        throw new Error(
+          `Posting an earlier message returned HTTP ${posted.status} with the job ${(await snapshot(jobId)).state}: ${JSON.stringify(posted.value.error ?? null).slice(0, 300)}`,
+        );
+      data = { ...data, history_posted: index + 1 };
+      state.update(cellKey, 'history', data);
+    }
     if (!data.initial) {
-      await wake(jobId, 1);
+      await wake(jobId, (scenario.history?.length ?? 0) + 1);
+      // In a conversation, a final turn whose attempt failed is retried like the earlier ones.
+      for (
+        let retry = 0;
+        retry < 3 && scenario.history?.length && (await snapshot(jobId)).state === 'queued';
+        retry++
+      )
+        await wake(jobId, (await snapshot(jobId)).attempts + 1);
       if (process.env.EVALS_CRASH_AT === 'after_first_turn') process.exit(77);
       data = {
         ...data,
@@ -484,7 +632,34 @@ export async function openLab(
       }
       state.update(cellKey, 'decision', data);
     }
-    if (scenario.action === 'approve' && data.decision_status === 200 && !data.second_done) {
+    if (scenario.approve && data.decision_status === undefined) {
+      const wanted = scenario.approve;
+      const proposed = initial.actions.find(
+        (action) => action.status === 'needs_approval' && action.kind === wanted.kind,
+      );
+      const decision = proposed
+        ? initial.approvals.find((approval) => approval.action_id === proposed.id)
+        : undefined;
+      const text = JSON.stringify(proposed?.canonical_payload ?? {}).toLowerCase();
+      const intentMatch =
+        !!proposed &&
+        Object.values(wanted.fields ?? {}).every((value) => text.includes(value.toLowerCase()));
+      data = { ...data, intent_match: intentMatch };
+      if (!proposed || !decision || !intentMatch) data.decision_status = 0;
+      else {
+        const response = await api(`/approvals/${decision.id}`, 'POST', {
+          decision: 'approved',
+          payload_hash: decision.payload_hash,
+        });
+        data.decision_status = response.status;
+      }
+      state.update(cellKey, 'decision', data);
+    }
+    if (
+      (scenario.action === 'approve' || scenario.approve) &&
+      data.decision_status === 200 &&
+      !data.second_done
+    ) {
       await wake(jobId, initial.attempts + 1);
       if (process.env.EVALS_CRASH_AT === 'after_followup') process.exit(77);
       data.second_done = true;
@@ -557,6 +732,12 @@ export async function openLab(
       ...(scenario.followup ? { followup_status: data.followup_status as number } : {}),
       ...(data.trigger ? { trigger: data.trigger as GradeContext['trigger'] } : {}),
       ...(data.before_trigger ? { before_trigger: data.before_trigger as Snapshot } : {}),
+      ...(typeof data.questions_before === 'number'
+        ? { questions_before: data.questions_before }
+        : {}),
+      ...(browser && usesBrowser(scenario)
+        ? { form_submissions: browser.submissions(formRun).map((entry) => entry.fields) }
+        : {}),
     };
     await writeFile(
       resolve(PRIVATE, `last-context-${slot}.json`),
@@ -576,6 +757,7 @@ export async function openLab(
     async close() {
       await server.stop(true);
       await new Promise<void>((done) => boundary.server.close(() => done()));
+      await browser?.close();
       await core.close();
     },
   };

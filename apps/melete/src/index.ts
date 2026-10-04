@@ -143,13 +143,17 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
 import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { mountRooms } from './rooms/routes.ts';
+import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
@@ -258,6 +262,8 @@ export type AppDeps = {
   blobs?: BlobStore;
   /** Signs app views. Left out, keyed from the master key. */
   viewTokens?: ViewTokens;
+  /** Chat platforms people can talk to rooms from, besides the web. Left out, none. */
+  roomSurfaces?: RoomSurface[];
   /** The files people send in chat. Left out, nothing can be attached. */
   attachments?: AttachmentService;
 };
@@ -415,7 +421,8 @@ export function createApp(deps: AppDeps) {
       companion: deps.voiceCompanion ?? null,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
-  if (deps.db)
+  const experience =
+    deps.db &&
     mountExperience(app, {
       db: deps.db,
       jobs: deps.jobs,
@@ -433,6 +440,23 @@ export function createApp(deps: AppDeps) {
       privacy,
       runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
       attachments: deps.attachments,
+    });
+  // Rooms: shared spaces where several people talk to one agent.
+  if (deps.db && deps.jobs && submissions)
+    mountRooms(app, {
+      db: deps.db,
+      jobs: deps.jobs,
+      submissions,
+      principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+      runner: deps.runner,
+      events: experience ? experience.events : undefined,
+      permissions: experience ? experience.permissions : undefined,
+      changes: deps.events,
+      computers: deps.sandboxComputers,
+      memory: deps.memory,
+      env: deps.env,
+      triggers: deps.triggers,
+      surfaces: deps.roomSurfaces,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -458,7 +482,8 @@ export function createApp(deps: AppDeps) {
       registry: deps.registry,
       limits,
     });
-  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
+  if (deps.db)
+    mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter, limits });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -619,6 +644,7 @@ export async function bootstrap(
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
+  let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
@@ -659,6 +685,7 @@ export async function bootstrap(
     stopEpisodeRetention?.();
     stopEgressRetention?.();
     clearInterval(leftovers);
+    stopGuestExpiry?.();
     sandboxes?.stop();
     processSweep?.stop();
     processMonitor?.stop();
@@ -887,6 +914,7 @@ export async function bootstrap(
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,
         privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+        roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
       });
     }
     if (jobs) {
@@ -958,6 +986,7 @@ export async function bootstrap(
                 gateway: memoryGateway?.gateway,
                 captureChat: true,
                 privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+                roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
               }
             : { gateway: memoryGateway?.gateway },
         );
@@ -1044,6 +1073,12 @@ export async function bootstrap(
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 recallsPrivateMemory: (jobId, attemptId) =>
                   privacy.recallsPrivateMemory(jobId, attemptId, {
+                    protocol: engineProtocol(env),
+                    providerUrl: providerAddress(env),
+                  }),
+                // The agent is told when what the person just wrote will not be kept.
+                refusesMemoryRead: (jobId) =>
+                  privacy.refusesServiceRead(jobId, {
                     protocol: engineProtocol(env),
                     providerUrl: providerAddress(env),
                   }),
@@ -1242,6 +1277,12 @@ export async function bootstrap(
         if (handle && processFactory)
           processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
             leading(leases, 'process-monitor'),
+          );
+        if (handle)
+          stopGuestExpiry = startGuestExpiry(
+            new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
+            undefined,
+            () => leading(leases, 'guest-expiry'),
           );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
