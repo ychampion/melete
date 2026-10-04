@@ -384,6 +384,15 @@ withDb('situations', () => {
       refused = true;
     }
     expect(refused).toBe(true);
+    // Nor can a push that would break quiet hours be one the person did not set.
+    let pushRefused = false;
+    try {
+      await required(handle).sql`update push_intent set urgency = 'urgent'
+        where situation_id = ${String(found.id)}`;
+    } catch {
+      pushRefused = true;
+    }
+    expect(pushRefused).toBe(true);
   }, 60_000);
 
   test('a meeting moved twice has one live clock, at its new time', async () => {
