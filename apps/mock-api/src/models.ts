@@ -7,16 +7,20 @@
  *
  * `MELETE_MOCK_MODELS=none` starts with no working model, so first-run setup
  * asks for one. Otherwise the server's default provider has an operator key.
+ * The person may set a secondary model beside it, and choose which work uses it.
  */
 import {
   effectiveVision,
   MODEL_PROVIDERS,
   type ModelProvider,
+  type ModelRole,
   type ModelSettings,
   modelSettingsResponse,
   providerSignInStatus,
   saveModelKeyRequest,
   setDefaultModelRequest,
+  setSecondaryModelRequest,
+  setSecondaryUsesRequest,
   startSignInResponse,
   testModelConnectionRequest,
   testModelConnectionResponse,
@@ -62,6 +66,12 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
     at: string;
     vision: boolean | null;
   } | null = null;
+  let secondary: { provider: string; model: string; at: string } | null = null;
+  const uses: { side_tasks: ModelRole; scheduled: ModelRole } = {
+    side_tasks: 'secondary',
+    scheduled: 'primary',
+  };
+  let usesAt: string | null = null;
   let signedIn = false;
   let pending: string | null = null;
 
@@ -71,6 +81,11 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
       : operatorKeys.has(provider) ||
         (keys.has(provider) &&
           (provider !== 'openai-compatible' || Boolean(keys.get(provider)?.baseUrl)));
+
+  /** A compatible endpoint saved at an address on this machine or network. */
+  const servesLocally = (provider: string) =>
+    provider === 'openai-compatible' &&
+    /^https?:\/\/(localhost|127\.|10\.|192\.168\.)/.test(keys.get(provider)?.baseUrl ?? '');
 
   const view = (): ModelSettings => {
     const active = chosen ?? OPERATOR_DEFAULT;
@@ -105,7 +120,32 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
       }),
       can_edit: true,
       can_store_keys: true,
+      secondary: {
+        model: secondary
+          ? {
+              provider: secondary.provider,
+              model: secondary.model,
+              connected: isConnected(secondary.provider),
+            }
+          : null,
+        uses: { ...uses },
+        can_edit: true,
+        leaves_local_primary: Boolean(
+          secondary &&
+            servesLocally((chosen ?? OPERATOR_DEFAULT).provider) &&
+            !servesLocally(secondary.provider),
+        ),
+        updated_at: secondary?.at ?? usesAt,
+      },
     };
+  };
+
+  /** The part a model plays for the person now, as `/usage` labels it. */
+  const roleOf = (provider: string, model: string): ModelRole | null => {
+    const active = chosen ?? OPERATOR_DEFAULT;
+    if (active.provider === provider && active.model === model) return 'primary';
+    if (secondary?.provider === provider && secondary.model === model) return 'secondary';
+    return null;
   };
 
   const send = <T extends z.ZodType>(c: Context, schema: T, body: unknown, status = 200) => {
@@ -185,7 +225,7 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
           usd: round2(spent * 0.2),
           tokens: Math.round(spent * 60_000),
         },
-      ],
+      ].map((row) => ({ ...row, role: roleOf(row.provider, row.model) })),
     });
   });
 
@@ -286,6 +326,34 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
 
   app.delete('/model-settings/default', (c) => {
     chosen = null;
+    return send(c, modelSettingsResponse, view());
+  });
+
+  app.put('/model-settings/secondary', async (c) => {
+    const input = await body(c, setSecondaryModelRequest);
+    if (!input.success) return refuse(c, 400, 'invalid_request', 'Request data is invalid.');
+    if (!isConnected(input.data.provider))
+      return refuse(
+        c,
+        409,
+        'model_not_connected',
+        `Add a key for ${LABELS[input.data.provider]} before choosing one of its models.`,
+      );
+    secondary = { provider: input.data.provider, model: input.data.model, at: now() };
+    return send(c, modelSettingsResponse, view());
+  });
+
+  app.delete('/model-settings/secondary', (c) => {
+    secondary = null;
+    return send(c, modelSettingsResponse, view());
+  });
+
+  app.put('/model-settings/secondary/uses', async (c) => {
+    const input = await body(c, setSecondaryUsesRequest);
+    if (!input.success) return refuse(c, 400, 'invalid_request', 'Request data is invalid.');
+    if (input.data.side_tasks) uses.side_tasks = input.data.side_tasks;
+    if (input.data.scheduled) uses.scheduled = input.data.scheduled;
+    usesAt = now();
     return send(c, modelSettingsResponse, view());
   });
 

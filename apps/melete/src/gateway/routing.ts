@@ -11,6 +11,12 @@
  * - MELETE_MODEL_FALLBACK: tried in order when the provider rate-limits,
  *   fails or cannot be reached, before any of the reply has been sent.
  *
+ * Two of these roles may be filled by the installation owner's secondary
+ * model, chosen in Settings, for the work in the spaces they own: `fast` for
+ * short side calls, and `background` for scheduled and repeating work, which
+ * otherwise runs on the primary. With no secondary set, the operator's roles
+ * apply as they are. Vision and fallback stay the operator's.
+ *
  * Each is written `provider/model`, the provider name before the first slash.
  * A model the owner chose in the app always wins for agent turns: those turns
  * are never rerouted or sent elsewhere on failure. A model the operator pinned
@@ -34,7 +40,21 @@ export type ModelRouting = {
   fast: ModelChoice | null;
   vision: ModelChoice | null;
   fallback: ModelChoice[];
+  /** Scheduled and repeating work. Unset, it runs on the primary. */
+  background?: ModelChoice | null;
 };
+
+/** The roles a person's secondary model may fill. */
+export type PersonRoles = { fast?: ModelChoice; background?: ModelChoice };
+
+/** The operator's routing with the roles a person's secondary fills put in. */
+export function withPersonRoles(routing: ModelRouting, roles: PersonRoles): ModelRouting {
+  return {
+    ...routing,
+    ...(roles.fast ? { fast: roles.fast } : {}),
+    ...(roles.background ? { background: roles.background } : {}),
+  };
+}
 
 export const NO_ROUTING: ModelRouting = { fast: null, vision: null, fallback: [] };
 

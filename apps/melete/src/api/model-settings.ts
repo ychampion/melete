@@ -1,14 +1,18 @@
 /**
  * The installation's model, connected from the app. Any signed-in account can
  * see which model is active; only the setup owner can change a key or the
- * model, since both serve every space on the installation. No response
- * carries a key, and no request body is logged.
+ * model, since both serve every space on the installation. The owner may also
+ * set a secondary model, from the providers connected here, and which of the
+ * work in their spaces runs on it; each account reads only its own. No
+ * response carries a key, and no request body is logged.
  */
 import {
   modelSettingsResponse,
   saveModelKeyRequest,
   setDefaultModelRequest,
   setModelVisionRequest,
+  setSecondaryModelRequest,
+  setSecondaryUsesRequest,
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from '@melete/contracts';
@@ -41,8 +45,14 @@ export function mountModelSettings(
     return c.get('owner')?.id as string;
   }
 
+  /** The signed-in account, for its own secondary model. */
+  const person = (c: Context) => {
+    const actor = c.get('owner') as { id?: string; kind?: string } | undefined;
+    return actor?.id ? { id: actor.id, guest: actor.kind === 'guest' } : null;
+  };
+
   const view = async (c: Context) =>
-    c.json(modelSettingsResponse.parse(await settings.view(await isOwner(c))));
+    c.json(modelSettingsResponse.parse(await settings.view(await isOwner(c), person(c))));
 
   app.get('/model-settings', view);
 
@@ -76,6 +86,25 @@ export function mountModelSettings(
     const ownerId = await requireOwner(c);
     const input = setModelVisionRequest.parse(await c.req.json());
     await settings.setVision(input.provider, input.model, ownerId, input.supports_vision);
+    return view(c);
+  });
+
+  app.put('/model-settings/secondary', async (c) => {
+    const principalId = await requireOwner(c);
+    const input = setSecondaryModelRequest.parse(await c.req.json());
+    await settings.setSecondary(principalId, input.provider, input.model);
+    return view(c);
+  });
+
+  app.delete('/model-settings/secondary', async (c) => {
+    await settings.clearSecondary(await requireOwner(c));
+    return view(c);
+  });
+
+  app.put('/model-settings/secondary/uses', async (c) => {
+    const principalId = await requireOwner(c);
+    const input = setSecondaryUsesRequest.parse(await c.req.json());
+    await settings.setSecondaryUses(principalId, input);
     return view(c);
   });
 

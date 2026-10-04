@@ -88,6 +88,11 @@ export function UsageThisMonth() {
                 {row.model}
               </span>
               <span>
+                {row.role ? (
+                  <span className="models-role">
+                    {row.role === 'primary' ? 'Primary' : 'Secondary'}
+                  </span>
+                ) : null}
                 {row.calls} call{row.calls === 1 ? '' : 's'} · {dollars(row.usd)}
               </span>
             </li>

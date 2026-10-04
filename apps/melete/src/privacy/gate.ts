@@ -21,6 +21,11 @@ import {
 import type { Protocol } from './redact.ts';
 import type { PrivacyRouter } from './router.ts';
 
+/** The model an attempt runs on, as its bundle names it. */
+export type AttemptModel = { provider: string; model: string };
+/** How an attempt's model is reached: the protocol it speaks and its address. */
+export type AttemptEngine = { protocol: Protocol; providerUrl?: string };
+
 /** What the person is told when the check could not be made. */
 export const CHECK_FAILED =
   'Melete could not check whether this conversation needs to stay private, so it has not sent anything to a model. Send your message again to try once more.';
@@ -32,6 +37,13 @@ export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAda
     engineProtocol: Protocol;
     /** The configured provider's address, which the owner may have confirmed is a model they run. */
     providerUrl?: string;
+    /**
+     * The protocol and address of the model this attempt runs on. Given, it is
+     * what the check judges, so an attempt on another model than the server's
+     * default (one chosen in the app, or the secondary) is asked about as that
+     * model rather than refused later at the gateway.
+     */
+    engineFor?: (model: AttemptModel) => Promise<AttemptEngine>;
     onError?: (error: Error) => void;
   },
 ): QuestioningRuntimeAdapter {
@@ -42,9 +54,11 @@ export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAda
   ): Promise<CommittedOutcome> => {
     let decision: Awaited<ReturnType<PrivacyRouter['beforeAttempt']>>;
     try {
-      decision = await options
-        .router()
-        .beforeAttempt(bundle, options.engineProtocol, options.providerUrl);
+      const engine =
+        options.engineFor && bundle.model
+          ? await options.engineFor(bundle.model)
+          : { protocol: options.engineProtocol, providerUrl: options.providerUrl };
+      decision = await options.router().beforeAttempt(bundle, engine.protocol, engine.providerUrl);
     } catch (error) {
       options.onError?.(error instanceof Error ? error : new Error(String(error)));
       decision = { proceed: false, text: CHECK_FAILED, question: null };
