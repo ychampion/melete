@@ -150,9 +150,13 @@ When a read no longer lists an occurrence that has not ended, the service looks
 it up again before saying anything: by its own id at Google and Microsoft Graph,
 by its UID in a CalDAV collection or a feed. Gone is a cancellation; found
 elsewhere, such as a meeting moved past the 14-day window, is a change; and when
-the lookup cannot tell, nothing is said (`a meeting moved past the window is a
-change, never a cancellation`, `an occurrence nobody can account for leaves
-quietly`).
+the calendar says it cannot tell, nothing is said (`a meeting moved past the
+window is a change, never a cancellation`, `an occurrence nobody can account
+for leaves quietly`). A lookup that fails, or that did not fit in this read's 20
+lookups, keeps the meeting and asks again on the next read, so a cancellation
+still arrives (`a meeting whose lookup fails is asked about again, and its
+cancellation arrives on the next read`). After three failed lookups, or once
+the meeting's start has passed, it is let go with the reason in `last_error`.
 
 An occurrence that only comes into view because the 14-day window moved on is
 kept quietly, and one that has ended leaves quietly. A read that stopped before
