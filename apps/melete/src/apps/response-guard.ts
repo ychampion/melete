@@ -13,6 +13,8 @@ import type { Sql, TransactionSql } from 'postgres';
 const WORKSPACE_WRITES = new Set([
   'files.write',
   'files.move',
+  'files.delete',
+  'files.restore',
   'exec.run',
   'exec.python',
   'terminal.run',
@@ -46,7 +48,11 @@ export async function asksAfterResponses(
   if (!WORKSPACE_WRITES.has(action.kind)) return false;
   const payload = action.canonical_payload;
   let path: string | null = null;
-  if (action.kind === 'files.write' || action.kind === 'files.move') {
+  if (
+    action.kind === 'files.write' ||
+    action.kind === 'files.move' ||
+    action.kind === 'files.delete'
+  ) {
     // A move writes where it lands: `to`, in `to_area` or else the move's own area.
     const area = action.kind === 'files.move' ? (payload.to_area ?? payload.area) : payload.area;
     if (area !== undefined && area !== 'work') return false;

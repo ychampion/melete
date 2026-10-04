@@ -852,11 +852,13 @@ export class BrokerService implements BrokerOperations {
       (changesPersonFiles(tool.name, action.canonical_payload) && !inSpace) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
-      // With the sandbox switch off, work in the agent's own workspace asks too.
+      // With the sandbox switch off, work in the agent's own workspace asks too,
+      // and so does deleting what the agent made there, which its tier alone
+      // (a delete is the person's tier) would otherwise let through unasked.
       (settings?.mode === 'auto_review' &&
         !settings.classes.sandbox &&
         changes &&
-        tierOf([]).tier === 'sandbox');
+        (tierOf([]).tier === 'sandbox' || tool.name === 'files.delete'));
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? this.originFields(action, action.kind) : [];
     const warnings = await resolveOriginWarnings(
@@ -1381,6 +1383,7 @@ export class BrokerService implements BrokerOperations {
                 constraints: jobConstraints.parse(job.constraints),
               },
               tx,
+              request.kind,
             ),
           );
           this.validatePayload(tool, canonical.canonical);

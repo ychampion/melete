@@ -113,6 +113,7 @@ const LABELS: Record<string, string> = {
   'files.read': 'Read a file',
   'files.write': 'Saved a file',
   'files.move': 'Moved a file',
+  'files.delete': 'Deleted a file',
   'files.restore': 'Restored a file',
   'files.save_attachment': 'Saved your file to its workspace',
   'web.fetch': 'Read a web page',
@@ -151,6 +152,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'files.read': ['Reading a file', 'Read a file'],
   'files.write': ['Saving a file', 'Saved a file'],
   'files.move': ['Moving a file', 'Moved a file'],
+  'files.delete': ['Deleting a file', 'Deleted a file'],
   'files.restore': ['Restoring a file', 'Restored a file'],
   'files.save_attachment': [
     'Saving your file to its workspace',
@@ -339,13 +341,64 @@ export function stepAsk(kind: string, payload: Record<string, unknown>): string 
       if (from && !into) return `Move ${what} out of your Files`;
       return into ? `Move ${what} within your Files` : null;
     }
+    case 'files.delete': {
+      const checked = object(payload.checked);
+      const file = named(typeof payload.path === 'string' ? payload.path.split('/').pop() : null);
+      const what = `${checked.what === 'folder' ? 'the folder ' : ''}${file ?? 'a file'}`;
+      return payload.area === 'artifacts' ? `Delete ${what} from your Files` : `Delete ${what}`;
+    }
     default:
       return null;
   }
 }
 
+/**
+ * What a delete would take, as the service found it before asking: the path,
+ * how much is in it, and the warning that it cannot be undone.
+ */
+function deleteFacts(payload: Record<string, unknown>) {
+  const checked = object(payload.checked);
+  const files = typeof checked.files === 'number' ? checked.files : null;
+  const bytes = typeof checked.bytes === 'number' ? checked.bytes : null;
+  const names = Array.isArray(checked.names)
+    ? checked.names.filter((name): name is string => typeof name === 'string')
+    : [];
+  return [
+    ...(typeof payload.path === 'string'
+      ? [
+          {
+            label: checked.what === 'folder' ? 'Folder' : 'File',
+            value: plainText(payload.path, 'A file'),
+          },
+        ]
+      : []),
+    ...(checked.what === 'folder' && files !== null
+      ? [{ label: 'Files in it', value: String(files) }]
+      : []),
+    ...(bytes !== null ? [{ label: 'Size', value: appBytes(bytes) }] : []),
+    ...(names.length
+      ? [
+          {
+            label: 'Inside',
+            value: plainText(
+              `${names.join(', ')}${files !== null && files > names.length ? `, and ${files - names.length} more` : ''}`,
+              'Its files',
+            ),
+          },
+        ]
+      : []),
+    ...(typeof checked.reason === 'string'
+      ? [{ label: 'Why you are asked', value: plainText(checked.reason, 'It is yours.') }]
+      : []),
+    ...(typeof checked.warning === 'string'
+      ? [{ label: 'Warning', value: plainText(checked.warning, 'It goes to the trash.') }]
+      : []),
+  ];
+}
+
 /** The target of a step in a browser or on the agent's computer, whole, for the card's facts. */
 function stepFacts(kind: string, payload: Record<string, unknown>) {
+  if (kind === 'files.delete') return deleteFacts(payload);
   if (!kind.startsWith('computer.') && !kind.startsWith('browser.')) return [];
   const intent =
     payload.intent && typeof payload.intent === 'object'
