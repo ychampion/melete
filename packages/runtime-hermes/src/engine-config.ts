@@ -63,7 +63,7 @@ export function attemptEngineFeatures(
  * reproduces that configuration exactly.
  */
 export type EngineFeatures = {
-  /** Toolsets the API-server agent is built with. Naming only the plugin's toolset is what turns every built-in off. */
+  /** Toolsets the API-server agent is built with. An explicit list replaces the engine's default, so a built-in not named here is off. */
   toolsets: readonly string[];
   /** Absent while no terminal toolset is built. */
   terminalBackend: TerminalBackend | null;
@@ -129,8 +129,46 @@ export const DEFAULT_BROKER_URL = 'http://melete:8788';
 /** The engine home's skills directory is filled from this path; it must not exist. */
 export const BUNDLED_SKILLS_DIR = '/opt/melete-runtime/no-bundled-skills';
 
+/**
+ * The engine's own toolsets an attempt is always built with, beside the plugin's.
+ * Each one acts only inside the engine process, so nothing it does can reach a
+ * file, the network, a shell or a credential except through the broker:
+ *
+ * - `todo` keeps a task list in the agent's memory for multi-step work. It
+ *   reads and writes nothing else (tools/todo_tool.py).
+ * - `delegation` runs helpers with their own context inside the same run. A
+ *   helper is built with the parent's toolsets minus delegation itself, the
+ *   question tool and memory (tools/delegate_tool_toolsets.py), so every effect
+ *   it has is a broker tool call on this attempt's capability, under the same
+ *   approvals and action budget, and its model calls go through the same
+ *   gateway with the same metering header, which is keyed on the gateway's
+ *   address (agent/agent_init.py). The delegation seam in
+ *   patches/observer_bridge.py keeps it in the turn: at the pin a top-level
+ *   delegation returns at once and its results arrive later as a new message,
+ *   which an attempt that ends with its run would never see.
+ *
+ * Everything else stays off. Files, the terminal, the web, the browser, code
+ * execution, vision and memory each act outside the engine, and Melete offers
+ * them as broker tools instead. Session search stays off too: an engine home
+ * lives for one attempt, so it could only find the conversation already in
+ * front of the model, while earlier ones are recalled by Melete.
+ */
+export const ENGINE_BUILTIN_TOOLSETS = ['todo', 'delegation'] as const;
+
+/**
+ * Bounds on helpers. Three at a time, one level deep, with a turn ceiling each;
+ * what they may spend is still the job's own accounting.
+ */
+export const DELEGATION_LIMITS = {
+  max_concurrent_children: 3,
+  max_spawn_depth: 1,
+  orchestrator_enabled: false,
+  max_iterations: 50,
+  subagent_auto_approve: false,
+} as const;
+
 const DEFAULT_FEATURES: EngineFeatures = {
-  toolsets: ['melete'],
+  toolsets: ['melete', ...ENGINE_BUILTIN_TOOLSETS],
   terminalBackend: null,
 };
 
@@ -254,6 +292,9 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     // loads its files out of the engine home whatever the toolset list says.
     memory: { memory_enabled: false, user_profile_enabled: false, provider: '' },
     curator: { enabled: false },
+    // Read by tools/delegate_tool_config.py. No provider or model is named, so
+    // a helper runs on the attempt's own model through the same gateway.
+    delegation: { ...DELEGATION_LIMITS },
     checkpoints: { enabled: false },
     // The engine is updated by pinning a new release. Its own check runs git
     // against the source checkout, in the background of every start.

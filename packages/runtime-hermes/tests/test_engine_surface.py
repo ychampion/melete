@@ -1089,6 +1089,110 @@ def test_the_sandbox_toolset_gives_the_terminal_and_no_background_processes(herm
         assert "process_manage" in model_tools._select_tool_names(["terminal"], None, True)
 
 
+@contextlib.contextmanager
+def _broker_tool(name: str = "say"):
+    """One plugin tool in the `melete` toolset, as the plugin registers them."""
+    from tools.registry import registry
+
+    registry.register(name=name, toolset="melete",
+                      schema={"description": f"{name} probe", "parameters": {"type": "object", "properties": {}}},
+                      handler=lambda args, **kw: "{}")
+    try:
+        yield name
+    finally:
+        registry.deregister(name)
+
+
+#: Built-in tools that act outside the engine process. None may be offered:
+#: Melete offers what they do as broker tools.
+OUTSIDE_EFFECT_TOOLS = {
+    "terminal", "process_manage", "read_file", "write_file", "patch", "search_files",
+    "web_search", "web_extract", "browser_navigate", "execute_code", "vision_analyze",
+    "image_generate", "memory", "session_search", "skill_manage", "cronjob_manage",
+    "text_to_speech", "clarify", "computer_use",
+}
+
+
+def test_the_shipped_toolsets_offer_the_engine_only_builtins_and_nothing_else(hermes_home):
+    """engine-config.ts ENGINE_BUILTIN_TOOLSETS: the task list and helpers, beside
+    the plugin's tools. Each acts only inside the engine (tools/todo_tool.py,
+    tools/delegate_tool.py)."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    config = shipped_config()
+    write_config(hermes_home, config)
+    with _broker_tool() as broker_tool:
+        enabled = sorted(_get_platform_tools(config, "api_server"))
+        names = {d["function"]["name"] for d in
+                 model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+    assert names == {broker_tool, "todo_list", "delegate_task"}
+    assert not names & OUTSIDE_EFFECT_TOOLS
+
+
+def test_a_helper_has_the_parents_tools_and_cannot_delegate_again(hermes_home):
+    """tools/delegate_tool_toolsets.py: a helper inherits the parent's toolsets,
+    minus delegation, the question tool and memory, so everything it can do is a
+    broker tool or its own task list."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    config = shipped_config()
+    write_config(hermes_home, config)
+    parent = type("Parent", (), {})()
+    parent.enabled_toolsets = sorted(_get_platform_tools(config, "api_server"))
+    parent.disabled_toolsets = None
+    with _broker_tool() as broker_tool:
+        enabled, disabled = _resolve_child_toolsets(parent, None, "leaf")
+        names = {d["function"]["name"] for d in model_tools.get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True)}
+        # Asking for more than the parent has gives nothing more.
+        wider, _ = _resolve_child_toolsets(parent, ["terminal", "file", "web", "melete"], "leaf")
+    assert names == {broker_tool, "todo_list"}
+    assert wider == ["melete"]
+
+
+def test_helpers_are_bounded_by_the_shipped_configuration(hermes_home):
+    """tools/delegate_tool_config.py reads the `delegation` section: three at a
+    time, one level deep, no helper of a helper, no self-approved commands."""
+    from tools import delegate_tool, delegate_tool_config
+
+    write_config(hermes_home, shipped_config())
+    assert delegate_tool._get_max_concurrent_children() == 3
+    assert delegate_tool_config._get_max_spawn_depth() == 1
+    assert delegate_tool_config._get_orchestrator_enabled() is False
+    assert delegate_tool_config._get_subagent_approval_callback() is delegate_tool_config._subagent_auto_deny
+    assert delegate_tool._load_config()["max_iterations"] == 50
+
+
+def test_a_delegation_runs_inside_the_turn_that_made_it(monkeypatch):
+    """The delegation seam (patches/observer_bridge.py), as the image applies it:
+    both of the engine's dispatch paths ask for the synchronous run, whose
+    result is the helpers' summaries, and the model is told so."""
+    import run_agent
+    from tools import delegate_tool
+
+    seen: dict = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", capture)
+    parent = type("Parent", (), {"_delegate_depth": 0})()
+    run_agent.AIAgent._dispatch_delegate_task(parent, {"tasks": [{"goal": "probe"}]})
+    assert seen["background"] is False, "the delegation seam is not applied to this engine"
+    assert delegate_tool._model_background_value({}, parent) is False
+    description = delegate_tool._build_top_level_description()
+    assert "Runs inside this turn" in description
+    assert "END YOUR TURN" not in description
+
+
 class _CatalogBroker(http.server.BaseHTTPRequestHandler):
     """Serves one attempt's catalog on `GET /tools` and nothing else."""
 

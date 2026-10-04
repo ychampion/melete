@@ -1203,7 +1203,7 @@ withDb("the agent's own terminal beside a paired computer", () => {
       expect(claim.bundle.tools.map((tool) => tool.name)).not.toContain('device.run');
       // The container deployment builds the engine from this bundle.
       expect(attemptEngineFeatures(claim.bundle.tools)).toEqual({
-        toolsets: ['melete', 'terminal_tools'],
+        toolsets: ['melete', 'todo', 'delegation', 'terminal_tools'],
         terminalBackend: 'melete_sandbox',
       });
       // The plugin is served the same terminal, which it hands to the engine.

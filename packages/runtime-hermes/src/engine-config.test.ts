@@ -102,7 +102,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
 
 test('this change turns nothing else on', () => {
   const config = renderEngineConfig(base) as Record<string, Record<string, unknown>>;
-  expect(config.platform_toolsets).toEqual({ api_server: ['melete'] });
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'todo', 'delegation'] });
   expect(config.tools).toEqual({ tool_search: { enabled: 'off' } });
   expect(config.terminal).toBeUndefined();
 });
@@ -298,14 +298,16 @@ test('a catalog with one sandbox terminal pins the engine terminal to the sandbo
   const sandbox = { name: 'terminal.run', connection_id: 'conn_sandbox' };
   const features = attemptEngineFeatures([{ name: 'react', connection_id: null }, sandbox]);
   expect(features).toEqual({
-    toolsets: ['melete', 'terminal_tools'],
+    toolsets: ['melete', 'todo', 'delegation', 'terminal_tools'],
     terminalBackend: 'melete_sandbox',
   });
   const config = renderEngineConfig({ ...base, features }) as Record<
     string,
     Record<string, unknown>
   >;
-  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal_tools'] });
+  expect(config.platform_toolsets).toEqual({
+    api_server: ['melete', 'todo', 'delegation', 'terminal_tools'],
+  });
   expect(config.terminal).toEqual({ backend: 'melete_sandbox', cwd: '/work' });
   expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBe('melete_sandbox');
 });

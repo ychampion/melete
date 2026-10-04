@@ -20,8 +20,8 @@ therefore changed in one place, and
 [`engine-config.test.ts`](src/engine-config.test.ts) fails if the committed file
 drifts from it.
 
-What it renders: the Melete plugin toolset alone, which is what turns every
-built-in toolset off; the tool-search bridge off; the skill curator,
+What it renders: the Melete plugin toolset beside two of the engine's own,
+`todo` and `delegation`, and no other built-in; the tool-search bridge off; the skill curator,
 conversation checkpoints and the auxiliary title and review requests off, so
 nothing spends a job's budget in the background; `memory.memory_enabled` and
 `memory.user_profile_enabled` both false, which are the two keys the engine
@@ -31,6 +31,20 @@ home whatever the toolset list says; a turn ceiling of 150
 since unset means unlimited; the tool-loop hard stop on by name, because the
 engine counts this platform as attended and would otherwise only warn; and model
 traffic pointed at Melete's gateway.
+
+The two built-ins act only inside the engine. `todo` keeps a task list in the
+agent's memory for work with several steps. `delegation` runs up to three
+helpers at a time, one level deep and fifty turns each, inside the same turn. A
+helper is built with the parent's toolsets minus delegation, the question tool
+and memory, so everything it does is a broker call on the attempt's capability,
+under the same approvals and action budget, and its model calls go through the
+gateway under the same metering header. Every built-in that touches files, the
+network, a shell or a credential stays off, because Melete offers those as
+broker tools. Session search stays off as well: an engine home lives for one
+attempt, so it could only find the conversation already in front of the model.
+`the shipped toolsets offer the engine-only built-ins and nothing else` and the
+probes after it in [`test_engine_surface.py`](tests/test_engine_surface.py)
+check this against the engine itself.
 
 Compaction is on, in place, and does not abort the attempt when a summary
 fails. `model.context_length` comes from Melete's model catalog, so the engine's
@@ -47,7 +61,7 @@ own bundled skills are never copied into an attempt's home.
 The boot script adds only what belongs to one attempt: the capability, the model
 it was granted, and the window and trigger that follow from that model. The
 image also applies
-`patches/observer_bridge.py`: six source hashes must match the audited pin or
+`patches/observer_bridge.py`: eight source hashes must match the audited pin or
 the identical reviewed patch. It adds a real compaction dispatch, binds plugin
 observations to the current HTTP run queue, puts the model's reasoning on the
 run's event stream as `reasoning.delta`, keeps the agent's own screenshot in
@@ -55,7 +69,10 @@ the session store and puts a paired computer's back from the broker when the
 next run of the same session reads its history (the engine stores a picture as
 the word "[screenshot]", and code the agent runs can read that store), and, when
 `agent.host_prompt` is false, leaves the engine's product pointer, profile line
-and host runtime block out of the system prompt; updating the pin means
+and host runtime block out of the system prompt. It also keeps a delegation
+inside the turn that made it: at the pin a top-level delegation returns at once
+and its results arrive later as a new message, which an attempt that ends with
+its run would never see. Updating the pin means
 reviewing those seams again. A
 checkout carrying the version of the patch before the reasoning seam is moved to
 this one; one carrying any other version is refused, so it has to be restored to

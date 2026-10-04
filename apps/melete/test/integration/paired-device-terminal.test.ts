@@ -108,7 +108,7 @@ withDb("the agent's own terminal", () => {
       // What the engine is built with: its own terminal, pinned to the sandbox.
       const features = attemptEngineFeatures(claim.bundle.tools);
       expect(features).toEqual({
-        toolsets: ['melete', 'terminal_tools'],
+        toolsets: ['melete', 'todo', 'delegation', 'terminal_tools'],
         terminalBackend: 'melete_sandbox',
       });
       const config = renderEngineConfig({
@@ -148,7 +148,7 @@ withDb('the engine is built for the agent answering', () => {
   test('an agent that may use everything keeps the terminal beside a paired computer', async () => {
     const { claim } = await attempt(true, {});
     expect(attemptEngineFeatures(claim.bundle.tools)).toEqual({
-      toolsets: ['melete', 'terminal_tools'],
+      toolsets: ['melete', 'todo', 'delegation', 'terminal_tools'],
       terminalBackend: 'melete_sandbox',
     });
   }, 20_000);

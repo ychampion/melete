@@ -49,8 +49,9 @@ logger = logging.getLogger("melete.plugin")
 SPARE_ENV = "MELETE_RUNTIME_SPARE"
 
 #: Every broker tool lands in this one toolset. `platform_toolsets.api_server`
-#: names it and nothing else, which is how the built-ins stay off: the model's
-#: entire catalog is what the broker served for this job.
+#: names it beside only the engine's task list and helpers, which act inside
+#: the engine, so every effect the model can have is a tool the broker served
+#: for this job.
 TOOLSET = "melete"
 
 #: The job this container is working on. It scopes the proposal reference, and
