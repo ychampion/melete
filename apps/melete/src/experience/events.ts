@@ -10,7 +10,7 @@ import {
   type TrailStep,
   toolCall,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { reviewView } from '../broker/auto-review.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -117,6 +117,17 @@ type AttemptText = {
 };
 
 /**
+ * Whether an event starts a piece of work the agent's message stops before: a
+ * proposed tool call, or the trace of work the engine or memory ran itself.
+ */
+const endsMessage = (row: { type: string; payload: unknown }): boolean => {
+  if (row.type === 'tool_call_proposed') return true;
+  if (row.type !== 'notice') return false;
+  const kind = object(row.payload).kind;
+  return kind === TOOL_TRACE_NOTICE || kind === MEMORY_TOOL_NOTICE;
+};
+
+/**
  * Where an attempt's streamed text stood before `seq`: the message being
  * written, and its reasoning since the answer last moved, which is where
  * reasoning is flushed. Read from the saved events, so a later page of the
@@ -129,7 +140,13 @@ async function attemptText(tx: Transaction, attemptId: string, seq: number): Pro
     .where(
       and(
         eq(event.attemptId, attemptId),
-        inArray(event.type, ['text_delta', 'reasoning_delta', 'tool_call_proposed']),
+        or(
+          inArray(event.type, ['text_delta', 'reasoning_delta', 'tool_call_proposed']),
+          and(
+            eq(event.type, 'notice'),
+            inArray(sql`${event.payload}->>'kind'`, [TOOL_TRACE_NOTICE, MEMORY_TOOL_NOTICE]),
+          ),
+        ),
         sql`${event.seq} < ${seq}`,
       ),
     )
@@ -139,7 +156,7 @@ async function attemptText(tx: Transaction, attemptId: string, seq: number): Pro
   let any = false;
   let split = false;
   for (const row of rows) {
-    if (row.type === 'tool_call_proposed') {
+    if (endsMessage(row)) {
       // The message before a call ended there; the next one starts afresh.
       if (answer !== '') split = true;
       answer = '';
@@ -500,8 +517,9 @@ export class ExperienceEvents {
           const payload = object(source.payload);
           // A tool call ends the message the model wrote before it: what it still
           // held back is shown now, ahead of the call, and the next words start
-          // a new paragraph.
-          if (source.type === 'tool_call_proposed' && source.attemptId) {
+          // a new paragraph. Work the engine runs itself is traced before the
+          // call is proposed, so its trace ends the message too.
+          if (endsMessage(source) && source.attemptId) {
             const text = await streamed(source);
             if (text.said) {
               const rest = text.answer.end();

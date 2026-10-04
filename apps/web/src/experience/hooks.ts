@@ -31,6 +31,7 @@ import type {
   Permission,
   Profile,
   Question,
+  RoomHandoff,
   Turn,
   TurnStatus,
 } from './types.ts';
@@ -106,6 +107,11 @@ export type AppContextValue = {
   refreshAgents: () => void;
   /** Ends the session on the service and returns to sign-in. */
   signOut: () => Promise<void>;
+  /**
+   * Signed in as a guest: an account invited into rooms, whose sign-in reaches
+   * only those rooms and its own account. Every personal surface stays away.
+   */
+  guest?: boolean;
 };
 
 export const AppContext = createContext<AppContextValue | null>(null);
@@ -143,6 +149,8 @@ export const defaultAgentOf = (agents: Agent[]): Agent | null =>
 export type Decisions = {
   permissions: Permission[];
   questions: Question[];
+  /** Tasks rooms handed the person, and results of them waiting to be shared or kept. */
+  handoffs: RoomHandoff[];
   loaded: boolean;
   error: string | null;
 };
@@ -150,6 +158,7 @@ export type Decisions = {
 export const NO_DECISIONS: Decisions = {
   permissions: [],
   questions: [],
+  handoffs: [],
   loaded: false,
   error: null,
 };
@@ -157,7 +166,16 @@ export const NO_DECISIONS: Decisions = {
 /** The open decisions, read once per refresh for the whole app. */
 export function useDecisions(): Decisions & { count: number } {
   const { decisions } = useApp();
-  return { ...decisions, count: decisions.permissions.length + decisions.questions.length };
+  return {
+    ...decisions,
+    // A task already running with the person's setup waits on nothing from them.
+    count:
+      decisions.permissions.length +
+      decisions.questions.length +
+      decisions.handoffs.filter(
+        (handoff) => handoff.state === 'pending' || handoff.state === 'settled',
+      ).length,
+  };
 }
 
 /** The face an agent wears for a conversation's status. */

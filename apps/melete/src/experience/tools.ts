@@ -31,6 +31,7 @@ import {
   toolCall,
 } from '@melete/contracts';
 import { appendEvent, type Query } from '../broker/records.ts';
+import { SEARCH_KEPT_DETAILS, SEARCH_KEPT_PRIVATE, SEARCH_KEPT_TOPIC } from '../privacy/router.ts';
 import { HIDDEN, hideSecrets } from './answer-filter.ts';
 import {
   ACTION_VERBS,
@@ -944,6 +945,63 @@ export function runtimePhrase(
         : null;
     }
   }
+}
+
+/** Why a web search was held back, in the row's words and in its receipt's. */
+const HELD_SEARCH: { reason: string; title: string; why: string }[] = [
+  {
+    reason: SEARCH_KEPT_PRIVATE,
+    title: 'Search held back: this chat is private',
+    why: 'Nothing was sent to a search service, because this conversation is private.',
+  },
+  {
+    reason: SEARCH_KEPT_TOPIC,
+    title: 'Search held back: it was about a private topic',
+    why: 'Nothing was sent to a search service, because the search was about a topic kept private here.',
+  },
+  {
+    reason: SEARCH_KEPT_DETAILS,
+    title: 'Search held back: it named something private',
+    why: 'Nothing was sent to a search service, because the search carried a personal detail your privacy settings keep from outside services.',
+  },
+];
+
+/**
+ * A web search refused before it left. Nothing is recorded as tried, so this
+ * entry is the only sign of it: a quiet row saying it was held back, and why.
+ * The query is not repeated, since it is what was held back.
+ */
+export function heldSearchCall(input: {
+  attemptId: string;
+  /** The words the model searched for; only their hash names the entry. */
+  query: string;
+  reason: string;
+  at: Date;
+}): ToolCall {
+  const known = HELD_SEARCH.find((entry) => entry.reason === input.reason);
+  const reason = plainText(input.reason, '', TOOL_SUMMARY_LIMIT);
+  const at = input.at.toISOString();
+  return toolCall.parse({
+    id: toolId(
+      'held-search',
+      input.attemptId,
+      createHash('sha256').update(input.query).digest('hex').slice(0, 16),
+    ),
+    kind: 'web',
+    title: known?.title ?? 'Search held back',
+    status: 'done',
+    started_at: at,
+    ended_at: at,
+    input_summary: null,
+    output_summary: summary(
+      known?.why ??
+        (reason
+          ? `Nothing was sent to a search service. ${reason}`
+          : 'Nothing was sent to a search service.'),
+    ),
+    detail: null,
+    parent: null,
+  });
 }
 
 export function runtimeCall(input: {

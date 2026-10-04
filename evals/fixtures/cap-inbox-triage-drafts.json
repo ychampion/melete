@@ -1,0 +1,174 @@
+{
+  "id": "cap-inbox-triage-drafts",
+  "domain": "mail",
+  "title": "Triage the inbox and draft the replies it needs",
+  "objective": "Go through my inbox and tell me what needs me. Draft replies to anything that needs an answer, but don't send anything.",
+  "tools": [
+    {
+      "name": "email.search",
+      "mirror": "email.search",
+      "result": {
+        "messages": [
+          {
+            "uid": 101,
+            "from": "Priya Shah <priya.shah@northwind.example>",
+            "subject": "Office chairs?",
+            "date": "2026-10-02T08:12:00Z",
+            "body": "Hi! Did the office chairs ship yet? If so, can you send me the tracking number so facilities know when to expect them? Thanks, Priya"
+          },
+          {
+            "uid": 102,
+            "from": "Harbour Lets <landlord@harbourlets.example>",
+            "subject": "Lease renewal terms",
+            "date": "2026-10-02T09:40:00Z",
+            "body": "We sent the renewed lease terms for next year by post on Monday. Please reply to confirm you have received them."
+          },
+          {
+            "uid": 103,
+            "from": "Weekly Finds <news@weeklyfinds.example>",
+            "subject": "This week: 12 desk lamps we love",
+            "date": "2026-10-02T06:00:00Z",
+            "body": "Our editors picked twelve desk lamps for every budget..."
+          },
+          {
+            "uid": 104,
+            "from": "Shopline <orders@shopline.example>",
+            "subject": "Your order #4471 has shipped",
+            "date": "2026-10-01T17:21:00Z",
+            "body": "Your order #4471 (2 office chairs) has shipped. Tracking number: 1Z99X4471GB. Expected delivery: Tuesday."
+          },
+          {
+            "uid": 105,
+            "from": "Northwind IT <it-alerts@northwind.example>",
+            "subject": "Your password expires in 5 days",
+            "date": "2026-10-01T12:00:00Z",
+            "body": "Change it any time from the staff portal before it expires. No reply needed."
+          }
+        ]
+      }
+    },
+    {
+      "name": "email.draft",
+      "mirror": "email.draft",
+      "result": {
+        "draft_saved": true,
+        "sent": false
+      }
+    },
+    {
+      "name": "email.send",
+      "mirror": "email.send"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "email.search",
+      "arguments": {}
+    },
+    {
+      "tool": "email.draft",
+      "arguments": {
+        "to": "priya.shah@northwind.example",
+        "subject": "Re: Office chairs?",
+        "body": "Hi Priya, yes, they shipped. The tracking number is 1Z99X4471GB and they should arrive on Tuesday."
+      }
+    },
+    {
+      "tool": "email.draft",
+      "arguments": {
+        "to": "landlord@harbourlets.example",
+        "subject": "Re: Lease renewal terms",
+        "body": "Hello, confirming I have received the renewed lease terms. Thank you."
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Two need you: Priya asked for the chairs tracking number, and Harbour Lets wants you to confirm the lease terms arrived. Drafts for both are ready to review. The rest are a newsletter, the shipping notice and a password reminder."
+  },
+  "source": {
+    "messages": [
+      {
+        "uid": 101,
+        "from": "Priya Shah <priya.shah@northwind.example>",
+        "subject": "Office chairs?",
+        "date": "2026-10-02T08:12:00Z",
+        "body": "Hi! Did the office chairs ship yet? If so, can you send me the tracking number so facilities know when to expect them? Thanks, Priya"
+      },
+      {
+        "uid": 102,
+        "from": "Harbour Lets <landlord@harbourlets.example>",
+        "subject": "Lease renewal terms",
+        "date": "2026-10-02T09:40:00Z",
+        "body": "We sent the renewed lease terms for next year by post on Monday. Please reply to confirm you have received them."
+      },
+      {
+        "uid": 103,
+        "from": "Weekly Finds <news@weeklyfinds.example>",
+        "subject": "This week: 12 desk lamps we love",
+        "date": "2026-10-02T06:00:00Z",
+        "body": "Our editors picked twelve desk lamps for every budget..."
+      },
+      {
+        "uid": 104,
+        "from": "Shopline <orders@shopline.example>",
+        "subject": "Your order #4471 has shipped",
+        "date": "2026-10-01T17:21:00Z",
+        "body": "Your order #4471 (2 office chairs) has shipped. Tracking number: 1Z99X4471GB. Expected delivery: Tuesday."
+      },
+      {
+        "uid": 105,
+        "from": "Northwind IT <it-alerts@northwind.example>",
+        "subject": "Your password expires in 5 days",
+        "date": "2026-10-01T12:00:00Z",
+        "body": "Change it any time from the staff portal before it expires. No reply needed."
+      }
+    ]
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "email.search",
+        "min": 1
+      },
+      {
+        "tool": "email.draft",
+        "status": "succeeded",
+        "where": {
+          "to": "priya.shah@northwind.example",
+          "body": "1Z99X4471GB"
+        },
+        "min": 1
+      },
+      {
+        "tool": "email.draft",
+        "status": "succeeded",
+        "where": {
+          "to": "harbourlets.example"
+        },
+        "min": 1
+      },
+      {
+        "tool": "email.draft",
+        "where": {
+          "to": "weeklyfinds.example"
+        },
+        "max": 0
+      },
+      {
+        "tool": "email.send",
+        "max": 0
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply says Priya (tracking number for the chairs) and the landlord (confirm the lease terms arrived) need answers, says drafts are ready but not sent for both, and the draft to Priya carries the tracking number 1Z99X4471GB from the shipping email. The newsletter, the shipping notice and the password reminder need no reply. Fail if it claims anything was sent or asks permission to draft.",
+  "suite": "capability"
+}

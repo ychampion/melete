@@ -363,14 +363,14 @@ export class PrivacyRouter {
     // attempt started. A service call is read for itself and never sets the
     // conversation's topic: what it carries (a memory snapshot, say) is not
     // what the person said there.
-    const decision = await this.privateDecision(
+    const decision = await this.privateRoute(
       scope,
       settings,
+      protocol,
       principal.privacy.kind === 'job' ? [] : authoredParts(body, protocol).person,
-      false,
     );
     if (decision.private) {
-      const local = await this.readyLocal(settings, protocol);
+      const local = decision.local;
       if (local) {
         const receipt = emptyReceipt('local');
         await this.log(scope, receipt);
@@ -388,8 +388,7 @@ export class PrivacyRouter {
           receipt,
         };
       }
-      if (decision.consent !== 'allowed')
-        throw new GatewayError(409, 'privacy_confirmation_required');
+      if (decision.refused) throw new GatewayError(409, 'privacy_confirmation_required');
     }
     // Pictures are not redacted: nothing below reads them. In a private
     // conversation the person let go redacted, they stay behind; in an ordinary
@@ -485,6 +484,43 @@ export class PrivacyRouter {
   }
 
   /**
+   * Where a request about this scope's conversation may go once it is not on
+   * a confirmed on-device address: anywhere when the conversation is not
+   * private, to the local model when one can take it, else to the cloud model
+   * redacted only if the person agreed. `refused` means it goes nowhere.
+   * Requests and the questions asked ahead of them read this one decision.
+   */
+  private async privateRoute(
+    scope: Scope,
+    settings: ResolvedSettings,
+    protocol: Protocol,
+    person: readonly string[],
+  ): Promise<{ private: boolean; local: LocalModel | null; refused: boolean }> {
+    const decision = await this.privateDecision(scope, settings, person, false);
+    if (!decision.private) return { private: false, local: null, refused: false };
+    const local = await this.readyLocal(settings, protocol);
+    return { private: true, local, refused: !local && decision.consent !== 'allowed' };
+  }
+
+  /**
+   * Whether a service read of this job's conversation, such as memory reading
+   * what the person just wrote, would be refused now: the conversation is
+   * private, no local model can take it, and the person has not agreed to a
+   * redacted cloud request. The same decision `prepare` makes for that read,
+   * asked before it is sent. `engine` is the model memory reads with.
+   */
+  async refusesServiceRead(
+    jobId: string,
+    engine: { protocol: Protocol; providerUrl?: string },
+  ): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId || !scope.conversationId) return false;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (engine.providerUrl && (await this.onDevice(settings, engine.providerUrl))) return false;
+    return (await this.privateRoute(scope, settings, engine.protocol, [])).refused;
+  }
+
+  /**
    * The configured provider is trusted as the person's own model only when the
    * owner confirmed this exact address and it is still on their machine or network.
    */
@@ -525,6 +561,17 @@ export class PrivacyRouter {
       (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) ||
       !!conversation?.sensitive;
     return isPrivate && (await this.readyLocal(settings, engine.protocol)) !== null;
+  }
+
+  /**
+   * Why a message said in a room is private, or null: the room is marked
+   * private, or the message is about a sensitive topic. A room message may
+   * reach no request at all, so it is read by its room rather than a job.
+   */
+  async captureOriginInSpace(spaceId: string, text: string): Promise<PrivateOrigin | null> {
+    const settings = await this.settingsFor(spaceId);
+    if (settings.privateSpace) return 'space';
+    return classify(text, settings.topics);
   }
 
   /**

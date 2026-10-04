@@ -8,7 +8,7 @@ import type { ArtifactRoots } from '../artifact/content.ts';
 import { noLinks, openBeneath, segmentsFor } from '../connectors/files.ts';
 import type { Database } from '../db/client.ts';
 import { artifact, job } from '../db/schema.ts';
-import { ownJob } from '../principals/authority.ts';
+import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ServiceError } from './errors.ts';
 import type { SpaceResolver } from './reactions.ts';
@@ -88,6 +88,27 @@ function rangeFor(value: string, size: number): { start: number; end: number } |
   return start < size && start <= end ? { start, end } : null;
 }
 
+/**
+ * A file one of a room's requests made, when this person is in that room now.
+ * A room's request belongs to the room's principal, so the job rule above never
+ * shows it to a person; this is the one route that does, for the room's people.
+ */
+async function roomArtifact(db: Database, id: string, principalId: string) {
+  const [row] = await db
+    .select({ artifact })
+    .from(artifact)
+    .innerJoin(job, eq(artifact.jobId, job.id))
+    .where(and(eq(artifact.id, id), eq(job.spaceId, artifact.spaceId), eq(job.audience, 'room')));
+  if (!row) return null;
+  const access = await spaceAuthority(db, row.artifact.spaceId, principalId).catch(
+    (error: unknown) => {
+      if (error instanceof ServiceError) return null;
+      throw error;
+    },
+  );
+  return access && access.space.kind === 'shared' && access.role !== 'agent' ? row : null;
+}
+
 export function mountArtifacts(
   app: Hono,
   db: Database,
@@ -95,46 +116,57 @@ export function mountArtifacts(
   resolveSpace: SpaceResolver,
 ): void {
   app.get('/artifacts/:id/content', async (c) => {
-    const scope = await resolveSpace(c);
+    const resolved = await resolveSpace(c);
     const id = prefixedId(ID_PREFIXES.artifact).safeParse(c.req.param('id'));
-    if (!scope || !id.success || !prefixedId(ID_PREFIXES.space).safeParse(scope.spaceId).success)
-      throw notFound();
-    const [row] = await db
-      .select({ artifact })
-      .from(artifact)
-      .leftJoin(job, eq(artifact.jobId, job.id))
-      .where(
-        and(
-          eq(artifact.id, id.data),
-          eq(artifact.spaceId, scope.spaceId),
-          // A job's files follow the job: private to its principal, also in a shared space.
-          or(
-            isNull(artifact.jobId),
+    if (!id.success) throw notFound();
+    const scope =
+      resolved && prefixedId(ID_PREFIXES.space).safeParse(resolved.spaceId).success
+        ? resolved
+        : null;
+    // A guest has no space of their own: the only files they read are their rooms'.
+    const viewer = scope ? scope.principalId : c.get('owner')?.id;
+    if (!scope && !viewer) throw notFound();
+    const [row] = scope
+      ? await db
+          .select({ artifact })
+          .from(artifact)
+          .leftJoin(job, eq(artifact.jobId, job.id))
+          .where(
             and(
-              eq(job.spaceId, scope.spaceId),
-              scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+              eq(artifact.id, id.data),
+              eq(artifact.spaceId, scope.spaceId),
+              // A job's files follow the job: private to its principal, also in a shared space.
+              or(
+                isNull(artifact.jobId),
+                and(
+                  eq(job.spaceId, scope.spaceId),
+                  scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+                ),
+              ),
             ),
-          ),
-        ),
-      );
-    if (!row) throw notFound();
+          )
+      : [];
+    // A file a room's request made belongs to the room: the people in the room
+    // read it, checked now, and nobody else. Every other file follows its job.
+    const found = row ?? (viewer ? await roomArtifact(db, id.data, viewer) : null);
+    if (!found) throw notFound();
     let bytes: Uint8Array;
     try {
-      bytes = await readArtifact(roots, scope.spaceId, row.artifact);
+      bytes = await readArtifact(roots, found.artifact.spaceId, found.artifact);
     } catch {
       throw notFound();
     }
     if (
-      bytes.length !== row.artifact.size ||
-      createHash('sha256').update(bytes).digest('hex') !== row.artifact.contentHash
+      bytes.length !== found.artifact.size ||
+      createHash('sha256').update(bytes).digest('hex') !== found.artifact.contentHash
     )
       throw notFound();
     const headers = new Headers({
-      'content-type': row.artifact.mime,
+      'content-type': found.artifact.mime,
       'cache-control': 'private, no-store',
       'x-content-type-options': 'nosniff',
       'accept-ranges': 'bytes',
-      'content-disposition': `${row.artifact.mime.startsWith('audio/') ? 'inline' : 'attachment'}; filename="${encodeURIComponent(row.artifact.path.split('/').at(-1) ?? 'artifact')}"`,
+      'content-disposition': `${found.artifact.mime.startsWith('audio/') ? 'inline' : 'attachment'}; filename="${encodeURIComponent(found.artifact.path.split('/').at(-1) ?? 'artifact')}"`,
     });
     const requested = c.req.header('range');
     if (requested) {

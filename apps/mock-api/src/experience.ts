@@ -16,6 +16,7 @@ import {
   plainText,
   projectActionGroup,
   projectCards,
+  projectReceipt,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
 import type { MockAttachment } from './attachments.ts';
@@ -174,6 +175,8 @@ export class ExperienceMock {
   welcomed = false;
   /** After POST /signout every route but sign-in answers 401 until a link is consumed. */
   signedOut = false;
+  /** Tasks rooms handed the person, and results waiting for them: shown on Home and with approvals. */
+  handoffsWaiting: () => C.RoomHandoff[] = () => [];
   readonly submissions = new Map<
     string,
     { text: string; result: ReturnType<typeof C.messageAcceptance.parse> }
@@ -657,11 +660,18 @@ export class ExperienceMock {
     if (!chat.pending.length) return;
     const group = projectActionGroup(chat.pending);
     if (group) this.event(chat, group);
-    for (const entry of chat.pending)
+    for (const entry of chat.pending) {
+      // A step that keeps a receipt (a web search does) shows it as the service would.
+      const receipt = projectReceipt(entry.action, entry.connection);
+      if (receipt) {
+        chat.receipts.push(receipt);
+        this.event(chat, { type: 'receipt', receipt });
+      }
       for (const card of projectCards(entry.action, entry.connection)) {
         chat.cards.push(card);
         this.event(chat, { type: 'card', card });
       }
+    }
     chat.pending = [];
   }
   schedule(chat: Chat) {
@@ -1043,9 +1053,14 @@ export class ExperienceMock {
         : step.name.startsWith('calendar.')
           ? 'caldav'
           : step.name.split('.')[0];
-      const source = [...this.deps.store.connections.values()].find(
-        (row) => row.space_id === this.deps.spaceId && row.provider === provider,
-      );
+      // The web connection is built in, so a space always has one.
+      const source =
+        [...this.deps.store.connections.values()].find(
+          (row) => row.space_id === this.deps.spaceId && row.provider === provider,
+        ) ??
+        (provider === 'web'
+          ? { id: `${this.deps.spaceId}:web`, label: 'Web', provider: 'web' }
+          : undefined);
       if (source)
         chat.pending.push({
           connection: source,
@@ -1840,7 +1855,7 @@ export class ExperienceMock {
         return { conversation: chat.view };
       }
       case 'GET /permissions':
-        return { permissions: [...this.permissions.values()] };
+        return { permissions: [...this.permissions.values()], handoffs: this.handoffsWaiting() };
       case 'POST /permissions/{id}':
         return this.decide(id, input);
       case 'GET /rules':
@@ -1979,6 +1994,7 @@ export class ExperienceMock {
           tasks,
           open_task_count: tasks.length,
           routine_results: [],
+          handoffs: this.handoffsWaiting(),
         };
       }
       case 'GET /tasks':

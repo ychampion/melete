@@ -17,6 +17,16 @@ export type SessionSpace = {
   created: boolean;
 };
 
+/**
+ * Whether the session owns the space it speaks for. Only `owner` does: a
+ * member, a guest, any role added later, and a request with no selected space
+ * at all are each refused an owner's surface. Ask this rather than whether
+ * the role is `member`, so a new role is never taken for an owner.
+ */
+export function ownsSessionSpace(session: Pick<SessionSpace, 'role'> | undefined): boolean {
+  return session?.role === 'owner';
+}
+
 /** A space the session named earlier, with the membership generation it was chosen under. */
 export type SpaceSelection = { spaceId: string; generation: number | null };
 
@@ -49,15 +59,29 @@ export async function ensurePersonalSpace(
   principalId: string,
   spacesRoot: string,
 ): Promise<{ spaceId: string; created: boolean }> {
+  // Only a person has a place of their own. A guest uses only the rooms they
+  // were invited to, and a room's own principal owns nothing. An account's
+  // kind never changes, so it is read once, before anything is locked.
+  const [account] = await db
+    .select({ kind: principal.kind })
+    .from(principal)
+    .where(eq(principal.id, principalId));
+  if (!account) throw new ServiceError('unauthorized', 'A session is required.', 401);
+  if (account.kind !== 'person')
+    throw new ServiceError(
+      'guests_use_rooms',
+      'A guest account uses only the rooms it was invited to.',
+      403,
+    );
   const existing = await ownPersonalSpace(db, principalId);
   if (existing) return { spaceId: existing, created: false };
   return db.transaction(async (tx) => {
-    const [account] = await tx
+    const [locked] = await tx
       .select({ id: principal.id })
       .from(principal)
       .where(eq(principal.id, principalId))
       .for('update');
-    if (!account) throw new ServiceError('unauthorized', 'A session is required.', 401);
+    if (!locked) throw new ServiceError('unauthorized', 'A session is required.', 401);
     const raced = await ownPersonalSpace(tx, principalId);
     if (raced) return { spaceId: raced, created: false };
     const id = newId(ID_PREFIXES.space);
@@ -88,6 +112,9 @@ export async function selectedSpace(
     const access = await spaceAuthority(db, selection.spaceId, principalId);
     const kind = access.space.kind === 'shared' ? 'shared' : 'personal';
     if (kind === 'shared' && access.generation !== selection.generation) return undefined;
+    // Only an owner or a member works in a selected space; any other role
+    // (a room's own principal) is treated as no selection.
+    if (access.role !== 'owner' && access.role !== 'member') return undefined;
     return {
       spaceId: selection.spaceId,
       kind,

@@ -17,6 +17,7 @@ import type { OriginResolution, TrustResolution } from '@melete/contracts';
 import { originResolution } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
 import { describeOrigin, type TrustResolutionInput, type TrustResolver } from '../broker/trust.ts';
+import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { MemoryScope, MemoryTx } from './db.ts';
 import { resolveTrustIn } from './trust.ts';
 
@@ -103,18 +104,159 @@ export function createMemoryTrustResolver(): TrustResolver {
       const [job] =
         await tx`select * from job where id = ${input.job_id} and space_id = ${input.space_id}`;
       if (!job) return [];
+      const room = await roomAuthorityOf(tx, input.job_id);
+      // Work a room handed the person: the task is the room's words, not theirs.
+      const said = room
+        ? await roomOrigins(tx, room, input)
+        : job.objective_origin === 'room_handoff'
+          ? await handoffOrigins(tx, String(job.space_id), String(job.id), input)
+          : [];
       const scope = await memoryScopeForSpace(
         tx,
         input.space_id,
         job.principal_id as string | null | undefined,
       );
-      if (!scope) return [];
+      if (!scope) return said;
       const handles = await handlesForJob(tx, input.space_id, input.job_id);
       const resolution = await resolveTrustIn(tx as MemoryTx, scope, {
         payload: input.canonical_payload,
         handles,
       });
-      return align(input, resolution);
+      const remembered = align(input, resolution);
+      if (!room && said.length === 0) return remembered;
+      // In a room, what was said in this request answers first. Room memory
+      // keeps the trust it was captured with, and never vouches for a value as
+      // if the person who asked had given it. In handed work, what the room's
+      // task names answers first; the person's own memory answers the rest.
+      const answered = new Set(said.map((entry) => entry.path));
+      return [
+        ...said,
+        ...remembered
+          .filter((entry) => !answered.has(entry.path))
+          .map((entry) =>
+            room && entry.origin_trust === 'owner'
+              ? originResolution.parse({
+                  ...entry,
+                  origin_trust: 'external_content',
+                  description: describeOrigin('external_content', entry.handle),
+                })
+              : entry,
+          ),
+      ];
     },
   };
+}
+
+/** Characters that continue a value: a match next to one is part of something longer. */
+const CONTINUES = /[\p{L}\p{N}_@/-]/u;
+
+/**
+ * Whether `value` appears in `text` as itself: not inside a longer word,
+ * address or path. A full stop after it counts as the end of a sentence only
+ * when nothing follows it but space.
+ */
+export function saysVerbatim(text: string, value: string): boolean {
+  const haystack = text.toLowerCase();
+  const needle = value.trim().toLowerCase();
+  if (!needle) return false;
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    const before = haystack[at - 1];
+    const after = haystack[at + needle.length];
+    const next = haystack[at + needle.length + 1];
+    if (before !== undefined && (CONTINUES.test(before) || before === '.')) continue;
+    if (after !== undefined && CONTINUES.test(after)) continue;
+    if (after === '.' && next !== undefined && !/\s/u.test(next)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Where the gated values of a room request's effect came from, as far as the
+ * room can say. A value the person who asked typed in this request is theirs:
+ * `owner` trust, for this request only. A value someone else in the thread
+ * typed is `external_content`, named as theirs, so it carries a warning on the
+ * asker's card and no standing rule admits it. A value both typed is the
+ * asker's: they said it themselves.
+ */
+export async function roomOrigins(
+  tx: Query,
+  room: RoomAuthority,
+  input: TrustResolutionInput,
+): Promise<OriginResolution[]> {
+  if (input.fields.length === 0) return [];
+  const asker = room.requestedBy ?? '';
+  const own = asker
+    ? await tx`select payload->>'text' as text from event
+        where job_id = ${room.requestJobId} and type = 'notice'
+          and payload->>'kind' = 'user_message' and payload->>'principal_id' = ${asker}`
+    : [];
+  const others = room.threadId
+    ? await tx`select author_principal_id, text from room_message
+        where thread_id = ${room.threadId} and space_id = ${room.spaceId}
+          and redacted_at is null and author_principal_id <> ${asker}
+        order by created_at, id`
+    : [];
+  const names = await labelsIn(
+    tx,
+    room.spaceId,
+    others.map((entry) => String(entry.author_principal_id)),
+  );
+  const answers: OriginResolution[] = [];
+  for (const field of input.fields) {
+    if (own.some((entry) => saysVerbatim(String(entry.text ?? ''), field.value))) {
+      answers.push(
+        originResolution.parse({
+          ...field,
+          origin_trust: 'owner',
+          handle: null,
+          description: 'The person who asked typed this value in their request.',
+        }),
+      );
+      continue;
+    }
+    const typed = others.find((entry) => saysVerbatim(String(entry.text ?? ''), field.value));
+    if (typed)
+      answers.push(
+        originResolution.parse({
+          ...field,
+          origin_trust: 'external_content',
+          handle: null,
+          description: `${names.get(String(typed.author_principal_id)) ?? 'Someone else in the room'} typed this value in the room, not the person who asked.`,
+        }),
+      );
+  }
+  return answers;
+}
+
+/**
+ * Where the gated values of a person's work came from, when a room handed
+ * them that work. The task is the room's text, which the person accepted to
+ * run, not text they typed: a value it names is `external_content`, so it
+ * carries a warning on the person's own card, and no standing rule they made
+ * for their own requests admits it.
+ */
+export async function handoffOrigins(
+  tx: Query,
+  spaceId: string,
+  jobId: string,
+  input: TrustResolutionInput,
+): Promise<OriginResolution[]> {
+  if (input.fields.length === 0) return [];
+  const [row] = await tx`select h.task_text, s.name from room_handoff h
+    join space s on s.id = h.space_id
+    join job j on j.id = h.personal_job_id
+    where h.personal_job_id = ${jobId} and j.space_id = ${spaceId}`;
+  if (!row) return [];
+  const task = String(row.task_text ?? '');
+  return input.fields
+    .filter((field) => saysVerbatim(task, field.value))
+    .map((field) =>
+      originResolution.parse({
+        ...field,
+        origin_trust: 'external_content',
+        handle: null,
+        description: `This value came from a request in the room ${JSON.stringify(String(row.name ?? ''))}, not from something you typed.`,
+      }),
+    );
 }

@@ -38,6 +38,16 @@ export type SandboxComputerList = z.infer<typeof sandboxComputerList>;
 
 export const sandboxComputerQuery = z.object({ job_id: z.string().min(1).max(64) });
 
+/**
+ * The epoch the person last saw. Given, control changes only from that epoch,
+ * so a page showing an older state is refused with 409 rather than acting on
+ * a computer that changed hands since.
+ */
+export const sandboxControlRequest = z
+  .strictObject({ control_epoch: z.number().int().nonnegative().optional() })
+  .meta({ id: 'SandboxControlRequest' });
+export type SandboxControlRequest = z.infer<typeof sandboxControlRequest>;
+
 export const sandboxControlResponse = z
   .strictObject({
     session_id: z.string(),

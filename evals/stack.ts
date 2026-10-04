@@ -25,6 +25,7 @@ import {
 } from '../packages/runtime-hermes/src/adapter.ts';
 import { renderEngineConfig } from '../packages/runtime-hermes/src/engine-config.ts';
 import { HERMES_PINNED_COMMIT, RUNTIME_VERSION } from '../packages/runtime-hermes/src/version.ts';
+import { LIGHT_ENGINE_VERSION, LightEngine } from './engine.ts';
 
 export const ROOT = resolve(import.meta.dir, '..');
 export const PRIVATE = resolve(ROOT, '.eval-state');
@@ -88,7 +89,70 @@ export async function stageRuntimeAssets(source: string, target: string): Promis
   }
 }
 
-export async function openStack() {
+/** Which loop executes each attempt: the pinned engine in a container, or the in-process light engine. */
+export type EngineKind = 'hermes' | 'light';
+export type Stack = {
+  engine: EngineKind;
+  secrets: Secrets;
+  imageId: string;
+  gateway: string;
+  brokerUrl: string;
+  databaseUrl: string;
+  compose?: (args: string[], extra?: Record<string, string>) => Promise<string>;
+  /** Whether the database outlives this process, so unfinished cells can resume. */
+  durable: boolean;
+  close?: () => Promise<void>;
+};
+
+async function readSecrets(): Promise<Secrets> {
+  try {
+    return JSON.parse(await readFile(resolve(PRIVATE, 'secrets.json'), 'utf8'));
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    const token = () => randomBytes(32).toString('hex');
+    const secrets = {
+      database: token(),
+      capability: token(),
+      approval: token(),
+      runtime: token(),
+      password: token(),
+    };
+    await writeFile(resolve(PRIVATE, 'secrets.json'), JSON.stringify(secrets), {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    return secrets;
+  }
+}
+
+/**
+ * The stack without Docker: a disposable database on the repository's test
+ * Postgres (DATABASE_URL when set, otherwise the embedded server) and the
+ * broker on loopback. The database ends with the process, so a light campaign
+ * resumes its finished cells from the journal and reruns unfinished ones.
+ */
+export async function openLightStack(): Promise<Stack> {
+  await mkdir(PRIVATE, { recursive: true, mode: 0o700 });
+  const secrets = await readSecrets();
+  const { testDatabase } = await import('../apps/melete/test/helpers/database.ts');
+  const database = await testDatabase();
+  if (!database)
+    throw new Error(
+      'No Postgres for the light engine: set DATABASE_URL or install embedded Postgres',
+    );
+  return {
+    engine: 'light',
+    secrets,
+    imageId: LIGHT_ENGINE_VERSION,
+    gateway: '127.0.0.1',
+    brokerUrl: `http://127.0.0.1:${BROKER_PORT}`,
+    databaseUrl: database.url,
+    durable: false,
+    close: () => database.close(),
+  };
+}
+
+export async function openStack(): Promise<Stack> {
   await mkdir(PRIVATE, { recursive: true, mode: 0o700 });
   await chmod(PRIVATE, 0o700);
   await mkdir(DATA, { recursive: true, mode: 0o700 });
@@ -300,6 +364,8 @@ export async function openStack() {
   ]);
   const brokerUrl = `http://${gateway}:${BROKER_PORT}`;
   return {
+    engine: 'hermes' as const,
+    durable: true,
     secrets,
     imageId,
     compose,
@@ -308,7 +374,57 @@ export async function openStack() {
     databaseUrl: `postgres://evals:${secrets.database}@${await command(['docker', 'inspect', DATABASE_CONTAINER, '--format', `{{(index .NetworkSettings.Networks "${PROJECT}_database").IPAddress}}`])}:5432/${DATABASE_NAME}`,
   };
 }
-export type Stack = Awaited<ReturnType<typeof openStack>>;
+
+/** One light engine per attempt, driven by the same adapter the container path uses. */
+export class LightRuntime implements RuntimeAdapter {
+  observe?: (bundle: AttemptBundle, event: RuntimeEvent) => Promise<void>;
+  constructor(
+    readonly stack: Stack,
+    readonly parked: (bundle: AttemptBundle) => Promise<string[]>,
+    readonly pendingWait?: (bundle: AttemptBundle) => Promise<WaitSpec | null>,
+  ) {}
+  async capabilities() {
+    return { streaming: true, tools: true, interrupt: true, version: LIGHT_ENGINE_VERSION };
+  }
+  async start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal) {
+    const serverKey = randomBytes(32).toString('hex');
+    const engine = new LightEngine({
+      brokerUrl: this.stack.brokerUrl,
+      attemptToken: bundle.attempt.token,
+      attemptId: bundle.attempt.id,
+      jobId: bundle.attempt.job_id,
+      provider: bundle.model.provider,
+      model: bundle.model.model,
+      serverKey,
+      // The same per-run ceilings the container path renders for a suite run.
+      maxTurns: 6,
+      maxTokens: 4096,
+    });
+    const baseUrl = engine.start();
+    try {
+      const adapter = new HermesRuntimeAdapter({
+        baseUrl,
+        token: serverKey,
+        parkedActions: this.parked,
+        pendingWait: this.pendingWait,
+        catalogState: brokerCatalogState({ brokerUrl: this.stack.brokerUrl }),
+      });
+      await adapter.capabilities();
+      return await adapter.start(
+        bundle,
+        {
+          emit: async (event) => {
+            await this.observe?.(bundle, event);
+            await sink.emit(event);
+          },
+        },
+        signal,
+      );
+    } finally {
+      await engine.stop();
+    }
+  }
+}
 
 /** Lifecycle glue: every model turn is executed by the pinned engine and checked observer bridge. */
 export class ContainerRuntime implements RuntimeAdapter {
@@ -357,8 +473,10 @@ export class ContainerRuntime implements RuntimeAdapter {
     const events: unknown[] = [];
     let output = '';
     this.last = { job: bundle.attempt.job_id, events, output };
+    const compose = this.stack.compose;
+    if (!compose) throw new Error('The container runtime needs the Compose stack');
     try {
-      await this.stack.compose(
+      await compose(
         ['--profile', 'attempt', 'run', '-d', '--no-deps', '--name', containerName, 'runtime'],
         env,
       );

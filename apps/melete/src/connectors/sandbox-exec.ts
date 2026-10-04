@@ -715,6 +715,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         workRoot: options.workRoot,
         session,
         provider,
+        controls: sessions.controls,
         signal,
       });
       return {
