@@ -320,6 +320,8 @@ export const roomConnection = z.strictObject({
   status: z.string(),
   /** `room`: the agent uses it for the room's requests. `owner`: it serves only the owner's own work. */
   shared_use: z.enum(['owner', 'room']),
+  /** One of the tools every room has (its files, the web, its computer), not an account someone added. */
+  builtin: z.boolean(),
 });
 export const roomConnectionList = z.strictObject({ connections: z.array(roomConnection) });
 export const roomConnectionUpdate = z.strictObject({ shared_use: z.enum(['owner', 'room']) });

@@ -620,12 +620,13 @@ export const adapter = {
       api.GET('/connection-kinds'),
     ),
   /** Starts signing in to an account; the answer names where, what it asks for, and the page to open. */
-  startAccountSignIn: (provider: 'google' | 'microsoft') =>
-    guard<AccountSignInStart>(() =>
-      provider === 'google'
-        ? api.POST('/google-sign-ins', { body: {} })
-        : api.POST('/microsoft-sign-ins', { body: {} }),
-    ),
+  startAccountSignIn: (provider: 'google' | 'microsoft', spaceId?: string) =>
+    guard<AccountSignInStart>(() => {
+      const body = spaceId ? { space_id: spaceId } : {};
+      return provider === 'google'
+        ? api.POST('/google-sign-ins', { body })
+        : api.POST('/microsoft-sign-ins', { body });
+    }),
   accountSignInStatus: (provider: 'google' | 'microsoft', id: string) =>
     guard<AccountSignInStatus>(() =>
       provider === 'google'

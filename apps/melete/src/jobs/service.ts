@@ -5,6 +5,7 @@ import {
   type CreateResponsibilityRequest,
   createResponsibilityRequest,
   isRunKind,
+  isTerminal,
   type JobBudget,
   type JobConstraints,
   type JobState,
@@ -527,45 +528,62 @@ export class JobService {
     const cancelled = await this.transaction(async (tx) => {
       const row = await this.lock(tx, id);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
-      // Cancelling a conversation mid-turn ends that turn the way Stop does, so
-      // the conversation settles and takes the next message. Ending the job
-      // instead left the turn working and every new message refused.
-      if (row.kind === 'chat' && (await this.stopTurn?.(tx, row))) {
-        const [stopped] = await tx.select().from(job).where(eq(job.id, id));
-        if (!stopped) throw new Error('locked job disappeared');
-        return stopped;
-      }
-      const updated = await this.move(
-        tx,
-        row,
-        { kind: 'cancelled' },
-        { payload: { reason: reason ?? null } },
-      );
-      for (const handler of this.cancelledInTransaction) await handler(tx, updated);
-      const interrupted = await tx
-        .update(attempt)
-        .set({
-          outcome: 'fenced',
-          outcomeDetail: { kind: 'cancelled', reason: reason ?? null },
-          endedAt: new Date(),
-          leaseExpiresAt: null,
-          leaseStatus: 'ended',
-        })
-        .where(and(eq(attempt.jobId, id), isNull(attempt.endedAt)))
-        .returning({ id: attempt.id });
-      for (const execution of interrupted)
-        await appendEvent(tx, {
-          jobId: id,
-          attemptId: execution.id,
-          type: 'attempt_ended',
-          payload: { kind: 'cancelled', reason: reason ?? null },
-          dedupKey: `${execution.id}:ended`,
-        });
-      return updated;
+      return this.cancelInTransaction(tx, row, reason);
     });
     // The fence commits before a potentially slow runtime is signalled.
     this.onCancelled?.(id);
     return cancelled;
+  }
+
+  /**
+   * Cancel a job the caller has locked, inside the caller's transaction. The
+   * caller signals `onCancelled` once the transaction commits. A conversation
+   * mid-turn has its turn stopped; with `end`, the conversation then ends too.
+   */
+  async cancelInTransaction(
+    tx: Transaction,
+    locked: JobRow,
+    reason?: string,
+    options: { end?: boolean } = {},
+  ): Promise<JobRow> {
+    let row = locked;
+    const id = row.id;
+    // Cancelling a conversation mid-turn ends that turn the way Stop does, so
+    // the conversation settles and takes the next message. Ending the job
+    // instead left the turn working and every new message refused.
+    if (row.kind === 'chat' && (await this.stopTurn?.(tx, row))) {
+      const [stopped] = await tx.select().from(job).where(eq(job.id, id));
+      if (!stopped) throw new Error('locked job disappeared');
+      if (!options.end || isTerminal(stopped.state as JobState)) return stopped;
+      row = stopped;
+    }
+    const updated = await this.move(
+      tx,
+      row,
+      { kind: 'cancelled' },
+      { payload: { reason: reason ?? null } },
+    );
+    for (const handler of this.cancelledInTransaction) await handler(tx, updated);
+    const interrupted = await tx
+      .update(attempt)
+      .set({
+        outcome: 'fenced',
+        outcomeDetail: { kind: 'cancelled', reason: reason ?? null },
+        endedAt: new Date(),
+        leaseExpiresAt: null,
+        leaseStatus: 'ended',
+      })
+      .where(and(eq(attempt.jobId, id), isNull(attempt.endedAt)))
+      .returning({ id: attempt.id });
+    for (const execution of interrupted)
+      await appendEvent(tx, {
+        jobId: id,
+        attemptId: execution.id,
+        type: 'attempt_ended',
+        payload: { kind: 'cancelled', reason: reason ?? null },
+        dedupKey: `${execution.id}:ended`,
+      });
+    return updated;
   }
 
   /** Objective edits invalidate approval bindings even if the state is unchanged. */

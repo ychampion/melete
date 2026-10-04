@@ -27,7 +27,10 @@ import { reviewPrompt } from '../../src/broker/reviewer.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { calendarManifest } from '../../src/connectors/calendar.ts';
+import { openMcpWorker } from '../../src/connectors/mcp.ts';
+import { mcpConnector } from '../../src/connectors/mcp-connector.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { sandboxTerminalManifest } from '../../src/connectors/sandbox-exec.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
 import { resolvePersonGrant } from '../../src/experience/chase-scope.ts';
@@ -41,6 +44,7 @@ import { principalContext } from '../../src/principals/authority.ts';
 import { PushService } from '../../src/push/service.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { mcpFixtureConfig } from '../fixtures/mcp-config.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -358,6 +362,20 @@ async function claim(jobId: string) {
   if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
   return claimed;
 }
+/** A person's own work in a room's space: not a request of the room's agent. */
+async function memberWork(person: Person, spaceId: string, objective: string) {
+  const { jobs } = database();
+  const row = await principalContext.run(person.id, () =>
+    jobs.create({ space_id: spaceId, title: objective, objective }, 'owner_request'),
+  );
+  return (await claim(row.id)).claims as CapabilityClaims;
+}
+/** How a request is refused, or `admitted` when it is not. */
+const refusalOf = (pending: Promise<unknown>) =>
+  pending.then(
+    () => 'admitted',
+    (error: { code?: string }) => error.code,
+  );
 /** The request proposes posting notes, and waits for permission. */
 async function proposeNotes(requestId: string, notes: string, to: string[]) {
   const { broker, runner } = database();
@@ -853,23 +871,40 @@ withDb('room approvals', () => {
   }, 90_000);
 
   test("no room rule lets a room's request act through a person's own account", async () => {
-    const { broker } = database();
+    const { broker, db, sql } = database();
     const { roomId } = await makeRoom('Their mail');
     await setPolicy(roomId, { approvers: 'any_member' });
-    // Marked for the room, and still a person's own account: it serves only an owner's own space.
-    const mailbox = await installAs(roomId, ownAccountManifest, 'room', {
+    // Bob's own mailbox stays in Bob's own space; the room reaches it only by
+    // handing Bob the task, which then runs under Bob's own rules.
+    const [own] = await sql`select id from space
+      where owner_principal_id = ${world.bob.id} and kind = 'personal' limit 1`;
+    const mailbox = await installAs(String(own?.id), ownAccountManifest, 'owner', {
       ...succeeding(ownAccountManifest),
       catalog: { audience: 'owner' },
     } as Connector);
     const opened = await startThread(world.bob, roomId, '@Melete post the notes from my mail');
-    const { claims } = await claim(opened.request_job_id ?? '');
+    const requestId = opened.request_job_id ?? '';
+    const offered = (
+      await new RuntimeCatalog(db, registry).toolsForSpace(
+        roomId,
+        ownAccountManifest.tools.map((tool) => tool.name),
+        db,
+        requestId,
+      )
+    ).map((tool) => tool.connection_id);
+    expect(offered).not.toContain(mailbox);
+    const { claims } = await claim(requestId);
+    // The broker's own catalog for the room's request never lists it either.
+    const listed = await broker.discovery.available(claims as CapabilityClaims);
+    expect(listed.map((tool) => tool.connection_id)).not.toContain(mailbox);
+    expect(listed.some((tool) => tool.name === 'notes.post')).toBe(true);
     await expect(
       broker.propose(claims as CapabilityClaims, {
         connection_id: mailbox,
         kind: 'notes.post',
         payload: { to: ['dana@example.test'], body: 'The notes.' },
       }),
-    ).rejects.toMatchObject({ code: 'scope_denied' });
+    ).rejects.toMatchObject({ code: 'unknown_connection' });
   }, 60_000);
 
   test("an option the asker picked is the assistant's words to the reviewer, not the asker's instruction", async () => {
@@ -1029,6 +1064,17 @@ withDb('room approvals', () => {
       await ok(send(world.alice.cookie, `/rooms/${roomId}/connections`)),
     );
     expect(owned.connections.find((entry) => entry.id === calendar)?.shared_use).toBe('owner');
+    // The tools every room has are marked, so the room's settings list only accounts.
+    const builtins = await sql`select id from connection
+      where space_id = ${roomId} and configuration ? 'builtin'`;
+    expect(builtins.length).toBeGreaterThan(0);
+    expect(
+      owned.connections
+        .filter((entry) => entry.builtin)
+        .map((entry) => entry.id)
+        .sort(),
+    ).toEqual(builtins.map((row) => String(row.id)).sort());
+    expect(owned.connections.find((entry) => entry.id === calendar)?.builtin).toBe(false);
     const opened = await startThread(world.bob, roomId, '@Melete when is the offsite?');
     const requestId = opened.request_job_id ?? '';
     const catalog = new RuntimeCatalog(db, registry);
@@ -1077,6 +1123,290 @@ withDb('room approvals', () => {
     });
     expect(proposed.requires_approval).toBe(true);
   }, 90_000);
+
+  test("an account the room's owners added serves the room's requests, under the room's rule", async () => {
+    const { db } = database();
+    const { roomId } = await makeRoom('Team accounts');
+    // An installed account carries its own audience mark, as a mailbox or a
+    // calendar account does; in a room's space it serves the room.
+    const account = succeeding(calendarManifest);
+    const team = await installAs(
+      roomId,
+      calendarManifest,
+      'room',
+      Object.assign(account, { catalog: { ...account.catalog, audience: 'owner' as const } }),
+    );
+    const opened = await startThread(
+      world.bob,
+      roomId,
+      '@Melete put the offsite on the team calendar',
+    );
+    const requestId = opened.request_job_id ?? '';
+    const catalog = new RuntimeCatalog(db, registry);
+    const offered = (
+      await catalog.toolsForSpace(
+        roomId,
+        calendarManifest.tools.map((tool) => tool.name),
+        db,
+        requestId,
+      )
+    ).map((tool) => tool.connection_id);
+    expect(offered).toContain(team);
+    const { claims } = await claim(requestId);
+    const proposed = await database().broker.propose(claims as CapabilityClaims, {
+      connection_id: team,
+      kind: 'calendar.create',
+      payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
+    });
+    // The room's rule decides it: the person who asked answers.
+    expect(proposed.requires_approval).toBe(true);
+  }, 90_000);
+
+  test("a room's own MCP server runs the room's requests, and its writes wait for the room's rule", async () => {
+    const { broker, runner, sql } = database();
+    const { roomId } = await makeRoom('Team server');
+    const config = mcpFixtureConfig();
+    const id = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes, shared_use, configuration)
+      values (${id}, ${roomId}, 'mcp', 'Team server',
+        ${JSON.stringify(config.allowed_scopes)}::jsonb, 'room',
+        ${JSON.stringify({ server: config })}::jsonb)`;
+    const binding = { connectionId: id, spaceId: roomId };
+    const connector = mcpConnector(await openMcpWorker(config, binding), binding, sql);
+    let calls = 0;
+    const execute = connector.execute.bind(connector);
+    connector.execute = (action, context) => {
+      calls++;
+      return execute(action, context);
+    };
+    registry.register(id, connector);
+
+    const opened = await startThread(world.bob, roomId, '@Melete add the launch to the team list');
+    const requestId = opened.request_job_id ?? '';
+    const { claims } = await claim(requestId);
+    const offered = (await broker.discovery.available(claims as CapabilityClaims))
+      .filter((tool) => tool.connection_id === id)
+      .map((tool) => tool.name)
+      .sort();
+    expect(offered).toEqual(['mcp_fixture.read', 'mcp_fixture.write']);
+    // A read runs at once, through the server the room's owner added.
+    const read = await broker.propose(claims as CapabilityClaims, {
+      connection_id: id,
+      kind: 'mcp_fixture.read',
+      payload: {},
+    });
+    expect(read.status).toBe('succeeded');
+    // A write waits for the person the room's rule names: Bob, who asked.
+    const write = await broker.propose(claims as CapabilityClaims, {
+      connection_id: id,
+      kind: 'mcp_fixture.write',
+      payload: { body: 'The launch' },
+    });
+    expect(write.requires_approval).toBe(true);
+    await runner.commitOutcome(claims as CapabilityClaims, {
+      kind: 'waiting_for_approval',
+      action_ids: [write.action_id],
+    });
+    const { card: seen } = await card(
+      world.carol,
+      roomId,
+      opened.thread.id,
+      write.approval_id ?? '',
+    );
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.bob.id]);
+    const body = {
+      option: 'allow_once' as const,
+      version: seen.version,
+      payload_hash: write.payload_hash,
+    };
+    expect((await answer(world.carol, roomId, write.approval_id ?? '', body)).status).toBe(403);
+    await ok(answer(world.bob, roomId, write.approval_id ?? '', body));
+    const again = await claim(requestId);
+    await broker.admit(again.claims as CapabilityClaims, write.action_id, write.payload_hash);
+    expect((await broker.dispatch(write.action_id)).status).toBe('succeeded');
+    expect(calls).toBe(2);
+
+    // Bob's own work in the room's space reaches none of it.
+    const own = await memberWork(world.bob, roomId, 'Add the launch to the list');
+    expect((await broker.discovery.available(own)).some((tool) => tool.connection_id === id)).toBe(
+      false,
+    );
+    expect(
+      await refusalOf(
+        broker.propose(own, { connection_id: id, kind: 'mcp_fixture.read', payload: {} }),
+      ),
+    ).toBe('scope_denied');
+    expect(calls).toBe(2);
+  }, 90_000);
+
+  test("the room's computer serves the room's requests under its rule, and a guest's only where guests may ask", async () => {
+    const { broker, runner, sql } = database();
+    const { roomId } = await makeRoom('Computer');
+    // The computer every room is given: one of the room's own tools, for its requests.
+    const computer = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes, shared_use, configuration)
+      values (${computer}, ${roomId}, 'sandbox', 'Computer', '["terminal.run"]'::jsonb, 'room',
+        '{"builtin": "sandbox", "kind": "sandbox"}'::jsonb)`;
+    let runs = 0;
+    const machine = succeeding(sandboxTerminalManifest);
+    registry.register(computer, {
+      ...machine,
+      catalog: { audience: 'owner' },
+      execute(action, context) {
+        runs++;
+        return machine.execute(action, context);
+      },
+    });
+    const run = (claims: CapabilityClaims) =>
+      broker.propose(claims, {
+        connection_id: computer,
+        kind: 'terminal.run',
+        payload: { command: 'ls' },
+      });
+    const offers = async (claims: CapabilityClaims) =>
+      (await broker.discovery.available(claims)).some(
+        (tool) => tool.connection_id === computer && tool.name === 'terminal.run',
+      );
+
+    // A command in the room's computer waits for the person the room's rule
+    // names, Bob who asked, even with auto-review on for the agent's own
+    // workspace: the room's space is everyone's in it, never one person's.
+    await saveApprovalSettings(sql, roomId, AUTO);
+    const asked = await startThread(world.bob, roomId, '@Melete list the files');
+    const bobs = (await claim(asked.request_job_id ?? '')).claims as CapabilityClaims;
+    expect(await offers(bobs)).toBe(true);
+    const held = await run(bobs);
+    expect(held.requires_approval).toBe(true);
+    await runner.commitOutcome(bobs, {
+      kind: 'waiting_for_approval',
+      action_ids: [held.action_id],
+    });
+    const { card: seen } = await card(world.carol, roomId, asked.thread.id, held.approval_id ?? '');
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.bob.id]);
+    const body = {
+      option: 'allow_once' as const,
+      version: seen.version,
+      payload_hash: held.payload_hash,
+    };
+    expect((await answer(world.carol, roomId, held.approval_id ?? '', body)).status).toBe(403);
+    expect(runs).toBe(0);
+    await ok(answer(world.bob, roomId, held.approval_id ?? '', body));
+    const resumed = (await claim(asked.request_job_id ?? '')).claims as CapabilityClaims;
+    await broker.admit(resumed, held.action_id, held.payload_hash);
+    expect((await broker.dispatch(held.action_id)).status).toBe('succeeded');
+    expect(runs).toBe(1);
+
+    // Bob's own work in the room's space is not a request of the room: no computer.
+    const own = await memberWork(world.bob, roomId, 'List the files');
+    expect(await offers(own)).toBe(false);
+    expect(await refusalOf(run(own))).toBe('scope_denied');
+
+    // A guest's request reaches it while the room lets guests ask, and waits
+    // for the room's owners, since a guest never answers.
+    const guest = await startThread(world.dan, roomId, '@Melete list the files for me');
+    const dans = (await claim(guest.request_job_id ?? '')).claims as CapabilityClaims;
+    expect(await offers(dans)).toBe(true);
+    const guests = await run(dans);
+    expect(guests.requires_approval).toBe(true);
+    await runner.commitOutcome(dans, {
+      kind: 'waiting_for_approval',
+      action_ids: [guests.action_id],
+    });
+    const { card: theirs } = await card(
+      world.dan,
+      roomId,
+      guest.thread.id,
+      guests.approval_id ?? '',
+    );
+    expect(theirs.eligible_approvers?.map((person) => person.principal_id)).toEqual([
+      world.alice.id,
+    ]);
+    expect(runs).toBe(1);
+    // Once guests may not ask, a guest makes no request, so nothing reaches the computer.
+    await setPolicy(roomId, { guests_may_ask: false });
+    const [before] = await sql`select count(*)::int as n from job where space_id = ${roomId}`;
+    const refused = await send(world.dan.cookie, `/rooms/${roomId}/threads`, 'POST', {
+      text: '@Melete list the files again',
+      submission_id: submission(),
+    });
+    expect(refused.status).toBe(403);
+    const [after] = await sql`select count(*)::int as n from job where space_id = ${roomId}`;
+    expect(after?.n).toBe(before?.n);
+    expect(runs).toBe(1);
+  }, 90_000);
+
+  test("turning guests' asks off ends the requests guests made, withdraws what they wait on, and says so", async () => {
+    const { sql } = database();
+    const { roomId, notes } = await makeRoom('Guests off');
+    const guests = await askAndWait(world.dan, roomId, notes);
+    const members = await askAndWait(world.bob, roomId, notes);
+    const { card: seen } = await card(world.alice, roomId, guests.threadId, guests.approvalId);
+    await setPolicy(roomId, { guests_may_ask: false });
+
+    // The guest's request ends, and the permission it waited on is withdrawn.
+    const [ended] = await sql`select state from job where id = ${guests.requestId}`;
+    expect(ended?.state).toBe('cancelled');
+    expect(await decision(guests.approvalId)).toEqual({ decision: 'denied', decided_by: 'policy' });
+    const [effect] = await sql`select status from action where id = ${guests.actionId}`;
+    expect(effect?.status).toBe('failed');
+    const late = await answer(world.alice, roomId, guests.approvalId, {
+      option: 'allow_once',
+      version: seen.version,
+      payload_hash: guests.hash,
+    });
+    expect(late.status).not.toBe(200);
+    // The thread tells everyone in it why, the guest included.
+    const view = roomThreadView.parse(
+      await ok(send(world.dan.cookie, `/rooms/${roomId}/threads/${guests.threadId}`)),
+    );
+    expect(
+      view.messages.some(
+        (message) =>
+          message.kind === 'system' &&
+          message.text ===
+            'Guests can no longer ask the agent in this room, so this request has stopped.',
+      ),
+    ).toBe(true);
+
+    // A member's request is untouched.
+    const [kept] = await sql`select state from job where id = ${members.requestId}`;
+    expect(kept?.state).toBe('waiting_for_approval');
+    expect(await decision(members.approvalId)).toEqual({ decision: null, decided_by: null });
+  }, 90_000);
+
+  test("only the room's owner adds an account to it: a member and a guest are refused, and nothing is made", async () => {
+    const { sql } = database();
+    const { roomId } = await makeRoom('Who adds');
+    const count = async () => {
+      const [row] = await sql`select count(*)::int as n from connection where space_id = ${roomId}`;
+      return Number(row?.n);
+    };
+    const before = await count();
+    const body = {
+      provider: 'mcp',
+      label: 'Team server',
+      space_id: roomId,
+      mcp: {
+        id: 'team',
+        url: 'https://93.184.216.34/mcp',
+        allowed_scopes: ['mcp_team.lookup'],
+        audience: 'owner',
+        tools: [
+          {
+            name: 'lookup',
+            alias: 'lookup',
+            required_scopes: ['mcp_team.lookup'],
+            effect_class: 'read',
+          },
+        ],
+      },
+    };
+    for (const person of [world.bob, world.dan]) {
+      const refused = await send(person.cookie, '/connections', 'POST', body);
+      expect([person.name, refused.status]).toEqual([person.name, 403]);
+    }
+    expect(await count()).toBe(before);
+  }, 60_000);
 
   test("auto-review never answers a room's permission, whoever the room's rule names", async () => {
     const { sql } = database();

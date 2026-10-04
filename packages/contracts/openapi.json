@@ -23770,7 +23770,7 @@
           "model-providers"
         ],
         "summary": "Choose this account’s secondary model",
-        "description": "A second model for cheaper work beside the primary. It applies to this account’s own work from the next call, as `secondary.uses` says; chats with the person stay on the primary. The provider must already have a key or a sign-in.",
+        "description": "A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says; chats stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -23817,7 +23817,7 @@
             }
           },
           "403": {
-            "description": "A guest account has no secondary model",
+            "description": "Only the setup owner changes the model",
             "content": {
               "application/json": {
                 "schema": {
@@ -23855,7 +23855,7 @@
             }
           },
           "403": {
-            "description": "A guest account has no secondary model",
+            "description": "Only the setup owner changes the model",
             "content": {
               "application/json": {
                 "schema": {
@@ -23914,7 +23914,7 @@
             }
           },
           "403": {
-            "description": "A guest account has no secondary model",
+            "description": "Only the setup owner changes the model",
             "content": {
               "application/json": {
                 "schema": {
@@ -36653,6 +36653,9 @@
               "owner",
               "room"
             ]
+          },
+          "builtin": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -36660,7 +36663,8 @@
           "label",
           "provider",
           "status",
-          "shared_use"
+          "shared_use",
+          "builtin"
         ],
         "additionalProperties": false
       },
@@ -41258,7 +41262,7 @@
         "description": "Which work runs on the secondary. Applies only while a secondary model is set; chats with the person always run on the primary."
       },
       "__schema631": {
-        "description": "Short side calls: reading chats into memory, quick voice replies and the check before an action runs. `secondary` by default once a secondary model is set.",
+        "description": "Short side calls: reading chats into memory and quick voice replies. `secondary` by default once a secondary model is set. The check before a risky action never moves.",
         "$ref": "#/components/schemas/__schema632"
       },
       "__schema632": {
@@ -41274,7 +41278,7 @@
       },
       "__schema634": {
         "type": "boolean",
-        "description": "Whether this account may set its own secondary model"
+        "description": "Whether this account may set the secondary model (the owner)"
       },
       "__schema635": {
         "anyOf": [

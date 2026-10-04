@@ -12552,7 +12552,7 @@ export interface paths {
         get?: never;
         /**
          * Choose this account’s secondary model
-         * @description A second model for cheaper work beside the primary. It applies to this account’s own work from the next call, as `secondary.uses` says; chats with the person stay on the primary. The provider must already have a key or a sign-in.
+         * @description A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says; chats stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.
          */
         put: {
             parameters: {
@@ -12588,7 +12588,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema188"];
                     };
                 };
-                /** @description A guest account has no secondary model */
+                /** @description Only the setup owner changes the model */
                 403: {
                     headers: {
                         [name: string]: unknown;
@@ -12628,7 +12628,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema624"];
                     };
                 };
-                /** @description A guest account has no secondary model */
+                /** @description Only the setup owner changes the model */
                 403: {
                     headers: {
                         [name: string]: unknown;
@@ -12690,7 +12690,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema188"];
                     };
                 };
-                /** @description A guest account has no secondary model */
+                /** @description Only the setup owner changes the model */
                 403: {
                     headers: {
                         [name: string]: unknown;
@@ -22599,6 +22599,7 @@ export interface components {
             policy: components["schemas"]["__schema352"];
         };
         __schema371: {
+            builtin: boolean;
             id: components["schemas"]["__schema354"];
             label: string;
             provider: string;
@@ -23559,13 +23560,13 @@ export interface components {
             scheduled: components["schemas"]["__schema633"];
             side_tasks: components["schemas"]["__schema631"];
         };
-        /** @description Short side calls: reading chats into memory, quick voice replies and the check before an action runs. `secondary` by default once a secondary model is set. */
+        /** @description Short side calls: reading chats into memory and quick voice replies. `secondary` by default once a secondary model is set. The check before a risky action never moves. */
         __schema631: components["schemas"]["__schema632"];
         /** @enum {string} */
         __schema632: "primary" | "secondary";
         /** @description Scheduled and repeating work: routines, and work that wakes on a trigger. `primary` by default. */
         __schema633: components["schemas"]["__schema632"];
-        /** @description Whether this account may set its own secondary model */
+        /** @description Whether this account may set the secondary model (the owner) */
         __schema634: boolean;
         __schema635: components["schemas"]["__schema186"] | null;
         __schema636: string;
