@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
+  ATTACHMENT_LIMITS,
   CONTINUABLE_STATES,
   type CreateResponsibilityRequest,
   createResponsibilityRequest,
@@ -160,6 +161,8 @@ export class JobService {
   readonly afterMove: ((tx: Transaction, before: JobRow, after: JobRow) => Promise<void>)[] = [];
   /** Ends a conversation's turn in flight as Stop does; see `AttemptRunner.stopTurn`. */
   stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
+  /** The most files one message may carry, as the operator sets it. */
+  attachmentsPerMessage: number = ATTACHMENT_LIMITS.per_message;
   constructor(
     readonly db: Database,
     readonly boss: PgBoss,
@@ -494,6 +497,7 @@ export class JobService {
           spaceId: row.spaceId,
           principalId: speaker ?? null,
           ids: attachments,
+          perMessage: this.attachmentsPerMessage,
         })
       : [];
     if (!text && !files.length)

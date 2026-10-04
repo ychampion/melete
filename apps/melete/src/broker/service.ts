@@ -94,7 +94,7 @@ import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } f
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
-import { BrokerFault } from './errors.ts';
+import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
   actionFromRow,
@@ -564,13 +564,7 @@ export class BrokerService implements BrokerOperations {
       }
       return await this.options.runs.call(claims, name, input);
     } catch (error) {
-      if (error instanceof ZodError) {
-        const issue = error.issues[0];
-        throw new BrokerFault(
-          'payload_invalid',
-          issue ? `${issue.path.join('.') || 'input'}: ${issue.message}` : 'Invalid input.',
-        );
-      }
+      if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
       if (error instanceof ServiceError)
         throw new BrokerFault(
           ['stale_epoch', 'scope_denied', 'revision_mismatch'].includes(error.code)

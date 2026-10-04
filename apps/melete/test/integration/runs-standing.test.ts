@@ -12,9 +12,14 @@ import {
   runResponse,
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
+import { signCapability } from '../../src/broker/capability.ts';
+import { createBrokerApp } from '../../src/broker/http.ts';
+import { BrokerService } from '../../src/broker/service.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   connection,
+  experienceProfile,
   job,
   owner,
   pushIntent,
@@ -522,5 +527,92 @@ withDb('standing work', () => {
     await required(runner).commitOutcome(asked.claims, done());
     expect(await progress()).toHaveLength(2);
     expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+  });
+
+  test('a weekly routine started from a conversation stands on its schedule, in the person’s time zone', async () => {
+    const broker = new BrokerService({
+      sql: required(handle).sql,
+      connectors: new ConnectorRegistry(),
+      runs: required(runs),
+    });
+    const brokerApp = createBrokerApp({
+      broker,
+      capabilityKey: KEY,
+      approvalKey: 'standing-fixture-approval-key-32-bytes!',
+    });
+    await required(handle)
+      .db.insert(experienceProfile)
+      .values({ spaceId, timeZone: 'America/Los_Angeles' })
+      .onConflictDoUpdate({
+        target: experienceProfile.spaceId,
+        set: { timeZone: 'America/Los_Angeles' },
+      });
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: spaceId, title: 'Routine', objective: 'Routine' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).input(
+      chat.id,
+      'Set up a routine called smoke-routine that checks in with me every Monday at 9am',
+    );
+    const turn = await claim(chat.id);
+    // The call as the engine forwards it: the broker route, then the run service.
+    const call = (args: Record<string, unknown>) =>
+      required(brokerApp).request('/tools/call', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${signCapability(turn.claims, KEY)}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'run.start', arguments: args }),
+      });
+    const refusal = async (args: Record<string, unknown>) => {
+      const response = await call(args);
+      expect(response.status).toBe(409);
+      return ((await response.json()) as { error: { message: string } }).error.message;
+    };
+    const goal = 'Check in with the person every Monday at 9:00';
+
+    // Without a time zone, the person's own is used.
+    const plain = await call({ goal, title: 'smoke-routine', repeat: { cron: '0 9 * * 1' } });
+    expect(plain.status).toBe(200);
+    const { run_id } = (await plain.json()) as { run_id: string };
+    expect((await triggerOf(run_id)).spec).toEqual({
+      kind: 'schedule',
+      cron: '0 9 * * 1',
+      timezone: 'America/Los_Angeles',
+    });
+    const standing = (await view(run_id)).standing;
+    expect(standing).toMatchObject({ kind: 'schedule', description: 'Every Monday at 9:00' });
+    expect(Date.parse(required(standing?.next_wake_at))).toBeGreaterThan(Date.now());
+    expect((await request(`/runs/${run_id}/stop`, 'POST')).status).toBe(200);
+
+    // A zone the model names is kept.
+    const named = await call({
+      goal,
+      title: 'smoke-routine',
+      repeat: { cron: '0 9 * * 1', timezone: 'Europe/Berlin' },
+    });
+    expect(named.status).toBe(200);
+    const namedRun = ((await named.json()) as { run_id: string }).run_id;
+    expect((await triggerOf(namedRun)).spec).toMatchObject({ timezone: 'Europe/Berlin' });
+    expect((await request(`/runs/${namedRun}/stop`, 'POST')).status).toBe(200);
+
+    // A refusal says what to fix.
+    const empty = await refusal({ goal, repeat: {} });
+    expect(empty).toContain('repeat.cron: missing');
+    expect(empty).toContain('"0 9 * * 1" is Mondays at 9:00');
+    expect(await refusal({ goal, repeat: { cron: 'every Monday at 9' } })).toContain(
+      '"every Monday at 9" is not a cron this can follow. Write it as five fields',
+    );
+    expect(await refusal({ goal, repeat: { cron: '0 9 * * 1', timezone: 'Pacific' } })).toContain(
+      '"Pacific" is not a time zone',
+    );
+    expect(await refusal({ goal, repeat: { cron: '0 9 * * 1', every: 'week' } })).toContain(
+      'repeat: Unrecognized key: "every"',
+    );
   });
 });

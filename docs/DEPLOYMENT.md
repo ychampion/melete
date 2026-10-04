@@ -1586,6 +1586,50 @@ for its owner alone.
 Removing a space keeps its calls' amounts, so a limit is not reset by deleting
 a space; which space and job they came from is removed with it.
 
+## Attachments
+
+Files sent in chat (pictures, PDFs, Word documents, spreadsheets and text
+files) are taken up to a size and a number per message. Nothing limits how
+many files one person uploads unless you set a limit, so a self-hosted
+installation never turns someone away for uploading; an installation shared
+with many people, such as a hosted one, can set the per-person limits.
+
+| Setting | Limit |
+| --- | --- |
+| `MELETE_ATTACHMENT_MAX_MB` | The largest file, in MB (default `20`, at most `100`) |
+| `MELETE_ATTACHMENTS_PER_MESSAGE` | The most files in one message (default `10`, at most `100`) |
+| `MELETE_ATTACHMENT_UPLOADS_AT_ONCE` | Uploads one person may have under way at once (default: no limit) |
+| `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | Uploads one person may start in a window (default: no limit) |
+| `MELETE_ATTACHMENT_UPLOAD_WINDOW_MINUTES` | That window, in minutes (default `10`) |
+| `MELETE_ATTACHMENT_SERVER_UPLOADS` | Uploads the whole service holds in flight at once, from everyone (default `16`) |
+| `MELETE_ATTACHMENT_SERVER_UPLOAD_MB` | The MB those uploads may hold between them (default `384`, never less than one file at the largest size) |
+
+- A file over the size, or a message over the number, is refused with a plain
+  sentence before anything is kept: "Files can be up to 20 MB. scan.pdf is
+  25 MB."
+- Past an upload limit the request gets `429` and a sentence ("You can upload
+  3 files at a time. Wait for one to finish, then try again."). The web client
+  reads the limits from `GET /attachments/limits` and queues its uploads to
+  the number at once, so a person picking many files never sees that refusal.
+- The upload window is counted where sign-in limits are, in Postgres, so every
+  service instance shares it; the number at once is counted by each instance.
+- The last two settings are not limits on people. An upload is held in memory
+  while it is read, so each service instance always bounds how many it holds
+  and their bytes; past that, an upload gets `503` and "Melete is busy reading
+  other files. Try again in a moment."
+- So that one person cannot fill those bounds and keep everyone else out, one
+  person may hold at most half of each (8 uploads by default, and no more
+  files at the largest size than fit in half the bytes), or your
+  `MELETE_ATTACHMENT_UPLOADS_AT_ONCE` if it is lower. `GET /attachments/limits`
+  gives that number and the web client queues to it, so a person sending ten
+  files sees them all finish; only a client that ignores it gets `429`.
+- Every way a message arrives (a chat, a chat started from Home, and
+  `POST /jobs/{id}/input`) binds its files in one place, which checks the files
+  per message and that each is the sender's own, unsent, and in the same space.
+- Reading a file stays bounded whatever these are: two reads run at a time
+  with a short queue, each with a deadline and a memory ceiling, and archives
+  and page counts are capped, so a crafted file cannot take the service down.
+
 ## Model routing
 
 By default every call uses the model chosen in Settings › Models, else

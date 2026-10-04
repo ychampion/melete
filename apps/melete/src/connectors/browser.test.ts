@@ -39,9 +39,10 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
     servers.push(server);
     worker = new BrowserWorkerClient(server.url.href, 'x'.repeat(32));
   }
+  const state = { opened: false };
   const sessions: Pick<BrowserSessionService, 'lease' | 'park'> = {
     async lease() {
-      return { session, worker };
+      return { session, worker, opened: state.opened };
     },
     async park(_ctx, _id, reason) {
       parks.push(reason);
@@ -59,7 +60,7 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
       };
     },
   });
-  return { connector, commands, parks, captures, sessions };
+  return { connector, commands, parks, captures, sessions, state };
 }
 
 test('browser catalog exposes consequential commits as approved external writes', () => {
@@ -199,26 +200,147 @@ test('read refresh keys stay inside the broker and observe failures park the lea
   expect(s.parks).toEqual(['human_control']);
 });
 
-test('non-observation actions cannot invent a current epoch and identity mismatch never dispatches', async () => {
+test('an unplanned submit never dispatches and identity mismatch never dispatches', async () => {
   const s = fixture(() => Response.json({}));
-  const action = connectorAction('browser.fill', { label: 'Name', value: 'Alice' });
-  await expect(s.connector.execute(action, connectorContext(action))).rejects.toThrow(
+  const submit = connectorAction('browser.submit', { intent: {} });
+  await expect(s.connector.execute(submit, connectorContext(submit))).rejects.toThrow(
     'planned browser session',
   );
   const observe = connectorAction('browser.observe', {});
-  const missingObservation = connectorAction('browser.fill', {
-    session_id: 'brws_fixture',
-    control_epoch: 4,
-    label: 'Name',
-    value: 'Alice',
-  });
-  await expect(
-    s.connector.execute(missingObservation, connectorContext(missingObservation)),
-  ).rejects.toThrow('observation id');
   await expect(
     s.connector.execute(observe, { ...connectorContext(observe), job_id: 'job_other' }),
   ).rejects.toThrow('identity mismatch');
   expect(s.commands).toHaveLength(0);
+});
+
+const observed = (body: JsonObject) =>
+  Response.json({
+    session_id: 'brws_fixture',
+    control_epoch: 4,
+    observation: {
+      id: `obs_${(body.operation as JsonObject).kind}`,
+      url: 'https://fixture.example/',
+      tree: 'tree',
+      screenshot: '',
+      schema: [],
+    },
+  });
+
+test("steps without a session act on the job's current session at its epoch", async () => {
+  const s = fixture(observed);
+  const action = connectorAction('browser.fill', { label: 'Name', value: 'Alice' });
+  const result = await s.connector.execute(action, connectorContext(action));
+  expect(result.outcome).toBe('succeeded');
+  expect(s.commands).toEqual([
+    {
+      session_id: 'brws_fixture',
+      job_id: action.job_id,
+      control_epoch: 4,
+      operation: { kind: 'fill', label: 'Name', value: 'Alice' },
+    },
+  ]);
+});
+
+test('a browser this step started is looked at once before the step acts', async () => {
+  const s = fixture(observed);
+  s.state.opened = true;
+  const action = connectorAction('browser.open', { url: 'https://fixture.example/' });
+  const result = await s.connector.execute(action, connectorContext(action));
+  expect(result.outcome).toBe('succeeded');
+  expect(s.commands.map((command) => command.operation)).toEqual([
+    { kind: 'observe' },
+    { kind: 'open', url: 'https://fixture.example/' },
+  ]);
+  const look = connectorAction('browser.observe', {});
+  s.commands.length = 0;
+  await s.connector.execute(look, connectorContext(look));
+  expect(s.commands.map((command) => command.operation)).toEqual([{ kind: 'observe' }]);
+});
+
+test('a named session that has closed says how to reach the current one', async () => {
+  const s = fixture(() => Response.json({}));
+  s.sessions.lease = async () => {
+    throw new BrowserFault('session_not_found');
+  };
+  const action = connectorAction('browser.fill', {
+    session_id: 'brws_closed',
+    label: 'Name',
+    value: 'Alice',
+  });
+  const result = await s.connector.execute(action, connectorContext(action));
+  expect(result).toMatchObject({ outcome: 'failed', retryable: false });
+  if (result.outcome !== 'failed') throw new Error('expected a failure');
+  expect(result.reason).toStartWith('session_not_found');
+  expect(result.reason).toContain("Leave session_id and control_epoch out to use this job's");
+  expect(s.parks).toEqual([]);
+});
+
+/** A query stand-in holding bindings for two jobs; it answers only for the scope it is asked. */
+function bindings(rows: Array<{ id: string; job_id: string; control_epoch: number }>) {
+  const asked: unknown[][] = [];
+  const tx = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    asked.push(values);
+    const [space, job] = values;
+    return space === 'sp_01'
+      ? rows
+          .filter((row) => row.job_id === job)
+          .map(({ id, control_epoch }) => ({ id, control_epoch }))
+      : [];
+  }) as unknown as Parameters<NonNullable<ReturnType<typeof createBrowserConnector>['prepare']>>[2];
+  return { tx, asked };
+}
+
+test("an unknown session id is refused at proposal with only this job's sessions listed", async () => {
+  const s = fixture(() => Response.json({}));
+  const { tx } = bindings([
+    { id: 'brws_mine', job_id: 'job_01', control_epoch: 2 },
+    { id: 'brws_theirs', job_id: 'job_other', control_epoch: 7 },
+  ]);
+  const prepare = s.connector.prepare;
+  if (!prepare) throw new Error('browser connector binds sessions at proposal');
+  const ctx = connectorContext(connectorAction('browser.fill', {}));
+  for (const named of ['brws_made_up', 'brws_theirs']) {
+    const message = await prepare({ session_id: named, label: 'Name', value: 'A' }, ctx, tx).then(
+      () => '',
+      (error: Error) => error.message,
+    );
+    expect(message).toContain(`no browser session ${named} in this job`);
+    expect(message).toContain("This job's sessions: brws_mine.");
+    expect(message).not.toContain('brws_theirs.');
+  }
+  expect(await prepare({ session_id: 'brws_mine', label: 'Name', value: 'A' }, ctx, tx)).toEqual({
+    session_id: 'brws_mine',
+    label: 'Name',
+    value: 'A',
+  });
+  expect(await prepare({ label: 'Name', value: 'A' }, ctx, tx)).toEqual({
+    label: 'Name',
+    value: 'A',
+  });
+});
+
+test("a submit is bound at proposal to the job's current session and its epoch", async () => {
+  const s = fixture(() => Response.json({}));
+  const prepare = s.connector.prepare;
+  if (!prepare) throw new Error('browser connector binds sessions at proposal');
+  const ctx = connectorContext(connectorAction('browser.submit', {}));
+  const { tx } = bindings([
+    { id: 'brws_mine', job_id: 'job_01', control_epoch: 2 },
+    { id: 'brws_theirs', job_id: 'job_other', control_epoch: 7 },
+  ]);
+  expect(await prepare({ intent: { name: 'Send' } }, ctx, tx)).toEqual({
+    intent: { name: 'Send' },
+    session_id: 'brws_mine',
+    control_epoch: 2,
+  });
+  // An epoch the caller planned under is kept, so a stale plan is still refused at dispatch.
+  expect(await prepare({ intent: {}, session_id: 'brws_mine', control_epoch: 1 }, ctx, tx)).toEqual(
+    { intent: {}, session_id: 'brws_mine', control_epoch: 1 },
+  );
+  const empty = bindings([{ id: 'brws_theirs', job_id: 'job_other', control_epoch: 7 }]);
+  await expect(prepare({ intent: {} }, ctx, empty.tx)).rejects.toThrow(
+    'no browser page to submit from',
+  );
 });
 
 test('sensitive-input refusal is a service wait and uncertain submits are never marked unsent', async () => {

@@ -18,11 +18,15 @@ import {
   turnList,
 } from '@melete/contracts';
 import { pdfWith, TINY_PNG } from '../../src/attachments/fixtures.ts';
+import {
+  attachmentSettingsFromEnv,
+  personUploadsAtOnce,
+  uploadBounds,
+} from '../../src/attachments/limits.ts';
 import { gatewayAttachments } from '../../src/attachments/model.ts';
-import { UPLOAD_RATE, UPLOADS_AT_ONCE } from '../../src/attachments/routes.ts';
 import { AttachmentService } from '../../src/attachments/store.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { owner, space } from '../../src/db/schema.ts';
+import { owner, principal, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
@@ -61,6 +65,44 @@ const app =
         checkDatabase: async () => 'ok',
       })
     : null;
+/** The same service where the operator limits uploads, as a hosted install does. */
+const limitedEnv = loadEnv({
+  NODE_ENV: 'test',
+  MELETE_ATTACHMENT_UPLOADS_AT_ONCE: '3',
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW: '60',
+});
+const limitedSettings = attachmentSettingsFromEnv(limitedEnv);
+const limitedApp = handle
+  ? createApp({
+      db: handle.db,
+      env: limitedEnv,
+      sql: handle.sql,
+      attachments: new AttachmentService(handle.sql, store, limitedSettings),
+      checkDatabase: async () => 'ok',
+    })
+  : null;
+/** The same service with a small bound on what it holds in flight, to reach it in a test. */
+const busyEnv = loadEnv({ NODE_ENV: 'test', MELETE_ATTACHMENT_SERVER_UPLOADS: '2' });
+/** The service holds four, so one person's share is two. */
+const fairEnv = loadEnv({ NODE_ENV: 'test', MELETE_ATTACHMENT_SERVER_UPLOADS: '4' });
+const fairApp = handle
+  ? createApp({
+      db: handle.db,
+      env: fairEnv,
+      sql: handle.sql,
+      attachments: new AttachmentService(handle.sql, store, attachmentSettingsFromEnv(fairEnv)),
+      checkDatabase: async () => 'ok',
+    })
+  : null;
+const busyApp = handle
+  ? createApp({
+      db: handle.db,
+      env: busyEnv,
+      sql: handle.sql,
+      attachments: new AttachmentService(handle.sql, store, attachmentSettingsFromEnv(busyEnv)),
+      checkDatabase: async () => 'ok',
+    })
+  : null;
 const spaceId = newId('sp');
 const ownerId = newId('own');
 const token = randomBytes(32).toString('base64url');
@@ -91,14 +133,21 @@ async function request(path: string, method = 'GET', body?: unknown, key?: strin
   });
 }
 
-async function upload(name: string, type: string, bytes: Uint8Array, preview?: Uint8Array) {
-  if (!app) throw new Error('Postgres unavailable');
+async function upload(
+  name: string,
+  type: string,
+  bytes: Uint8Array,
+  preview?: Uint8Array,
+  to = app,
+  as = token,
+) {
+  if (!to) throw new Error('Postgres unavailable');
   const form = new FormData();
   form.append('file', new File([bytes], name, { type }));
   if (preview) form.append('preview', new File([preview], 'preview.jpg', { type: 'image/jpeg' }));
-  return app.request('/attachments', {
+  return to.request('/attachments', {
     method: 'POST',
-    headers: { Cookie: `melete_session=${token}` },
+    headers: { Cookie: `melete_session=${as}` },
     body: form,
   });
 }
@@ -114,6 +163,43 @@ async function conversation() {
   const persona = agentResponse.parse(await made.json()).agent;
   const created = await request('/conversations', 'POST', { title: 'Lease', agent_id: persona.id });
   return conversationResponse.parse(await created.json()).conversation;
+}
+
+/** Another person on the same installation, with a personal space and a session of their own. */
+async function person(): Promise<string> {
+  if (!handle) throw new Error('Postgres unavailable');
+  const theirSpace = newId('sp');
+  const them = newId('own');
+  const theirToken = randomBytes(32).toString('base64url');
+  await handle.db.insert(principal).values({ id: them, email: `${them}@example.test` });
+  await handle.db.insert(space).values({
+    id: theirSpace,
+    name: 'Personal',
+    ownerPrincipalId: them,
+    gitPath: `/spaces/${theirSpace}`,
+  });
+  await handle.db.insert(session).values({
+    tokenHash: createHash('sha256').update(theirToken).digest('hex'),
+    ownerId,
+    principalId: them,
+    spaceId: theirSpace,
+    expiresAt: new Date(Date.now() + 600_000),
+  });
+  return theirToken;
+}
+
+/** Run uploads as the web client does: no more at once than the service says. */
+async function queuedUploads<T>(limit: number, tasks: (() => Promise<T>)[]): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < tasks.length) {
+      const index = next++;
+      results[index] = await (tasks[index] as () => Promise<T>)();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, lane));
+  return results;
 }
 
 /** The sentence a refusal gave. */
@@ -384,26 +470,165 @@ const LEASE = pdfWith(['The lease starts in May.', 'Repairs are due within 14 da
     expect(await store.head((row?.blob_key ?? '') as BlobKey)).toBeNull();
   }, 60_000);
 
-  test('twelve uploads at once from one person: three go ahead, nine are asked to wait', async () => {
-    // PDFs, so each upload spends a while reading and they overlap.
-    const results = await Promise.all(
-      Array.from({ length: 12 }, (_, index) =>
-        upload(`parallel-${index}.pdf`, 'application/pdf', pdfWith([`Parallel ${index}`])),
+  test('twelve files from one person through the client queue all go ahead; past the share only a bypassing client is refused', async () => {
+    const limits = await request('/attachments/limits');
+    // No limit on people by default; one person's fair share is half of the service's 16.
+    expect(await limits.json()).toEqual({
+      file_bytes: ATTACHMENT_LIMITS.file_bytes,
+      per_message: ATTACHMENT_LIMITS.per_message,
+      uploads_at_once: 8,
+    });
+    const queued = await queuedUploads(
+      8,
+      Array.from(
+        { length: 12 },
+        (_, index) => () =>
+          upload(`queued-${index}.pdf`, 'application/pdf', pdfWith([`Queued ${index}`])),
       ),
     );
-    const refused = results.filter((response) => response.status === 429);
-    expect(results.filter((response) => response.status === 201)).toHaveLength(UPLOADS_AT_ONCE);
-    expect(refused).toHaveLength(12 - UPLOADS_AT_ONCE);
+    expect(queued.map((response) => response.status)).toEqual(Array(12).fill(201));
+    // A client that ignores the number and sends all twelve together meets it.
+    const raw = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        upload(`raw-${index}.pdf`, 'application/pdf', pdfWith([`Raw ${index}`])),
+      ),
+    );
+    const refused = raw.filter((response) => response.status === 429);
+    expect(raw.filter((response) => response.status === 201)).toHaveLength(8);
+    expect(refused).toHaveLength(4);
     for (const response of refused)
       expect(await said(response)).toBe(
-        `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
+        'You can upload 8 files at a time. Wait for one to finish, then try again.',
       );
   }, 120_000);
 
-  test('one person uploading too many files in a short time is asked to wait', async () => {
+  test('one person filling their share cannot keep another person from uploading', async () => {
+    const other = await person();
+    const results = await Promise.all([
+      ...Array.from({ length: 12 }, (_, index) =>
+        upload(
+          `hog-${index}.pdf`,
+          'application/pdf',
+          pdfWith([`Hog ${index}`]),
+          undefined,
+          fairApp,
+        ),
+      ),
+      upload('theirs.pdf', 'application/pdf', pdfWith(['Theirs']), undefined, fairApp, other),
+    ]);
+    const mine = results.slice(0, 12);
+    expect(mine.filter((response) => response.status === 201)).toHaveLength(2);
+    expect(mine.filter((response) => response.status === 429)).toHaveLength(10);
+    // Nobody got the service-wide refusal: the other person went straight in.
+    expect(results.at(-1)?.status).toBe(201);
+  }, 120_000);
+
+  test('ten files at once from one person stay inside what the service holds in flight', async () => {
+    const settings = attachmentSettingsFromEnv(loadEnv({ NODE_ENV: 'test' }));
+    // No limit on people by default, and room for ten files at the largest size.
+    expect(settings.uploadsAtOnce).toBeNull();
+    expect(settings.uploadRate).toBeNull();
+    expect(personUploadsAtOnce(settings)).toBe(8);
+    // Eight files at the largest size fit in one person's share of the bytes too.
+    expect(uploadBounds(settings).personBytes).toBeGreaterThanOrEqual(
+      8 * uploadBounds(settings).largest,
+    );
+  });
+
+  test('past what the whole service holds in flight, an upload is asked to come back', async () => {
+    // The service holds two, one each; a third person in the same moment is turned away.
+    const people = [token, await person(), await person()];
+    const results = await Promise.all(
+      people.map((who, index) =>
+        upload(
+          `busy-${index}.pdf`,
+          'application/pdf',
+          pdfWith([`Busy ${index}`]),
+          undefined,
+          busyApp,
+          who,
+        ),
+      ),
+    );
+    const refused = results.filter((response) => response.status === 503);
+    expect(results.filter((response) => response.status === 201)).toHaveLength(2);
+    expect(refused).toHaveLength(1);
+    for (const response of refused)
+      expect(await said(response)).toBe(
+        'Melete is busy reading other files. Try again in a moment.',
+      );
+  }, 120_000);
+
+  test('a chat started from Home, or a job input, cannot carry more files than the operator allows', async () => {
+    if (!jobs) return;
+    const files = [];
+    for (let index = 0; index < ATTACHMENT_LIMITS.per_message + 1; index++)
+      files.push(
+        await uploaded(`many-${index}.txt`, 'text/plain', new TextEncoder().encode(`${index}`)),
+      );
+    const ids = files.map((file) => file.id);
+    const sentence = `A message can carry up to ${ATTACHMENT_LIMITS.per_message} files, each once.`;
+    // Home starts a chat, then sends its first message with the files.
+    const started = await request('/conversations', 'POST', { title: 'Many files' });
+    const chat = conversationResponse.parse(await started.json()).conversation;
+    const first = await request(
+      `/conversations/${chat.id}/messages`,
+      'POST',
+      { text: 'Read these', attachments: ids },
+      'home-too-many',
+    );
+    expect(first.status).toBe(400);
+    expect(await said(first)).toBe(sentence);
+    // The same files through the jobs API meet the same check.
+    const viaJobs = await request(`/jobs/${chat.id}/input`, 'POST', {
+      text: 'Read these',
+      attachments: ids,
+    });
+    expect(viaJobs.status).toBe(400);
+    expect(JSON.stringify(await viaJobs.json())).toContain(sentence);
+    // Nothing was bound: every file is still unsent and can go in a smaller message.
+    const sent = await request(
+      `/conversations/${chat.id}/messages`,
+      'POST',
+      { text: 'Read these', attachments: ids.slice(0, ATTACHMENT_LIMITS.per_message) },
+      'home-just-enough',
+    );
+    expect(sent.status).toBe(200);
+  }, 120_000);
+
+  test('where the operator limits uploads at once, three go ahead and nine are asked to wait', async () => {
+    if (!limitedApp) throw new Error('Postgres unavailable');
+    const limits = await limitedApp.request('/attachments/limits', {
+      headers: { Cookie: `melete_session=${token}` },
+    });
+    expect(((await limits.json()) as { uploads_at_once: number }).uploads_at_once).toBe(3);
+    // PDFs, so each upload spends a while reading and they overlap.
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        upload(
+          `parallel-${index}.pdf`,
+          'application/pdf',
+          pdfWith([`Parallel ${index}`]),
+          undefined,
+          limitedApp,
+        ),
+      ),
+    );
+    const refused = results.filter((response) => response.status === 429);
+    expect(results.filter((response) => response.status === 201)).toHaveLength(3);
+    expect(refused).toHaveLength(9);
+    for (const response of refused)
+      expect(await said(response)).toBe(
+        'You can upload 3 files at a time. Wait for one to finish, then try again.',
+      );
+  }, 120_000);
+
+  test('where the operator limits uploads in a while, one person uploading too many is asked to wait', async () => {
+    const count = limitedSettings.uploadRate?.count ?? 0;
+    expect(count).toBe(60);
     let refused: Response | null = null;
-    for (let index = 0; index < UPLOAD_RATE.count + 1 && !refused; index++) {
-      const response = await upload(`p${index}.png`, 'image/png', TINY_PNG);
+    for (let index = 0; index < count + 1 && !refused; index++) {
+      const response = await upload(`p${index}.png`, 'image/png', TINY_PNG, undefined, limitedApp);
       if (response.status === 429) refused = response;
       else expect(response.status).toBe(201);
     }

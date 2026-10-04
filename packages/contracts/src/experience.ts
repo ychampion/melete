@@ -580,7 +580,7 @@ export const conversationTurn = z.strictObject({
   delivery: deliveryState.nullable(),
   created_at: date,
   /** The files the person sent with this message. */
-  attachments: z.array(attachmentView).max(ATTACHMENT_LIMITS.per_message).optional(),
+  attachments: z.array(attachmentView).max(ATTACHMENT_LIMITS.per_message_ceiling).optional(),
 });
 export const conversationCreate = z.strictObject({
   title: text,
@@ -596,7 +596,7 @@ export const conversationMessage = z
     /** The answer this message corrects, when the person replies to it as a correction. */
     corrects: messageId.optional(),
     /** Files uploaded with `POST /attachments` and not yet sent, in the order shown. */
-    attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message).optional(),
+    attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message_ceiling).optional(),
   })
   .refine((value) => value.text.trim().length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',

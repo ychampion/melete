@@ -19,7 +19,7 @@ import { ASK_PERSON_TOOL_NAME } from './ask-person.ts';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import type { ToolCatalog } from './catalog.ts';
 import type { ComposeService } from './compose.ts';
-import { BrokerFault } from './errors.ts';
+import { BrokerFault, inputProblem } from './errors.ts';
 import { RepeatGuard } from './repeats.ts';
 
 export interface BrokerOperations {
@@ -119,7 +119,10 @@ export function createBrokerApp(options: {
             : 409;
       return c.json({ error: { code: error.code, message: error.message } }, status);
     }
-    if (error instanceof ZodError || error instanceof SyntaxError) {
+    if (error instanceof ZodError) {
+      return c.json({ error: { code: 'payload_invalid', message: inputProblem(error) } }, 400);
+    }
+    if (error instanceof SyntaxError) {
       return c.json({ error: { code: 'payload_invalid', message: 'Invalid request body' } }, 400);
     }
     // The caller learns only that it failed; the operator learns why.
