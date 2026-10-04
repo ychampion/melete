@@ -521,7 +521,7 @@ const expectSchema = {
       type: 'string',
       enum: ['markdown', 'csv', 'json', 'text', 'html', 'image', 'pdf', 'docx', 'xlsx', 'binary'],
     },
-    checks: { type: 'array', maxItems: 25, items: { type: 'object' } },
+    checks: { type: 'array', maxItems: 25, items: { type: 'object', additionalProperties: true } },
     render: { type: 'boolean' },
     critique: { type: ['string', 'null'], maxLength: 2000 },
     template: { type: ['string', 'null'], maxLength: 200 },

@@ -81,7 +81,7 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
       protocol: 'chat/completions',
       body: ask(`pay from account ${ACCOUNT}`),
     });
-    expect((first.body.messages as { content: string }[])[0]?.content).toBe(
+    expect((first.body.messages as { content: string }[]).at(-1)?.content).toBe(
       'pay from account ⟦ACCOUNT_1⟧',
     );
 
@@ -98,7 +98,7 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
       protocol: 'chat/completions',
       body: ask(`and again account ${ACCOUNT} plus sam@example.org`),
     });
-    expect((second.body.messages as { content: string }[])[0]?.content).toBe(
+    expect((second.body.messages as { content: string }[]).at(-1)?.content).toBe(
       'and again account ⟦ACCOUNT_1⟧ plus ⟦EMAIL_1⟧',
     );
 
@@ -205,7 +205,9 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
       protocol: 'chat/completions',
       body: ask(`account ${ACCOUNT}`),
     });
-    expect((sent.body.messages as { content: string }[])[0]?.content).toBe('account ⟦ACCOUNT_1⟧');
+    expect((sent.body.messages as { content: string }[]).at(-1)?.content).toBe(
+      'account ⟦ACCOUNT_1⟧',
+    );
     expect(KEEP_PRIVATE).not.toBe(SEND_REDACTED);
   });
 

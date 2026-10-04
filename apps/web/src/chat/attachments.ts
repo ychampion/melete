@@ -1,7 +1,9 @@
 /**
  * Files in the message box: chosen with the paperclip, dropped on the box or
  * pasted into it. Each is checked here first (what kind it is, how large) so a
- * refusal is a plain sentence at once, then uploaded on its own; the message
+ * refusal is a plain sentence at once, then uploaded on its own. The limits
+ * come from the service; where the operator limits uploads at once, the rest
+ * wait their turn, and otherwise a few run together; the message
  * names the uploaded files when it is sent. A picture also gets a small copy,
  * made here, which is what a model that reads pictures is shown.
  */
@@ -9,9 +11,11 @@ import {
   ATTACHMENT_LIMITS,
   ATTACHMENT_TYPES_SENTENCE,
   type AttachmentKind,
+  type AttachmentLimits,
   type AttachmentView,
   attachmentKindFor,
   attachmentTooLarge,
+  DEFAULT_ATTACHMENT_LIMITS,
 } from '@melete/contracts/attachments';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
@@ -33,16 +37,27 @@ export type PendingFile = {
 const MODEL_EDGE = 1280;
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
+/**
+ * Uploads run together when the service sets no limit: enough to keep a
+ * picked handful moving without the browser opening a dozen at once.
+ */
+export const BROWSER_UPLOADS_AT_ONCE = 4;
+
 /** Why this file cannot be attached, in a sentence; null when it can. */
-export function refusal(file: File, already: number): string | null {
-  if (already >= ATTACHMENT_LIMITS.per_message)
-    return `A message can carry up to ${ATTACHMENT_LIMITS.per_message} files.`;
+export function refusal(
+  file: File,
+  already: number,
+  limits: AttachmentLimits = DEFAULT_ATTACHMENT_LIMITS,
+): string | null {
+  if (already >= limits.per_message)
+    return `A message can carry up to ${limits.per_message} files.`;
   if (!attachmentKindFor(file.name, file.type)) {
     const extension = /\.([A-Za-z0-9]{1,10})$/.exec(file.name)?.[1];
     return `${extension ? `Melete can't read .${extension.toLowerCase()} files.` : `Melete can't read ${file.name || 'that file'}.`} ${ATTACHMENT_TYPES_SENTENCE}`;
   }
   if (file.size === 0) return `${file.name} is empty.`;
-  if (file.size > ATTACHMENT_LIMITS.file_bytes) return attachmentTooLarge(file.name, file.size);
+  if (file.size > limits.file_bytes)
+    return attachmentTooLarge(file.name, file.size, limits.file_bytes);
   return null;
 }
 
@@ -135,14 +150,79 @@ export async function removeAttachment(id: string): Promise<void> {
   }
 }
 
+/**
+ * Runs the tasks given to it, at most `limit()` at a time, in the order given;
+ * the rest wait for a place. Shared by every box on the page, since the
+ * service counts one person's uploads, not one box's.
+ */
+export function queueOf(limit: () => number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  const next = () => {
+    if (running >= limit()) return;
+    const start = waiting.shift();
+    if (!start) return;
+    running++;
+    start();
+  };
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      waiting.push(() => {
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            running--;
+            next();
+          });
+      });
+      next();
+    });
+}
+
+/** What this installation takes, once read; the defaults until then. */
+let limitsNow: AttachmentLimits = DEFAULT_ATTACHMENT_LIMITS;
+let limitsRead: Promise<AttachmentLimits> | null = null;
+
+/** Read the installation's limits once per page; the defaults if it cannot be reached. */
+export function attachmentLimits(): Promise<AttachmentLimits> {
+  limitsRead ??= (async () => {
+    try {
+      const response = await client.options.fetch(`${API_BASE_URL}/attachments/limits`, {
+        headers: client.options.headers as Record<string, string>,
+        credentials: client.options.credentials,
+      });
+      if (response.ok) limitsNow = (await response.json()) as AttachmentLimits;
+      else limitsRead = null;
+    } catch {
+      limitsRead = null;
+    }
+    return limitsNow;
+  })();
+  return limitsRead;
+}
+
+const queued = queueOf(() => limitsNow.uploads_at_once ?? BROWSER_UPLOADS_AT_ONCE);
+
 let counter = 0;
 
 /** The files in one message box, as they upload. */
 export function useAttachments() {
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
+  const [limits, setLimits] = useState(limitsNow);
+  useEffect(() => {
+    let current = true;
+    void attachmentLimits().then((read) => {
+      if (current) setLimits(read);
+    });
+    return () => {
+      current = false;
+    };
+  }, []);
   const live = useRef(files);
   live.current = files;
+  /** Files taken out of the box; one still waiting or uploading is then let go. */
+  const gone = useRef(new Set<string>());
 
   // Local pictures are let go when the box goes.
   useEffect(
@@ -164,7 +244,7 @@ export function useAttachments() {
       const problems: string[] = [];
       const accepted: { file: File; pending: PendingFile }[] = [];
       for (const file of chosen) {
-        const why = refusal(file, count);
+        const why = refusal(file, count, limits);
         if (why) {
           problems.push(why);
           continue;
@@ -190,11 +270,16 @@ export function useAttachments() {
       setProblem(problems[0] ?? null);
       if (!accepted.length) return;
       setFiles((current) => [...current, ...accepted.map((entry) => entry.pending)]);
+      const kept = (key: string) => !gone.current.has(key);
       for (const { file, pending } of accepted)
         void (async () => {
           const preview = pending.kind === 'image' ? await modelCopy(file) : null;
-          const result = await uploadAttachment(file, preview);
-          if (!live.current.some((entry) => entry.key === pending.key)) {
+          // A file taken out while it waited is never sent.
+          const result = await queued(async () =>
+            kept(pending.key) ? uploadAttachment(file, preview) : null,
+          );
+          if (!result) return;
+          if (!kept(pending.key)) {
             // Removed while it uploaded.
             if (result.data) void removeAttachment(result.data.id);
             return;
@@ -203,12 +288,13 @@ export function useAttachments() {
           else update(pending.key, { state: 'failed', error: result.error });
         })();
     },
-    [update],
+    [update, limits],
   );
 
   const remove = useCallback((key: string) => {
     const file = live.current.find((entry) => entry.key === key);
     if (!file) return;
+    gone.current.add(key);
     if (file.thumb) URL.revokeObjectURL(file.thumb);
     if (file.view) void removeAttachment(file.view.id);
     setFiles((current) => current.filter((entry) => entry.key !== key));

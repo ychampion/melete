@@ -1,4 +1,5 @@
 import {
+  CRON_FORMAT,
   compileWatchPattern,
   evaluateWatch,
   ID_PREFIXES,
@@ -47,6 +48,17 @@ export type TriggerRow = typeof trigger.$inferSelect;
  */
 export const WATCH_SCAN_LIMIT = 200;
 
+function knownTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const clipped = (text: string) => (text.length > 64 ? `${text.slice(0, 64)}…` : text);
+
 /**
  * Refuses a trigger that could never fire as the person meant it: a watch
  * pattern that does not compile, or a schedule that is not a valid cron and
@@ -71,12 +83,18 @@ export function checkTriggerSpec(jobs: Pick<JobService, 'boss'>, spec: TriggerSp
     }
   }
   if (spec.kind === 'schedule') {
+    if (!knownTimeZone(spec.timezone))
+      throw new ServiceError(
+        'invalid_schedule',
+        `"${clipped(spec.timezone)}" is not a time zone. Use a name such as "America/Los_Angeles".`,
+        400,
+      );
     try {
       jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 1 });
     } catch {
       throw new ServiceError(
         'invalid_schedule',
-        'Provide a valid cron expression and timezone.',
+        `"${clipped(spec.cron)}" is not a cron this can follow. ${CRON_FORMAT}`,
         400,
       );
     }

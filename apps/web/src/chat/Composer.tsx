@@ -8,6 +8,8 @@
  * paperclip, a drop on the box, or a paste. Each shows as a tile above the
  * words (a thumbnail for a picture, a name for a document) while it uploads,
  * and a file Melete cannot take is refused with a sentence saying why.
+ * Taking a tile out moves focus to the next tile, or to the paperclip when
+ * none are left, so the keyboard never drops back to the top of the page.
  *
  * When the installation transcribes speech, a microphone sits beside the
  * state button: tap to record, tap again to stop, and the words land in the
@@ -98,6 +100,9 @@ export function Composer({
   const textRef = useRef<HTMLTextAreaElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
   const [dropping, setDropping] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  /** Where focus goes once a removed tile is gone: a tile's key, or null for the paperclip. */
+  const focusAfter = useRef<string | null | undefined>(undefined);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the box resizes on every keystroke
   useEffect(() => {
@@ -115,6 +120,23 @@ export function Composer({
   const model = useLoad(() => models.settings(), []);
   const noModel = model.data !== null && !model.data.active.connected;
   const files = attachments?.files ?? [];
+
+  const removeFile = (key: string) => {
+    const at = files.findIndex((file) => file.key === key);
+    focusAfter.current = files[at + 1]?.key ?? files[at - 1]?.key ?? null;
+    attachments?.remove(key);
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once the removed tile has left the list
+  useEffect(() => {
+    const target = focusAfter.current;
+    if (target === undefined) return;
+    focusAfter.current = undefined;
+    const card = cardRef.current;
+    const next = target
+      ? card?.querySelector<HTMLElement>(`[data-key="${CSS.escape(target)}"] .attach-x`)
+      : card?.querySelector<HTMLElement>('.attach-btn');
+    next?.focus();
+  }, [files]);
   const waiting = files.some((file) => file.state !== 'ready');
   const canSend =
     (value.trim().length > 0 || (attachments?.ready.length ?? 0) > 0) && !waiting && !noModel;
@@ -222,6 +244,7 @@ export function Composer({
       {noModel && model.data ? <ModelMissing canEdit={model.data.can_edit} /> : null}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop target only; the paperclip is the keyboard way in */}
       <div
+        ref={cardRef}
         className="composer-card"
         data-dropping={dropping ? 'true' : undefined}
         onDragOver={onDragOver}
@@ -232,7 +255,7 @@ export function Composer({
         {files.length ? (
           <ul className="composer-tiles" aria-label="Files to send">
             {files.map((file) => (
-              <FileTile key={file.key} file={file} onRemove={() => attachments?.remove(file.key)} />
+              <FileTile key={file.key} file={file} onRemove={() => removeFile(file.key)} />
             ))}
           </ul>
         ) : null}
@@ -348,6 +371,7 @@ function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void 
   return (
     <li
       className="attach-tile"
+      data-key={file.key}
       data-doc={picture ? undefined : 'true'}
       data-state={file.state}
       title={`${file.name} · ${state}`}

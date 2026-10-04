@@ -1129,7 +1129,7 @@ withDb('installing each kind of connection through the API', () => {
     expect((await h.revoke(replacement)).status).toBe(200);
   }, 120_000);
 
-  test('only the owner of an owner-audience space installs, and a session without a space_id means its own space', async () => {
+  test("only an owner of the space installs, a room's account serves the room, and a session without a space_id means its own space", async () => {
     if (!h || !fixture) throw new Error('Postgres unavailable');
     const feed = Bun.serve({
       hostname: '127.0.0.1',
@@ -1178,11 +1178,23 @@ withDb('installing each kind of connection through the API', () => {
     const shared = await h.app.request('/spaces/shared', h.as(h.cookie, { name: 'Household' }));
     expect(shared.status).toBe(201);
     const sharedId = ((await shared.json()) as { space: { id: string } }).space.id;
-    expect((await h.install({ ...body, space_id: sharedId })).status).toBe(403);
+    // Someone outside the room is refused before the address is examined.
+    expect((await h.install({ ...body, space_id: sharedId }, memberCookie)).status).toBe(403);
     expect(
-      (await h.install({ ...body, space_id: sharedId, ics: { url: 'https://10.0.0.8/m.ics' } }))
-        .status,
+      (
+        await h.install(
+          { ...body, space_id: sharedId, ics: { url: 'https://10.0.0.8/m.ics' } },
+          memberCookie,
+        )
+      ).status,
     ).toBe(403);
+    // The room's owner adds an account the room uses as its own.
+    const team = await h.install({ ...body, label: 'Team feed', space_id: sharedId });
+    expect(team.status).toBe(201);
+    const teamId = connectionResponse.parse(team.json).connection.id;
+    const [teamRow] = await h.sql`select space_id, shared_use from connection where id = ${teamId}`;
+    expect(teamRow).toMatchObject({ space_id: sharedId, shared_use: 'room' });
+    expect((await h.revoke(teamId)).status).toBe(200);
 
     // A new account's space and a new shared space receive the defaults as they are created.
     for (const created of [installed.space_id, sharedId]) {
@@ -1255,6 +1267,30 @@ withDb('installing each kind of connection through the API', () => {
     for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
       expect((await h.install(body(url), member)).status).toBe(400);
     }
+    // A room the setup owner made serves everyone in it, so it is held to
+    // public addresses too: at install, and on every request its server makes.
+    const madeRoom = await h.app.request('/rooms', h.as(h.cookie, { name: 'Inside room' }));
+    expect(madeRoom.status).toBe(201);
+    const roomId = ((await madeRoom.json()) as { room: { id: string } }).room.id;
+    for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
+      expect((await h.install({ ...body(url), space_id: roomId })).status).toBe(400);
+    }
+    expect(
+      await fixture.sql`select id from connection where space_id = ${roomId} and provider = 'mcp'`,
+    ).toHaveLength(0);
+    const inRoom = newId('conn');
+    const plantedInRoom = {
+      server: { ...policy, endpoint: { transport: 'http', url: `${server.url}mcp` } },
+    };
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, configuration, status, setup_state, shared_use)
+      values (${inRoom}, ${roomId}, 'mcp', 'Planted in the room', '["mcp_inside.lookup"]'::jsonb,
+        ${JSON.stringify(plantedInRoom)}::jsonb, 'error', 'error', 'room')`;
+    const roomCheck = await h.app.request(`/connections/${inRoom}/health`, h.as(h.cookie, {}));
+    expect(roomCheck.status).toBe(200);
+    expect(((await roomCheck.json()) as { check: { status: string } }).check.status).toBe(
+      'failing',
+    );
+    expect(hits).toBe(0);
     // A public server with a token endpoint on this machine is refused too, before
     // anything is opened: the refresh would otherwise post there.
     expect(

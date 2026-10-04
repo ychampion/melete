@@ -97,7 +97,7 @@ export const COMPOSE_TOOL: ToolSpec = {
           properties: {
             as: { type: 'string', pattern: '^[a-z][a-z0-9_]{0,39}$' },
             name: { type: 'string', minLength: 1, maxLength: 300 },
-            arguments: { type: 'object' },
+            arguments: { type: 'object', additionalProperties: true },
           },
           required: ['as', 'name'],
           additionalProperties: false,

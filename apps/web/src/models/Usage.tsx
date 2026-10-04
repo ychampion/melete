@@ -19,6 +19,22 @@ const tokens = (value: number) =>
 const dayOf = (iso: string) =>
   new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
 
+/**
+ * When the day's count starts again, in the reader's own time: "today at
+ * 5:00 PM", "tomorrow at 5:30 AM", or a date if further off. The service's day
+ * ends at midnight UTC, which is rarely midnight where the reader is.
+ */
+export function dayResetLine(iso: string, now = new Date(), timeZone?: string) {
+  const at = new Date(iso);
+  const zone = timeZone ? { timeZone } : {};
+  const dateKey = (date: Date) => date.toLocaleDateString('en-CA', zone);
+  const time = at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...zone });
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  if (dateKey(at) === dateKey(now)) return `today at ${time}`;
+  if (dateKey(at) === dateKey(tomorrow)) return `tomorrow at ${time}`;
+  return `on ${at.toLocaleDateString('en-US', { month: 'long', day: 'numeric', ...zone })} at ${time}`;
+}
+
 /** "$4.20 of $10.00 · 1.2M tokens", or without the limit when there is none. */
 export function usageLine(
   spent: { usd: number; tokens: number },
@@ -48,7 +64,10 @@ export function UsageThisMonth() {
       </span>
       <span className="models-active-name">{usageLine(mine.month, limit)}</span>
       <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-        Today {usageLine(mine.day, limits.day)} · resets on {dayOf(data.month_resets_at)}
+        Today {usageLine(mine.day, limits.day)} · resets {dayResetLine(data.day_resets_at)}
+      </span>
+      <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+        This month resets on {dayOf(data.month_resets_at)}
       </span>
       {data.notice ? (
         <span
