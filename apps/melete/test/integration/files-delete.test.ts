@@ -215,3 +215,24 @@ databaseTest(
   },
   SLOW,
 );
+
+databaseTest(
+  'a file whose save has no settled outcome yet is still the person’s, and asks',
+  async () => {
+    for (const status of ['dispatched', 'unknown', 'unresolved']) {
+      const ctx = await setup();
+      await writeFile(ctx.work('upload.csv'), 'a,b');
+      await ctx.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, status, idempotency_key)
+        select ${`act_UNSETTLED${status}`}, j.id, a.id, ${ctx.connectionId}, 'files.save_attachment',
+          'write_reversible', ${JSON.stringify({ attachment_id: 'file_1', path: 'upload.csv' })}::jsonb,
+          'given', ${status}, ${`act_UNSETTLED${status}`}
+        from job j join attempt a on a.job_id = j.id where j.id = ${ctx.claims.job_id}`;
+      const proposal = await ctx.propose('files.delete', { path: 'upload.csv' });
+      expect(proposal.status, status).toBe('needs_approval');
+      expect(proposal.canonical_payload, status).toMatchObject({ checked: { owner: 'person' } });
+      expect(existsSync(ctx.work('upload.csv')), status).toBe(true);
+    }
+  },
+  SLOW * 2,
+);

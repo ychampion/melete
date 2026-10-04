@@ -445,3 +445,81 @@ test('the sweep keeps trash until the time its receipt promised, whatever the se
   expect(await sweepTrash(roots, 1, Date.now() + 3 * 86_400_000)).toBe(0);
   expect(await sweepTrash(roots, 1, Date.now() + 8 * 86_400_000)).toBe(1);
 });
+
+test('a workspace delete whose records cannot be read asks first', async () => {
+  await writeFile(work('upload.csv'), 'a,b');
+  const bound = await connector().prepare?.(
+    { path: 'upload.csv' },
+    ctx,
+    null as unknown as Query,
+    'files.delete',
+  );
+  if (!bound) throw new Error('files.delete is not prepared');
+  const checked = bound.checked as Record<string, unknown>;
+  expect(checked.owner).toBe('person');
+  expect(String(checked.reason)).toContain('could not check');
+});
+
+test('an unsettled action can make a file the person’s, but never Melete’s', () => {
+  const given = {
+    kind: 'files.save_attachment',
+    status: 'succeeded',
+    canonical_payload: { path: 'upload.csv' },
+    receipt: { detail: { path: 'upload.csv' } },
+  };
+  // A save whose outcome is not known yet may have put the file there.
+  for (const status of ['admitted', 'dispatched', 'unknown', 'unresolved'])
+    expect(
+      fileRecords([{ ...given, status }]).personInWork.has('upload.csv'),
+      `save ${status}`,
+    ).toBe(true);
+  // A delete or move that may not have happened leaves the file the person's.
+  for (const status of ['dispatched', 'unknown', 'unresolved']) {
+    const deleted = fileRecords([
+      given,
+      { kind: 'files.delete', status, canonical_payload: { path: 'upload.csv' }, receipt: null },
+    ]);
+    expect(deleted.personInWork.has('upload.csv'), `delete ${status}`).toBe(true);
+    const moved = fileRecords([
+      given,
+      {
+        kind: 'files.move',
+        status,
+        canonical_payload: { from: 'upload.csv', to: 'renamed.csv' },
+        receipt: null,
+      },
+    ]);
+    expect([...moved.personInWork].sort(), `move ${status}`).toEqual(['renamed.csv', 'upload.csv']);
+    // A new file in the person's Files is Melete's only once its write settled.
+    const written = fileRecords([
+      {
+        kind: 'files.write',
+        status,
+        canonical_payload: { path: 'new.md', area: 'artifacts' },
+        receipt: { detail: { created: true, content_hash: 'h' } },
+      },
+    ]);
+    expect(written.madeInFiles.has('new.md'), `write ${status}`).toBe(false);
+  }
+  // A denied or failed action changed nothing.
+  for (const status of ['denied', 'failed', 'proposed', 'needs_approval'])
+    expect(fileRecords([{ ...given, status }]).personInWork.size, `save ${status}`).toBe(0);
+});
+
+test("one conversation cannot restore another conversation's trash", async () => {
+  await writeFile(work('notes.md'), 'hello');
+  const { result } = await run({ path: 'notes.md' });
+  if (result.outcome !== 'succeeded') throw new Error('expected a receipt');
+  const trash = String(result.receipt.detail.trash_id);
+  await mkdir(path.join(root, 'work', 'job_02'), { recursive: true });
+  const restore = {
+    ...connectorAction('files.restore', { trash_id: trash }, 'act_01J0000000000000000000XJB'),
+    job_id: 'job_02',
+  };
+  await expect(connector().execute(restore, connectorContext(restore))).rejects.toThrow(
+    'nothing in the trash',
+  );
+  expect(existsSync(work('notes.md'))).toBe(false);
+  expect(existsSync(path.join(root, 'work', 'job_02', 'notes.md'))).toBe(false);
+  expect(existsSync(path.join(root, 'work', '.trash', 'job_01', trash))).toBe(true);
+});
