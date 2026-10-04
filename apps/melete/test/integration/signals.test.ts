@@ -645,12 +645,14 @@ withDb('signals', () => {
     const { sql } = required(handle);
     // Sorted for the owner, with a label kept for it.
     await new TriageService({ sql, classifier: null }).collect();
-    const [sorted] = await sql`select principal_id, space_id, subject_key from triage_item
+    const [sorted] =
+      await sql`select principal_id, space_id, subject_key, event_seq from triage_item
       where connection_id = ${mailbox}`;
     expect(sorted).toBeDefined();
-    await sql`insert into triage_verdict (principal_id, space_id, subject_key, content_hash, verdict,
-        urgency, sentence, reason, model, expires_at)
-      values (${sorted?.principal_id}, ${sorted?.space_id}, ${sorted?.subject_key}, 'h', 'fyi',
+    await sql`insert into triage_verdict (principal_id, space_id, connection_id, event_seq,
+        subject_key, content_hash, verdict, urgency, sentence, reason, model, expires_at)
+      values (${sorted?.principal_id}, ${sorted?.space_id}, ${mailbox}, ${sorted?.event_seq},
+        ${sorted?.subject_key}, 'h', 'fyi',
         'normal', 's', 'r', 'fake/fake', now() + interval '7 days')`;
     for (const id of [mailbox, calendarId]) {
       const [row] = await sql`select generation from connection where id = ${id}`;
