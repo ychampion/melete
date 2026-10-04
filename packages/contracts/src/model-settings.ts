@@ -150,6 +150,11 @@ export const secondaryModel = z
     can_edit: z
       .boolean()
       .meta({ description: 'Whether this account may set the secondary model (the owner)' }),
+    leaves_local_primary: z.boolean().meta({
+      description:
+        'The primary runs on this machine or network and the secondary does not, so work moved ' +
+        'to the secondary leaves it. Side calls stay on a local primary either way.',
+    }),
     updated_at: timestamp.nullable(),
   })
   .strict();

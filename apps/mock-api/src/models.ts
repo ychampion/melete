@@ -82,6 +82,11 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
         (keys.has(provider) &&
           (provider !== 'openai-compatible' || Boolean(keys.get(provider)?.baseUrl)));
 
+  /** A compatible endpoint saved at an address on this machine or network. */
+  const servesLocally = (provider: string) =>
+    provider === 'openai-compatible' &&
+    /^https?:\/\/(localhost|127\.|10\.|192\.168\.)/.test(keys.get(provider)?.baseUrl ?? '');
+
   const view = (): ModelSettings => {
     const active = chosen ?? OPERATOR_DEFAULT;
     return {
@@ -125,6 +130,11 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
           : null,
         uses: { ...uses },
         can_edit: true,
+        leaves_local_primary: Boolean(
+          secondary &&
+            servesLocally((chosen ?? OPERATOR_DEFAULT).provider) &&
+            !servesLocally(secondary.provider),
+        ),
         updated_at: secondary?.at ?? usesAt,
       },
     };

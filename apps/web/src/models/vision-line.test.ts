@@ -41,6 +41,7 @@ const settings = (over: Partial<ModelSettings> = {}): ModelSettings => ({
     model: null,
     uses: { side_tasks: 'secondary', scheduled: 'primary' },
     can_edit: true,
+    leaves_local_primary: false,
     updated_at: null,
   },
   ...over,

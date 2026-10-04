@@ -11,6 +11,7 @@ import { configuredReviewGateway } from '../../src/broker/review-gateway.ts';
 import type { ReviewInput } from '../../src/broker/reviewer.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
+import { providersFromEnv } from '../../src/gateway/providers.ts';
 import { NO_ROUTING } from '../../src/gateway/routing.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -46,8 +47,8 @@ function database() {
 type Json = Record<string, any>;
 
 /** One process of the service: its own settings reader over the shared database. */
-function service() {
-  const env = loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: masterKey, ...ENV });
+function service(extra: Record<string, string> = {}) {
+  const env = loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: masterKey, ...ENV, ...extra });
   const settings = new ModelSettingsService({ db: database().db, env });
   const built = createApp({
     env,
@@ -357,6 +358,12 @@ describeWithDb('a secondary model beside the primary', () => {
       .sql`insert into model_secondary (principal_id, provider, model, side_tasks, scheduled)
       values (${member.id}, 'fireworks', ${MEMBER}, 'secondary', 'secondary')`;
     expect((await api.call('/model-settings', member.cookie)).body.secondary.model).toBeNull();
+    // Usage does not label it either.
+    expect((await api.settings.roles(member.id)).secondary).toBeNull();
+    expect((await api.settings.roles(owner.id)).secondary).toEqual({
+      provider: 'fireworks',
+      model: SMALL,
+    });
 
     // The member speaking in the owner's space: the owner's settings, not the member's.
     expect(await sideCall(api, member.id, spaceId)).toEqual([
@@ -459,5 +466,65 @@ describeWithDb('a secondary model beside the primary', () => {
     expect(await sideCall(api, owner.id, spaceId, router)).toEqual([
       { host: '127.0.0.1:11434', model: 'llama3.3' },
     ]);
+  }, 60_000);
+
+  test('scheduled work moved off a local primary is flagged, and still redacted on its way out', async () => {
+    // The primary runs on this machine; the secondary is a cloud model.
+    const api = service({
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'llama3.3',
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+    });
+    const { owner, spaceId } = await people(api);
+    await api.call(
+      '/model-settings/secondary',
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
+    );
+    const kept = await api.call('/model-settings', owner.cookie);
+    expect(kept.body.secondary).toMatchObject({
+      uses: { scheduled: 'primary' },
+      leaves_local_primary: true,
+    });
+    // Side calls stay on the local primary; scheduled work only once switched.
+    expect(await sideCall(api, owner.id, spaceId)).toEqual([
+      { host: '127.0.0.1:11434', model: 'llama3.3' },
+    ]);
+    expect(await attemptModel(api, spaceId, owner.id, 'routine')).toBe('llama3.3');
+    await api.call('/model-settings/secondary/uses', owner.cookie, put({ scheduled: 'secondary' }));
+    expect(await attemptModel(api, spaceId, owner.id, 'routine')).toBe(SMALL);
+
+    // The routine's request to the cloud secondary still passes the privacy router's redaction.
+    const [routine] = await database().sql`select id from job where space_id = ${spaceId}
+      and kind = 'routine' order by created_at desc limit 1`;
+    const router = new PrivacyRouter({
+      store: new PostgresPrivacyStore(database().sql, () => 'a'.repeat(64)),
+      resolve: async () => [{ address: '93.184.216.34' }],
+    });
+    const cloud = providersFromEnv(api.env as unknown as Record<string, string | undefined>).find(
+      (entry) => entry.name === 'fireworks',
+    );
+    if (!cloud) throw new Error('fireworks is not configured');
+    const prepared = await router.prepare({
+      principal: {
+        jobId: String(routine?.id),
+        attemptId: 'att_secondary',
+        epoch: 1,
+        revision: 1,
+        maxRequests: 1,
+        maxTokens: 100,
+        allowedModels: [{ provider: 'fireworks', model: SMALL }],
+        privacy: { kind: 'job' },
+      },
+      provider: cloud,
+      protocol: 'chat/completions',
+      body: {
+        model: SMALL,
+        messages: [{ role: 'user', content: 'Email the summary to jamie.davis@fastmail.example' }],
+      },
+    });
+    expect(prepared.route).toBe('cloud');
+    expect(JSON.stringify(prepared.body)).not.toContain('jamie.davis@fastmail.example');
+    expect(JSON.stringify(prepared.body)).toContain('⟦EMAIL_');
   }, 60_000);
 });

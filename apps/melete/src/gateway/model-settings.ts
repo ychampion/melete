@@ -295,10 +295,12 @@ export class ModelSettingsService {
     db: Runner = this.options.db,
     work?: ScheduledWorkRow,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    const background =
-      work && (await this.isScheduled(work, db))
+    // The trigger is read only when the background role is filled at all.
+    const filled =
+      work && work.kind !== 'chat'
         ? (await this.routingFor(work.spaceId, routing, db)).background
         : null;
+    const background = filled && work && (await this.isScheduled(work, db)) ? filled : null;
     if (background)
       return {
         ...background,
@@ -620,6 +622,12 @@ export class ModelSettingsService {
         scheduled: (row?.scheduled as ModelRole | undefined) ?? 'primary',
       },
       can_edit: Boolean(person && !person.guest && (await this.isInstallationOwner(person.id))),
+      leaves_local_primary: Boolean(
+        row?.provider &&
+          row.model &&
+          (await this.servesLocally((await this.activeChoice()).provider)) &&
+          !(await this.servesLocally(row.provider)),
+      ),
       updated_at: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -727,7 +735,11 @@ export class ModelSettingsService {
     secondary: ServiceModel | null;
   }> {
     const { provider, model } = await this.activeChoice();
-    const row = principalId ? await this.secondaryRow(principalId) : null;
+    // Only the installation's owner has a secondary; a stray row for anyone else is not labelled.
+    const row =
+      principalId && (await this.isInstallationOwner(principalId))
+        ? await this.secondaryRow(principalId)
+        : null;
     return {
       primary: { provider, model },
       secondary: row?.provider && row.model ? { provider: row.provider, model: row.model } : null,
@@ -960,6 +972,14 @@ export class ModelSettingsService {
     // from an address not yet saved describes some other endpoint.
     if (base === configuredBase) await this.remember(provider, listed.body);
     return { ok: true, models: modelIds(listed.body), latency_ms: listed.latency_ms };
+  }
+
+  /**
+   * The address calls to this provider go to, for the privacy checks made
+   * before an attempt on it: built in, or the compatible endpoint's.
+   */
+  async providerAddress(provider: string): Promise<string | undefined> {
+    return isModelProvider(provider) ? this.configuredBase(provider) : undefined;
   }
 
   /** The address a provider's model list is fetched from: built in, or the compatible endpoint's. */

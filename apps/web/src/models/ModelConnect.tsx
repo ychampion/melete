@@ -978,6 +978,15 @@ export function SecondaryModel({
                 {chosen && secondary.uses[work.key] === 'secondary' ? 'Secondary' : 'Primary'}
               </span>
             )}
+            {chosen &&
+            work.key === 'scheduled' &&
+            secondary.uses.scheduled === 'secondary' &&
+            secondary.leaves_local_primary ? (
+              <span className="models-warning models-uses-note" role="note">
+                <Icon name="alert" size={14} />
+                {`Scheduled work will leave this computer and go to ${providerLabel(settings, chosen.provider)}.`}
+              </span>
+            ) : null}
           </li>
         ))}
       </ul>

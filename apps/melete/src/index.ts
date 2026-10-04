@@ -150,7 +150,12 @@ import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
-import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
+import {
+  attemptEngine,
+  engineProtocol,
+  providerAddress,
+  servicePrivacyRouter,
+} from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { mountRooms } from './rooms/routes.ts';
@@ -1064,6 +1069,8 @@ export async function bootstrap(
         },
       };
       const boundaryForCatalog = effectBoundary;
+      // How the model an attempt runs on is reached, for the privacy checks before it starts.
+      const engineOf = attemptEngine(env, modelSettings);
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1074,11 +1081,15 @@ export async function bootstrap(
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 // Private memory is recalled only into attempts that stay on the person's own model.
-                recallsPrivateMemory: (jobId, attemptId) =>
-                  privacy.recallsPrivateMemory(jobId, attemptId, {
-                    protocol: engineProtocol(env),
-                    providerUrl: providerAddress(env),
-                  }),
+                // Judged by the model the attempt runs on, which may not be the server's default.
+                recallsPrivateMemory: async (jobId, attemptId, model) =>
+                  privacy.recallsPrivateMemory(
+                    jobId,
+                    attemptId,
+                    model
+                      ? await engineOf(model)
+                      : { protocol: engineProtocol(env), providerUrl: providerAddress(env) },
+                  ),
                 // The agent is told when what the person just wrote will not be kept.
                 refusesMemoryRead: (jobId) =>
                   privacy.refusesServiceRead(jobId, {
@@ -1099,6 +1110,7 @@ export async function bootstrap(
         router: () => privacy,
         engineProtocol: engineProtocol(env),
         providerUrl: providerAddress(env),
+        engineFor: engineOf,
         onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
       });
       runner = new AttemptRunner(jobs, gatedRuntime, {
