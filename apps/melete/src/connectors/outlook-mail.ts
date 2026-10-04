@@ -8,6 +8,9 @@
 import { simpleParser } from 'mailparser';
 import {
   composeMail,
+  headerBlock,
+  headerMessage,
+  MAX_HEADER_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
@@ -118,6 +121,153 @@ export class OutlookMailTransport implements MailTransport {
 
   async read(key: number | string): Promise<MailMessage | null> {
     return typeof key === 'string' ? this.message(key) : null;
+  }
+
+  /**
+   * One message's headers, without its body. Mail from inside the same
+   * organisation can come without its internet headers; then they are written
+   * from the message's own fields.
+   */
+  private async headers(id: string): Promise<MailMessage | null> {
+    if (!GRAPH_MESSAGE_ID.test(id)) return null;
+    const params = new URLSearchParams({
+      $select:
+        'internetMessageHeaders,internetMessageId,from,toRecipients,ccRecipients,subject,receivedDateTime',
+    });
+    const response = await this.request(`/messages/${encodeURIComponent(id)}?${params}`);
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new GraphError(response.status);
+    }
+    let found: Record<string, unknown> | null;
+    try {
+      found = (await boundedJson(response, MAX_HEADER_BYTES)) as Record<string, unknown> | null;
+    } catch (error) {
+      if (error instanceof ResponseTooLarge) return null;
+      throw error;
+    }
+    if (!found) return null;
+    const given = (
+      Array.isArray(found.internetMessageHeaders) ? found.internetMessageHeaders : []
+    ).flatMap((header: { name?: unknown; value?: unknown }) =>
+      typeof header.name === 'string' && typeof header.value === 'string'
+        ? [{ name: header.name, value: header.value }]
+        : [],
+    );
+    if (given.some((header) => header.name.toLowerCase() === 'from'))
+      return headerMessage(id, headerBlock(given));
+    const address = (entry: unknown) => {
+      const email = (entry as { emailAddress?: { name?: unknown; address?: unknown } })
+        ?.emailAddress;
+      if (typeof email?.address !== 'string') return null;
+      const name = typeof email.name === 'string' ? email.name.replaceAll('"', '') : '';
+      return name ? `"${name}" <${email.address}>` : email.address;
+    };
+    const list = (value: unknown) =>
+      (Array.isArray(value) ? value : []).map(address).filter(Boolean).join(', ');
+    const written = [
+      { name: 'From', value: address(found.from) ?? '' },
+      { name: 'To', value: list(found.toRecipients) },
+      { name: 'Cc', value: list(found.ccRecipients) },
+      { name: 'Subject', value: typeof found.subject === 'string' ? found.subject : '' },
+      {
+        name: 'Message-ID',
+        value: typeof found.internetMessageId === 'string' ? found.internetMessageId : '',
+      },
+      {
+        name: 'Date',
+        value:
+          typeof found.receivedDateTime === 'string'
+            ? new Date(found.receivedDateTime).toUTCString()
+            : '',
+      },
+    ].filter((header) => header.value);
+    return headerMessage(id, headerBlock(written));
+  }
+
+  /**
+   * What arrived in the inbox since the cursor, read from Graph's delta of the
+   * inbox. The cursor holds the next or delta link Graph gave, and the time
+   * watching began: the first pass through the delta lists every message the
+   * inbox holds, and only those received since then are news. A delta link
+   * Graph no longer honours (410) starts the delta again, and messages already
+   * delivered are skipped by their id.
+   */
+  async changes(
+    cursor: string | null,
+    options: { limit: number; seen?: (key: string) => Promise<boolean>; now?: number },
+  ) {
+    const start = `${this.options.base}/mailFolders/inbox/messages/delta?${new URLSearchParams({
+      $select: 'id,receivedDateTime',
+    })}`;
+    let state: { link: string; since: string };
+    try {
+      const parsed = cursor ? (JSON.parse(cursor) as { link?: unknown; since?: unknown }) : null;
+      state =
+        parsed &&
+        typeof parsed.link === 'string' &&
+        parsed.link.startsWith(`${this.options.base}/`) &&
+        typeof parsed.since === 'string' &&
+        !Number.isNaN(Date.parse(parsed.since))
+          ? { link: parsed.link, since: parsed.since }
+          : { link: start, since: new Date(options.now ?? Date.now()).toISOString() };
+    } catch {
+      state = { link: start, since: new Date(options.now ?? Date.now()).toISOString() };
+    }
+    const since = Date.parse(state.since);
+    const ids: string[] = [];
+    let link = state.link;
+    for (let page = 0; page < 10; page++) {
+      const response = await bearerRequest(
+        this.options.access,
+        link,
+        { headers: { prefer: 'odata.maxpagesize=50' } },
+        this.options.fetcher,
+      );
+      if (response.status === 410) {
+        await response.body?.cancel().catch(() => {});
+        link = start;
+        continue;
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw new GraphError(response.status);
+      }
+      const body = (await boundedJson(response, MAX_LIST_RESPONSE_BYTES)) as {
+        value?: Record<string, unknown>[];
+        '@odata.nextLink'?: unknown;
+        '@odata.deltaLink'?: unknown;
+      } | null;
+      for (const entry of body?.value ?? []) {
+        if (entry['@removed'] || typeof entry.id !== 'string') continue;
+        const received = Date.parse(String(entry.receivedDateTime ?? ''));
+        if (Number.isNaN(received) || received < since) continue;
+        ids.push(entry.id);
+      }
+      const delta = body?.['@odata.deltaLink'];
+      const following = body?.['@odata.nextLink'];
+      const valid = (value: unknown): value is string =>
+        typeof value === 'string' && value.startsWith(`${this.options.base}/`);
+      if (valid(delta)) {
+        link = delta;
+        break;
+      }
+      if (!valid(following)) break;
+      link = following;
+      if (ids.length >= options.limit) break;
+    }
+    const messages: (MailMessage & { key: string; read_key: string })[] = [];
+    for (const id of [...new Set(ids)]) {
+      const key = `graph:${id}`;
+      if (await options.seen?.(key)) continue;
+      const message = await this.headers(id);
+      if (message) messages.push({ ...message, key, read_key: id });
+    }
+    return { cursor: JSON.stringify({ link, since: state.since }), messages };
   }
 
   async send(

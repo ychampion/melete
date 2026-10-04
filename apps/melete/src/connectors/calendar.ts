@@ -9,6 +9,8 @@ import type {
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
+import { expandIcs } from '../signals/occurrences.ts';
+import type { SignalSource } from '../signals/types.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -462,6 +464,61 @@ export class CalendarConnector implements Connector {
     };
   }
 
+  /** Every calendar object the collection holds, as iCalendar text with its ETag. */
+  private async calendarObjects(
+    ctx?: ConnectorContext,
+  ): Promise<{ ics: string; etag: string | null }[]> {
+    const response = await this.request(
+      'REPORT',
+      null,
+      '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter></c:calendar-query>',
+      ctx,
+      { depth: '1', 'content-type': 'application/xml; charset=utf-8' },
+    );
+    if (response.status !== 207) {
+      await response.body?.cancel();
+      throw new Error('CalDAV listing unavailable');
+    }
+    const xml = await boundedText(response);
+    if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('XML declarations are not accepted');
+    const parsed: unknown = new XMLParser({
+      removeNSPrefix: true,
+      ignoreAttributes: true,
+    }).parse(xml);
+    const objects: { ics: string; etag: string | null }[] = [];
+    for (const item of array(object(object(parsed).multistatus).response)) {
+      for (const propstat of array(object(item).propstat)) {
+        const prop = object(object(propstat).prop);
+        if (
+          typeof prop['calendar-data'] === 'string' &&
+          /\s200\s/.test(String(object(propstat).status))
+        ) {
+          objects.push({
+            ics: prop['calendar-data'],
+            etag: typeof prop.getetag === 'string' ? prop.getetag : null,
+          });
+        }
+      }
+    }
+    return objects;
+  }
+
+  /**
+   * Every occurrence touching the window, a repeating event expanded into its
+   * instances. An imported file is read as it was imported; a CalDAV
+   * collection is read fresh.
+   */
+  readonly signals: SignalSource = {
+    stream: 'calendar',
+    occurrences: async (window) =>
+      expandIcs(
+        this.config.mode === 'ics'
+          ? [this.config.ics]
+          : (await this.calendarObjects()).map((object) => object.ics),
+        window,
+      ),
+  };
+
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let dispatched = false;
     try {
@@ -473,40 +530,9 @@ export class CalendarConnector implements Connector {
           const listed = eventsInWindow(parseIcs(this.config.ics), window, payload.limit);
           return this.success(action, listDetail(listed.events, window, listed.truncated, true));
         }
-        const response = await this.request(
-          'REPORT',
-          null,
-          '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter></c:calendar-query>',
-          ctx,
-          { depth: '1', 'content-type': 'application/xml; charset=utf-8' },
-        );
-        if (response.status !== 207) {
-          await response.body?.cancel();
-          throw new Error('CalDAV listing unavailable');
-        }
-        const xml = await boundedText(response);
-        if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('XML declarations are not accepted');
-        const parsed: unknown = new XMLParser({
-          removeNSPrefix: true,
-          ignoreAttributes: true,
-        }).parse(xml);
         const events: ParsedEvent[] = [];
-        for (const item of array(object(object(parsed).multistatus).response)) {
-          for (const propstat of array(object(item).propstat)) {
-            const prop = object(object(propstat).prop);
-            if (
-              typeof prop['calendar-data'] === 'string' &&
-              /\s200\s/.test(String(object(propstat).status))
-            ) {
-              events.push(
-                ...parseIcs(
-                  prop['calendar-data'],
-                  typeof prop.getetag === 'string' ? prop.getetag : null,
-                ),
-              );
-            }
-          }
-        }
+        for (const object of await this.calendarObjects(ctx))
+          events.push(...parseIcs(object.ics, object.etag));
         const listed = eventsInWindow(events, window, payload.limit);
         return this.success(action, listDetail(listed.events, window, listed.truncated, false));
       }

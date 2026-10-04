@@ -2,6 +2,7 @@ import {
   CRON_FORMAT,
   compileWatchPattern,
   evaluateWatch,
+  eventCatalog,
   ID_PREFIXES,
   isTerminal,
   type JsonObject,
@@ -10,6 +11,7 @@ import {
   PROCESS_LIMITS,
   type ProcessWatchKind,
   prefixedId,
+  producesEvent,
   type TriggerSpec,
   triggerSpec,
   type WatchObservation,
@@ -99,6 +101,24 @@ export function checkTriggerSpec(jobs: Pick<JobService, 'boss'>, spec: TriggerSp
       );
     }
   }
+}
+
+/**
+ * Refuses a trigger on an event its connection never produces. Such a trigger
+ * would be accepted and then wait for ever, so it is refused when it is made,
+ * naming what the connection does report.
+ */
+export function checkEventSource(provider: string, eventName: string): void {
+  if (producesEvent(provider, eventName)) return;
+  const catalog = eventCatalog(provider);
+  const names = [...catalog.names, ...catalog.prefixes.map((prefix) => `${prefix}<id>`)];
+  throw new ServiceError(
+    'unknown_event',
+    names.length
+      ? `This connection never reports ${eventName}. It reports: ${names.join(', ')}.`
+      : `This connection never reports ${eventName}; it reports nothing a trigger can wait for.`,
+    400,
+  );
 }
 
 type WatchScan = {
@@ -325,6 +345,7 @@ export class TriggerService {
             'Choose an active connection in the job space.',
             400,
           );
+        checkEventSource(source.provider, spec.event_name);
       }
       const [start] = await tx
         .select({ seq: event.seq })
