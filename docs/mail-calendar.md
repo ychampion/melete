@@ -212,14 +212,25 @@ verification` checks uncertainty handling.
 
 Redirects are rejected before credentials leave the configured collection
 (`redirects cannot forward credentials outside the configured calendar`).
-Listing returns each event series with its recurrence rule; individual
-occurrences are not expanded.
+`calendar.list` returns each event series with its recurrence rule. Watching
+a calendar for changes works per occurrence instead, with each series expanded
+into its instances; see [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md).
 
 Google Calendar keeps the same promises over its own API. An event Melete
 creates is named by the action that created it, so a second create is refused
 rather than making a second event; an update or removal sends the ETag it read;
 and verification compares the event's recorded action, payload hash and fields
 (`google.test.ts`).
+
+## Noticing new mail and calendar changes
+
+While a trigger or standing work listens to a mailbox or calendar, the service
+reads what changed in it: Gmail's history, the Outlook inbox delta, IMAP UIDs,
+and each calendar's occurrences for the next 14 days. New mail arrives as
+`mail.received`, headers only; calendar changes arrive as
+`calendar.event.created`, `calendar.event.changed` and
+`calendar.event.cancelled`. [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)
+describes the cursors, the observations and who hears them.
 
 ## Verify
 
