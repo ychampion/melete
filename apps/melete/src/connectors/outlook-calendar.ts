@@ -144,7 +144,7 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
         : null,
     ...(event.showAs === 'free' ? { busy: false } : event.showAs ? { busy: true } : {}),
     ...(event.importance === 'high' ? { important: true } : {}),
-    ...(mark(event) ? { melete: true } : {}),
+    ...(mark(event) ? { melete_uid: String(mark(event)).split(' ')[0] } : {}),
   };
 }
 

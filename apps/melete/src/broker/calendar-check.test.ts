@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { expandIcs } from '../signals/occurrences.ts';
 import type { Occurrence } from '../signals/types.ts';
 import { calendarConcern, IMPORTANT_WITHIN_HOURS, spansOf, windowOf } from './calendar-check.ts';
 
@@ -87,10 +88,106 @@ describe('the time a change touches', () => {
     expect(spansOf('calendar.delete', { uid: 'act_1', etag: '"1"' }, before)).toEqual([
       { start: at(48), end: at(49) },
     ]);
+    // A day wider on each side, so an all-day event on the person's own day is read.
     expect(windowOf(spansOf('calendar.update', fields, before))).toEqual({
-      from: at(24),
-      to: at(49),
+      from: at(0),
+      to: at(73),
     });
     expect(windowOf([])).toBeNull();
+  });
+});
+
+describe('all-day events on the person’s own day', () => {
+  // Los Angeles, from 17:00 local on 10 October: 00:00 UTC on the 11th.
+  const evening = [{ start: '2026-10-10T18:00:00-07:00', end: '2026-10-10T19:00:00-07:00' }];
+  const anniversary = (patch: Partial<Occurrence> = {}) =>
+    event({
+      title: 'Anniversary',
+      start: '2026-10-10',
+      end: '2026-10-11',
+      all_day: true,
+      important: true,
+      ...patch,
+    });
+  const check = (zones: string[], items: Occurrence[], spans = evening) =>
+    calendarConcern({ spans, read: { items, complete: true }, now, zones });
+
+  test('an important all-day event covers the evening in Los Angeles', () => {
+    expect(check(['America/Los_Angeles'], [anniversary()])).toBe(
+      'It overlaps “Anniversary”, which is marked important.',
+    );
+    // Its own time zone counts as well, and with no zone known it is read as wide as a date can be.
+    expect(check([], [anniversary({ time_zone: 'America/Los_Angeles' })])).not.toBeNull();
+    expect(check([], [anniversary()])).not.toBeNull();
+  });
+
+  test('the evening before, in Los Angeles, is not that day', () => {
+    const before = [{ start: '2026-10-09T18:00:00-07:00', end: '2026-10-09T19:00:00-07:00' }];
+    expect(check(['America/Los_Angeles'], [anniversary()], before)).toBeNull();
+  });
+
+  test('a calendar read for those hours brings the all-day event back', async () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//test//EN',
+      'BEGIN:VEVENT',
+      'UID:anniversary',
+      'DTSTAMP:20261001T000000Z',
+      'DTSTART;VALUE=DATE:20261010',
+      'DTEND;VALUE=DATE:20261011',
+      'PRIORITY:1',
+      'SUMMARY:Anniversary',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    const window = windowOf(evening);
+    if (!window) throw new Error('no window');
+    const read = await expandIcs([ics], window);
+    expect(read.items.map((item) => item.title)).toEqual(['Anniversary']);
+    expect(
+      calendarConcern({ spans: evening, read, now, zones: ['America/Los_Angeles'] }),
+    ).not.toBeNull();
+  });
+});
+
+describe('long events', () => {
+  test('anything longer than a day asks', () => {
+    expect(concern([], [{ start: at(30), end: at(30 + 24 * 30) }])).toBe(
+      'It runs longer than a day.',
+    );
+    expect(concern([], [{ start: at(30), end: at(53) }])).toBeNull();
+  });
+});
+
+describe('whose event it is', () => {
+  test('a UID shaped like Melete’s is only a claim, never Melete’s own', async () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//test//EN',
+      'BEGIN:VEVENT',
+      'UID:act_lookslikemelete',
+      'DTSTAMP:20261001T000000Z',
+      'DTSTART:20261010T180000Z',
+      'DTEND:20261010T190000Z',
+      'TRANSP:OPAQUE',
+      'SUMMARY:Planning',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    const read = await expandIcs([ics], {
+      from: '2026-10-10T00:00:00Z',
+      to: '2026-10-11T00:00:00Z',
+    });
+    expect(read.items[0]).toMatchObject({ melete_uid: 'act_lookslikemelete' });
+    expect(read.items[0]?.melete).toBeUndefined();
+    expect(
+      calendarConcern({
+        spans: [{ start: '2026-10-10T18:30:00Z', end: '2026-10-10T19:30:00Z' }],
+        read,
+        now: Date.parse('2026-10-01T00:00:00Z'),
+      }),
+    ).toBe('It overlaps “Planning” on your calendar, which blocks that time.');
   });
 });

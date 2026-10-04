@@ -30,13 +30,24 @@ const HOUR = 3600_000;
 const later = (hours: number) => new Date(Date.now() + hours * HOUR).toISOString();
 
 /** A connector that records what it was asked to do and keeps a calendar in memory. */
-function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = []) {
+function fakeConnector(
+  manifest: ConnectorManifest,
+  existing: Occurrence[] = [],
+  /** A tool of its own this connector declares as held before it runs. */
+  declaresHold?: string,
+) {
   const executed: Action[] = [];
   const events = new Map<string, Occurrence>();
   /** What the calendar says now; tests change it after the fact. */
   const state = { guests: 0, unreadable: false };
   const connector: Connector = {
     manifest,
+    ...(declaresHold
+      ? {
+          reversalDeclared: (kind: string) =>
+            kind === declaresHold ? { mode: 'hold' as const, says: 'Waits before sending.' } : null,
+        }
+      : {}),
     async existingGuests() {
       return state.guests;
     },
@@ -63,12 +74,21 @@ function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = [])
           status: 'confirmed',
           attendees: 0,
           time_zone: null,
-          melete: true,
+          // As CalDAV reports it: the uid names the action that made it.
+          melete_uid: action.id,
         });
         detail = { uid: action.id, etag: '"1"', action_id: action.id };
       }
-      if (action.kind === 'calendar.update')
+      if (action.kind === 'calendar.update') {
+        const moved = events.get(String(payload.uid));
+        if (moved)
+          events.set(String(payload.uid), {
+            ...moved,
+            start: payload.start ?? moved.start,
+            end: payload.end ?? moved.end,
+          });
         detail = { uid: String(payload.uid), etag: '"2"', action_id: action.id };
+      }
       if (action.kind === 'calendar.delete') {
         events.delete(String(payload.uid));
         detail = { uid: String(payload.uid), removed: true };
@@ -97,7 +117,13 @@ function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = [])
 
 async function setup(
   manifest: ConnectorManifest,
-  options: { existing?: Occurrence[]; sendHoldMs?: number } = {},
+  options: {
+    existing?: Occurrence[];
+    sendHoldMs?: number;
+    declaresHold?: string;
+    /** Events on another calendar the person has connected in the same space. */
+    otherCalendar?: Occurrence[];
+  } = {},
 ) {
   if (!fixture) throw new Error('Postgres unavailable');
   const sql = fixture.sql;
@@ -105,8 +131,14 @@ async function setup(
     scopes: manifest.tools.map((tool) => tool.name),
     provider: manifest.provider,
   });
-  const fake = fakeConnector(manifest, options.existing);
+  const fake = fakeConnector(manifest, options.existing, options.declaresHold);
   const registry = new ConnectorRegistry().register(seed.connectionId, fake.connector);
+  if (options.otherCalendar) {
+    const other = recordId('con');
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${other}, ${seed.claims.space_id}, 'caldav', 'Work', '[]'::jsonb)`;
+    registry.register(other, fakeConnector(calendarManifest, options.otherCalendar).connector);
+  }
   const brokerFor = () =>
     new BrokerService({
       sql,
@@ -131,7 +163,7 @@ async function setup(
 
 describe('undo send', () => {
   databaseTest('a cancel inside the hold sends nothing, and a restart sends once', async () => {
-    const s = await setup(emailManifest, { sendHoldMs: 60_000 });
+    const s = await setup(emailManifest, { sendHoldMs: 2_000 });
     const send = async (body: string) => {
       const proposed = await s.propose('email.send', {
         to: 'alex@example.test',
@@ -169,16 +201,82 @@ describe('undo send', () => {
     const restarted = s.brokerFor();
     expect(await restarted.resumeParked(Date.now())).toBe(0);
     expect(s.executed).toHaveLength(0);
-    const due = Date.parse(String(second.retry_after_at)) + 1;
-    await restarted.resumeParked(due);
-    await restarted.resumeParked(due + 1000);
-    await s.broker.resumeParked(due + 2000);
+    await Bun.sleep(Math.max(0, Date.parse(String(second.retry_after_at)) - Date.now()) + 300);
+    await restarted.resumeParked();
+    await restarted.resumeParked();
+    await s.broker.resumeParked();
     expect(s.executed.map((action) => action.id)).toEqual([second.id]);
     expect((await loadAction(s.sql, second.id)).status).toBe('succeeded');
     // Once sent, it cannot be cancelled.
     expect(await s.effects.undo(s.claims.space_id, second.id)).toMatchObject({
       status: 'not_available',
     });
+  });
+
+  databaseTest('an instance whose clock runs ahead does not end a hold early', async () => {
+    const s = await setup(emailManifest, { sendHoldMs: 60_000 });
+    const proposed = await s.propose('email.send', {
+      to: 'alex@example.test',
+      subject: 'Dinner',
+      body: 'Nine?',
+    });
+    await s.broker.decide(proposed.action_id, {
+      decision: 'approved',
+      payload_hash: proposed.payload_hash,
+    });
+    expect((await s.broker.resume(s.claims, proposed.action_id)).status).toBe('admitted');
+    // Two minutes fast, by this instance's own clock.
+    const ahead = Date.now() + 120_000;
+    await s.brokerFor().resumeParked(ahead);
+    await s.broker.dispatch(proposed.action_id, ahead);
+    expect(s.executed).toHaveLength(0);
+    expect((await loadAction(s.sql, proposed.action_id)).status).toBe('admitted');
+  });
+
+  databaseTest('a send parked by its destination in a finished task is not sent', async () => {
+    const s = await setup(emailManifest);
+    const proposed = await s.propose('email.send', {
+      to: 'alex@example.test',
+      subject: 'Dinner',
+      body: 'Ten?',
+    });
+    await s.broker.decide(proposed.action_id, {
+      decision: 'approved',
+      payload_hash: proposed.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposed.action_id, proposed.payload_hash);
+    // The destination asked to be left alone, and the task finished meanwhile.
+    await s.sql`update action set retry_after_at = clock_timestamp() - interval '1 second'
+      where id = ${proposed.action_id}`;
+    await s.sql`update job set state = 'completed' where id = ${s.claims.job_id}`;
+    await s.broker.resumeParked();
+    expect(s.executed).toHaveLength(0);
+    expect((await loadAction(s.sql, proposed.action_id)).status).toBe('failed');
+  });
+
+  databaseTest('a send its connector declares as held waits like a message', async () => {
+    const chat: ConnectorManifest = {
+      ...emailManifest,
+      tools: emailManifest.tools.map((tool) =>
+        tool.name === 'email.send'
+          ? { ...tool, name: 'chat.send', required_scopes: ['chat.send'] }
+          : tool,
+      ),
+    };
+    const s = await setup(chat, { sendHoldMs: 60_000, declaresHold: 'chat.send' });
+    const proposed = await s.propose('chat.send', {
+      to: 'alex@example.test',
+      subject: 'Dinner',
+      body: 'Eleven?',
+    });
+    await s.broker.decide(proposed.action_id, {
+      decision: 'approved',
+      payload_hash: proposed.payload_hash,
+    });
+    const resumed = await s.broker.resume(s.claims, proposed.action_id);
+    expect(resumed.status).toBe('admitted');
+    expect(resumed.message).toContain('held');
+    expect(s.executed).toHaveLength(0);
   });
 
   databaseTest('an action with no reversal shows no Undo', async () => {
@@ -353,7 +451,8 @@ describe('events on the person’s own calendar', () => {
         attendees: 0,
         time_zone: null,
         busy: false,
-        melete: true,
+        // It carries Melete's mark, but Melete never created it.
+        melete_uid: 'act_theirs',
       };
       const s = await setup(calendarManifest, { existing: [theirs] });
       const update = await s.propose('calendar.update', {
@@ -375,6 +474,112 @@ describe('events on the person’s own calendar', () => {
       const removal = await s.propose('calendar.delete', { uid: 'act_theirs', etag: '"2"' });
       expect(removal.status).toBe('needs_approval');
       expect(s.executed.map((action) => action.kind)).toEqual(['calendar.update']);
+    },
+  );
+
+  databaseTest(
+    'moving and removing an event Melete made go ahead unasked, vouched for by its own record',
+    async () => {
+      // No trust entry for the event's id: only Melete's record of making it vouches for it.
+      const s = await setup(calendarManifest);
+      const created = await s.propose('calendar.create', event);
+      expect(created.status).toBe('succeeded');
+      const moved = await s.propose('calendar.update', {
+        uid: created.action_id,
+        etag: '"1"',
+        summary: 'Focus time',
+        start: later(50),
+        end: later(51),
+      });
+      expect(moved.status).toBe('succeeded');
+      const removed = await s.propose('calendar.delete', { uid: created.action_id, etag: '"2"' });
+      expect(removed.status).toBe('succeeded');
+      expect(s.events.has(created.action_id)).toBe(false);
+    },
+  );
+
+  databaseTest(
+    'an event that only claims to be Melete’s, and blocks the time, asks first',
+    async () => {
+      const s = await setup(calendarManifest, {
+        existing: [
+          {
+            uid: 'act_lookslikemelete',
+            occurrence: null,
+            title: 'Planning',
+            start: later(30),
+            end: later(31),
+            all_day: false,
+            location: '',
+            status: 'confirmed',
+            attendees: 0,
+            time_zone: null,
+            busy: true,
+            melete_uid: 'act_lookslikemelete',
+          },
+        ],
+      });
+      const proposed = await s.propose('calendar.create', event);
+      expect(proposed.status).toBe('needs_approval');
+      expect(proposed.message).toContain('It overlaps “Planning” on your calendar');
+    },
+  );
+
+  databaseTest('a clash on another of the person’s calendars asks first', async () => {
+    const s = await setup(calendarManifest, {
+      otherCalendar: [
+        {
+          uid: 'work-1',
+          occurrence: null,
+          title: 'Quarterly review',
+          start: later(30),
+          end: later(31),
+          all_day: false,
+          location: '',
+          status: 'confirmed',
+          attendees: 0,
+          time_zone: null,
+        },
+      ],
+    });
+    const proposed = await s.propose('calendar.create', event);
+    expect(proposed.status).toBe('needs_approval');
+    expect(proposed.message).toContain('It overlaps “Quarterly review” on your calendar');
+    expect(s.executed).toHaveLength(0);
+  });
+
+  databaseTest(
+    'an event put back after a removal that had guests says it comes back without them',
+    async () => {
+      const s = await setup(calendarManifest);
+      const created = await s.propose('calendar.create', event);
+      // Guests were added in the calendar; the person approved removing it anyway.
+      s.state.guests = 2;
+      const removal = await s.propose('calendar.delete', { uid: created.action_id, etag: '"1"' });
+      expect(removal.status).toBe('needs_approval');
+      await s.broker.decide(removal.action_id, {
+        decision: 'approved',
+        payload_hash: removal.payload_hash,
+      });
+      expect((await s.broker.resume(s.claims, removal.action_id)).status).toBe('succeeded');
+      s.state.guests = 0;
+      const undone = await s.effects.undo(s.claims.space_id, removal.action_id);
+      if ('reason' in undone) throw new Error(undone.reason);
+      expect(undone.receipt).toMatchObject({
+        what: 'Put the event back as a new event, without its guests',
+        reverses: removal.action_id,
+      });
+      // A removal the own-calendar rule let through had no guests: its undo says so plainly.
+      const again = await s.propose('calendar.create', {
+        summary: 'Reading',
+        start: later(60),
+        end: later(61),
+      });
+      const quiet = await s.propose('calendar.delete', { uid: again.action_id, etag: '"1"' });
+      expect(quiet.status).toBe('succeeded');
+      const back = await s.effects.undo(s.claims.space_id, quiet.action_id);
+      if ('reason' in back) throw new Error(back.reason);
+      expect(back.receipt?.what).toBe('Created an event');
     },
   );
 

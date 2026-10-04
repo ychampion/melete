@@ -15,7 +15,7 @@ import { actionReviewView } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import {
-  heldKind,
+  heldUntil,
   planReversal,
   type ReversalPlan,
   UNDO_WINDOW_MS,
@@ -43,6 +43,10 @@ import { experienceMissing } from './service.ts';
 export const ASSISTANT_SENDS_WAITING = 5;
 /** How long an assistant waits to propose again after the person turned one of its messages down. */
 export const ASSISTANT_SEND_COOLDOWN_MINUTES = 10;
+
+/** A message cancelled while it waited out its hold: nothing was sent. */
+const cancelledInHold = (action: Pick<Action, 'status' | 'reconciliation'>) =>
+  action.status === 'failed' && object(action.reconciliation).cancelled === true;
 
 export const actionProjectionRow = (value: Action): ActionRow => ({
   id: value.id,
@@ -270,22 +274,19 @@ export class ExperienceEffects {
       label: String(row.label),
       provider: String(row.provider),
     };
-    if (heldKind(source.kind) && source.status === 'admitted' && source.retry_after_at)
+    const until = await heldUntil(this.sql, source);
+    if (until)
       return projectHeldReceipt(actionProjectionRow(source), connection, {
-        until: source.retry_after_at,
+        until,
         undo: await this.undoHandle(spaceId, source),
       });
-    if (
-      heldKind(source.kind) &&
-      source.status === 'failed' &&
-      object(source.reconciliation).cancelled === true
-    )
+    if (cancelledInHold(source))
       return projectHeldReceipt(actionProjectionRow(source), connection, { cancelled: true });
     // An undo is not itself undone from its receipt; the change it took back can be made again.
     const [reversed] = await this
       .sql`select action_id from experience_undo where reversal_action_id = ${source.id}`;
     const undo = reversed ? undefined : await this.undoHandle(spaceId, source);
-    return projectReceipt(
+    const receipt = projectReceipt(
       actionProjectionRow(source),
       connection,
       undo,
@@ -293,6 +294,23 @@ export class ExperienceEffects {
       await actionBecause(this.sql, spaceId, source.id),
       reversed ? String(reversed.action_id) : undefined,
     );
+    const what = reversed ? await this.restoredWithoutGuests(String(reversed.action_id)) : null;
+    return receipt && what ? { ...receipt, what } : receipt;
+  }
+
+  /**
+   * An event put back after a removal is a new event with no guests. Only a
+   * removal that went ahead by the own-calendar rule is known to have had none,
+   * because that rule checks right before it runs. Otherwise the receipt says
+   * plainly that guests it may have had were not invited again: inviting them
+   * would be a send of its own, for the person to ask for.
+   */
+  private async restoredWithoutGuests(removedId: string): Promise<string | null> {
+    const [removed] = await this.sql`select a.kind, r.tier, r.outcome from action a
+      left join action_review r on r.action_id = a.id where a.id = ${removedId}`;
+    if (removed?.kind !== 'calendar.delete') return null;
+    if (removed.tier === 'own_calendar' && removed.outcome === 'approved') return null;
+    return 'Put the event back as a new event, without its guests';
   }
 
   /**
@@ -306,30 +324,22 @@ export class ExperienceEffects {
   ): Promise<{
     undo?: { handle: string; valid_until: string };
     reverses?: string;
+    /** In place of the receipt's usual words, when they would say too much. */
+    what?: string;
     held?: { until: string } | { cancelled: true };
   }> {
     const source = await loadAction(this.sql, actionId);
-    if (this.held(source))
-      return {
-        held: { until: String(source.retry_after_at) },
-        undo: await this.undoHandle(spaceId, source),
-      };
-    if (
-      heldKind(source.kind) &&
-      source.status === 'failed' &&
-      object(source.reconciliation).cancelled === true
-    )
-      return { held: { cancelled: true } };
+    const until = await heldUntil(this.sql, source);
+    if (until) return { held: { until }, undo: await this.undoHandle(spaceId, source) };
+    if (cancelledInHold(source)) return { held: { cancelled: true } };
     const [reversed] = await this
       .sql`select action_id from experience_undo where reversal_action_id = ${source.id}`;
-    if (reversed) return { reverses: String(reversed.action_id) };
+    if (reversed) {
+      const what = await this.restoredWithoutGuests(String(reversed.action_id));
+      return { reverses: String(reversed.action_id), ...(what ? { what } : {}) };
+    }
     const undo = await this.undoHandle(spaceId, source);
     return undo ? { undo } : {};
-  }
-
-  /** Whether a message is waiting out its hold, so Undo cancels it rather than reverses it. */
-  private held(source: Action) {
-    return heldKind(source.kind) && source.status === 'admitted' && source.retry_after_at !== null;
   }
 
   /** The registry's reversal or compensation for a change that happened. */
@@ -339,7 +349,7 @@ export class ExperienceEffects {
 
   async undoHandle(spaceId: string, source: Action) {
     // A held message is undone by cancelling it, until its hold ends.
-    const held = this.held(source);
+    const held = await heldUntil(this.sql, source);
     const reversal = source.status === 'succeeded' ? await this.reversal(spaceId, source) : null;
     if (
       !held &&
@@ -352,7 +362,7 @@ export class ExperienceEffects {
     )
       return undefined;
     const validUntil = held
-      ? String(source.retry_after_at)
+      ? held
       : (reversal?.validUntil ??
         new Date(
           Date.parse(source.resolved_at ?? source.created_at) + UNDO_WINDOW_MS,
@@ -375,13 +385,12 @@ export class ExperienceEffects {
       join job j on j.id = a.job_id where (u.action_id = ${id} or u.handle = ${id})
       and j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}`;
     const { action: source } = await this.source(spaceId, lookup ? String(lookup.action_id) : id);
-    if (heldKind(source.kind) && source.status !== 'succeeded') {
+    if ((await heldUntil(this.sql, source)) || cancelledInHold(source)) {
       // Undo send: cancelling a held message sends nothing.
-      const cancelled = this.held(source) ? await this.broker.cancelHeld(source.id) : null;
+      const cancelled = await this.broker.cancelHeld(source.id);
       if (cancelled) return { receipt: await this.receipt(spaceId, cancelled) };
       const now = await loadAction(this.sql, source.id);
-      if (now.status === 'failed' && object(now.reconciliation).cancelled === true)
-        return { receipt: await this.receipt(spaceId, now) };
+      if (cancelledInHold(now)) return { receipt: await this.receipt(spaceId, now) };
       return unavailable('The message has already gone, so it cannot be cancelled.');
     }
     const reversal = await this.reversal(spaceId, source);

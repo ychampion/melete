@@ -115,7 +115,7 @@ import {
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
-import { eventBefore, heldKind, reversibleProposal } from './reversals.ts';
+import { eventBefore, heldKind, heldUntil, reversibleProposal } from './reversals.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
@@ -314,6 +314,20 @@ const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
 ]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
+/** `work`, or a rejection once `ms` have passed. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 /**
  * What a calendar change's own calendar says, taken before a job lock (see
  * `guestsAhead`): the guests of the event it rewrites, and what the time it
@@ -363,6 +377,8 @@ export function dispositionMessage(
   repeated: boolean,
   /** The action ran on the agent's own computer, so the agent checks an open outcome itself. */
   ownComputer = false,
+  /** The action is a message waiting out its hold. */
+  held = false,
 ): string {
   const receiptRef = (action.receipt?.external_ref as string | null | undefined) ?? action.id;
   const already = repeated ? 'already ' : '';
@@ -377,7 +393,7 @@ export function dispositionMessage(
       return 'You denied this effect. It was not sent, and it will not be.';
     case 'admitted':
       // A message waits a few seconds before it goes, so the person can cancel it.
-      if (heldKind(action.kind) && action.retry_after_at)
+      if (held)
         return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left Melete yet; do not send it again.`;
       return `This effect is ${already}admitted and has not been dispatched yet.`;
     case 'dispatched':
@@ -472,7 +488,8 @@ export class BrokerService implements BrokerOperations {
       kind: action.kind,
       effect_class: action.effect_class,
       canonical_payload: action.canonical_payload,
-      fields: this.originFields(action),
+      // The same fields admission checks, so the two agree on what was in doubt.
+      fields: await this.withoutOwnEvent(tx, job.space_id, action, this.originFields(action)),
     });
   }
 
@@ -480,6 +497,28 @@ export class BrokerService implements BrokerOperations {
    * The fields whose origin decides admission: every one `collectOriginFields`
    * finds, less the resource fields the action's connector proved itself.
    */
+  /**
+   * A change to an event Melete itself created, here, names it by the action
+   * that created it: Melete's own record vouches for that id, wherever the
+   * conversation got it. Only that `uid` is left out of origin checking, and
+   * only when the record is there; every other value keeps its check.
+   */
+  private async withoutOwnEvent<T extends { path: string; category: string }>(
+    tx: Query,
+    spaceId: string,
+    action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
+    fields: T[],
+  ): Promise<T[]> {
+    const uid = (action.canonical_payload as { uid?: unknown }).uid;
+    if (!CHANGES_EXISTING_EVENT.has(action.kind) || typeof uid !== 'string') return fields;
+    const [made] = await tx`select 1 from action a join job j on j.id = a.job_id
+      where a.id = ${uid} and a.kind = 'calendar.create' and a.status = 'succeeded'
+        and a.connection_id = ${action.connection_id} and j.space_id = ${spaceId}`;
+    return made
+      ? fields.filter((field) => !(field.category === 'resource' && field.path === 'uid'))
+      : fields;
+  }
+
   private originFields(
     action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
     kind?: string,
@@ -792,7 +831,12 @@ export class BrokerService implements BrokerOperations {
    * why, and tells the agent to wait rather than find another way round.
    */
   private async reviewedMessage(action: Action, repeated: boolean): Promise<string> {
-    const message = dispositionMessage(action, repeated, await this.ownComputer(this.sql, action));
+    const message = dispositionMessage(
+      action,
+      repeated,
+      await this.ownComputer(this.sql, action),
+      (await heldUntil(this.sql, action)) !== null,
+    );
     if (action.status !== 'needs_approval' || !this.options.autoReview) return message;
     const review = await actionReviewView(this.sql, action.id);
     if (review?.outcome !== 'escalated') return message;
@@ -901,7 +945,9 @@ export class BrokerService implements BrokerOperations {
         changes &&
         (tierOf([]).tier === 'sandbox' || tool.name === 'files.delete'));
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated ? this.originFields(action, action.kind) : [];
+    const fields = gated
+      ? await this.withoutOwnEvent(tx, job.space_id, action, this.originFields(action, action.kind))
+      : [];
     const warnings = await resolveOriginWarnings(
       tx,
       gated
@@ -1090,7 +1136,6 @@ export class BrokerService implements BrokerOperations {
     action: Action,
     source: Extract<NonNullable<Connector['signals']>, { stream: 'calendar' }>,
   ): Promise<CalendarCheck | null> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const reversible = await reversibleProposal(this.sql, spaceId, action);
       const before =
@@ -1098,17 +1143,60 @@ export class BrokerService implements BrokerOperations {
       const spans = spansOf(action.kind, action.canonical_payload, before);
       const window = windowOf(spans);
       if (!window) return { concern: 'Melete could not tell when this event is.', reversible };
-      const read = await Promise.race([
-        source.occurrences(window),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('timeout')), EXISTING_GUESTS_TIMEOUT_MS);
+      // Every calendar the person has connected here, not only the one written:
+      // a clash on another calendar matters as much. One that cannot be read
+      // leaves the change with the person.
+      const others = await this.sql`select id from connection
+        where space_id = ${spaceId} and status = 'active' and id <> ${action.connection_id}
+        order by id`;
+      const sources: { connectionId: string; source: typeof source }[] = [
+        { connectionId: action.connection_id, source },
+      ];
+      for (const row of others) {
+        const signals = this.options.connectors.get(String(row.id))?.signals;
+        if (signals?.stream === 'calendar')
+          sources.push({ connectionId: String(row.id), source: signals });
+      }
+      const reads = await Promise.all(
+        sources.map(async ({ connectionId, source: calendar }) => ({
+          connectionId,
+          read: await withDeadline(calendar.occurrences(window), EXISTING_GUESTS_TIMEOUT_MS),
+        })),
+      );
+      // Whether Melete made an event is what its own records say: a create that
+      // succeeded under that id, on that calendar, in this space.
+      const claimed = [
+        ...new Set(
+          reads.flatMap(({ read }) =>
+            read.items.flatMap((item) => (item.melete_uid ? [item.melete_uid] : [])),
+          ),
+        ),
+      ];
+      const made = claimed.length
+        ? await this.sql`select a.id, a.connection_id from action a join job j on j.id = a.job_id
+            where a.id = any(${claimed}) and a.kind = 'calendar.create' and a.status = 'succeeded'
+              and j.space_id = ${spaceId}`
+        : [];
+      const own = new Set(made.map((row) => `${row.connection_id}:${row.id}`));
+      const items = reads.flatMap(({ connectionId, read }) =>
+        read.items.map((item) => ({
+          ...item,
+          melete: Boolean(item.melete_uid) && own.has(`${connectionId}:${item.melete_uid}`),
+        })),
+      );
+      const [profile] = await this.sql`select time_zone from experience_profile
+        where space_id = ${spaceId} and time_zone_confirmed_at is not null`;
+      return {
+        concern: calendarConcern({
+          spans,
+          read: { items, complete: reads.every(({ read }) => read.complete) },
+          now: Date.now(),
+          zones: profile ? [String(profile.time_zone)] : [],
         }),
-      ]);
-      return { concern: calendarConcern({ spans, read, now: Date.now() }), reversible };
+        reversible,
+      };
     } catch {
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -2047,9 +2135,12 @@ export class BrokerService implements BrokerOperations {
         // Undo send: a message waits before it goes, under the same id, so a
         // restart in the meantime still sends it once and a cancel sends nothing.
         const hold = this.options.sendHoldMs ?? 0;
-        if (hold > 0 && heldKind(action.kind)) {
-          const until = new Date(Date.now() + hold).toISOString();
-          await tx`update action set retry_after_at = ${until} where id = ${id}`;
+        if (hold > 0 && heldKind(action.kind, this.options.connectors.get(action.connection_id))) {
+          // The database's clock, which every instance shares, sets and ends the hold.
+          const [timed] = await tx`update action
+            set retry_after_at = clock_timestamp() + make_interval(secs => ${hold / 1000})
+            where id = ${id} returning retry_after_at`;
+          const until = new Date(timed?.retry_after_at as string | Date).toISOString();
           await appendEvent(
             tx,
             job.id,
@@ -2104,7 +2195,7 @@ export class BrokerService implements BrokerOperations {
    * decides which of them sends it, so it is sent once.
    */
   private releaseWhenDue(action: Action) {
-    if (!heldKind(action.kind) || action.status !== 'admitted' || !action.retry_after_at) return;
+    if (action.status !== 'admitted' || !action.retry_after_at) return;
     const wait = Math.max(0, Date.parse(action.retry_after_at) - Date.now()) + 25;
     const timer = setTimeout(() => {
       void this.dispatch(action.id).catch(() => {
@@ -2145,8 +2236,7 @@ export class BrokerService implements BrokerOperations {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
-      if (!heldKind(action.kind) || action.status !== 'admitted' || !action.retry_after_at)
-        return null;
+      if (!(await heldUntil(tx, action))) return null;
       await this.setStatus(tx, action, 'failed');
       await tx`update action set resolved_at = now(), retry_after_at = null,
         reconciliation = ${JSON.stringify({ reason: 'cancelled before it was sent; nothing left Melete', retryable: false, cancelled: true })}::jsonb
@@ -2357,11 +2447,17 @@ export class BrokerService implements BrokerOperations {
         if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
           return { action, context: null };
         }
+        // A held message ends its hold by the database's clock, never by this
+        // instance's, so a clock running ahead cannot shorten the time to cancel.
+        const held = (await heldUntil(tx, action)) !== null;
+        if (held) {
+          const [due] =
+            await tx`select ${action.retry_after_at}::timestamptz <= clock_timestamp() as due`;
+          if (!due?.due) return { action, context: null };
+        }
         // A conversation that was stopped sends nothing more, however long an
-        // action of it waited for its destination.
-        // A held message was cleared to go before its task finished; only
-        // stopping the task takes it back.
-        const held = heldKind(action.kind) && action.retry_after_at !== null;
+        // action of it waited for its destination. A held message was cleared to
+        // go before its task finished; only stopping the task takes it back.
         if (['cancelled', 'failed'].includes(job.state) || (job.state === 'completed' && !held))
           return {
             action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),

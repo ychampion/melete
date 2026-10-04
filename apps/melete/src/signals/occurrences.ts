@@ -197,7 +197,7 @@ function occurrenceOf(
     updated_at:
       modified instanceof ICAL.Time ? new Date(modified.toUnixTime() * 1000).toISOString() : null,
     ...marksOf(component),
-    ...(MELETE_UID.test(uid) ? { melete: true } : {}),
+    ...(MELETE_UID.test(uid) ? { melete_uid: uid } : {}),
   };
 }
 

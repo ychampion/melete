@@ -8,6 +8,7 @@
  * is important when what it creates, moves or removes:
  *
  * - starts within the next few hours (`IMPORTANT_WITHIN_HOURS`), or has passed;
+ * - runs longer than a day;
  * - overlaps a repeating meeting;
  * - overlaps an event with guests;
  * - overlaps an event marked important or high priority;
@@ -20,7 +21,7 @@
  * person sees when they are asked.
  */
 import type { JsonObject } from '@melete/contracts';
-import { instantMs } from '../signals/occurrences.ts';
+import { instantMs, zonedToUtc } from '../signals/occurrences.ts';
 import type { CalendarRead, CalendarWindow, Occurrence } from '../signals/types.ts';
 
 /** A change starting sooner than this asks first. */
@@ -60,15 +61,61 @@ export function spansOf(kind: string, payload: JsonObject, before: JsonObject | 
   return spans;
 }
 
-/** The window a calendar is read over to check these spans. */
+/** A day either side: an all-day event is a date, which in a time zone far from UTC begins up to 14 hours earlier or ends up to 12 hours later. */
+const READ_MARGIN_MS = 86_400_000;
+
+/**
+ * The window a calendar is read over to check these spans, a day wider on
+ * each side so an all-day event on the person's own day is read even where its
+ * date, taken as UTC, would fall outside the spans.
+ */
 export function windowOf(spans: readonly Span[]): CalendarWindow | null {
   const starts = spans.map((span) => instantMs(span.start));
   const ends = spans.map((span) => instantMs(span.end));
   if (!spans.length || [...starts, ...ends].some(Number.isNaN)) return null;
   return {
-    from: new Date(Math.min(...starts)).toISOString(),
-    to: new Date(Math.max(...ends)).toISOString(),
+    from: new Date(Math.min(...starts) - READ_MARGIN_MS).toISOString(),
+    to: new Date(Math.max(...ends) + READ_MARGIN_MS).toISOString(),
   };
+}
+
+/** A change longer than this asks first: it would block the person's time for days. */
+export const LONGEST_UNASKED_MS = 86_400_000;
+
+/** The earliest a date begins and the latest it ends anywhere on Earth (UTC+14 to UTC−12). */
+const EARLIEST_MS = 14 * 3600_000;
+const LATEST_MS = 12 * 3600_000;
+
+/** Midnight at the start of a date (`YYYY-MM-DD`) in a time zone, as epoch milliseconds. */
+function midnightIn(date: string, zone: string): number {
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+  return zonedToUtc({ year, month, day, hour: 0, minute: 0, second: 0 }, zone);
+}
+
+/**
+ * The instants an all-day event covers. A date names a day in someone's time
+ * zone: the event's own when it says, and the person's. Each such day counts;
+ * with neither known, the date is taken as wide as it can be anywhere.
+ */
+function allDayRanges(occurrence: Occurrence, zones: readonly string[]): [number, number][] {
+  const first = occurrence.start.slice(0, 10);
+  const endDate = occurrence.end.slice(0, 10);
+  const last = endDate > first ? endDate : null;
+  const known = [...new Set([occurrence.time_zone, ...zones].filter(Boolean))] as string[];
+  const ranges: [number, number][] = [];
+  for (const zone of known) {
+    try {
+      const start = midnightIn(first, zone);
+      const end = last ? midnightIn(last, zone) : start + 86_400_000;
+      if (Number.isFinite(start) && Number.isFinite(end)) ranges.push([start, end]);
+    } catch {
+      // An unknown zone name is left to the widest reading below.
+    }
+  }
+  if (ranges.length) return ranges;
+  const start = instantMs(first);
+  const end = last ? instantMs(last) : start + 86_400_000;
+  return [[start - EARLIEST_MS, end + LATEST_MS]];
 }
 
 /** An event's title as it can be quoted in one line. */
@@ -92,13 +139,12 @@ function titled(occurrence: Occurrence): string {
   return `“${title.length > 60 ? `${title.slice(0, 57)}…` : title}”`;
 }
 
-const overlaps = (occurrence: Occurrence, span: Span) => {
-  const start = instantMs(occurrence.start);
-  // An all-day event covers its whole day (or days).
-  const end = occurrence.all_day
-    ? Math.max(instantMs(occurrence.end), start + 86_400_000)
-    : instantMs(occurrence.end);
-  return start < instantMs(span.end) && end > instantMs(span.start);
+const overlaps = (occurrence: Occurrence, span: Span, zones: readonly string[]) => {
+  // An all-day event covers its whole day (or days) where the person is.
+  const ranges = occurrence.all_day
+    ? allDayRanges(occurrence, zones)
+    : [[instantMs(occurrence.start), instantMs(occurrence.end)] as [number, number]];
+  return ranges.some(([start, end]) => start < instantMs(span.end) && end > instantMs(span.start));
 };
 
 /** Why an existing event makes a change important, or null when it may be overlapped. */
@@ -120,15 +166,20 @@ export function calendarConcern(input: {
   spans: readonly Span[];
   read: CalendarRead;
   now: number;
+  /** The person's time zone, when they chose or confirmed one. */
+  zones?: readonly string[];
 }): string | null {
   const { spans, read, now } = input;
+  const zones = input.zones ?? [];
   if (!spans.length) return 'Melete could not tell when this event is.';
+  if (spans.some((span) => instantMs(span.end) - instantMs(span.start) > LONGEST_UNASKED_MS))
+    return 'It runs longer than a day.';
   const soon = now + IMPORTANT_WITHIN_HOURS * 3600_000;
   if (spans.some((span) => instantMs(span.start) < soon))
     return `It is within the next ${IMPORTANT_WITHIN_HOURS} hours.`;
   for (const occurrence of read.items) {
     if (occurrence.status === 'cancelled') continue;
-    if (!spans.some((span) => overlaps(occurrence, span))) continue;
+    if (!spans.some((span) => overlaps(occurrence, span, zones))) continue;
     const concern = concernAbout(occurrence);
     if (concern) return concern;
   }

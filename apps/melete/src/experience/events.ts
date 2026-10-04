@@ -12,7 +12,6 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { reviewView } from '../broker/auto-review.ts';
-import { heldKind } from '../broker/reversals.ts';
 import type { Database } from '../db/client.ts';
 import {
   action,
@@ -670,7 +669,7 @@ export class ExperienceEvents {
             const state =
               effect &&
               this.projections?.receiptState &&
-              (payload.to === 'succeeded' || heldKind(effect.action.kind))
+              (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
                 ? // A receipt whose Undo cannot be worked out is drawn without one.
                   await this.projections
                     .receiptState(spaceId, effect.action.id)
@@ -708,7 +707,11 @@ export class ExperienceEvents {
                 lookups.because.get(effect.action.id),
                 state.reverses,
               );
-              if (receipt) await emit(source, { type: 'receipt', receipt });
+              if (receipt)
+                await emit(source, {
+                  type: 'receipt',
+                  receipt: state.what ? { ...receipt, what: state.what } : receipt,
+                });
               // A card is projected once, when its draft is freshly prepared; its
               // later status reaches the person through the conversation's drafts.
               for (const card of projectCards(effect.action, effect.connection, 'draft'))

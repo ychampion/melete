@@ -38,7 +38,7 @@ export const REVERSALS: Readonly<Record<string, Declaration>> = {
   'calendar.update': { mode: 'reversal', says: 'Puts the event back the way it was.' },
   'calendar.delete': {
     mode: 'compensation',
-    says: 'Puts the event back, as a new event with the same details.',
+    says: 'Puts the event back as a new event with the same title, time and notes. Guests it had are not invited again.',
   },
   'email.draft': { mode: 'reversal', says: 'Discards the draft.' },
   'email.send': {
@@ -60,8 +60,27 @@ export function declarationOf(
   return REVERSALS[kind] ?? connector?.reversalDeclared?.(kind) ?? NONE;
 }
 
-/** Tools that wait before they run, so they can be cancelled first. */
-export const heldKind = (kind: string) => REVERSALS[kind]?.mode === 'hold';
+/** Tools that wait before they run, so they can be cancelled first, built-in or declared. */
+export const heldKind = (kind: string, connector?: Pick<Connector, 'reversalDeclared'> | null) =>
+  declarationOf(kind, connector).mode === 'hold';
+
+/**
+ * Until when a message waits out its hold, or null when it is not waiting in
+ * one. Only the hold's own record says so: an action parked because its
+ * destination asked to be left alone looks the same on its row, and is not a
+ * hold.
+ */
+export async function heldUntil(
+  q: Query,
+  action: Pick<Action, 'id' | 'status' | 'retry_after_at'>,
+): Promise<string | null> {
+  if (action.status !== 'admitted' || !action.retry_after_at) return null;
+  const [row] = await q`select payload->>'until' as until from event
+    where dedup_key = ${`broker:held:${action.id}`}`;
+  return row && Date.parse(String(row.until)) === Date.parse(action.retry_after_at)
+    ? action.retry_after_at
+    : null;
+}
 
 /** How long a message waits before it is sent, unless the installation says otherwise. */
 export const DEFAULT_SEND_HOLD_SECONDS = 20;
@@ -197,12 +216,16 @@ export async function planReversal(
   q: Query,
   spaceId: string,
   source: Action,
-  connector?: Pick<Connector, 'reversal'> | null,
+  connector?: Pick<Connector, 'reversal' | 'manifest'> | null,
 ): Promise<ReversalPlan | null> {
   if (source.status !== 'succeeded') return null;
   const detail = object(source.receipt?.detail);
+  // A trash entry is restored only from the receipt of the delete that made it,
+  // written by the connector that deletes into the trash: the Files connection
+  // for its own deletes, the agent's computer for a command's.
+  const provider = connector?.manifest.provider ?? null;
   // A delete went to the trash: undoing it restores everything it took.
-  if (source.kind === 'files.delete' && typeof detail.trash_id === 'string')
+  if (source.kind === 'files.delete' && provider === 'files' && typeof detail.trash_id === 'string')
     return {
       mode: 'reversal',
       kind: 'files.restore',
@@ -213,7 +236,10 @@ export async function planReversal(
     };
   // So did what a command deleted in the agent's computer; the space's own
   // Files connection restores it.
-  if (typeof detail.workspace_trash === 'string') {
+  if (
+    (provider === 'exec' || provider === 'sandbox') &&
+    typeof detail.workspace_trash === 'string'
+  ) {
     const [files] = await q`select id from connection
       where space_id = ${spaceId} and provider = 'files' and status = 'active'
       order by created_at limit 1`;

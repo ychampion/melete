@@ -10,6 +10,7 @@ import {
   heldKind,
   planReversal,
   REVERSALS,
+  type ReversalPlan,
   reverseInOrder,
   undoDecides,
 } from './reversals.ts';
@@ -78,12 +79,63 @@ describe('what an undo may reach', () => {
 
   test('a connector’s own reversal is marked as declared by it', async () => {
     const connector = {
-      reversal: () => ({ mode: 'compensation' as const, kind: 'bookings.cancel', payload: {} }),
+      manifest: { ...calendarManifest, provider: 'mcp' as const },
+      reversal: (): ReversalPlan => ({
+        mode: 'compensation',
+        kind: 'bookings.cancel',
+        payload: {},
+      }),
     };
     const booked = { ...created('act_made'), kind: 'bookings.book' } as Action;
     expect(await planReversal(none, 'spc_1', booked, connector)).toMatchObject({
       declared: 'connector',
     });
+  });
+});
+
+describe('restoring from the trash', () => {
+  const deleted = (kind: string, detail: Record<string, string>) =>
+    ({
+      id: 'act_del',
+      kind,
+      status: 'succeeded',
+      connection_id: 'con_1',
+      canonical_payload: {},
+      receipt: { detail },
+    }) as unknown as Action;
+  const filesConnection = (async () => [{ id: 'con_files' }]) as unknown as Query;
+  const from = (provider: 'files' | 'sandbox' | 'mcp') => ({
+    manifest: { ...calendarManifest, provider },
+  });
+
+  test('only the connector that deleted into the trash names what Undo restores', async () => {
+    const trash = { trash_id: 'del_1790000000000_abcdefabcdef' };
+    expect(
+      await planReversal(filesConnection, 'spc_1', deleted('files.delete', trash), from('files')),
+    ).toMatchObject({ kind: 'files.restore', payload: trash });
+    expect(
+      await planReversal(filesConnection, 'spc_1', deleted('files.delete', trash), from('mcp')),
+    ).toBeNull();
+    const command = { workspace_trash: 'del_1790000000000_abcdefabcdef' };
+    expect(
+      await planReversal(filesConnection, 'spc_1', deleted('exec.run', command), from('sandbox')),
+    ).toMatchObject({ kind: 'files.restore', connectionId: 'con_files' });
+    // Another app's receipt cannot name a trash entry for Undo to restore.
+    expect(
+      await planReversal(filesConnection, 'spc_1', deleted('notes.write', command), from('mcp')),
+    ).toBeNull();
+  });
+});
+
+describe('holds a connected app declares', () => {
+  test('a send its connector declares as held is held like a message', () => {
+    const connector = {
+      reversalDeclared: (kind: string) =>
+        kind === 'chat.send' ? ({ mode: 'hold', says: 'Waits before sending.' } as const) : null,
+    };
+    expect(heldKind('chat.send', connector)).toBe(true);
+    expect(heldKind('chat.send')).toBe(false);
+    expect(heldKind('chat.read', connector)).toBe(false);
   });
 });
 

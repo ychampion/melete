@@ -124,7 +124,9 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
       : event.transparency === 'opaque'
         ? { busy: true }
         : {}),
-    ...(event.extendedProperties?.private?.melete_uid ? { melete: true } : {}),
+    ...(event.extendedProperties?.private?.melete_uid
+      ? { melete_uid: event.extendedProperties.private.melete_uid }
+      : {}),
   };
 }
 

@@ -67,7 +67,13 @@ export type Occurrence = {
   busy?: boolean;
   /** True when the event is marked important or high priority. */
   important?: boolean;
-  /** True when Melete itself made the event. */
+  /**
+   * The Melete action the event says made it, as the calendar reports it. It
+   * is only a claim: whether Melete made the event is decided from Melete's
+   * own records (`melete`), never from what the calendar says.
+   */
+  melete_uid?: string;
+  /** Set by the broker from its own records: Melete created this event. */
   melete?: boolean;
 };
 
