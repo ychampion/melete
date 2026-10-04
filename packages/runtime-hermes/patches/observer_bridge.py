@@ -216,6 +216,26 @@ def _durable_content(content: Any) -> Any:
              "    # Melete delegation seam: a delegation runs inside the turn that made it.\n"
              "    \"Runs inside this turn: the call returns once its subagents finish, with each one's final summary in \"\n"
              "    \"the result.\\n\\n\"\n"),
+            # Tools the engine does not offer here are not suggested instead.
+            ("    \"- Mechanical multi-step work with no reasoning needed -> execute_code\\n\"\n",
+             "    # Melete delegation seam: no code-execution tool is offered here.\n"),
+            ("    \"- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, \"\n"
+             "    \"or process exit discards running subagents.\\n\\n\"\n",
+             "    \"- Anything for the person to see or answer -> have the subagent report it; you decide what to ask\\n\\n\"\n"),
+            # A helper speaks as Melete: the engine home's SOUL.md is Melete's identity.
+            ("                skip_context_files=True, skip_memory=True, clarify_callback=None,\n",
+             "                skip_context_files=True, skip_memory=True, clarify_callback=None,\n"
+             "                load_soul_identity=True,  # Melete delegation seam\n"),
+            # The broker tools that speak to the person, park the job or start
+            # more helpers stay with the parent; the plugin also refuses them.
+            ("    child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role\n",
+             "    child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role\n"
+             "    from melete_runtime_hooks import hide_parent_only  # Melete delegation seam\n"
+             "    hide_parent_only(child)  # Melete delegation seam\n"),
+            # Actions a helper left waiting for approval go back to the parent as data.
+            ("    return _run_batch(batch, background)\n",
+             "    from melete_runtime_hooks import attach_helper_parked  # Melete delegation seam\n"
+             "    return attach_helper_parked(_run_batch(batch, background))  # Melete delegation seam\n"),
         ],
     ),
 }

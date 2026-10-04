@@ -20,8 +20,9 @@ therefore changed in one place, and
 [`engine-config.test.ts`](src/engine-config.test.ts) fails if the committed file
 drifts from it.
 
-What it renders: the Melete plugin toolset beside two of the engine's own,
-`todo` and `delegation`, and no other built-in; the tool-search bridge off; the skill curator,
+What it renders: the Melete plugin toolset beside the engine's own `todo`, plus
+its `delegation` for an attempt whose budget can carry helpers, and no other
+built-in; the tool-search bridge off; the skill curator,
 conversation checkpoints and the auxiliary title and review requests off, so
 nothing spends a job's budget in the background; `memory.memory_enabled` and
 `memory.user_profile_enabled` both false, which are the two keys the engine
@@ -33,15 +34,31 @@ engine counts this platform as attended and would otherwise only warn; and model
 traffic pointed at Melete's gateway.
 
 The two built-ins act only inside the engine. `todo` keeps a task list in the
-agent's memory for work with several steps. `delegation` runs up to three
-helpers at a time, one level deep and fifty turns each, inside the same turn. A
-helper is built with the parent's toolsets minus delegation, the question tool
-and memory, so everything it does is a broker call on the attempt's capability,
-under the same approvals and action budget, and its model calls go through the
-gateway under the same metering header. Every built-in that touches files, the
-network, a shell or a credential stays off, because Melete offers those as
-broker tools. Session search stays off as well: an engine home lives for one
-attempt, so it could only find the conversation already in front of the model.
+agent's memory for work with several steps, in every attempt. `delegation` runs
+helpers inside the same turn, and only for an attempt whose budget is a
+conversation turn's (200 model calls and 400,000 output tokens): helper calls
+are charged to the job like the parent's, so a routine on the job default of 20
+calls would be spent by its helpers before the parent could answer. The boot
+script adds the toolset when `MELETE_ENGINE_DELEGATION=1`, which the renderer
+sets from the attempt's budget. Up to three helpers run at a time, one level
+deep, fifty turns and ten minutes each; one that hangs ends with a timed-out
+result to the parent.
+
+A helper is built with the parent's toolsets minus delegation, the engine's
+question tool and memory. The broker tools that speak to the person, park the
+job or start more work (`ask_person`, `say`, `react`, `job.wait`,
+`search_tools`, `load_tool` and `run.*`) are left out of its list, and the
+plugin refuses them inside a helper if the engine offers them again: a helper
+says in its summary what the person needs, and the parent decides. Everything
+else it does is a broker call on the attempt's capability, under the same
+approvals and action budget, and its model calls go through the gateway under
+the same metering header. It speaks as Melete, from the engine home's
+`SOUL.md`. An action a helper proposes that parks for approval is handed to the
+parent as data beside the summaries (`awaiting_approval`), so the parent does
+not report it as done. Every built-in that touches files, the network, a shell
+or a credential stays off, because Melete offers those as broker tools. Session
+search stays off as well: an engine home lives for one attempt, so it could only
+find the conversation already in front of the model.
 `the shipped toolsets offer the engine-only built-ins and nothing else` and the
 probes after it in [`test_engine_surface.py`](tests/test_engine_surface.py)
 check this against the engine itself.
@@ -70,9 +87,11 @@ next run of the same session reads its history (the engine stores a picture as
 the word "[screenshot]", and code the agent runs can read that store), and, when
 `agent.host_prompt` is false, leaves the engine's product pointer, profile line
 and host runtime block out of the system prompt. It also keeps a delegation
-inside the turn that made it: at the pin a top-level delegation returns at once
+inside the turn that made it (at the pin a top-level delegation returns at once
 and its results arrive later as a new message, which an attempt that ends with
-its run would never see. Updating the pin means
+its run would never see), builds each helper with Melete's identity and without
+the parent-only tools, and hands the parent what its helpers left waiting for
+approval. Updating the pin means
 reviewing those seams again. A
 checkout carrying the version of the patch before the reasoning seam is moved to
 this one; one carrying any other version is refused, so it has to be restored to

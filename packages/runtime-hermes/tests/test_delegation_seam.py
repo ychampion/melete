@@ -33,7 +33,7 @@ def engine_source(name: str) -> str:
     return target.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("name, marks", [("run_agent.py", 1), ("tools/delegate_tool.py", 2)])
+@pytest.mark.parametrize("name, marks", [("run_agent.py", 1), ("tools/delegate_tool.py", 8)])
 def test_the_seam_applies_to_the_pinned_source_and_again_to_its_own_result(name, marks):
     module = bridge()
     expected_hash, changes = module.PATCHES[name]
@@ -50,6 +50,12 @@ def test_no_top_level_delegation_is_left_in_the_background():
     tool = module.patched(engine_source("tools/delegate_tool.py"), *module.PATCHES["tools/delegate_tool.py"])
     assert 'return not getattr(parent_agent, "_delegate_depth", 0) > 0' not in tool
     assert "END YOUR TURN" not in tool
+    # A helper speaks as Melete, keeps only the parent's other tools, and its
+    # parked actions go back to the parent.
+    assert "load_soul_identity=True,  # Melete delegation seam" in tool
+    assert "hide_parent_only(child)" in tool
+    assert "return attach_helper_parked(_run_batch(batch, background))" in tool
+    assert "-> execute_code" not in tool and "-> cronjob" not in tool
 
 
 @pytest.mark.parametrize("name", SEAM_FILES)

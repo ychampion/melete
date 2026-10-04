@@ -112,7 +112,7 @@ import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { connectionScopesForJob } from './jobs/scopes.ts';
-import { JobService } from './jobs/service.ts';
+import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
@@ -1011,7 +1011,9 @@ export async function bootstrap(
         const next = await modelSettings?.activeChoice().catch(() => undefined);
         const provider = next?.provider ?? env.MELETE_DEFAULT_PROVIDER;
         const model = next?.model ?? env.MELETE_DEFAULT_MODEL;
-        if (provider && model) supervisedRuntime.warm({ provider, model, fallback: null });
+        // The first reply is a conversation's, so the spare carries its features.
+        if (provider && model)
+          supervisedRuntime.warm({ provider, model, fallback: null }, [], CONVERSATION_BUDGET);
       }
       let hermesRuntime: SupervisedHermesRuntime | undefined;
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
