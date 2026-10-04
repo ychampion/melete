@@ -3660,14 +3660,15 @@ export function buildOpenApiDocument() {
             tags: ['model-providers'],
             summary: 'Choose this account’s secondary model',
             description:
-              'A second model for cheaper work beside the primary. It applies to this account’s ' +
-              'own work from the next call, as `secondary.uses` says; chats with the person stay on ' +
-              'the primary. The provider must already have a key or a sign-in.',
+              'A second model for cheaper work beside the primary. It applies to work in the ' +
+              'owner’s spaces from the next call, as `secondary.uses` says; chats stay on the ' +
+              'primary, and the action reviewer never uses it. The provider must already have a ' +
+              'key or a sign-in.',
             requestBody: json(setSecondaryModelRequest),
             responses: {
               '200': jsonResponse('Model settings', modelSettingsResponse),
               '400': problem('Invalid request'),
-              '403': problem('A guest account has no secondary model'),
+              '403': problem('Only the setup owner changes the model'),
               '409': problem('The provider has no key or sign-in yet'),
             },
           },
@@ -3676,7 +3677,7 @@ export function buildOpenApiDocument() {
             summary: 'Remove this account’s secondary model, so all its work uses the primary',
             responses: {
               '200': jsonResponse('Model settings', modelSettingsResponse),
-              '403': problem('A guest account has no secondary model'),
+              '403': problem('Only the setup owner changes the model'),
             },
           },
         },
@@ -3692,7 +3693,7 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Model settings', modelSettingsResponse),
               '400': problem('Invalid request'),
-              '403': problem('A guest account has no secondary model'),
+              '403': problem('Only the setup owner changes the model'),
             },
           },
         },

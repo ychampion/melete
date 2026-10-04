@@ -147,10 +147,10 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const chat: ReviewChat = async (messages, signal, scope, format) => {
-    // The model is read for each review, so one connected in the app applies at once;
-    // the secondary model of the person whose work it is takes it when they chose one.
+    // The model is read for each review, so one connected in the app applies at once.
+    // It is a safety check: no person's secondary model ever takes it.
     const target = options.source
-      ? await options.source.current({ jobId: scope.jobId })
+      ? await options.source.current()
       : { provider: options.provider, model: options.model };
     const model = `${target.provider}/${target.model}`;
     const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
@@ -237,6 +237,8 @@ export async function configuredReviewGateway(
       settings: connected.settings,
       pinned,
       fast: routingFromEnv(env).fast,
+      // It decides whether a risky action runs, so no person's secondary takes it.
+      sideTask: false,
     }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),

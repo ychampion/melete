@@ -17,12 +17,14 @@
  * Every read goes to the database, so the runner and the gateway see a change
  * on the next attempt and the next model call, in any process, without a restart.
  *
- * Each person may also set a secondary model, for cheaper work beside the
- * primary: the short side calls made about their work (on it by default) and
- * their scheduled and repeating work (off by default). Chats with them always
- * run on the primary. With no secondary set, everything runs as it would
- * without one. Wherever a call goes, the privacy router still decides whether
- * it may leave the person's machine.
+ * The owner may also set a secondary model, for cheaper work beside the
+ * primary in the spaces they own: short side calls (memory reads and voice
+ * asides), on it by default, and scheduled and repeating work, off by
+ * default. Work follows the settings of its space's owner, never those of
+ * whoever spoke or asked. Chats always run on the primary, and the action
+ * reviewer never moves: it is a safety check. With no secondary set,
+ * everything runs as it would without one. Wherever a call goes, the privacy
+ * router, spending limits and the gateway's checks still apply.
  *
  * The service's own model calls (memory reads, learning proposals, the
  * companies scan) take their model and keys from `serviceModelSource`, the same
@@ -53,12 +55,13 @@ import { ServiceError } from '../api/errors.ts';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { Database } from '../db/client.ts';
 import {
-  job,
   modelDefault,
   modelProviderKey,
   modelSecondary,
   modelVision,
   modelVisionReport,
+  owner,
+  space,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -601,9 +604,18 @@ export class ModelSettingsService {
         side_tasks: (row?.sideTasks as ModelRole | undefined) ?? 'secondary',
         scheduled: (row?.scheduled as ModelRole | undefined) ?? 'primary',
       },
-      can_edit: Boolean(person && !person.guest),
+      can_edit: Boolean(person && !person.guest && (await this.isInstallationOwner(person.id))),
       updated_at: row?.updatedAt.toISOString() ?? null,
     };
+  }
+
+  /**
+   * Whether this principal runs the installation. Only they choose models on
+   * its keys, so only their secondary is ever used, as only they set the primary.
+   */
+  private async isInstallationOwner(principalId: string, db: Runner = this.options.db) {
+    const [row] = await db.select({ id: owner.id }).from(owner).limit(1);
+    return row?.id === principalId;
   }
 
   private async secondaryRow(principalId: string, db: Runner = this.options.db) {
@@ -674,7 +686,7 @@ export class ModelSettingsService {
     work: SecondaryWork,
     db: Runner = this.options.db,
   ): Promise<ServiceModel | null> {
-    if (!principalId) return null;
+    if (!principalId || !(await this.isInstallationOwner(principalId, db))) return null;
     const row = await this.secondaryRow(principalId, db);
     if (!row?.provider || !row.model) return null;
     if ((work === 'side_tasks' ? row.sideTasks : row.scheduled) !== 'secondary') return null;
@@ -696,31 +708,33 @@ export class ModelSettingsService {
   }
 
   /**
-   * The secondary a short side call runs on: that of the person named, else
-   * of the principal of the job the call is about. Null for the usual model.
+   * The secondary a short side call about work in this space runs on: that of
+   * the space's owner, never that of whoever is speaking or asked. Null for
+   * the usual model.
    */
   async sideTaskModel(whose: SideCallOwner): Promise<ServiceModel | null> {
-    let principalId = whose.principalId ?? null;
-    if (!principalId && whose.jobId) {
-      const [row] = await this.options.db
-        .select({ principalId: job.principalId })
-        .from(job)
-        .where(eq(job.id, whose.jobId));
-      principalId = row?.principalId ?? null;
-    }
-    return this.secondaryFor(principalId, 'side_tasks');
+    return this.secondaryFor(await this.spaceOwner(whose.spaceId), 'side_tasks');
+  }
+
+  /** Whose settings work in a space follows: the space's owner. */
+  private async spaceOwner(spaceId: string, db: Runner = this.options.db) {
+    const [row] = await db
+      .select({ owner: space.ownerPrincipalId })
+      .from(space)
+      .where(eq(space.id, spaceId));
+    return row?.owner ?? null;
   }
 
   /**
    * The secondary an attempt of this job runs on, when it is scheduled or
-   * repeating work (a routine, or work that wakes on a trigger) and its person
-   * moved that work to their secondary. A chat is never moved.
+   * repeating work (a routine, or work that wakes on a trigger) and the owner
+   * of its space moved that work to their secondary. A chat is never moved.
    */
   private async scheduledSecondary(
     work: ScheduledWorkRow,
     db: Runner,
   ): Promise<ServiceModel | null> {
-    if (work.kind === 'chat' || !work.principalId) return null;
+    if (work.kind === 'chat') return null;
     if (work.kind !== 'routine') {
       const [standing] = await db
         .select({ id: trigger.id })
@@ -729,7 +743,7 @@ export class ModelSettingsService {
         .limit(1);
       if (!standing) return null;
     }
-    return this.secondaryFor(work.principalId, 'scheduled', db);
+    return this.secondaryFor(await this.spaceOwner(work.spaceId, db), 'scheduled', db);
   }
 
   async saveKey(
@@ -1046,13 +1060,13 @@ export class ModelSettingsService {
 export type ServiceModel = { provider: string; model: string };
 
 /** The job an attempt is claimed for, as far as choosing its model needs it. */
-export type ScheduledWorkRow = { id: string; kind: string; principalId: string | null };
+export type ScheduledWorkRow = { id: string; kind: string; spaceId: string };
 
 /**
- * Whose work a side call is about, so it may run on that person's secondary
- * model: the person, or the job whose principal it is.
+ * The space a side call is about. It runs on the secondary of that space's
+ * owner, never on that of the person speaking or asking.
  */
-export type SideCallOwner = { principalId?: string | null; jobId?: string | null };
+export type SideCallOwner = { spaceId: string };
 
 /**
  * Where a model call the service makes on its own (memory reads, learning
@@ -1062,8 +1076,8 @@ export type SideCallOwner = { principalId?: string | null; jobId?: string | null
  */
 export type ServiceModelSource = {
   /**
-   * The model the next call uses. Told whose work the call is about, a short
-   * side call runs on that person's secondary model when they chose one.
+   * The model the next call uses. Told the space the call is about, a short
+   * side call runs on the secondary of that space's owner when they chose one.
    */
   current(whose?: SideCallOwner): Promise<ServiceModel>;
   /** The gateway's providers for one call: the configured ones plus keys connected in the app. */
@@ -1097,7 +1111,8 @@ export function serviceModelSource(options: {
   fast?: ServiceModel | null;
   /**
    * These are short side calls, which a person's secondary model takes when
-   * they chose one. Implied by passing `fast`, even when it is null.
+   * they chose one. Implied by passing `fast`, even when it is null. A safety
+   * check (the action reviewer) passes false: no person's setting moves it.
    */
   sideTask?: boolean;
 }): ServiceModelSource {

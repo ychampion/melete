@@ -115,8 +115,8 @@ export const secondaryModelUses = z
   .object({
     side_tasks: modelRole.meta({
       description:
-        'Short side calls: reading chats into memory, quick voice replies and the check before ' +
-        'an action runs. `secondary` by default once a secondary model is set.',
+        'Short side calls: reading chats into memory and quick voice replies. `secondary` by ' +
+        'default once a secondary model is set. The check before a risky action never moves.',
     }),
     scheduled: modelRole.meta({
       description:
@@ -149,7 +149,7 @@ export const secondaryModel = z
     }),
     can_edit: z
       .boolean()
-      .meta({ description: 'Whether this account may set its own secondary model' }),
+      .meta({ description: 'Whether this account may set the secondary model (the owner)' }),
     updated_at: timestamp.nullable(),
   })
   .strict();

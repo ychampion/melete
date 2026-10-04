@@ -239,7 +239,7 @@ export const modelSecondary = pgTable(
       .references(() => principal.id, { onDelete: 'cascade' }),
     provider: text('provider'),
     model: text('model'),
-    /** Short side calls: memory reads, voice asides, the check before an action. */
+    /** Short side calls: memory reads and voice asides. */
     sideTasks: text('side_tasks').notNull().default('secondary'),
     /** Routines and work that wakes on a trigger. */
     scheduled: text('scheduled').notNull().default('primary'),

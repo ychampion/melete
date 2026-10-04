@@ -170,7 +170,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       // The model is read for each call, so one connected in the app applies at once;
       // the space owner's secondary model takes it when they chose one for side tasks.
       const target = options.source
-        ? await options.source.current({ principalId: call.ownerId })
+        ? await options.source.current({ spaceId: call.spaceId })
         : { provider: options.provider, model: options.model };
       const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
       const system = messages.find((message) => message.role === 'system')?.content ?? '';

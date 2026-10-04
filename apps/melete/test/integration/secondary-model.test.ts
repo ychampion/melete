@@ -1,11 +1,14 @@
 /**
- * A person's secondary model, end to end on Postgres: set in Settings, kept
- * per person across a restart, taken by short side calls about that person's
- * work and, when they switch it on, by their scheduled work. Chats always run
- * on the primary, and a private conversation still stays on the local model.
+ * The secondary model, end to end on Postgres: set by the owner in Settings,
+ * kept across a restart, taken by short side calls about work in the owner's
+ * spaces and, when switched on, by scheduled work there. Chats and the action
+ * reviewer stay where they were, a member's work never follows anyone else's
+ * setting, and a private conversation still stays on the local model.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
+import { configuredReviewGateway } from '../../src/broker/review-gateway.ts';
+import type { ReviewInput } from '../../src/broker/reviewer.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
 import { NO_ROUTING } from '../../src/gateway/routing.ts';
@@ -322,25 +325,119 @@ describeWithDb('a secondary model beside the primary', () => {
 
     // Another person sees none of it, and their work never runs on it.
     const theirs = await restarted.call('/model-settings', member.cookie);
-    expect(theirs.body.secondary).toMatchObject({ model: null, can_edit: true });
+    expect(theirs.body.secondary).toMatchObject({ model: null, can_edit: false });
     expect(await sideCall(restarted, member.id, member.spaceId)).toEqual([
       { host: 'api.fireworks.ai', model: FAST },
     ]);
     expect(await attemptModel(restarted, member.spaceId, member.id, 'routine')).toBe(PRIMARY);
+  }, 60_000);
 
-    // A member sets their own, from the providers connected here, without touching the owner's.
-    const own = await restarted.call(
+  test('only the owner sets a secondary, and work follows its space owner, never who asked', async () => {
+    const api = service();
+    const { owner, member, spaceId } = await people(api);
+    const MEMBER = 'accounts/fireworks/models/fixture-member';
+    // Choosing a model on the installation's keys is the owner's, as for the primary.
+    for (const [path, body] of [
+      ['/model-settings/secondary', { provider: 'fireworks', model: MEMBER }],
+      ['/model-settings/secondary/uses', { side_tasks: 'secondary' }],
+    ] as const) {
+      const refused = await api.call(path, member.cookie, put(body));
+      expect(refused.status).toBe(403);
+    }
+    expect(
+      (await api.call('/model-settings/secondary', member.cookie, { method: 'DELETE' })).status,
+    ).toBe(403);
+    await api.call(
       '/model-settings/secondary',
-      member.cookie,
-      put({ provider: 'fireworks', model: 'accounts/fireworks/models/fixture-member' }),
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
     );
-    expect(own.status).toBe(200);
-    expect(await sideCall(restarted, member.id, member.spaceId)).toEqual([
-      { host: 'api.fireworks.ai', model: 'accounts/fireworks/models/fixture-member' },
-    ]);
-    expect(await sideCall(restarted, owner.id, spaceId)).toEqual([
+    // A row for a member, however it came to be, is never used.
+    await database()
+      .sql`insert into model_secondary (principal_id, provider, model, side_tasks, scheduled)
+      values (${member.id}, 'fireworks', ${MEMBER}, 'secondary', 'secondary')`;
+    expect((await api.call('/model-settings', member.cookie)).body.secondary.model).toBeNull();
+
+    // The member speaking in the owner's space: the owner's settings, not the member's.
+    expect(await sideCall(api, member.id, spaceId)).toEqual([
       { host: 'api.fireworks.ai', model: SMALL },
     ]);
+    // In the member's own space nobody's secondary applies.
+    expect(await sideCall(api, member.id, member.spaceId)).toEqual([
+      { host: 'api.fireworks.ai', model: FAST },
+    ]);
+    expect(await attemptModel(api, member.spaceId, member.id, 'routine')).toBe(PRIMARY);
+  }, 60_000);
+
+  test('the action reviewer stays on its own model whatever the secondary is', async () => {
+    const api = service();
+    const { owner, spaceId } = await people(api);
+    await api.call(
+      '/model-settings/secondary',
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
+    );
+    expect((await api.call('/model-settings', owner.cookie)).body.secondary.uses.side_tasks).toBe(
+      'secondary',
+    );
+    const reached: unknown[] = [];
+    const provider = async (request: Request) => {
+      const body = (await request.json()) as {
+        model?: unknown;
+        messages?: { role: string; content: string }[];
+      };
+      reached.push(body.model);
+      const system = (body.messages ?? []).find((m) => m.role === 'system');
+      const nonce = /The review_id must be exactly (\w+)\./.exec(system?.content ?? '')?.[1];
+      const text = JSON.stringify({
+        review_id: nonce,
+        verdict: 'approve',
+        risk: 'low',
+        reason: 'It renames the task as asked.',
+      });
+      return Response.json({
+        id: 'chat_1',
+        object: 'chat.completion',
+        model: body.model,
+        choices: [
+          { index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' },
+        ],
+        usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
+      });
+    };
+    const jobId = newId('job');
+    await database().sql`insert into job (id, space_id, title, objective, principal_id)
+      values (${jobId}, ${spaceId}, 'Tasks', 'Rename a task', ${owner.id})`;
+    const review = await configuredReviewGateway(
+      api.env,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      undefined,
+      { settings: api.settings, fetch: provider },
+    );
+    if (!review) throw new Error('auto-review is off');
+    const input: ReviewInput = {
+      action: {
+        tool: 'tasks.rename',
+        description: 'Rename a task',
+        effect: 'write_reversible',
+        app: 'Tasks',
+        payload: { title: 'Groceries' },
+      },
+      instruction: 'Rename my task to Groceries',
+      recent: [],
+      origins: [],
+    };
+    try {
+      const verdict = await review.reviewer.review(input, AbortSignal.timeout(10_000), {
+        spaceId,
+        jobId,
+      });
+      expect(verdict).toMatchObject({ verdict: 'approve', model: `fireworks/${FAST}` });
+      expect(reached).toEqual([FAST]);
+    } finally {
+      await review.close();
+    }
   }, 60_000);
 
   test('a private conversation stays on the local model whatever the secondary is', async () => {

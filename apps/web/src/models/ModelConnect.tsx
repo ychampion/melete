@@ -869,7 +869,7 @@ const WORK: { key: keyof ModelSettings['secondary']['uses']; name: string; hint:
   {
     key: 'side_tasks',
     name: 'Quick side tasks',
-    hint: 'Reading chats into memory, quick voice replies, checking an action before it runs',
+    hint: 'Reading chats into memory and quick voice replies',
   },
   {
     key: 'scheduled',
@@ -929,8 +929,9 @@ export function SecondaryModel({
             </>
           ) : (
             <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Optional. Link a second, cheaper model for side tasks and scheduled jobs. Until you
-              do, everything uses the primary.
+              {secondary.can_edit
+                ? 'Optional. Link a second, cheaper model for side tasks and scheduled jobs. Until you do, everything uses the primary.'
+                : 'None is set, so everything uses the primary.'}
             </span>
           )}
         </div>
@@ -984,68 +985,6 @@ export function SecondaryModel({
   );
 }
 
-/**
- * Choosing a secondary model for someone who does not run the installation:
- * one of the providers already connected here, and the model's name.
- */
-function SecondaryPicker({
-  settings,
-  onChanged,
-}: {
-  settings: ModelSettings;
-  onChanged: (next: ModelSettings) => void;
-}) {
-  const connected = settings.providers.filter((entry) => entry.connected);
-  const current = settings.secondary.model;
-  const [provider, setProvider] = useState<string>(
-    current?.provider ?? connected[0]?.provider ?? '',
-  );
-  const [model, setModel] = useState(current?.model ?? '');
-  const [busy, setBusy] = useState(false);
-  if (!connected.length)
-    return (
-      <p className="models-hint">
-        No provider is connected here yet, so there is no secondary model to choose.
-      </p>
-    );
-  return (
-    <div className="card-12 models-panel">
-      <span className="models-panel-title">Choose your secondary model</span>
-      <Field label="Provider">
-        <Select
-          label="Provider"
-          value={provider}
-          onChange={setProvider}
-          width="100%"
-          options={connected.map((entry) => ({ value: entry.provider, label: entry.label }))}
-        />
-      </Field>
-      <ModelChoice
-        value={model}
-        onChange={setModel}
-        options={[]}
-        placeholder="The model id, as the provider writes it"
-      />
-      <div className="row" style={{ gap: 10 }}>
-        <Button
-          loading={busy}
-          disabled={busy || !provider || !model.trim()}
-          iconRight="chevronRight"
-          onClick={() => {
-            setBusy(true);
-            void chooseFor('secondary', provider as ModelProvider, model.trim()).then((chosen) => {
-              setBusy(false);
-              if (chosen) onChanged(chosen);
-            });
-          }}
-        >
-          Use as secondary
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 const TARGETS = [
   { value: 'primary', label: 'Primary' },
   { value: 'secondary', label: 'Secondary' },
@@ -1086,14 +1025,9 @@ export function ModelsTab({ loaded }: { loaded: Loaded<ModelSettings> }) {
               />
             </>
           ) : (
-            <>
-              <p className="models-hint">
-                Only the owner of this installation can change the primary model or its keys.
-              </p>
-              {settings.secondary.can_edit ? (
-                <SecondaryPicker settings={settings} onChanged={loaded.set} />
-              ) : null}
-            </>
+            <p className="models-hint">
+              Only the owner of this installation can change its models or their keys.
+            </p>
           )}
         </>
       ) : null}
