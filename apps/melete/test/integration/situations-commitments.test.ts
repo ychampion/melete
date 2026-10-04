@@ -28,6 +28,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { actorEnvironment } from '../../src/mcp-server/actor.ts';
 import { principalContext } from '../../src/principals/authority.ts';
+import { isQuiet } from '../../src/push/policy.ts';
 import { PushService } from '../../src/push/service.ts';
 import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/webpush.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -145,9 +146,9 @@ withDb('a commitment taken up in Melete', () => {
     await sql`update ledger_item set due_at = ${new Date(clock + 180 * MINUTE).toISOString()}::timestamptz,
         due_date_only = false
       where id in ${sql(items.slice(0, 2))}`;
-    // Quiet now: their day is two hours from now until four hours from now.
+    // Quiet now and at the last look (2 h 45 m on): their day starts five hours from now.
     const hour = new Date(clock).getUTCHours();
-    await profile(at(hour + 2), at(hour + 4), 'UTC');
+    await profile(at(hour + 5), at(hour + 7), 'UTC');
     // A phone to reach them on.
     const keys = await generateVapidKeys();
     phone = {
@@ -190,6 +191,16 @@ withDb('a commitment taken up in Melete', () => {
     expect(kept?.lead_s).toBe(15 * 60);
     expect(new Date(kept?.fire_at).getTime()).toBe(clock + 165 * MINUTE);
     clock += 165 * MINUTE;
+    // Their quiet hours, by the profile the push service reads.
+    const [day] = await required(handle).sql`select day_start, day_end, time_zone
+      from experience_profile where space_id = ${spaceId}`;
+    expect(
+      isQuiet(new Date(clock), {
+        start: String(day?.day_start),
+        end: String(day?.day_end),
+        timeZone: String(day?.time_zone),
+      }),
+    ).toBe(true);
     const before = delivered.length;
     await required(situations).sweep();
     const [raised] = await raisedOn(String(mine));
