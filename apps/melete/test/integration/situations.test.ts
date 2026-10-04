@@ -622,6 +622,20 @@ withDb('situations', () => {
     ];
     await poll();
     expect((await live(kit.id)).length).toBeGreaterThan(0);
+    await required(situations).setDeadline({
+      spaceId: kit.spaceId,
+      principalId: kit.id,
+      subjectKey: await keyOf(calendarId, 'one'),
+      connectionId: calendarId,
+      title: 'Notes are ready',
+      anchor: { field: 'start', offset_s: -1800 },
+      leadSeconds: 600,
+      atRisk: { all: [{ field: 'status', op: 'eq', value: 'confirmed' }] },
+      personSet: true,
+    });
+    const [before] = await required(handle)
+      .sql`select count(*)::int as n from clock where connection_id = ${calendarId}`;
+    expect(before?.n).toBe(1);
     const { sql: raw } = required(handle);
     const [current] = await raw`select generation from connection where id = ${calendarId}`;
     await new PolicyService(required(jobs), required(runner)).changeConnection(calendarId, {
