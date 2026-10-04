@@ -90,13 +90,27 @@ export function normalizeEmailAddress(raw: string): string {
 const isEmailField = (key: string): boolean =>
   (EMAIL_ADDRESS_FIELDS as readonly string[]).includes(key.toLowerCase());
 
+/** One address: a local part, `@`, and a host, with no spaces, brackets or path separators. */
+const ADDRESS = /^[^\s@<>]+@[^\s@<>/\\]+$/;
+
+/**
+ * The comparable form of a value under an address key, or null when the value
+ * is not an address. The key names alone are shared with other tools: a
+ * calendar window's `from` and `to` are date-times, and `files.move`'s are
+ * paths. Those are kept as written (trimmed), never lowercased.
+ */
+function addressValue(raw: string): string | null {
+  const normalized = normalizeEmailAddress(raw);
+  return ADDRESS.test(normalized) ? normalized : null;
+}
+
 const uniqueSorted = (values: string[]): string[] => [...new Set(values)].sort();
 
 function canonicalizeValue(value: unknown, key: string | null): JsonValue {
   if (value === null || value === undefined) return null;
 
   if (typeof value === 'string') {
-    return key !== null && isEmailField(key) ? normalizeEmailAddress(value) : value.trim();
+    return (key !== null && isEmailField(key) && addressValue(value)) || value.trim();
   }
 
   if (typeof value === 'number') {
@@ -113,7 +127,11 @@ function canonicalizeValue(value: unknown, key: string | null): JsonValue {
     const items = value.map((item) => canonicalizeValue(item, key));
     // Recipient lists are sets: order and duplicates carry no meaning, and a
     // reordered To: line must not invalidate an approval.
-    if (key !== null && isEmailField(key) && items.every((i) => typeof i === 'string')) {
+    if (
+      key !== null &&
+      isEmailField(key) &&
+      items.every((i) => typeof i === 'string' && addressValue(i) !== null)
+    ) {
       return uniqueSorted(items as string[]);
     }
     return items;

@@ -447,6 +447,23 @@ describe('calendar listing window', () => {
     expect(detail.events.map((event) => event.uid)).toEqual(['weekly']);
   });
 
+  test('a window given as date-times in their usual upper case is read as given', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(fake.config, secret);
+    await connector.execute(mailAction('calendar.create', payload), mailContext());
+    // The payload goes through the same canonical form the broker hashes.
+    const listed = await connector.execute(
+      mailAction('calendar.list', { from: '2026-09-12T08:00:00Z', to: '2026-09-12T11:00:00Z' }),
+      mailContext(),
+    );
+    if (listed.outcome !== 'succeeded') throw new Error(listed.outcome);
+    expect(listed.receipt.detail.window).toEqual({
+      from: '2026-09-12T08:00:00.000Z',
+      to: '2026-09-12T11:00:00.000Z',
+    });
+    expect(listed.receipt.detail.events).toHaveLength(1);
+  });
+
   test('with no window the listing starts yesterday and looks 90 days ahead', () => {
     const now = Date.parse('2026-10-01T12:00:00Z');
     expect(listWindow(listPayload.parse({}), now)).toEqual({

@@ -94,6 +94,38 @@ describe('canonicalizePayload', () => {
   });
 });
 
+describe('address keys hold other things too', () => {
+  test('a date-time under `from` or `to` keeps its case', () => {
+    const { canonical } = canonicalizePayload({
+      from: '2026-10-13T09:00:00Z',
+      to: ' 2026-10-14T17:30:00+02:00 ',
+    });
+    expect(canonical).toEqual({ from: '2026-10-13T09:00:00Z', to: '2026-10-14T17:30:00+02:00' });
+  });
+
+  test('a path under `from` or `to` keeps its case, even with an @ in it', () => {
+    const { canonical } = canonicalizePayload({
+      from: 'Docs/Report Q3.PDF',
+      to: 'team@home/Archive/Report.PDF',
+    });
+    expect(canonical).toEqual({
+      from: 'Docs/Report Q3.PDF',
+      to: 'team@home/Archive/Report.PDF',
+    });
+  });
+
+  test('addresses are still compared in lower case, and an address list is still a set', () => {
+    const { canonical } = canonicalizePayload({
+      to: ['Zara <ZARA@Example.COM>', 'b@example.com', 'zara@example.com'],
+      from: ' Me@Example.com ',
+    });
+    expect(canonical).toEqual({
+      to: ['b@example.com', 'zara@example.com'],
+      from: 'me@example.com',
+    });
+  });
+});
+
 describe('normalizeEmailAddress', () => {
   test('pulls the address out of an angle-bracket form', () => {
     expect(normalizeEmailAddress('Zara Zhang <zara@example.com>')).toBe('zara@example.com');
