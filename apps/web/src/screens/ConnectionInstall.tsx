@@ -166,9 +166,12 @@ export function KindForm({
   onInstalled,
   signIn: easier,
   onSignIn,
+  spaceId,
 }: {
   kind: ConnectionKind;
   onDone: () => void;
+  /** The space it is added to; left out, the person's own. */
+  spaceId?: string;
   /** Called only when the connection was saved, before `onDone`. */
   onInstalled?: () => void;
   /** The account sign-in that connects this kind without a password, when there is one. */
@@ -192,7 +195,10 @@ export function KindForm({
     if (gap) return;
     setSending(true);
     void adapter
-      .installConnection(requestBody(kind, values))
+      .installConnection({
+        ...requestBody(kind, values),
+        ...(spaceId ? { space_id: spaceId } : {}),
+      })
       .then((result) => {
         if (result.data === null) {
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t add that' });
@@ -396,10 +402,13 @@ export function AccountSignIn({
   entry,
   onDone,
   onInstalled,
+  spaceId,
 }: {
   entry: SignInEntry;
   onDone: () => void;
   onInstalled: () => void;
+  /** The space it is added to; left out, the person's own. */
+  spaceId?: string;
 }) {
   const provider = entry.connect.provider;
   const [started, setStarted] = useState<AccountSignInStart | null>(null);
@@ -410,7 +419,7 @@ export function AccountSignIn({
   useEffect(() => {
     if (!entry.available) return;
     let live = true;
-    void adapter.startAccountSignIn(provider).then((r) => {
+    void adapter.startAccountSignIn(provider, spaceId).then((r) => {
       if (!live) return;
       setLoading(false);
       if (r.data) setStarted(r.data);
@@ -419,7 +428,7 @@ export function AccountSignIn({
     return () => {
       live = false;
     };
-  }, [entry.available, provider]);
+  }, [entry.available, provider, spaceId]);
 
   // Once the provider's page is open, wait for the sign-in to finish there.
   useEffect(() => {
@@ -502,7 +511,16 @@ export function AccountSignIn({
   );
 }
 
-export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
+export function AddConnection({
+  onInstalled,
+  spaceId,
+  title = 'Add a connection',
+}: {
+  onInstalled: () => void;
+  /** The space it is added to; left out, the person's own. */
+  spaceId?: string;
+  title?: string;
+}) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState<string | null>(null);
@@ -521,9 +539,7 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
 
   return (
     <div className="col" style={{ gap: 10 }}>
-      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-        Add a connection
-      </span>
+      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>{title}</span>
       {kinds.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{kinds.error}</p> : null}
       {account ? (
         <AccountSignIn
@@ -531,11 +547,13 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
           entry={account}
           onDone={() => setSigningIn(null)}
           onInstalled={onInstalled}
+          {...(spaceId ? { spaceId } : {})}
         />
       ) : kind ? (
         <KindForm
           key={kind.id}
           kind={kind}
+          {...(spaceId ? { spaceId } : {})}
           signIn={easier(kind.id)}
           onSignIn={() => {
             const entry = easier(kind.id);

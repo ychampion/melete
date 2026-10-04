@@ -156,6 +156,23 @@ test('MCP execution rejects changed audience, space, scope, effect, identity and
   }
 });
 
+test("a room's own server runs a call for the room's space, and still refuses any other audience", async () => {
+  const worker = await openMcpWorker(mcpFixtureConfig(), binding);
+  try {
+    const action = connectorAction('mcp_fixture.read', {});
+    const result = await worker.execute(action, { ...context(action), audience: 'space' });
+    expect(result.outcome).toBe('succeeded');
+    for (const audience of ['public', 'principal', 'room'])
+      expect(await worker.execute(action, { ...context(action), audience })).toEqual({
+        outcome: 'failed',
+        reason: 'MCP execution authority mismatch',
+        retryable: false,
+      });
+  } finally {
+    await worker.close();
+  }
+});
+
 test('MCP lost acknowledgement remains unknown and does not fabricate verification', async () => {
   const worker = await openMcpWorker(mcpFixtureConfig(), binding);
   try {
