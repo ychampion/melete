@@ -34,6 +34,8 @@ export type FakeGoogle = {
   issued: string[];
   sent: Stored[];
   events: Map<string, Event>;
+  /** The `sendUpdates` each event create asked for (null: guests not told). */
+  notified: (string | null)[];
   deliver(raw: string): string;
   /** Make every access token handed out so far stale, so the next call must refresh. */
   expireAccess(): void;
@@ -60,6 +62,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
     issued: [] as string[],
     sent: [] as Stored[],
     events: new Map<string, Event>(),
+    notified: [] as (string | null)[],
   };
   let serial = 0;
   const nextId = () => (0x18c000000000 + ++serial).toString(16);
@@ -227,10 +230,16 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         if (rest === '/events' && request.method === 'GET')
           return Response.json({ items: [...state.events.values()] });
         if (rest === '/events' && request.method === 'POST') {
+          state.notified.push(url.searchParams.get('sendUpdates'));
           const body = (await request.json()) as Record<string, unknown>;
           const id = String(body.id ?? nextId());
           if (state.events.has(id)) return Response.json({ error: { code: 409 } }, { status: 409 });
-          const event: Event = { ...body, id, etag: '"1"', status: 'confirmed' };
+          const event: Event = {
+            ...body,
+            id,
+            etag: '"1"',
+            status: String(body.status ?? 'confirmed'),
+          };
           state.events.set(id, event);
           return Response.json(event);
         }
@@ -251,7 +260,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
             const next: Event = {
               ...body,
               id: event.id,
-              status: 'confirmed',
+              status: String(body.status ?? 'confirmed'),
               etag: `"${Number(event.etag.replaceAll('"', '')) + 1}"`,
             };
             state.events.set(event.id, next);

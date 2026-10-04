@@ -314,6 +314,8 @@ const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
 ]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
+/** How long a connector's read before a proposal may take; see `readAhead`. */
+const AHEAD_TIMEOUT_MS = 10_000;
 /** `work`, or a rejection once `ms` have passed. */
 async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -582,7 +584,11 @@ export class BrokerService implements BrokerOperations {
     if (!grantsConnectionScopes(claims, connection.scopes, [...required])) {
       throw new BrokerFault('scope_denied');
     }
-    return { tool, connector };
+    const scopes = (connection.scopes ?? []) as string[];
+    // Every tool this job may use on this connection, for a connector that
+    // shows less to a job that may not read what it would show.
+    const granted = scopes.filter((scope) => grantsConnectionScopes(claims, scopes, [scope]));
+    return { tool, connector, granted };
   }
 
   /**
@@ -1210,6 +1216,76 @@ export class BrokerService implements BrokerOperations {
     }
   }
 
+  /**
+   * The checks a proposal must pass before anything reads the destination on
+   * its behalf: the attempt is live, the connection is in the job's space,
+   * active and usable by this job, the tool (an account alias resolved) is one
+   * it offers, and the job holds its grants. Made in a short transaction of
+   * its own, holding no job lock; the proposal's own transaction makes them
+   * all again. Null when any fails, and then nothing is read ahead: the
+   * proposal itself is refused with the reason.
+   */
+  private async authorizedAhead(
+    claims: CapabilityClaims,
+    request: Pick<ProposeActionRequest, 'connection_id' | 'kind'>,
+  ): Promise<{
+    job: LockedJob;
+    tool: ConnectorTool;
+    connector: Connector;
+    granted: string[];
+  } | null> {
+    try {
+      return await this.sql.begin(async (tx) => {
+        const [job] = await tx<LockedJob[]>`select * from job where id = ${claims.job_id}`;
+        if (!job) return null;
+        await checkAttempt(tx, job, claims);
+        const access = await agentAccess(tx, job.id);
+        if (access.chat && directSend(request.kind)) return null;
+        return { job, ...(await this.tool(tx, job, claims, request.connection_id, request.kind)) };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * What a connector reads from the destination before a proposal is
+   * admitted (`Connector.ahead`), outside every lock, only once the proposal
+   * is authorized, and within a deadline that stops the read itself. Null
+   * when the connector reads nothing, the read failed or ran out of time;
+   * `prepare` binds that, and dispatch checks again.
+   */
+  private async readAhead(
+    authorized: NonNullable<Awaited<ReturnType<BrokerService['authorizedAhead']>>>,
+    request: Pick<ProposeActionRequest, 'connection_id' | 'payload'>,
+  ): Promise<JsonObject | null> {
+    const { job, tool, connector, granted } = authorized;
+    if (!connector.ahead) return null;
+    const signal = AbortSignal.timeout(AHEAD_TIMEOUT_MS);
+    const deadline = new Promise<null>((resolve) =>
+      signal.addEventListener('abort', () => resolve(null), { once: true }),
+    );
+    try {
+      return await Promise.race([
+        connector.ahead(
+          { kind: tool.name, canonical_payload: request.payload as JsonObject },
+          {
+            job_id: job.id,
+            space_id: job.space_id,
+            idempotency_key: '',
+            constraints: jobConstraints.parse(job.constraints),
+            signal,
+            granted,
+          },
+          this.sql,
+        ),
+        deadline,
+      ]);
+    } catch {
+      return null;
+    }
+  }
+
   private approvalRow(row: Record<string, unknown>) {
     return {
       id: row.id as string,
@@ -1561,11 +1637,19 @@ export class BrokerService implements BrokerOperations {
     request: ProposeActionRequest,
     readOnly = false,
   ): Promise<EffectProposalResponse> {
-    const guests = await this.guestsAhead(claims.job_id, {
-      connection_id: request.connection_id,
-      kind: request.kind,
-      canonical_payload: request.payload as Action['canonical_payload'],
-    });
+    // Nothing is read from a destination for a proposal that is not authorized.
+    // Only a connector that reads ahead needs the checks made early.
+    const reader = this.options.connectors.get(request.connection_id);
+    const authorized =
+      reader?.ahead || reader?.existingGuests ? await this.authorizedAhead(claims, request) : null;
+    const guests = authorized
+      ? await this.guestsAhead(claims.job_id, {
+          connection_id: request.connection_id,
+          kind: authorized.tool.name,
+          canonical_payload: request.payload as Action['canonical_payload'],
+        })
+      : NO_GUESTS;
+    const ahead = authorized ? await this.readAhead(authorized, request) : null;
     const proposal = await this.sql
       .begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
@@ -1576,7 +1660,7 @@ export class BrokerService implements BrokerOperations {
             'scope_denied',
             'In a chat the person sends a draft from its draft card. Say the draft is ready.',
           );
-        const { tool, connector } = await this.tool(
+        const { tool, connector, granted } = await this.tool(
           tx,
           job,
           claims,
@@ -1593,19 +1677,17 @@ export class BrokerService implements BrokerOperations {
         request = { ...request, kind: tool.name };
         let canonical = canonicalizePayload(request.payload);
         this.validatePayload(tool, canonical.canonical);
+        const proposing: ConnectorContext = {
+          job_id: job.id,
+          space_id: job.space_id,
+          idempotency_key: '',
+          constraints: jobConstraints.parse(job.constraints),
+          ahead,
+          granted,
+        };
         if (connector.prepare) {
           canonical = canonicalizePayload(
-            await connector.prepare(
-              canonical.canonical,
-              {
-                job_id: job.id,
-                space_id: job.space_id,
-                idempotency_key: '',
-                constraints: jobConstraints.parse(job.constraints),
-              },
-              tx,
-              request.kind,
-            ),
+            await connector.prepare(canonical.canonical, proposing, tx, request.kind),
           );
           this.validatePayload(tool, canonical.canonical);
         }
@@ -1694,6 +1776,12 @@ export class BrokerService implements BrokerOperations {
         // makes two live attempts take their turn rather than race.
         const [prior] = await tx`select * from action where intent_key = ${key} for update`;
         if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
+        // Only a proposal that is new is checked against what was read ahead:
+        // a repeat is handed the action it already made, never refused over it.
+        await connector.checkAhead?.(
+          { kind: request.kind, canonical_payload: canonical.canonical },
+          proposing,
+        );
         const id = recordId('act');
         const [row] = await tx`insert into action
         (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key, intent_key)

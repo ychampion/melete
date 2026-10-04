@@ -221,7 +221,7 @@ describe('installable kinds against the connectors they select', () => {
     const sorted = (scopes: readonly string[]) => [...scopes].sort();
     expect(sorted(CONNECTION_KIND_SCOPES.mail)).toEqual(toolNames(emailManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.caldav)).toEqual(toolNames(calendarManifest));
-    expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.list']);
+    expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.freebusy', 'calendar.list']);
     expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
     // The read grant is checked by the egress relay itself; the write grant is the broker tool.
     expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual(

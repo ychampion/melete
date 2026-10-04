@@ -450,7 +450,7 @@ describe('events on the person’s own calendar', () => {
         status: 'confirmed',
         attendees: 0,
         time_zone: null,
-        busy: false,
+        transparent: true,
         // It carries Melete's mark, but Melete never created it.
         melete_uid: 'act_theirs',
       };
@@ -514,7 +514,6 @@ describe('events on the person’s own calendar', () => {
             status: 'confirmed',
             attendees: 0,
             time_zone: null,
-            busy: true,
             melete_uid: 'act_lookslikemelete',
           },
         ],

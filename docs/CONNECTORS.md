@@ -59,7 +59,7 @@ succeeded and the job continues`.
 | Files | List/read/write/move in configured work and space-artifact roots; content-hash verification | `files manifests parse and workspace/artifact writes can be read and verified` |
 | Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects are checked hop by hop and never reach a private destination` |
 | Email | IMAP search/read, local draft, SMTP send, or the same tools over the Gmail API or Microsoft Graph after a Google or Microsoft sign-in; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending`; `a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own` |
-| Calendar | Read-only ICS import; CalDAV, Google Calendar or Outlook calendar list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
+| Calendar | Read-only ICS import; CalDAV, Google Calendar or Outlook calendar list/create/update with UID and content verification; free/busy, conflict refusal, guests and holds | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
 | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
 | Artifacts | Declared writes become artifact records with deterministic checks; a new file saved to the space goes through like work in the agent's own workspace, while saving over a file already there or sending by email is an approved external effect | `artifacts.test.ts` |
@@ -169,8 +169,8 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Kind | `provider` | Block | Credential | Grants |
 | --- | --- | --- | --- | --- |
 | Mail (IMAP and SMTP) | `imap` | `mail`: account name, IMAP and SMTP host, port and TLS mode, optional sender address and folders | `credentials.password` | `email.search`, `email.read`, `email.draft`, `email.send` |
-| CalDAV | `caldav` | `caldav`: an account name and either one HTTPS calendar collection address or the HTTPS address of the calendar service | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
-| Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
+| CalDAV | `caldav` | `caldav`: an account name and either one HTTPS calendar collection address or the HTTPS address of the calendar service | `credentials.password` | `calendar.list`, `calendar.freebusy`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list`, `calendar.freebusy` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
 | GitHub for the agent's computer | `command_line` | `command_line`: `{ "adapter": "github" }` | `credentials.token`, a fine-grained token; GitHub is asked whose it is before it is kept | `egress.github_read`, `egress.github_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github) |
@@ -281,6 +281,10 @@ series is listed when one of its occurrences falls in the window, and the
 receipt names the window it covered. When more events fall in it than `limit`
 (at most 100), the receipt says `truncated: true` with a note, so a short list
 is never mistaken for a complete one.
+
+`calendar.freebusy` reads when the person is busy and free, and a create or
+update over a taken time is refused, naming what is there; see
+[mail-calendar.md](mail-calendar.md#free-time-conflicts-guests-and-holds).
 
 A calendar feed is fetched again on every `calendar.list`, with redirects
 refused and the same size limit as CalDAV. A feed address must be HTTPS and

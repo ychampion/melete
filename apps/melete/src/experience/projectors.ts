@@ -101,6 +101,7 @@ export function appName(row: ConnectionRow): string {
 }
 const LABELS: Record<string, string> = {
   'calendar.list': 'Checked your calendar',
+  'calendar.freebusy': 'Checked when you are free',
   'calendar.create': 'Created an event',
   'calendar.update': 'Updated an event',
   'calendar.delete': 'Removed an event',
@@ -140,6 +141,7 @@ export const NOT_OPENED = 'Tried to open a page in its computer; the window did 
 /** How each connector verb reads while it runs and once it is done. */
 export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'calendar.list': ['Checking your calendar', 'Checked your calendar'],
+  'calendar.freebusy': ['Checking when you are free', 'Checked when you are free'],
   'calendar.create': ['Adding an event', 'Added an event'],
   'calendar.update': ['Updating an event', 'Updated an event'],
   'calendar.delete': ['Removing an event', 'Removed an event'],
@@ -1093,6 +1095,91 @@ export function projectQuestionDecision(input: {
 }
 
 /**
+ * Why a calendar write is the person's to decide, naming the people it would
+ * invite from outside their own accounts and what a double-booking lands on.
+ */
+export function calendarReasons(kind: string, payload: Record<string, unknown>): string[] {
+  if (kind !== 'calendar.create' && kind !== 'calendar.update') return [];
+  const checked = object(payload.checked);
+  const strings = (value: unknown) =>
+    array(value).filter((item): item is string => typeof item === 'string');
+  const outside = checked.outside ? strings(checked.outside) : strings(payload.attendees);
+  const reasons: string[] = [];
+  if (outside.length)
+    reasons.push(
+      plainText(
+        `It invites ${outside.length === 1 ? 'someone' : 'people'} outside your own accounts: ${outside.join(', ')}. Your calendar sends them the invitation.`,
+        'It invites people outside your own accounts.',
+      ),
+    );
+  const doubleBook = object(payload.double_book);
+  if (typeof doubleBook.reason === 'string') {
+    const blocks = array(checked.conflicts).map((block) => object(block));
+    // Titles are bound only when this work may read the calendar.
+    const over =
+      checked.names === true
+        ? blocks.map((block) => plainText(block.title, 'an untitled event'))
+        : [];
+    const landsOn = over.length
+      ? `It goes on top of ${over.join(', ')}`
+      : blocks.length
+        ? `It goes on top of ${blocks.length === 1 ? 'something' : `${blocks.length} things`} already on your calendar`
+        : 'It was asked for on top of what is already there';
+    reasons.push(
+      plainText(
+        `${landsOn}. The reason given: ${doubleBook.reason}`,
+        'It double-books your calendar.',
+      ),
+    );
+  }
+  // Said whenever the calendar could not be read before asking: the check
+  // just before it is added may still stop it.
+  if (checked.read === false)
+    reasons.push(
+      'Melete could not check your calendar for anything already at this time before asking. It checks again just before adding it, and stops if the time is taken.',
+    );
+  return reasons;
+}
+
+/**
+ * What a calendar write adds to its card: who it invites (those outside the
+ * person's own accounts named as such), whether it is a hold, and, for a
+ * double-booking the agent asked for, what it lands on and why.
+ */
+export function calendarFacts(
+  kind: string,
+  payload: Record<string, unknown>,
+): { label: string; value: string }[] {
+  if (kind !== 'calendar.create' && kind !== 'calendar.update') return [];
+  const checked = object(payload.checked);
+  const guests = array(payload.attendees).filter(
+    (value): value is string => typeof value === 'string',
+  );
+  const outside = new Set(
+    array(checked.outside).filter((value): value is string => typeof value === 'string'),
+  );
+  const facts: { label: string; value: string }[] = [];
+  const named = (list: string[]) => plainText(list.join(', '), 'Not specified');
+  const away = guests.filter((guest) => outside.has(guest) || !checked.outside);
+  if (away.length) facts.push({ label: 'Invites', value: named(away) });
+  const own = guests.filter((guest) => !away.includes(guest));
+  if (own.length) facts.push({ label: 'Also invites your own', value: named(own) });
+  if (payload.tentative === true) facts.push({ label: 'Hold', value: 'Marked tentative' });
+  const doubleBook = object(payload.double_book);
+  if (typeof doubleBook.reason === 'string') {
+    const over =
+      checked.names === true
+        ? array(checked.conflicts)
+            .map((block) => object(block))
+            .map((block) => plainText(block.title, 'an untitled event'))
+        : [];
+    if (over.length) facts.push({ label: 'On top of', value: plainText(over.join(', '), '') });
+    facts.push({ label: 'Why both', value: plainText(doubleBook.reason, 'No reason given') });
+  }
+  return facts;
+}
+
+/**
  * The file a write would save, as the person reviews it: the path and the
  * exact text, with only control characters taken out. Content past the preview
  * limit is cut and marked, never silently dropped.
@@ -1244,6 +1331,7 @@ export function projectPermission(input: {
           ]
         : [],
     ),
+    ...calendarFacts(input.action.kind, payload),
   ];
   return permissionCard.parse({
     id: input.id,

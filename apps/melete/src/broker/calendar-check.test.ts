@@ -46,7 +46,7 @@ describe('what makes a change on the person’s own calendar important', () => {
     expect(concern([event({ occurrence: at(24), melete: true })])).toBe(
       'It overlaps “Dentist”, a repeating meeting.',
     );
-    expect(concern([event({ attendees: 2, busy: false })])).toBe(
+    expect(concern([event({ attendees: 2, transparent: true })])).toBe(
       'It overlaps “Dentist”, which has guests.',
     );
     expect(concern([event({ important: true, melete: true })])).toBe(
@@ -56,7 +56,7 @@ describe('what makes a change on the person’s own calendar important', () => {
 
   test('Melete’s own event with no guests, or one marked free, may be overlapped', () => {
     expect(concern([event({ melete: true })])).toBeNull();
-    expect(concern([event({ busy: false })])).toBeNull();
+    expect(concern([event({ transparent: true })])).toBeNull();
     expect(concern([event({ status: 'cancelled' })])).toBeNull();
   });
 

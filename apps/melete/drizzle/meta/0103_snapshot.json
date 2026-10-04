@@ -1,5 +1,5 @@
 {
-  "id": "3e454959-5a9d-4206-9200-481785690ccf",
+  "id": "4b9e75d1-f041-4ef3-836c-f513b0e91b7f",
   "prevId": "80cbdf1a-6bc4-4303-a626-e8e1c558ca77",
   "version": "7",
   "dialect": "postgresql",
@@ -615,30 +615,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "reversal": {
-          "name": "reversal",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "undo_until": {
-          "name": "undo_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "undone_at": {
-          "name": "undone_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "undone_by": {
-          "name": "undone_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {

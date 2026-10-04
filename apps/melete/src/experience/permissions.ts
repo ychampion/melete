@@ -27,6 +27,7 @@ import {
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
 import {
+  calendarReasons,
   draftForReview,
   plainText,
   projectPermission,
@@ -176,6 +177,7 @@ export class ExperiencePermissions {
         warnings.flatMap((warning) => (typeof warning.handle === 'string' ? [warning.handle] : [])),
       )),
     );
+    reasons.push(...calendarReasons(action.kind, action.canonical_payload));
     const [parent] = await this.sql`select j.title from job j
       where j.id = ${row.experience_parent_id ?? row.job_id} and j.space_id = ${spaceId}
       ${own ? ownJobClause(this.sql, 'j') : this.sql``}`;

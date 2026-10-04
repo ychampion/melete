@@ -28,6 +28,7 @@ import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
+import { mountNeedsYouSource } from './api/needs-you-source.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -201,6 +202,9 @@ import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
+import { mountNeedsYou } from './triage/routes.ts';
+import { TriageService } from './triage/service.ts';
 import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
 import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -287,6 +291,8 @@ export type AppDeps = {
   roomSurfaces?: RoomSurface[];
   /** The files people send in chat. Left out, nothing can be attached. */
   attachments?: AttachmentService;
+  /** Sorting what came in, for "Needs you". Left out, the list reads what is stored. */
+  triage?: TriageService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -438,6 +444,22 @@ export function createApp(deps: AppDeps) {
         })
       : defaultPrivacyRouter());
   // Before the experience routes, which answer every operation they do not implement.
+  if (deps.sql)
+    mountNeedsYou(
+      app,
+      deps.triage ??
+        new TriageService({
+          sql: deps.sql,
+          classifier: null,
+          ...(noticing ? { situations: (principalId) => noticing.list(principalId) } : {}),
+        }),
+    );
+  if (deps.sql && deps.attachments)
+    mountNeedsYouSource(app, {
+      sql: deps.sql,
+      attachments: deps.attachments,
+      resolveSpace: personalSpace,
+    });
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
   if (deps.db)
     mountVoice(app, {
@@ -709,6 +731,8 @@ export async function bootstrap(
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let signalPoller: SignalPoller | undefined;
+  let triage: TriageService | undefined;
+  let triageClassifier: TriageClassifier | null = null;
   let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
@@ -751,6 +775,7 @@ export async function bootstrap(
           events?.close(),
           companyReplies?.stop(),
           signalPoller?.stop(),
+          triage?.stop(),
           situations?.stop(QUEUES.clockSweep),
           pushDispatcher?.stop(),
           triggers?.stop(),
@@ -767,6 +792,7 @@ export async function bootstrap(
       () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
+      () => triageClassifier?.close(),
       () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
@@ -1474,6 +1500,29 @@ export async function bootstrap(
             noticing.deps.load = load;
           }
         }
+        // New mail and calendar changes sorted into needs you, for your
+        // information, or ignore, by one instance at a time. Sorting only labels.
+        if (handle) {
+          triageClassifier = await configuredTriageGateway(env, privacy, {
+            settings: modelSettings,
+            signIn,
+            spending,
+            ...(options.fakeProvider ? { fake: options.fakeProvider } : {}),
+          });
+          triage = new TriageService({
+            sql: handle.sql,
+            classifier: triageClassifier,
+            spending,
+            // What Melete noticed on its own is ranked with the sorted items.
+            situations: async (principalId) => (await situations?.list(principalId)) ?? [],
+            leads: () => leading(leases, 'triage'),
+            intervalSeconds: env.MELETE_TRIAGE_INTERVAL_SECONDS,
+            onError: (error) =>
+              process.stderr.write(`triage: ${error instanceof Error ? error.message : error}
+`),
+          });
+          await triage.start();
+        }
         // Pushes to people's devices, when this installation has its VAPID keys.
         if (handle) {
           const push = new PushService(handle.db, pushConfig(env));
@@ -1568,6 +1617,7 @@ export async function bootstrap(
     voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase,
     attachments,
+    triage,
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql, memoryEmbedder) } : {}),
   });
 

@@ -13,7 +13,7 @@
  * - overlaps an event with guests;
  * - overlaps an event marked important or high priority;
  * - overlaps an event the person made themselves that blocks the time
- *   (anything not marked free).
+ *   (anything not marked free, or declined).
  *
  * Melete's own events with no guests, and the person's events marked free,
  * may be overlapped. A calendar that could not be read in full counts as
@@ -153,7 +153,7 @@ function concernAbout(occurrence: Occurrence): string | null {
   if (occurrence.occurrence !== null) return `It overlaps ${name}, a repeating meeting.`;
   if (occurrence.attendees > 0) return `It overlaps ${name}, which has guests.`;
   if (occurrence.important) return `It overlaps ${name}, which is marked important.`;
-  if (!occurrence.melete && occurrence.busy !== false)
+  if (!occurrence.melete && !occurrence.transparent && !occurrence.declined)
     return `It overlaps ${name} on your calendar, which blocks that time.`;
   return null;
 }

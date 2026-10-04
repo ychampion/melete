@@ -378,6 +378,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   situation: 'operational',
   clock: 'operational',
   subject_link: 'operational',
+  triage_item: 'operational',
+  triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
@@ -729,6 +731,17 @@ describe.if(handle !== null)('removing a space', () => {
         now() + interval '1 day', 300, now() + interval '1 day', '{}'::jsonb)`;
     await sql`insert into subject_link (subject_key, job_id, space_id, role)
       values ('subject:one', ${seeded.jobId}, ${seeded.spaceId}, 'deadline')`;
+    // An incoming message as it was sorted, and the label kept for it.
+    const [observed] = await sql`insert into event (job_id, type, payload, dedup_key)
+      values (null, 'notice', '{}'::jsonb, ${`triage:${seeded.spaceId}`}) returning seq`;
+    await sql`insert into triage_item (id, space_id, principal_id, connection_id, event_seq, kind,
+        subject_key, content_hash, fields, verdict)
+      values (${`tri_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, ${seeded.connectionId},
+        ${observed?.seq}, 'mail.received', 'mail:subject', 'hash', '{}'::jsonb, 'fyi')`;
+    await sql`insert into triage_verdict (principal_id, space_id, event_seq, subject_key, content_hash,
+        verdict, urgency, sentence, reason, model, expires_at)
+      values (${seeded.principalId}, ${seeded.spaceId}, ${observed?.seq}, 'mail:subject', 'hash',
+        'fyi', 'normal', 's', 'r', 'fake/fake', now() + interval '7 days')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

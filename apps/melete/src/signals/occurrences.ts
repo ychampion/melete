@@ -144,12 +144,10 @@ function attendeesOf(component: ICAL.Component): number {
 }
 
 /**
- * What the event says about how much it matters: TRANSP:TRANSPARENT is free
- * time, PRIORITY 1 to 4 is high, and a category named important or high
- * priority marks it too. Only what the event states is kept.
+ * Whether the event says it matters: PRIORITY 1 to 4 is high, and a category
+ * named important or high priority marks it too.
  */
-function marksOf(component: ICAL.Component): { busy?: boolean; important?: boolean } {
-  const transp = String(component.getFirstPropertyValue('transp') ?? '').toUpperCase();
+function marksOf(component: ICAL.Component): { important?: boolean } {
   const priority = Number(component.getFirstPropertyValue('priority') ?? 0);
   const categories = component
     .getAllProperties('categories')
@@ -158,10 +156,7 @@ function marksOf(component: ICAL.Component): { busy?: boolean; important?: boole
   const important =
     (Number.isInteger(priority) && priority >= 1 && priority <= 4) ||
     categories.some((value) => value === 'important' || value === 'high priority');
-  return {
-    ...(transp === 'TRANSPARENT' ? { busy: false } : transp === 'OPAQUE' ? { busy: true } : {}),
-    ...(important ? { important: true } : {}),
-  };
+  return important ? { important: true } : {};
 }
 
 /** Melete names every event it makes by the action that made it. */
@@ -172,6 +167,25 @@ function textOf(component: ICAL.Component, name: string): string {
   return typeof value === 'string' ? value : value == null ? '' : String(value);
 }
 
+/** A calendar address as compared: `mailto:` dropped, lower case. */
+export const calendarAddress = (value: unknown): string =>
+  String(value ?? '')
+    .trim()
+    .replace(/^mailto:/i, '')
+    .toLowerCase();
+
+/** Whether one of the calendar's own addresses is an attendee who declined. */
+function declinedBySelf(component: ICAL.Component, self: ReadonlySet<string>): boolean {
+  if (!self.size) return false;
+  return component
+    .getAllProperties('attendee')
+    .some(
+      (attendee) =>
+        self.has(calendarAddress(attendee.getFirstValue())) &&
+        String(attendee.getParameter('partstat') ?? '').toUpperCase() === 'DECLINED',
+    );
+}
+
 /** The occurrence an event component describes, between `start` and `end`. */
 function occurrenceOf(
   component: ICAL.Component,
@@ -179,8 +193,13 @@ function occurrenceOf(
   recurrenceId: string | null,
   start: ICAL.Time,
   end: ICAL.Time,
+  self: ReadonlySet<string> = new Set(),
+  floating: string | null = null,
 ): Occurrence {
-  const zone = tzidOf(component, 'dtstart');
+  // A time written with no zone is the person's own wall clock when the
+  // reader knows their zone; the zone stays unnamed in what is kept.
+  const named = tzidOf(component, 'dtstart');
+  const zone = named ?? floating;
   const endZone = tzidOf(component, 'dtend') ?? zone;
   const modified = component.getFirstPropertyValue('last-modified');
   return {
@@ -193,9 +212,12 @@ function occurrenceOf(
     location: textOf(component, 'location'),
     status: statusOf(component.getFirstPropertyValue('status')),
     attendees: attendeesOf(component),
-    time_zone: zone,
+    time_zone: named,
     updated_at:
       modified instanceof ICAL.Time ? new Date(modified.toUnixTime() * 1000).toISOString() : null,
+    transparent: textOf(component, 'transp').toUpperCase() === 'TRANSPARENT',
+    declined: declinedBySelf(component, self),
+    melete_action: textOf(component, 'x-melete-action-id') || null,
     ...marksOf(component),
     ...(MELETE_UID.test(uid) ? { melete_uid: uid } : {}),
   };
@@ -304,7 +326,12 @@ export async function expandIcs(
   texts: readonly string[],
   window: CalendarWindow,
   budget: ExpansionBudget = EXPANSION_BUDGET,
+  /** The calendar's own addresses, so an invitation it declined is known as one. */
+  selfAddresses: readonly string[] = [],
+  /** The zone a time written with no zone is read in; UTC when none is given. */
+  floating: string | null = null,
 ): Promise<CalendarRead> {
+  const self = new Set(selfAddresses.map(calendarAddress).filter(Boolean));
   const out: Occurrence[] = [];
   const began = performance.now();
   const from = instantMs(window.from);
@@ -342,7 +369,15 @@ export async function expandIcs(
           await spend();
           const event = new ICAL.Event(exception);
           keep(
-            occurrenceOf(exception, uid, recurrenceKey(exception), event.startDate, event.endDate),
+            occurrenceOf(
+              exception,
+              uid,
+              recurrenceKey(exception),
+              event.startDate,
+              event.endDate,
+              self,
+              floating,
+            ),
           );
         }
         continue;
@@ -350,10 +385,10 @@ export async function expandIcs(
       const event = new ICAL.Event(master, { exceptions });
       if (!event.isRecurring()) {
         await spend();
-        keep(occurrenceOf(master, uid, null, event.startDate, event.endDate));
+        keep(occurrenceOf(master, uid, null, event.startDate, event.endDate, self, floating));
         continue;
       }
-      const masterZone = tzidOf(master, 'dtstart');
+      const masterZone = tzidOf(master, 'dtstart') ?? floating;
       startNearWindow(event, masterZone, from);
       const seen = new Set<string>();
       const iterator = event.iterator();
@@ -368,7 +403,7 @@ export async function expandIcs(
         const item = details.item.component;
         const key = icalInstant(details.recurrenceId, masterZone);
         seen.add(key);
-        keep(occurrenceOf(item, uid, key, details.startDate, details.endDate));
+        keep(occurrenceOf(item, uid, key, details.startDate, details.endDate, self, floating));
       }
       // An instance moved into the window from a date the walk above never
       // reached is still in the window.
@@ -377,7 +412,7 @@ export async function expandIcs(
         if (key === null || seen.has(key)) continue;
         await spend();
         const moved = new ICAL.Event(exception);
-        keep(occurrenceOf(exception, uid, key, moved.startDate, moved.endDate));
+        keep(occurrenceOf(exception, uid, key, moved.startDate, moved.endDate, self, floating));
       }
     }
   }
