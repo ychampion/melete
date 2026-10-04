@@ -82,10 +82,12 @@ type GoogleEvent = {
 };
 
 /** The calendar's own answer to an event: organiser, or its own attendee entry's status. */
-function googleResponse(event: GoogleEvent): OwnResponse | null {
+function googleResponse(event: GoogleEvent): OwnResponse {
   if (event.organizer?.self) return 'organizer';
   const own = (event.attendees ?? []).find((attendee) => attendee.self);
-  if (!own) return event.attendees?.length ? null : 'organizer';
+  // Others are listed but not the person (sent to a list they are on, or the
+  // list was cut short): their answer is not known, so it is not their meeting.
+  if (!own) return event.attendees?.length ? 'unknown' : 'organizer';
   switch (own.responseStatus) {
     case 'accepted':
       return 'accepted';
@@ -96,7 +98,7 @@ function googleResponse(event: GoogleEvent): OwnResponse | null {
     case 'needsAction':
       return 'needs_action';
     default:
-      return null;
+      return 'unknown';
   }
 }
 

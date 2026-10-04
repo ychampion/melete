@@ -39,10 +39,18 @@ export type OccurrenceStatus = 'confirmed' | 'tentative' | 'cancelled';
 
 /**
  * What the calendar's own account said to an event: it organises it, it
- * accepted, it said maybe or no, or it has not answered (an invitation). Null
- * when the source cannot tell, as with a feed or a CalDAV collection.
+ * accepted, it said maybe or no, or it has not answered (an invitation).
+ * `unknown` when a calendar that keeps answers shows none for the person (an
+ * invitation sent to a list they are on). Null when the source cannot tell,
+ * as with a feed or a CalDAV collection.
  */
-export type OwnResponse = 'organizer' | 'accepted' | 'tentative' | 'declined' | 'needs_action';
+export type OwnResponse =
+  | 'organizer'
+  | 'accepted'
+  | 'tentative'
+  | 'declined'
+  | 'needs_action'
+  | 'unknown';
 
 /**
  * One occurrence of a calendar event. A single event is one occurrence with no

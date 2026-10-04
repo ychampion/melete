@@ -225,6 +225,19 @@ export class PrincipalService {
       sql`delete from mcp_token where principal_id = ${memberId}
         and exists (select 1 from principal p where p.id = ${memberId} and p.kind = 'guest')`,
     );
+    // What Melete kept for them in this space goes with their place in it:
+    // the deadlines it was keeping, what it noticed, and anything still
+    // waiting to be pushed about it.
+    await tx.execute(sql`update push_intent set dropped_at = now()
+      where principal_id = ${memberId} and sent_at is null and dropped_at is null
+        and situation_id in (select id from situation
+          where space_id = ${spaceId} and principal_id = ${memberId})`);
+    await tx.execute(
+      sql`delete from situation where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
+    await tx.execute(
+      sql`delete from clock where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
     const generation = policyGeneration + 1;
     // The copies of what memory handed the member's own actions, kept to say
     // why each was taken, go with the access.

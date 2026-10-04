@@ -197,7 +197,8 @@ export function dueWords(due: string, timeZone: string, dateOnly: string | null)
 /**
  * Whether an event is the person's own meeting: one they organise or
  * accepted. An invitation they have not answered, said maybe to, or declined
- * is not; a source that cannot say (a feed) counts what it lists.
+ * is not, and neither is one whose answer their calendar does not show; a
+ * source that keeps no answers at all (a feed) counts what it lists.
  */
 export function ownMeeting(response: unknown): boolean {
   return (

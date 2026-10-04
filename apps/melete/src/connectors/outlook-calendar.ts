@@ -104,7 +104,7 @@ export type GraphInstance = GraphEvent & {
 };
 
 /** The mailbox's own answer to an event, as Graph reports it. */
-function graphResponse(event: GraphInstance): OwnResponse | null {
+function graphResponse(event: GraphInstance): OwnResponse {
   if (event.isOrganizer) return 'organizer';
   switch (event.responseStatus?.response) {
     case 'organizer':
@@ -118,7 +118,7 @@ function graphResponse(event: GraphInstance): OwnResponse | null {
     case 'notResponded':
       return 'needs_action';
     default:
-      return null;
+      return 'unknown';
   }
 }
 
