@@ -9,8 +9,12 @@
  *   adapter's read scope;
  * - the adapter covers the host and the egress CA may vouch for it;
  * - the command's conversation may use the connection: not paused, its agent
- *   resolves and allows it, the space is the owner's own, and the work is not
- *   in a public compartment (a member's account never reaches a room).
+ *   resolves and allows it, and the work is not in a public compartment;
+ * - the connection serves the job whose computer asks, by the rule every other
+ *   connection follows (`connectionServesJob`). In a person's own space that is
+ *   all of its jobs. In a room it is an account the room's owners added for the
+ *   room, and only the requests people make of the room's agent: never a
+ *   member's own work there. A person's own account never reaches a room.
  *
  * Anything else gets a blind tunnel, exactly as a host with no account does.
  * The secret is opened for one request at a time and never leaves the service.
@@ -19,6 +23,7 @@ import type { Sql } from 'postgres';
 import type { EgressAdmission } from '../broker/egress-admission.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
 import { agentAccess } from '../experience/access.ts';
+import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import type { AdapterSet } from './adapters/index.ts';
 import { type CredentialAdapter, egressReadScope, hostCovered } from './adapters/types.ts';
 import type { EgressCertificateAuthority } from './ca.ts';
@@ -89,7 +94,7 @@ export function postgresEgressCredentials(options: {
   const { sql, adapters, ca } = options;
   /** The space's usable accounts, oldest first, with their adapter and parsed configuration. */
   const accounts = async (space: string) => {
-    const rows = await sql`select id, scopes, configuration, secret_ref from connection
+    const rows = await sql`select id, scopes, configuration, secret_ref, shared_use from connection
       where space_id = ${space} and provider = 'command_line' and status = 'active'
         and secret_ref is not null
       order by created_at, id`;
@@ -97,6 +102,7 @@ export function postgresEgressCredentials(options: {
       id: string;
       scopes: string[];
       secretRef: string;
+      sharedUse: string;
       adapter: CredentialAdapter;
       config: unknown;
     }> = [];
@@ -116,22 +122,41 @@ export function postgresEgressCredentials(options: {
         id: String(row.id),
         scopes: row.scopes as string[],
         secretRef: String(row.secret_ref),
+        sharedUse: String(row.shared_use),
         adapter,
         config,
       });
     }
     return usable;
   };
-  /** A person's own space, for the owner's audience: the only kind an account reaches. */
-  const personal = async (space: string) => {
+  /**
+   * The kinds of space an account reaches: a person's own, for the owner's
+   * audience, and a room, whose own accounts serve its requests. Any other
+   * kind, including ones added later, gets none.
+   */
+  const reach = (kind: unknown, audience: unknown): 'personal' | 'room' | null =>
+    kind === 'personal' && (audience ?? 'owner') === 'owner'
+      ? 'personal'
+      : kind === 'shared'
+        ? 'room'
+        : null;
+  /**
+   * The accounts a computer of this space may be set up for: every account in a
+   * person's own space, and in a room only those the room's owners added for
+   * the room. Which job may then use one is settled per request, in `find`.
+   */
+  const offered = async (space: string) => {
     const [row] = await sql`select kind, audience from space where id = ${space}`;
-    return row?.kind === 'personal' && (row.audience ?? 'owner') === 'owner';
+    const kind = reach(row?.kind, row?.audience);
+    if (!kind) return [];
+    const usable = await accounts(space);
+    return kind === 'room' ? usable.filter((account) => account.sharedUse === 'room') : usable;
   };
   return {
     ca,
     async find({ space, attribution, host }) {
       if (!space || !attribution.jobId || !ca.permits(host)) return null;
-      const candidates = (await accounts(space)).filter(
+      const candidates = (await offered(space)).filter(
         (account) =>
           account.scopes.includes(egressReadScope(account.adapter.id)) &&
           hostCovered(host, account.adapter.hosts(account.config)),
@@ -143,16 +168,20 @@ export function postgresEgressCredentials(options: {
       if (
         !job ||
         job.space_id !== space ||
-        // Only a person's own space: a room, or any kind added later, gets no account.
-        job.space_kind !== 'personal' ||
-        (job.audience ?? 'owner') !== 'owner' ||
+        // A person's own space or a room; any kind added later gets no account.
+        !reach(job.space_kind, job.audience) ||
         (job.constraints as { public_compartment?: boolean } | null)?.public_compartment === true
       )
         return null;
+      // The job whose computer is asking decides which accounts serve it.
+      const audience = await jobConnectionAudience(sql, attribution.jobId);
+      if (!audience) return null;
       const access = await agentAccess(sql, attribution.jobId);
       if (access.paused || access.missingAgent) return null;
       const account = candidates.find(
-        (each) => !access.allowed || access.allowed.includes(each.id),
+        (each) =>
+          connectionServesJob(audience, each.sharedUse) &&
+          (!access.allowed || access.allowed.includes(each.id)),
       );
       if (!account) return null;
       return {
@@ -163,15 +192,15 @@ export function postgresEgressCredentials(options: {
       };
     },
     async hosts(space) {
-      if (!space || !(await personal(space))) return [];
-      return (await accounts(space))
+      if (!space) return [];
+      return (await offered(space))
         .filter((account) => account.scopes.includes(egressReadScope(account.adapter.id)))
         .flatMap((account) => account.adapter.hosts(account.config))
         .filter((host) => ca.permits(host.replace(/^\./, '')));
     },
     async computer(space) {
-      if (!space || !(await personal(space))) return null;
-      const usable = await accounts(space);
+      if (!space) return null;
+      const usable = await offered(space);
       if (!usable.length) return null;
       const certificate = await ca.certificate();
       const placeholders: Record<string, string> = {};

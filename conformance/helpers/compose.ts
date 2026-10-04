@@ -190,14 +190,15 @@ export async function waitForStack(): Promise<void> {
   await waitFor(
     async () => {
       const ids = (await compose('ps', '-q')).trim().split('\n');
-      if (ids.length !== 4) return false;
+      // postgres, melete-cells, melete, runtime and web; database-roles has run and exited.
+      if (ids.length !== 5) return false;
       const containers = JSON.parse(await docker('inspect', ...ids)) as {
         State: { Health?: { Status: string } };
       }[];
       return containers.every((container) => container.State.Health?.Status === 'healthy');
     },
     180_000,
-    'all four Compose services to become healthy',
+    'all five long-running Compose services to become healthy',
   );
   // Healthy is the container's own view. The tests reach Postgres from the host,
   // at the address it has now, so that connection is what is waited for.

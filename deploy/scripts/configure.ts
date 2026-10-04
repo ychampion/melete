@@ -21,7 +21,8 @@
  * writes no credential: the auth key is issued by the Tailscale admin console
  * and is pasted into deploy/.env afterwards.
  *
- * DOCKER_GID is the group of the Docker socket as the service will see it. On
+ * DOCKER_GID is the group of the Docker socket as melete-cells, the one service
+ * that holds it, will see it. On
  * a Linux host running Docker Engine that is the host's own socket. Docker
  * Desktop, on Windows, macOS or Linux, serves the socket from its VM, and an
  * engine reached over ssh:// or tcp:// has it on its own machine; in both the
@@ -232,7 +233,7 @@ export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAcc
     const socket = await access.statHost().catch((error: unknown) => {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
         throw new ConfigureRefusal(
-          'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into the service. Start Docker Engine, or link its socket to that path.',
+          'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into melete-cells. Start Docker Engine, or link its socket to that path.',
         );
       throw error;
     });

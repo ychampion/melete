@@ -348,14 +348,21 @@ withDb('the sandbox connection kind', () => {
     const refused = await h.install({ ...body(), space_id: h.spaceId }, memberCookie);
     expect(refused.status).toBe(403);
     expect(refused.text).not.toContain(AUTHORING_KEY);
-    // Nor in a shared space, whose audience is not the owner alone.
+    // Nor in a shared space they are not an owner of.
     const shared = await h.app.request('/spaces/shared', h.as(h.cookie, { name: 'Workshop' }));
     expect(shared.status).toBe(201);
     const sharedId = (JSON.parse(await shared.text()) as { space: { id: string } }).space.id;
-    expect((await h.install({ ...body(), space_id: sharedId })).status).toBe(403);
+    expect((await h.install({ ...body(), space_id: sharedId }, memberCookie)).status).toBe(403);
     expect(
       await h.sql`select id from connection where provider = 'sandbox' and status <> 'revoked'`,
     ).toHaveLength(0);
+    // The shared space's owner adds a computer the room uses for its requests.
+    const room = await h.install({ ...body(), space_id: sharedId });
+    expect(room.status).toBe(201);
+    const roomComputer = connectionResponse.parse(room.json).connection.id;
+    const [roomRow] = await h.sql`select shared_use from connection where id = ${roomComputer}`;
+    expect(roomRow?.shared_use).toBe('room');
+    expect((await h.revoke(roomComputer)).status).toBe(200);
     // Their own personal space is theirs to install into.
     const own = await h.install(body(), memberCookie);
     expect(own.status).toBe(201);

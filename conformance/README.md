@@ -86,7 +86,7 @@ configured; without one it reports itself as skipped.
 
 Scenario 10 starts stdio MCP servers through the service's Docker launcher on a
 real engine. It needs no stack and no database, but it runs inside a container
-holding the Docker socket, as the service does, because a server with named
+holding the Docker socket, as `melete-cells` does, because a server with named
 destinations reaches them through the proxy in that container. CI runs it on
 every pull request; by hand, on a Linux Docker host:
 
