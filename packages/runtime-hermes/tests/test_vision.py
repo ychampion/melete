@@ -95,6 +95,29 @@ def test_a_vision_model_is_given_the_screenshot_as_a_picture(client, broker, wor
     assert result["text_summary"].startswith(f"Screenshot from computer.screenshot saved at {SHOT} (2560x1600).")
 
 
+def test_a_computer_step_is_given_the_screenshot_taken_after_it(client, broker, workspace, monkeypatch):  # noqa: F811
+    """A click, a key, a batch: each ends with a screenshot, which a vision model sees with the result."""
+    monkeypatch.setenv(VISION_ENV, "1")
+    for name in ("computer.click", "computer.batch", "computer.open__0123456789ab"):
+        result = run(client, broker, name)
+        assert isinstance(result, dict) and result["_multimodal"] is True, name
+        assert decoded(result).size == (1280, 800)
+        assert result["text_summary"].startswith(f"Screenshot after {name} saved at {SHOT}")
+
+
+def test_a_computer_step_without_a_screenshot_is_its_receipt(client, broker, workspace, monkeypatch):  # noqa: F811
+    """A step whose screenshot was not taken (a person took over) is the receipt alone."""
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.catalog = [screenshot_tool("computer.type")]
+    record = receipt()
+    del record["receipt"]["detail"]["path"]
+    broker.action_record = record
+    ctx = RecordingContext()
+    register(ctx, client)
+    assert isinstance(ctx.tools[0]["handler"]({"step": 1}, task_id="engine"), str)
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
+
+
 def test_a_paired_device_screenshot_is_shown_too(client, broker, workspace, monkeypatch):  # noqa: F811
     """A paired computer's screenshot is saved by the service as itself, and the
     runtime (another user) may not be able to read that file; the broker reads
@@ -256,6 +279,7 @@ def test_a_device_picture_read_back_from_the_session_store_is_asked_for_again(mo
     assert kept["picture"] == "private"
     # The agent's own screenshot, anything not stored that way, and other tools are left alone.
     assert restore("computer.screenshot", stored, fetch) == stored
+    assert restore("computer.click", stored, fetch) == stored
     assert restore("device.read_file", stored, fetch) == stored
     assert restore("device.screenshot", "plain text", fetch) == "plain text"
     assert asked == [ACTION]
