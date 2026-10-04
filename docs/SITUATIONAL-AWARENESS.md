@@ -36,11 +36,26 @@ Every mailbox and calendar a person connects in their own space is watched,
 with nothing to set up: its new mail and the changes to its meetings arrive as
 observations whether or not any work is waiting for them yet (`a newly connected
 mailbox produces mail.received with no trigger`). Each one has a switch in
-Settings, under Connections: **Watch this account for changes**. Turning it off
-stops those reads at once and forgets where the account was read to and what
-was kept about its calendar (`switching it off stops reads and clears its
-cursor`); turning it on again starts watching afresh from then. Work that set
-its own trigger on the account still hears it.
+Settings, under Connections: **Watch this account for changes**. On, a mailbox
+says "Melete reads new mail's sender and subject to notice what needs you", and
+a calendar "Melete reads each event's title, time and place to notice changes
+and clashes". Off, it says "Off. Melete still reads this account for things you
+asked it to watch": work that set its own trigger on the account still hears
+it.
+
+Turning it off stops those reads at once and removes, in the same step, what
+they left: where the account was read to, what was kept about its calendar,
+and every observation from it that nothing used (`switching it off stops reads
+and clears its cursor`, `turning watching off removes what it read, and keeps
+what work took in`). What a job woke on, or a situation cites, stays. A read
+already under way when it is turned off keeps nothing it found (`a read in
+flight when watching is turned off keeps nothing it found`). Turning it on again
+starts watching afresh from then.
+
+An observation that no job, situation or listening trigger holds is removed
+after `MELETE_OBSERVATION_RETENTION_DAYS` days (14 by default), by one instance
+at a time under the `observation-retention` lease (`observations nothing used go
+after the retention period, on the leading instance only`).
 
 A room's own accounts, such as a team mailbox, are watched only once the room's
 owners turn the switch on (`a room account is not observed by default`). What
@@ -57,8 +72,13 @@ the connector of an account installed through another instance when that
 account is first due. It reads a few accounts at once, claimed with `SKIP LOCKED`,
 and each read has two minutes. An account that fails to answer is tried again
 later: after the time it asked for when it sends `Retry-After`, otherwise less
-often the longer it keeps failing. Its cursor stays where it was, so nothing it
-holds is skipped, and `source_cursor.last_error` says in plain words why the
+often the longer it keeps failing. Three failures in a row at one provider
+that look like the provider's own trouble (a timeout, a request to slow down, a
+server error) pause every account read from it, for five minutes and then
+longer if it keeps happening, while accounts at other providers go on being
+read (`a provider in trouble pauses its own accounts, and the others keep being
+read`). Its cursor stays where it was, so nothing it holds is skipped, and
+`source_cursor.last_error` says in plain words why the
 last read failed (`a provider asking for time is left alone that long; a stuck
 or oversized read is skipped with a reason`, `a second instance without the
 connector neither forgets the account nor misses its changes`). An account's
