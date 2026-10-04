@@ -100,6 +100,65 @@ export const activeModel = z
   })
   .strict();
 
+/** Which of a person's two models a kind of work runs on. */
+export const modelRole = z.enum(['primary', 'secondary']);
+export type ModelRole = z.infer<typeof modelRole>;
+
+/**
+ * The kinds of work a person may move to their secondary model. Chats with
+ * them always run on the primary, so they are not among these.
+ */
+export const SECONDARY_WORK = ['side_tasks', 'scheduled'] as const;
+export type SecondaryWork = (typeof SECONDARY_WORK)[number];
+
+export const secondaryModelUses = z
+  .object({
+    side_tasks: modelRole.meta({
+      description:
+        'Short side calls: reading chats into memory and quick voice replies. `secondary` by ' +
+        'default once a secondary model is set. The check before a risky action never moves.',
+    }),
+    scheduled: modelRole.meta({
+      description:
+        'Scheduled and repeating work: routines, and work that wakes on a trigger. `primary` ' +
+        'by default.',
+    }),
+  })
+  .strict();
+
+export const secondaryModel = z
+  .object({
+    model: z
+      .object({
+        provider: z.string(),
+        model: z.string(),
+        connected: z.boolean().meta({
+          description:
+            'The provider has a credential. While it has none, the work goes to the primary.',
+        }),
+      })
+      .strict()
+      .nullable()
+      .meta({
+        description: 'This account’s secondary model; null uses the primary for everything',
+      }),
+    uses: secondaryModelUses.meta({
+      description:
+        'Which work runs on the secondary. Applies only while a secondary model is set; chats ' +
+        'with the person always run on the primary.',
+    }),
+    can_edit: z
+      .boolean()
+      .meta({ description: 'Whether this account may set the secondary model (the owner)' }),
+    leaves_local_primary: z.boolean().meta({
+      description:
+        'The primary runs on this machine or network and the secondary does not, so work moved ' +
+        'to the secondary leaves it. Side calls stay on a local primary either way.',
+    }),
+    updated_at: timestamp.nullable(),
+  })
+  .strict();
+
 export const modelSettingsResponse = z
   .object({
     active: activeModel,
@@ -111,6 +170,10 @@ export const modelSettingsResponse = z
     can_store_keys: z
       .boolean()
       .meta({ description: 'False when MELETE_MASTER_KEY is unset, so no key can be sealed' }),
+    secondary: secondaryModel.meta({
+      description:
+        'This account’s secondary model, for cheaper work beside the primary, and which work uses it',
+    }),
   })
   .strict();
 
@@ -209,6 +272,21 @@ export const setModelVisionRequest = z
   })
   .strict();
 
+export const setSecondaryModelRequest = z
+  .object({
+    provider: modelProvider,
+    model: z.string().trim().min(1).max(300),
+  })
+  .strict();
+
+export const setSecondaryUsesRequest = z
+  .object({
+    side_tasks: modelRole.optional(),
+    scheduled: modelRole.optional(),
+  })
+  .strict();
+
 export type ModelSettings = z.infer<typeof modelSettingsResponse>;
+export type SecondaryModel = z.infer<typeof secondaryModel>;
 export type ModelProviderStatus = z.infer<typeof modelProviderStatus>;
 export type ModelConnectionTest = z.infer<typeof testModelConnectionResponse>;

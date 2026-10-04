@@ -24,6 +24,11 @@ export function mountUsage(
     /** Read for the daily series and, for the owner, background cost per person-day. */
     sql?: Sql;
     now?: () => Date;
+    /**
+     * This account's primary and secondary models now, so each model it used is
+     * labelled with the part it plays. Left out, no model is labelled.
+     */
+    roles?: (actor: string | undefined) => Promise<ModelRoles>;
   },
 ): void {
   app.get('/usage', async (c) => {
@@ -31,6 +36,7 @@ export function mountUsage(
     const owner = await deps.isOwner(actor);
     const summary = await deps.spending.summary(actor ?? null, owner);
     const { noticePercent: _notice, ...limits } = summary.limits;
+    const roles = (await deps.roles?.(actor)) ?? { primary: null, secondary: null };
     const now = deps.now?.() ?? new Date();
     const today = utcDay(now);
     const weekAgo = utcDay(new Date(now.getTime() - 7 * 86_400_000));
@@ -45,6 +51,7 @@ export function mountUsage(
           background: limits.background ?? { day: NO_LIMIT, month: NO_LIMIT },
           installation: owner ? limits.installation : null,
         },
+        models: summary.models.map((row) => ({ ...row, role: roleOf(row, roles) })),
         ...(days ? { days } : {}),
         background_per_person_day: perPersonDay
           ? {
@@ -57,6 +64,19 @@ export function mountUsage(
       }),
     );
   });
+}
+
+type ModelChoice = { provider: string; model: string };
+export type ModelRoles = { primary: ModelChoice | null; secondary: ModelChoice | null };
+
+const same = (a: ModelChoice, b: ModelChoice | null) =>
+  b !== null && a.provider === b.provider && a.model === b.model;
+
+/** The part a model plays for this account now; the primary when it is both. */
+export function roleOf(row: ModelChoice, roles: ModelRoles): 'primary' | 'secondary' | null {
+  if (same(row, roles.primary)) return 'primary';
+  if (same(row, roles.secondary)) return 'secondary';
+  return null;
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest();

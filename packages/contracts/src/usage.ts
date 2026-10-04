@@ -140,6 +140,10 @@ export const usageResponse = z
             calls: z.number().int().nonnegative(),
             usd: z.number().nonnegative(),
             tokens: z.number().int().nonnegative(),
+            role: z.enum(['primary', 'secondary']).nullable().meta({
+              description:
+                'Whether this is the account’s primary or secondary model now; null for any other',
+            }),
           })
           .strict(),
       )

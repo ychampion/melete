@@ -16,6 +16,16 @@
  *
  * Every read goes to the database, so the runner and the gateway see a change
  * on the next attempt and the next model call, in any process, without a restart.
+ *
+ * The owner may also set a secondary model, for cheaper work beside the
+ * primary in the spaces they own: short side calls (memory reads and voice
+ * asides), on it by default, and scheduled and repeating work, off by
+ * default. Work follows the settings of its space's owner, never those of
+ * whoever spoke or asked. Chats always run on the primary, and the action
+ * reviewer never moves: it is a safety check. With no secondary set,
+ * everything runs as it would without one. Wherever a call goes, the privacy
+ * router, spending limits and the gateway's checks still apply.
+ *
  * The service's own model calls (memory reads, learning proposals, the
  * companies scan) take their model and keys from `serviceModelSource`, the same
  * way.
@@ -29,19 +39,31 @@
  * beside the switch in Settings; it never turns pictures on by itself. A
  * missing or old answer is fetched in the background when Settings is read.
  */
+
 import {
   effectiveVision,
   listedVisionByModel,
   MODEL_PROVIDERS,
   type ModelConnectionTest,
   type ModelProvider,
+  type ModelRole,
   type ModelSettings,
+  type SecondaryModel,
+  type SecondaryWork,
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { Database } from '../db/client.ts';
-import { modelDefault, modelProviderKey, modelVision, modelVisionReport } from '../db/schema.ts';
+import {
+  modelDefault,
+  modelProviderKey,
+  modelSecondary,
+  modelVision,
+  modelVisionReport,
+  owner,
+  space,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import type { ProviderSignIn } from './credentials.ts';
@@ -53,8 +75,17 @@ import {
   providersFromEnv,
   providerUrl,
 } from './providers.ts';
-import { addressIsLocal, agentRoutes, type ModelRouting, sameModel } from './routing.ts';
+import {
+  addressIsLocal,
+  agentRoutes,
+  type ModelRouting,
+  NO_ROUTING,
+  type PersonRoles,
+  sameModel,
+  withPersonRoles,
+} from './routing.ts';
 import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
+import type { UsageClass } from './usage-class.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
@@ -258,11 +289,28 @@ export class ModelSettingsService {
    * The model the next attempt runs on, as `activeChoice`, told to send its
    * pictures when the operator configured a vision model that will read them
    * for it. A model the owner chose in the app is used exactly as chosen.
+   * Background work runs on the `background` role when one is filled: an
+   * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
+   * `attemptCause`), the same reading that meters it as background.
    */
   async routedChoice(
     routing: ModelRouting,
     db: Runner = this.options.db,
+    work?: AttemptWork,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
+    const background =
+      work?.usageClass === 'background'
+        ? (await this.routingFor(work.spaceId, routing, db)).background
+        : null;
+    if (background)
+      return {
+        ...background,
+        vision: effectiveVision(
+          background.provider,
+          background.model,
+          await this.visionSaid(background.provider, background.model, db),
+        ),
+      };
     const chosen = await this.chosen(db);
     const { provider, model, vision } = await this.active(chosen, db);
     const routes = agentRoutes(
@@ -488,7 +536,10 @@ export class ModelSettingsService {
     });
   }
 
-  async view(canEdit: boolean): Promise<ModelSettings> {
+  async view(
+    canEdit: boolean,
+    person?: { id: string; guest?: boolean } | null,
+  ): Promise<ModelSettings> {
     const [rows, chosen] = await Promise.all([this.keyRows(), this.chosen()]);
     const active = await this.active(chosen);
     const reported = await this.report(active.provider, active.model);
@@ -544,7 +595,165 @@ export class ModelSettingsService {
       providers,
       can_edit: canEdit,
       can_store_keys: Boolean(this.masterKey()),
+      secondary: await this.secondaryView(person ?? null, rows),
     };
+  }
+
+  /** A person's secondary model as Settings shows it. */
+  private async secondaryView(
+    person: { id: string; guest?: boolean } | null,
+    rows: Map<string, KeyRow>,
+  ): Promise<SecondaryModel> {
+    // Only the installation's owner has a secondary; a stray row for anyone else is not shown.
+    const row =
+      person && (await this.isInstallationOwner(person.id))
+        ? await this.secondaryRow(person.id)
+        : null;
+    return {
+      model:
+        row?.provider && row.model
+          ? {
+              provider: row.provider,
+              model: row.model,
+              connected: await this.connected(row.provider, rows),
+            }
+          : null,
+      uses: {
+        side_tasks: (row?.sideTasks as ModelRole | undefined) ?? 'secondary',
+        scheduled: (row?.scheduled as ModelRole | undefined) ?? 'primary',
+      },
+      can_edit: Boolean(person && !person.guest && (await this.isInstallationOwner(person.id))),
+      leaves_local_primary: Boolean(
+        row?.provider &&
+          row.model &&
+          (await this.servesLocally((await this.activeChoice()).provider)) &&
+          !(await this.servesLocally(row.provider)),
+      ),
+      updated_at: row?.updatedAt.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * Whether this principal runs the installation. Only they choose models on
+   * its keys, so only their secondary is ever used, as only they set the primary.
+   */
+  private async isInstallationOwner(principalId: string, db: Runner = this.options.db) {
+    const [row] = await db.select({ id: owner.id }).from(owner).limit(1);
+    return row?.id === principalId;
+  }
+
+  private async secondaryRow(principalId: string, db: Runner = this.options.db) {
+    const [row] = await db
+      .select()
+      .from(modelSecondary)
+      .where(eq(modelSecondary.principalId, principalId));
+    return row ?? null;
+  }
+
+  /**
+   * Choose a person's secondary model. Like the primary, its provider must
+   * already have a key or a sign-in. Which work uses it is left as it was.
+   */
+  async setSecondary(principalId: string, provider: string, model: string): Promise<void> {
+    if (!isModelProvider(provider))
+      throw new ServiceError(
+        'provider_not_available',
+        'That is not a provider Melete serves.',
+        404,
+      );
+    if (!(await this.connected(provider, await this.keyRows())))
+      throw new ServiceError(
+        'model_not_connected',
+        provider === CHATGPT_PROVIDER
+          ? 'Sign in to ChatGPT before choosing one of its models.'
+          : `Add a key for ${MODEL_PROVIDER_LABELS[provider]} before choosing one of its models.`,
+        409,
+      );
+    const set = { provider, model: model.trim(), updatedAt: new Date() };
+    await this.options.db
+      .insert(modelSecondary)
+      .values({ principalId, ...set })
+      .onConflictDoUpdate({ target: modelSecondary.principalId, set });
+  }
+
+  /** Remove a person's secondary model: all their work runs on the primary again. */
+  async clearSecondary(principalId: string): Promise<void> {
+    await this.options.db
+      .update(modelSecondary)
+      .set({ provider: null, model: null, updatedAt: new Date() })
+      .where(eq(modelSecondary.principalId, principalId));
+  }
+
+  /** Which of a person's work runs on their secondary. Kinds left out keep their setting. */
+  async setSecondaryUses(
+    principalId: string,
+    uses: Partial<Record<SecondaryWork, ModelRole>>,
+  ): Promise<void> {
+    const set = {
+      ...(uses.side_tasks ? { sideTasks: uses.side_tasks } : {}),
+      ...(uses.scheduled ? { scheduled: uses.scheduled } : {}),
+      updatedAt: new Date(),
+    };
+    await this.options.db
+      .insert(modelSecondary)
+      .values({ principalId, ...set })
+      .onConflictDoUpdate({ target: modelSecondary.principalId, set });
+  }
+
+  /**
+   * The roles the owner's secondary model fills for work in this space: `fast`
+   * for short side calls and `background` for scheduled work, each only when
+   * they moved that work to it. None when the space is not the owner's, no
+   * secondary is set, or its provider has no credential now. Work follows its
+   * space's owner, never whoever spoke or asked, and only the installation's
+   * owner chooses models on its keys.
+   */
+  async personRoles(spaceId: string, db: Runner = this.options.db): Promise<PersonRoles> {
+    const principalId = await this.spaceOwner(spaceId, db);
+    if (!principalId || !(await this.isInstallationOwner(principalId, db))) return {};
+    const row = await this.secondaryRow(principalId, db);
+    if (!row?.provider || !row.model) return {};
+    if (!(await this.connected(row.provider, await this.keyRows(db)))) return {};
+    const choice = { provider: row.provider, model: row.model };
+    return {
+      ...(row.sideTasks === 'secondary' ? { fast: choice } : {}),
+      ...(row.scheduled === 'secondary' ? { background: choice } : {}),
+    };
+  }
+
+  /** The operator's routing for work in this space, with the roles the owner's secondary fills. */
+  async routingFor(
+    spaceId: string,
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<ModelRouting> {
+    return withPersonRoles(routing, await this.personRoles(spaceId, db));
+  }
+
+  /** The primary model and this person's secondary, as usage labels them. */
+  async roles(principalId: string | undefined): Promise<{
+    primary: ServiceModel;
+    secondary: ServiceModel | null;
+  }> {
+    const { provider, model } = await this.activeChoice();
+    // Only the installation's owner has a secondary; a stray row for anyone else is not labelled.
+    const row =
+      principalId && (await this.isInstallationOwner(principalId))
+        ? await this.secondaryRow(principalId)
+        : null;
+    return {
+      primary: { provider, model },
+      secondary: row?.provider && row.model ? { provider: row.provider, model: row.model } : null,
+    };
+  }
+
+  /** Whose settings work in a space follows: the space's owner. */
+  private async spaceOwner(spaceId: string, db: Runner = this.options.db) {
+    const [row] = await db
+      .select({ owner: space.ownerPrincipalId })
+      .from(space)
+      .where(eq(space.id, spaceId));
+    return row?.owner ?? null;
   }
 
   async saveKey(
@@ -751,6 +960,14 @@ export class ModelSettingsService {
     return { ok: true, models: modelIds(listed.body), latency_ms: listed.latency_ms };
   }
 
+  /**
+   * The address calls to this provider go to, for the privacy checks made
+   * before an attempt on it: built in, or the compatible endpoint's.
+   */
+  async providerAddress(provider: string): Promise<string | undefined> {
+    return isModelProvider(provider) ? this.configuredBase(provider) : undefined;
+  }
+
   /** The address a provider's model list is fetched from: built in, or the compatible endpoint's. */
   private async configuredBase(provider: ModelProvider): Promise<string | undefined> {
     return provider === OPENAI_COMPATIBLE
@@ -860,6 +1077,15 @@ export class ModelSettingsService {
 /** The provider and model one service-side model call uses. */
 export type ServiceModel = { provider: string; model: string };
 
+/** The attempt being claimed, as far as choosing its model needs it. */
+export type AttemptWork = { spaceId: string; usageClass: UsageClass };
+
+/**
+ * The space a side call is about. It runs on the secondary of that space's
+ * owner, never on that of the person speaking or asking.
+ */
+export type SideCallOwner = { spaceId: string };
+
 /**
  * Where a model call the service makes on its own (memory reads, learning
  * proposals, the companies scan, the action reviewer) takes its model and its
@@ -867,8 +1093,11 @@ export type ServiceModel = { provider: string; model: string };
  * connects in the app applies to the next call without a restart.
  */
 export type ServiceModelSource = {
-  /** The model the next call uses. */
-  current(): Promise<ServiceModel>;
+  /**
+   * The model the next call uses. Told the space the call is about, a short
+   * side call runs on the secondary of that space's owner when they chose one.
+   */
+  current(whose?: SideCallOwner): Promise<ServiceModel>;
   /** The gateway's providers for one call: the configured ones plus keys connected in the app. */
   providers(configured: GatewayProvider[]): Promise<GatewayProvider[]>;
   /** Whether a call to this provider would carry a credential now. */
@@ -880,7 +1109,9 @@ export type ServiceModelSource = {
 /**
  * The one resolver every service-side model call uses. A model the operator
  * set outright for that use (`pinned`, from MELETE_MEMORY_MODEL and the like)
- * wins; otherwise the model chosen in the app, else the server's default.
+ * wins; then, for a short side call, the secondary model of the person whose
+ * work it is about; otherwise the model chosen in the app, else the server's
+ * default.
  * Without the settings service (a test, a process with no database) it is the
  * server's default with the configured providers.
  */
@@ -892,30 +1123,48 @@ export function serviceModelSource(options: {
   pinned?: { provider?: string; model?: string };
   /**
    * The operator's fast model (MELETE_MODEL_FAST), for a short side call. A
-   * model pinned for this use wins over it; it wins over the default.
+   * model pinned for this use, or the person's own secondary, wins over it; it
+   * wins over the default.
    */
   fast?: ServiceModel | null;
+  /**
+   * These are short side calls, which a person's secondary model takes when
+   * they chose one. Implied by passing `fast`, even when it is null. A safety
+   * check (the action reviewer) passes false: no person's setting moves it.
+   */
+  sideTask?: boolean;
 }): ServiceModelSource {
   const { env, settings } = options;
   const pinned = options.pinned?.provider || options.pinned?.model ? options.pinned : undefined;
+  const sideTask = options.sideTask ?? options.fast !== undefined;
   const local = async (provider: string) =>
     settings
       ? settings.servesLocally(provider)
       : provider === OPENAI_COMPATIBLE && addressIsLocal(env.OPENAI_COMPAT_BASE_URL);
   return {
-    async current() {
+    async current(whose) {
       if (pinned)
         return {
           provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
           model: pinned.model || env.MELETE_DEFAULT_MODEL,
         };
+      // The fast role: the operator's, or the space owner's secondary filling it.
+      const fast =
+        sideTask && settings && whose
+          ? (
+              await settings.routingFor(whose.spaceId, {
+                ...NO_ROUTING,
+                fast: options.fast ?? null,
+              })
+            ).fast
+          : options.fast;
       const chosen = settings
         ? await settings.activeChoice()
         : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
       // A model on the owner's own machine or network keeps the side calls on
       // it; the fast model is for a cloud model's.
-      if (options.fast && !(await local(chosen.provider)))
-        return { provider: options.fast.provider, model: options.fast.model };
+      if (fast && !(await local(chosen.provider)))
+        return { provider: fast.provider, model: fast.model };
       return { provider: chosen.provider, model: chosen.model };
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),

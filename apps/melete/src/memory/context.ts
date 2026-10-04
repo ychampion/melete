@@ -322,7 +322,11 @@ export function withMemoryRuntime(
      * memory learned in private conversations may be recalled into it. Left
      * out, it never is.
      */
-    recallsPrivateMemory?: (jobId: string, attemptId: string) => Promise<boolean>;
+    recallsPrivateMemory?: (
+      jobId: string,
+      attemptId: string,
+      model?: { provider: string; model: string },
+    ) => Promise<boolean>;
     /**
      * Whether memory's read of this job's conversation would be refused now,
      * as the privacy router decides it. Left out, only memory's own record of
@@ -337,7 +341,11 @@ export function withMemoryRuntime(
       const scope = await scopeForJob(bundle.attempt.job_id);
       let assembled: AttemptBundle | undefined;
       const privateOrigin =
-        (await options.recallsPrivateMemory?.(bundle.attempt.job_id, bundle.attempt.id)) ?? false;
+        (await options.recallsPrivateMemory?.(
+          bundle.attempt.job_id,
+          bundle.attempt.id,
+          bundle.model,
+        )) ?? false;
       // An agent the person set not to read memory is given none of it: nothing
       // is recalled or recorded as used, no correction is briefed, and no handle
       // to a remembered source is passed on. The turn's own agent decides, the
