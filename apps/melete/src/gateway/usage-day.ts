@@ -21,12 +21,17 @@ export const utcDay = (at: Date) => at.toISOString().slice(0, 10);
 
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 
-/** Replaces one UTC day's rollup rows with what `model_usage` holds for that day. */
+/**
+ * Replaces one UTC day's rollup rows with what `model_usage` holds for that
+ * day. Two writers of the same day take their turn on a lock for that day, so
+ * the second replaces the first's rows rather than colliding with them.
+ */
 export async function rollupUsageDay(sql: Sql, day: string): Promise<number> {
   const start = new Date(`${day}T00:00:00.000Z`);
   if (Number.isNaN(start.getTime()) || utcDay(start) !== day) throw new Error('invalid day');
   const end = new Date(start.getTime() + DAY_MS);
   return sql.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtext(${`usage_day:${day}`}))`;
     await tx`delete from usage_day where day = ${day}`;
     const rows = await tx`insert into usage_day (day, principal_id, space_id, class, tier, purpose,
         calls, input_tokens, cached_input_tokens, cache_write_tokens, charged_input_tokens,
@@ -46,18 +51,25 @@ export async function rollupUsageDay(sql: Sql, day: string): Promise<number> {
 
 /**
  * Writes yesterday again (a call settled just before midnight may have been
- * recorded after the last pass), and every earlier finished day of the last
- * five weeks that has calls and no rollup yet.
+ * recorded after the last pass), and every finished day from `since` (by
+ * default five weeks back) that has calls and no rollup yet. Each day is
+ * looked at once, by the `created_at` index: no row is read per call.
  */
-export async function rollupFinishedDays(sql: Sql, now = new Date()): Promise<string[]> {
+export async function rollupFinishedDays(
+  sql: Sql,
+  now = new Date(),
+  since?: string,
+): Promise<string[]> {
   const today = new Date(`${utcDay(now)}T00:00:00.000Z`);
-  const since = new Date(today.getTime() - ROLLUP_LOOKBACK_DAYS * DAY_MS);
-  const missing =
-    await sql`select distinct to_char(created_at at time zone 'UTC', 'YYYY-MM-DD') as day
-    from model_usage
-    where created_at >= ${since.toISOString()}::timestamptz
-      and created_at < ${today.toISOString()}::timestamptz
-      and to_char(created_at at time zone 'UTC', 'YYYY-MM-DD') not in (select day from usage_day)`;
+  const from = since
+    ? new Date(`${since}T00:00:00.000Z`)
+    : new Date(today.getTime() - ROLLUP_LOOKBACK_DAYS * DAY_MS);
+  const missing = await sql`select to_char(d, 'YYYY-MM-DD') as day
+    from generate_series(${from.toISOString()}::timestamptz,
+      ${today.toISOString()}::timestamptz - interval '1 day', interval '1 day') as d
+    where not exists (select 1 from usage_day u where u.day = to_char(d, 'YYYY-MM-DD'))
+      and exists (select 1 from model_usage m
+        where m.created_at >= d and m.created_at < d + interval '1 day')`;
   const days = new Set(missing.map((row) => String(row.day)));
   days.add(utcDay(new Date(today.getTime() - DAY_MS)));
   const written = [...days].sort();
@@ -65,15 +77,25 @@ export async function rollupFinishedDays(sql: Sql, now = new Date()): Promise<st
   return written;
 }
 
-/** Rolls up finished days now and every hour after, while this instance leads. */
+/**
+ * Rolls up finished days now and every hour after, while this instance leads.
+ * The first pass looks back five weeks; later ones look only from the day
+ * before the last pass, which is all that can have changed since.
+ */
 export function startUsageRollup(
   sql: Sql,
   leads: () => boolean | Promise<boolean> = () => true,
   say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
 ): () => void {
+  let since: string | undefined;
   const pass = () =>
     void Promise.resolve(leads())
-      .then((leading) => (leading ? rollupFinishedDays(sql) : undefined))
+      .then(async (leading) => {
+        if (!leading) return;
+        const now = new Date();
+        await rollupFinishedDays(sql, now, since);
+        since = utcDay(new Date(now.getTime() - DAY_MS));
+      })
       .catch((error: unknown) =>
         say(`usage rollup failed: ${String((error as Error)?.message ?? error)}`),
       );

@@ -93,6 +93,8 @@ export type SpendingScope = {
 };
 
 export type SpendingTotals = { usd: number; tokens: number };
+/** A limit reached: the sentence the person reads, and when it resets. */
+export type LimitReached = { message: string; resetsAt: Date };
 type Period = 'day' | 'month';
 type Level = 'warning' | 'reached';
 
@@ -236,6 +238,8 @@ export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
   private readonly holds = new Map<GatewayPrincipal, Hold[]>();
   private readonly cached = new Map<string, { at: number; totals: Totals }>();
+  /** The admission now being judged; the next waits for it. */
+  private admitting: Promise<void> = Promise.resolve();
   /** Told when a job's call is refused, so its attempt can end at once. */
   onRefused?: (scope: SpendingScope, principal: GatewayPrincipal, message: string) => void;
   /** Told the first time in a period that a limit passes the notice level. */
@@ -479,8 +483,8 @@ export class SpendingGuard implements GatewaySpending {
     return best;
   }
 
-  /** The sentence for a reached background limit, the month's before the day's, or null. */
-  private backgroundReached(totals: Totals, now: Date): string | null {
+  /** A reached background limit, the month's before the day's, or null. */
+  private backgroundReached(totals: Totals, now: Date): LimitReached | null {
     const limits = this.limits.background;
     if (!limits || !totals.background) return null;
     const { nextMonth, nextDay } = periodBounds(now);
@@ -488,46 +492,86 @@ export class SpendingGuard implements GatewaySpending {
       (limit.usd !== null && used.usd >= limit.usd) ||
       (limit.tokens !== null && used.tokens >= limit.tokens);
     if (over(totals.background.month, limits.month))
-      return backgroundLimitMessage('month', nextMonth);
-    if (over(totals.background.day, limits.day)) return backgroundLimitMessage('day', nextDay);
+      return { message: backgroundLimitMessage('month', nextMonth), resetsAt: nextMonth };
+    if (over(totals.background.day, limits.day))
+      return { message: backgroundLimitMessage('day', nextDay), resetsAt: nextDay };
     return null;
   }
 
   /**
-   * The sentence for a reached limit that applies to this person, or null. A
-   * background call is also held to the person's background limits; an
-   * interactive one never is.
+   * The limit this person has reached, with its sentence and when it resets,
+   * or null. A background call is also held to the person's background
+   * limits; an interactive one never is.
    */
-  async reached(
+  async reachedLimit(
     personId: string | null,
     usageClass: UsageClass = 'interactive',
-  ): Promise<string | null> {
+  ): Promise<LimitReached | null> {
     const background = usageClass === 'background' && this.backgroundLimited;
     if (!this.limited && !background) return null;
     const now = this.now();
     const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
     const notice = this.noticeFor(totals, now);
-    if (notice?.level === 'reached') return notice.message;
+    if (notice?.level === 'reached')
+      return { message: notice.message, resetsAt: new Date(notice.resets_at) };
     return background ? this.backgroundReached(totals, now) : null;
   }
 
+  /** The sentence for a reached limit that applies to this person, or null. */
+  async reached(
+    personId: string | null,
+    usageClass: UsageClass = 'interactive',
+  ): Promise<string | null> {
+    return (await this.reachedLimit(personId, usageClass))?.message ?? null;
+  }
+
   /**
-   * The reached-limit sentence for the person a job's work is for, or null;
-   * read by the runner before an attempt of that class starts.
+   * The limit the person a job's work is for has reached, or null; read by
+   * the runner before an attempt of that class starts.
    */
+  async limitForJob(
+    jobId: string,
+    usageClass: UsageClass = 'interactive',
+  ): Promise<LimitReached | null> {
+    if (!this.limited && !(usageClass === 'background' && this.backgroundLimited)) return null;
+    const [row] = await PERSON_FOR_JOB(this.sql, jobId);
+    return this.reachedLimit(row?.person_id ? String(row.person_id) : null, usageClass);
+  }
+
+  /** The reached-limit sentence for the person a job's work is for, or null. */
   async reachedForJob(
     jobId: string,
     usageClass: UsageClass = 'interactive',
   ): Promise<string | null> {
-    if (!this.limited && !(usageClass === 'background' && this.backgroundLimited)) return null;
-    const [row] = await PERSON_FOR_JOB(this.sql, jobId);
-    return this.reached(row?.person_id ? String(row.person_id) : null, usageClass);
+    return (await this.limitForJob(jobId, usageClass))?.message ?? null;
   }
 
   async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
     if (!this.limited && !this.backgroundLimited) return;
     const scope = await this.scopeOf(principal);
-    const message = await this.reached(scope.personId, scope.usageClass);
+    // Reading the totals and holding this call's most are one step: admissions
+    // in this process take their turn, so calls started side by side are
+    // judged one after another, each with the ones before it held.
+    const message = await this.inTurn(async () => {
+      const reached = await this.reached(scope.personId, scope.usageClass);
+      // While it runs, the call's most it can cost is held against the limits,
+      // so calls running side by side cannot all slip in under one.
+      if (!reached && call) {
+        const hold: Hold = {
+          personId: scope.personId,
+          usageClass: scope.usageClass,
+          usd: callCost(this.prices, call, {
+            inputTokens: call.inputTokens,
+            outputTokens: call.maxOutputTokens,
+            cachedInputTokens: 0,
+          }),
+          tokens: call.inputTokens + call.maxOutputTokens,
+          at: this.now().getTime(),
+        };
+        this.holds.set(principal, [...(this.holds.get(principal) ?? []), hold]);
+      }
+      return reached;
+    });
     if (message) {
       try {
         this.onRefused?.(scope, principal, message);
@@ -536,22 +580,16 @@ export class SpendingGuard implements GatewaySpending {
       }
       throw new GatewayError(402, 'spending_limit_reached', message);
     }
-    // While it runs, the call's most it can cost is held against the limits,
-    // so calls running side by side cannot all slip in under one.
-    if (call) {
-      const hold: Hold = {
-        personId: scope.personId,
-        usageClass: scope.usageClass,
-        usd: callCost(this.prices, call, {
-          inputTokens: call.inputTokens,
-          outputTokens: call.maxOutputTokens,
-          cachedInputTokens: 0,
-        }),
-        tokens: call.inputTokens + call.maxOutputTokens,
-        at: this.now().getTime(),
-      };
-      this.holds.set(principal, [...(this.holds.get(principal) ?? []), hold]);
-    }
+  }
+
+  /** Runs `step` after every admission started before it in this process has finished. */
+  private inTurn<T>(step: () => Promise<T>): Promise<T> {
+    const turn = this.admitting.then(step);
+    this.admitting = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    return turn;
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {

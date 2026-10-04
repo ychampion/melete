@@ -178,6 +178,22 @@ describe('operator alerts', () => {
     });
   });
 
+  test('spending that cannot be read is reported as such, and the job queue as itself', async () => {
+    const sql = ((strings: TemplateStringsArray) =>
+      strings.join('').includes('percentile_cont')
+        ? Promise.reject(new Error('spending read failed'))
+        : Promise.resolve([{ stuck: 0, ended: 0, failed: 0, total: 0 }])) as never;
+    const detail = await healthDetail({
+      version: 'test',
+      database: async () => 'ok',
+      sql,
+      spend: { hourlyMultiple: 5, minUsd: 1 },
+    });
+    const checks = Object.fromEntries(detail.checks.map((check) => [check.name, check.ok]));
+    expect(checks).toEqual({ database: true, job_queue: true, error_rate: true, spend: false });
+    expect(detail.checks.at(-1)?.detail).toBe('spending could not be read (spending read failed)');
+  });
+
   test('the detail checks the runtime with a time limit', async () => {
     const detail = await healthDetail(
       { version: 'test', database: async () => 'ok', runtime: () => new Promise(() => {}) },

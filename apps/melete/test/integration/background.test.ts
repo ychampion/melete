@@ -365,7 +365,7 @@ withDb('background and interactive model calls', () => {
     };
     const runner = new AttemptRunner(jobs, engine, {
       key,
-      spendingLimit: (jobId, usageClass) => guard.reachedForJob(jobId, usageClass),
+      spendingLimit: (jobId, usageClass) => guard.limitForJob(jobId, usageClass),
     });
     const wake = async (row: JobRow) => {
       await handle.db.update(job).set({ nextWakeAt: new Date() }).where(eq(job.id, row.id));
@@ -556,5 +556,54 @@ withDb('background and interactive model calls', () => {
       p95_usd: 0.0624,
       mean_usd: 0.0624,
     });
+  });
+  test('calls admitted side by side are judged one after another, as if made in turn', async () => {
+    const { handle } = fixture();
+    await handle.sql`insert into model_usage (id, created_at, space_id, principal_id, purpose, provider,
+        model, status, cost_usd, class, tier)
+      values (${randomUUID()}, now(), ${spaceId}, ${personId}, 'memory', 'x', 'y', 'succeeded', 0.9,
+        'background', 'service')`;
+    // An unknown model is priced $3 in and $15 out: each call may cost $0.09.
+    const call = {
+      provider: 'unknown',
+      model: 'm',
+      inputTokens: 10_000,
+      maxOutputTokens: 4_000,
+      local: false,
+    };
+    const results = async (parallel: boolean) => {
+      const guard = new SpendingGuard(handle.sql, limits({ day: { usd: 1, tokens: null } }));
+      const one = () =>
+        guard.admit(service('memory'), call).then(
+          () => 'ok',
+          () => 'refused',
+        );
+      if (parallel) return Promise.all(Array.from({ length: 5 }, one));
+      const serial: string[] = [];
+      for (let n = 0; n < 5; n++) serial.push(await one());
+      return serial;
+    };
+    const serial = await results(false);
+    expect(serial).toEqual(['ok', 'ok', 'refused', 'refused', 'refused']);
+    expect(await results(true)).toEqual(serial);
+  });
+
+  test('two rollups of the same day at once both finish, and the day matches its calls', async () => {
+    const { handle } = fixture();
+    const guard = new SpendingGuard(handle.sql, limits(), prices);
+    const call = await gateway(guard);
+    for (let read = 0; read < 4; read++)
+      expect(await call(service('memory'), 1_000 + read, 0, 100)).toBe(200);
+    const day = utcDay(new Date());
+    const both = await Promise.allSettled([
+      rollupUsageDay(handle.sql, day),
+      rollupUsageDay(handle.sql, day),
+    ]);
+    expect(both.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+    const [rolled] =
+      await handle.sql`select round(sum(cost_usd)::numeric, 6)::text as usd, sum(calls)::int as calls from usage_day where day = ${day}`;
+    const [exact] =
+      await handle.sql`select round(sum(cost_usd)::numeric, 6)::text as usd, count(*)::int as calls from model_usage`;
+    expect({ ...rolled }).toEqual({ ...exact });
   });
 });

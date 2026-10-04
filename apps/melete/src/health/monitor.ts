@@ -176,12 +176,22 @@ export async function healthDetail(
         ok: !attemptSpike && !callSpike,
         detail: `in the last ${limits.error_window_minutes} minutes: ${attempts?.failed ?? 0} of ${attempts?.ended ?? 0} attempts failed or were lost, ${calls?.failed ?? 0} of ${calls?.total ?? 0} model calls were refused by the provider`,
       });
-      if (probes.spend) checks.push(...(await spendChecks(sql, probes.spend)));
     } catch (error) {
       checks.push({
         name: 'job_queue',
         ok: false,
         detail: `could not be read (${error instanceof Error ? error.message.slice(0, 120) : 'error'})`,
+      });
+    }
+  }
+  if (probes.sql && database === 'ok' && probes.spend) {
+    try {
+      checks.push(...(await spendChecks(probes.sql, probes.spend)));
+    } catch (error) {
+      checks.push({
+        name: 'spend',
+        ok: false,
+        detail: `spending could not be read (${error instanceof Error ? error.message.slice(0, 120) : 'error'})`,
       });
     }
   }

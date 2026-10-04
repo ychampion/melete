@@ -25,6 +25,7 @@ import {
 import { newId } from '../ids.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { personStarted } from '../jobs/wake-guard.ts';
 import { ownJob } from '../principals/authority.ts';
 import { answerText, object, plainText } from './projectors.ts';
 import { removeJobs } from './removal.ts';
@@ -555,6 +556,9 @@ export class ExperiencePlanning {
         'This routine is already running or needs your answer.',
         409,
       );
+    // The person asked for this run of it, so it is theirs, not background work.
+    const jobs = this.service.jobs;
+    if (jobs) await jobs.transaction((tx) => personStarted(tx, row.job.id, null));
     await this.triggers.fireSchedule(id, newId('op'));
     return { status: 'ok' };
   }

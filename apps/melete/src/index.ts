@@ -1126,7 +1126,7 @@ export async function bootstrap(
         ...(spending
           ? {
               spendingLimit: (jobId: string, usageClass: UsageClass) =>
-                (spending as SpendingGuard).reachedForJob(jobId, usageClass),
+                (spending as SpendingGuard).limitForJob(jobId, usageClass),
             }
           : {}),
         loadCatalog: catalog?.forAttempt,

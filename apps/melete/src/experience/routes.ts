@@ -24,6 +24,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { personStarted } from '../jobs/wake-guard.ts';
 import { mcpActorOf } from '../mcp-server/actor.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
@@ -185,15 +186,21 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       if (!deps.runs) return unavailable(RUNS_UNAVAILABLE);
       return deps.runs.list(spaceId, c.req.query('conversation_id') || undefined);
     },
-    'POST /runs': async (spaceId, _c, input) => {
+    'POST /runs': async (spaceId, c, input) => {
       const runs = deps.runs;
       const jobs = deps.jobs;
       if (!runs || !jobs) return unavailable(RUNS_UNAVAILABLE);
       const agentId = typeof input.agent_id === 'string' ? input.agent_id : undefined;
       if (agentId) await service.requireAgent(spaceId, agentId);
-      const row = await jobs.transaction((tx) =>
-        runs.create(tx, spaceId, input, { agentId: agentId ?? null, typed: true }),
-      );
+      const row = await jobs.transaction(async (tx) => {
+        const created = await runs.create(tx, spaceId, input, {
+          agentId: agentId ?? null,
+          typed: true,
+        });
+        // The person started it: its first shift is theirs, not background work.
+        await personStarted(tx, created.id, (c.get('owner')?.id as string | undefined) ?? null);
+        return created;
+      });
       await runs.syncSchedules();
       return { run: await runs.view(row) };
     },

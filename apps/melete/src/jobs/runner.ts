@@ -49,6 +49,7 @@ import { appendEvent } from '../events/store.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
+import type { LimitReached } from '../gateway/spending.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
@@ -133,7 +134,7 @@ export type RunnerOptions = {
    * attempt is also held to the person's background limits; an interactive
    * one never is.
    */
-  spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<string | null>;
+  spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<LimitReached | null>;
 };
 
 /**
@@ -395,7 +396,15 @@ export class AttemptRunner {
         await this.finish(tx, row, attemptId, settled);
         return null;
       }
+      // An attempt that starts no engine reads none of its inputs: they are
+      // left for the next attempt, so what woke this one is not lost.
+      const unread = async () =>
+        tx
+          .update(attempt)
+          .set({ inputCursor: previous?.inputCursor ?? 0 })
+          .where(eq(attempt.id, attemptId));
       if (guarded) {
+        await unread();
         await this.finish(tx, row, attemptId, {
           kind: 'waiting_for_input',
           question: WAKE_GUARD_QUESTION,
@@ -405,9 +414,29 @@ export class AttemptRunner {
       }
       // Past a spending limit no engine is started: the turn, routine run or
       // background job ends at once with the sentence that says when it resets.
+      // Background long work instead rests until then, keeping what arrives
+      // for it, and the person is told the limit once, in its own words.
       const capped = await this.options.spendingLimit?.(row.id, cause.usageClass);
+      if (capped) await unread();
+      if (capped && cause.usageClass === 'background' && isRunKind(row.kind)) {
+        await this.finish(tx, row, attemptId, {
+          kind: 'waiting_for_event_or_time',
+          wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
+        });
+        await tellOnce(
+          tx,
+          row,
+          capped.message,
+          `spending-limit:${row.id}:${capped.resetsAt.toISOString()}`,
+          'spending_limit',
+        );
+        return null;
+      }
       if (capped) {
-        await this.finish(tx, row, attemptId, { kind: 'budget_exhausted', summary: capped });
+        await this.finish(tx, row, attemptId, {
+          kind: 'budget_exhausted',
+          summary: capped.message,
+        });
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
@@ -671,7 +700,8 @@ export class AttemptRunner {
     // that limit, not as a failure to run again while it still holds.
     const capped =
       (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
-        ? await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId))
+        ? ((await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId)))?.message ??
+          null)
         : null;
     const original: AttemptOutcome = capped ? { kind: 'budget_exhausted', summary: capped } : given;
     let carried = raised;
