@@ -405,6 +405,66 @@ test('the pages a search found are one quiet row of links, not a card each', () 
   expect(opened).toContain('Releases');
 });
 
+test('the pages a search found are named once, not again by the grouped work after them', () => {
+  const pageSource = (url: string, title: string) => ({
+    app: 'Web',
+    title,
+    kind: 'page' as const,
+    connection_id: 'conn_web',
+    url,
+  });
+  const transcript = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    tool(entry('call:search', { kind: 'web', title: 'Searched the web for “SF weather”' })),
+    event({ type: 'card', card: page(1, 'https://weather.com/sf', 'SF Weather | weather.com') }),
+    event({ type: 'card', card: page(2, 'https://www.accuweather.com/sf', 'SF | AccuWeather') }),
+    tool(entry('call:date', { title: 'Ran `date`' })),
+    event({
+      type: 'action',
+      label: 'Searched the web, Ran a command',
+      meta: '2 sources',
+      sources: [
+        pageSource('https://weather.com/sf', 'SF Weather | weather.com'),
+        pageSource('https://www.accuweather.com/sf', 'SF | AccuWeather'),
+      ],
+    }),
+  ]);
+  const turn = only(transcript.turns[0]);
+  const items = logItems(turn);
+  expect(items.map((item) => item.type)).toEqual(['work', 'sources', 'work']);
+  // The work after the sources is the command alone: the group repeats it and the pages.
+  const after = only(items[2]);
+  if (after.type !== 'work') throw new Error('not work');
+  expect(after.work).toEqual([
+    { type: 'tool', tool: expect.objectContaining({ id: 'call:date' }) },
+  ]);
+  const html = renderToStaticMarkup(
+    <WorkLog turn={turn} now={0} items={items} finished={false} renderBlock={() => 'CARD'} />,
+  );
+  expect(html).toContain('2 sources');
+  expect(html).not.toContain('Searched the web, Ran a command');
+  expect(html).not.toContain('used an app');
+  const sources = only(items[1]);
+  if (sources.type !== 'sources') throw new Error('not sources');
+  const opened = renderToStaticMarkup(<SourcesLine cards={sources.cards} initiallyOpen />);
+  expect(opened).toContain('href="https://www.accuweather.com/sf"');
+  expect(opened).toContain('SF | AccuWeather');
+
+  // Grouped work whose sources no card shows still tells them.
+  const unseen = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    tool(entry('call:cal', { kind: 'connector', title: 'Looked at your calendar' })),
+    event({
+      type: 'action',
+      label: 'Looked at your calendar',
+      meta: '1 source',
+      sources: [{ app: 'Calendar', title: 'Standup', kind: 'event', connection_id: 'conn_cal' }],
+    }),
+  ]);
+  expect(only(logItems(only(unseen.turns[0]))[0])).toMatchObject({
+    type: 'work',
+    work: [{ type: 'tool' }, { type: 'group' }],
+  });
+});
+
 test('a question that repeats the message before it is told once', () => {
   const words =
     'This conversation looks like it is about personal finances. There is no local model set up.';
