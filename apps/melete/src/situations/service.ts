@@ -1192,7 +1192,8 @@ export class SituationService {
   /**
    * The accounts the detectors need read, beside those triggers listen to:
    * every calendar a person connected for themselves, and a mailbox while a
-   * wait on a reply is watched in its space. A calendar with a deadline due
+   * wait on a reply is watched in its space or still open on Home, so the
+   * answer that ends it is read. A calendar with a deadline due
    * within the hour is read every minute.
    */
   async demand(): Promise<
@@ -1210,8 +1211,10 @@ export class SituationService {
       await this.db.execute(sql`select c.id, c.space_id, c.provider,
           exists (select 1 from clock k where k.connection_id = c.id and k.state = 'armed'
             and k.fire_at <= ${new Date(now + HOUR).toISOString()}::timestamptz) as soon,
-          exists (select 1 from clock k where k.space_id = c.space_id and k.state = 'armed'
-            and k.rule = ${SITUATION_KINDS.replyOverdue}) as waits
+          (exists (select 1 from clock k where k.space_id = c.space_id and k.state = 'armed'
+              and k.rule = ${SITUATION_KINDS.replyOverdue})
+            or exists (select 1 from situation x where x.space_id = c.space_id
+              and x.kind = ${SITUATION_KINDS.replyOverdue} and x.state in ('open', 'routed'))) as waits
         from connection c join space s on s.id = c.space_id and s.removed_at is null
         where c.status = 'active' and c.shared_use = 'owner'`),
     );
