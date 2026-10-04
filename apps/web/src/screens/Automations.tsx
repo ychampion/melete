@@ -3,6 +3,10 @@
  * from the service; each card carries its recent runs, what each said or why
  * it did not finish, a link to the thread with the whole answer, and a test
  * run. Creating one takes the days, the time and the agent.
+ *
+ * A routine set up in a conversation is background work that repeats. It is
+ * listed here too, with its schedule, next time, pause and stop, so every
+ * schedule the person has is in one place.
  */
 import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
@@ -20,8 +24,9 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
 import { plainRunReason, plainSchedule } from '../experience/plain.ts';
-import type { Automation, AutomationRun } from '../experience/types.ts';
+import type { Automation, AutomationRun, Run } from '../experience/types.ts';
 import { href } from '../router.ts';
+import { isFinished, isPaused, standingLine } from '../runs/words.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -122,6 +127,44 @@ export function RunRow({ run }: { run: AutomationRun }) {
   );
 }
 
+/** A routine card's top line: its icon, name, schedule in words, and whether it is on. */
+function RoutineHead({
+  title,
+  schedule,
+  state,
+}: {
+  title: string;
+  schedule: string;
+  state: 'on' | 'paused' | 'stopped';
+}) {
+  return (
+    <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+      <span
+        className="row"
+        style={{
+          justifyContent: 'center',
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          background: 'var(--soft)',
+          border: '1px solid var(--line)',
+          color: 'var(--secondary)',
+          flexShrink: 0,
+        }}
+      >
+        <Icon name="automations" size={20} />
+      </span>
+      <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>{title}</span>
+        <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{schedule}</span>
+      </div>
+      <Badge tone={state === 'on' ? 'success' : 'neutral'} dot={state === 'on'}>
+        {state === 'stopped' ? 'Stopped' : state === 'on' ? 'On' : 'Paused'}
+      </Badge>
+    </div>
+  );
+}
+
 export function RoutineCard({
   automation,
   onChange,
@@ -182,34 +225,11 @@ export function RoutineCard({
   };
   return (
     <div className="card-pad">
-      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-        <span
-          className="row"
-          style={{
-            justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--soft)',
-            border: '1px solid var(--line)',
-            color: 'var(--secondary)',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="automations" size={20} />
-        </span>
-        <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            {automation.title}
-          </span>
-          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
-            {plainSchedule(automation.schedule)}
-          </span>
-        </div>
-        <Badge tone={automation.enabled ? 'success' : 'neutral'} dot={automation.enabled}>
-          {automation.ended ? 'Stopped' : automation.enabled ? 'On' : 'Paused'}
-        </Badge>
-      </div>
+      <RoutineHead
+        title={automation.title}
+        schedule={plainSchedule(automation.schedule)}
+        state={automation.ended ? 'stopped' : automation.enabled ? 'on' : 'paused'}
+      />
       <div className="col">
         <Overline style={{ paddingBottom: 4 }}>Last runs</Overline>
         {automation.runs.slice(0, 4).map((run) => (
@@ -313,6 +333,113 @@ export function RoutineCard({
             onClick={() => setConfirming(true)}
           >
             Delete
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Background work that repeats, as set up in a conversation: shown as the routine it is. */
+export const repeats = (run: Run) => run.standing !== null && !isFinished(run.status);
+
+export function RepeatingWorkCard({
+  run,
+  onChange,
+  onStopped,
+}: {
+  run: Run;
+  onChange: (next: Run) => void;
+  onStopped: (id: string) => void;
+}) {
+  const [busy, setBusy] = useState<'switch' | 'stop' | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const paused = isPaused(run);
+  const toggle = () => {
+    setBusy('switch');
+    void (paused ? adapter.resumeRun : adapter.pauseRun)(run.id).then((r) => {
+      setBusy(null);
+      if (r.data === null) {
+        toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t change it' });
+        return;
+      }
+      onChange(r.data.run);
+    });
+  };
+  const stop = () => {
+    setBusy('stop');
+    void adapter.stopRun(run.id).then((r) => {
+      setBusy(null);
+      if (r.data === null) {
+        toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t stop it' });
+        return;
+      }
+      onStopped(run.id);
+      toast({
+        kind: 'info',
+        title: `${run.title} is stopped`,
+        sub: 'It will not run again. What it found stays in its record.',
+      });
+    });
+  };
+  return (
+    <div className="card-pad">
+      <RoutineHead
+        title={run.title}
+        schedule={standingLine(run) ?? run.status_line}
+        state={paused ? 'paused' : 'on'}
+      />
+      <div className="col" style={{ gap: 2 }}>
+        <Overline style={{ paddingBottom: 4 }}>Latest</Overline>
+        <span style={{ fontSize: 13, color: 'var(--secondary)', overflowWrap: 'anywhere' }}>
+          {run.latest_report?.title ?? run.status_line}
+        </span>
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <Button
+          size="sm"
+          variant="outline"
+          loading={busy === 'switch'}
+          disabled={busy !== null}
+          onClick={toggle}
+        >
+          {paused ? 'Resume' : 'Pause'}
+        </Button>
+        <a href={href(`/runs/${run.id}`)} className="btn btn-sm btn-ghost">
+          Open
+        </a>
+        {confirming ? (
+          <>
+            <span id={`stop-${run.id}`} style={{ fontSize: 13, color: 'var(--secondary)' }}>
+              It stops for good and its schedule is removed. What it found stays in its record.
+            </span>
+            <Button
+              size="sm"
+              aria-describedby={`stop-${run.id}`}
+              variant="destructive"
+              loading={busy === 'stop'}
+              disabled={busy !== null}
+              onClick={stop}
+            >
+              Stop routine
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy !== null}
+              onClick={() => setConfirming(false)}
+            >
+              Keep
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy !== null}
+            onClick={() => setConfirming(true)}
+          >
+            Stop
           </Button>
         )}
       </div>
@@ -431,10 +558,15 @@ function NewRoutineDialog({
 
 export function AutomationsScreen() {
   const data = useLoad(() => adapter.automations(), []);
+  const work = useLoad(() => adapter.runs(), []);
   const [creating, setCreating] = useState(false);
   const list = data.data?.automations ?? [];
+  const runs = work.data?.runs ?? [];
+  const repeating = runs.filter(repeats);
   const update = (next: Automation) =>
     data.set({ automations: list.map((a) => (a.id === next.id ? next : a)) });
+  const updateRun = (next: Run) =>
+    work.set({ runs: runs.map((r) => (r.id === next.id ? next : r)) });
   return (
     <Shell title="Automations">
       <div className="page">
@@ -455,6 +587,9 @@ export function AutomationsScreen() {
         {data.error ? (
           <LoadError what="your routines" error={data.error} onRetry={data.reload} />
         ) : null}
+        {work.error ? (
+          <LoadError what="your background routines" error={work.error} onRetry={work.reload} />
+        ) : null}
         <div
           style={{
             display: 'grid',
@@ -473,8 +608,16 @@ export function AutomationsScreen() {
               }
             />
           ))}
+          {repeating.map((run) => (
+            <RepeatingWorkCard
+              key={run.id}
+              run={run}
+              onChange={updateRun}
+              onStopped={(id) => work.set({ runs: runs.filter((r) => r.id !== id) })}
+            />
+          ))}
         </div>
-        {data.data && !data.error && list.length === 0 ? (
+        {data.data && !data.error && list.length === 0 && repeating.length === 0 ? (
           <div
             className="col"
             style={{ alignItems: 'center', gap: 8, padding: '32px 24px', textAlign: 'center' }}
