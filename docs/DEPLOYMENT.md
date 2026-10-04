@@ -1140,10 +1140,16 @@ recent OpenAI models through the Responses API do. `false` sends the agent's
 searches to Melete's own search instead. Native searches are metered on the job
 like any other model call.
 
-`BRAVE_SEARCH_API_KEY` and `TAVILY_API_KEY` are optional. Without either, every
+`TAVILY_API_KEY` and `BRAVE_SEARCH_API_KEY` are optional. Without either, every
 agent still searches the web: with its model's own search where it has one, and
 otherwise with a search that needs no key (DuckDuckGo's results page, then
-Wikipedia). When a key is set, searches use that API first. The order, the
+Wikipedia). When a key is set, searches use that API first, Tavily before Brave.
+Tavily's results carry the passages of each page that match the query, and with
+its key `web.fetch` also reads, through Tavily Extract, a public page that gave
+a direct read no text, at most three pages a turn. Tavily's free plan includes
+1,000 credits a month; a search costs one and an extracted page at most two.
+Both are charged to the job that made them at $0.008 a credit and count toward
+the spending limits. The order, the
 privacy rules and what each search records are in
 [CONNECTORS](CONNECTORS.md#web-search).
 
@@ -1154,7 +1160,7 @@ seconds apart, a repeated query reused for ten minutes, nothing sent for
 fifteen minutes after DuckDuckGo answers with a robot check), and the service
 log says at start when no key is set. DuckDuckGo can still block the address,
 and Wikipedia then answers with encyclopedia articles only. For a hosted or
-shared installation, set `BRAVE_SEARCH_API_KEY` or `TAVILY_API_KEY`.
+shared installation, set `TAVILY_API_KEY` or `BRAVE_SEARCH_API_KEY`.
 
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its

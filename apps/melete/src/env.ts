@@ -396,9 +396,13 @@ const variables = z.object({
       .optional()
       .transform((v) => (v === undefined ? undefined : v === 'true')),
   ),
-  /** A Brave Search API key. When set, `web.search` uses it before anything else. */
+  /** A Brave Search API key. When set, `web.search` uses it after a Tavily key. */
   BRAVE_SEARCH_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
-  /** A Tavily API key, used when set and no Brave key is. */
+  /**
+   * A Tavily API key. When set, `web.search` uses Tavily before anything else,
+   * and `web.fetch` reads a page through Tavily Extract when the direct read
+   * gets no text from it.
+   */
   TAVILY_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
   /**
    * The output limit the gateway gives a model request that names none. The
