@@ -5,7 +5,10 @@
  * `healthDetail` checks the database, the runtime that runs attempts, the job
  * queue (work that is due but has not been picked up) and the recent error
  * rate (attempts that failed or were lost, and model calls providers
- * refused). `GET /health/detail` returns it to the operator.
+ * refused). Where the operator asks for them, two spending checks join it:
+ * the last hour's model spending against the installation's usual hour, and
+ * one person's share of today's. `GET /health/detail` returns it to the
+ * operator.
  *
  * `HealthMonitor` runs those checks on a timer and, when the service turns
  * unhealthy, sends an alert to the configured webhook and/or email address;
@@ -31,7 +34,68 @@ export type HealthProbes = {
   /** Resolves when the runtime answers; left out, there is no runtime to check. */
   runtime?: () => Promise<unknown>;
   sql?: Sql;
+  /** The spending checks to run; each is left out unless set. */
+  spend?: SpendAlerts;
 };
+
+export type SpendAlerts = {
+  /** The last hour above this many times the median hour of the week before. */
+  hourlyMultiple?: number;
+  /** One person above this percent of today's spending, with others spending too. */
+  personPercent?: number;
+  /** Neither check fires below this many dollars. */
+  minUsd: number;
+};
+
+export function spendAlertsFromEnv(env: Env): SpendAlerts | undefined {
+  if (!env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE && !env.MELETE_ALERT_SPEND_PERSON_PERCENT)
+    return undefined;
+  return {
+    ...(env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE
+      ? { hourlyMultiple: env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE }
+      : {}),
+    ...(env.MELETE_ALERT_SPEND_PERSON_PERCENT
+      ? { personPercent: env.MELETE_ALERT_SPEND_PERSON_PERCENT }
+      : {}),
+    minUsd: env.MELETE_ALERT_SPEND_MIN_USD,
+  };
+}
+
+const dollars = (value: number) => `$${value.toFixed(2)}`;
+
+/** The last hour's spending against the usual hour. */
+export function spendRateCheck(
+  lastHourUsd: number,
+  usualHourUsd: number,
+  multiple: number,
+  minUsd: number,
+): HealthCheck {
+  const high = lastHourUsd >= minUsd && lastHourUsd > multiple * usualHourUsd;
+  return {
+    name: 'spend_rate',
+    ok: !high,
+    detail: `${dollars(lastHourUsd)} on model calls in the last hour; the usual hour is ${dollars(usualHourUsd)}${high ? `, and the alert is set at ${multiple} times that` : ''}`,
+  };
+}
+
+/** One person's share of today's spending. */
+export function spendShareCheck(
+  top: { personId: string; usd: number } | null,
+  totalUsd: number,
+  people: number,
+  percent: number,
+  minUsd: number,
+): HealthCheck {
+  const share = top && totalUsd > 0 ? (top.usd / totalUsd) * 100 : 0;
+  const high = Boolean(top) && people > 1 && (top?.usd ?? 0) >= minUsd && share > percent;
+  return {
+    name: 'spend_share',
+    ok: !high,
+    detail: top
+      ? `${top.personId} accounts for ${Math.round(share)}% (${dollars(top.usd)}) of today's ${dollars(totalUsd)} across ${people} ${people === 1 ? 'person' : 'people'}`
+      : 'no model spending today',
+  };
+}
 
 export const HEALTH_LIMITS = {
   /** How long a runtime probe may take. */
@@ -112,6 +176,7 @@ export async function healthDetail(
         ok: !attemptSpike && !callSpike,
         detail: `in the last ${limits.error_window_minutes} minutes: ${attempts?.failed ?? 0} of ${attempts?.ended ?? 0} attempts failed or were lost, ${calls?.failed ?? 0} of ${calls?.total ?? 0} model calls were refused by the provider`,
       });
+      if (probes.spend) checks.push(...(await spendChecks(sql, probes.spend)));
     } catch (error) {
       checks.push({
         name: 'job_queue',
@@ -126,6 +191,52 @@ export async function healthDetail(
     checks,
     time: new Date().toISOString(),
   };
+}
+
+/** The spending checks the operator asked for, read from `model_usage`. */
+async function spendChecks(sql: Sql, spend: SpendAlerts): Promise<HealthCheck[]> {
+  const checks: HealthCheck[] = [];
+  if (spend.hourlyMultiple !== undefined) {
+    const [rate] = await sql`with hours as (
+        select generate_series(date_trunc('hour', now()) - interval '168 hours',
+          date_trunc('hour', now()) - interval '1 hour', interval '1 hour') as hour),
+      spent as (
+        select date_trunc('hour', created_at) as hour, sum(cost_usd) as usd from model_usage
+        where created_at >= date_trunc('hour', now()) - interval '168 hours'
+          and created_at < date_trunc('hour', now())
+        group by 1)
+      select
+        (select coalesce(sum(cost_usd), 0) from model_usage
+          where created_at > now() - interval '1 hour')::float8 as last_hour,
+        (select percentile_cont(0.5) within group (order by coalesce(spent.usd, 0))
+          from hours left join spent using (hour))::float8 as usual_hour`;
+    checks.push(
+      spendRateCheck(
+        Number(rate?.last_hour ?? 0),
+        Number(rate?.usual_hour ?? 0),
+        spend.hourlyMultiple,
+        spend.minUsd,
+      ),
+    );
+  }
+  if (spend.personPercent !== undefined) {
+    const people = await sql`select principal_id, sum(cost_usd)::float8 as usd from model_usage
+      where created_at >= date_trunc('day', now() at time zone 'UTC') at time zone 'UTC'
+        and principal_id is not null
+      group by principal_id order by usd desc`;
+    const total = people.reduce((sum, row) => sum + Number(row.usd), 0);
+    const [first] = people;
+    checks.push(
+      spendShareCheck(
+        first ? { personId: String(first.principal_id), usd: Number(first.usd) } : null,
+        total,
+        people.length,
+        spend.personPercent,
+        spend.minUsd,
+      ),
+    );
+  }
+  return checks;
 }
 
 export type Alert = {

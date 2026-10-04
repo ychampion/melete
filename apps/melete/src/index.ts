@@ -89,11 +89,14 @@ import type { GatewayOptions } from './gateway/index.ts';
 import { ModelSettingsService } from './gateway/model-settings.ts';
 import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
+import type { UsageClass } from './gateway/usage-class.ts';
+import { startUsageRollup } from './gateway/usage-day.ts';
 import {
   alertSendersFromEnv,
   type HealthDetail,
   HealthMonitor,
   healthDetail,
+  spendAlertsFromEnv,
 } from './health/monitor.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
@@ -360,6 +363,7 @@ export function createApp(deps: AppDeps) {
   if (deps.spending)
     mountUsage(app, {
       spending: deps.spending,
+      ...(deps.sql ? { sql: deps.sql } : {}),
       isOwner: async (actor) => {
         if (!actor || !deps.db) return false;
         const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
@@ -644,6 +648,7 @@ export async function bootstrap(
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
+  let stopUsageRollup: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -684,6 +689,7 @@ export async function bootstrap(
     supervisedRuntime?.beginShutdown();
     stopEpisodeRetention?.();
     stopEgressRetention?.();
+    stopUsageRollup?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -768,6 +774,8 @@ export async function bootstrap(
         undefined,
         () => leading(leases, 'egress-retention'),
       );
+      // Each finished day of model calls is rolled up for reports, by one instance.
+      stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.
@@ -1106,7 +1114,10 @@ export async function bootstrap(
           : {}),
         // Past a spending limit no attempt starts, and one cut short ends on it.
         ...(spending
-          ? { spendingLimit: (jobId: string) => (spending as SpendingGuard).reachedForJob(jobId) }
+          ? {
+              spendingLimit: (jobId: string, usageClass: UsageClass) =>
+                (spending as SpendingGuard).reachedForJob(jobId, usageClass),
+            }
           : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
@@ -1312,6 +1323,7 @@ export async function bootstrap(
   }
 
   const sqlForHealth = handle?.sql;
+  const spendAlerts = spendAlertsFromEnv(env);
   const checkDatabase = async () => {
     if (!handle) return 'not_configured' as const;
     return (await pingDatabase(handle)) ? ('ok' as const) : ('unreachable' as const);
@@ -1322,6 +1334,7 @@ export async function bootstrap(
       database: checkDatabase,
       ...(runtimeProbe ? { runtime: runtimeProbe } : {}),
       ...(sqlForHealth ? { sql: sqlForHealth } : {}),
+      ...(spendAlerts ? { spend: spendAlerts } : {}),
     });
   // The operator is told when the service turns unhealthy, where alerts are configured.
   if (options.workers !== false) {

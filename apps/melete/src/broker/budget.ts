@@ -51,6 +51,21 @@ async function positionLocked(
 }
 
 /**
+ * Whether the job's dollar limit (`max_usd_est`), or this attempt's share of
+ * it, is already spent. A model call is admitted below it and charged its
+ * cost once it reports, so one call may finish past the limit and the next
+ * is refused. Caller holds the job row lock.
+ */
+export async function dollarsSpentLocked(
+  tx: Query,
+  job: LockedJob,
+  claims: CapabilityClaims,
+): Promise<boolean> {
+  const position = await positionLocked(tx, job, claims, 'usd_est', true);
+  return position.jobUsed >= position.limit || position.attemptUsed >= position.attemptLimit;
+}
+
+/**
  * Whole output tokens a model call could still reserve. Advisory: it sizes a
  * limit the gateway fills in, and the reservation is checked again when made.
  */

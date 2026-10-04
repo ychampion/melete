@@ -49,6 +49,7 @@ import { appendEvent } from '../events/store.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
+import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -73,6 +74,13 @@ import {
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
+import {
+  attemptCause,
+  emptyWakes,
+  pauseForWakes,
+  usageClassOf,
+  WAKE_GUARD_LIMIT,
+} from './wake-guard.ts';
 import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -118,9 +126,11 @@ export type RunnerOptions = {
   /**
    * The sentence for a spending limit this job's person has reached, or null.
    * An attempt is not started past it, and one that ends while it holds ends
-   * with that sentence rather than as a failure to retry.
+   * with that sentence rather than as a failure to retry. A background
+   * attempt is also held to the person's background limits; an interactive
+   * one never is.
    */
-  spendingLimit?: (jobId: string) => Promise<string | null>;
+  spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<string | null>;
 };
 
 /**
@@ -224,6 +234,19 @@ export class AttemptRunner {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
       }
       if (row.state !== 'queued') return null;
+      const [previous] = await tx
+        .select()
+        .from(attempt)
+        .where(eq(attempt.jobId, row.id))
+        .orderBy(desc(attempt.epoch))
+        .limit(1);
+      const cause = await attemptCause(tx, row, previous, previous?.inputCursor ?? 0);
+      // Work that keeps waking with nothing to show is paused before this
+      // wake starts anything, and the person is told once.
+      if (cause.usageClass === 'background' && (await emptyWakes(tx, row.id)) >= WAKE_GUARD_LIMIT) {
+        await pauseForWakes(tx, row);
+        return null;
+      }
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
@@ -240,12 +263,6 @@ export class AttemptRunner {
         ...(typeof chosen.vision === 'boolean' ? { vision: chosen.vision } : {}),
       };
       const budget = jobBudget.parse(row.budget);
-      const [previous] = await tx
-        .select()
-        .from(attempt)
-        .where(eq(attempt.jobId, row.id))
-        .orderBy(desc(attempt.epoch))
-        .limit(1);
       const [latest] = await tx
         .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
         .from(event)
@@ -315,6 +332,8 @@ export class AttemptRunner {
         usage: attemptUsage.parse({}),
         leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
+        usageClass: cause.usageClass,
+        triggerId: cause.triggerId,
       });
       await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its
@@ -372,7 +391,7 @@ export class AttemptRunner {
       }
       // Past a spending limit no engine is started: the turn, routine run or
       // background job ends at once with the sentence that says when it resets.
-      const capped = await this.options.spendingLimit?.(row.id);
+      const capped = await this.options.spendingLimit?.(row.id, cause.usageClass);
       if (capped) {
         await this.finish(tx, row, attemptId, { kind: 'budget_exhausted', summary: capped });
         return null;
@@ -638,7 +657,7 @@ export class AttemptRunner {
     // that limit, not as a failure to run again while it still holds.
     const capped =
       (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
-        ? await this.options.spendingLimit(row.id)
+        ? await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId))
         : null;
     const original: AttemptOutcome = capped ? { kind: 'budget_exhausted', summary: capped } : given;
     let carried = raised;

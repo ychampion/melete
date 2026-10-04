@@ -14,6 +14,12 @@
  * Days and months are UTC calendar days and months. A limit left unset is no
  * limit. At MELETE_SPEND_NOTICE_PERCENT (default 80) of any limit the person
  * gets a quiet notice in the app, once per period.
+ *
+ * Each call is also recorded as interactive (a person is waiting on it) or
+ * background (nobody is), with its tier and the trigger behind it (see
+ * `usage-class.ts`). A person's background limits, when the operator sets
+ * them, hold back background calls alone: a person's own message is never
+ * refused by them.
  */
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -26,11 +32,20 @@ import {
   type GatewaySpending,
   type GatewaySpendingCall,
 } from './types.ts';
+import {
+  serviceClass,
+  TURN_PURPOSES,
+  tierOf,
+  type UsageClass,
+  type UsageTier,
+} from './usage-class.ts';
 
 export type SpendingWindow = { usd: number | null; tokens: number | null };
 export type SpendingLimits = {
   installation: { day: SpendingWindow; month: SpendingWindow };
   person: { day: SpendingWindow; month: SpendingWindow };
+  /** Each person's background calls alone; their interactive calls never count here. */
+  background?: { day: SpendingWindow; month: SpendingWindow };
   /** Percent of a limit at which the person is told it is close. */
   noticePercent: number;
 };
@@ -51,16 +66,30 @@ export function spendingLimitsFromEnv(env: Env): SpendingLimits {
       day: window(env.MELETE_SPEND_PERSON_DAILY_USD, env.MELETE_SPEND_PERSON_DAILY_TOKENS),
       month: window(env.MELETE_SPEND_PERSON_MONTHLY_USD, env.MELETE_SPEND_PERSON_MONTHLY_TOKENS),
     },
+    background: {
+      day: window(
+        env.MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD,
+        env.MELETE_SPEND_PERSON_BACKGROUND_DAILY_TOKENS,
+      ),
+      month: window(
+        env.MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD,
+        env.MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS,
+      ),
+    },
     noticePercent: env.MELETE_SPEND_NOTICE_PERCENT,
   };
 }
 
-/** Who a call's spending counts against. */
+/** Who a call's spending counts against, and why the call was made. */
 export type SpendingScope = {
   spaceId: string | null;
   personId: string | null;
   jobId: string | null;
   purpose: string;
+  usageClass: UsageClass;
+  tier: UsageTier;
+  /** The trigger whose event woke the work that makes the call. */
+  triggerId: string | null;
 };
 
 export type SpendingTotals = { usd: number; tokens: number };
@@ -75,16 +104,22 @@ export type SpendingNotice = {
   resets_at: string;
 };
 
+type Breakdown = { calls: number; usd: number; tokens: number };
+
 export type SpendingSummary = {
   month_start: string;
   month_resets_at: string;
   day_resets_at: string;
   person: { month: SpendingTotals; day: SpendingTotals } | null;
+  /** The person's background calls alone. */
+  background: { month: SpendingTotals; day: SpendingTotals } | null;
   /** Only for the installation's owner. */
   installation: { month: SpendingTotals; day: SpendingTotals } | null;
   limits: SpendingLimits;
   notice: SpendingNotice | null;
-  models: { provider: string; model: string; calls: number; usd: number; tokens: number }[];
+  models: ({ provider: string; model: string } & Breakdown)[];
+  by_purpose: ({ purpose: string; class: UsageClass } & Breakdown)[];
+  by_tier: ({ tier: UsageTier } & Breakdown)[];
 };
 
 const MONTHS = [
@@ -119,6 +154,13 @@ export function limitMessage(period: Period, resetsAt: Date): string {
     : `Today's limit is reached; it resets on ${dayName(resetsAt)} at 00:00 UTC.`;
 }
 
+/** The sentence a person reads when their background work reaches its limit. */
+export function backgroundLimitMessage(period: Period, resetsAt: Date): string {
+  return period === 'month'
+    ? `Background work has reached this month's limit; it starts again on ${dayName(resetsAt)}. Your own messages still go through.`
+    : `Background work has reached today's limit; it starts again on ${dayName(resetsAt)} at 00:00 UTC. Your own messages still go through.`;
+}
+
 function warningMessage(period: Period, percent: number): string {
   return `You have used ${percent}% of ${period === 'month' ? "this month's" : "today's"} model allowance.`;
 }
@@ -128,10 +170,49 @@ const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 type Totals = {
   installation: { month: SpendingTotals; day: SpendingTotals };
   person: { month: SpendingTotals; day: SpendingTotals } | null;
+  /** The person's background calls alone. */
+  background: { month: SpendingTotals; day: SpendingTotals } | null;
 };
 
 /** A call admitted and still running: what it may cost, held against the limits. */
-type Hold = { personId: string | null; usd: number; tokens: number; at: number };
+type Hold = {
+  personId: string | null;
+  usageClass: UsageClass;
+  usd: number;
+  tokens: number;
+  at: number;
+};
+
+function callCost(
+  prices: PriceTable,
+  call: { provider: string; model: string; local?: boolean },
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
+): number {
+  if (call.local) {
+    const priced = prices.operatorPrice(call.provider, call.model);
+    return priced ? prices.cost(call.provider, call.model, usage) : 0;
+  }
+  return prices.cost(call.provider, call.model, usage);
+}
+
+/**
+ * What a settled call cost: nothing on the person's own model unless the
+ * operator priced it, plus any flat fee. The spending caps and a job's dollar
+ * limit both charge this.
+ */
+export function settledCost(prices: PriceTable, settlement: GatewaySettlement): number {
+  const usage = settlement.usage ?? settlement.spendEstimate ?? null;
+  // The model that answered: the person's local model when the privacy
+  // router sent the call there.
+  const served = settlement.servedBy ?? {
+    provider: settlement.provider,
+    model: settlement.modelRequested,
+  };
+  return (
+    (usage ? callCost(prices, { ...served, local: settlement.servedLocally === true }, usage) : 0) +
+    (settlement.feeUsd ?? 0)
+  );
+}
 
 /** How long totals read from the database are reused before they are read again. */
 const TOTALS_TTL_MS = 2_000;
@@ -178,6 +259,15 @@ export class SpendingGuard implements GatewaySpending {
     return windows.some((window) => window.usd !== null || window.tokens !== null);
   }
 
+  /** Whether the operator set a background limit for each person. */
+  get backgroundLimited(): boolean {
+    const background = this.limits.background;
+    if (!background) return false;
+    return [background.day, background.month].some(
+      (window) => window.usd !== null || window.tokens !== null,
+    );
+  }
+
   /** Whose spending a principal's calls count against, read once per principal. */
   scopeOf(principal: GatewayPrincipal): Promise<SpendingScope> {
     let scope = this.scopes.get(principal);
@@ -195,14 +285,20 @@ export class SpendingGuard implements GatewaySpending {
     const jobId = privacy.kind === 'job' ? principal.jobId : privacy.sourceJobId;
     const purpose = privacy.kind === 'job' ? 'agent' : privacy.purpose;
     const actor = principal.actor ?? null;
+    const cause = await this.causeOf(principal, jobId ?? null, purpose);
+    const scope = {
+      ...cause,
+      tier: tierOf(privacy.kind, purpose, cause.usageClass),
+      jobId: jobId ?? null,
+      purpose,
+    };
     if (jobId) {
       const [row] = await PERSON_FOR_JOB(this.sql, jobId);
       if (row)
         return {
+          ...scope,
           spaceId: String(row.space_id),
           personId: actor ?? (row.person_id ? String(row.person_id) : null),
-          jobId,
-          purpose,
         };
     }
     const spaceId = privacy.kind === 'service' ? privacy.spaceId : null;
@@ -211,13 +307,38 @@ export class SpendingGuard implements GatewaySpending {
         ? [{ owner_principal_id: actor }]
         : await this.sql`select owner_principal_id from space where id = ${spaceId}`;
       return {
+        ...scope,
         spaceId,
         personId: row?.owner_principal_id ? String(row.owner_principal_id) : null,
-        jobId: jobId ?? null,
-        purpose,
       };
     }
-    return { spaceId: null, personId: actor, jobId: jobId ?? null, purpose };
+    return { ...scope, spaceId: null, personId: actor };
+  }
+
+  /**
+   * Whether a person is waiting on a call, and what woke the work that makes
+   * it. An agent turn's is recorded on its attempt when the attempt starts; a
+   * search or a review takes the class of the turn that made it (its own
+   * attempt where the principal names one, else the job's latest).
+   */
+  private async causeOf(
+    principal: GatewayPrincipal,
+    jobId: string | null,
+    purpose: string,
+  ): Promise<{ usageClass: UsageClass; triggerId: string | null }> {
+    const turn = principal.privacy.kind === 'job' || TURN_PURPOSES.has(purpose);
+    if (!turn) return { usageClass: serviceClass(purpose), triggerId: null };
+    const [own] = await this
+      .sql`select class, trigger_id from attempt where id = ${principal.attemptId}`;
+    const [row] =
+      own || !jobId
+        ? [own]
+        : await this.sql`select class, trigger_id from attempt where job_id = ${jobId}
+            order by epoch desc limit 1`;
+    return {
+      usageClass: row?.class === 'background' ? 'background' : 'interactive',
+      triggerId: row?.trigger_id ? String(row.trigger_id) : null,
+    };
   }
 
   /**
@@ -239,7 +360,11 @@ export class SpendingGuard implements GatewaySpending {
         coalesce(sum(cost_usd) filter (where principal_id = ${personId}), 0)::float8 as pm_usd,
         coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId}), 0)::float8 as pm_tokens,
         coalesce(sum(cost_usd) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_tokens
+        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_tokens,
+        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_usd,
+        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_tokens,
+        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_usd,
+        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_tokens
       from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz`;
     const total = (usd: unknown, tokens: unknown): SpendingTotals => ({
       usd: round(Number(usd ?? 0)),
@@ -253,6 +378,9 @@ export class SpendingGuard implements GatewaySpending {
       person: personId
         ? { month: total(row?.pm_usd, row?.pm_tokens), day: total(row?.pd_usd, row?.pd_tokens) }
         : null,
+      background: personId
+        ? { month: total(row?.bm_usd, row?.bm_tokens), day: total(row?.bd_usd, row?.bd_tokens) }
+        : null,
     };
     if (this.cached.size > 1000) this.cached.clear();
     this.cached.set(key, { at: now.getTime(), totals });
@@ -263,14 +391,21 @@ export class SpendingGuard implements GatewaySpending {
   private withHolds(totals: Totals, personId: string | null, now: number): Totals {
     let all = { usd: 0, tokens: 0 };
     let mine = { usd: 0, tokens: 0 };
+    let mineBackground = { usd: 0, tokens: 0 };
     for (const [principal, list] of this.holds) {
       const live = list.filter((hold) => now - hold.at < HOLD_TTL_MS);
       if (!live.length) this.holds.delete(principal);
       else if (live.length !== list.length) this.holds.set(principal, live);
       for (const hold of live) {
         all = { usd: all.usd + hold.usd, tokens: all.tokens + hold.tokens };
-        if (personId && hold.personId === personId)
+        if (personId && hold.personId === personId) {
           mine = { usd: mine.usd + hold.usd, tokens: mine.tokens + hold.tokens };
+          if (hold.usageClass === 'background')
+            mineBackground = {
+              usd: mineBackground.usd + hold.usd,
+              tokens: mineBackground.tokens + hold.tokens,
+            };
+        }
       }
     }
     const add = (a: SpendingTotals, b: { usd: number; tokens: number }) => ({
@@ -284,6 +419,12 @@ export class SpendingGuard implements GatewaySpending {
       },
       person: totals.person
         ? { month: add(totals.person.month, mine), day: add(totals.person.day, mine) }
+        : null,
+      background: totals.background
+        ? {
+            month: add(totals.background.month, mineBackground),
+            day: add(totals.background.day, mineBackground),
+          }
         : null,
     };
   }
@@ -338,38 +479,55 @@ export class SpendingGuard implements GatewaySpending {
     return best;
   }
 
-  /** The sentence for a reached limit that applies to this person, or null. */
-  async reached(personId: string | null): Promise<string | null> {
-    if (!this.limited) return null;
+  /** The sentence for a reached background limit, the month's before the day's, or null. */
+  private backgroundReached(totals: Totals, now: Date): string | null {
+    const limits = this.limits.background;
+    if (!limits || !totals.background) return null;
+    const { nextMonth, nextDay } = periodBounds(now);
+    const over = (used: SpendingTotals, limit: SpendingWindow) =>
+      (limit.usd !== null && used.usd >= limit.usd) ||
+      (limit.tokens !== null && used.tokens >= limit.tokens);
+    if (over(totals.background.month, limits.month))
+      return backgroundLimitMessage('month', nextMonth);
+    if (over(totals.background.day, limits.day)) return backgroundLimitMessage('day', nextDay);
+    return null;
+  }
+
+  /**
+   * The sentence for a reached limit that applies to this person, or null. A
+   * background call is also held to the person's background limits; an
+   * interactive one never is.
+   */
+  async reached(
+    personId: string | null,
+    usageClass: UsageClass = 'interactive',
+  ): Promise<string | null> {
+    const background = usageClass === 'background' && this.backgroundLimited;
+    if (!this.limited && !background) return null;
     const now = this.now();
     const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
     const notice = this.noticeFor(totals, now);
-    return notice?.level === 'reached' ? notice.message : null;
+    if (notice?.level === 'reached') return notice.message;
+    return background ? this.backgroundReached(totals, now) : null;
   }
 
-  /** The reached-limit sentence for the person a job's work is for, or null; read by the runner. */
-  async reachedForJob(jobId: string): Promise<string | null> {
-    if (!this.limited) return null;
+  /**
+   * The reached-limit sentence for the person a job's work is for, or null;
+   * read by the runner before an attempt of that class starts.
+   */
+  async reachedForJob(
+    jobId: string,
+    usageClass: UsageClass = 'interactive',
+  ): Promise<string | null> {
+    if (!this.limited && !(usageClass === 'background' && this.backgroundLimited)) return null;
     const [row] = await PERSON_FOR_JOB(this.sql, jobId);
-    return this.reached(row?.person_id ? String(row.person_id) : null);
-  }
-
-  /** What a call may cost: nothing on the person's own model unless the operator priced it. */
-  private costOf(
-    call: { provider: string; model: string; local?: boolean },
-    usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
-  ): number {
-    if (call.local) {
-      const priced = this.prices.operatorPrice(call.provider, call.model);
-      return priced ? this.prices.cost(call.provider, call.model, usage) : 0;
-    }
-    return this.prices.cost(call.provider, call.model, usage);
+    return this.reached(row?.person_id ? String(row.person_id) : null, usageClass);
   }
 
   async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
-    if (!this.limited) return;
+    if (!this.limited && !this.backgroundLimited) return;
     const scope = await this.scopeOf(principal);
-    const message = await this.reached(scope.personId);
+    const message = await this.reached(scope.personId, scope.usageClass);
     if (message) {
       try {
         this.onRefused?.(scope, principal, message);
@@ -383,7 +541,8 @@ export class SpendingGuard implements GatewaySpending {
     if (call) {
       const hold: Hold = {
         personId: scope.personId,
-        usd: this.costOf(call, {
+        usageClass: scope.usageClass,
+        usd: callCost(this.prices, call, {
           inputTokens: call.inputTokens,
           outputTokens: call.maxOutputTokens,
           cachedInputTokens: 0,
@@ -410,19 +569,21 @@ export class SpendingGuard implements GatewaySpending {
         provider: settlement.provider,
         model: settlement.modelRequested,
       };
-      const cost =
-        (usage ? this.costOf({ ...served, local: settlement.servedLocally === true }, usage) : 0) +
-        (settlement.feeUsd ?? 0);
+      const cost = settledCost(this.prices, settlement);
       await this.sql`insert into model_usage (id, created_at, space_id, principal_id, job_id,
           purpose, provider, model, model_actual, route, routed_from, status,
-          input_tokens, output_tokens, cached_input_tokens, cost_usd, usage_estimated)
+          input_tokens, output_tokens, cached_input_tokens, cost_usd, usage_estimated,
+          class, tier, trigger_id, charged_input_tokens, cache_write_tokens)
         values (${randomUUID()}, ${this.now().toISOString()}::timestamptz, ${scope.spaceId}, ${scope.personId}, ${scope.jobId},
           ${scope.purpose}, ${served.provider}, ${served.model}, ${settlement.modelActual},
           ${settlement.route ?? null},
           ${settlement.routedFrom ? `${settlement.routedFrom.provider}/${settlement.routedFrom.model}` : null},
           ${settlement.status}, ${usage?.inputTokens ?? 0}, ${usage?.outputTokens ?? 0},
           ${usage?.cachedInputTokens ?? 0}, ${cost},
-          ${settlement.usage === null || settlement.usageEstimated === true})`;
+          ${settlement.usage === null || settlement.usageEstimated === true},
+          ${scope.usageClass}, ${scope.tier}, ${scope.triggerId},
+          ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
+          ${usage?.cacheWriteInputTokens ?? 0})`;
       if (this.limited) await this.noticeOnce(scope.personId);
     } catch (error) {
       process.stderr.write(
@@ -446,34 +607,58 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   /**
-   * What Settings shows: this month and today, the limits, the notice and the
-   * models. The installation's figures are for its owner alone.
+   * What Settings shows: this month and today, background work on its own,
+   * the limits, the notice, and the month by model, by purpose and by tier.
+   * The installation's figures are for its owner alone.
    */
   async summary(personId: string | null, installation = true): Promise<SpendingSummary> {
     const now = this.now();
     const { monthStart, nextMonth, nextDay } = periodBounds(now);
+    const month = monthStart.toISOString();
     const totals = await this.totals(personId, now, true);
     const models = await this.sql`select provider, model, count(*)::int as calls,
         coalesce(sum(cost_usd), 0)::float8 as usd,
         coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
-      from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz
+      from model_usage where created_at >= ${month}::timestamptz
         and (${personId}::text is null or principal_id = ${personId})
       group by provider, model order by usd desc, tokens desc limit 20`;
+    const purposes = await this.sql`select purpose, class, count(*)::int as calls,
+        coalesce(sum(cost_usd), 0)::float8 as usd,
+        coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
+      from model_usage where created_at >= ${month}::timestamptz
+        and (${personId}::text is null or principal_id = ${personId})
+      group by purpose, class order by usd desc, tokens desc, purpose, class`;
+    const tiers = await this.sql`select tier, count(*)::int as calls,
+        coalesce(sum(cost_usd), 0)::float8 as usd,
+        coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
+      from model_usage where created_at >= ${month}::timestamptz
+        and (${personId}::text is null or principal_id = ${personId})
+      group by tier order by usd desc, tokens desc, tier`;
+    const breakdown = (row: Record<string, unknown>): Breakdown => ({
+      calls: Number(row.calls),
+      usd: round(Number(row.usd)),
+      tokens: Number(row.tokens),
+    });
     return {
-      month_start: monthStart.toISOString(),
+      month_start: month,
       month_resets_at: nextMonth.toISOString(),
       day_resets_at: nextDay.toISOString(),
       person: totals.person,
+      background: totals.background,
       installation: installation ? totals.installation : null,
       limits: this.limits,
       notice: this.noticeFor(totals, now, installation),
       models: models.map((row) => ({
         provider: String(row.provider),
         model: String(row.model),
-        calls: Number(row.calls),
-        usd: round(Number(row.usd)),
-        tokens: Number(row.tokens),
+        ...breakdown(row),
       })),
+      by_purpose: purposes.map((row) => ({
+        purpose: String(row.purpose),
+        class: row.class === 'background' ? 'background' : 'interactive',
+        ...breakdown(row),
+      })),
+      by_tier: tiers.map((row) => ({ tier: String(row.tier) as UsageTier, ...breakdown(row) })),
     };
   }
 }

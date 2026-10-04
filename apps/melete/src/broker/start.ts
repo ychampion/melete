@@ -156,6 +156,7 @@ export async function startEffectBoundary(
       connectTls: (host) => certificates.get(host),
       privacy: dependencies.privacy,
       spending,
+      ...(env.MELETE_JOB_USD_COUNTS_MODELS ? { modelDollars: spending.prices } : {}),
       routes: (attempt) => modelSettings.attemptRoutes(routing, attempt),
       reasoningEffort: env.MELETE_REASONING_EFFORT_AGENT,
       ...(dependencies.blobs

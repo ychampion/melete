@@ -469,6 +469,45 @@ const variables = z.object({
   MELETE_SPEND_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  /**
+   * Each person's background model calls alone (watches, standing runs,
+   * routines, memory and learning), beside the limits above. A person's own
+   * messages never count here and are never held back by them. Unset is no
+   * limit. docs/BACKGROUND-COMPUTE.md.
+   */
+  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD: unsetWhenBlank(
+    z.coerce.number().positive().optional(),
+  ),
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS: unsetWhenBlank(
+    z.coerce.number().int().positive().optional(),
+  ),
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_TOKENS: unsetWhenBlank(
+    z.coerce.number().int().positive().optional(),
+  ),
+  /**
+   * When true, a job's model calls count against its dollar limit
+   * (`max_usd_est`) as well as its actions do. Off, only actions and search
+   * fees count there.
+   */
+  MELETE_JOB_USD_COUNTS_MODELS: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  ),
+  /**
+   * Operator alerts on spending, through the same webhook and email as the
+   * health alerts. Each is off unless set: the last hour's model spending
+   * above this many times the installation's usual hour (the median hour of
+   * the week before), or one person above this percent of today's spending.
+   * Neither fires below MELETE_ALERT_SPEND_MIN_USD. docs/DEPLOYMENT.md, "Alerts".
+   */
+  MELETE_ALERT_SPEND_HOURLY_MULTIPLE: unsetWhenBlank(z.coerce.number().min(1).optional()),
+  MELETE_ALERT_SPEND_PERSON_PERCENT: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(100).optional(),
+  ),
+  MELETE_ALERT_SPEND_MIN_USD: unsetWhenBlank(z.coerce.number().nonnegative().default(1)),
   /** Percent of a limit at which the person is told it is close. */
   MELETE_SPEND_NOTICE_PERCENT: unsetWhenBlank(z.coerce.number().int().min(1).max(99).default(80)),
   /** Per-million-token prices that replace the built-in estimates, as JSON. */
