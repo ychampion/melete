@@ -8,6 +8,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
+import type { SignalSource } from '../signals/types.ts';
 import {
   credentialRefused,
   type EmailConnection,
@@ -228,6 +229,23 @@ export class EmailConnector implements Connector {
         work(transport(imap, password)),
       );
   }
+
+  /**
+   * New mail for the signal poller: headers only, read from the mailbox's own
+   * change feed, with the same inbox hygiene the tools apply.
+   */
+  readonly signals: SignalSource = {
+    stream: 'mail',
+    changes: (cursor, options) =>
+      this.use(async (transport) => {
+        if (!transport.changes) throw new Error('This mailbox cannot list what changed');
+        const read = await transport.changes(cursor, options);
+        return {
+          cursor: read.cursor,
+          messages: read.messages.filter((message) => !sensitiveInboxMessage(message)),
+        };
+      }),
+  };
 
   private assertContext(action: Action, ctx: ConnectorContext): void {
     if (

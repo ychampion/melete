@@ -508,17 +508,25 @@ await client.api.POST('/jobs/{jobId}/triggers', {
   body: {
     kind: 'watch',
     connection_id,
-    event_name: 'mail.new',
+    event_name: 'mail.received',
     predicate: {
       all: [
-        { field: 'from.address', op: 'eq', value: 'billing@example.test' },
+        { field: 'sender_domain', op: 'eq', value: 'billing.example' },
         { field: 'subject', op: 'contains', value: 'overdue' },
-        { field: 'amount', op: 'gt', value: 100 },
       ],
     },
   },
 });
 ```
+
+The event name must be one the connection reports: a mailbox reports
+`mail.received` (and `mail.new` for a reply to a chase), a calendar reports
+`calendar.event.created`, `calendar.event.changed` and
+`calendar.event.cancelled`. A trigger on any other name is refused when it is
+made, with the names the connection does report (`a watch on an event its
+connection never produces is refused`). How the service reads those events
+from Gmail, Outlook, IMAP and calendars, and what each observation carries, is
+in [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md).
 
 The language is deliberately too small to hide a decision in: dotted field paths
 into the observation, at most five clauses, all of which must hold, and six

@@ -331,6 +331,10 @@ export class PolicyService {
           .where(eq(connection.id, id))
           .returning();
         if (!updated) throw new Error('Locked connection disappeared');
+        // What was read from the old account, and where its feed was read to,
+        // say nothing about the next one; a revoked one is read no more.
+        await tx.execute(sql`delete from source_cursor where connection_id = ${id}`);
+        await tx.execute(sql`delete from subject_state where connection_id = ${id}`);
         if (request.kind === 'revoke')
           await tx
             .update(trigger)
