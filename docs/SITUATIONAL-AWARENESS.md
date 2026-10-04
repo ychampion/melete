@@ -30,11 +30,27 @@ Each account and stream (its mail, its calendar) has one cursor in
 last reads went. A first read starts the cursor at the account's present
 state; what was already there is where watching begins, not news.
 
-An account is read while some live trigger listens for one of its kinds, as
-often as the most frequent of those triggers asks (`poll_seconds`, 300 by
-default, never more often than once a minute). Which accounts those are is
-decided from the database alone. When nobody listens to an account any more,
-its cursor and kept fields go.
+### Which accounts are watched
+
+Every mailbox and calendar a person connects in their own space is watched,
+with nothing to set up: its new mail and the changes to its meetings arrive as
+observations whether or not any work is waiting for them yet (`a newly connected
+mailbox produces mail.received with no trigger`). Each one has a switch in
+Settings, under Connections: **Watch this account for changes**. Turning it off
+stops those reads at once and forgets where the account was read to and what
+was kept about its calendar (`switching it off stops reads and clears its
+cursor`); turning it on again starts watching afresh from then. Work that set
+its own trigger on the account still hears it.
+
+A room's own accounts, such as a team mailbox, are watched only once the room's
+owners turn the switch on (`a room account is not observed by default`). What
+they report still reaches only the work the sharing rule gives them to.
+
+A watched account is read every 5 minutes. A trigger that asks for more often
+gets it (`poll_seconds`, never more often than once a minute), and an account
+nobody watches and no trigger listens to is not read at all. Which accounts
+those are is decided from the database alone. When an account stops being
+watched, its cursor and kept fields go.
 
 One service instance reads at a time, under the `signal-poller` lease, and opens
 the connector of an account installed through another instance when that
@@ -55,7 +71,8 @@ hygiene the mail tools apply holds here too, and a stricter rule on the subject
 line is added: a subject that names a code, a PIN, a passcode, a verification,
 a sign-in or two-factor step, or that puts a 4 to 8 digit number beside such a
 word, makes no observation (`a sign-in code message is never an observation`,
-`every code-shaped subject is withheld, and ordinary mail is not`). The rule
+`every code-shaped subject is withheld, and ordinary mail is not`, `a code mail
+is still dropped`). The rule
 leans to withholding: a code mail missed costs little.
 
 A read that changes hands mid-way is dropped. It remembers the connection's
@@ -217,8 +234,10 @@ job's own record of what woke it stays with the job.
 
 - `apps/melete/test/integration/signals.test.ts`: reading, de-duplication, the
   catalog, the sharing rule, standing work woken by a calendar change, and
-  nothing read for an account nobody listens to (`nobody listening means nothing
-  is read and nothing is kept`).
+  nothing read for an account nobody listens to with watching off (`with
+  watching off, nobody listening means nothing is read and nothing is kept`).
+- `apps/melete/test/integration/default-observation.test.ts`: accounts watched
+  by default, the switch, rooms, and code mail withheld on that path too.
 - `apps/melete/src/signals/occurrences.test.ts`: recurrence expansion with
   EXDATE, RDATE, moved and cancelled instances, and time zones.
 - `apps/melete/src/signals/observations.test.ts`: how a read becomes created,
