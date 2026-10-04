@@ -69,11 +69,16 @@ receives no private memory.
 Email hygiene matches the known shapes of one-time codes, password resets and
 magic links, tested by `withholds OTP, password resets and magic links from
 search and direct read`; a sensitive message in any other shape is read like
-any other message. The same hygiene holds for the mail observations that wake
-waiting work (`a sign-in code message is never an observation`). Those
-observations carry headers only, marked as outside content, and a watch tests
-them with a fixed, deterministic predicate before anything wakes
-([SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)). Approval fatigue, misleading summaries, harmful reads within
+any other message. The mail observations that wake waiting work keep that
+hygiene and add a stricter rule on the subject line, which withholds anything
+that names a code, a PIN or a verification, or sets a 4 to 8 digit number beside
+such a word (`every code-shaped subject is withheld, and ordinary mail is not`).
+Those observations carry headers only, marked as outside content, a watch tests
+them with a fixed, deterministic predicate before anything wakes, and revoking
+the connection removes every one no job took in
+([SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)). A calendar feed is
+someone else's file, so expanding its repeating events is held to a fixed
+budget per read. Approval fatigue, misleading summaries, harmful reads within
 granted scope and social engineering of the owner rest on the owner's judgement
 rather than on these checks.
 
