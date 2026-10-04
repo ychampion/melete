@@ -986,7 +986,10 @@ withDb('installing each kind of connection through the API', () => {
     const created = await h.install(body);
     expect(created.status).toBe(201);
     const installed = connectionResponse.parse(created.json);
-    expect(installed.connection).toMatchObject({ status: 'active', scopes: ['calendar.list'] });
+    expect(installed.connection).toMatchObject({
+      status: 'active',
+      scopes: ['calendar.list', 'calendar.freebusy'],
+    });
     expect(installed.check?.code).toBe('ok');
     const id = installed.connection.id;
     expect(await h.sealed(id)).toStartWith('sealed-box-v1:');
@@ -1406,13 +1409,14 @@ withDb('installing each kind of connection through the API', () => {
     });
     try {
       // Without the file: the stored configuration selects CalDAV, and a row with none selects nothing.
-      expect(fromRows.get(pinned)?.manifest.tools).toHaveLength(4);
+      expect(fromRows.get(pinned)?.manifest.tools).toHaveLength(5);
       expect(fromRows.get(bare)).toBeUndefined();
       // With it: the file's imported ICS replaces the stored CalDAV, and the bare row gets a connector.
       expect(fromFile.get(pinned)?.manifest.tools.map((tool) => tool.name)).toEqual([
         'calendar.list',
+        'calendar.freebusy',
       ]);
-      expect(fromFile.get(bare)?.manifest.tools).toHaveLength(4);
+      expect(fromFile.get(bare)?.manifest.tools).toHaveLength(5);
     } finally {
       await fromRows.close();
       await fromFile.close();

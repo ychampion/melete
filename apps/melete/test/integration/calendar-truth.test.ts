@@ -258,10 +258,14 @@ databaseTest(
   'a tentative hold can be confirmed or released, and a released hold leaves nothing',
   async () => {
     const ctx = await setup();
+    // A repeated read in one attempt reuses its first answer, so each read
+    // asks for a window a few seconds longer.
+    let reads = 0;
     const busy = async () => {
+      reads += 1;
       const read = await ctx.propose('calendar.freebusy', {
         start: '2026-11-11',
-        end: '2026-11-12',
+        end: `2026-11-12T00:00:${String(reads).padStart(2, '0')}Z`,
       });
       expect(read.status).toBe('succeeded');
       const [row] = await ctx.sql`select receipt from action where id = ${read.action_id}`;
