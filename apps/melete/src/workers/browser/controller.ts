@@ -626,6 +626,14 @@ export class BrowserController {
         const after = await this.transition(page, cdp);
         if (before !== after || action.kind === 'open' || action.kind === 'submit')
           return this.observe(command);
+        // A step that stayed on the same page still shows what it did, submit
+        // intents with the values now in the form included, so the next step
+        // needs no separate look. A page it cannot observe says only that.
+        try {
+          return await this.observe(command);
+        } catch (error) {
+          if (!(error instanceof BrowserFault)) throw error;
+        }
         return {
           session_id: session.id,
           control_epoch: session.control_epoch,
