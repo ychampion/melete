@@ -36,3 +36,24 @@ export function providerAddress(env: Env): string | undefined {
     (provider) => provider.name === env.MELETE_DEFAULT_PROVIDER,
   )?.baseUrl;
 }
+
+/**
+ * How an attempt's own model is reached, for the privacy checks made before it
+ * starts: the protocol it speaks and its address, from the address the owner
+ * connected in the app when there is one, else the environment's.
+ */
+export function attemptEngine(
+  env: Env,
+  addresses?: { providerAddress(provider: string): Promise<string | undefined> },
+): (model: { provider: string; model: string }) => Promise<{
+  protocol: Protocol;
+  providerUrl?: string;
+}> {
+  const configured = providersFromEnv(env as unknown as Record<string, string | undefined>);
+  return async (model) => ({
+    protocol: protocolForApiMode(modelApiMode(model.provider, model.model)),
+    providerUrl:
+      (await addresses?.providerAddress(model.provider)) ??
+      configured.find((provider) => provider.name === model.provider)?.baseUrl,
+  });
+}

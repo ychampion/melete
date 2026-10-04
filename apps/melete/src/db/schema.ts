@@ -227,6 +227,32 @@ export const modelVision = pgTable(
 );
 
 /**
+ * A person's secondary model, beside the installation's primary, and which of
+ * their work runs on it. One row per person at most; with none, or with no
+ * model in it, all their work runs on the primary.
+ */
+export const modelSecondary = pgTable(
+  'model_secondary',
+  {
+    principalId: text('principal_id')
+      .primaryKey()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    provider: text('provider'),
+    model: text('model'),
+    /** Short side calls: memory reads and voice asides. */
+    sideTasks: text('side_tasks').notNull().default('secondary'),
+    /** Routines and work that wakes on a trigger. */
+    scheduled: text('scheduled').notNull().default('primary'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('model_secondary_pair', sql`(${t.provider} is null) = (${t.model} is null)`),
+    check('model_secondary_side_tasks', sql`${t.sideTasks} in ('primary', 'secondary')`),
+    check('model_secondary_scheduled', sql`${t.scheduled} in ('primary', 'secondary')`),
+  ],
+);
+
+/**
  * What a provider's own model list said about which of its models read
  * images, kept from the last time the list was fetched. A provider's rows are
  * replaced whenever its list is fetched again. Shown to the owner; it never
