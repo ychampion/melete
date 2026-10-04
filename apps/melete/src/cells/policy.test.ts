@@ -637,3 +637,69 @@ describe('melete-cells refuses a container outside its profiles', () => {
     ).toEqual({ Id: 'x', Config: { Labels: {} } });
   });
 });
+
+describe('melete-cells reads a body the way the engine will', () => {
+  const EXEC = 'e'.repeat(64);
+  const SANDBOX_CELL = 'melete-sbx-session1';
+  const sandboxLabels: Labels = {
+    'com.melete.sandbox': 'v1',
+    'melete.project': SANDBOX_PROJECT,
+  };
+  async function withSandboxExec() {
+    const engine = new Engine();
+    engine.containers.set(SANDBOX_CELL, {
+      Id: SANDBOX_CELL,
+      Name: `/${SANDBOX_CELL}`,
+      Labels: sandboxLabels,
+      Running: true,
+    });
+    engine.execs.set(EXEC, { ContainerID: SANDBOX_CELL });
+    return engine;
+  }
+
+  // Go's encoding/json matches a struct field to a key case-insensitively and
+  // takes the last match, so a field repeated under another case decodes to the
+  // later value though we validate the earlier one. The validated object must be
+  // the one the engine decodes.
+  test('refuses an exec that is detached under another case of the key', async () => {
+    const engine = await withSandboxExec();
+    // The honest, attached start is accepted.
+    expect(
+      (await engine.ask('POST', `/exec/${EXEC}/start`, { Detach: false, Tty: false })).allow,
+    ).toBe(true);
+    // Go would read Detach:true from the trailing lower-case key.
+    expect(
+      (await engine.ask('POST', `/exec/${EXEC}/start`, { Detach: false, Tty: false, detach: true }))
+        .allow,
+    ).toBe(false);
+    // And the exec start now carries no field but Detach and Tty.
+    expect(
+      (
+        await engine.ask('POST', `/exec/${EXEC}/start`, {
+          Detach: false,
+          Tty: false,
+          ConsoleSize: [1, 1],
+        })
+      ).allow,
+    ).toBe(false);
+  });
+
+  test('refuses a container body that repeats a field under another case', async () => {
+    const engine = await engineWithAttemptNetwork();
+    // The unchanged request is accepted.
+    expect(
+      (await engine.ask('POST', `/containers/create?name=${ATTEMPT}`, attemptBody(ATTEMPT))).allow,
+    ).toBe(true);
+    // RestartPolicy.Name carries no exact-case allow-list of its own, yet Go would
+    // read the trailing `name:"always"`; the collision is refused outright.
+    expect(
+      (
+        await engine.ask(
+          'POST',
+          `/containers/create?name=${ATTEMPT}`,
+          attemptBody(ATTEMPT, {}, { RestartPolicy: { Name: 'no', name: 'always' } }),
+        )
+      ).allow,
+    ).toBe(false);
+  });
+});
