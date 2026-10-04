@@ -1,6 +1,9 @@
 /**
- * The Melete service. One process in v0.1 with separate modules and separate
- * database roles: api, jobs, broker, gateway, connectors, knowledge, events.
+ * The Melete service. One process with separate modules: api, jobs, broker,
+ * gateway, connectors, knowledge, events. In Compose its database role cannot
+ * read the `secret` table; only the secret store, on the effects role's pool, can
+ * (db/roles.ts). It holds no Docker socket: melete-cells does, and starts
+ * containers for it from fixed profiles only (cells/policy.ts).
  *
  * Modules register their API surfaces against injected durable dependencies.
  * The public API serves /health, the job and account surfaces, and the
@@ -70,9 +73,11 @@ import {
 } from './connectors/configured.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
+import { useEffectsPool } from './connectors/secrets.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
-import { migrateDatabase } from './db/migrate.ts';
+import { assertMigrated, migrateDatabase } from './db/migrate.ts';
+import { checkRoles } from './db/roles.ts';
 import { owner } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { moveWorkspaceScreensUntilDone } from './devices/screens.ts';
@@ -101,7 +106,7 @@ import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { QuestionService } from './jobs/questions.ts';
-import { startQueue } from './jobs/queue.ts';
+import { queueCreatesSchema, startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
@@ -158,7 +163,7 @@ import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
-import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
+import { DockerHermesRuntimeAdapter, DockerSocketApi, endpointName } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
@@ -169,6 +174,7 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { dockerEndpoint } from './sandbox/docker-default.ts';
 import { mountSandboxPreviews, previewsFor, type SandboxPreviews } from './sandbox/preview.ts';
 import { PREVIEW_PREFIX } from './sandbox/preview-path.ts';
 import { startProcessMonitor } from './sandbox/process-monitor.ts';
@@ -615,12 +621,18 @@ export async function bootstrap(
     process.stderr.write(`WARNING: ${warning}\n`);
   // An engine the supervisor cannot drive is named here, before the database is
   // opened or migrated, instead of as a Docker 400 on the first attempt.
+  // With the cell service configured, it holds the socket and this service reaches the engine through it.
+  const docker = dockerEndpoint(env);
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
-    await assertDockerEngine(
-      new DockerSocketApi(env.MELETE_DOCKER_SOCKET),
-      env.MELETE_DOCKER_SOCKET,
-    );
+    await assertDockerEngine(new DockerSocketApi(docker), endpointName(docker));
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
+  // With separate database roles, the one role that may read the secret table
+  // has a pool of its own, and only the secret store uses it.
+  const effectsHandle =
+    handle && env.MELETE_EFFECTS_DATABASE_URL
+      ? openDatabase(env.MELETE_EFFECTS_DATABASE_URL, 4)
+      : null;
+  useEffectsPool(effectsHandle?.sql);
   // One privacy router for this service, over its database, handed to every model
   // gateway it opens, the attempt gate and the settings routes.
   const privacy = handle ? servicePrivacyRouter(handle.sql, env) : defaultPrivacyRouter();
@@ -727,6 +739,11 @@ export async function bootstrap(
       () => instances?.stop(),
       () => queue?.stop(),
       () => handle?.close(),
+      async () => {
+        if (!effectsHandle) return;
+        useEffectsPool(undefined);
+        await effectsHandle.close();
+      },
     ]) {
       try {
         await stop();
@@ -738,7 +755,13 @@ export async function bootstrap(
   };
   try {
     if (handle) {
-      await migrateDatabase(handle);
+      // With separate roles the setup step migrated as the schema's owner; this
+      // service checks that every migration ran and that its role cannot read
+      // a sealed secret, and refuses to start otherwise.
+      if (env.DATABASE_URL && env.MELETE_EFFECTS_DATABASE_URL) {
+        await assertMigrated(handle);
+        await checkRoles({ api: env.DATABASE_URL, effects: env.MELETE_EFFECTS_DATABASE_URL });
+      } else await migrateDatabase(handle);
       // Recorded before this instance starts anything another could remove.
       instances = new InstanceRegistry(handle.sql, instanceId(env.MELETE_INSTANCE_ID));
       await instances.start();
@@ -781,7 +804,7 @@ export async function bootstrap(
         const hostname = process.env.HOSTNAME ?? '';
         stdioLauncher = new DockerStdioLauncher({
           project: env.MELETE_COMPOSE_PROJECT,
-          socket: env.MELETE_DOCKER_SOCKET,
+          socket: docker,
           selfId: /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(hostname) ? hostname : undefined,
           egressPort: env.MELETE_MCP_EGRESS_PORT,
           nodeImage: env.MELETE_MCP_NODE_IMAGE,
@@ -874,7 +897,8 @@ export async function bootstrap(
       events = new EventStream(handle);
       await events.start();
     }
-    if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
+    if (env.DATABASE_URL)
+      queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
     runs = jobs ? new RunService(jobs) : undefined;
@@ -950,7 +974,7 @@ export async function bootstrap(
         supervisedRuntime = new DockerHermesRuntimeAdapter({
           project: env.MELETE_COMPOSE_PROJECT,
           image: env.MELETE_RUNTIME_IMAGE,
-          socket: env.MELETE_DOCKER_SOCKET,
+          socket: docker,
           workRoot: env.MELETE_WORK_DIR,
           workVolume: env.MELETE_WORK_VOLUME,
           probeUrl: env.MELETE_RUNTIME_URL,

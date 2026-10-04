@@ -25,9 +25,11 @@ type PhysicalRecord = { records: number; fts: number; head: string; history: str
 const seedRecord = `
 import { databaseSpaces } from './apps/melete/src/knowledge/spaces.ts';
 import { openDatabase } from './apps/melete/src/db/client.ts';
+import { withFileSettings } from './apps/melete/src/env.ts';
 import { commitRecord, serializeRecord } from '@melete/knowledge';
 const data = JSON.parse(process.env.MELETE_RETRACTION_FIXTURE);
-const handle = openDatabase(process.env.DATABASE_URL);
+// The service's container is given its address as a file.
+const handle = openDatabase(withFileSettings(process.env).DATABASE_URL);
 try {
   const ref = await databaseSpaces(handle.db, process.env.MELETE_SPACES_DIR).byId(data.spaceId);
   if (!ref) throw new Error('The catalog space is unavailable');

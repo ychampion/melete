@@ -8,9 +8,11 @@
  * children are deleted before their parents. Everything here is safe to run
  * twice: a repeated phase deletes nothing the first pass left.
  */
+
 import { resolve } from 'node:path';
 import { initSpace } from '@melete/knowledge';
 import type { Sql, TransactionSql } from 'postgres';
+import { PostgresSecretRepository } from '../connectors/secrets.ts';
 import { PathHeld, removeConfined } from '../paths.ts';
 import { LocalWorkspaceFs, type WorkspaceFs } from '../runtime/workspace-fs.ts';
 
@@ -191,15 +193,18 @@ const SPACE_KEYED_OPERATIONAL = [
 /**
  * Phase 8. This order is what satisfies the two `restrict` constraints: jobs
  * and actions are already gone, so an agent and a connection can finally go.
- * A secret goes last because a connection points at one.
+ * A secret goes last because a connection points at one. Secrets are removed
+ * by the one role that may touch them (connectors/secrets.ts), after the
+ * connections; a pass interrupted between the two finds the connections gone
+ * and removes the secrets on its next run.
  */
 export async function sweepPrincipals(raw: Sql, spaceId: string, hold?: LeaseHold): Promise<void> {
   await raw.begin(async (tx) => {
     await hold?.(tx);
     await tx`delete from agent where space_id = ${spaceId}`;
     await tx`delete from connection where space_id = ${spaceId}`;
-    await tx`delete from secret where space_id = ${spaceId}`;
   });
+  await new PostgresSecretRepository(raw).forgetSpace(spaceId);
 }
 
 /**

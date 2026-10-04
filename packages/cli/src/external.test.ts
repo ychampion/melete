@@ -142,7 +142,43 @@ describe('melete check with an external database', () => {
       'database.supported': 'ok',
       'database.external_url': 'ok',
       'database.tls': 'ok',
+      'database.roles': 'ok',
     });
+  });
+
+  test('melete check explains who creates the database roles, and checks the ones an administrator made', () => {
+    const verified = EXTERNAL_URL.replace('require', 'verify-full');
+    const role = (user: string) => verified.replace('melete:', `${user}:`);
+    const roles = (env: Record<string, string>) => {
+      const deployDir = temporaryDeployDir();
+      writeEnv(deployDir, { DATABASE_URL: verified, ...env });
+      contract(deployDir, { database: { external: true } });
+      return judge(deployDir).find((result) => result.id === 'database.roles');
+    };
+    const created = roles({});
+    expect(created?.level).toBe('ok');
+    expect(created?.detail).toContain('must be allowed to create roles');
+    expect(created?.detail).toContain('MELETE_API_DATABASE_URL');
+    expect(created?.detail).not.toContain(PASSWORD);
+    const given = {
+      MELETE_MIGRATE_DATABASE_URL: role('app_migrate'),
+      MELETE_API_DATABASE_URL: role('app_api'),
+      MELETE_EFFECTS_DATABASE_URL: role('app_effects'),
+    };
+    expect(roles(given)).toMatchObject({ level: 'ok' });
+    expect(roles(given)?.detail).not.toContain(PASSWORD);
+    expect(roles({ MELETE_API_DATABASE_URL: role('app_api') })?.level).toBe('fail');
+    // The service's role may not be the operator's own, which reads everything.
+    expect(roles({ ...given, MELETE_API_DATABASE_URL: verified })?.level).toBe('fail');
+    expect(
+      roles({
+        ...given,
+        MELETE_EFFECTS_DATABASE_URL: role('app_effects').replace(
+          'db.example.net',
+          'other.example.net',
+        ),
+      })?.level,
+    ).toBe('fail');
   });
 
   test('sslmode=require is encrypted but unchecked, so it is a warning that names verify-full', () => {
@@ -334,7 +370,7 @@ describe('reaching an external database', () => {
   });
 
   test('status judges the services the installation runs, so a database elsewhere is not a missing postgres', () => {
-    expect(statusServices(external)).toEqual(['melete', 'runtime', 'web']);
+    expect(statusServices(external)).toEqual(['melete-cells', 'melete', 'runtime', 'web']);
     expect(statusServices(config({}))).toEqual([...SERVICES]);
     const facts: StatusFacts = {
       docker: [],
@@ -342,7 +378,7 @@ describe('reaching an external database', () => {
       env: {},
       freeBytes: 50 * 1024 ** 3,
       images: [],
-      services: ['melete', 'runtime', 'web'].map((service) => ({
+      services: ['melete-cells', 'melete', 'runtime', 'web'].map((service) => ({
         service,
         state: 'running',
         health: 'healthy',
