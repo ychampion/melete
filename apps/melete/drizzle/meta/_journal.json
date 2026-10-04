@@ -713,6 +713,13 @@
       "idx": 101,
       "version": "7",
       "when": 1789232400081,
+      "tag": "0101_background_meter",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1789232400082,
       "tag": "0104_calendar_freebusy_scope",
       "breakpoints": true
     }

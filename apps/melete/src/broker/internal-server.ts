@@ -58,6 +58,8 @@ export function createInternalServer(options: {
   spending?: GatewayOptions['spending'];
   /** The operator's vision model and fallbacks for an attempt's model. */
   routes?: ConstructorParameters<typeof PostgresGatewayBudget>[0]['routes'];
+  /** Set, each model call counts against its job's dollar limit at these prices. */
+  modelDollars?: ConstructorParameters<typeof PostgresGatewayBudget>[0]['modelDollars'];
   /** How hard a reasoning model thinks on an agent turn. */
   reasoningEffort?: GatewayOptions['reasoningEffort'];
   /** The files people sent in chat, for the model to see as files where allowed. */
@@ -102,6 +104,7 @@ export function createInternalServer(options: {
     sql: options.sql,
     capabilityKey: options.capabilityKey,
     ...(options.routes ? { routes: options.routes } : {}),
+    ...(options.modelDollars ? { modelDollars: options.modelDollars } : {}),
   });
   const reads = createActionReadApi({
     sql: options.sql,

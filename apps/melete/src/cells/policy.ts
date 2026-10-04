@@ -23,6 +23,8 @@
  * tests exercise it without Docker.
  */
 
+import { pullsFromPublicRegistry } from '@melete/contracts';
+
 export type Profile = 'runtime' | 'sandbox' | 'mcp';
 
 export type CellsPolicyConfig = {
@@ -413,18 +415,14 @@ function ownedFilter(query: URLSearchParams): boolean {
 const onlyKeys = (query: URLSearchParams, allowed: readonly string[]) =>
   [...query.keys()].every((key) => allowed.includes(key));
 
-/** Image references a pull may name: the configured runners', or one pinned by its digest. */
+/**
+ * Image references a pull may name: the configured runners', or one pinned by
+ * its digest on a public registry. The engine pulls from the host's network
+ * and follows the registry wherever it sends it, so a registry chosen by name
+ * alone could still point it at the host's own or private ports.
+ */
 function pullable(reference: string, config: CellsPolicyConfig): boolean {
-  if (config.mcpImages.includes(reference)) return true;
-  const match =
-    /^([a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?)\/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/.exec(
-      reference,
-    );
-  if (!match) return false;
-  // A registry named by address, or as the host itself, would have the engine knock on private ports.
-  const host = (match[1] ?? '').replace(/:\d+$/, '');
-  const last = host.split('.').at(-1) ?? '';
-  return /[a-z]/.test(last) && host !== 'localhost' && !host.endsWith('.localhost');
+  return config.mcpImages.includes(reference) || pullsFromPublicRegistry(reference);
 }
 
 /** Judge one request to the engine. */

@@ -3661,9 +3661,9 @@ export function buildOpenApiDocument() {
             summary: 'Choose this account’s secondary model',
             description:
               'A second model for cheaper work beside the primary. It applies to work in the ' +
-              'owner’s spaces from the next call, as `secondary.uses` says; chats stay on the ' +
-              'primary, and the action reviewer never uses it. The provider must already have a ' +
-              'key or a sign-in.',
+              'owner’s spaces from the next call, as `secondary.uses` says. The person’s own ' +
+              'messages stay on the primary, and the action reviewer never uses it. The provider ' +
+              'must already have a key or a sign-in.',
             requestBody: json(setSecondaryModelRequest),
             responses: {
               '200': jsonResponse('Model settings', modelSettingsResponse),

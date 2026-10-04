@@ -32,6 +32,7 @@ import { QUEUES } from './queue.ts';
 import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
+import { personStarted } from './wake-guard.ts';
 
 export const eventDelivery = z.object({
   connection_id: prefixedId(ID_PREFIXES.connection),
@@ -707,7 +708,15 @@ export class TriggerService {
     });
   }
 
-  async fireSchedule(triggerId: string, occurrenceId: string): Promise<void> {
+  /**
+   * One occurrence of a schedule. `byPerson` marks a run the person asked for
+   * (a routine's test): it is recorded as theirs only when the run fires.
+   */
+  async fireSchedule(
+    triggerId: string,
+    occurrenceId: string,
+    byPerson?: { principalId: string | null },
+  ): Promise<void> {
     await this.jobs.transaction(async (tx) => {
       const [registration] = await tx.select().from(trigger).where(eq(trigger.id, triggerId));
       if (!registration?.enabled || registration.kind !== 'schedule') return;
@@ -722,7 +731,10 @@ export class TriggerService {
         },
         dedupKey: `${registration.id}:schedule:${occurrenceId}`,
       });
-      if (received) await this.registerWait(tx, row);
+      if (!received) return;
+      const woke = await this.registerWait(tx, row);
+      if (byPerson && woke.state === 'queued')
+        await personStarted(tx, row.id, byPerson.principalId);
     });
   }
 

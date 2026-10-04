@@ -450,8 +450,19 @@ export const attempt = pgTable(
       .default('local_process_interrupted'),
     runtimeCursor: integer('runtime_cursor').notNull().default(-1),
     inputCursor: bigint('input_cursor', { mode: 'number' }).notNull().default(0),
+    /**
+     * `interactive` when a person is waiting on this attempt (their message,
+     * their answer or decision, or the turn they started); `background` when a
+     * trigger, schedule or timer woke it. Its model calls are counted under it.
+     */
+    usageClass: text('class').notNull().default('interactive'),
+    /** The trigger whose event woke this attempt, when one did. */
+    triggerId: text('trigger_id'),
   },
-  (t) => [uniqueIndex('attempt_job_epoch_idx').on(t.jobId, t.epoch)],
+  (t) => [
+    uniqueIndex('attempt_job_epoch_idx').on(t.jobId, t.epoch),
+    check('attempt_class', sql`${t.usageClass} in ('interactive', 'background')`),
+  ],
 );
 
 export const action = pgTable(
@@ -1368,11 +1379,57 @@ export const modelUsage = pgTable(
     cachedInputTokens: integer('cached_input_tokens').notNull().default(0),
     costUsd: doublePrecision('cost_usd').notNull().default(0),
     usageEstimated: boolean('usage_estimated').notNull().default(false),
+    /** `interactive` when a person was waiting on the call, else `background`. */
+    usageClass: text('class').notNull().default('interactive'),
+    /**
+     * Which step made the call: `interactive` (an agent turn a person waits
+     * on), `t2` (an agent turn something else woke), `service` (one of the
+     * service's own side calls), or `t1` (a batched look at what came in).
+     */
+    tier: text('tier').notNull().default('interactive'),
+    /** The trigger whose event woke the work that made the call, when one did. */
+    triggerId: text('trigger_id'),
+    /** The situation behind the call, when one is. */
+    situationId: text('situation_id'),
+    /** Input at full-price-equivalent tokens: cached reads and cache writes at their own prices. */
+    chargedInputTokens: integer('charged_input_tokens').notNull().default(0),
+    /** The part of the input the provider wrote to its prompt cache. */
+    cacheWriteTokens: integer('cache_write_tokens').notNull().default(0),
   },
   (t) => [
     index('model_usage_created_idx').on(t.createdAt),
     index('model_usage_principal_idx').on(t.principalId, t.createdAt),
     index('model_usage_space_idx').on(t.spaceId, t.createdAt),
+    check('model_usage_class', sql`${t.usageClass} in ('interactive', 'background')`),
+  ],
+);
+
+/**
+ * One day of `model_usage`, summed per person, space, class, tier and
+ * purpose. Written for each finished UTC day, and recomputable from
+ * `model_usage` at any time; an empty person or space is ''.
+ */
+export const usageDay = pgTable(
+  'usage_day',
+  {
+    day: text('day').notNull(),
+    principalId: text('principal_id').notNull(),
+    spaceId: text('space_id').notNull(),
+    usageClass: text('class').notNull(),
+    tier: text('tier').notNull(),
+    purpose: text('purpose').notNull(),
+    calls: integer('calls').notNull(),
+    inputTokens: bigint('input_tokens', { mode: 'number' }).notNull(),
+    cachedInputTokens: bigint('cached_input_tokens', { mode: 'number' }).notNull(),
+    cacheWriteTokens: bigint('cache_write_tokens', { mode: 'number' }).notNull(),
+    chargedInputTokens: bigint('charged_input_tokens', { mode: 'number' }).notNull(),
+    outputTokens: bigint('output_tokens', { mode: 'number' }).notNull(),
+    costUsd: doublePrecision('cost_usd').notNull(),
+    computedAt: created(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.day, t.principalId, t.spaceId, t.usageClass, t.tier, t.purpose] }),
+    index('usage_day_principal_idx').on(t.principalId, t.day),
   ],
 );
 

@@ -23333,6 +23333,10 @@
                       ],
                       "description": "This account’s own model calls"
                     },
+                    "background": {
+                      "description": "The part of this account’s calls that ran in the background",
+                      "$ref": "#/components/schemas/__schema618"
+                    },
                     "installation": {
                       "anyOf": [
                         {
@@ -23348,12 +23352,16 @@
                       "type": "object",
                       "properties": {
                         "person": {
-                          "$ref": "#/components/schemas/__schema618"
+                          "$ref": "#/components/schemas/__schema619"
+                        },
+                        "background": {
+                          "description": "This account’s limits on background calls alone; its own messages never count here",
+                          "$ref": "#/components/schemas/__schema619"
                         },
                         "installation": {
                           "anyOf": [
                             {
-                              "$ref": "#/components/schemas/__schema618"
+                              "$ref": "#/components/schemas/__schema619"
                             },
                             {
                               "type": "null"
@@ -23367,6 +23375,22 @@
                         "installation"
                       ],
                       "additionalProperties": false
+                    },
+                    "by_purpose": {
+                      "description": "This month’s calls for this account, by purpose and class",
+                      "$ref": "#/components/schemas/__schema623"
+                    },
+                    "by_tier": {
+                      "description": "This month’s calls for this account, by tier",
+                      "$ref": "#/components/schemas/__schema627"
+                    },
+                    "days": {
+                      "description": "This account’s last 30 UTC days, oldest first",
+                      "$ref": "#/components/schemas/__schema628"
+                    },
+                    "background_per_person_day": {
+                      "description": "Background dollars per active person-day over the last seven finished days; only for the installation’s owner",
+                      "$ref": "#/components/schemas/__schema629"
                     },
                     "notice": {
                       "anyOf": [
@@ -23420,7 +23444,7 @@
                     "models": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema622"
+                        "$ref": "#/components/schemas/__schema630"
                       },
                       "description": "This month’s calls for this account, by the model that served them"
                     }
@@ -23466,7 +23490,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23533,7 +23557,7 @@
                         "models": {
                           "type": "array",
                           "items": {
-                            "$ref": "#/components/schemas/__schema637"
+                            "$ref": "#/components/schemas/__schema645"
                           },
                           "description": "The model ids the provider lists, sorted; empty if it lists none"
                         },
@@ -23577,7 +23601,7 @@
                         "status": {
                           "anyOf": [
                             {
-                              "$ref": "#/components/schemas/__schema638"
+                              "$ref": "#/components/schemas/__schema646"
                             },
                             {
                               "type": "null"
@@ -23669,7 +23693,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23737,7 +23761,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23796,7 +23820,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23844,7 +23868,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23914,7 +23938,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -23958,7 +23982,7 @@
           "model-providers"
         ],
         "summary": "Choose this account’s secondary model",
-        "description": "A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says; chats stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.",
+        "description": "A second model for cheaper work beside the primary. It applies to work in the owner’s spaces from the next call, as `secondary.uses` says. The person’s own messages stay on the primary, and the action reviewer never uses it. The provider must already have a key or a sign-in.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -23989,7 +24013,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -24037,7 +24061,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -24086,7 +24110,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema624"
+                  "$ref": "#/components/schemas/__schema632"
                 }
               }
             }
@@ -24131,7 +24155,7 @@
                     "providers": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema639"
+                        "$ref": "#/components/schemas/__schema647"
                       }
                     }
                   },
@@ -24188,7 +24212,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema639"
+                  "$ref": "#/components/schemas/__schema647"
                 }
               }
             }
@@ -24411,7 +24435,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema639"
+                  "$ref": "#/components/schemas/__schema647"
                 }
               }
             }
@@ -24496,7 +24520,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema639"
+                  "$ref": "#/components/schemas/__schema647"
                 }
               }
             }
@@ -25305,7 +25329,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema660"
+                  "$ref": "#/components/schemas/__schema668"
                 }
               }
             }
@@ -25358,7 +25382,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema660"
+                  "$ref": "#/components/schemas/__schema668"
                 }
               }
             }
@@ -25859,7 +25883,7 @@
                     "apps": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema665"
+                        "$ref": "#/components/schemas/__schema673"
                       }
                     }
                   },
@@ -25897,7 +25921,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema673"
+                  "$ref": "#/components/schemas/__schema681"
                 }
               }
             }
@@ -25940,7 +25964,7 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "$ref": "#/components/schemas/__schema666"
+                      "$ref": "#/components/schemas/__schema674"
                     },
                     "deleted": {
                       "type": "boolean",
@@ -26022,7 +26046,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema673"
+                  "$ref": "#/components/schemas/__schema681"
                 }
               }
             }
@@ -26091,7 +26115,7 @@
                       "pattern": "^\\/apps\\/view\\/[A-Za-z0-9._-]+\\/index\\.html$"
                     },
                     "version_id": {
-                      "$ref": "#/components/schemas/__schema669"
+                      "$ref": "#/components/schemas/__schema677"
                     },
                     "expires_at": {
                       "$ref": "#/components/schemas/__schema186"
@@ -26241,7 +26265,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema673"
+                  "$ref": "#/components/schemas/__schema681"
                 }
               }
             }
@@ -26317,7 +26341,7 @@
                   "type": "object",
                   "properties": {
                     "name": {
-                      "$ref": "#/components/schemas/__schema674"
+                      "$ref": "#/components/schemas/__schema682"
                     },
                     "state": {
                       "type": "string",
@@ -26413,7 +26437,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema675"
+                  "$ref": "#/components/schemas/__schema683"
                 }
               }
             }
@@ -26487,7 +26511,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema675"
+                  "$ref": "#/components/schemas/__schema683"
                 }
               }
             }
@@ -26683,15 +26707,15 @@
                             "type": "string"
                           },
                           "collection": {
-                            "$ref": "#/components/schemas/__schema674"
+                            "$ref": "#/components/schemas/__schema682"
                           },
                           "version_id": {
-                            "$ref": "#/components/schemas/__schema669"
+                            "$ref": "#/components/schemas/__schema677"
                           },
                           "by": {
                             "anyOf": [
                               {
-                                "$ref": "#/components/schemas/__schema667"
+                                "$ref": "#/components/schemas/__schema675"
                               },
                               {
                                 "type": "null"
@@ -30630,16 +30654,16 @@
         "type": "object",
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/__schema643"
+            "$ref": "#/components/schemas/__schema651"
           },
           "connection_id": {
-            "$ref": "#/components/schemas/__schema644"
+            "$ref": "#/components/schemas/__schema652"
           },
           "name": {
-            "$ref": "#/components/schemas/__schema645"
+            "$ref": "#/components/schemas/__schema653"
           },
           "platform": {
-            "$ref": "#/components/schemas/__schema646"
+            "$ref": "#/components/schemas/__schema654"
           },
           "capabilities": {
             "$ref": "#/components/schemas/DeviceCapabilitiesOutput"
@@ -30648,28 +30672,28 @@
             "$ref": "#/components/schemas/DeviceCapabilitiesOutput"
           },
           "folders": {
-            "$ref": "#/components/schemas/__schema652"
+            "$ref": "#/components/schemas/__schema660"
           },
           "cloud_screenshots": {
-            "$ref": "#/components/schemas/__schema653"
+            "$ref": "#/components/schemas/__schema661"
           },
           "status": {
-            "$ref": "#/components/schemas/__schema654"
+            "$ref": "#/components/schemas/__schema662"
           },
           "browser_connected": {
-            "$ref": "#/components/schemas/__schema655"
+            "$ref": "#/components/schemas/__schema663"
           },
           "companion_version": {
-            "$ref": "#/components/schemas/__schema656"
+            "$ref": "#/components/schemas/__schema664"
           },
           "paired_at": {
             "$ref": "#/components/schemas/__schema186"
           },
           "last_seen_at": {
-            "$ref": "#/components/schemas/__schema657"
+            "$ref": "#/components/schemas/__schema665"
           },
           "revoked_at": {
-            "$ref": "#/components/schemas/__schema658"
+            "$ref": "#/components/schemas/__schema666"
           }
         },
         "required": [
@@ -30694,7 +30718,7 @@
         "type": "object",
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/__schema659"
+            "$ref": "#/components/schemas/__schema667"
           },
           "expires_at": {
             "$ref": "#/components/schemas/__schema186"
@@ -30710,16 +30734,16 @@
         "type": "object",
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/__schema661"
+            "$ref": "#/components/schemas/__schema669"
           },
           "tool": {
-            "$ref": "#/components/schemas/__schema662"
+            "$ref": "#/components/schemas/__schema670"
           },
           "arguments": {
-            "$ref": "#/components/schemas/__schema663"
+            "$ref": "#/components/schemas/__schema671"
           },
           "deadline": {
-            "$ref": "#/components/schemas/__schema664"
+            "$ref": "#/components/schemas/__schema672"
           }
         },
         "required": [
@@ -30734,13 +30758,13 @@
         "type": "object",
         "properties": {
           "process_id": {
-            "$ref": "#/components/schemas/__schema676"
+            "$ref": "#/components/schemas/__schema684"
           },
           "path": {
-            "$ref": "#/components/schemas/__schema677"
+            "$ref": "#/components/schemas/__schema685"
           },
           "port": {
-            "$ref": "#/components/schemas/__schema678"
+            "$ref": "#/components/schemas/__schema686"
           },
           "expires_at": {
             "$ref": "#/components/schemas/__schema186"
@@ -30758,13 +30782,13 @@
         "type": "object",
         "properties": {
           "process_id": {
-            "$ref": "#/components/schemas/__schema676"
+            "$ref": "#/components/schemas/__schema684"
           },
           "state": {
-            "$ref": "#/components/schemas/__schema679"
+            "$ref": "#/components/schemas/__schema687"
           },
           "text": {
-            "$ref": "#/components/schemas/__schema680"
+            "$ref": "#/components/schemas/__schema688"
           }
         },
         "required": [
@@ -30778,10 +30802,10 @@
         "type": "object",
         "properties": {
           "process_id": {
-            "$ref": "#/components/schemas/__schema676"
+            "$ref": "#/components/schemas/__schema684"
           },
           "state": {
-            "$ref": "#/components/schemas/__schema681"
+            "$ref": "#/components/schemas/__schema689"
           }
         },
         "required": [
@@ -41038,13 +41062,23 @@
         "additionalProperties": false
       },
       "__schema618": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/__schema616"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema619": {
         "type": "object",
         "properties": {
           "month": {
-            "$ref": "#/components/schemas/__schema619"
+            "$ref": "#/components/schemas/__schema620"
           },
           "day": {
-            "$ref": "#/components/schemas/__schema619"
+            "$ref": "#/components/schemas/__schema620"
           }
         },
         "required": [
@@ -41053,13 +41087,13 @@
         ],
         "additionalProperties": false
       },
-      "__schema619": {
+      "__schema620": {
         "type": "object",
         "properties": {
           "usd": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema620"
+                "$ref": "#/components/schemas/__schema621"
               },
               {
                 "type": "null"
@@ -41070,7 +41104,7 @@
           "tokens": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema621"
+                "$ref": "#/components/schemas/__schema622"
               },
               {
                 "type": "null"
@@ -41085,16 +41119,169 @@
         ],
         "additionalProperties": false
       },
-      "__schema620": {
+      "__schema621": {
         "type": "number",
         "exclusiveMinimum": 0
       },
-      "__schema621": {
+      "__schema622": {
         "type": "integer",
         "exclusiveMinimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema622": {
+      "__schema623": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "purpose": {
+              "type": "string"
+            },
+            "class": {
+              "type": "string",
+              "enum": [
+                "interactive",
+                "background"
+              ],
+              "description": "`interactive`: a person was waiting on the call (their message, their answer, a voice aside, a scan they asked for, and the searches and reviews of that turn). `background`: nobody was (watches, standing runs, routines, memory, learning)."
+            },
+            "calls": {
+              "$ref": "#/components/schemas/__schema624"
+            },
+            "usd": {
+              "$ref": "#/components/schemas/__schema625"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/__schema626"
+            }
+          },
+          "required": [
+            "purpose",
+            "class",
+            "calls",
+            "usd",
+            "tokens"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema624": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema625": {
+        "type": "number",
+        "minimum": 0
+      },
+      "__schema626": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema627": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": [
+                "interactive",
+                "t1",
+                "t2",
+                "service"
+              ],
+              "description": "Which step made the call: `interactive` an agent turn a person waited on, `t2` an agent turn something else woke, `service` one of the service’s own side calls, `t1` a batched look at what came in."
+            },
+            "calls": {
+              "$ref": "#/components/schemas/__schema624"
+            },
+            "usd": {
+              "$ref": "#/components/schemas/__schema625"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/__schema626"
+            }
+          },
+          "required": [
+            "tier",
+            "calls",
+            "usd",
+            "tokens"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema628": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "day": {
+              "type": "string",
+              "description": "UTC day, YYYY-MM-DD"
+            },
+            "usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "background_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "day",
+            "usd",
+            "background_usd",
+            "calls"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema629": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "person_days": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Days a person made at least one model call, summed over people"
+              },
+              "median_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "p95_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "mean_usd": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "person_days",
+              "median_usd",
+              "p95_usd",
+              "mean_usd"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema630": {
         "type": "object",
         "properties": {
           "provider": {
@@ -41120,7 +41307,7 @@
           "role": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema623"
+                "$ref": "#/components/schemas/__schema631"
               },
               {
                 "type": "null"
@@ -41139,14 +41326,14 @@
         ],
         "additionalProperties": false
       },
-      "__schema623": {
+      "__schema631": {
         "type": "string",
         "enum": [
           "primary",
           "secondary"
         ]
       },
-      "__schema624": {
+      "__schema632": {
         "type": "object",
         "properties": {
           "active": {
@@ -41186,7 +41373,7 @@
               "provider_vision": {
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/__schema625"
+                    "$ref": "#/components/schemas/__schema633"
                   },
                   {
                     "type": "null"
@@ -41274,7 +41461,7 @@
                     "last_four": {
                       "anyOf": [
                         {
-                          "$ref": "#/components/schemas/__schema626"
+                          "$ref": "#/components/schemas/__schema634"
                         },
                         {
                           "type": "null"
@@ -41303,7 +41490,7 @@
                 "base_url": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/__schema627"
+                      "$ref": "#/components/schemas/__schema635"
                     },
                     {
                       "type": "null"
@@ -41359,19 +41546,19 @@
             "type": "object",
             "properties": {
               "model": {
-                "$ref": "#/components/schemas/__schema628"
+                "$ref": "#/components/schemas/__schema636"
               },
               "uses": {
-                "$ref": "#/components/schemas/__schema630"
+                "$ref": "#/components/schemas/__schema638"
               },
               "can_edit": {
-                "$ref": "#/components/schemas/__schema634"
+                "$ref": "#/components/schemas/__schema642"
               },
               "leaves_local_primary": {
-                "$ref": "#/components/schemas/__schema635"
+                "$ref": "#/components/schemas/__schema643"
               },
               "updated_at": {
-                "$ref": "#/components/schemas/__schema636"
+                "$ref": "#/components/schemas/__schema644"
               }
             },
             "required": [
@@ -41395,20 +41582,20 @@
         ],
         "additionalProperties": false
       },
-      "__schema625": {
+      "__schema633": {
         "type": "boolean"
       },
-      "__schema626": {
+      "__schema634": {
         "type": "string",
         "maxLength": 4
       },
-      "__schema627": {
+      "__schema635": {
         "type": "string"
       },
-      "__schema628": {
+      "__schema636": {
         "anyOf": [
           {
-            "$ref": "#/components/schemas/__schema629"
+            "$ref": "#/components/schemas/__schema637"
           },
           {
             "type": "null"
@@ -41416,7 +41603,7 @@
         ],
         "description": "This account’s secondary model; null uses the primary for everything"
       },
-      "__schema629": {
+      "__schema637": {
         "type": "object",
         "properties": {
           "provider": {
@@ -41437,14 +41624,14 @@
         ],
         "additionalProperties": false
       },
-      "__schema630": {
+      "__schema638": {
         "type": "object",
         "properties": {
           "side_tasks": {
-            "$ref": "#/components/schemas/__schema631"
+            "$ref": "#/components/schemas/__schema639"
           },
           "scheduled": {
-            "$ref": "#/components/schemas/__schema633"
+            "$ref": "#/components/schemas/__schema641"
           }
         },
         "required": [
@@ -41452,32 +41639,32 @@
           "scheduled"
         ],
         "additionalProperties": false,
-        "description": "Which work runs on the secondary. Applies only while a secondary model is set; chats with the person always run on the primary."
+        "description": "Which work runs on the secondary. Applies only while a secondary model is set. A chat answering the person’s own message always runs on the primary; one a watch or a schedule wakes, with nobody writing, follows `scheduled`."
       },
-      "__schema631": {
+      "__schema639": {
         "description": "Short side calls: reading chats into memory and quick voice replies. `secondary` by default once a secondary model is set. The check before a risky action never moves.",
-        "$ref": "#/components/schemas/__schema632"
+        "$ref": "#/components/schemas/__schema640"
       },
-      "__schema632": {
+      "__schema640": {
         "type": "string",
         "enum": [
           "primary",
           "secondary"
         ]
       },
-      "__schema633": {
+      "__schema641": {
         "description": "Scheduled and repeating work: routines, and work that wakes on a trigger. `primary` by default.",
-        "$ref": "#/components/schemas/__schema632"
+        "$ref": "#/components/schemas/__schema640"
       },
-      "__schema634": {
+      "__schema642": {
         "type": "boolean",
         "description": "Whether this account may set the secondary model (the owner)"
       },
-      "__schema635": {
+      "__schema643": {
         "type": "boolean",
-        "description": "The primary runs on this machine or network and the secondary does not, so work moved to the secondary leaves it. Side calls stay on a local primary either way."
+        "description": "The primary runs on this machine or network and the secondary does not, so work moved to the secondary leaves it, chats a watch or schedule wakes among it. Side calls stay on a local primary either way."
       },
-      "__schema636": {
+      "__schema644": {
         "anyOf": [
           {
             "$ref": "#/components/schemas/__schema186"
@@ -41487,15 +41674,15 @@
           }
         ]
       },
-      "__schema637": {
+      "__schema645": {
         "type": "string"
       },
-      "__schema638": {
+      "__schema646": {
         "type": "integer",
         "minimum": -9007199254740991,
         "maximum": 9007199254740991
       },
-      "__schema639": {
+      "__schema647": {
         "type": "object",
         "properties": {
           "provider": {
@@ -41522,7 +41709,7 @@
           "account": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema640"
+                "$ref": "#/components/schemas/__schema648"
               },
               {
                 "type": "null"
@@ -41544,7 +41731,7 @@
           "reason": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema641"
+                "$ref": "#/components/schemas/__schema649"
               },
               {
                 "type": "null"
@@ -41555,7 +41742,7 @@
           "message": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema642"
+                "$ref": "#/components/schemas/__schema650"
               },
               {
                 "type": "null"
@@ -41586,10 +41773,10 @@
         ],
         "additionalProperties": false
       },
-      "__schema640": {
+      "__schema648": {
         "type": "string"
       },
-      "__schema641": {
+      "__schema649": {
         "type": "string",
         "enum": [
           "refresh_expired",
@@ -41599,19 +41786,19 @@
           "access_expired"
         ]
       },
-      "__schema642": {
+      "__schema650": {
         "type": "string"
       },
-      "__schema643": {
+      "__schema651": {
         "type": "string"
       },
-      "__schema644": {
+      "__schema652": {
         "type": "string"
       },
-      "__schema645": {
+      "__schema653": {
         "type": "string"
       },
-      "__schema646": {
+      "__schema654": {
         "type": "string",
         "enum": [
           "windows",
@@ -41620,23 +41807,23 @@
           "other"
         ]
       },
-      "__schema647": {
+      "__schema655": {
         "type": "boolean"
       },
-      "__schema648": {
+      "__schema656": {
         "type": "boolean"
       },
-      "__schema649": {
+      "__schema657": {
         "type": "boolean"
       },
-      "__schema650": {
+      "__schema658": {
         "type": "boolean"
       },
-      "__schema651": {
+      "__schema659": {
         "default": false,
         "type": "boolean"
       },
-      "__schema652": {
+      "__schema660": {
         "type": "array",
         "items": {
           "type": "object",
@@ -41660,13 +41847,13 @@
           "additionalProperties": false
         }
       },
-      "__schema653": {
+      "__schema661": {
         "type": [
           "boolean",
           "null"
         ]
       },
-      "__schema654": {
+      "__schema662": {
         "type": "string",
         "enum": [
           "online",
@@ -41674,16 +41861,16 @@
           "revoked"
         ]
       },
-      "__schema655": {
+      "__schema663": {
         "type": "boolean"
       },
-      "__schema656": {
+      "__schema664": {
         "type": [
           "string",
           "null"
         ]
       },
-      "__schema657": {
+      "__schema665": {
         "anyOf": [
           {
             "$ref": "#/components/schemas/__schema186"
@@ -41693,7 +41880,7 @@
           }
         ]
       },
-      "__schema658": {
+      "__schema666": {
         "anyOf": [
           {
             "$ref": "#/components/schemas/__schema186"
@@ -41703,10 +41890,10 @@
           }
         ]
       },
-      "__schema659": {
+      "__schema667": {
         "type": "string"
       },
-      "__schema660": {
+      "__schema668": {
         "type": "object",
         "properties": {
           "device": {
@@ -41718,10 +41905,10 @@
         ],
         "additionalProperties": false
       },
-      "__schema661": {
+      "__schema669": {
         "type": "string"
       },
-      "__schema662": {
+      "__schema670": {
         "type": "string",
         "enum": [
           "status",
@@ -41738,23 +41925,23 @@
           "browser_screenshot"
         ]
       },
-      "__schema663": {
+      "__schema671": {
         "type": "object",
         "propertyNames": {
           "type": "string"
         },
         "additionalProperties": {}
       },
-      "__schema664": {
+      "__schema672": {
         "type": "integer",
         "minimum": -9007199254740991,
         "maximum": 9007199254740991
       },
-      "__schema665": {
+      "__schema673": {
         "type": "object",
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/__schema666"
+            "$ref": "#/components/schemas/__schema674"
           },
           "name": {
             "type": "string"
@@ -41766,10 +41953,10 @@
             ]
           },
           "publisher": {
-            "$ref": "#/components/schemas/__schema667"
+            "$ref": "#/components/schemas/__schema675"
           },
           "role": {
-            "$ref": "#/components/schemas/__schema668"
+            "$ref": "#/components/schemas/__schema676"
           },
           "current_version": {
             "anyOf": [
@@ -41777,19 +41964,19 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "$ref": "#/components/schemas/__schema669"
+                    "$ref": "#/components/schemas/__schema677"
                   },
                   "created_at": {
                     "$ref": "#/components/schemas/__schema186"
                   },
                   "created_by": {
-                    "$ref": "#/components/schemas/__schema670"
+                    "$ref": "#/components/schemas/__schema678"
                   },
                   "file_count": {
-                    "$ref": "#/components/schemas/__schema671"
+                    "$ref": "#/components/schemas/__schema679"
                   },
                   "total_bytes": {
-                    "$ref": "#/components/schemas/__schema672"
+                    "$ref": "#/components/schemas/__schema680"
                   }
                 },
                 "required": [
@@ -41825,11 +42012,11 @@
         ],
         "additionalProperties": false
       },
-      "__schema666": {
+      "__schema674": {
         "type": "string",
         "pattern": "^app_[0-9A-Za-z]{1,64}$"
       },
-      "__schema667": {
+      "__schema675": {
         "type": "object",
         "properties": {
           "id": {
@@ -41845,42 +42032,42 @@
         ],
         "additionalProperties": false
       },
-      "__schema668": {
+      "__schema676": {
         "type": "string",
         "enum": [
           "view",
           "manage"
         ]
       },
-      "__schema669": {
+      "__schema677": {
         "type": "string",
         "pattern": "^[0-9a-f]{64}$"
       },
-      "__schema670": {
+      "__schema678": {
         "anyOf": [
           {
-            "$ref": "#/components/schemas/__schema667"
+            "$ref": "#/components/schemas/__schema675"
           },
           {
             "type": "null"
           }
         ]
       },
-      "__schema671": {
+      "__schema679": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema672": {
+      "__schema680": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema673": {
+      "__schema681": {
         "type": "object",
         "properties": {
           "app": {
-            "$ref": "#/components/schemas/__schema665"
+            "$ref": "#/components/schemas/__schema673"
           },
           "files": {
             "type": "array",
@@ -41976,19 +42163,19 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "$ref": "#/components/schemas/__schema669"
+                      "$ref": "#/components/schemas/__schema677"
                     },
                     "created_at": {
                       "$ref": "#/components/schemas/__schema186"
                     },
                     "created_by": {
-                      "$ref": "#/components/schemas/__schema670"
+                      "$ref": "#/components/schemas/__schema678"
                     },
                     "file_count": {
-                      "$ref": "#/components/schemas/__schema671"
+                      "$ref": "#/components/schemas/__schema679"
                     },
                     "total_bytes": {
-                      "$ref": "#/components/schemas/__schema672"
+                      "$ref": "#/components/schemas/__schema680"
                     },
                     "current": {
                       "type": "boolean"
@@ -42058,10 +42245,10 @@
                           "const": "principal"
                         },
                         "principal": {
-                          "$ref": "#/components/schemas/__schema667"
+                          "$ref": "#/components/schemas/__schema675"
                         },
                         "role": {
-                          "$ref": "#/components/schemas/__schema668"
+                          "$ref": "#/components/schemas/__schema676"
                         },
                         "granted_at": {
                           "$ref": "#/components/schemas/__schema186"
@@ -42118,11 +42305,11 @@
         ],
         "additionalProperties": false
       },
-      "__schema674": {
+      "__schema682": {
         "type": "string",
         "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
       },
-      "__schema675": {
+      "__schema683": {
         "type": "object",
         "properties": {
           "updates": {
@@ -42131,7 +42318,7 @@
               "type": "object",
               "properties": {
                 "binding": {
-                  "$ref": "#/components/schemas/__schema674"
+                  "$ref": "#/components/schemas/__schema682"
                 },
                 "path": {
                   "type": "string"
@@ -42222,20 +42409,20 @@
         ],
         "additionalProperties": false
       },
-      "__schema676": {
+      "__schema684": {
         "type": "string",
         "pattern": "^prc_[0-9A-Z]{26}$"
       },
-      "__schema677": {
+      "__schema685": {
         "type": "string",
         "pattern": "^\\/previews\\/[A-Za-z0-9._-]+\\/$"
       },
-      "__schema678": {
+      "__schema686": {
         "type": "integer",
         "minimum": 1,
         "maximum": 65535
       },
-      "__schema679": {
+      "__schema687": {
         "type": "string",
         "enum": [
           "starting",
@@ -42246,11 +42433,11 @@
           "lost"
         ]
       },
-      "__schema680": {
+      "__schema688": {
         "type": "string",
         "maxLength": 32768
       },
-      "__schema681": {
+      "__schema689": {
         "type": "string",
         "enum": [
           "starting",
@@ -42261,25 +42448,25 @@
           "lost"
         ]
       },
-      "__schema682": {
+      "__schema690": {
         "type": "string",
         "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema683": {
+      "__schema691": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema684": {
+      "__schema692": {
         "type": "string",
         "minLength": 1
       },
-      "__schema685": {
+      "__schema693": {
         "type": "string",
         "minLength": 1,
         "maxLength": 160
       },
-      "__schema686": {
+      "__schema694": {
         "type": "string",
         "enum": [
           "on_session_start",
@@ -42305,7 +42492,7 @@
           "runtime_error"
         ]
       },
-      "__schema687": {
+      "__schema695": {
         "anyOf": [
           {
             "type": "string",
@@ -42316,7 +42503,7 @@
           }
         ]
       },
-      "__schema688": {
+      "__schema696": {
         "type": "object",
         "properties": {
           "captured_at": {
@@ -42341,7 +42528,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema689": {
+      "__schema697": {
         "type": "string",
         "enum": [
           "started",
@@ -42352,7 +42539,7 @@
           "unknown"
         ]
       },
-      "__schema690": {
+      "__schema698": {
         "anyOf": [
           {
             "type": "string",
@@ -42363,7 +42550,7 @@
           }
         ]
       },
-      "__schema691": {
+      "__schema699": {
         "type": "object",
         "properties": {
           "compression_count": {
@@ -42380,7 +42567,7 @@
         },
         "additionalProperties": false
       },
-      "__schema692": {
+      "__schema700": {
         "type": "string",
         "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
@@ -42502,19 +42689,19 @@
         "type": "object",
         "properties": {
           "commands": {
-            "$ref": "#/components/schemas/__schema647"
+            "$ref": "#/components/schemas/__schema655"
           },
           "files": {
-            "$ref": "#/components/schemas/__schema648"
+            "$ref": "#/components/schemas/__schema656"
           },
           "open_url": {
-            "$ref": "#/components/schemas/__schema649"
+            "$ref": "#/components/schemas/__schema657"
           },
           "screenshot": {
-            "$ref": "#/components/schemas/__schema650"
+            "$ref": "#/components/schemas/__schema658"
           },
           "browser": {
-            "$ref": "#/components/schemas/__schema651"
+            "$ref": "#/components/schemas/__schema659"
           }
         },
         "required": [
@@ -42532,37 +42719,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema685"
+                "$ref": "#/components/schemas/__schema693"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema686"
+                "$ref": "#/components/schemas/__schema694"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema687"
+                "$ref": "#/components/schemas/__schema695"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema688"
+                "$ref": "#/components/schemas/__schema696"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema689"
+                "$ref": "#/components/schemas/__schema697"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema690"
+                "$ref": "#/components/schemas/__schema698"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema691"
+                "$ref": "#/components/schemas/__schema699"
               },
               "type": {
                 "type": "string",
@@ -42588,37 +42775,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema685"
+                "$ref": "#/components/schemas/__schema693"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema686"
+                "$ref": "#/components/schemas/__schema694"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema687"
+                "$ref": "#/components/schemas/__schema695"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema688"
+                "$ref": "#/components/schemas/__schema696"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema689"
+                "$ref": "#/components/schemas/__schema697"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema690"
+                "$ref": "#/components/schemas/__schema698"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema691"
+                "$ref": "#/components/schemas/__schema699"
               },
               "type": {
                 "type": "string",
@@ -42653,13 +42840,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42688,13 +42875,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42721,13 +42908,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42754,13 +42941,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42795,13 +42982,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42836,13 +43023,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -42874,13 +43061,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -43002,7 +43189,7 @@
                         "minItems": 1,
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/__schema692"
+                          "$ref": "#/components/schemas/__schema700"
                         }
                       }
                     },
@@ -43118,13 +43305,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema682"
+                "$ref": "#/components/schemas/__schema690"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema683"
+                "$ref": "#/components/schemas/__schema691"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema684"
+                "$ref": "#/components/schemas/__schema692"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema186"
@@ -43162,25 +43349,25 @@
         "type": "object",
         "properties": {
           "capture_id": {
-            "$ref": "#/components/schemas/__schema685"
+            "$ref": "#/components/schemas/__schema693"
           },
           "name": {
-            "$ref": "#/components/schemas/__schema686"
+            "$ref": "#/components/schemas/__schema694"
           },
           "tool_name": {
-            "$ref": "#/components/schemas/__schema687"
+            "$ref": "#/components/schemas/__schema695"
           },
           "timing": {
-            "$ref": "#/components/schemas/__schema688"
+            "$ref": "#/components/schemas/__schema696"
           },
           "outcome": {
-            "$ref": "#/components/schemas/__schema689"
+            "$ref": "#/components/schemas/__schema697"
           },
           "redacted_args_digest": {
-            "$ref": "#/components/schemas/__schema690"
+            "$ref": "#/components/schemas/__schema698"
           },
           "detail": {
-            "$ref": "#/components/schemas/__schema691"
+            "$ref": "#/components/schemas/__schema699"
           }
         },
         "required": [

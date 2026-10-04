@@ -942,8 +942,12 @@ did not record as internal is removed before anything joins it.
 An image names its registry and pins its digest (`ghcr.io/org/server:1.0@sha256:…`),
 and it runs only if the image on the host carries that digest. The registry is
 named by its DNS name: an address, `localhost` or a `.localhost` name is
-refused, since the engine pulls from the host's own network. The runners' own
-images are pinned the same way.
+refused. The engine pulls from the host's own network and goes wherever a
+registry sends it, so it pulls a server's image only from a public registry:
+`docker.io`, `ghcr.io`, `quay.io`, `gcr.io`, `mcr.microsoft.com`,
+`public.ecr.aws` or `registry.gitlab.com`, on its usual port. An image from
+another registry runs once the operator has put it on the host. The runners'
+own images are pinned the same way.
 
 A package runner is prepared in a separate container that holds no secret and
 may reach only its registry (`registry.npmjs.org`, or `pypi.org` and

@@ -225,6 +225,8 @@ export async function seedSpace(
   // What one of the space's model calls cost; its amounts outlive the space.
   await sql`insert into model_usage (id, space_id, principal_id, job_id, purpose, provider, model, status, input_tokens, output_tokens, cost_usd)
     values (${newId('mu')}, ${spaceId}, ${principalId}, ${jobId}, 'agent', 'fake', 'scripted', 'succeeded', 10, 5, 0.01)`;
+  await sql`insert into usage_day (day, principal_id, space_id, class, tier, purpose, calls, input_tokens, cached_input_tokens, cache_write_tokens, charged_input_tokens, output_tokens, cost_usd)
+    values ('2026-09-01', ${principalId}, ${spaceId}, 'interactive', 'interactive', 'agent', 1, 10, 0, 0, 10, 5, 0.01)`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;

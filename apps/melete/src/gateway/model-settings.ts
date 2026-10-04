@@ -21,8 +21,10 @@
  * primary in the spaces they own: short side calls (memory reads and voice
  * asides), on it by default, and scheduled and repeating work, off by
  * default. Work follows the settings of its space's owner, never those of
- * whoever spoke or asked. Chats always run on the primary, and the action
- * reviewer never moves: it is a safety check. With no secondary set,
+ * whoever spoke or asked. An attempt answering a person's own message runs on
+ * the primary; one nobody is waiting on (a routine, a watch, or a chat a watch
+ * woke) follows the scheduled setting. The action reviewer never moves: it is
+ * a safety check. With no secondary set,
  * everything runs as it would without one. Wherever a call goes, the privacy
  * router, spending limits and the gateway's checks still apply.
  *
@@ -39,6 +41,7 @@
  * beside the switch in Settings; it never turns pictures on by itself. A
  * missing or old answer is fetched in the background when Settings is read.
  */
+
 import {
   effectiveVision,
   listedVisionByModel,
@@ -62,7 +65,6 @@ import {
   modelVisionReport,
   owner,
   space,
-  trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
@@ -85,6 +87,7 @@ import {
   withPersonRoles,
 } from './routing.ts';
 import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
+import type { UsageClass } from './usage-class.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
@@ -288,28 +291,33 @@ export class ModelSettingsService {
    * The model the next attempt runs on, as `activeChoice`, told to send its
    * pictures when the operator configured a vision model that will read them
    * for it. A model the owner chose in the app is used exactly as chosen.
-   * Scheduled work runs on the `background` role when one is filled.
+   * Background work runs on the `background` role when one is filled: an
+   * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
+   * `attemptCause`), the same reading that meters it as background.
    */
   async routedChoice(
     routing: ModelRouting,
     db: Runner = this.options.db,
-    work?: ScheduledWorkRow,
+    work?: AttemptWork,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    // The trigger is read only when the background role is filled at all.
-    const filled =
-      work && work.kind !== 'chat'
+    const background =
+      work?.usageClass === 'background'
         ? (await this.routingFor(work.spaceId, routing, db)).background
         : null;
-    const background = filled && work && (await this.isScheduled(work, db)) ? filled : null;
-    if (background)
-      return {
-        ...background,
-        vision: effectiveVision(
-          background.provider,
-          background.model,
-          await this.visionSaid(background.provider, background.model, db),
-        ),
-      };
+    if (background) {
+      // The operator's vision model and fallbacks serve background work on
+      // the secondary as they serve the primary.
+      const reads = effectiveVision(
+        background.provider,
+        background.model,
+        await this.visionSaid(background.provider, background.model, db),
+      );
+      const routes = agentRoutes(routing, background, {
+        ownerChose: false,
+        primaryReadsImages: reads,
+      });
+      return { ...background, vision: reads || Boolean(routes?.vision) };
+    }
     const chosen = await this.chosen(db);
     const { provider, model, vision } = await this.active(chosen, db);
     const routes = agentRoutes(
@@ -334,13 +342,17 @@ export class ModelSettingsService {
   /**
    * The operator's alternatives for an attempt on this model: a vision model
    * for its pictures when it reads none, and fallbacks. None when the owner
-   * chose the model in the app.
+   * chose the model in the app, except for background work on a secondary
+   * model, which keeps them.
    */
   async attemptRoutes(
     routing: ModelRouting,
-    primary: { provider: string; model: string },
+    primary: { provider: string; model: string; usageClass?: 'interactive' | 'background' },
   ): Promise<GatewayRoutes | undefined> {
-    if (this.ownerChose(primary)) return undefined;
+    const onSecondary =
+      primary.usageClass === 'background' &&
+      !sameModel(primary, await this.active(await this.chosen()));
+    if (this.ownerChose(primary) && !onSecondary) return undefined;
     const owner = await this.visionSaid(primary.provider, primary.model);
     const readsImages = effectiveVision(
       primary.provider,
@@ -755,21 +767,6 @@ export class ModelSettingsService {
     return row?.owner ?? null;
   }
 
-  /**
-   * Whether this job is scheduled or repeating work, which the `background`
-   * role takes: a routine, or work that wakes on a trigger. A chat never is.
-   */
-  private async isScheduled(work: ScheduledWorkRow, db: Runner): Promise<boolean> {
-    if (work.kind === 'chat') return false;
-    if (work.kind === 'routine') return true;
-    const [standing] = await db
-      .select({ id: trigger.id })
-      .from(trigger)
-      .where(and(eq(trigger.jobId, work.id), eq(trigger.enabled, true)))
-      .limit(1);
-    return Boolean(standing);
-  }
-
   async saveKey(
     provider: string,
     ownerId: string,
@@ -1091,8 +1088,8 @@ export class ModelSettingsService {
 /** The provider and model one service-side model call uses. */
 export type ServiceModel = { provider: string; model: string };
 
-/** The job an attempt is claimed for, as far as choosing its model needs it. */
-export type ScheduledWorkRow = { id: string; kind: string; spaceId: string };
+/** The attempt being claimed, as far as choosing its model needs it. */
+export type AttemptWork = { spaceId: string; usageClass: UsageClass };
 
 /**
  * The space a side call is about. It runs on the secondary of that space's
