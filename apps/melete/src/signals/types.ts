@@ -39,10 +39,18 @@ export type OccurrenceStatus = 'confirmed' | 'tentative' | 'cancelled';
 
 /**
  * What the calendar's own account said to an event: it organises it, it
- * accepted, it said maybe or no, or it has not answered (an invitation). Null
- * when the source cannot tell, as with a feed or a CalDAV collection.
+ * accepted, it said maybe or no, or it has not answered (an invitation).
+ * `unknown` when a calendar that keeps answers shows none for the person (an
+ * invitation sent to a list they are on). Null when the source cannot tell,
+ * as with a feed or a CalDAV collection.
  */
-export type OwnResponse = 'organizer' | 'accepted' | 'tentative' | 'declined' | 'needs_action';
+export type OwnResponse =
+  | 'organizer'
+  | 'accepted'
+  | 'tentative'
+  | 'declined'
+  | 'needs_action'
+  | 'unknown';
 
 /**
  * One occurrence of a calendar event. A single event is one occurrence with no
@@ -70,6 +78,12 @@ export type Occurrence = {
   updated_at?: string | null;
   /** The provider's own id for this instance, to look it up again. */
   ref?: string | null;
+  /** Shown as free: the event does not block the time (TRANSP, transparency, showAs). */
+  transparent?: boolean;
+  /** The calendar's own account declined it, so it does not block the time either. */
+  declined?: boolean;
+  /** The Melete action that wrote this event, when Melete wrote it. */
+  melete_action?: string | null;
   /** The account's own answer to the event, when the source says. */
   response?: OwnResponse | null;
 };
@@ -96,9 +110,17 @@ export type Confirmed = Occurrence | 'gone' | 'unknown';
 /** A lookup that could not be made this time: the occurrence is kept and asked about again. */
 export type Lookup = Confirmed | 'failed';
 
+/**
+ * How a read for free and busy time is made: stopped by `signal`, with a
+ * floating time (one written with no zone) read in `zone`, and the person's
+ * own `self` addresses, so an invitation they declined is known as one. The
+ * signal poller passes none of these.
+ */
+export type ReadOptions = { signal?: AbortSignal; zone?: string; self?: readonly string[] };
+
 /** A calendar that can list the occurrences touching a window. */
 export interface CalendarOccurrences {
-  occurrences(window: CalendarWindow): Promise<CalendarRead>;
+  occurrences(window: CalendarWindow, options?: ReadOptions): Promise<CalendarRead>;
   /** Look one occurrence up again by the provider's own id. */
   confirm?(occurrence: {
     uid: string;

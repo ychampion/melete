@@ -1122,6 +1122,14 @@ export class SituationService {
     const check = entry.check as ClockCheck;
     if (now > entry.fireAt.getTime() + LATE_MS && now > entry.dueAt.getTime())
       return this.missed(entry, check, 'Melete could not look at this before it was due.');
+    // Someone who has left the space hears nothing more about it.
+    const [present] = rows<{ ok: boolean }>(
+      await this.db.execute(
+        sql`select ${belongs(sql`${entry.spaceId}`, sql`${entry.principalId}`)} as ok`,
+      ),
+    );
+    if (!present?.ok)
+      return this.settleClock(entry, 'cleared', 'The person no longer uses this space.');
     const read = await this.readSubject(entry, check);
     if (read === 'retry') {
       const tries = entry.tries + 1;
@@ -1576,6 +1584,7 @@ export class SituationService {
             li.due_date_only, li.job_id
           from ledger_item li join space s on s.id = li.space_id and s.removed_at is null
           where li.due_at is not null and li.status in ${sqlList(OPEN_LEDGER)}
+            and ${belongs(sql`li.space_id`, sql`li.principal_id`)}
             and li.due_at > ${new Date(now - DAY).toISOString()}::timestamptz
             and li.due_at <= ${new Date(now + COMMITMENT_HORIZON_MS).toISOString()}::timestamptz
             and not exists (select 1 from clock k
@@ -1646,6 +1655,7 @@ export class SituationService {
             a.subject, a.sent_at, a.created_at, a.job_id
           from awaited_reply a join space s on s.id = a.space_id and s.removed_at is null
           where a.status in ${sqlList(OPEN_AWAITED)}
+            and ${belongs(sql`a.space_id`, sql`a.principal_id`)}
             and a.sent_at > ${new Date(now - REPLY_WINDOW_MS).toISOString()}::timestamptz
             and not exists (select 1 from clock k
               where k.rule = ${SITUATION_KINDS.replyOverdue} and k.subject_key = 'awaited:' || a.id
@@ -1967,6 +1977,18 @@ function scalars(fields: Record<string, unknown>): Record<string, unknown> {
 
 const clip = (value: string, length: number) =>
   value.length > length ? `${value.slice(0, length - 1)}…` : value;
+
+/**
+ * Whether a person still uses a space: it is their own personal space, or
+ * they hold a membership there that has neither been ended nor run out.
+ */
+export function belongs(spaceId: ReturnType<typeof sql>, principalId: ReturnType<typeof sql>) {
+  return sql`(exists (select 1 from space bs where bs.id = ${spaceId} and bs.kind = 'personal'
+      and coalesce(bs.owner_principal_id, (select id from owner limit 1)) = ${principalId})
+    or exists (select 1 from space_membership bm where bm.space_id = ${spaceId}
+      and bm.principal_id = ${principalId} and bm.revoked_at is null
+      and (bm.expires_at is null or bm.expires_at > now())))`;
+}
 
 /** A parenthesised SQL list of values, for `in`. */
 function sqlList(values: readonly string[]) {

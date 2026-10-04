@@ -87,6 +87,7 @@ const FINISHED_TTL_MS = 10 * 60_000;
 export const MAIL_READ_GRANTS = ['email.search', 'email.read', 'email.draft', 'email.discard'];
 export const CALENDAR_GRANTS = [
   'calendar.list',
+  'calendar.freebusy',
   'calendar.create',
   'calendar.update',
   'calendar.delete',
