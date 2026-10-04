@@ -286,6 +286,7 @@ const SWEEP_ORDER: readonly RemovalPhase[] = [
 
 const MEMORY: readonly string[] = [
   'memory_action_basis',
+  'memory_agent_notes',
   'memory_blocks',
   'memory_capture',
   'memory_claims',

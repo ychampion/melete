@@ -13,11 +13,15 @@ import { withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
 import { lockEventOrder } from '../memory/invalidate.ts';
 import { knowledgeTokens } from '../memory/recall.ts';
+import type { EmbeddingProvider } from '../memory/views.ts';
 
 type ContextOptions = {
   sql: MemorySql;
   spaces: SpaceResolver;
   scopeForJob: (jobId: string) => Promise<MemoryScope>;
+  /** Semantic recall, and whether a job's words may be read by a cloud embedder. */
+  embedding?: EmbeddingProvider;
+  embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
 };
 
 async function legacyKnowledge(
@@ -138,7 +142,10 @@ export function withDeploymentContext(
       return runtime.start(bundle, sink, signal);
     },
   };
-  const memory = withMemoryRuntime(legacy, options.sql, options.scopeForJob);
+  const memory = withMemoryRuntime(legacy, options.sql, options.scopeForJob, {
+    ...(options.embedding ? { embedding: options.embedding } : {}),
+    ...(options.embedsQuery ? { embedsQuery: options.embedsQuery } : {}),
+  });
   return {
     ...memory,
     contextInvalidated: (control) =>

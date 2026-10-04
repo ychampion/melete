@@ -41,6 +41,7 @@ import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
+import { notesManifest } from './notes.ts';
 import { webManifest } from './web.ts';
 
 /** Procedure evaluation runs each arm in a throwaway space that must stay without tools. */
@@ -132,6 +133,15 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     label: 'Hand to a person',
     scopes: [...ROOM_TOOL_SCOPES.room],
     spaceKind: 'shared',
+  },
+  // The agent's own notes stay in the person's own space, where they read and
+  // delete them in Memory; a shared space keeps none.
+  {
+    key: 'notes',
+    provider: 'notes',
+    label: 'Notes',
+    scopes: grants(notesManifest),
+    spaceKind: 'personal',
   },
 ];
 

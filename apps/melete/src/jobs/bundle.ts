@@ -62,6 +62,7 @@ import { procedureReach, selectProcedureSkills } from '../learning/selection.ts'
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { attemptRecallQuery, recall } from '../memory/recall.ts';
+import type { EmbeddingProvider } from '../memory/views.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
 import { withSharedItems } from '../rooms/shares.ts';
@@ -981,6 +982,8 @@ export type BundleAssembly = {
   privateOrigin?: boolean;
   /** The agent answering may not read memory. */
   withheld?: boolean;
+  /** Ranks memory by meaning beside its words, when the request may be embedded. */
+  embedding?: EmbeddingProvider;
 };
 
 /** Complete the bundle after the lease commits, before any model request. */
@@ -1009,6 +1012,7 @@ export async function buildBundle(
       includeProfile: true,
       privateOrigin: options.privateOrigin === true,
       withheld: options.withheld === true,
+      ...(options.embedding ? { embedding: options.embedding } : {}),
     },
   );
   // A room's request is also handed what people shared into the room from their own memory.

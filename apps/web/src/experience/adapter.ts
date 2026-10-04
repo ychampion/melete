@@ -22,6 +22,7 @@ import type {
   AgentComputer,
   AgentDeleted,
   AgentInput,
+  AgentNote,
   AgentTemplate,
   ApprovalSettings,
   ApprovalSettingsView,
@@ -496,6 +497,10 @@ export const adapter = {
   beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
   unblockBelief: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),
+  /** Notes Melete kept for itself; they can be deleted, never edited. */
+  agentNotes: () => guard<{ notes: AgentNote[] }>(() => api.GET('/memory/notes')),
+  deleteAgentNote: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/memory/notes/{id}', path(id))),
   memoryTimeline: (days = 30) =>
     guard<MemoryTimeline>(() =>
       api.GET('/memory/timeline', { params: { query: { days: String(days) } } }),

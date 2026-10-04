@@ -382,7 +382,7 @@ withDb('memory evidence ledger', () => {
     await db.sql`update memory_sources set state = 'revoked' where id = ${(await claimHistory(db.sql, scope, id)).revisions[1]?.sources[0]?.source_id as string}`;
     expect((await recall(db.sql, scope, { query: 'trip' })).items).toHaveLength(0);
   });
-  test('lexical and dense candidates are independent and incompatible embeddings fail closed', async () => {
+  test('lexical and dense candidates are independent and incompatible embeddings fall back to lexical', async () => {
     if (!db) return;
     const scope = await createScope(db);
     for (const word of ['July', 'August']) {
@@ -407,17 +407,21 @@ withDb('memory evidence ledger', () => {
     await buildViews(db.sql, scope, embedding);
     const result = await recall(db.sql, scope, { query: 'July' }, { embedding, deadlineMs: 1500 });
     expect(result.items.map((item) => item.content).sort()).toEqual(['August', 'July']);
+    // Vectors of another embedding are never compared: recall answers by words alone.
     const incompatible = await recall(
       db.sql,
       scope,
       { query: 'trip' },
       { embedding: { ...embedding, version: '2' } },
     );
-    expect(incompatible.status).toBe('unavailable');
+    expect(incompatible.status).toBe('degraded');
+    expect(incompatible.recipe).toBe('simple-lexical-v1');
+    expect(incompatible.items.map((item) => item.content).sort()).toEqual(['August', 'July']);
     const [before] =
       await db.sql`select generation from memory_index_manifest where space_id = ${scope.spaceId}`;
     const invalid = await buildViews(db.sql, scope, {
       ...embedding,
+      version: '3',
       async embed(texts) {
         return texts.map(() => [1]);
       },
