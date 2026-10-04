@@ -3895,6 +3895,9 @@
                       "calendar": {
                         "type": "boolean"
                       },
+                      "own_calendar": {
+                        "type": "boolean"
+                      },
                       "app_changes": {
                         "type": "boolean"
                       },
@@ -3905,6 +3908,7 @@
                     "required": [
                       "sandbox",
                       "calendar",
+                      "own_calendar",
                       "app_changes",
                       "apps"
                     ],
@@ -34611,6 +34615,9 @@
                   "calendar": {
                     "type": "boolean"
                   },
+                  "own_calendar": {
+                    "type": "boolean"
+                  },
                   "app_changes": {
                     "type": "boolean"
                   },
@@ -34621,6 +34628,7 @@
                 "required": [
                   "sandbox",
                   "calendar",
+                  "own_calendar",
                   "app_changes",
                   "apps"
                 ],

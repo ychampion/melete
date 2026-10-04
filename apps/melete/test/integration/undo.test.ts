@@ -7,7 +7,7 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { Action, ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
-import { loadAction } from '../../src/broker/records.ts';
+import { loadAction, recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { calendarManifest } from '../../src/connectors/calendar.ts';
@@ -15,6 +15,7 @@ import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { ExperienceEffects } from '../../src/experience/effects.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import type { Occurrence } from '../../src/signals/types.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
@@ -32,14 +33,19 @@ const later = (hours: number) => new Date(Date.now() + hours * HOUR).toISOString
 function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = []) {
   const executed: Action[] = [];
   const events = new Map<string, Occurrence>();
+  /** What the calendar says now; tests change it after the fact. */
+  const state = { guests: 0, unreadable: false };
   const connector: Connector = {
     manifest,
     async existingGuests() {
-      return 0;
+      return state.guests;
     },
     signals: {
       stream: 'calendar',
-      occurrences: async () => ({ items: [...existing, ...events.values()], complete: true }),
+      occurrences: async () => {
+        if (state.unreadable) throw new Error('calendar unavailable');
+        return { items: [...existing, ...events.values()], complete: true };
+      },
     },
     async execute(action): Promise<DispatchResult> {
       executed.push(action);
@@ -84,7 +90,7 @@ function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = [])
       return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
     },
   };
-  return { connector, executed, events };
+  return { connector, executed, events, state };
 }
 
 async function setup(
@@ -148,6 +154,8 @@ describe('undo send', () => {
     expect(undone.receipt?.what).toBe('Cancelled a message before it was sent');
     expect((await loadAction(s.sql, first.id)).status).toBe('failed');
     await s.broker.resumeParked(Date.now() + 2 * 60_000);
+    // Nor after a restart: the cancel is kept, not the hold.
+    await s.brokerFor().resumeParked(Date.now() + 3 * 60_000);
     expect(s.executed).toHaveLength(0);
 
     // Held across a restart: a new process sends it once when its hold ends.
@@ -277,6 +285,50 @@ describe('events on the person’s own calendar', () => {
       expect(review).toEqual({ outcome: 'escalated', reason });
     },
   );
+
+  databaseTest('a calendar that cannot be read asks first, and nothing is written', async () => {
+    const s = await setup(calendarManifest);
+    s.state.unreadable = true;
+    const proposed = await s.propose('calendar.create', event);
+    expect(proposed.status).toBe('needs_approval');
+    expect(proposed.message).toContain('Melete could not read your calendar around that time.');
+    expect(s.executed).toHaveLength(0);
+  });
+
+  databaseTest(
+    'undoing an event that has guests now waits for approval instead of telling them',
+    async () => {
+      const s = await setup(calendarManifest);
+      const proposed = await s.propose('calendar.create', event);
+      expect(proposed.status).toBe('succeeded');
+      // Someone added guests in the calendar since; removing it would tell them.
+      s.state.guests = 2;
+      const undone = await s.effects.undo(s.claims.space_id, proposed.action_id);
+      expect(undone).toMatchObject({ status: 'not_available' });
+      expect(s.executed.map((action) => action.kind)).toEqual(['calendar.create']);
+      expect(s.events.has(proposed.action_id)).toBe(true);
+      const [reversal] = await s.sql`select a.status from experience_undo u
+        join action a on a.id = u.reversal_action_id where u.action_id = ${proposed.action_id}`;
+      expect(reversal?.status).toBe('needs_approval');
+    },
+  );
+
+  databaseTest('only the person whose work it was can undo it', async () => {
+    const s = await setup(calendarManifest);
+    const proposed = await s.propose('calendar.create', event);
+    const [mine, other] = [recordId('prn'), recordId('prn')];
+    for (const id of [mine, other])
+      await s.sql`insert into principal (id, email) values (${id}, ${`${id}@example.test`})`;
+    await s.sql`update job set principal_id = ${mine} where id = ${s.claims.job_id}`;
+    const refused = await principalContext
+      .run(other, () => s.effects.undo(s.claims.space_id, proposed.action_id))
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(String(refused)).toContain('That item is not here.');
+    expect(s.executed.map((action) => action.kind)).toEqual(['calendar.create']);
+  });
 
   databaseTest('anything within the next few hours asks first, too', async () => {
     const s = await setup(calendarManifest);

@@ -77,7 +77,26 @@ export type ReversalPlan = {
   connectionId?: string;
   /** Until when it is offered; the default is a day after the change. */
   validUntil?: string;
+  /** Declared by the change's own connector rather than the built-in list. */
+  declared?: 'connector';
 };
+
+/**
+ * Reversals whose bytes the person's own Undo may approve: they act on
+ * something Melete itself made in the person's own accounts, and send nothing
+ * to anyone else. Anything else, and a connector's own declarations, wait for
+ * the person to approve them on their card like any other change.
+ */
+const DECIDED_BY_UNDO = new Set([
+  'calendar.create',
+  'calendar.update',
+  'calendar.delete',
+  'email.discard',
+  'files.restore',
+  'apps.rollback',
+]);
+export const undoDecides = (plan: Pick<ReversalPlan, 'kind' | 'declared'>) =>
+  plan.declared !== 'connector' && DECIDED_BY_UNDO.has(plan.kind);
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -204,7 +223,9 @@ export async function planReversal(
   }
   switch (source.kind) {
     case 'calendar.create':
-      return typeof detail.uid === 'string' && writtenEtag(source)
+      // Melete names every event it makes by the action that made it, so the
+      // undo removes that event and no other, whatever the receipt says.
+      return detail.uid === source.id && writtenEtag(source)
         ? {
             mode: 'reversal',
             kind: 'calendar.delete',
@@ -237,7 +258,7 @@ export async function planReversal(
         : null;
   }
   const declared = connector?.reversal?.(source) ?? null;
-  return declared;
+  return declared ? { ...declared, declared: 'connector' } : null;
 }
 
 export type ReversalStep<T> = { effect: T; ok: boolean; reason?: string };

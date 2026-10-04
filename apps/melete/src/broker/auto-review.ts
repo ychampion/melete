@@ -302,7 +302,7 @@ export function reviewTier(input: {
       return person('Melete could not keep a way to undo it, because the event changed since.');
     return {
       tier: 'own_calendar',
-      actionClass: 'calendar',
+      actionClass: 'own_calendar',
       reason:
         tool.name === 'calendar.delete'
           ? 'It removes an event Melete made on your own calendar, touches nothing important, and can be put back.'
@@ -330,6 +330,10 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
       ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'apps')
         ? { apps: stored.sandbox }
         : {}),
+      // So does a row saved before own-calendar events had theirs.
+      ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'own_calendar')
+        ? { own_calendar: stored.sandbox }
+        : {}),
       ...Object.fromEntries(
         Object.entries(stored).filter(
           ([key, value]) => key in DEFAULT_APPROVAL_SETTINGS.classes && typeof value === 'boolean',
@@ -342,7 +346,13 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
     ? parsed.data
     : {
         mode: 'ask',
-        classes: { sandbox: false, calendar: false, app_changes: false, apps: false },
+        classes: {
+          sandbox: false,
+          calendar: false,
+          own_calendar: false,
+          app_changes: false,
+          apps: false,
+        },
       };
 }
 

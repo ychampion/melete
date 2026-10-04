@@ -85,7 +85,7 @@ describe('reviewTier', () => {
     ) => reviewTier({ tool: create, provider: 'caldav', payload, doubts: [], calendar });
     expect(decide({ concern: null, reversible: true })).toMatchObject({
       tier: 'own_calendar',
-      actionClass: 'calendar',
+      actionClass: 'own_calendar',
     });
     // Anything important asks, with its reason.
     expect(

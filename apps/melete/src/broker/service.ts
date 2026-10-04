@@ -958,7 +958,9 @@ export class BrokerService implements BrokerOperations {
       // Counted before the job lock was taken (see `guestsAhead`); a count
       // that was not taken leaves the change with the person.
       const existingGuests =
-        CHANGES_EXISTING_EVENT.has(tool.name) && settings.classes.calendar && !agentAsks
+        CHANGES_EXISTING_EVENT.has(tool.name) &&
+        (settings.classes.calendar || settings.classes.own_calendar) &&
+        !agentAsks
           ? (guests.guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
       const checked = changeKey(action.connection_id, action.canonical_payload);
@@ -1042,7 +1044,11 @@ export class BrokerService implements BrokerOperations {
     const [job] = await this.sql<LockedJob[]>`select * from job where id = ${jobId}`;
     if (!job) return NO_GUESTS;
     const settings = await loadApprovalSettings(this.sql, job.space_id);
-    if (settings.mode !== 'auto_review' || !settings.classes.calendar) return NO_GUESTS;
+    if (
+      settings.mode !== 'auto_review' ||
+      !(settings.classes.calendar || settings.classes.own_calendar)
+    )
+      return NO_GUESTS;
     // A proposal has no id yet; the connector only checks that the two agree.
     const id = action.id ?? 'proposed';
     const asked = {
@@ -1282,7 +1288,7 @@ export class BrokerService implements BrokerOperations {
         space_id: job.space_id,
         attempt_id: context.claims.attempt_id,
         tier: 'person',
-        action_class: 'calendar',
+        action_class: 'own_calendar',
         decided_by: 'policy',
         outcome: 'escalated',
         risk: null,
@@ -2106,6 +2112,27 @@ export class BrokerService implements BrokerOperations {
       });
     }, wait);
     timer.unref?.();
+  }
+
+  /**
+   * Whether a change to an existing event would reach its guests: true when
+   * the calendar says it has some, and when nobody could say.
+   */
+  async reachesGuests(actionId: string): Promise<boolean> {
+    const action = await loadAction(this.sql, actionId);
+    if (!CHANGES_EXISTING_EVENT.has(action.kind)) return false;
+    const connector = this.options.connectors.get(action.connection_id);
+    const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
+    if (!connector?.existingGuests || !job) return true;
+    try {
+      const count = await connector.existingGuests(action, {
+        ...this.context(job, action),
+        signal: AbortSignal.timeout(EXISTING_GUESTS_TIMEOUT_MS),
+      });
+      return !(Number.isInteger(count) && count === 0);
+    } catch {
+      return true;
+    }
   }
 
   /**

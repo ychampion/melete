@@ -671,7 +671,10 @@ export class ExperienceEvents {
               effect &&
               this.projections?.receiptState &&
               (payload.to === 'succeeded' || heldKind(effect.action.kind))
-                ? await this.projections.receiptState(spaceId, effect.action.id)
+                ? // A receipt whose Undo cannot be worked out is drawn without one.
+                  await this.projections
+                    .receiptState(spaceId, effect.action.id)
+                    .catch(() => ({}) as Awaited<ReturnType<ExperienceEffects['receiptState']>>)
                 : {};
             if (effect && payload.to !== 'succeeded') {
               if (state.held) {

@@ -14,7 +14,13 @@ import { ServiceError } from '../api/errors.ts';
 import { actionReviewView } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
-import { heldKind, planReversal, UNDO_WINDOW_MS } from '../broker/reversals.ts';
+import {
+  heldKind,
+  planReversal,
+  type ReversalPlan,
+  UNDO_WINDOW_MS,
+  undoDecides,
+} from '../broker/reversals.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { lockEventOrderIn } from '../db/transaction.ts';
@@ -22,6 +28,7 @@ import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
+import { roomAuthorityOf } from '../rooms/approvals.ts';
 import { listActivity } from './activity.ts';
 import {
   type ActionRow,
@@ -407,23 +414,11 @@ export class ExperienceEffects {
       reversal.connectionId,
     );
     if ('reason' in effect) return effect;
-    if (effect.status === 'needs_approval') {
-      // This route is the explicit owner decision for these exact reversal bytes.
-      await this.broker.decide(
-        effect.id,
-        { decision: 'approved', payload_hash: effect.payload_hash },
-        undefined,
-        requestPrincipal(),
-      );
-      await this.broker.admit(
-        await this.claims(effect.job_id, effect.connection_id),
-        effect.id,
-        effect.payload_hash,
-      );
-      effect = await this.broker.dispatch(effect.id);
-    }
+    const decided = await this.approveUndo(effect, reversal);
     await this
       .sql`update experience_undo set reversal_action_id = ${effect.id} where action_id = ${source.id}`;
+    if ('reason' in decided) return decided;
+    effect = decided;
     if (effect.status !== 'succeeded')
       return unavailable('The reversal could not be confirmed. It has not been repeated.');
     if (source.kind === 'email.draft')
@@ -491,27 +486,50 @@ export class ExperienceEffects {
             })
           ).action_id,
         );
-    if (effect.status === 'needs_approval') {
-      // This route is the explicit owner decision for these exact reversal bytes.
-      await this.broker.decide(
-        effect.id,
-        { decision: 'approved', payload_hash: effect.payload_hash },
-        undefined,
-        requestPrincipal(),
-      );
-      await this.broker.admit(
-        await this.claims(effect.job_id, effect.connection_id),
-        effect.id,
-        effect.payload_hash,
-      );
-      effect = await this.broker.dispatch(effect.id);
-    }
+    const decided = await this.approveUndo(effect, { kind: reversal.kind });
+    if ('reason' in decided) return decided;
+    effect = decided;
     if (effect.status !== 'succeeded')
       return unavailable('The reversal could not be confirmed. It has not been repeated.');
     await this.sql`update activity_record set undone_at = coalesce(undone_at, now()),
       undone_by = coalesce(undone_by, ${effect.id}) where id = ${id}`;
     await this.endJob(jobId, { kind: 'completed', summary: 'Undid the selected change.' });
     return entry();
+  }
+
+  /**
+   * The person's Undo is their decision for the reversal's exact bytes only
+   * when it acts on what Melete itself made in their own accounts and reaches
+   * nobody else. A reversal that would reach other people (an event that has
+   * guests now), one a connector declared, or one in a room's work, waits for
+   * approval on its card like any other change.
+   */
+  private async approveUndo(
+    effect: Action,
+    plan: Pick<ReversalPlan, 'kind' | 'declared'>,
+  ): Promise<Action | NotAvailable> {
+    if (effect.status !== 'needs_approval') return effect;
+    // A room's work is answered by the people its rule names, never by one Undo.
+    if (
+      !undoDecides(plan) ||
+      (await roomAuthorityOf(this.sql, effect.job_id)) !== null ||
+      (await this.broker.reachesGuests(effect.id))
+    )
+      return unavailable(
+        'Undoing this would reach other people, so it waits for your approval on its card.',
+      );
+    await this.broker.decide(
+      effect.id,
+      { decision: 'approved', payload_hash: effect.payload_hash },
+      undefined,
+      requestPrincipal(),
+    );
+    await this.broker.admit(
+      await this.claims(effect.job_id, effect.connection_id),
+      effect.id,
+      effect.payload_hash,
+    );
+    return this.broker.dispatch(effect.id);
   }
 
   async draft(spaceId: string, id: string) {

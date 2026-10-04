@@ -257,14 +257,14 @@ works this out again at admission and does not trust what the proposal decided.
   removing an event Melete made, when it can be undone and touches nothing
   important: nothing in the next 4 hours, no repeating meeting, no event with
   guests or marked important, and none of the person's own events that blocks
-  the time. A fixed rule approves it when the `calendar` switch is on (the
+  the time. A fixed rule approves it when the `own_calendar` switch is on (the
   default), with a receipt that offers Undo. Anything important asks, and the
   card leads with the reason. No model is called. [UNDO.md](UNDO.md) has the
   details and the tests.
 - **Reviewable.** A reversible change in a connected app, or an event with no
   guests on a calendar Melete cannot read for its context. An independent
   reviewer judges it. It goes ahead only when the person switched that class on
-  (`app_changes`, off by default, or `calendar`) and the reviewer approves at low risk. The
+  (`app_changes` or `calendar`, both off by default) and the reviewer approves at low risk. The
   reviewer's approval is stored as an ordinary approval, bound to the payload
   hash, job revision and expiry. A change to an event that already exists is
   reviewable only when its calendar says the event has no guests now; when it

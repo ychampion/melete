@@ -826,6 +826,7 @@ export interface paths {
                             app_changes: boolean;
                             apps: boolean;
                             calendar: boolean;
+                            own_calendar: boolean;
                             sandbox: boolean;
                         };
                         /** @enum {string} */
@@ -22299,6 +22300,7 @@ export interface components {
                     app_changes: boolean;
                     apps: boolean;
                     calendar: boolean;
+                    own_calendar: boolean;
                     sandbox: boolean;
                 };
                 /** @enum {string} */

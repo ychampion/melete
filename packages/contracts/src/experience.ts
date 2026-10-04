@@ -255,7 +255,13 @@ export type PermissionCard = z.infer<typeof permissionCard>;
  * spends, sends, deletes, carries credentials, or rests on a value the person
  * never confirmed is not a class here: it always asks.
  */
-export const AUTO_REVIEW_CLASSES = ['sandbox', 'calendar', 'app_changes', 'apps'] as const;
+export const AUTO_REVIEW_CLASSES = [
+  'sandbox',
+  'calendar',
+  'own_calendar',
+  'app_changes',
+  'apps',
+] as const;
 export const autoReviewClass = z.enum(AUTO_REVIEW_CLASSES);
 export type AutoReviewClass = z.infer<typeof autoReviewClass>;
 export const approvalSettings = z.strictObject({
@@ -264,15 +270,17 @@ export const approvalSettings = z.strictObject({
   classes: z.strictObject({
     /** Work in the agent's own workspace: commands, files, its own browser. */
     sandbox: z.boolean(),
+    /** Events on the person's own calendar, after the reviewer approves. */
+    calendar: z.boolean(),
     /**
      * Events on the person's own calendar with no guests, and removing ones
-     * Melete made. They go ahead by a fixed rule when they can be undone and
-     * touch nothing important (a repeating meeting, an event with guests or
-     * marked important, one of the person's own that blocks the time, or
-     * anything in the next few hours); anything important asks, with the
-     * reason. Where the calendar cannot be read for that, the reviewer decides.
+     * Melete made, decided by a fixed rule: they go ahead only when they can
+     * be undone and touch nothing important (anything in the next few hours,
+     * a repeating meeting, an event with guests or marked important, or one of
+     * the person's own events that blocks the time). Anything important, or a
+     * calendar that cannot be read for it, asks, with the reason.
      */
-    calendar: z.boolean(),
+    own_calendar: z.boolean(),
     /** Reversible changes in connected apps, after the reviewer approves. */
     app_changes: z.boolean(),
     /**
@@ -287,7 +295,7 @@ export const approvalSettings = z.strictObject({
 export type ApprovalSettings = z.infer<typeof approvalSettings>;
 export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   mode: 'auto_review',
-  classes: { sandbox: true, calendar: true, app_changes: false, apps: true },
+  classes: { sandbox: true, calendar: false, own_calendar: true, app_changes: false, apps: true },
 };
 export const approvalSettingsResponse = z.strictObject({
   settings: approvalSettings,

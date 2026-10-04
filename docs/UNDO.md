@@ -48,10 +48,17 @@ It asks first, with the reason on the card, when the change:
 - or when the calendar could not be read in full.
 
 Melete's own events with no guests, and your events marked free, may be
-overlapped. This is the **Calendar** switch in Settings → Approvals, on by
-default. "Ask me for everything", an agent set to ask before acting, a room's
-own rule, and a calendar that cannot be read this way still ask. Where a
-calendar cannot be read for its context, the reviewer decides as before.
+overlapped. This is the **Its own events on your calendar** switch in
+Settings → Approvals (`own_calendar`), on by default; a space whose settings
+were saved before it follows its sandbox switch. "Ask me for everything", an
+agent set to ask before acting, a room's own rule, and a calendar that cannot
+be read all ask. The reviewer-backed **Events on your own calendar** switch
+(`calendar`) stays off by default.
+
+Undo approves its own reversal only when it acts on something Melete made in
+your own accounts and reaches nobody else. Removing or changing an event that
+has guests now, a connected app's own reversal, and anything in a room's work
+wait for approval on their card. Only the person whose work it was can undo it.
 
 ## Evidence
 
@@ -61,6 +68,9 @@ calendar cannot be read for its context, the reviewer decides as before.
   - "an own-calendar event that overlaps an important event asks first, with the reason"
   - "an own-calendar event with no guests and no conflict goes through without asking, with undo offered"
   - "an action with no reversal shows no Undo"
+  - "undoing an event that has guests now waits for approval instead of telling them"
+  - "a calendar that cannot be read asks first, and nothing is written"
+  - "only the person whose work it was can undo it"
 - `apps/melete/src/broker/calendar-check.test.ts`: what makes a change important.
 - `apps/melete/src/broker/reversals.test.ts`: the registry, and taking back a
   series of changes newest first.

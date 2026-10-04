@@ -28,6 +28,7 @@ import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
+import { roomAuthorityOf } from '../rooms/approvals.ts';
 import type { BlobKey, BlobStore } from '../storage/blob.ts';
 
 export type JobRemovalDeps = {
@@ -148,7 +149,8 @@ const KEPT_REVERSALS = new Set([
 ]);
 
 async function keepActivity(tx: TransactionSql, list: readonly string[]) {
-  const rows = await tx`select a.id, a.kind, a.effect_class, a.canonical_payload, a.receipt,
+  const rows =
+    await tx`select a.id, a.job_id, a.kind, a.effect_class, a.canonical_payload, a.receipt,
       a.status, coalesce(a.resolved_at, a.created_at) as happened_at,
       c.id as connection_id, c.label, c.provider, j.space_id, j.principal_id, j.title
     from action a
@@ -164,8 +166,10 @@ async function keepActivity(tx: TransactionSql, list: readonly string[]) {
     // Undo stays on offer after the chat is gone, for what can still be taken back.
     const [undone] = await tx`select 1 from experience_undo where action_id = ${row.id}
       and reversal_action_id is not null`;
+    // A room's work is undone under the room's rule, never alone from one person's list.
+    const room = await roomAuthorityOf(tx, String(row.job_id));
     const plan =
-      row.connection_id && !undone
+      row.connection_id && !undone && !room
         ? await planReversal(tx, String(row.space_id), await loadAction(tx, String(row.id)))
         : null;
     const kept = plan && KEPT_REVERSALS.has(plan.kind) && !plan.connectionId ? plan : null;
