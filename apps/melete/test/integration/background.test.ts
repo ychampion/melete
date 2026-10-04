@@ -588,18 +588,19 @@ withDb('background and interactive model calls', () => {
     expect(await results(true)).toEqual(serial);
   });
 
-  test('two rollups of the same day at once both finish, and the day matches its calls', async () => {
+  test('rollups of the same day at once all finish, and the day matches its calls', async () => {
     const { handle } = fixture();
-    const guard = new SpendingGuard(handle.sql, limits(), prices);
-    const call = await gateway(guard);
-    for (let read = 0; read < 4; read++)
-      expect(await call(service('memory'), 1_000 + read, 0, 100)).toBe(200);
+    // Many groups, so each rollup's insert takes long enough for the others to meet it.
+    await handle.sql`insert into model_usage (id, created_at, space_id, principal_id, purpose,
+        provider, model, status, input_tokens, output_tokens, cost_usd, class, tier)
+      select gen_random_uuid()::text, now(), ${spaceId}, 'own_' || (n % 50), 'purpose_' || (n % 40),
+        'fireworks', ${MODEL}, 'succeeded', n, n, n / 1000000.0, 'background', 'service'
+      from generate_series(1, 4000) as n`;
     const day = utcDay(new Date());
-    const both = await Promise.allSettled([
-      rollupUsageDay(handle.sql, day),
-      rollupUsageDay(handle.sql, day),
-    ]);
-    expect(both.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+    const all = await Promise.allSettled(
+      Array.from({ length: 8 }, () => rollupUsageDay(handle.sql, day)),
+    );
+    expect(all.map((result) => result.status)).toEqual(Array(8).fill('fulfilled'));
     const [rolled] =
       await handle.sql`select round(sum(cost_usd)::numeric, 6)::text as usd, sum(calls)::int as calls from usage_day where day = ${day}`;
     const [exact] =

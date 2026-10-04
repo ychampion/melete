@@ -1599,9 +1599,10 @@ Each call is also recorded as `interactive`, when a person was waiting on it,
 or `background`, when nobody was, with the step that made it and the trigger
 behind it. The background limits above count a person's background calls alone
 and hold back only those: at a background limit, background work starts
-nothing new and ends with "Background work has reached today's limit; it
-starts again on October 16 at 00:00 UTC. Your own messages still go through.",
-while the person's own messages keep running. Each finished UTC day is rolled
+nothing new (a run rests until the limit resets, keeping what arrives for it)
+and the person reads "Background work has reached today's limit; it starts
+again on October 16 at 00:00 UTC. Your own messages still go through.", while
+their own messages keep running. Each finished UTC day is rolled
 up into `usage_day` within the hour, by one instance, and `GET /usage` adds the
 month by purpose and by step, the last 30 days, and, for the owner, background
 cost per active person-day over the last week.
