@@ -51,6 +51,7 @@ import {
   jobConnectionAudience,
 } from '../jobs/scopes.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { isQuiet } from '../push/policy.ts';
 import {
   type CalendarCursor,
   diffCalendar,
@@ -89,9 +90,12 @@ export const READ_CONCURRENCY = 4;
 export const MAX_CONFIRMS = 20;
 /**
  * How often an account watched by default, with no trigger asking for more,
- * is read. A trigger that asks for a shorter interval gets it.
+ * is read: every five minutes in its owner's day, every thirty at night (the
+ * day hours of their profile), as the detectors read calendars. A trigger or a
+ * detector that asks for a shorter interval gets it.
  */
 export const DEFAULT_WATCH_SECONDS = 300;
+export const DEFAULT_WATCH_NIGHT_SECONDS = 1800;
 
 /** The stream a watched account is read on, by provider: a mailbox's mail, a calendar's occurrences. */
 export const WATCHED_PROVIDERS: Record<string, Stream> = { imap: 'mail', caldav: 'calendar' };
@@ -125,6 +129,15 @@ export type SignalPollerDeps = {
   load?: (connectionId: string) => Promise<Readable>;
   /** Whether this instance is the one that reads now. Without it, it always is. */
   leads?: () => Promise<boolean>;
+  /**
+   * Accounts read for Melete's own detectors, beside those triggers listen
+   * to (see situations/service.ts `demand`).
+   */
+  detectorDemand?: () => Promise<
+    Array<{ connectionId: string; spaceId: string; stream: Stream; seconds: number }>
+  >;
+  /** Called after a calendar read has kept its fields, to move clocks and look for overlaps. */
+  afterCalendarRead?: (connectionId: string) => Promise<void>;
   now?: () => number;
   readTimeoutMs?: number;
   concurrency?: number;
@@ -301,8 +314,13 @@ export class SignalPoller {
     // is watched, with nothing set up; a room's, only when its owners say so.
     // What it reports still reaches only the work the connection serves.
     const watched = await this.deps.sql`
-      select c.id, c.space_id, c.provider, c.watch_changes, s.kind
+      select c.id, c.space_id, c.provider, c.watch_changes, s.kind,
+        pr.day_start, pr.day_end, pr.time_zone
       from connection c join space s on s.id = c.space_id
+        left join lateral (select p.day_start, p.day_end, p.time_zone from experience_profile p
+          join space ps on ps.id = p.space_id
+          where ps.owner_principal_id = coalesce(s.owner_principal_id, (select id from owner limit 1))
+            and ps.kind = 'personal' limit 1) pr on true
       where c.status = 'active' and s.removed_at is null
         and c.provider in ${this.deps.sql(Object.keys(WATCHED_PROVIDERS))}`;
     for (const row of watched) {
@@ -310,12 +328,28 @@ export class SignalPoller {
       if (!watchedByDefault(String(row.kind), watchChanges)) continue;
       const stream = WATCHED_PROVIDERS[String(row.provider)];
       if (!stream) continue;
+      const night = isQuiet(new Date(this.now()), {
+        start: row.day_start ? String(row.day_start) : '08:00',
+        end: row.day_end ? String(row.day_end) : '22:00',
+        timeZone: row.time_zone ? String(row.time_zone) : 'UTC',
+      });
+      const seconds = night ? DEFAULT_WATCH_NIGHT_SECONDS : DEFAULT_WATCH_SECONDS;
       const key = `${String(row.id)} ${stream}`;
       const before = wanted.get(key);
       wanted.set(key, {
         spaceId: String(row.space_id),
         stream,
-        seconds: Math.min(before?.seconds ?? DEFAULT_WATCH_SECONDS, DEFAULT_WATCH_SECONDS),
+        seconds: Math.min(before?.seconds ?? seconds, seconds),
+      });
+    }
+    for (const extra of (await this.deps.detectorDemand?.()) ?? []) {
+      const key = `${extra.connectionId} ${extra.stream}`;
+      const seconds = clampInterval(extra.seconds);
+      const before = wanted.get(key);
+      wanted.set(key, {
+        spaceId: extra.spaceId,
+        stream: extra.stream,
+        seconds: Math.min(before?.seconds ?? seconds, seconds),
       });
     }
     return wanted;
@@ -677,6 +711,12 @@ export class SignalPoller {
         await tx`delete from subject_state
           where connection_id = ${row.connection_id} and subject_key in ${tx(diff.remove)}`;
     });
+    // Clocks that follow a meeting move with it, and overlaps are looked for,
+    // from what was just kept. A failure here never fails the read.
+    if (this.deps.afterCalendarRead)
+      await this.deps.afterCalendarRead(row.connection_id).catch(() => {
+        process.stderr.write(`signals: after_read_failed ${row.connection_id}\n`);
+      });
     return { cursor: { window_end: diff.window_end }, delivered, note: diff.note ?? null };
   }
 

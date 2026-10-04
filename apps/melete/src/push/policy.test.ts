@@ -139,3 +139,77 @@ describe('the because line', () => {
     }
   });
 });
+
+describe('urgency lanes', () => {
+  const noticed = (
+    id: string,
+    createdAt: string,
+    urgency: 'soon' | 'urgent',
+    personSet: boolean,
+  ): Waiting => ({
+    id,
+    kind: 'situation',
+    title: 'The contract is signed',
+    body: 'Due Mon 3:00 PM, and it is not done yet.',
+    because: personSet
+      ? 'Because you asked Melete to keep this deadline.'
+      : 'Because it has a due date.',
+    url: '/#/',
+    createdAt: at(createdAt),
+    urgency,
+    personSet,
+    ack: `/situations/${id}/ack`,
+  });
+  // 05:00 UTC is 06:00 in London: quiet.
+  const night = at('2026-09-27T05:00:00Z');
+  const noon = at('2026-09-27T11:00:00Z');
+
+  test('an urgent deadline the person set goes now, even in quiet hours, alone and with its ack', () => {
+    const plan = planPush({
+      waiting: [
+        decision('a', '2026-09-27T04:00:00Z'),
+        noticed('u', '2026-09-27T05:00:00Z', 'urgent', true),
+      ],
+      day,
+      pacing,
+      sentToday: 0,
+      now: night,
+    });
+    if (!('send' in plan)) throw new Error(`held: ${plan.hold}`);
+    expect(plan.ids).toEqual(['u']);
+    expect(plan.urgency).toBe('urgent');
+    expect(plan.send.ack).toBe('/situations/u/ack');
+    expect(pushPayload.parse(plan.send).because).toContain('you asked');
+  });
+
+  test('one the person did not set waits for their day, then goes without the normal batch delay', () => {
+    const waiting = [noticed('s', '2026-09-27T10:59:30Z', 'urgent', false)];
+    expect(planPush({ waiting, day, pacing, sentToday: 0, now: night })).toEqual({ hold: 'quiet' });
+    const plan = planPush({ waiting, day, pacing, sentToday: 0, now: noon });
+    expect('send' in plan && plan.ids).toEqual(['s']);
+  });
+
+  test('soon waits a minute for company; each lane has its own cap and spills into the next', () => {
+    const fresh = [noticed('s', '2026-09-27T10:59:30Z', 'soon', false)];
+    expect(planPush({ waiting: fresh, day, pacing, sentToday: 0, now: noon })).toEqual({
+      hold: 'batching',
+    });
+    const ready = [noticed('s', '2026-09-27T10:58:00Z', 'soon', false)];
+    const full = { normal: pacing.dailyCap, soon: 0, urgent: 0 };
+    const sent = planPush({ waiting: ready, day, pacing, sentToday: full, now: noon });
+    expect('send' in sent && sent.urgency).toBe('soon');
+    const soonFull = { normal: pacing.dailyCap, soon: 6, urgent: 0 };
+    expect(planPush({ waiting: ready, day, pacing, sentToday: soonFull, now: noon })).toEqual({
+      hold: 'cap',
+    });
+    const urgentFull = { normal: 0, soon: 0, urgent: 3 };
+    const spilled = planPush({
+      waiting: [noticed('u', '2026-09-27T10:58:00Z', 'urgent', true)],
+      day,
+      pacing,
+      sentToday: urgentFull,
+      now: night,
+    });
+    expect(spilled).toEqual({ hold: 'quiet' });
+  });
+});

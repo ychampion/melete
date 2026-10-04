@@ -2,8 +2,11 @@
 
 Melete keeps watch over the mail and calendar accounts a person connects. When
 new mail arrives or a meeting moves, the work that is waiting for it wakes, once,
-with what changed in front of it. When nothing changes, nothing runs and nothing
-is spent.
+with what changed in front of it. When a meeting moves close to its time, two
+meetings overlap, a deadline comes near and is still unmet, or a message the
+person sent has had no answer, Melete notices it on its own and tells the
+person, as soon as it matters and no sooner. When nothing changes, nothing runs
+and nothing is spent.
 
 This page describes how changes in connected accounts become observations, and
 how observations reach waiting work. Triggers and watch predicates themselves are
@@ -61,11 +64,17 @@ A room's own accounts, such as a team mailbox, are watched only once the room's
 owners turn the switch on (`a room account is not observed by default`). What
 they report still reaches only the work the sharing rule gives them to.
 
-A watched account is read every 5 minutes. A trigger that asks for more often
-gets it (`poll_seconds`, never more often than once a minute), and an account
-nobody watches and no trigger listens to is not read at all. Which accounts
-those are is decided from the database alone. When an account stops being
-watched, its cursor and kept fields go.
+A watched account is read every 5 minutes in its owner's day and every 30 at
+night, by the day hours in their profile (`a watched account is read less often
+in its owner's night`). A trigger that asks for more often
+gets it (`poll_seconds`, never more often than once a minute). Melete's own
+detectors listen too (see [What the detectors read](#what-the-detectors-read)):
+a calendar a person connected for themselves while they have a device to reach
+or a deadline on it, and a mailbox while a message the person sent is waiting
+on an answer. An account nobody watches, and that no trigger or detector
+listens to, is not read at all. Which accounts those are is decided from the
+database alone. When an account stops being watched, its cursor and kept
+fields go.
 
 One service instance reads at a time, under the `signal-poller` lease, and opens
 the connector of an account installed through another instance when that
@@ -243,12 +252,212 @@ calendar.event.changed`).
 ## Disconnecting
 
 Revoking a connection removes, in the same step, its cursors, the fields kept
-about its calendar, and every observation it reported that no job took in, and
-turns off the triggers that listened to it (`revoking a connection removes what
+about its calendar, every observation it reported that no job took in, and the
+situations and clocks that came from it with anything still waiting to be pushed
+about them, and turns off the triggers that listened to it (`revoking an account
+takes what was noticed in it and its clocks`) (`revoking a connection removes what
 was read from it, in the same step`). Switching it to another credential
-removes the cursors, the kept fields and its mail and calendar observations the
-same way. Removing a space removes all of these with the rest of the space. A
+removes the cursors, the kept fields, its mail and calendar observations and
+what was noticed in them the same way, and keeps the deadlines kept on it, which
+read the account afresh as it now is (`switching an account’s credential keeps
+the deadlines kept on it`). Removing a space removes all of these with the rest of the space. A
 job's own record of what woke it stays with the job.
+
+## Situations
+
+A situation is something Melete noticed that may need the person. Four kinds
+are built in, and each is decided by rules over the fields an account reported,
+never by a model:
+
+| Kind | When | How soon |
+| --- | --- | --- |
+| `meeting.changed` | one of the person's meetings with other people on it moved, changed place or was cancelled, and it starts, or was to start, within a day | soon |
+| `meeting.conflict` | two of the person's confirmed, timed meetings overlap, and at least one has other people on it; the same event seen on two calendars is one meeting | soon within a day, otherwise on Home |
+| `deadline.at_risk` | a deadline's time has come and a fresh look says it is still unmet, or it could not be checked in time | urgent, soon or on Home (below) |
+| `reply.overdue` | a message the person sent asking for something, found by the waiting-on rules, has had no answer three days on | on Home |
+
+A meeting is the person's when they organise it or accepted it. An invitation
+they have not answered, said maybe to, or declined raises nothing, so someone
+outside cannot fill their phone by sending invitations (`an invitation the
+person has not accepted is not their meeting`). Google Calendar and Microsoft
+Graph say how the account answered; for a feed or a CalDAV collection, which
+cannot, what it lists is taken as the person's.
+
+A situation is for one person: the owner of the account it came from, or
+whoever set the deadline. A room's shared accounts raise none. Its title and
+reason are Melete's own words, with times in the person's own zone ("It now
+starts Tue 3:00 PM; it was Tue 2:00 PM."), and a due date given as a day alone
+is said as that day ("Due Sat, Oct 10"; `a commitment due on a date is due
+until that day ends where the person is, and named by its day`). What the
+account said, such as a meeting's title or place, travels beside it as evidence
+and never becomes Melete's words, so an invitation titled "URGENT: call this
+number" says nothing in Melete's voice (`a meeting with others that moved within
+a day is soon, in Melete’s own words`). Each carries the handles of what raised
+it: the observation, or the clock.
+
+There is one live situation per person, space, kind, subject and moment, so two
+people keeping a deadline on the same document each have their own (`two people
+keeping a deadline on the same subject each keep their own`). Each sighting has
+a fingerprint of what makes it what it is: a meeting's times and place, both
+meetings' times for an overlap, a due time. The same fingerprint again changes
+nothing, so a calendar read every few minutes does not rewrite an overlap that
+has not changed. A different one folds in, counted, with the newest evidence,
+and is not told again unless it became more urgent (`a meeting that moves within
+a day wakes the work watching it, once`). An overlap is named by its two
+meetings in a fixed order, so it is one situation whichever side is read first,
+and it ends when the meetings part (`a conflict between two meetings is one
+situation, not two, and ends when they part`). A situation ends when what it was
+about stops being true: the answer came, the commitment was settled, the
+meetings no longer overlap. After its moment it expires.
+
+The person can say they saw it (`POST /situations/{id}/ack`) or that it was not
+useful (`POST /situations/{id}/dismiss`); either stops anything still waiting to
+be pushed about it. A dismissed situation stays dismissed: it comes back only
+when its fingerprint changes, such as one of two overlapping meetings moving,
+and with no new push before then. `GET /situations` lists the live ones.
+
+Mail that answers a message the person is waiting on ends its `reply.overdue`
+at once, by the waiting-on rule: a reply in the thread, anything from the person
+asked, or a colleague of theirs on the same subject; an automatic reply answers
+nothing (`a wait on a reply is raised for Home, and settles when the answer
+arrives`). Before a wait is raised, Melete looks again through the mail it has
+already read since the message was sent, and it raises a wait only when it was
+watching the mailbox from soon after the waiting-on list found it: silence from
+a mailbox nobody was reading proves nothing (`a wait answered before its clock
+was set, or found before Melete watched the mailbox, is not raised`). A space
+with no mailbox connected lets its waits go, with the reason on the clock.
+
+### Deadlines and clocks
+
+A clock is a time Melete keeps to look at something again. A deadline has one:
+at its due time less a lead, Melete reads the subject again, from its source
+when the source can be read (a document's own state, a meeting looked up at the
+calendar), and evaluates the deadline's test against what it read. Done, and
+the clock settles quietly. Still unmet, and `deadline.at_risk` is raised
+(`a deadline is checked against fresh state at its time, once`, `a deadline met
+before its time says nothing`). A source that cannot be read is tried again a
+minute later while there is time; one still unread by its due time is marked
+missed, and when the deadline is the person's they are told that Melete
+couldn't check it in time, never that it is undone (`a source that cannot be
+read is tried again, and is never raised on stale state`).
+
+A fresh read follows the same rules as a read work makes through the broker.
+The account must be active and not part way through a revocation or a switch of
+credential, in the deadline's space, serving the work the deadline belongs to
+(or, with no work, owned by the person), and its tools must be open to that
+work's compartment. Otherwise nothing is read. If the account's credential
+changes while it is read, what was read is dropped and the clock waits for the
+next look (`a fresh read is refused when the account is being revoked, is
+elsewhere, or serves someone else`). A deadline cannot be set on an account or a
+subject outside the person's space, or on an account that does not serve them.
+What a fresh read returns is tested and dropped: it is not kept, handed to work,
+or shown to a model, so the privacy router, which governs what models see, has
+nothing to decide.
+
+There is one live clock per person, deadline and subject. Setting a deadline
+again moves its clock. A deadline that follows a meeting's time, such as "an
+hour before the board meeting", moves when the meeting moves and is cleared when
+the meeting is cancelled (`a meeting moved twice has one live clock, at its new
+time`, `a cancelled meeting’s clocks are cleared`). The due time is taken again
+from each fresh read too, so a meeting that moves while its deadline is being
+checked leaves one clock, at the new time, and nothing raised for the old one
+(`a meeting that moves while its deadline is being checked leaves one clock, at
+the new time`). A clock fires once: it goes on to its next look, or to fired, in
+the transaction that raises its situation, and only if it was not moved while it
+was read, so two sweeps at once raise one situation. Clocks are swept every
+minute, and a clock due within ten minutes is also timed in the service itself.
+The watch language gains what clocks need: `before` and `after` (a time against
+now plus seconds), `older_than` (an age in seconds), one `any` group, and, for
+clocks alone, `absent` (nothing of a kind seen since).
+
+Deadlines come from two places today. Work can keep one for the person
+(`SituationService.setDeadline`). And a commitment the companies map found with
+a due date has one. Until the person takes it up it is shown on Home and not
+pushed. Once they press "Handle it" in Melete it is theirs: a due date with a
+time is looked at a day before and again fifteen minutes before, and that last
+look can reach them at once, at any hour (`pressed by the person, it reaches
+them fifteen minutes before it is due, even in quiet hours`). Taken up by an
+outside assistant over MCP instead, it stays one Melete found (`pressed by an
+outside assistant, it stays one Melete found: on Home, never urgent`).
+
+A due date with no time, which is how most dates in mail are written, is never
+taken as a time. It is due at 17:00, the end of a working day, on that date
+where the person is. It is looked at the day before and on the morning of the
+day, at the start of the person's day, and at most it is `soon`: it never
+breaks quiet hours, and a look that would fall in them waits for the morning
+(`a commitment due on a date is due at the end of that working day, looked at
+only inside the person’s day, and never urgent`, `a look at a date-only
+commitment that would fall outside the person’s day waits for the morning`).
+The same holds for a deadline work keeps with a date alone.
+
+Pressing "Handle it" again moves the deadline to the date the item has now; once
+the person has pressed it, it stays theirs whoever presses after (`pressing
+Handle it again moves the deadline to the date the item has now, and keeps it
+the person’s`). A rescan that moves a commitment's date moves its deadline, and
+one that takes the commitment off the list clears it (`a rescan that moves a
+commitment moves its clock, and one that removes it clears it`).
+
+### How soon the person hears
+
+Only a deadline the person set or accepted can be urgent, and only when it is
+within fifteen minutes; nothing a detector reads on its own can be, and the
+database refuses an urgent situation, or an urgent push, that is not the
+person's (`only a deadline the person set or accepted, and close, is urgent`).
+Pushes are paced in three lanes, each with its own daily count:
+
+| Urgency | Waits for company | A day, at most | Quiet hours |
+| --- | --- | --- | --- |
+| normal | the batching window (10 minutes by default) | the person's daily cap (4 by default) | held |
+| soon | a minute | 6 | held |
+| urgent | not at all | 3 | held, unless the deadline is one the person set or accepted |
+
+An urgent push is sent the moment its situation is raised, not at the next
+minute's pass. A push past its lane's count waits in the lane below, and counts
+against the lane it goes out in, so no lane's cap can be stepped round: a whole
+day of soon situations reaches the phone ten times at most (`a whole day of
+pushes keeps every lane to its cap, whatever spills`, `urgency lanes`). A
+situation kept for Home sends no push (`an urgent deadline the person set pushes
+now, even in quiet hours; one they didn’t set waits`). A push about a situation
+carries where to say it was seen, and tapping it tells Melete so. A push about a
+situation that was resolved, dismissed or removed before it went out is not
+sent.
+
+### Reaching work
+
+Work names the subjects it cares about: a watch on one subject (`about.key`
+equal to its key) links its job to that subject, and work that sets a deadline
+is linked to it. A new situation about a linked subject reaches that work, in
+the same space, for the same person, and only work that every account it names
+serves under the sharing rule: an overlap names both calendars (`a conflict
+reaches linked work only when that work may read both calendars`). Work waiting
+on a trigger wakes with the situation as an operation event
+(`situation.<kind>`); one situation wakes one piece of work at most once in five
+minutes, and anything else reads it at its next wake. The attempt it wakes
+records the situation beside the trigger, and every model call that attempt
+makes is counted against both in `model_usage`.
+
+A detector runs inside the delivery of each observation, in a savepoint of its
+own: one that fails is undone and reported, and the observation, and every wake
+it made, still go through (`a detector that fails undoes only itself: the
+observation is delivered and work still wakes`).
+
+### What the detectors read
+
+A calendar is read for the detectors only while there is someone to tell or
+something to keep: while its owner has a device to reach, or while a deadline
+is kept on it. It is read every five minutes in the person's day, every thirty
+minutes outside it, and every minute while a deadline on it is due within the
+hour (`a calendar is read for the detectors only while there is someone to tell,
+and less at night`). A mailbox is read while a wait on a reply is watched in its
+space or still open on Home. These reads are the poller's reads: they share its
+budget, its backoff and a provider's Retry-After with every other read of the
+account.
+
+### Off
+
+`MELETE_DETECTORS=false` turns the built-in detectors off for an installation.
+Calendars are then read only when some work listens to them, and only deadlines
+that work sets are kept.
 
 ## Evidence
 
@@ -265,3 +474,18 @@ job's own record of what woke it stays with the job.
 - `apps/melete/src/connectors/signals-providers.test.ts`: Google Calendar,
   Graph `calendarView`, Gmail history, Graph mail delta and IMAP UIDs against
   recorded answers.
+- `apps/melete/test/integration/situations.test.ts`: deadlines checked fresh
+  and once, missed rather than stale, urgency and quiet hours, whole-day lane
+  caps, fresh reads refused, deadlines per person, clocks that follow a meeting
+  even mid-check, conflicts and dismissals, waking linked work, replies,
+  detector faults, what the detectors read, revocation and switching.
+- `apps/melete/test/integration/situations-commitments.test.ts`: "Handle it"
+  by the person, and by an outside assistant, over the real route; date-only
+  due dates; pressing again; rescans.
+- `apps/melete/src/situations/detectors.test.ts` and
+  `apps/melete/src/push/policy.test.ts`: the detectors' rules and the urgency
+  lanes as plain functions.
+- `packages/contracts/src/watch.test.ts`: `before`, `after`, `older_than`,
+  `any` and `absent`.
+- Conformance 12, [`12-deadline-fresh-check.test.ts`](../conformance/scenarios/12-deadline-fresh-check.test.ts):
+  a deadline is checked against fresh state at its time, once.

@@ -14,7 +14,11 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { DEFAULT_WATCH_SECONDS, SignalPoller } from '../../src/signals/poller.ts';
+import {
+  DEFAULT_WATCH_NIGHT_SECONDS,
+  DEFAULT_WATCH_SECONDS,
+  SignalPoller,
+} from '../../src/signals/poller.ts';
 import { expireObservations, sweepObservations } from '../../src/signals/retention.ts';
 import { type SignalSource, SourceError } from '../../src/signals/types.ts';
 import { setWatching } from '../../src/signals/watching.ts';
@@ -371,5 +375,19 @@ withDb('watching connected accounts by default', () => {
     await sequential.runOnce();
     expect(reads()).toBeGreaterThan(3);
     clock += 3_600_000;
+  }, 60_000);
+  test('a watched account is read less often in its owner’s night', async () => {
+    const { id } = await connectMailbox('Mail read at night');
+    const saved = clock;
+    try {
+      clock = Date.parse('2026-10-08T23:30:00.000Z');
+      await required(poller).refresh();
+      expect(await cursors(id)).toEqual({ count: 1, every: DEFAULT_WATCH_NIGHT_SECONDS });
+      clock = Date.parse('2026-10-09T09:30:00.000Z');
+      await required(poller).refresh();
+      expect(await cursors(id)).toEqual({ count: 1, every: DEFAULT_WATCH_SECONDS });
+    } finally {
+      clock = Math.max(saved, clock);
+    }
   }, 60_000);
 });

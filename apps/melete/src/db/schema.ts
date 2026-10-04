@@ -464,6 +464,8 @@ export const attempt = pgTable(
     usageClass: text('class').notNull().default('interactive'),
     /** The trigger whose event woke this attempt, when one did. */
     triggerId: text('trigger_id'),
+    /** The situation that woke this attempt, when one did (see situations/service.ts). */
+    situationId: text('situation_id'),
   },
   (t) => [
     uniqueIndex('attempt_job_epoch_idx').on(t.jobId, t.epoch),
@@ -898,7 +900,7 @@ export const pushIntent = pgTable(
     principalId: text('principal_id')
       .notNull()
       .references(() => principal.id, { onDelete: 'cascade' }),
-    /** `decision`, `settled` or `weekly`. */
+    /** `decision`, `settled`, `weekly`, `progress` or `situation`. */
     kind: text('kind').notNull(),
     title: text('title').notNull(),
     body: text('body').notNull(),
@@ -911,12 +913,24 @@ export const pushIntent = pgTable(
     sentAt: timestamp('sent_at', { withTimezone: true }),
     /** Set instead of sending when it stopped being true: the decision was made. */
     droppedAt: timestamp('dropped_at', { withTimezone: true }),
+    /** `normal`, `soon` or `urgent`: how it is paced (see push/policy.ts). */
+    urgency: text('urgency').notNull().default('normal'),
+    /** An urgent push about a deadline the person set or accepted may break quiet hours. */
+    personSet: boolean('person_set').notNull().default(false),
+    /** The situation it tells of, when it does. */
+    situationId: text('situation_id'),
+    /** The lane it went out in, which may be below the one it asked for; its day's count is that lane's. */
+    sentLane: text('sent_lane'),
   },
   (t) => [
     index('push_intent_waiting_idx')
       .on(t.principalId)
       .where(sql`sent_at is null and dropped_at is null`),
     check('push_intent_because_not_empty', sql`length(${t.because}) > 0`),
+    check('push_intent_urgency', sql`${t.urgency} in ('normal', 'soon', 'urgent')`),
+    // Only a deadline the person set or accepted may break their quiet.
+    check('push_intent_urgent_is_person_set', sql`${t.urgency} <> 'urgent' or ${t.personSet}`),
+    index('push_intent_situation_idx').on(t.situationId).where(sql`${t.situationId} is not null`),
   ],
 );
 

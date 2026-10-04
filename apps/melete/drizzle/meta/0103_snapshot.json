@@ -1,6 +1,6 @@
 {
-  "id": "80cbdf1a-6bc4-4303-a626-e8e1c558ca77",
-  "prevId": "f4809be5-0fd6-4dc0-8ae7-e972d218dd5d",
+  "id": "bb302a6f-f16b-45ca-980e-e2c92a7f7057",
+  "prevId": "80cbdf1a-6bc4-4303-a626-e8e1c558ca77",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2145,6 +2145,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'owner'"
+        },
+        "watch_changes": {
+          "name": "watch_changes",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

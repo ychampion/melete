@@ -374,6 +374,10 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Where each account's changes were last read, and what was kept about its calendar.
   source_cursor: 'operational',
   subject_state: 'operational',
+  // What was noticed in the space, the clocks it keeps, and which work cares about what.
+  situation: 'operational',
+  clock: 'operational',
+  subject_link: 'operational',
   sandbox_awake_day: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
@@ -712,6 +716,19 @@ describe.if(handle !== null)('removing a space', () => {
         version, origin, last_changed_at)
       values (${`calendar:${seeded.connectionId}:uid:`}, ${seeded.spaceId}, ${seeded.connectionId},
         'calendar_occurrence', '{}'::jsonb, 'v1', 'external_content', now())`;
+    // Something noticed there, a deadline it keeps, and the work that cares about it.
+    await sql`insert into situation (id, space_id, principal_id, kind, subject_key, connection_id,
+        key, title, reason, because, origin)
+      values (${`sit_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId},
+        'meeting.changed', 'subject:one', ${seeded.connectionId}, ${`key_${seeded.spaceId}`},
+        'A meeting moved', 'It now starts later.', '["event:1"]'::jsonb, 'external_content')`;
+    await sql`insert into clock (id, space_id, principal_id, rule, subject_key, connection_id,
+        title, due_at, lead_s, fire_at, "check")
+      values (${`clk_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId},
+        'deadline.at_risk', 'subject:one', ${seeded.connectionId}, 'The deck is ready',
+        now() + interval '1 day', 300, now() + interval '1 day', '{}'::jsonb)`;
+    await sql`insert into subject_link (subject_key, job_id, space_id, role)
+      values ('subject:one', ${seeded.jobId}, ${seeded.spaceId}, 'deadline')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

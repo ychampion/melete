@@ -38,6 +38,13 @@ export interface MailChanges {
 export type OccurrenceStatus = 'confirmed' | 'tentative' | 'cancelled';
 
 /**
+ * What the calendar's own account said to an event: it organises it, it
+ * accepted, it said maybe or no, or it has not answered (an invitation). Null
+ * when the source cannot tell, as with a feed or a CalDAV collection.
+ */
+export type OwnResponse = 'organizer' | 'accepted' | 'tentative' | 'declined' | 'needs_action';
+
+/**
  * One occurrence of a calendar event. A single event is one occurrence with no
  * `occurrence` id; each instance of a repeating one carries the start it was
  * scheduled at (its recurrence id), which stays the same when the instance is
@@ -63,6 +70,8 @@ export type Occurrence = {
   updated_at?: string | null;
   /** The provider's own id for this instance, to look it up again. */
   ref?: string | null;
+  /** The account's own answer to the event, when the source says. */
+  response?: OwnResponse | null;
 };
 
 export type CalendarWindow = { from: string; to: string };

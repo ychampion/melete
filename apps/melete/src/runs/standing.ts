@@ -26,7 +26,12 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
-import { checkEventSource, checkTriggerSpec, type TriggerRow } from '../jobs/triggers.ts';
+import {
+  checkEventSource,
+  checkTriggerSpec,
+  linkWatchedSubject,
+  type TriggerRow,
+} from '../jobs/triggers.ts';
 import { clip, object } from './record.ts';
 
 /** The shortest time a schedule the person set may leave between two wakes. */
@@ -137,6 +142,7 @@ export async function stand(
     })
     .returning();
   if (!created) throw new Error('trigger insert returned no row');
+  await linkWatchedSubject(tx, row.id, spec);
   await appendEvent(tx, {
     jobId: row.id,
     type: 'notice',
