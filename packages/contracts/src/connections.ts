@@ -982,7 +982,7 @@ const CALDAV_SCOPES: KindScopes = [
   },
   {
     scope: 'calendar.freebusy',
-    label: 'See when you are free',
+    label: 'See when you are busy, and with what',
     effect_class: 'read',
     asks_first: false,
     default: true,

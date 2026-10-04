@@ -229,56 +229,86 @@ Every calendar (CalDAV, Google, Outlook, a feed or an imported file) answers
 The answer lists the busy blocks, each with its event's title and `busy` or
 `tentative`, the free stretches between them, the time zone used, and
 `complete`, which is false when the calendar held more than one read covers.
-The blocks come from the same occurrences change-watching reads: Google's
-instances, Graph's `calendarView`, and a CalDAV collection or feed expanded
-within the same budget, so every instance of a repeating event counts. An
-event shown as free (`TRANSP:TRANSPARENT`, Google's `transparent`, Graph's
-`free` or `workingElsewhere`), an invitation the account declined, and a
-cancelled event leave the time free. A tentative event or a hold blocks it. An
-all-day event fills the person's own day, midnight to midnight in the time zone
-of their profile, unless the call names another zone. Touching is not
-overlapping: a meeting ending at 15:00 leaves 15:00 free.
+The grant reads "See when you are busy, and with what", because the blocks
+carry titles. The blocks come from the same occurrences change-watching reads:
+Google's instances, Graph's `calendarView`, and a CalDAV collection or feed
+expanded within the same budget, so every instance of a repeating event counts.
+An event shown as free (`TRANSP:TRANSPARENT`, Google's `transparent`, Graph's
+`free` or `workingElsewhere`), an invitation the person declined, and a
+cancelled event leave the time free; a feed or a CalDAV account whose name is
+not the person's address knows a decline by the person's own addresses. A
+tentative event or a hold blocks the time. An all-day event fills the person's
+own day, midnight to midnight in the time zone of their profile, unless the
+call names another zone, and a time written with no zone is read on the
+person's own clock. Touching is not overlapping: a meeting ending at 15:00
+leaves 15:00 free.
 
-`calendar.create` and `calendar.update` check the calendar twice: when the
-action is proposed, before anyone is asked, and again just before it is sent.
-A time already taken is refused, and the refusal names what is there in the
-person's own zone ("“Board meeting” (Mon, Nov 9, 10:00 AM–11:00 AM EST)"). An
-update never conflicts with the event it changes. A calendar that cannot be
-read stops the write as well; nothing is written on a guess. To put an event
-on top of another on purpose, the agent sends `double_book` with a reason: the
-person is asked, the card names what it goes on top of and why, and at dispatch
-only those events may be in the way.
+`calendar.create` and `calendar.update` check the calendar twice: once the
+proposal is authorized (live attempt, connection in the job's space, the job's
+grants, an account-named tool resolved) and before anyone is asked, and again
+just before the event is written. The first read has a 10-second deadline;
+when it cannot finish, the card says the calendar could not be checked, and
+the second read still decides. A time already taken is refused. The refusal
+names what is there in the person's own zone ("“Board meeting” (Mon, Nov 9,
+10:00 AM–11:00 AM EST)") only when the work may read the calendar
+(`calendar.list` or `calendar.freebusy`); otherwise it says only that the time
+is taken. A repeat of a proposal that was already made is handed that action,
+never refused over the event it made. An update never conflicts with the event
+it changes. A calendar that cannot be read stops the write as well; nothing is
+written on a guess. To put an event on top of another on purpose, the agent
+sends `double_book` with a reason: the person is asked, the card says what it
+goes on top of (by title, when the work may read the calendar) and why, and at
+dispatch only those events may be in the way.
 
-`attendees` invites people by address. Before anyone is asked, Melete binds
-which of them are outside the person's own accounts (the address they sign in
-with and every account connected in the space). Inviting anyone outside asks,
-and the card names them; inviting no one, or an empty list, is an event on the
-person's own calendar. CalDAV writes each guest as an `ATTENDEE` asked to
-reply, with the account as `ORGANIZER` when its user name is an address;
-Google is told to send the invitations; Graph sends them itself.
+`attendees` invites people by address, each one plain address; anything else
+is refused before anyone is asked. Before anyone is asked, Melete binds which
+guests are outside the person's own addresses: in their own space, the address
+they sign in with and each account they signed in to and connected there; in a
+room's space, only the accounts the room connected for its own use. A mailbox
+or calendar connected with a password can be a shared or list address, so it
+does not count. Inviting anyone outside asks, and the card names them; inviting
+no one, or an empty list, is an event on the person's own calendar. CalDAV
+writes each guest as an `ATTENDEE` asked to reply, with the account as
+`ORGANIZER`; a CalDAV account whose name is not an address cannot invite, and
+says so. Google is told to send the invitations; Graph sends them itself.
 
 `tentative: true` places a hold: the event is marked tentative and keeps the
-time. `calendar.update` with `tentative: false` confirms it, and
-`calendar.delete` releases it, leaving nothing on the calendar. The receipt of
-every create or update says whether it is a hold and whom it invited.
+time. `calendar.update` with `tentative: false` confirms it; an update that
+leaves `tentative` out keeps the event as it is, so moving a hold keeps it a
+hold. `calendar.delete` releases it, leaving nothing on the calendar. The
+receipt of every create or update says whether it is a hold and whom it
+invited.
 
 Other code reads the same answers through `calendarConflicts` and `freeBusy` in
 `apps/melete/src/connectors/calendar-truth.ts`.
 
-The tests:
+The tests, in `apps/melete/src/connectors/calendar-truth.test.ts`, the
+provider tests, and `apps/melete/test/integration/calendar-truth.test.ts`:
 
-- `free/busy from each provider` in `calendar-truth.test.ts`: Google instances
-  with an all-day day in New York, Graph with tentative, away, free, working
-  elsewhere and declined, and a weekly CalDAV meeting that keeps 9:00 in New
-  York across the clock change;
-- `a create over a busy slot is refused with the conflict named` (unit, for each
-  provider, and through the broker in
-  `apps/melete/test/integration/calendar-truth.test.ts`, which also stops a
-  write when something lands on its time after it was approved);
-- `inviting someone outside asks, naming them`;
+- `free/busy from each provider`: Google instances with an all-day day in New
+  York, Graph with tentative, away, free, working elsewhere and declined, and a
+  weekly CalDAV meeting that keeps 9:00 in New York across the clock change;
+  `a time written with no zone is the person’s own wall clock`; `an invitation
+  the person declined frees the time even when the account name is not their
+  address`;
+- `a create over a busy slot is refused with the conflict named` (for each
+  provider and through the broker, which also stops a write when something
+  lands on its time after it was approved); `a job that may create but not
+  read events is never told what is in the way`; `a busy slot is refused, and a
+  double-booking lands, through an account-named tool`;
+- `nothing is read from a calendar for a proposal that is not authorized`; `a
+  calendar that does not answer holds a proposal no longer than the deadline`;
+  `the card says when the calendar could not be checked before asking`;
+- `proposing a booking that already landed hands back that booking`; `a repeat
+  of a proposal still waiting is handed back even when its time has since been
+  taken`;
+- `inviting someone outside asks, naming them`; `a guest must be one plain
+  address, refused before anyone is asked`; `own addresses are the person’s
+  sign-in and accounts they signed in to, and a room’s own team accounts`;
 - `a double-booking asks, with its reason and what it lands on, and then goes ahead`;
-- `a tentative hold can be confirmed or released, and a released hold leaves nothing`
-  (CalDAV, Google and Outlook, and through the broker).
+- `a tentative hold can be confirmed or released, and a released hold leaves
+  nothing` and `moving a hold without saying tentative keeps it a hold` (CalDAV,
+  Google and Outlook).
 
 ## Noticing new mail and calendar changes
 

@@ -575,3 +575,18 @@ databaseTest(
   },
   60_000,
 );
+
+databaseTest(
+  'a repeat of a proposal still waiting is handed back even when its time has since been taken',
+  async () => {
+    const ctx = await setup();
+    const request = event('2026-11-16T15:00:00Z', '2026-11-16T16:00:00Z');
+    const waiting = await ctx.propose('calendar.create', request);
+    expect(waiting.status).toBe('needs_approval');
+    ctx.dav.existingEvent('late', 'Late arrival', '20261116T153000Z', '20261116T163000Z');
+    const again = await ctx.propose('calendar.create', request);
+    expect(again.action_id).toBe(waiting.action_id);
+    expect(again.repeated).toBe(true);
+  },
+  SLOW,
+);

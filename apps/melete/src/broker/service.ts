@@ -1417,7 +1417,10 @@ export class BrokerService implements BrokerOperations {
     readOnly = false,
   ): Promise<EffectProposalResponse> {
     // Nothing is read from a destination for a proposal that is not authorized.
-    const authorized = await this.authorizedAhead(claims, request);
+    // Only a connector that reads ahead needs the checks made early.
+    const reader = this.options.connectors.get(request.connection_id);
+    const authorized =
+      reader?.ahead || reader?.existingGuests ? await this.authorizedAhead(claims, request) : null;
     const guests = authorized
       ? await this.guestsAhead(claims.job_id, {
           connection_id: request.connection_id,
