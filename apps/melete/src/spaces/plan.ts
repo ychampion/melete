@@ -108,6 +108,24 @@ export async function sweepOperational(
     // removing a space does not reset a spending limit; which space and job
     // they came from goes with the space.
     await tx`update model_usage set space_id = null, job_id = null where space_id = ${spaceId}`;
+    // Its daily totals likewise: folded into the person's totals with no space.
+    await tx`insert into usage_day (day, principal_id, space_id, class, tier, purpose, calls,
+        input_tokens, cached_input_tokens, cache_write_tokens, charged_input_tokens,
+        output_tokens, cost_usd)
+      select day, principal_id, '', class, tier, purpose, sum(calls)::int, sum(input_tokens),
+        sum(cached_input_tokens), sum(cache_write_tokens), sum(charged_input_tokens),
+        sum(output_tokens), round(sum(cost_usd)::numeric, 6)::float8
+      from usage_day where space_id = ${spaceId}
+      group by day, principal_id, class, tier, purpose
+      on conflict (day, principal_id, space_id, class, tier, purpose) do update set
+        calls = usage_day.calls + excluded.calls,
+        input_tokens = usage_day.input_tokens + excluded.input_tokens,
+        cached_input_tokens = usage_day.cached_input_tokens + excluded.cached_input_tokens,
+        cache_write_tokens = usage_day.cache_write_tokens + excluded.cache_write_tokens,
+        charged_input_tokens = usage_day.charged_input_tokens + excluded.charged_input_tokens,
+        output_tokens = usage_day.output_tokens + excluded.output_tokens,
+        cost_usd = round((usage_day.cost_usd + excluded.cost_usd)::numeric, 6)::float8`;
+    await tx`delete from usage_day where space_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation
     // and publication rows.
