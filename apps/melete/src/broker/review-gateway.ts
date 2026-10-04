@@ -147,9 +147,10 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const chat: ReviewChat = async (messages, signal, scope, format) => {
-    // The model is read for each review, so one connected in the app applies at once.
+    // The model is read for each review, so one connected in the app applies at once;
+    // the secondary model of the person whose work it is takes it when they chose one.
     const target = options.source
-      ? await options.source.current()
+      ? await options.source.current({ jobId: scope.jobId })
       : { provider: options.provider, model: options.model };
     const model = `${target.provider}/${target.model}`;
     const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));

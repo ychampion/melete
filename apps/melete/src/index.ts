@@ -87,7 +87,7 @@ import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
-import { ModelSettingsService } from './gateway/model-settings.ts';
+import { ModelSettingsService, type ScheduledWorkRow } from './gateway/model-settings.ts';
 import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
 import {
@@ -366,6 +366,7 @@ export function createApp(deps: AppDeps) {
         const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
         return installation?.id === actor;
       },
+      ...(modelSettings ? { roles: (actor) => modelSettings.roles(actor) } : {}),
     });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
@@ -1106,10 +1107,13 @@ export async function bootstrap(
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
         // A model chosen in the app applies from the next attempt. On the
         // server's default, a configured vision model reads its pictures.
+        // Scheduled work runs on its person's secondary when they chose so.
         ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
           ? {
-              resolveModel: (tx: Parameters<ModelSettingsService['routedChoice']>[1]) =>
-                (modelSettings as ModelSettingsService).routedChoice(routing, tx),
+              resolveModel: (
+                tx: Parameters<ModelSettingsService['routedChoice']>[1],
+                row: ScheduledWorkRow,
+              ) => (modelSettings as ModelSettingsService).routedChoice(routing, tx, row),
             }
           : {}),
         // Past a spending limit no attempt starts, and one cut short ends on it.

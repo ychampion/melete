@@ -5,10 +5,13 @@
  * nothing restarts. A key the server configuration sets is shown as the
  * operator's and never replaced here. No key is ever shown back, only its
  * last four characters.
+ *
+ * Beside the primary, a person may link a secondary model for cheaper work:
+ * the same picker sets it, and a short list says which work runs on it.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
-import { Badge, Button, Field, Input, Select, Toggle } from '../design/primitives.tsx';
+import { Badge, Button, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
 import { type Loaded, useLoad } from '../experience/hooks.ts';
 import { modelDisplayName } from '../experience/model-name.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -43,6 +46,47 @@ const BLURB: Record<ModelProvider, string> = {
   'openai-compatible': 'Your own endpoint',
   chatgpt: 'Your ChatGPT plan',
 };
+
+/** Which of the person's two models the picker sets. */
+export type ModelTarget = 'primary' | 'secondary';
+
+/** Sets the model for the target, and says so in a toast. */
+async function chooseFor(
+  target: ModelTarget,
+  provider: ModelProvider,
+  model: string,
+): Promise<ModelSettings | null> {
+  const chosen =
+    target === 'secondary'
+      ? await models.chooseSecondary(provider, model)
+      : await models.choose(provider, model);
+  if (chosen.data === null) {
+    toast({ kind: 'err', title: 'Couldn’t change the model', sub: chosen.error ?? '' });
+    return null;
+  }
+  toast(
+    target === 'secondary'
+      ? {
+          kind: 'ok',
+          title: `${modelDisplayName(model)} is your secondary model`,
+          sub: 'The work set to it uses it from the next call.',
+        }
+      : {
+          kind: 'ok',
+          title: `Agents now answer with ${modelDisplayName(model)}`,
+          sub: 'From the next reply. Nothing needed a restart.',
+        },
+  );
+  return chosen.data;
+}
+
+/** The provider and model the target uses now, if any. */
+function targetModel(
+  settings: ModelSettings,
+  target: ModelTarget,
+): { provider: string; model: string } | null {
+  return target === 'secondary' ? settings.secondary.model : settings.active;
+}
 
 /**
  * The state a provider tile shows. A tick is shown only for a credential that
@@ -158,7 +202,7 @@ export function ActiveModel({
   return (
     <div className="card-12 models-active">
       <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
-        <span className="models-overline">Agents answer with</span>
+        <span className="models-overline">Primary model</span>
         <span className="models-active-name" title={active.model}>
           {modelDisplayName(active.model)}
         </span>
@@ -218,13 +262,17 @@ export function ActiveModel({
 export function ModelConnect({
   settings,
   onChanged,
+  target = 'primary',
 }: {
   settings: ModelSettings;
   onChanged: (next: ModelSettings) => void;
+  target?: ModelTarget;
 }) {
-  const initial = settings.providers.some((entry) => entry.provider === settings.active.provider)
-    ? (settings.active.provider as ModelProvider)
-    : 'anthropic';
+  const current = targetModel(settings, target);
+  const initial =
+    current && settings.providers.some((entry) => entry.provider === current.provider)
+      ? (current.provider as ModelProvider)
+      : 'anthropic';
   const [selected, setSelected] = useState<ModelProvider>(initial);
   // ChatGPT is offered, as on the sign-in page, only when this server is set up for its sign-in.
   const hasSignIn = settings.providers.some((entry) => entry.method === 'sign_in');
@@ -254,7 +302,7 @@ export function ModelConnect({
                 settings.active.source === 'operator',
             );
             const on = entry.provider === selected;
-            const inUse = entry.provider === settings.active.provider;
+            const inUse = entry.provider === current?.provider;
             return (
               <button
                 key={entry.provider}
@@ -281,17 +329,19 @@ export function ModelConnect({
       {status ? (
         status.method === 'sign_in' ? (
           <SignInPanel
-            key={status.provider}
+            key={`${target}:${status.provider}`}
             status={status}
             settings={settings}
             onChanged={onChanged}
+            target={target}
           />
         ) : (
           <KeyPanel
-            key={status.provider}
+            key={`${target}:${status.provider}`}
             status={status}
             settings={settings}
             onChanged={onChanged}
+            target={target}
           />
         )
       ) : null}
@@ -381,18 +431,21 @@ function KeyPanel({
   status,
   settings,
   onChanged,
+  target,
 }: {
   status: ModelProviderStatus;
   settings: ModelSettings;
   onChanged: (next: ModelSettings) => void;
+  target: ModelTarget;
 }) {
   const operator = status.key.state === 'operator';
   const compatible = status.provider === 'openai-compatible';
   const operatorAddress = status.base_url_source === 'operator';
-  const inUse = settings.active.provider === status.provider;
+  const current = targetModel(settings, target);
+  const inUse = current?.provider === status.provider;
   const [key, setKey] = useState('');
   const [address, setAddress] = useState(status.base_url ?? '');
-  const [model, setModel] = useState(inUse ? settings.active.model : '');
+  const [model, setModel] = useState(inUse ? (current?.model ?? '') : '');
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -444,18 +497,9 @@ function KeyPanel({
       setKey('');
       onChanged(saved.data);
     }
-    const chosen = await models.choose(status.provider, model.trim());
+    const chosen = await chooseFor(target, status.provider, model.trim());
     setSaving(false);
-    if (chosen.data === null) {
-      toast({ kind: 'err', title: 'Couldn’t change the model', sub: chosen.error ?? '' });
-      return;
-    }
-    onChanged(chosen.data);
-    toast({
-      kind: 'ok',
-      title: `Agents now answer with ${modelDisplayName(model)}`,
-      sub: 'From the next reply. Nothing needed a restart.',
-    });
+    if (chosen) onChanged(chosen);
   };
 
   return (
@@ -574,7 +618,13 @@ function KeyPanel({
           onClick={() => void use()}
           iconRight="chevronRight"
         >
-          {key.trim() ? 'Save and use this model' : 'Use this model'}
+          {target === 'secondary'
+            ? key.trim()
+              ? 'Save and use as secondary'
+              : 'Use as secondary'
+            : key.trim()
+              ? 'Save and use this model'
+              : 'Use this model'}
         </Button>
         {inUse ? <span className="models-hint">This provider is in use now.</span> : null}
       </div>
@@ -595,14 +645,17 @@ function SignInPanel({
   status,
   settings,
   onChanged,
+  target,
 }: {
   status: ModelProviderStatus;
   settings: ModelSettings;
   onChanged: (next: ModelSettings) => void;
+  target: ModelTarget;
 }) {
   const signIn = useLoad(() => models.signInStatus(status.provider), [status.provider]);
-  const inUse = settings.active.provider === status.provider;
-  const [model, setModel] = useState(inUse ? settings.active.model : '');
+  const current = targetModel(settings, target);
+  const inUse = current?.provider === status.provider;
+  const [model, setModel] = useState(inUse ? (current?.model ?? '') : '');
   const [started, setStarted] = useState<SignInStart | null>(null);
   const [callback, setCallback] = useState('');
   const [busy, setBusy] = useState(false);
@@ -679,18 +732,9 @@ function SignInPanel({
 
   const use = () => {
     setBusy(true);
-    void models.choose(status.provider, model.trim()).then((answer) => {
+    void chooseFor(target, status.provider, model.trim()).then((chosen) => {
       setBusy(false);
-      if (answer.data === null) {
-        toast({ kind: 'err', title: 'Couldn’t change the model', sub: answer.error ?? '' });
-        return;
-      }
-      onChanged(answer.data);
-      toast({
-        kind: 'ok',
-        title: `Agents now answer with ${modelDisplayName(model)}`,
-        sub: 'From the next reply. Nothing needed a restart.',
-      });
+      if (chosen) onChanged(chosen);
     });
   };
 
@@ -811,7 +855,7 @@ function SignInPanel({
           />
           <div className="row" style={{ gap: 10 }}>
             <Button disabled={busy || !model.trim()} onClick={use} iconRight="chevronRight">
-              Use this model
+              {target === 'secondary' ? 'Use as secondary' : 'Use this model'}
             </Button>
           </div>
         </>
@@ -820,25 +864,236 @@ function SignInPanel({
   );
 }
 
-/** Settings › Models: the active model, then connecting one. */
+/** The kinds of work a secondary model can take, in the words Settings uses. */
+const WORK: { key: keyof ModelSettings['secondary']['uses']; name: string; hint: string }[] = [
+  {
+    key: 'side_tasks',
+    name: 'Quick side tasks',
+    hint: 'Reading chats into memory, quick voice replies, checking an action before it runs',
+  },
+  {
+    key: 'scheduled',
+    name: 'Scheduled and repeating jobs',
+    hint: 'Routines, and work that wakes on a schedule or an event',
+  },
+];
+
+const ROLE_OPTIONS = [
+  { value: 'primary', label: 'Primary' },
+  { value: 'secondary', label: 'Secondary' },
+] as const;
+
+/** The secondary model, and which work runs on it. */
+export function SecondaryModel({
+  settings,
+  onChanged,
+}: {
+  settings: ModelSettings;
+  onChanged: (next: ModelSettings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const { secondary } = settings;
+  const chosen = secondary.model;
+  const apply = (request: Promise<{ data: ModelSettings | null; error: string | null }>) => {
+    setBusy(true);
+    void request.then((result) => {
+      setBusy(false);
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? 'Couldn’t change that' });
+        return;
+      }
+      onChanged(result.data);
+    });
+  };
+  return (
+    <section className="card-12 models-secondary" aria-labelledby="secondary-head">
+      <div className="models-active">
+        <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
+          <span id="secondary-head" className="models-overline">
+            Secondary model
+          </span>
+          {chosen ? (
+            <>
+              <span className="models-active-name" title={chosen.model}>
+                {modelDisplayName(chosen.model)}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+                {providerLabel(settings, chosen.provider)} · for the work set to it below
+              </span>
+              {chosen.connected ? null : (
+                <span className="models-warning" role="note">
+                  <Icon name="alert" size={14} />
+                  {`${providerLabel(settings, chosen.provider)} has no key or sign-in here now, so this work uses the primary.`}
+                </span>
+              )}
+            </>
+          ) : (
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+              Optional. Link a second, cheaper model for side tasks and scheduled jobs. Until you
+              do, everything uses the primary.
+            </span>
+          )}
+        </div>
+        {chosen && secondary.can_edit ? (
+          <div className="col models-active-side">
+            <Button
+              size="sm"
+              variant="ghost"
+              loading={busy}
+              disabled={busy}
+              onClick={() => apply(models.removeSecondary())}
+            >
+              Remove secondary
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      <ul className="models-uses" aria-label="Which model each kind of work uses">
+        <li>
+          <span className="col" style={{ gap: 2, minWidth: 0 }}>
+            <span className="models-uses-name">Chats with you</span>
+            <span className="models-hint">Always the primary</span>
+          </span>
+          <span className="models-uses-fixed">Primary</span>
+        </li>
+        {WORK.map((work) => (
+          <li key={work.key}>
+            <span className="col" style={{ gap: 2, minWidth: 0 }}>
+              <span className="models-uses-name">{work.name}</span>
+              <span className="models-hint">{work.hint}</span>
+            </span>
+            {chosen && secondary.can_edit ? (
+              <Segmented
+                label={`Model for ${work.name.toLowerCase()}`}
+                value={secondary.uses[work.key]}
+                options={ROLE_OPTIONS}
+                onChange={(next) => {
+                  if (!busy && next !== secondary.uses[work.key])
+                    apply(models.setSecondaryUses({ [work.key]: next }));
+                }}
+              />
+            ) : (
+              <span className="models-uses-fixed">
+                {chosen && secondary.uses[work.key] === 'secondary' ? 'Secondary' : 'Primary'}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Choosing a secondary model for someone who does not run the installation:
+ * one of the providers already connected here, and the model's name.
+ */
+function SecondaryPicker({
+  settings,
+  onChanged,
+}: {
+  settings: ModelSettings;
+  onChanged: (next: ModelSettings) => void;
+}) {
+  const connected = settings.providers.filter((entry) => entry.connected);
+  const current = settings.secondary.model;
+  const [provider, setProvider] = useState<string>(
+    current?.provider ?? connected[0]?.provider ?? '',
+  );
+  const [model, setModel] = useState(current?.model ?? '');
+  const [busy, setBusy] = useState(false);
+  if (!connected.length)
+    return (
+      <p className="models-hint">
+        No provider is connected here yet, so there is no secondary model to choose.
+      </p>
+    );
+  return (
+    <div className="card-12 models-panel">
+      <span className="models-panel-title">Choose your secondary model</span>
+      <Field label="Provider">
+        <Select
+          label="Provider"
+          value={provider}
+          onChange={setProvider}
+          width="100%"
+          options={connected.map((entry) => ({ value: entry.provider, label: entry.label }))}
+        />
+      </Field>
+      <ModelChoice
+        value={model}
+        onChange={setModel}
+        options={[]}
+        placeholder="The model id, as the provider writes it"
+      />
+      <div className="row" style={{ gap: 10 }}>
+        <Button
+          loading={busy}
+          disabled={busy || !provider || !model.trim()}
+          iconRight="chevronRight"
+          onClick={() => {
+            setBusy(true);
+            void chooseFor('secondary', provider as ModelProvider, model.trim()).then((chosen) => {
+              setBusy(false);
+              if (chosen) onChanged(chosen);
+            });
+          }}
+        >
+          Use as secondary
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const TARGETS = [
+  { value: 'primary', label: 'Primary' },
+  { value: 'secondary', label: 'Secondary' },
+] as const;
+
+/** Settings › Models: the primary and secondary models, usage, then connecting one. */
 export function ModelsTab({ loaded }: { loaded: Loaded<ModelSettings> }) {
   const settings = loaded.data;
+  const [target, setTarget] = useState<ModelTarget>('primary');
   return (
     <div className="col" style={{ gap: 14 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        The model every agent answers with. A change applies from the next reply.
+        The primary model answers your chats and does most work. A secondary model can take side
+        tasks and scheduled jobs. A change applies from the next reply.
       </p>
       {loaded.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{loaded.error}</p> : null}
       {settings ? (
         <>
           <ActiveModel settings={settings} onChanged={loaded.set} />
+          <SecondaryModel settings={settings} onChanged={loaded.set} />
           <UsageThisMonth />
           {settings.can_edit ? (
-            <ModelConnect settings={settings} onChanged={loaded.set} />
+            <>
+              <div className="row models-target">
+                <span className="models-overline">Choose a model for</span>
+                <Segmented
+                  label="Which model to set"
+                  value={target}
+                  options={TARGETS}
+                  onChange={setTarget}
+                />
+              </div>
+              <ModelConnect
+                key={target}
+                settings={settings}
+                onChanged={loaded.set}
+                target={target}
+              />
+            </>
           ) : (
-            <p className="models-hint">
-              Only the owner of this installation can change the model or its keys.
-            </p>
+            <>
+              <p className="models-hint">
+                Only the owner of this installation can change the primary model or its keys.
+              </p>
+              {settings.secondary.can_edit ? (
+                <SecondaryPicker settings={settings} onChanged={loaded.set} />
+              ) : null}
+            </>
           )}
         </>
       ) : null}

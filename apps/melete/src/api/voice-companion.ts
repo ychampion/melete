@@ -403,7 +403,7 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
   const companion: VoiceCompanion = {
     async answer(call) {
       const target = options.source
-        ? await options.source.current()
+        ? await options.source.current({ principalId: call.principalId })
         : { provider: options.provider, model: options.model };
       const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
       const body = companionBody(
