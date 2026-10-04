@@ -244,6 +244,26 @@ const toolsById = (turn: TranscriptTurn): Map<string, ToolEntry> => {
 };
 
 /**
+ * Whether grouped app work only repeats what the turn already shows: each of
+ * its actions is a tool row of its own, and each of its sources a card (a
+ * page as a link among the sources, anything else as its card).
+ */
+function toldElsewhere(turn: TranscriptTurn, step: GroupStep, hasTools: boolean): boolean {
+  if (!hasTools) return false;
+  const urls = new Set<string>();
+  const titles = new Set<string>();
+  for (const block of turn.blocks) {
+    if (block.type !== 'card') continue;
+    titles.add(block.card.title);
+    const action = block.card.primary_action;
+    if (action?.kind === 'open' && action.url) urls.add(action.url);
+  }
+  return step.sources.every((source) =>
+    source.url ? urls.has(source.url) : titles.has(source.title),
+  );
+}
+
+/**
  * The turn's flow as the rows to draw, oldest first. Work between two messages
  * becomes one `work` item; a message, a note, an edit or a block ends it.
  * Blocks the flow never named (a permission added by a send here) follow at
@@ -251,6 +271,7 @@ const toolsById = (turn: TranscriptTurn): Map<string, ToolEntry> => {
  */
 export function logItems(turn: TranscriptTurn): LogItem[] {
   const tools = toolsById(turn);
+  const hasTools = turn.flow.some((entry) => entry.type === 'tool' && tools.has(entry.id));
   const blocks = new Map(turn.blocks.map((block) => [blockId(block), block]));
   const named = new Set<string>();
   const items: LogItem[] = [];
@@ -300,7 +321,8 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
         } else if (step.type === 'note') {
           close();
           items.push({ type: 'note', key: `note-${index}`, text: step.text });
-        } else if (step.type === 'action') add({ type: 'group', step }, `group-${index}`);
+        } else if (step.type === 'action' && !toldElsewhere(turn, step, hasTools))
+          add({ type: 'group', step }, `group-${index}`);
         return;
       }
       case 'block': {
