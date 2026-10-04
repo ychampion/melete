@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 import { EXEC_LIMITS } from './execution.ts';
 import type { ToolSpec } from './runtime.ts';
-import { watchPredicate } from './watch.ts';
+import { WATCH_OPERATORS, watchPredicate } from './watch.ts';
 
 export const RUN_KINDS = ['run', 'run_step'] as const;
 export const isRunKind = (kind: string): boolean => (RUN_KINDS as readonly string[]).includes(kind);
@@ -83,10 +83,21 @@ export type RunLimit = z.infer<typeof runLimit>;
 const title = z.string().trim().min(1).max(RUN_TITLE_LIMIT);
 const body = z.string().max(RUN_BODY_LIMIT);
 
+/** How a schedule's cron is written, said wherever one is asked for or refused. */
+export const CRON_FORMAT =
+  'Write it as five fields, minute hour day-of-month month day-of-week: "0 9 * * 1" is Mondays at 9:00, "30 8 * * 1-5" is weekdays at 8:30.';
+
 /** A repeating time, in the person's time zone unless another is named. */
 export const runSchedule = z
   .object({
-    cron: z.string().trim().min(1).max(120),
+    cron: z
+      .string({
+        error: (issue) =>
+          issue.input === undefined ? `missing. ${CRON_FORMAT}` : `must be text. ${CRON_FORMAT}`,
+      })
+      .trim()
+      .min(1, `empty. ${CRON_FORMAT}`)
+      .max(120),
     timezone: z.string().trim().min(1).max(64).optional(),
   })
   .strict();
@@ -295,8 +306,17 @@ export const RUN_START_TOOL: ToolSpec = {
       },
       repeat: {
         type: 'object',
-        description:
-          'For work that repeats: {cron, timezone?}, in the person’s time zone by default.',
+        description: 'For work that repeats on a schedule.',
+        properties: {
+          cron: { type: 'string', description: CRON_FORMAT },
+          timezone: {
+            type: 'string',
+            description:
+              'A time zone name such as "America/Los_Angeles". Leave it out to use the person’s time zone.',
+          },
+        },
+        required: ['cron'],
+        additionalProperties: false,
       },
     },
     ['goal'],
@@ -341,8 +361,18 @@ export const RUN_TRY_TOOL: ToolSpec = {
     {
       title: { type: 'string' },
       command: { type: 'string' },
-      files: { type: 'object' },
-      variants: { type: 'array' },
+      files: {
+        type: 'object',
+        description: 'Text files to write before the command runs, by relative path.',
+        additionalProperties: { type: 'string' },
+      },
+      variants: {
+        type: 'array',
+        items: obj({ label: { type: 'string' }, command: { type: 'string' } }, [
+          'label',
+          'command',
+        ]),
+      },
       value_pattern: { type: 'string' },
       timeout_seconds: { type: 'integer' },
     },
@@ -377,7 +407,35 @@ export const RUN_CHECKPOINT_TOOL: ToolSpec = {
       summary: { type: 'string' },
       next: { type: 'string' },
       next_shift: {
-        anyOf: [{ type: 'string' }, { type: 'object' }],
+        anyOf: [
+          { type: 'string' },
+          obj(
+            {
+              kind: { type: 'string', enum: ['schedule', 'event', 'watch'] },
+              cron: { type: 'string' },
+              timezone: { type: 'string' },
+              connection_id: { type: 'string' },
+              event_name: { type: 'string' },
+              predicate: obj(
+                {
+                  all: {
+                    type: 'array',
+                    items: obj(
+                      {
+                        field: { type: 'string' },
+                        op: { type: 'string', enum: [...WATCH_OPERATORS] },
+                        value: { type: ['string', 'number', 'boolean', 'null'] },
+                      },
+                      ['field', 'op'],
+                    ),
+                  },
+                },
+                ['all'],
+              ),
+            },
+            ['kind'],
+          ),
+        ],
         description:
           '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}]}}. "drop_trigger" ends that.',
       },

@@ -90,7 +90,7 @@ export function createCommandLineConnector(
         name,
         description:
           'A change a command in the agent’s computer asked to make with a connected account. Made by the command itself; never proposed directly.',
-        input_schema: { type: 'object' },
+        input_schema: { type: 'object', additionalProperties: true },
         effect_class: 'write_external',
         required_scopes: [name],
         verify: false,

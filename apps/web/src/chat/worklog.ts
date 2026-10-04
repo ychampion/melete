@@ -12,7 +12,7 @@ import {
   type TurnBlock,
 } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
-import type { TrailStep, TurnStatus } from '../experience/types.ts';
+import type { ResultCard, TrailStep, TurnStatus } from '../experience/types.ts';
 
 /** A step the trail tells without a tool entry: grouped app work and its sources. */
 export type GroupStep = Extract<TrailStep, { type: 'action' }>;
@@ -25,6 +25,8 @@ export type LogItem =
   | { type: 'work'; key: string; work: Work[] }
   | { type: 'edit'; key: string; tool: ToolEntry; diff: DiffSummary }
   | { type: 'note'; key: string; text: string }
+  /** Pages the work found or read, drawn as one quiet row that opens onto their links. */
+  | { type: 'sources'; key: string; cards: ResultCard[] }
   | { type: 'block'; key: string; block: TurnBlock };
 
 export const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
@@ -77,6 +79,7 @@ export type WorkKind =
   | 'edit'
   | 'search_files'
   | 'web_search'
+  | 'held'
   | 'page'
   | 'open'
   | 'screenshot'
@@ -94,7 +97,10 @@ export function workKind(work: Work): WorkKind {
   if (/^Ask(ed|ing) you\b/.test(title)) return 'ask';
   if (/^(Ran|Running)\b/.test(title) || (kind === 'sandbox' && title.includes('`')))
     return 'command';
-  if (kind === 'web') return /^Search/.test(title) ? 'web_search' : 'page';
+  if (kind === 'web') {
+    if (/^Search held back\b/.test(title)) return 'held';
+    return /^Search/.test(title) ? 'web_search' : 'page';
+  }
   if (kind === 'file') {
     if (/^(Edit|Wrote|Writ|Sav|Patch|Updat|Chang)/.test(title)) return 'edit';
     if (/^Search/.test(title)) return 'search_files';
@@ -116,6 +122,7 @@ const PHRASES: Record<WorkKind, [one: string, many: string]> = {
   edit: ['edited a file', 'edited files'],
   search_files: ['searched files', 'searched files'],
   web_search: ['searched the web', 'searched the web'],
+  held: ['held back a search', 'held back searches'],
   page: ['read a page', 'read pages'],
   open: ['opened a site', 'opened sites'],
   screenshot: ['took a screenshot', 'took screenshots'],
@@ -146,6 +153,7 @@ const COUNTED: Record<WorkKind, [one: string, many: (n: number) => string]> = {
   edit: ['edited a file', (n) => `edited ${n} files`],
   search_files: ['searched files', (n) => `searched files ${n} times`],
   web_search: ['searched the web', (n) => `searched the web ${n} times`],
+  held: ['held back a search', (n) => `held back ${n} searches`],
   page: ['read a page', (n) => `read ${n} pages`],
   open: ['opened a site', (n) => `opened ${n} sites`],
   screenshot: ['took a screenshot', (n) => `took ${n} screenshots`],
@@ -200,6 +208,34 @@ export function finalText(turn: TranscriptTurn): string {
   return answerOf(turn).trim();
 }
 
+/**
+ * A card that only points at a page: a search result or a page read. It
+ * carries nothing to act on but the link, so it is drawn as a line among the
+ * sources rather than as a card of its own.
+ */
+export const isLinkCard = (card: ResultCard): boolean =>
+  card.primary_action?.kind === 'open' &&
+  Boolean(card.primary_action.url) &&
+  card.facts.length === 0 &&
+  card.secondary_actions.length === 0;
+
+/** A message that ends on one of these marks is whole. */
+const ENDED = /[.!?:;…)\]"'”’`*]$/;
+
+/**
+ * Whether `next` is the tail of `previous`, cut off when a tool row was drawn
+ * before the last word of the message arrived: the message stops mid-sentence
+ * and what follows is one lowercase word or a closing mark ("release.").
+ */
+export function continuesMessage(previous: string, next: string): boolean {
+  if (ENDED.test(previous.trimEnd())) return false;
+  const tail = next.trim();
+  return tail.length <= 40 && !/\s/.test(tail) && /^[\p{Ll},.;:!?)]/u.test(tail);
+}
+
+const sameWords = (a: string, b: string): boolean =>
+  a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+
 const toolsById = (turn: TranscriptTurn): Map<string, ToolEntry> => {
   const map = new Map<string, ToolEntry>();
   for (const step of turn.trail)
@@ -233,6 +269,13 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
       case 'text': {
         const text = entry.text.trim();
         if (!text) return;
+        // The tail of the message before the work joins it; the work stays after.
+        const previous = items.at(-1);
+        if (run.length && previous?.type === 'message' && continuesMessage(previous.text, text)) {
+          const glue = /^[,.;:!?)]/.test(text) ? '' : ' ';
+          items[items.length - 1] = { ...previous, text: `${previous.text}${glue}${text}` };
+          return;
+        }
         close();
         items.push({ type: 'message', key: `text-${index}`, text });
         return;
@@ -265,6 +308,20 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
         if (!block || named.has(entry.id)) return;
         named.add(entry.id);
         close();
+        if (block.type === 'card' && isLinkCard(block.card)) {
+          const last = items.at(-1);
+          if (last?.type === 'sources') last.cards.push(block.card);
+          else items.push({ type: 'sources', key: `sources-${entry.id}`, cards: [block.card] });
+          return;
+        }
+        // A question that repeats the message before it is told once, by the question.
+        const previous = items.at(-1);
+        if (
+          block.type === 'question' &&
+          previous?.type === 'message' &&
+          sameWords(previous.text, block.question.text)
+        )
+          items.pop();
         items.push({ type: 'block', key: `block-${entry.id}`, block });
         return;
       }
@@ -293,7 +350,12 @@ export function layoutTurn(turn: TranscriptTurn): TurnLayout {
   const items = logItems(turn);
   const finished = FINISHED.includes(turn.status);
   if (!finished) return { log: items, answer: '', after: [], finished };
-  const answer = finalText(turn);
+  // A saved answer that only repeats what a question asks is told once, by the question.
+  const saved = finalText(turn);
+  const asked = turn.blocks.some(
+    (block) => block.type === 'question' && sameWords(block.question.text, saved),
+  );
+  const answer = asked ? '' : saved;
   let last = -1;
   items.forEach((item, index) => {
     if (item.type === 'message') last = index;

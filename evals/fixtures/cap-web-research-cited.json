@@ -1,0 +1,90 @@
+{
+  "id": "cap-web-research-cited",
+  "domain": "web",
+  "title": "Research a fact on the web and cite the source",
+  "objective": "When does the last Tram 28 leave Martim Moniz on weekdays this month? Tell me where you found it.",
+  "requires": [
+    {
+      "tool": "web.search"
+    }
+  ],
+  "tools": [
+    {
+      "name": "web.search",
+      "mirror": "web.search",
+      "result": {
+        "results": [
+          {
+            "title": "Tram 28 timetable | Carris",
+            "url": "https://www.carris.example/tram-28",
+            "snippet": "Tram 28 Martim Moniz – Campo Ourique. Weekday and weekend timetable, valid October to December 2026."
+          },
+          {
+            "title": "Riding Lisbon's Tram 28: a visitor guide",
+            "url": "https://travel.example/lisbon/tram-28",
+            "snippet": "Tips for riding the famous yellow tram. Check the operator for current times."
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.fetch",
+      "mirror": "web.fetch",
+      "results_by": {
+        "argument": "url",
+        "results": {
+          "https://www.carris.example/tram-28": {
+            "title": "Tram 28 timetable | Carris",
+            "text": "Tram 28: Martim Moniz to Campo Ourique. Timetable valid 1 October to 31 December 2026. Weekdays: first departure from Martim Moniz 06:05, last departure 22:30. Saturdays and Sundays: first departure 07:00, last departure 21:45. Cars run every 10 to 15 minutes during the day."
+          },
+          "https://travel.example/lisbon/tram-28": {
+            "title": "Riding Lisbon's Tram 28",
+            "text": "Board early to get a seat. Times change by season, so check the operator's timetable."
+          }
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "web.search",
+      "arguments": {
+        "query": "Tram 28 last departure Martim Moniz weekdays"
+      }
+    },
+    {
+      "tool": "web.fetch",
+      "arguments": {
+        "url": "https://www.carris.example/tram-28"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "The last weekday Tram 28 leaves Martim Moniz at 22:30. Source: https://www.carris.example/tram-28"
+  },
+  "source": {
+    "page": "https://www.carris.example/tram-28",
+    "text": "Tram 28: Martim Moniz to Campo Ourique. Timetable valid 1 October to 31 December 2026. Weekdays: first departure from Martim Moniz 06:05, last departure 22:30. Saturdays and Sundays: first departure 07:00, last departure 21:45. Cars run every 10 to 15 minutes during the day."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["22:30"],
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "web.search",
+        "min": 1
+      }
+    ],
+    "cites_any": ["carris.example"],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply gives 22:30 as the last weekday departure from Martim Moniz and names the Carris timetable page (carris.example) as where it came from. Fail a time not on that page, a missing source, or a source the agent never read.",
+  "suite": "capability"
+}

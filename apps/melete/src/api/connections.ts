@@ -443,7 +443,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await requireInstaller(deps.db, spaceId, actor, installation.kind);
-    // An MCP server outside the setup owner's own spaces must be a public
+    // An MCP server outside the setup owner's own space must be a public
     // address; the connector holds it to that again on every request.
     if (installation.kind === 'mcp' && !(await setupOwnersSpace(deps.sql, spaceId))) {
       const tokenUrl = installation.credentials?.token_url;
@@ -463,7 +463,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const secretRef = stored.secret ? await secrets.put(spaceId, stored.secret) : null;
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
-      await requireInstaller(tx, spaceId, actor, installation.kind, true);
+      const access = await requireInstaller(tx, spaceId, actor, installation.kind, true);
       if (installation.kind === 'sandbox') {
         // One execution backend per space, as one browser worker per space:
         // two would mean two places a command could run, and two answers to
@@ -516,6 +516,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
           status: 'disabled',
           setupState: 'connecting',
+          sharedUse: installedUse(access),
         })
         .returning({ generation: connection.generation });
       if (!created) throw new Error('Connection installation was not created');
@@ -561,7 +562,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       const checkedAt = new Date(outcome.checked_at);
       await serviceTransaction(deps.db, async (tx) => {
         const access = await spaceAuthority(tx, spaceId, actor, true);
-        if (access.role !== 'owner' || access.space.audience !== 'owner')
+        if (!mayInstall(access))
           throw new ServiceError('scope_denied', 'Installation authority changed.', 403);
         // Registry publication precedes activation so discovery cannot observe an active row without a worker.
         const [published] = await tx
@@ -999,9 +1000,23 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 }
 
 /**
- * Installing is the owner's own act, in a space whose audience is the owner
- * alone. The same judgement is made before anything in the request is acted on
- * and again under the lock that writes the row.
+ * Installing is an owner's act: the owner of a personal space, adding their own
+ * account, or an owner of a room, adding an account the room uses as its own.
+ */
+function mayInstall(access: Awaited<ReturnType<typeof spaceAuthority>>): boolean {
+  return (
+    access.role === 'owner' && (access.space.audience === 'owner' || access.space.kind === 'shared')
+  );
+}
+
+/** How a new connection is shared: a room's account serves the room's requests. */
+function installedUse(access: Awaited<ReturnType<typeof spaceAuthority>>): 'owner' | 'room' {
+  return access.space.kind === 'shared' ? 'room' : 'owner';
+}
+
+/**
+ * The same judgement is made before anything in the request is acted on and
+ * again under the lock that writes the row.
  */
 async function requireInstaller(
   reader: Database | Transaction,
@@ -1011,12 +1026,12 @@ async function requireInstaller(
   lock = false,
 ) {
   const access = await spaceAuthority(reader, spaceId, actor, lock);
-  if (access.role !== 'owner' || access.space.audience !== 'owner')
+  if (!mayInstall(access))
     throw new ServiceError(
       'scope_denied',
       kind === 'mcp' || kind === 'mcp_stdio'
         ? 'MCP installation requires its owner and matching audience.'
-        : 'Installing a connection requires the owner of an owner-audience space.',
+        : 'Installing a connection requires an owner of the space.',
       403,
     );
   return access;

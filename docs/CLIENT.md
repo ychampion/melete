@@ -475,6 +475,12 @@ The web app in `apps/web` also uses the mock: run it on `3210` (`MOCK_PORT=3210 
 - **kyoto-in-october**, **passport-renewal**, **welcome** — a question with
   numbered answers, a plain answer with its source, and the first message
   after setup.
+- **web-search** — checks the date and searches the web; the search keeps a
+  receipt and its pages fold into one row of sources. Ask for "the latest
+  stable version of Bun".
+- **private-search** — a chat about personal finances with no local model:
+  it asks before sending a redacted version, then holds back a search that
+  carries an account number. Mention "bank account number".
 
 The web app reads only the experience contract
 (`packages/contracts/src/experience.ts`, through the generated client in

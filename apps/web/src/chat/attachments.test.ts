@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { ATTACHMENT_LIMITS } from '@melete/contracts/attachments';
-import { refusal } from './attachments.ts';
+import { BROWSER_UPLOADS_AT_ONCE, queueOf, refusal } from './attachments.ts';
 
 const file = (name: string, type: string, size: number) =>
   ({ name, type, size }) as unknown as File;
@@ -18,4 +18,74 @@ test('a file the box cannot take is refused in a sentence before anything upload
   expect(refusal(file('one-more.txt', 'text/plain', 5), ATTACHMENT_LIMITS.per_message)).toBe(
     `A message can carry up to ${ATTACHMENT_LIMITS.per_message} files.`,
   );
+});
+
+const runTen = async (limit: number) => {
+  const run = queueOf(() => limit);
+  let running = 0;
+  let most = 0;
+  const started: number[] = [];
+  const results = await Promise.all(
+    Array.from({ length: 10 }, (_, index) =>
+      run(async () => {
+        started.push(index);
+        running++;
+        most = Math.max(most, running);
+        await new Promise((done) => setTimeout(done, 5 + (index % 3) * 3));
+        running--;
+        return index;
+      }),
+    ),
+  );
+  return { most, started, results };
+};
+
+test('where the operator limits uploads at once, ten files picked together wait their turn', async () => {
+  const { most, started, results } = await runTen(3);
+  expect(most).toBe(3);
+  expect(started).toEqual(results);
+  expect(results).toEqual(Array.from({ length: 10 }, (_, i) => i));
+});
+
+test('with no limit set, a few run together for the browser, and every file is taken', async () => {
+  const { most, results } = await runTen(BROWSER_UPLOADS_AT_ONCE);
+  expect(most).toBe(BROWSER_UPLOADS_AT_ONCE);
+  expect(results).toHaveLength(10);
+});
+
+test('the limits an operator sets are the ones the box refuses by', () => {
+  const limits = { file_bytes: 1024 * 1024, per_message: 2, uploads_at_once: null };
+  expect(refusal(file('a.txt', 'text/plain', 5), 2, limits)).toBe(
+    'A message can carry up to 2 files.',
+  );
+  expect(refusal(file('big.pdf', 'application/pdf', 2 * 1024 * 1024), 0, limits)).toBe(
+    'Files can be up to 1 MB. big.pdf is 2 MB.',
+  );
+  expect(refusal(file('a.txt', 'text/plain', 5), 12, { ...limits, per_message: 50 })).toBeNull();
+});
+
+test('a failed upload frees its place for the next one', async () => {
+  const run = queueOf(() => 1);
+  const first = run(async () => {
+    throw new Error('offline');
+  });
+  const second = run(async () => 'sent');
+  await expect(first).rejects.toThrow('offline');
+  expect(await second).toBe('sent');
+});
+
+test('twelve files from one person, queued to the share the service gives, are never refused', async () => {
+  // A service that holds 8 per person and refuses the next, as the real one does.
+  const share = 8;
+  let held = 0;
+  const serve = async () => {
+    if (held >= share) return 429;
+    held++;
+    await new Promise((done) => setTimeout(done, 5));
+    held--;
+    return 201;
+  };
+  const run = queueOf(() => share);
+  const results = await Promise.all(Array.from({ length: 12 }, () => run(serve)));
+  expect(results).toEqual(Array(12).fill(201));
 });

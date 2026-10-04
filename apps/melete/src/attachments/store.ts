@@ -34,6 +34,7 @@ import {
 import { defineBlobOwner, lockBlobKey, referenceBlobs } from '../storage/refs.ts';
 import { extractBounded, ReadersBusy } from './bounded.ts';
 import { looksLike, UnreadableFile } from './extract.ts';
+import { type AttachmentSettings, DEFAULT_ATTACHMENT_SETTINGS } from './limits.ts';
 import { type AttachmentRow, attachment } from './schema.ts';
 
 export const ATTACHMENT_OWNER = 'attachment';
@@ -101,6 +102,8 @@ export class AttachmentService {
   constructor(
     readonly sql: Sql,
     readonly store: BlobStore,
+    /** What files the operator lets in. Left out, the defaults, with no upload limits. */
+    readonly settings: AttachmentSettings = DEFAULT_ATTACHMENT_SETTINGS,
   ) {}
 
   /** Check, read and keep one upload. Nothing is kept when it is refused. */
@@ -120,7 +123,8 @@ export class AttachmentService {
     }
     if (input.bytes.length === 0)
       throw new ServiceError('attachment_empty', `${name} is empty.`, 400);
-    if (input.bytes.length > ATTACHMENT_LIMITS.file_bytes) throw tooLarge(name, input.bytes.length);
+    if (input.bytes.length > this.settings.fileBytes)
+      throw tooLarge(name, input.bytes.length, this.settings.fileBytes);
     if (!looksLike(kind.kind, input.bytes, kind.type))
       throw new ServiceError(
         'attachment_unreadable',
@@ -191,9 +195,10 @@ export class AttachmentService {
 
   private async put(bytes: Uint8Array, name: string): Promise<StoredBlob> {
     try {
-      return await this.store.put(bytes, { maxBytes: ATTACHMENT_LIMITS.file_bytes });
+      return await this.store.put(bytes, { maxBytes: this.settings.fileBytes });
     } catch (error) {
-      if (error instanceof BlobTooLarge) throw tooLarge(name, bytes.length);
+      if (error instanceof BlobTooLarge)
+        throw tooLarge(name, bytes.length, this.settings.fileBytes);
       throw error;
     }
   }
@@ -316,13 +321,25 @@ export class AttachmentService {
  */
 export async function bindAttachments(
   tx: Transaction,
-  input: { jobId: string; spaceId: string; principalId: string | null; ids: readonly string[] },
+  input: {
+    jobId: string;
+    spaceId: string;
+    principalId: string | null;
+    ids: readonly string[];
+    /** The operator's files per message; never above the ceiling. */
+    perMessage?: number;
+  },
 ): Promise<SentAttachment[]> {
   const ids = [...new Set(input.ids)];
-  if (ids.length !== input.ids.length || ids.length > ATTACHMENT_LIMITS.per_message)
+  // Every way a message arrives binds its files here, so the number is checked here.
+  const most = Math.min(
+    input.perMessage ?? ATTACHMENT_LIMITS.per_message,
+    ATTACHMENT_LIMITS.per_message_ceiling,
+  );
+  if (ids.length !== input.ids.length || ids.length > most)
     throw new ServiceError(
       'attachments_invalid',
-      `A message can carry up to ${ATTACHMENT_LIMITS.per_message} files, each once.`,
+      `A message can carry up to ${most} files, each once.`,
       400,
     );
   if (!ids.length) return [];
@@ -445,8 +462,8 @@ const KIND_NAMES: Record<AttachmentKind, string> = {
   text: 'a text file',
 };
 
-function tooLarge(name: string, bytes: number): ServiceError {
-  return new ServiceError('attachment_too_large', attachmentTooLarge(name, bytes), 413);
+function tooLarge(name: string, bytes: number, limitBytes: number): ServiceError {
+  return new ServiceError('attachment_too_large', attachmentTooLarge(name, bytes, limitBytes), 413);
 }
 
 /** The type of a picture the gateway can forward, from its bytes; null for anything else. */

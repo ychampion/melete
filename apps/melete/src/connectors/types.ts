@@ -136,14 +136,17 @@ export interface Connector {
   retire?(): Promise<void>;
 }
 
-/** An operator's owner-only installation is unavailable to public compartments. */
+/**
+ * An installed account is unavailable to public compartments. It serves its own
+ * person's space, or a room's space when the room's owners added it there; which
+ * jobs in a room it serves is the `shared_use` rule's to say.
+ */
 export function connectorAllowsAudience(
   connector: Connector,
   constraints: JobConstraints,
   audience: string,
 ): boolean {
-  return (
-    !connector.catalog?.audience ||
-    (connector.catalog.audience === audience && !constraints.public_compartment)
-  );
+  if (!connector.catalog?.audience) return true;
+  if (constraints.public_compartment) return false;
+  return audience === connector.catalog.audience || audience === 'space';
 }

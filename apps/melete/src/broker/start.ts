@@ -106,6 +106,7 @@ export async function startEffectBoundary(
       privateContext: ({ spaceId, agentId }, query) =>
         dependencies.privacy.marksPrivate(spaceId, agentId, query),
       webSearch: webSearchFromEnv(env, { native: search?.backend }),
+      spending,
       searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;

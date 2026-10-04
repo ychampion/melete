@@ -49,6 +49,7 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
+import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
@@ -773,7 +774,7 @@ export async function bootstrap(
       blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
         leading(leases, 'blob-collector'),
       );
-      attachments = new AttachmentService(handle.sql, blobs.store);
+      attachments = new AttachmentService(handle.sql, blobs.store, attachmentSettingsFromEnv(env));
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
@@ -838,6 +839,8 @@ export async function bootstrap(
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
         webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
+        // Paid search and reading calls count toward the same spending caps.
+        spending,
         // A private or sensitive conversation's words never go to an outside search.
         searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
       });
@@ -894,6 +897,7 @@ export async function bootstrap(
     if (env.DATABASE_URL)
       queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+    if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
     runs = jobs ? new RunService(jobs) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
     // one. Both memory startups deliver through it.
@@ -1095,6 +1099,12 @@ export async function bootstrap(
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 recallsPrivateMemory: (jobId, attemptId) =>
                   privacy.recallsPrivateMemory(jobId, attemptId, {
+                    protocol: engineProtocol(env),
+                    providerUrl: providerAddress(env),
+                  }),
+                // The agent is told when what the person just wrote will not be kept.
+                refusesMemoryRead: (jobId) =>
+                  privacy.refusesServiceRead(jobId, {
                     protocol: engineProtocol(env),
                     providerUrl: providerAddress(env),
                   }),
