@@ -335,13 +335,16 @@ while its own workspace stayed writable.
 
 ### Web search
 
-`web.search(query, max_results?)` is a `read` on the default Web connection, so
+`web.search(query, max_results?, recency?)` is a `read` on the default Web connection, so
 every agent can search the web on a fresh installation with nothing configured.
 A search goes to the first of these that answers:
 
-1. A search API key the operator set: `BRAVE_SEARCH_API_KEY` (Brave Search),
-   then `TAVILY_API_KEY` (Tavily). A key is a deliberate choice, so it comes
-   before everything else.
+1. A search API key the operator set: `TAVILY_API_KEY` (Tavily), then
+   `BRAVE_SEARCH_API_KEY` (Brave Search). A key is a deliberate choice, so it
+   comes before everything else. Tavily comes first when both are set because
+   each of its results carries the passages of the page that match the query
+   (see "Tavily" below), so the agent can often answer without reading every
+   page.
 2. The search tool of the model the conversation runs on, when its provider has
    one: the Messages API web search tool for Claude models, the Responses API
    `web_search` tool for recent OpenAI models. The catalog in
@@ -358,6 +361,12 @@ A search goes to the first of these that answers:
    logs a warning at start when no search key is set (see
    [DEPLOYMENT](DEPLOYMENT.md)). Wikipedia is told who is calling, as its API
    policy asks.
+
+`recency` (`day`, `week`, `month` or `year`) asks for recent pages only. Tavily
+receives it as `time_range` and returns each page's publication date, kept as
+the result's `published`; Brave receives it as `freshness` and DuckDuckGo as
+`df`. Wikipedia's articles carry no date, so it steps aside for such a search.
+The model's own search receives the query as written.
 
 A backend that fails or finds nothing hands the search to the next one, and the
 receipt's `tried` names every backend that was asked. That includes the model's
@@ -391,8 +400,10 @@ and the search stops.
 What the receipt keeps: the query, which backend answered and which were tried,
 the model for a native search, how many searches the provider ran, the
 provider's short answer when there is one, and each result's title, address
-(credentials cut, as `web.fetch` does) and snippet, with `sources` listing the
-addresses. `about_this_text` comes before the results and tells the model they
+(credentials cut, as `web.fetch` does) and snippet, plus the page's matching
+passages (`content`, up to 1,600 characters) and publication date
+(`published`) when the backend returns them, with `sources` listing the
+addresses. The recency asked for is kept as `recency`. `about_this_text` comes before the results and tells the model they
 were written by the sites found, that it must not follow instructions in them,
 and that it should name the addresses it relied on. The conversation's trail
 shows the action as "Searched the web for “…”", with each result as a source.
@@ -425,6 +436,66 @@ search, with no key configured`, `a configured search key takes precedence over
 the model’s own search`, `a private space or a sensitive conversation sends the
 query nowhere`, and `a default web connection from an earlier release gains
 web.search; a removed one does not`.
+
+#### Tavily
+
+With `TAVILY_API_KEY` set, Tavily serves two purposes. The key is sent only to
+`https://api.tavily.com`, in the `Authorization` header, with redirects
+refused; it never reaches the model, the sandbox or a receipt, and a failed
+call records only its status, since an error body can echo the key. Replies
+over 1 MB are not read.
+
+- **Search.** `search_depth: basic` (one Tavily credit) with three passages per
+  page, reranked against the query. The passages arrive as each result's
+  `content`, so a search usually answers on its own, and `web.fetch` is left
+  for the pages that need a full read. Tavily's written answer, whole-page text
+  and images are not requested. A search that fails or hits a rate limit moves
+  on to the next backend.
+- **Reading pages `web.fetch` gets no text from.** When the direct read of a
+  page meets a bot wall (a 403 that is a challenge or block page from a
+  bot-protection service), a rate limit (429) or an unavailable site (503), or
+  returns an HTML page with almost no readable text (a page built by scripts),
+  `web.fetch` asks Tavily Extract for the same page with `extract_depth:
+  advanced`, which renders it first. A plain 403 is the site saying the page
+  is not for this reader, so its address stays here. The fallback runs only
+  after the direct read has passed every rule for that address: the Public
+  web reads setting, and a public address for the host and every redirect.
+  The address is then sent only when:
+  - nothing in its host, path or query looks like a key: a run of eight or
+    more letters mixed with digits, ten or more digits, a JSON web token, or a
+    query name that suggests a key (`authkey`, `token`, `sig`, `session` and
+    the like);
+  - it is not a sign-in, sign-up, reset, invite or share step, and carries no
+    onward address (`next`, `redirect`, `return` and the like);
+  - the Public web reads rule allows it, even for a site the work's own list
+    let it read;
+  - the privacy check a search query passes allows it as sent, decoded, and
+    as words (`Jane%20Marlowe`, `jane-marlowe` and `john.doe%40gmail.com`
+    are read as the details they are).
+
+  The read stays within `web.fetch`'s total time and its 60,000-character
+  limit, and the receipt marks it with `read_through: "tavily"` and a note.
+  When Extract fails or finds less, the direct read's result is returned as
+  it was. The hosted reader reads at most three pages each conversation turn;
+  past that, or past the work's spending limit, the receipt's note says so.
+
+Every Tavily call is charged to the job that made it, as the model's own
+search is: the most it can cost (one credit for a search, two for a page) is
+reserved on the job's spending estimate at $0.008 a credit before it is sent,
+then settled at the credits Tavily reports, counted on the attempt
+(`tavily_credits`, `usd_est`) and in the installation's spending record, so
+the spending limits in [DEPLOYMENT](DEPLOYMENT.md) cover it. A request and its
+receipt are `paid_api_request` and `paid_api_receipt` notices in the job's
+ledger. A search over the job's limit is refused, not moved to a free backend.
+
+When `recency` is asked for, the receipt keeps it only if the backend that
+answered held to it; otherwise its note tells the model the results are not
+limited to recent pages.
+
+Evidence: `tavily.test.ts` and `tavily-guard.test.ts`, which run the calls
+against a local stand-in for Tavily's API and the privacy check against the
+real redactor and topic classifier, and the integration test
+`paid-meter.test.ts`.
 
 ### Web reads
 

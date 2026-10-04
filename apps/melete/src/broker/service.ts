@@ -55,6 +55,7 @@ import {
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
+import { appendToolTrace, heldSearchCall } from '../experience/tools.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
@@ -93,7 +94,7 @@ import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } f
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
-import { BrokerFault } from './errors.ts';
+import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
   actionFromRow,
@@ -563,13 +564,7 @@ export class BrokerService implements BrokerOperations {
       }
       return await this.options.runs.call(claims, name, input);
     } catch (error) {
-      if (error instanceof ZodError) {
-        const issue = error.issues[0];
-        throw new BrokerFault(
-          'payload_invalid',
-          issue ? `${issue.path.join('.') || 'input'}: ${issue.message}` : 'Invalid input.',
-        );
-      }
+      if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
       if (error instanceof ServiceError)
         throw new BrokerFault(
           ['stale_epoch', 'scope_denied', 'revision_mismatch'].includes(error.code)
@@ -1345,190 +1340,204 @@ export class BrokerService implements BrokerOperations {
       kind: request.kind,
       canonical_payload: request.payload as Action['canonical_payload'],
     });
-    const proposal = await this.sql.begin(async (tx) => {
-      const job = await lockJob(tx, claims.job_id);
-      await checkAttempt(tx, job, claims);
-      const access = await agentAccess(tx, job.id);
-      if (access.chat && directSend(request.kind))
-        throw new BrokerFault(
-          'scope_denied',
-          'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+    const proposal = await this.sql
+      .begin(async (tx) => {
+        const job = await lockJob(tx, claims.job_id);
+        await checkAttempt(tx, job, claims);
+        const access = await agentAccess(tx, job.id);
+        if (access.chat && directSend(request.kind))
+          throw new BrokerFault(
+            'scope_denied',
+            'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+          );
+        const { tool, connector } = await this.tool(
+          tx,
+          job,
+          claims,
+          request.connection_id,
+          request.kind,
         );
-      const { tool, connector } = await this.tool(
-        tx,
-        job,
-        claims,
-        request.connection_id,
-        request.kind,
-      );
-      if (readOnly && (tool.effect_class !== 'read' || tool.requires_approval))
-        throw new BrokerFault(
-          'scope_denied',
-          'Composition may invoke only auto-admitted read tools',
-        );
-      // A presentation alias binds one granted account; the durable intent and
-      // connector dispatch keep the original verb, including after a restart.
-      request = { ...request, kind: tool.name };
-      let canonical = canonicalizePayload(request.payload);
-      this.validatePayload(tool, canonical.canonical);
-      if (connector.prepare) {
-        canonical = canonicalizePayload(
-          await connector.prepare(
-            canonical.canonical,
-            {
-              job_id: job.id,
-              space_id: job.space_id,
-              idempotency_key: '',
-              constraints: jobConstraints.parse(job.constraints),
-            },
-            tx,
-          ),
-        );
+        if (readOnly && (tool.effect_class !== 'read' || tool.requires_approval))
+          throw new BrokerFault(
+            'scope_denied',
+            'Composition may invoke only auto-admitted read tools',
+          );
+        // A presentation alias binds one granted account; the durable intent and
+        // connector dispatch keep the original verb, including after a restart.
+        request = { ...request, kind: tool.name };
+        let canonical = canonicalizePayload(request.payload);
         this.validatePayload(tool, canonical.canonical);
-      }
-      // The identity of the effect itself, independent of which attempt is
-      // alive. A runtime that died between proposing and hearing back proposes
-      // the same key and is handed the action it already made.
-      const effectKey = intentKey({
-        job_id: job.id,
-        job_revision: job.revision,
-        connection_id: request.connection_id,
-        kind: request.kind,
-        payload_hash: canonical.hash,
-        ...(access.turnId ? { turn_id: access.turnId } : {}),
-      });
-      // Repeated reads reuse their observation within an attempt; later attempts
-      // observe the current source. External effects retain durable job identity.
-      const scope = tool.effect_class === 'read' ? claims.attempt_id : job.id;
-      const key =
-        tool.effect_class === 'read'
-          ? createHash('sha256').update(`${effectKey}:${scope}`).digest('hex')
-          : effectKey;
-      const refBase =
-        request.client_ref === undefined
-          ? null
-          : `broker:proposal:${scope}:${createHash('sha256')
-              .update(access.turnId ? `${access.turnId}:${request.client_ref}` : request.client_ref)
-              .digest('hex')}`;
-      const ref = refBase ? `${refBase}:revision:${job.revision}` : null;
-      if (refBase) {
-        // LIKE treats '_' in every job id as a wildcard unless escaped.
-        const refPattern = `${refBase.replace(/[\\%_]/g, '\\$&')}:revision:%`;
-        const [event] = await tx`select payload from event where job_id = ${job.id}
+        if (connector.prepare) {
+          canonical = canonicalizePayload(
+            await connector.prepare(
+              canonical.canonical,
+              {
+                job_id: job.id,
+                space_id: job.space_id,
+                idempotency_key: '',
+                constraints: jobConstraints.parse(job.constraints),
+              },
+              tx,
+            ),
+          );
+          this.validatePayload(tool, canonical.canonical);
+        }
+        // The identity of the effect itself, independent of which attempt is
+        // alive. A runtime that died between proposing and hearing back proposes
+        // the same key and is handed the action it already made.
+        const effectKey = intentKey({
+          job_id: job.id,
+          job_revision: job.revision,
+          connection_id: request.connection_id,
+          kind: request.kind,
+          payload_hash: canonical.hash,
+          ...(access.turnId ? { turn_id: access.turnId } : {}),
+        });
+        // Repeated reads reuse their observation within an attempt; later attempts
+        // observe the current source. External effects retain durable job identity.
+        const scope = tool.effect_class === 'read' ? claims.attempt_id : job.id;
+        const key =
+          tool.effect_class === 'read'
+            ? createHash('sha256').update(`${effectKey}:${scope}`).digest('hex')
+            : effectKey;
+        const refBase =
+          request.client_ref === undefined
+            ? null
+            : `broker:proposal:${scope}:${createHash('sha256')
+                .update(
+                  access.turnId ? `${access.turnId}:${request.client_ref}` : request.client_ref,
+                )
+                .digest('hex')}`;
+        const ref = refBase ? `${refBase}:revision:${job.revision}` : null;
+        if (refBase) {
+          // LIKE treats '_' in every job id as a wildcard unless escaped.
+          const refPattern = `${refBase.replace(/[\\%_]/g, '\\$&')}:revision:%`;
+          const [event] = await tx`select payload from event where job_id = ${job.id}
           and (dedup_key = ${refBase} or dedup_key like ${refPattern})
           order by seq desc limit 1`;
-        if (event) {
-          const existing = await loadAction(tx, event.payload.action_id);
-          const currentEffectIdentity = intentKey({
-            job_id: job.id,
-            job_revision: job.revision,
-            connection_id: existing.connection_id,
-            kind: existing.kind,
-            payload_hash: existing.payload_hash,
-            ...(access.turnId ? { turn_id: access.turnId } : {}),
-          });
-          const currentIdentity =
-            tool.effect_class === 'read'
-              ? createHash('sha256').update(`${currentEffectIdentity}:${scope}`).digest('hex')
-              : currentEffectIdentity;
-          const obsoleteUnadmitted =
-            existing.intent_key !== currentIdentity &&
-            ['proposed', 'needs_approval', 'approved', 'denied'].includes(existing.status);
-          if (obsoleteUnadmitted) {
-            // A correction revokes an unadmitted approval. Preserve the old
-            // record, refuse its dispatch, and create a binding for this revision.
-            if (['proposed', 'needs_approval', 'approved'].includes(existing.status))
-              await this.rejectDispatch(tx, job, existing, 'job_revision_changed');
-          } else {
-            if (
-              existing.payload_hash !== canonical.hash ||
-              existing.kind !== request.kind ||
-              existing.connection_id !== request.connection_id
-            ) {
-              throw new BrokerFault(
-                'approval_hash_mismatch',
-                'A retried proposal must use the same content',
-              );
+          if (event) {
+            const existing = await loadAction(tx, event.payload.action_id);
+            const currentEffectIdentity = intentKey({
+              job_id: job.id,
+              job_revision: job.revision,
+              connection_id: existing.connection_id,
+              kind: existing.kind,
+              payload_hash: existing.payload_hash,
+              ...(access.turnId ? { turn_id: access.turnId } : {}),
+            });
+            const currentIdentity =
+              tool.effect_class === 'read'
+                ? createHash('sha256').update(`${currentEffectIdentity}:${scope}`).digest('hex')
+                : currentEffectIdentity;
+            const obsoleteUnadmitted =
+              existing.intent_key !== currentIdentity &&
+              ['proposed', 'needs_approval', 'approved', 'denied'].includes(existing.status);
+            if (obsoleteUnadmitted) {
+              // A correction revokes an unadmitted approval. Preserve the old
+              // record, refuse its dispatch, and create a binding for this revision.
+              if (['proposed', 'needs_approval', 'approved'].includes(existing.status))
+                await this.rejectDispatch(tx, job, existing, 'job_revision_changed');
+            } else {
+              if (
+                existing.payload_hash !== canonical.hash ||
+                existing.kind !== request.kind ||
+                existing.connection_id !== request.connection_id
+              ) {
+                throw new BrokerFault(
+                  'approval_hash_mismatch',
+                  'A retried proposal must use the same content',
+                );
+              }
+              return { action: existing, key, repeated: true, pending: null };
             }
-            return { action: existing, key, repeated: true, pending: null };
           }
         }
-      }
-      // A conversation goes on after a turn that left an effect uncertain, and
-      // the same effect asked for from a later turn is that one: it is not sent
-      // again, nor asked for again, until the person has settled it.
-      if (tool.effect_class !== 'read') {
-        const [uncertain] = await tx`select * from action where job_id = ${job.id}
+        // A conversation goes on after a turn that left an effect uncertain, and
+        // the same effect asked for from a later turn is that one: it is not sent
+        // again, nor asked for again, until the person has settled it.
+        if (tool.effect_class !== 'read') {
+          const [uncertain] = await tx`select * from action where job_id = ${job.id}
           and connection_id = ${request.connection_id} and kind = ${request.kind}
           and payload_hash = ${canonical.hash}
           and status in ('dispatched', 'unknown', 'unresolved')
           order by created_at desc limit 1 for update`;
-        if (uncertain) return { action: actionFromRow(uncertain), key, repeated: true };
-      }
-      // The unique index is the durable half of this; the job row lock is what
-      // makes two live attempts take their turn rather than race.
-      const [prior] = await tx`select * from action where intent_key = ${key} for update`;
-      if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
-      const id = recordId('act');
-      const [row] = await tx`insert into action
+          if (uncertain) return { action: actionFromRow(uncertain), key, repeated: true };
+        }
+        // The unique index is the durable half of this; the job row lock is what
+        // makes two live attempts take their turn rather than race.
+        const [prior] = await tx`select * from action where intent_key = ${key} for update`;
+        if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
+        const id = recordId('act');
+        const [row] = await tx`insert into action
         (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key, intent_key)
         values (${id}, ${job.id}, ${claims.attempt_id}, ${request.connection_id}, ${request.kind},
           ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key}) returning *`;
-      if (!row) throw new Error('Action insert returned no record');
-      const created = actionFromRow(row);
-      const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
-      // What the person approves is shown to them whole: a command too long
-      // for its card is refused here, and nothing of it is recorded.
-      const hidden = classified.requires_approval
-        ? tooLongToAsk(created.kind, created.canonical_payload)
-        : null;
-      if (hidden) throw new BrokerFault('payload_invalid', hidden);
-      const expiresAt = classified.requires_approval
-        ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
-        : null;
-      const authority = await resolveEffectAuthority(
-        tx,
-        { job, action: created, phase: 'proposal' },
-        this.options.resolveAuthority,
-      );
-      await saveBinding(tx, created, bindEffect(created, job, authority, expiresAt));
-      await appendEvent(
-        tx,
-        job.id,
-        claims.attempt_id,
-        'action_requested',
-        { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
-        ref ?? undefined,
-      );
-      const review = { job, action: created, tool, claims };
-      if (classified.requires_approval) {
-        // A reviewable action waits as `proposed`, with no card, while the
-        // reviewer is asked outside this transaction; anything else asks now.
-        const pending = await this.pendingReview(tx, review, classified, connector);
-        if (pending) return { action: await loadAction(tx, id), key, repeated: false, pending };
-        const approvalId = recordId('apr');
-        await tx`insert into approval
+        if (!row) throw new Error('Action insert returned no record');
+        const created = actionFromRow(row);
+        const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
+        // What the person approves is shown to them whole: a command too long
+        // for its card is refused here, and nothing of it is recorded.
+        const hidden = classified.requires_approval
+          ? tooLongToAsk(created.kind, created.canonical_payload)
+          : null;
+        if (hidden) throw new BrokerFault('payload_invalid', hidden);
+        const expiresAt = classified.requires_approval
+          ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
+          : null;
+        const authority = await resolveEffectAuthority(
+          tx,
+          { job, action: created, phase: 'proposal' },
+          this.options.resolveAuthority,
+        );
+        await saveBinding(tx, created, bindEffect(created, job, authority, expiresAt));
+        await appendEvent(
+          tx,
+          job.id,
+          claims.attempt_id,
+          'action_requested',
+          { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
+          ref ?? undefined,
+        );
+        const review = { job, action: created, tool, claims };
+        if (classified.requires_approval) {
+          // A reviewable action waits as `proposed`, with no card, while the
+          // reviewer is asked outside this transaction; anything else asks now.
+          const pending = await this.pendingReview(tx, review, classified, connector);
+          if (pending) return { action: await loadAction(tx, id), key, repeated: false, pending };
+          const approvalId = recordId('apr');
+          await tx`insert into approval
           (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
           values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt},
             ${JSON.stringify(classified.warnings)}::jsonb)`;
-        await this.setStatus(tx, created, 'needs_approval');
-        const escalated = await this.recordPolicyEscalation(tx, review, classified);
-        await this.askOwner(tx, job, created, approvalId, classified, escalated);
-      } else if (classified.auto?.outcome === 'policy_approved')
-        await recordReview(tx, {
-          action_id: id,
-          job_id: job.id,
-          space_id: job.space_id,
-          attempt_id: claims.attempt_id,
-          tier: classified.auto.tier.tier,
-          action_class: classified.auto.tier.actionClass,
-          decided_by: 'policy',
-          outcome: 'approved',
-          risk: null,
-          reason: classified.auto.tier.reason,
-        });
-      return { action: await loadAction(tx, id), key, repeated: false, pending: null };
-    });
+          await this.setStatus(tx, created, 'needs_approval');
+          const escalated = await this.recordPolicyEscalation(tx, review, classified);
+          await this.askOwner(tx, job, created, approvalId, classified, escalated);
+        } else if (classified.auto?.outcome === 'policy_approved')
+          await recordReview(tx, {
+            action_id: id,
+            job_id: job.id,
+            space_id: job.space_id,
+            attempt_id: claims.attempt_id,
+            tier: classified.auto.tier.tier,
+            action_class: classified.auto.tier.actionClass,
+            decided_by: 'policy',
+            outcome: 'approved',
+            risk: null,
+            reason: classified.auto.tier.reason,
+          });
+        return { action: await loadAction(tx, id), key, repeated: false, pending: null };
+      })
+      .catch(async (error: unknown) => {
+        // A search refused before it left records no action; the conversation
+        // still shows that it was held back.
+        if (
+          error instanceof BrokerFault &&
+          error.code === 'scope_denied' &&
+          request.kind === 'web.search'
+        )
+          await this.traceHeldSearch(claims, request.payload, error.message);
+        throw error;
+      });
     const { key, repeated } = proposal;
     const action = proposal.pending
       ? await this.settleReview(claims, proposal.pending)
@@ -1542,6 +1551,36 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  /**
+   * The row a held-back search leaves in its conversation. Writing it is never
+   * worth more than the refusal: if it cannot be written, the model still hears
+   * why the search did not run.
+   */
+  private async traceHeldSearch(claims: CapabilityClaims, payload: unknown, reason: string) {
+    const query = (payload as { query?: unknown } | null)?.query;
+    try {
+      await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, claims.job_id);
+        await checkAttempt(tx, job, claims);
+        await appendToolTrace(
+          tx,
+          job.id,
+          claims.attempt_id,
+          heldSearchCall({
+            attemptId: claims.attempt_id,
+            query: typeof query === 'string' ? query : '',
+            reason,
+            at: new Date(),
+          }),
+        );
+      });
+    } catch (error) {
+      process.stderr.write(
+        `broker: could not show a held-back search: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   }
 
   /**

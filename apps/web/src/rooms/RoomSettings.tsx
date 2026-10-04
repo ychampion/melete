@@ -1,12 +1,14 @@
 /**
  * Room → Settings: who answers the permissions the room's requests ask for,
- * and whether guests may ask the room's agent. Everyone in the room reads
- * them; owners change them. A change applies to permissions already waiting.
+ * whether guests may ask the room's agent, and the accounts the room uses as
+ * its own. Everyone in the room reads them; owners change them. A change
+ * applies to permissions already waiting.
  */
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Toggle } from '../design/primitives.tsx';
+import { AddConnection } from '../screens/ConnectionInstall.tsx';
 import { toast } from '../shell/Shell.tsx';
-import { type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
+import { type RoomConnection, type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
 
 export const APPROVER_CHOICES: readonly {
   value: RoomPolicy['approvers'];
@@ -53,6 +55,21 @@ export function RoomSettings({
   // Controls stay enabled while a save is out, so focus stays where the keyboard
   // left it; only the answer to the latest save is applied.
   const latest = useRef(0);
+
+  const [accounts, setAccounts] = useState<RoomConnection[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const loadAccounts = useCallback(() => {
+    void roomsApi.connections(detail.room.id).then((result) => {
+      if (result.data)
+        setAccounts(
+          result.data.connections.filter(
+            // The tools every room has are not accounts anyone added.
+            (entry) => entry.shared_use === 'room' && !entry.builtin,
+          ),
+        );
+    });
+  }, [detail.room.id]);
+  useEffect(loadAccounts, [loadAccounts]);
 
   const save = async (change: Partial<RoomPolicy>) => {
     const before = policy;
@@ -120,6 +137,42 @@ export function RoomSettings({
             label={`Guests may ask ${detail.room.agent_name}`}
             onChange={(next) => void save({ guests_may_ask: next })}
           />
+        </div>
+        <div className="col" style={{ gap: 8 }}>
+          <span className="people-field-label">Accounts the room uses</span>
+          <span className="people-hint">
+            The team’s own accounts, such as a shared mailbox or a team GitHub.{' '}
+            {detail.room.agent_name} uses them for the room’s requests, and the rule above answers
+            what it sends. A person’s own accounts stay theirs: the room hands them the task
+            instead.
+          </span>
+          {accounts === null ? null : accounts.length ? (
+            <ul className="col" style={{ gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
+              {accounts.map((entry) => (
+                <li key={entry.id} className="settings-choice-title">
+                  {entry.label}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span className="people-hint">None yet.</span>
+          )}
+          {owner ? (
+            adding ? (
+              <AddConnection
+                spaceId={detail.room.id}
+                title="Add an account to this room"
+                onInstalled={() => {
+                  setAdding(false);
+                  loadAccounts();
+                }}
+              />
+            ) : (
+              <Button variant="outline" onClick={() => setAdding(true)}>
+                Add an account
+              </Button>
+            )
+          ) : null}
         </div>
       </div>
     </Dialog>

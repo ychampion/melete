@@ -16,6 +16,7 @@ import {
   plainText,
   projectActionGroup,
   projectCards,
+  projectReceipt,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
 import type { MockAttachment } from './attachments.ts';
@@ -659,11 +660,18 @@ export class ExperienceMock {
     if (!chat.pending.length) return;
     const group = projectActionGroup(chat.pending);
     if (group) this.event(chat, group);
-    for (const entry of chat.pending)
+    for (const entry of chat.pending) {
+      // A step that keeps a receipt (a web search does) shows it as the service would.
+      const receipt = projectReceipt(entry.action, entry.connection);
+      if (receipt) {
+        chat.receipts.push(receipt);
+        this.event(chat, { type: 'receipt', receipt });
+      }
       for (const card of projectCards(entry.action, entry.connection)) {
         chat.cards.push(card);
         this.event(chat, { type: 'card', card });
       }
+    }
     chat.pending = [];
   }
   schedule(chat: Chat) {
@@ -1045,9 +1053,14 @@ export class ExperienceMock {
         : step.name.startsWith('calendar.')
           ? 'caldav'
           : step.name.split('.')[0];
-      const source = [...this.deps.store.connections.values()].find(
-        (row) => row.space_id === this.deps.spaceId && row.provider === provider,
-      );
+      // The web connection is built in, so a space always has one.
+      const source =
+        [...this.deps.store.connections.values()].find(
+          (row) => row.space_id === this.deps.spaceId && row.provider === provider,
+        ) ??
+        (provider === 'web'
+          ? { id: `${this.deps.spaceId}:web`, label: 'Web', provider: 'web' }
+          : undefined);
       if (source)
         chat.pending.push({
           connection: source,
@@ -1149,6 +1162,9 @@ export class ExperienceMock {
   }
   message(chat: Chat, raw: unknown, key?: string, scenarioId?: string) {
     const input = C.conversationMessage.parse(raw);
+    const most = C.DEFAULT_ATTACHMENT_LIMITS.per_message;
+    if ((input.attachments?.length ?? 0) > most)
+      throw new MockExperienceError(400, `A message can carry up to ${most} files, each once.`);
     const fingerprint = `${chat.view.id}:${key}`;
     const previous = key ? this.submissions.get(fingerprint) : undefined;
     const files = (input.attachments ?? []).map((id) => {

@@ -363,14 +363,14 @@ export class PrivacyRouter {
     // attempt started. A service call is read for itself and never sets the
     // conversation's topic: what it carries (a memory snapshot, say) is not
     // what the person said there.
-    const decision = await this.privateDecision(
+    const decision = await this.privateRoute(
       scope,
       settings,
+      protocol,
       principal.privacy.kind === 'job' ? [] : authoredParts(body, protocol).person,
-      false,
     );
     if (decision.private) {
-      const local = await this.readyLocal(settings, protocol);
+      const local = decision.local;
       if (local) {
         const receipt = emptyReceipt('local');
         await this.log(scope, receipt);
@@ -388,8 +388,7 @@ export class PrivacyRouter {
           receipt,
         };
       }
-      if (decision.consent !== 'allowed')
-        throw new GatewayError(409, 'privacy_confirmation_required');
+      if (decision.refused) throw new GatewayError(409, 'privacy_confirmation_required');
     }
     // Pictures are not redacted: nothing below reads them. In a private
     // conversation the person let go redacted, they stay behind; in an ordinary
@@ -416,7 +415,11 @@ export class PrivacyRouter {
       cache: state.cache,
       extra: (text) => state.ner.get(text),
     });
-    const redacted = redactor.body(outbound, protocol);
+    const redacted = withPlaceholderNote(
+      redactor.body(outbound, protocol),
+      protocol,
+      redactor.used,
+    );
     const receipt = receiptFor('cloud', redactor.used, localDetection);
     if (state.vault.changed && scope.conversationId && scope.spaceId) {
       state.vault.changed = false;
@@ -482,6 +485,43 @@ export class PrivacyRouter {
       sensitive,
       consent: conversation?.consent ?? null,
     };
+  }
+
+  /**
+   * Where a request about this scope's conversation may go once it is not on
+   * a confirmed on-device address: anywhere when the conversation is not
+   * private, to the local model when one can take it, else to the cloud model
+   * redacted only if the person agreed. `refused` means it goes nowhere.
+   * Requests and the questions asked ahead of them read this one decision.
+   */
+  private async privateRoute(
+    scope: Scope,
+    settings: ResolvedSettings,
+    protocol: Protocol,
+    person: readonly string[],
+  ): Promise<{ private: boolean; local: LocalModel | null; refused: boolean }> {
+    const decision = await this.privateDecision(scope, settings, person, false);
+    if (!decision.private) return { private: false, local: null, refused: false };
+    const local = await this.readyLocal(settings, protocol);
+    return { private: true, local, refused: !local && decision.consent !== 'allowed' };
+  }
+
+  /**
+   * Whether a service read of this job's conversation, such as memory reading
+   * what the person just wrote, would be refused now: the conversation is
+   * private, no local model can take it, and the person has not agreed to a
+   * redacted cloud request. The same decision `prepare` makes for that read,
+   * asked before it is sent. `engine` is the model memory reads with.
+   */
+  async refusesServiceRead(
+    jobId: string,
+    engine: { protocol: Protocol; providerUrl?: string },
+  ): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId || !scope.conversationId) return false;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (engine.providerUrl && (await this.onDevice(settings, engine.providerUrl))) return false;
+    return (await this.privateRoute(scope, settings, engine.protocol, [])).refused;
   }
 
   /**
@@ -836,6 +876,62 @@ function receiptFor(
     placeholders: [...used],
     ...(localDetection && localDetection !== 'off' ? { local_detection: localDetection } : {}),
   };
+}
+
+/**
+ * What a placeholder is, said to the model whenever a request carries one. Without it some
+ * models read ⟦EMAIL_1⟧ as a blank to fill and ask the person for the "actual" value. Replies,
+ * tool-call arguments included, are rehydrated from this conversation's vault on the way back,
+ * so the placeholder itself is what the model should write. The example is a placeholder this
+ * request already carries; no value is named.
+ */
+export function placeholderNote(example: string): string {
+  return `Some details here appear as placeholders such as ${example}. Each one stands for a real value the person gave, which Melete holds. Use a placeholder exactly as written wherever its value belongs, in replies and in tool-call arguments such as a recipient: Melete puts the real value back before anything is shown or sent. Never ask the person for the value behind a placeholder.`;
+}
+
+/** The request with the placeholder note at the end of its system instructions. */
+function withPlaceholderNote(
+  body: Record<string, unknown>,
+  protocol: Protocol,
+  used: ReadonlySet<string>,
+): Record<string, unknown> {
+  const [example] = used;
+  if (!example) return body;
+  const note = placeholderNote(example);
+  const appended = (system: unknown): unknown => {
+    if (typeof system === 'string')
+      return system
+        ? `${system}
+
+${note}`
+        : note;
+    if (Array.isArray(system)) return [...system, { type: 'text', text: note }];
+    return note;
+  };
+  if (protocol === 'messages') return { ...body, system: appended(body.system) };
+  if (protocol === 'responses')
+    return {
+      ...body,
+      instructions: Array.isArray(body.instructions)
+        ? [...body.instructions, { role: 'developer', content: note }]
+        : appended(body.instructions),
+    };
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const first = messages[0] as { role?: unknown; content?: unknown } | undefined;
+  if (first && (first.role === 'system' || first.role === 'developer'))
+    return {
+      ...body,
+      messages: [
+        {
+          ...first,
+          content: Array.isArray(first.content)
+            ? appended(first.content)
+            : appended(typeof first.content === 'string' ? first.content : ''),
+        },
+        ...messages.slice(1),
+      ],
+    };
+  return { ...body, messages: [{ role: 'system', content: note }, ...messages] };
 }
 
 function declinedText(): string {

@@ -1,0 +1,53 @@
+{
+  "id": "cap-save-without-asking",
+  "domain": "files",
+  "title": "Save a note without asking permission",
+  "objective": "Save a note for me as notes/lisbon-packing.md with my packing list: passport, plug adapter, rain jacket, walking shoes.",
+  "tools": [
+    {
+      "name": "files.write",
+      "mirror": "files.write",
+      "result": {
+        "path": "notes/lisbon-packing.md",
+        "written": true
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "files.write",
+      "arguments": {
+        "path": "notes/lisbon-packing.md",
+        "content": "# Lisbon packing\n\n- passport\n- plug adapter\n- rain jacket\n- walking shoes\n"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Saved your packing list to notes/lisbon-packing.md."
+  },
+  "source": {
+    "list": ["passport", "plug adapter", "rain jacket", "walking shoes"]
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "files.write",
+        "status": "succeeded",
+        "where": {
+          "content": "passport"
+        },
+        "min": 1
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the note was saved with all four items and the agent did not ask for permission or approval first.",
+  "suite": "capability"
+}

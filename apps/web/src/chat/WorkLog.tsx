@@ -14,6 +14,7 @@ import { Button, Dialog } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import type { TranscriptTurn, TurnBlock } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
+import type { ResultCard } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { toolIcon } from './activity.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -112,6 +113,7 @@ const KIND_ICON: Partial<Record<WorkKind, IconName>> = {
   edit: 'pencil',
   search_files: 'search',
   web_search: 'search',
+  held: 'lock',
   page: 'globe',
   open: 'globe',
   screenshot: 'image',
@@ -419,6 +421,85 @@ export function WorkGroup({
   );
 }
 
+/** A page's site, the way a person names it: "bun.com", not the whole address. */
+function siteOf(card: ResultCard): string {
+  const url = card.primary_action?.kind === 'open' ? card.primary_action.url : undefined;
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+/** At most this many sites are named on the folded row. */
+const NAMED_SITES = 3;
+
+/**
+ * The pages a search found or the work read: one quiet row naming the first
+ * few sites, opening onto one line per page that links to it.
+ */
+export function SourcesLine({
+  cards,
+  initiallyOpen = false,
+}: {
+  cards: ResultCard[];
+  initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const id = useId();
+  const sites = [...new Set(cards.map(siteOf).filter(Boolean))];
+  const named = sites.slice(0, NAMED_SITES).join(', ');
+  const more = sites.length > NAMED_SITES ? ` +${sites.length - NAMED_SITES}` : '';
+  return (
+    <div className="log-row">
+      <button
+        type="button"
+        className="log-line"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="log-icon" aria-hidden="true">
+          <Icon name="globe" size={15} />
+        </span>
+        <span className="log-title">
+          {cards.length} {cards.length === 1 ? 'source' : 'sources'}
+          {named ? (
+            <span className="log-meta">
+              {' '}
+              · {named}
+              {more}
+            </span>
+          ) : null}
+        </span>
+        <span className="log-chevron" aria-hidden="true">
+          <Icon name="chevronDown" size={13} />
+        </span>
+      </button>
+      <Reveal id={id} open={open} className="log-detail">
+        <ul className="log-sources">
+          {cards.map((card) => {
+            const url = card.primary_action?.kind === 'open' ? card.primary_action.url : undefined;
+            const site = siteOf(card);
+            return (
+              <li key={card.id}>
+                <a className="log-source" href={url} target="_blank" rel="noreferrer">
+                  <span className="log-source-title">{card.title}</span>
+                  {site && site !== card.title ? (
+                    <span className="log-source-site">{site}</span>
+                  ) : null}
+                  <Icon name="arrowUpRight" size={12} />
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </Reveal>
+    </div>
+  );
+}
+
 /** A file the agent changed, with what changed. There is no way to take an edit back, so no Undo. */
 export function EditCard({ tool, diff }: { tool: ToolEntry; diff: DiffSummary }) {
   const [open, setOpen] = useState(false);
@@ -513,6 +594,8 @@ export function LogEntries({
             return <WorkGroup key={item.key} work={item.work} live={live} />;
           case 'edit':
             return <EditCard key={item.key} tool={item.tool} diff={item.diff} />;
+          case 'sources':
+            return <SourcesLine key={item.key} cards={item.cards} />;
           case 'note':
             return (
               <div key={item.key} className="log-line log-note" data-static="true">
