@@ -8,11 +8,25 @@
  * - At most `daily_cap` pushes a local day. What is held back is not lost; it
  *   goes out folded into the next push the cap allows.
  * - Every push says why it was sent.
+ *
+ * Situations add two faster lanes beside that one, each with its own cap:
+ *
+ * - `soon` waits a minute for company, at most six a day, and holds through
+ *   quiet hours like everything else.
+ * - `urgent` goes at once, at most three a day. It holds through quiet hours
+ *   too, unless it is about a deadline the person set or accepted: that one
+ *   goes now, whatever the hour.
+ *
+ * A push past its lane's cap is not lost: it waits in the lane below.
  */
-import type { PushPayload } from '@melete/contracts';
+import type { PushPayload, Urgency } from '@melete/contracts';
 
-/** `progress` is news from long work: a report, or that it is done. */
-export type IntentKind = 'decision' | 'settled' | 'weekly' | 'progress';
+/** `progress` is news from long work: a report, or that it is done. `situation` is something noticed. */
+export type IntentKind = 'decision' | 'settled' | 'weekly' | 'progress' | 'situation';
+
+/** The faster lanes' own pacing. */
+export const SOON_PACING = { dailyCap: 6, batchMinutes: 1 } as const;
+export const URGENT_DAILY_CAP = 3;
 
 export type Waiting = {
   id: string;
@@ -22,6 +36,12 @@ export type Waiting = {
   because: string;
   url: string;
   createdAt: Date;
+  /** `normal` when left out. */
+  urgency?: Urgency;
+  /** About a deadline the person set or accepted. */
+  personSet?: boolean;
+  /** Where the service worker says the person saw it. */
+  ack?: string;
 };
 
 export type DayWindow = { start: string; end: string; timeZone: string };
@@ -29,8 +49,11 @@ export type DayWindow = { start: string; end: string; timeZone: string };
 export type Pacing = { dailyCap: number; batchMinutes: number };
 
 export type Plan =
-  | { send: PushPayload; ids: string[] }
+  | { send: PushPayload; ids: string[]; urgency: Urgency }
   | { hold: 'nothing' | 'quiet' | 'cap' | 'batching' };
+
+/** Pushes already sent today, in each lane. */
+export type SentToday = { normal: number; soon: number; urgent: number };
 
 const minutesOf = (clock: string) => {
   const [hours = 0, minutes = 0] = clock.split(':').map(Number);
@@ -93,29 +116,34 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
       because: first.because,
       url: first.url,
       tag: first.kind,
+      ...(first.ack ? { ack: first.ack } : {}),
     };
   const decisions = waiting.filter((w) => w.kind === 'decision');
   const settled = waiting.filter((w) => w.kind === 'settled');
   const weekly = waiting.filter((w) => w.kind === 'weekly');
   const progress = waiting.filter((w) => w.kind === 'progress');
+  const noticed = waiting.filter((w) => w.kind === 'situation');
   const title =
-    decisions.length > 0
-      ? decisions.length === 1
-        ? 'One decision is waiting'
-        : `${counted(decisions.length, 'decision', 'decisions')} are waiting`
-      : settled.length > 0
-        ? settled.length === 1
-          ? 'A chase settled'
-          : `${counted(settled.length, 'chase', 'chases')} settled`
-        : progress.length > 0
-          ? progress.length === 1
-            ? (progress[0]?.title ?? first.title)
-            : `${counted(progress.length, 'update', 'updates')} on your work`
-          : (weekly[0]?.title ?? first.title);
+    noticed.length > 0 && noticed.length === waiting.length
+      ? `${counted(noticed.length, 'thing needs', 'things need')} you`
+      : decisions.length > 0
+        ? decisions.length === 1
+          ? 'One decision is waiting'
+          : `${counted(decisions.length, 'decision', 'decisions')} are waiting`
+        : settled.length > 0
+          ? settled.length === 1
+            ? 'A chase settled'
+            : `${counted(settled.length, 'chase', 'chases')} settled`
+          : progress.length > 0
+            ? progress.length === 1
+              ? (progress[0]?.title ?? first.title)
+              : `${counted(progress.length, 'update', 'updates')} on your work`
+            : (weekly[0]?.title ?? first.title);
   const reasons = [
     decisions.length ? counted(decisions.length, 'decision waits', 'decisions wait') : null,
     settled.length ? counted(settled.length, 'chase settled', 'chases settled') : null,
     progress.length ? counted(progress.length, 'work update', 'work updates') : null,
+    noticed.length ? counted(noticed.length, 'thing came up', 'things came up') : null,
     weekly.length ? 'your weekly summary is ready' : null,
   ].filter(Boolean) as string[];
   const said = reasons.map((reason) => reason.replace(/^./, (c) => c.toLowerCase()));
@@ -136,20 +164,57 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
   };
 }
 
-/** Whether to send now, and what; or why not yet. */
+const byAge = (waiting: Waiting[]) =>
+  [...waiting].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+/**
+ * Whether to send now, and what; or why not yet. One lane at a time, the
+ * fastest first: an urgent push never waits behind a batch.
+ */
 export function planPush(input: {
   waiting: Waiting[];
   day: DayWindow;
   pacing: Pacing;
-  sentToday: number;
+  /** Normal pushes sent today, or every lane's count. */
+  sentToday: number | SentToday;
   now: Date;
 }): Plan {
-  const { waiting, day, pacing, sentToday, now } = input;
+  const { waiting, day, pacing, now } = input;
+  const sent: SentToday =
+    typeof input.sentToday === 'number'
+      ? { normal: input.sentToday, soon: 0, urgent: 0 }
+      : input.sentToday;
   if (waiting.length === 0) return { hold: 'nothing' };
-  if (isQuiet(now, day)) return { hold: 'quiet' };
-  if (sentToday >= pacing.dailyCap) return { hold: 'cap' };
-  const oldest = Math.min(...waiting.map((w) => w.createdAt.getTime()));
-  if (now.getTime() - oldest < pacing.batchMinutes * 60_000) return { hold: 'batching' };
-  const ordered = [...waiting].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  return { send: composeBatch(ordered), ids: ordered.map((w) => w.id) };
+  const quiet = isQuiet(now, day);
+  // Each push in its lane; one past its lane's cap waits in the lane below.
+  const urgentRoom = sent.urgent < URGENT_DAILY_CAP;
+  const soonRoom = sent.soon < SOON_PACING.dailyCap;
+  const laneOf = (w: Waiting): Urgency => {
+    const wanted = w.urgency ?? 'normal';
+    if (wanted === 'urgent' && urgentRoom) return 'urgent';
+    if (wanted !== 'normal' && soonRoom) return 'soon';
+    return 'normal';
+  };
+  const urgent = waiting.filter((w) => laneOf(w) === 'urgent' && (!quiet || w.personSet === true));
+  if (urgent.length) {
+    const ordered = byAge(urgent);
+    return { send: composeBatch(ordered), ids: ordered.map((w) => w.id), urgency: 'urgent' };
+  }
+  if (quiet) return { hold: 'quiet' };
+  const at = now.getTime();
+  const soon = waiting.filter((w) => laneOf(w) === 'soon' || laneOf(w) === 'urgent');
+  if (soon.length) {
+    const oldest = Math.min(...soon.map((w) => w.createdAt.getTime()));
+    if (at - oldest >= SOON_PACING.batchMinutes * 60_000) {
+      const ordered = byAge(soon);
+      return { send: composeBatch(ordered), ids: ordered.map((w) => w.id), urgency: 'soon' };
+    }
+  }
+  const normal = waiting.filter((w) => laneOf(w) === 'normal');
+  if (!normal.length) return { hold: 'batching' };
+  if (sent.normal >= pacing.dailyCap) return { hold: 'cap' };
+  const oldest = Math.min(...normal.map((w) => w.createdAt.getTime()));
+  if (at - oldest < pacing.batchMinutes * 60_000) return { hold: 'batching' };
+  const ordered = byAge(normal);
+  return { send: composeBatch(ordered), ids: ordered.map((w) => w.id), urgency: 'normal' };
 }

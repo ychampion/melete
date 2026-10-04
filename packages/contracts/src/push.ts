@@ -66,5 +66,7 @@ export const pushPayload = z.strictObject({
   /** Where tapping it goes, inside the web app. */
   url: z.string().startsWith('/'),
   tag: z.string().max(64),
+  /** Where the service worker says the person saw it, when it is about a situation. */
+  ack: z.string().startsWith('/').max(200).optional(),
 });
 export type PushPayload = z.infer<typeof pushPayload>;

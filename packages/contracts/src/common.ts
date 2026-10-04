@@ -48,6 +48,10 @@ export const ID_PREFIXES = {
   awaited_reply: 'awr',
   /** A published app. */
   app: 'app',
+  /** Something Melete noticed that may need the person. */
+  situation: 'sit',
+  /** A time Melete keeps to look at something again. */
+  clock: 'clk',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
