@@ -281,7 +281,7 @@ export class LocalWorkspaceFs implements WorkspaceFs {
   async remove(job: string, beforeRetry?: () => Promise<void>): Promise<void> {
     await removeConfined(this.workRoot, job, beforeRetry);
     // What the job deleted goes with it: its trash is beside the workspace.
-    checkJob(job);
+    // `removeConfined` checks the name, as it does for the workspace itself.
     await removeConfined(join(this.workRoot, TRASH_DIRECTORY), job, beforeRetry);
   }
 
