@@ -585,7 +585,8 @@ withDb('background and interactive model calls', () => {
     };
     const serial = await results(false);
     expect(serial).toEqual(['ok', 'ok', 'refused', 'refused', 'refused']);
-    expect(await results(true)).toEqual(serial);
+    // Calls started together have no order among them; as many get through.
+    expect((await results(true)).sort()).toEqual([...serial].sort());
   });
 
   test('rollups of the same day at once all finish, and the day matches its calls', async () => {
