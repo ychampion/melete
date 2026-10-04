@@ -3484,6 +3484,23 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/needs-you/{id}/source': {
+          post: {
+            tags: ['companies'],
+            summary: 'Attach a sorted item\u2019s source to a new chat',
+            description:
+              'Writes the message\u2019s headers, or the calendar change\u2019s fields, into a text ' +
+              'file in the signed-in space, for "Handle it" to send with its message. The ' +
+              'message itself names only the item\u2019s source handle; the file reaches the ' +
+              'agent as untrusted data. An item from another space is refused.',
+            requestParams: idParam('id', 'Sorted item id'),
+            responses: {
+              '201': jsonResponse('The attached file', attachmentResponse),
+              '404': problem('No such item for this person'),
+              '409': problem('The item came from another space'),
+            },
+          },
+        },
         '/needs-you/{id}/ack': {
           post: {
             tags: ['companies'],

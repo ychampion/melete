@@ -173,6 +173,50 @@ describe('false-positive guards', () => {
     });
 });
 
+describe('one-time codes and sign-in links', () => {
+  const codes: [string, string][] = [
+    ['Your login code: 482913', '482913'],
+    ['771234 is your verification code', '771234'],
+    ['G-482913 is your Google verification code', 'G-482913'],
+    ['code: 1234-5678', '1234-5678'],
+    ['use 902114 to sign in', '902114'],
+    ['Enter 482-913 to verify your account', '482-913'],
+    ['Your OTP is 4821', '4821'],
+    ['Your one-time passcode is 90211', '90211'],
+    ['2FA code 553311', '553311'],
+    ['MFA: 228844', '228844'],
+    ['Your Slack confirmation code is ABC-123', 'ABC-123'],
+    ['Your verification code is X7K2PQ', 'X7K2PQ'],
+    ['Your security code is 5531', '5531'],
+    ['Sign in: https://app.example.com/login?token=abcDEF123456xyz', 'abcDEF123456xyz'],
+    ['https://acme.example/magic-link/9f8e7d6c5b4a3f2e1d0c', '9f8e7d6c5b4a3f2e1d0c'],
+  ];
+  for (const [text, value] of codes)
+    test(text, () => {
+      expect(found(text)).toEqual([['credential', value]]);
+    });
+
+  const ordinary = [
+    'Order #123456 has shipped',
+    'Your order confirmation number is 123456',
+    'Your booking reference: 482913',
+    'zip code: 94110',
+    'area code is 4155',
+    'promo code: 2024',
+    'Use code SAVE20 for 20% off',
+    'Invoice 48291 due Friday',
+    'Flight 1234 to Boston',
+    'Use 2 cups of flour',
+    'Your order 123456 is your best deal',
+    'The code is in the repo',
+    'Your code review is ready',
+  ];
+  for (const text of ordinary)
+    test(`not a code: ${text}`, () => {
+      expect(found(text)).toEqual([]);
+    });
+});
+
 describe('randomized look-alikes stay untouched', () => {
   // A small seeded generator, so a failure names the exact text.
   let seed = 0x5eed;

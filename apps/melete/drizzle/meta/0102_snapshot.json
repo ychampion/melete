@@ -1,5 +1,5 @@
 {
-  "id": "b855be80-f50c-4782-b0fb-f1a383c03851",
+  "id": "8d412a0e-6c30-4d3f-812f-d68c44c40140",
   "prevId": "f4809be5-0fd6-4dc0-8ae7-e972d218dd5d",
   "version": "7",
   "dialect": "postgresql",
@@ -18466,6 +18466,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "subject_key": {
           "name": "subject_key",
           "type": "text",
@@ -18552,6 +18558,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "triage_verdict_connection_idx": {
+          "name": "triage_verdict_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -18574,6 +18595,19 @@
           "tableTo": "space",
           "columnsFrom": [
             "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_verdict_connection_id_connection_id_fk": {
+          "name": "triage_verdict_connection_id_connection_id_fk",
+          "tableFrom": "triage_verdict",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
           ],
           "columnsTo": [
             "id"

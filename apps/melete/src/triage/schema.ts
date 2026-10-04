@@ -64,7 +64,7 @@ export const triageItem = pgTable(
     model: text('model'),
     /** Why it was left unsorted: `kept_private`, `limit_reached`, `failed`, `off`. */
     unsorted: text('unsorted'),
-    /** Calls that tried to sort it and got no usable answer. */
+    /** Tries that failed (no usable answer, or kept private); each doubles the wait before the next. */
     tries: integer('tries').notNull().default(0),
     state: text('state').notNull().default('open'),
     ackedAt: timestamp('acked_at', { withTimezone: true }),
@@ -98,6 +98,8 @@ export const triageVerdict = pgTable(
     spaceId: text('space_id')
       .notNull()
       .references(() => space.id, { onDelete: 'cascade' }),
+    /** The account the labelled item was read from; its labels go when it is revoked. */
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
     subjectKey: text('subject_key').notNull(),
     contentHash: text('content_hash').notNull(),
     verdict: text('verdict').notNull(),
@@ -114,6 +116,7 @@ export const triageVerdict = pgTable(
     }),
     index('triage_verdict_expires_idx').on(table.expiresAt),
     index('triage_verdict_space_idx').on(table.spaceId),
+    index('triage_verdict_connection_idx').on(table.connectionId),
     check('triage_verdict_verdict_check', sql`${table.verdict} in ('needs_you', 'fyi', 'ignore')`),
     check('triage_verdict_urgency_check', sql`${table.urgency} in ('normal', 'soon')`),
   ],

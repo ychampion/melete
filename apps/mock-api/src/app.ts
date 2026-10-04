@@ -66,6 +66,7 @@ import {
   spaceListResponse,
   sseFrame,
 } from '@melete/contracts';
+import { attachmentResponse } from '@melete/contracts/attachments';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
@@ -191,10 +192,28 @@ export function createMockApp(deps: AppDeps) {
   // Before the experience routes, which answer every operation they do not implement.
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
-  mountNeedsYouMock(app, { seeded: Boolean(deps.seedExperience) && deps.needsYou !== false });
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);
+  mountNeedsYouMock(app, {
+    seeded: Boolean(deps.seedExperience) && deps.needsYou !== false,
+    attach: (name, text) => {
+      const bytes = new TextEncoder().encode(text);
+      const view = attachmentResponse.shape.attachment.parse({
+        id: `file_${randomUUID().replace(/-/g, '').slice(0, 26)}`,
+        name,
+        media_type: 'text/plain',
+        kind: 'text',
+        size: bytes.length,
+        pages: null,
+        has_preview: false,
+        has_text: true,
+        created_at: new Date().toISOString(),
+      });
+      experience.attachments.set(view.id, { view, bytes, preview: null, sent: false });
+      return view;
+    },
+  });
   if (deps.seedExperience) experience.seed();
   // The companies surface is agreed but not yet in openapi.json, so it mounts
   // its own routes rather than going through the contract's operation table.

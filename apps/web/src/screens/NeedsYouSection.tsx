@@ -4,8 +4,12 @@
  * `GET /needs-you` returned. Each item says why (the message or meeting it
  * rests on), its urgency, and lets the person mark it seen or dismiss it.
  * "Handle it" starts an ordinary chat about it, where anything Melete would do
- * still asks first. With nothing to show, one calm line; never a made-up item.
+ * still asks first. The person's message names only the item's source; the
+ * source itself goes with it as an attached file, which the agent reads as
+ * untrusted data, so nothing a sender wrote is ever said in the person's name. With nothing to show, one calm line; never a made-up item.
  */
+
+import type { AttachmentView } from '@melete/contracts/attachments';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Status } from '../design/primitives.tsx';
@@ -16,6 +20,11 @@ import { toast } from '../shell/Shell.tsx';
 
 export const needsYouApi = {
   list: () => call<NeedsYou>('/needs-you'),
+  /** The item's source as a file in this space, for the chat's first message to carry. */
+  source: (item: NeedsYouItem) =>
+    call<{ attachment: AttachmentView }>(`/needs-you/${encodeURIComponent(item.id)}/source`, {
+      method: 'POST',
+    }),
   /** A sorted item is marked through its own routes; something noticed, through the situation's. */
   mark: (item: NeedsYouItem, what: 'ack' | 'dismiss'): Promise<Result<unknown>> =>
     call(
@@ -48,10 +57,17 @@ export function whenWords(iso: string | null, now: number): string | null {
   return `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${time}`;
 }
 
-/** "3 not sorted yet", or nothing. */
-export function unsortedLine(count: number): string | null {
+const WAITING_BECAUSE: Record<NonNullable<NeedsYou['unsorted_reason']>, string> = {
+  kept_private: 'kept private, with no local model to sort them',
+  limit_reached: 'background work has reached its limit',
+  failed: 'the model could not be reached',
+  off: 'sorting is turned off',
+};
+
+/** "3 not sorted yet: kept private, with no local model to sort them", or nothing. */
+export function unsortedLine(count: number, reason: NeedsYou['unsorted_reason']): string | null {
   if (count <= 0) return null;
-  return `${count} not sorted yet`;
+  return reason ? `${count} not sorted yet: ${WAITING_BECAUSE[reason]}` : `${count} not sorted yet`;
 }
 
 function Row({
@@ -148,7 +164,7 @@ export function NeedsYouSection({
   onStart,
 }: {
   now: number;
-  onStart: (text: string) => Promise<void>;
+  onStart: (text: string, attached: readonly AttachmentView[]) => Promise<void>;
 }) {
   const [view, setView] = useState<NeedsYou | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -185,13 +201,15 @@ export function NeedsYouSection({
     if (busy || !item.chat_prompt) return;
     setBusy(item.id);
     if (!item.seen) await needsYouApi.mark(item, 'ack');
-    await onStart(item.chat_prompt);
+    // The source goes as a file; a situation, or a service without file storage, goes by reference alone.
+    const source = item.source === 'triage' ? await needsYouApi.source(item) : null;
+    await onStart(item.chat_prompt, source?.data ? [source.data.attachment] : []);
     if (live.current) setBusy(null);
   };
 
   // The service has no list for this person (an older one, or none yet): nothing to draw.
   if (!view) return null;
-  const meta = unsortedLine(view.unsorted);
+  const meta = unsortedLine(view.unsorted, view.unsorted_reason);
   return (
     <section className="home-section" aria-labelledby="home-needs-you">
       <div className="home-section-head">

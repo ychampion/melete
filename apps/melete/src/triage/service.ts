@@ -33,7 +33,6 @@ import {
   type ItemFields,
   itemFields,
   type Label,
-  MAX_TRIES,
   parseLabels,
   plainSentence,
   subjectKeyOf,
@@ -44,10 +43,14 @@ import {
 
 /** Observations older than this when first seen are not sorted: they are not news. */
 const COLLECT_WINDOW = '2 days';
-/** How long an unsorted item waits before it is tried again. */
-const RETRY_AFTER = '1 hour';
-/** Needs-you items are listed for a week. */
+/**
+ * Items are listed, kept unsorted and retried for a week, then swept with the
+ * labels that expired. An unsorted item waits an hour before it is tried
+ * again, twice as long after each try that failed, and never more than a day.
+ */
 const LIST_WINDOW = '7 days';
+/** Why an item was left unsorted, most pressing first. */
+const UNSORTED_ORDER = ['kept_private', 'limit_reached', 'failed', 'off'] as const;
 
 /** Something Melete noticed on its own, as the situation routes list it. */
 export type NoticedSituation = {
@@ -104,6 +107,7 @@ type ItemRow = {
   reason: string | null;
   state: string;
   tries: number;
+  connection_id: string | null;
   created_at: Date | string;
   acked_at: Date | string | null;
 };
@@ -174,9 +178,10 @@ export class TriageService {
     const result = { fromCache: 0, byModel: 0, calls: 0, unsorted: 0 };
     const pending = (await sql`select * from triage_item
       where verdict is null
-        and created_at > ${now.toISOString()}::timestamptz - ${COLLECT_WINDOW}::interval
+        and created_at > ${now.toISOString()}::timestamptz - ${LIST_WINDOW}::interval
         and (unsorted is null or triaged_at is null
-          or triaged_at < ${now.toISOString()}::timestamptz - ${RETRY_AFTER}::interval)
+          or triaged_at < ${now.toISOString()}::timestamptz
+            - least(interval '1 day', interval '1 hour' * power(2, least(tries, 5))))
       order by principal_id, space_id, event_seq
       limit 2000`) as unknown as ItemRow[];
     const groups = new Map<string, ItemRow[]>();
@@ -216,11 +221,21 @@ export class TriageService {
         result.unsorted += await this.leave(left, 'limit_reached');
         continue;
       }
-      for (let at = 0; at < left.length; at += BATCH_SIZE) {
-        const batch = left.slice(at, at + BATCH_SIZE);
+      const classifier = this.deps.classifier;
+      let stopped = false;
+      /**
+       * One call for a group. A group the privacy router keeps private is split
+       * and asked about in halves, so one sensitive item stays private and the
+       * rest are still sorted.
+       */
+      const ask = async (batch: ItemRow[]): Promise<void> => {
+        if (stopped) {
+          result.unsorted += await this.leave(batch, 'limit_reached');
+          return;
+        }
         const ids = new Map(batch.map((item, index) => [`i${index + 1}`, item] as const));
         result.calls++;
-        const answer = await this.deps.classifier.label(
+        const answer = await classifier.label(
           { principalId: first.principal_id, spaceId: first.space_id, batchId: newId('tri') },
           triageInput(
             [...ids].map(([id, item]) => ({ id, kind: item.kind, fields: item.fields })),
@@ -228,13 +243,16 @@ export class TriageService {
           ),
         );
         if (!answer.ok) {
-          result.unsorted += await this.leave(batch, answer.reason);
-          // At a limit, the rest of this person's items wait too.
-          if (answer.reason === 'limit_reached') {
-            result.unsorted += await this.leave(left.slice(at + BATCH_SIZE), 'limit_reached');
-            break;
+          if (answer.reason === 'kept_private' && batch.length > 1) {
+            const half = Math.ceil(batch.length / 2);
+            await ask(batch.slice(0, half));
+            await ask(batch.slice(half));
+            return;
           }
-          continue;
+          // At a limit, the rest of this person's items wait too.
+          if (answer.reason === 'limit_reached') stopped = true;
+          result.unsorted += await this.leave(batch, answer.reason);
+          return;
         }
         const labels = parseLabels(answer.text, new Set(ids.keys()));
         const missing: ItemRow[] = [];
@@ -249,16 +267,27 @@ export class TriageService {
           result.byModel++;
         }
         result.unsorted += await this.leave(missing, 'failed');
-      }
+      };
+      for (let at = 0; at < left.length; at += BATCH_SIZE)
+        await ask(left.slice(at, at + BATCH_SIZE));
     }
     return result;
   }
 
-  /** One pass: collect, then sort. */
+  /** One pass: sweep what is past its week, collect, then sort. */
   async run(): Promise<SortResult> {
+    await this.sweep();
     const collected = await this.collect();
     const sorted = await this.sort();
     return { ...collected, ...sorted };
+  }
+
+  /** Items older than the list's week go, with their copied headers, and so do expired labels. */
+  async sweep(): Promise<void> {
+    const now = this.now().toISOString();
+    await this.deps.sql`delete from triage_item
+      where created_at < ${now}::timestamptz - ${LIST_WINDOW}::interval`;
+    await this.deps.sql`delete from triage_verdict where expires_at < ${now}::timestamptz`;
   }
 
   private async label(item: ItemRow, label: Label, by: 'cache' | 'model', model: string) {
@@ -273,9 +302,10 @@ export class TriageService {
   private async remember(item: ItemRow, label: Label, model: string) {
     const now = this.now();
     await this.deps
-      .sql`insert into triage_verdict (principal_id, space_id, subject_key, content_hash,
-        verdict, urgency, sentence, reason, model, expires_at)
-      values (${item.principal_id}, ${item.space_id}, ${item.subject_key}, ${item.content_hash},
+      .sql`insert into triage_verdict (principal_id, space_id, connection_id, subject_key,
+        content_hash, verdict, urgency, sentence, reason, model, expires_at)
+      values (${item.principal_id}, ${item.space_id}, ${item.connection_id}, ${item.subject_key},
+        ${item.content_hash},
         ${label.verdict}, ${label.urgency === 'soon' ? 'soon' : 'normal'},
         ${label.sentence || plainSentence(item.kind, item.fields)}, ${label.reason}, ${model},
         ${new Date(now.getTime() + VERDICT_TTL_MS).toISOString()})
@@ -285,24 +315,18 @@ export class TriageService {
   }
 
   /**
-   * Items left unsorted, with why. Never an error and never a guess: they wait
-   * and are tried again later. An item a model kept failing to label is shown
-   * as worth knowing, so it is not lost, and never as needing the person.
+   * Items left unsorted, with why. Never an error and never a guess: they stay
+   * unsorted, are counted, and are tried again later. A try that failed counts
+   * toward the wait before the next one; waiting on a limit or with sorting
+   * off does not.
    */
   private async leave(items: readonly ItemRow[], why: TriageFailure | 'off'): Promise<number> {
     if (!items.length) return 0;
     const ids = items.map((item) => item.id);
     const now = this.now().toISOString();
-    if (why === 'failed') {
-      await this.deps
-        .sql`update triage_item set tries = tries + 1, unsorted = 'failed', triaged_at = ${now}
-        where id in ${this.deps.sql(ids)} and verdict is null`;
-      await this.deps.sql`update triage_item set verdict = 'fyi', decided_by = 'rules',
-          reason = 'Could not be sorted.', unsorted = null
-        where id in ${this.deps.sql(ids)} and verdict is null and tries >= ${MAX_TRIES}`;
-      return items.length;
-    }
-    await this.deps.sql`update triage_item set unsorted = ${why}, triaged_at = ${now}
+    const counts = why === 'failed' || why === 'kept_private';
+    await this.deps.sql`update triage_item set unsorted = ${why}, triaged_at = ${now},
+        tries = tries + ${counts ? 1 : 0}
       where id in ${this.deps.sql(ids)} and verdict is null`;
     return items.length;
   }
@@ -334,7 +358,7 @@ export class TriageService {
       urgency: row.urgency === 'soon' ? 'soon' : 'normal',
       seen: row.state === 'acked' || row.acked_at !== null,
       created_at: iso(row.created_at),
-      chat_prompt: chatPrompt(row.kind, fields, sentence),
+      chat_prompt: chatPrompt(`event:${row.event_seq}`),
     };
   }
 
@@ -354,7 +378,7 @@ export class TriageService {
       urgency: situation.urgency,
       seen: situation.acked_at !== null,
       created_at: situation.created_at,
-      chat_prompt: `Help me with this: ${situation.title} ${situation.reason}`.slice(0, 1000),
+      chat_prompt: chatPrompt(`situation:${situation.id}`),
     };
   }
 
@@ -388,10 +412,16 @@ export class TriageService {
         Number(a.item.seen) - Number(b.item.seen) ||
         Date.parse(b.item.created_at) - Date.parse(a.item.created_at),
     );
-    const [unsorted] = await sql`select count(*)::int as n from triage_item
+    const waiting = await sql`select unsorted, count(*)::int as n from triage_item
       where principal_id = ${principalId} and verdict is null and unsorted is not null
-        and created_at > ${now}::timestamptz - interval '1 day'`;
-    return { items: entries.map((entry) => entry.item), unsorted: Number(unsorted?.n ?? 0) };
+        and created_at > ${now}::timestamptz - ${LIST_WINDOW}::interval
+      group by unsorted`;
+    const count = (why: string) => Number(waiting.find((row) => row.unsorted === why)?.n ?? 0);
+    return {
+      items: entries.map((entry) => entry.item),
+      unsorted: waiting.reduce((sum, row) => sum + Number(row.n), 0),
+      unsorted_reason: UNSORTED_ORDER.find((why) => count(why) > 0) ?? null,
+    };
   }
 
   private async mark(principalId: string, id: string, state: 'acked' | 'dismissed') {

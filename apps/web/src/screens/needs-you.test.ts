@@ -19,6 +19,9 @@ test('a time today, a day and time otherwise, nothing without one', () => {
 });
 
 test('unsorted items are mentioned only when there are some', () => {
-  expect(unsortedLine(0)).toBeNull();
-  expect(unsortedLine(3)).toBe('3 not sorted yet');
+  expect(unsortedLine(0, null)).toBeNull();
+  expect(unsortedLine(3, null)).toBe('3 not sorted yet');
+  expect(unsortedLine(2, 'kept_private')).toBe(
+    '2 not sorted yet: kept private, with no local model to sort them',
+  );
 });

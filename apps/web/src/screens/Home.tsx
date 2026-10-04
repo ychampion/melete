@@ -1081,7 +1081,7 @@ export function HomeScreen() {
           </div>
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
-          <NeedsYouSection now={now} onStart={(text) => start(text)} />
+          <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />
           <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />

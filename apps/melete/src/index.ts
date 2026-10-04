@@ -28,6 +28,7 @@ import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
+import { mountNeedsYouSource } from './api/needs-you-source.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -436,6 +437,12 @@ export function createApp(deps: AppDeps) {
   // Before the experience routes, which answer every operation they do not implement.
   if (deps.sql)
     mountNeedsYou(app, deps.triage ?? new TriageService({ sql: deps.sql, classifier: null }));
+  if (deps.sql && deps.attachments)
+    mountNeedsYouSource(app, {
+      sql: deps.sql,
+      attachments: deps.attachments,
+      resolveSpace: personalSpace,
+    });
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
   if (deps.db)
     mountVoice(app, {

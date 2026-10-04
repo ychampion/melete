@@ -56,8 +56,10 @@ export const needsYouItem = z.strictObject({
   seen: z.boolean(),
   created_at: timestamp,
   /**
-   * What starting a chat about it would ask, when it proposes doing something.
-   * The chat is an ordinary one: anything it would do still asks first.
+   * What starting a chat about it says in the person's name: a reference to the
+   * source and nothing from it. The source itself comes with the chat as an
+   * attached file (`POST /needs-you/{id}/source`), read as untrusted data. The
+   * chat is an ordinary one: anything it would do still asks first.
    */
   chat_prompt: z.string().max(1000).nullable(),
 });
@@ -65,8 +67,14 @@ export type NeedsYouItem = z.infer<typeof needsYouItem>;
 
 export const needsYouList = z.strictObject({
   items: z.array(needsYouItem),
-  /** Items that came in today and could not be sorted: kept private, or over a limit. */
+  /** Items from the last week not sorted yet: kept private, over a limit, or a failed call. */
   unsorted: z.number().int().nonnegative(),
+  /**
+   * The main reason, when some are waiting: `kept_private` (a private space with
+   * no local model), `limit_reached` (a background spending limit), `failed` (the
+   * model could not be reached or did not answer), `off` (sorting is turned off).
+   */
+  unsorted_reason: z.enum(['kept_private', 'limit_reached', 'failed', 'off']).nullable(),
 });
 export type NeedsYouList = z.infer<typeof needsYouList>;
 

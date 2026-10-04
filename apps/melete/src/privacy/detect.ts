@@ -197,6 +197,21 @@ const MONTHS =
 
 const DATE_VALUE = `(?:\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|(?:${MONTHS})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:${MONTHS})\\.?,?\\s+\\d{4})`;
 
+/**
+ * Words that name a one-time code. "Code" alone is not enough here; it takes a
+ * sign-in, verification or two-factor word, or "your code".
+ */
+const CODE_WORDS = [
+  '(?:verification|verify|confirmation|security|login|log[- ]?in|sign[- ]?in|access|one[- ]?time|single[- ]?use|auth(?:entication|orization)?|2fa|mfa|2-step|two[- ](?:factor|step)|backup|recovery|reset|device|pairing|activation)[^\\S\\n]+(?:code|pin|passcode|password|key|token)',
+  'otp|totp|passcode',
+  '(?:your|the|this)[^\\S\\n]+(?:code|pin)',
+  '2fa|mfa',
+].join('|');
+/** A code: four to eight digits, in one group or two. */
+const CODE_DIGITS = '\\d{4,8}|\\d{3,4}[- ]\\d{3,4}';
+/** A code with letters as well: two groups, or six to eight characters, always with a digit. */
+const CODE_VALUE = `${CODE_DIGITS}|(?=[A-Za-z-]{0,9}\\d)[A-Za-z0-9]{3,5}-[A-Za-z0-9]{3,5}|(?=[A-Za-z]{0,7}\\d)(?=\\d{0,7}[A-Za-z])[A-Za-z0-9]{6,8}`;
+
 const RULES: Rule[] = [
   // Credentials first: a key can contain long digit runs another rule would misread.
   {
@@ -226,6 +241,57 @@ const RULES: Rule[] = [
     // Bounded: an unbounded scheme rescans a long run of letters and dashes
     // from every position, which takes seconds on a large tool result.
     pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,256}:(?<v>[^\s/@]{3,256})@/gi,
+  },
+  // One-time codes: sign-in, verification and two-factor codes, named by the
+  // words around them. A bare number is never one: it needs a code word right
+  // before it ("Your login code: 482913", "OTP 4821"), or right after it with
+  // "is your" ("771234 is your verification code"), or an instruction to use it
+  // to sign in ("use 902114 to sign in"). A code with letters needs a digit.
+  {
+    category: 'credential',
+    digits: true,
+    pattern: new RegExp(
+      `\\b(?:${CODE_WORDS})\\b[^\\S\\n]{0,3}(?:is|was|:|=|-|#)?[^\\S\\n]{0,3}(?<v>${CODE_VALUE})(?![A-Za-z0-9-])`,
+      'gi',
+    ),
+  },
+  {
+    category: 'credential',
+    digits: true,
+    // "code: 1234-5678", but not a zip, area, promo or discount code.
+    refuse:
+      /\b(?:zip|postal|post|area|promo(?:tional)?|discount|coupon|voucher|gift|dial(?:ling)?|country|tax|source|product|item|style|referral|invite|invitation|reference|ref|booking|tracking|qr|bar)\s*$/i,
+    pattern: new RegExp(
+      `\\bcode\\b[^\\S\\n]{0,3}(?:is|:|=)[^\\S\\n]{0,3}(?<v>${CODE_DIGITS})(?![A-Za-z0-9-])`,
+      'gi',
+    ),
+  },
+  {
+    category: 'credential',
+    digits: true,
+    pattern: new RegExp(
+      `(?<![\\w$£€#.,/-])(?<v>(?:[A-Z]-)?(?:${CODE_DIGITS}))[^\\S\\n]+(?:is|=)[^\\S\\n]+(?:your|the)\\b[^\\n]{0,40}?\\b(?:code|otp|pin|passcode|password)\\b`,
+      'gi',
+    ),
+  },
+  {
+    category: 'credential',
+    digits: true,
+    pattern: new RegExp(
+      `\\b(?:use|enter|type|input|paste)[^\\S\\n]+(?:the[^\\S\\n]+)?(?:code[^\\S\\n]+)?(?<v>${CODE_VALUE})[^\\S\\n]+(?:to|as|for|when)\\b[^\\n]{0,40}?\\b(?:sign|log|verify|confirm|access|reset|authenticat|continue|complete|finish|unlock)`,
+      'gi',
+    ),
+  },
+  // Sign-in links: the token in a magic link or a verification address, never the rest of it.
+  {
+    category: 'credential',
+    pattern:
+      /[?&#](?:token|code|otp|magic(?:_?link)?(?:_?token)?|login_?token|access_?token|auth(?:_?token)?|signin_?token|verification_?token|oobCode|ticket|key|sig(?:nature)?)=(?<v>[A-Za-z0-9._~%+/-]{8,512})/gi,
+  },
+  {
+    category: 'credential',
+    pattern:
+      /\/(?:magic[-_]?links?|verify|verification|login|log-in|signin|sign-in|auth|confirm|confirmation|reset(?:-password)?|password-reset|activate|activation)\/(?<v>[A-Za-z0-9_-]{16,256})(?![A-Za-z0-9_-])/gi,
   },
   // Payment cards and their security codes.
   {
