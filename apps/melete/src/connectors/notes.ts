@@ -72,14 +72,30 @@ export function createNotesConnector(options: NotesConnectorOptions): Connector 
 
   /** The person whose own work this is, in the space the action runs in. */
   const ownWork = async (ctx: ConnectorContext) => {
-    const [row] = await options.sql`select j.audience, j.space_id,
+    const [row] = await options.sql`select j.audience, j.space_id, s.kind,
         coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-      from job j where j.id = ${ctx.job_id}`;
+      from job j join space s on s.id = j.space_id where j.id = ${ctx.job_id}`;
     if (!row || row.space_id !== ctx.space_id || row.audience !== 'principal' || !row.principal_id)
       throw new BrokerFault('scope_denied', "Only a person's own work keeps notes.");
+    // Only in the person's own space: a shared space keeps no one's notes.
+    if (row.kind !== 'personal')
+      throw new BrokerFault('scope_denied', 'Notes are kept only in your own space.');
     if (ctx.constraints.public_compartment)
       throw new BrokerFault('scope_denied', 'Notes are not kept for a public conversation.');
     return { principalId: String(row.principal_id) };
+  };
+
+  /**
+   * Whether this chat has read anything from outside: any other step it took
+   * (a page, a message, a file, a search). A note written after that may
+   * repeat what the content said, so it is marked and never read back as an
+   * instruction.
+   */
+  const readOutside = async (action: Action) => {
+    const [row] = await options.sql`select 1 from action
+      where job_id = ${action.job_id} and id <> ${action.id} and kind not like 'notes.%'
+        and status in ('dispatched', 'succeeded', 'unknown', 'unresolved') limit 1`;
+    return Boolean(row);
   };
 
   const textOf = (action: Action) => {
@@ -111,6 +127,7 @@ export function createNotesConnector(options: NotesConnectorOptions): Connector 
         privateOrigin,
         // A dispatch tried again keeps the same note, not a second one.
         idempotencyKey: action.id,
+        origin: (await readOutside(action)) ? 'outside' : 'agent',
       });
       return {
         outcome: 'succeeded',

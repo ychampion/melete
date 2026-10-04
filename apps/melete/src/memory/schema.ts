@@ -727,6 +727,8 @@ export const memoryAgentNotes = pgTable(
     jobId: text('job_id'),
     content: text('content').notNull(),
     privateOrigin: text('private_origin'),
+    /** `outside` when the chat it was written in had read outside content: never an instruction. */
+    origin: text('origin').notNull().default('agent'),
     embeddingModel: text('embedding_model'),
     embedding: jsonb('embedding'),
     createdAt: created(),
@@ -734,5 +736,6 @@ export const memoryAgentNotes = pgTable(
   (t) => [
     index('memory_agent_notes_owner').on(t.spaceId, t.principalId, t.createdAt),
     check('memory_agent_notes_content', sql`char_length(${t.content}) between 1 and 2000`),
+    check('memory_agent_notes_origin', sql`${t.origin} in ('agent', 'outside')`),
   ],
 );

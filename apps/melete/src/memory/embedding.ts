@@ -10,23 +10,24 @@
  *   (MELETE_LOCAL_MODEL_URL), checked to be on this machine or network.
  *
  * Privacy follows the router's rules. A cloud embedder never reads what memory
- * learned in a private conversation, nor anything in a space marked private;
- * the details the space's privacy settings detect (addresses, numbers, the
- * person's listed values) are swapped for their kind before anything is sent.
- * Only a local model reads memory as written.
+ * learned in a private conversation, nor anything in a space marked private,
+ * and every text it is sent first goes through the gateway's own redactor
+ * (`PrivacyRouter.screenForCloud`): the listed values, every value memory
+ * learned privately, the detectors, the local name detector and the
+ * conversation's vault. Only a local model reads memory as written.
+ *
+ * A provider that fails three times in a row is not asked again for a minute:
+ * recall stays lexical meanwhile instead of waiting on it every turn.
  *
  * Every call is counted in the spending ledger as a `memory_embedding` call,
  * charged to the person whose memory it read.
  */
 import { randomUUID } from 'node:crypto';
-import { PRIVACY_CATEGORIES } from '@melete/contracts';
 import { compatibleBaseUrl, providersFromEnv } from '../gateway/providers.ts';
 import type { GatewayPrincipal, GatewaySpending } from '../gateway/types.ts';
-import { detect } from '../privacy/detect.ts';
 import { isLocalUrl } from '../privacy/local.ts';
-import type { ResolvedSettings } from '../privacy/store.ts';
-import { knownPattern } from '../privacy/vault.ts';
-import { MemoryError } from './db.ts';
+import { MemoryError, type MemorySql } from './db.ts';
+import { QUERY_EMBED_MS } from './recall.ts';
 import type { EmbeddingCall, EmbeddingProvider } from './views.ts';
 
 /** How a text is turned into what the embedder reads. Part of the vector space's identity. */
@@ -64,10 +65,18 @@ export type EmbeddingEnv = {
   MELETE_LOCAL_MODEL_KEY?: string;
 } & Record<string, unknown>;
 
-/** What the provider needs from the privacy router: a space's settings. */
+/** What the provider needs from the privacy router: its cloud redaction. */
 export type EmbeddingPrivacy = {
-  settingsFor(spaceId: string): Promise<ResolvedSettings>;
+  screenForCloud(
+    spaceId: string,
+    texts: readonly string[],
+    jobId?: string | null,
+  ): Promise<string[] | null>;
 };
+
+/** Failures in a row after which the provider is left alone for `PAUSE_MS`. */
+export const BREAKER_FAILURES = 3;
+export const PAUSE_MS = 60_000;
 
 export type EmbeddingOptions = {
   /** Where requests go, ending in its version prefix and a slash. */
@@ -85,41 +94,17 @@ export type EmbeddingOptions = {
   onError?: (code: string) => void;
 };
 
-/** A provider-agnostic stand-in for a value the privacy settings detect, by its kind. */
-const placeholder = (category: string) => `[${category.replace(/_/g, ' ')}]`;
-
-/**
- * The text a cloud embedder may read: every detected value and every value the
- * person listed is replaced by its kind, so "my number is 415 555 0100"
- * embeds as "my number is [phone]". The meaning stays, the value does not.
- */
-export function screenText(
-  text: string,
-  settings: Pick<ResolvedSettings, 'enabled' | 'known'> | null,
-): string {
-  const enabled = settings?.enabled ?? new Set(PRIVACY_CATEGORIES);
-  const spans = detect(text, enabled).map((span) => ({ ...span, kind: span.category as string }));
-  for (const known of settings?.known ?? []) {
-    const pattern = knownPattern(known);
-    if (!pattern) continue;
-    for (const match of text.matchAll(pattern))
-      spans.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        category: known.category,
-        kind: known.category,
-      });
-  }
-  spans.sort((a, b) => a.start - b.start || b.end - a.end);
-  let out = '';
-  let at = 0;
-  for (const span of spans) {
-    if (span.start < at) continue;
-    out += text.slice(at, span.start) + placeholder(span.kind);
-    at = span.end;
-  }
-  return out + text.slice(at);
-}
+/** What health reports about the embedder: never a text, only how calls went. */
+export type EmbeddingStatus = {
+  configured: boolean;
+  model: string | null;
+  local: boolean;
+  last_success_at: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  /** Set while the provider is left alone after failing in a row. */
+  paused_until: string | null;
+};
 
 /** Tokens for a text when a provider does not say, at the gateway's quarter-byte estimate. */
 const estimateTokens = (texts: string[]) =>
@@ -129,6 +114,22 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
   const request = options.fetch ?? fetch;
   const endpoint = new URL('embeddings', compatibleBaseUrl(options.baseUrl));
   const { model } = options;
+  const state: EmbeddingStatus = {
+    configured: true,
+    model: `${options.provider}/${model.model}`,
+    local: options.local,
+    last_success_at: null,
+    last_error: null,
+    consecutive_failures: 0,
+    paused_until: null,
+  };
+  const failed = (code: string) => {
+    state.last_error = code;
+    state.consecutive_failures++;
+    if (state.consecutive_failures >= BREAKER_FAILURES)
+      state.paused_until = new Date(Date.now() + PAUSE_MS).toISOString();
+    options.onError?.(code);
+  };
   const principalFor = (call: EmbeddingCall | undefined): GatewayPrincipal | null =>
     call
       ? {
@@ -154,15 +155,18 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
     dimensions: model.dimensions,
     recipe: EMBEDDING_RECIPE,
     local: options.local,
-    async screen(spaceId, texts) {
+    status: () => ({ ...state }),
+    async screen(spaceId, texts, jobId) {
       // A local model reads memory as written; it never leaves the person's machine.
       if (options.local) return texts;
-      const settings = options.privacy ? await options.privacy.settingsFor(spaceId) : null;
-      if (settings?.privateSpace) return null;
-      return texts.map((text) => screenText(text, settings));
+      // Without the privacy router nothing goes to a cloud embedder.
+      if (!options.privacy) return null;
+      return options.privacy.screenForCloud(spaceId, texts, jobId ?? null);
     },
     async embed(texts, signal, call) {
       if (!texts.length) return [];
+      if (state.paused_until && Date.now() < Date.parse(state.paused_until))
+        throw new MemoryError('embedding_paused');
       const prefix = model.prefixes?.[call?.purpose ?? 'document'] ?? '';
       const input = texts.map((text) => `${prefix}${text}`.slice(0, 8000));
       const principal = principalFor(call?.call);
@@ -220,9 +224,18 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
           )
         )
           throw new MemoryError('embedding_space_mismatch');
+        state.consecutive_failures = 0;
+        state.paused_until = null;
+        state.last_success_at = new Date().toISOString();
         return vectors;
       } catch (error) {
-        options.onError?.(error instanceof MemoryError ? error.code : 'embedding_unreachable');
+        failed(
+          error instanceof MemoryError
+            ? error.code
+            : error instanceof Error && error.name === 'TimeoutError'
+              ? 'embedding_timeout'
+              : 'embedding_unreachable',
+        );
         throw error;
       } finally {
         if (principal && options.spending) {
@@ -348,8 +361,37 @@ export function onceForQueries(provider: EmbeddingProvider): EmbeddingProvider {
       if (prior) return prior;
       const made = provider.embed(texts, signal, options);
       asked.set(text, made);
-      made.catch(() => asked.delete(text));
+      // A failure is kept too: the attempt does not wait on the same question twice.
+      made.catch(() => {});
       return made;
     },
   };
+}
+
+/**
+ * Start embedding an attempt's request now, so recall finds it ready. Only
+ * when the space's index was built with this embedding: otherwise recall
+ * would not use it, and the call would be wasted. The result lands in the
+ * attempt's `onceForQueries` cache; a failure is left for recall to see.
+ */
+export function prefetchQuery(
+  sql: MemorySql,
+  provider: EmbeddingProvider,
+  request: { spaceId: string; query: string; jobId: string; actor: string | null },
+): void {
+  if (!request.query.trim()) return;
+  void (async () => {
+    const [manifest] =
+      await sql`select embedding->>'model' as model from memory_index_manifest where space_id = ${request.spaceId}`;
+    if (manifest?.model !== provider.model) return;
+    const screened = provider.screen
+      ? await provider.screen(request.spaceId, [request.query], request.jobId)
+      : [request.query];
+    const text = screened?.[0];
+    if (!text) return;
+    await provider.embed([text], AbortSignal.timeout(QUERY_EMBED_MS), {
+      purpose: 'query',
+      call: { spaceId: request.spaceId, jobId: request.jobId, actor: request.actor },
+    });
+  })().catch(() => {});
 }

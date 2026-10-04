@@ -25,7 +25,7 @@ import {
   type MemoryTx,
   newId,
 } from './db.ts';
-import { onceForQueries } from './embedding.ts';
+import { onceForQueries, prefetchQuery } from './embedding.ts';
 import { lockEventOrder, notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
 import { recallNotes } from './notes.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
@@ -366,6 +366,14 @@ export function withMemoryRuntime(
               true))
           ? onceForQueries(options.embedding)
           : undefined;
+      // The request is embedded while the rest of the attempt is prepared, not before it.
+      if (embedding && readsMemory)
+        prefetchQuery(sql, embedding, {
+          spaceId: scope.spaceId,
+          query: attemptRecallQuery(bundle).slice(0, 2000),
+          jobId: bundle.attempt.job_id,
+          actor: scope.principalId ?? null,
+        });
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -414,7 +422,12 @@ export function withMemoryRuntime(
             privateOrigin,
             withheld,
             embedding,
-          }).catch(() => [])
+          }).catch((error: unknown) => {
+            process.stderr.write(
+              `memory: notes_recall_failed:${error instanceof MemoryError ? error.code : 'unknown'}\n`,
+            );
+            return [];
+          })
         : [];
       const [job] =
         await sql`select constraints, revision from job where id = ${bundle.attempt.job_id} and space_id = ${scope.spaceId}`;

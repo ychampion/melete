@@ -43,7 +43,9 @@ export type EmbeddingProvider = {
    * space may leave (a space the person marked private). Left out, texts are
    * sent as given, which only a local model should do.
    */
-  screen?(spaceId: string, texts: string[]): Promise<string[] | null>;
+  screen?(spaceId: string, texts: string[], jobId?: string | null): Promise<string[] | null>;
+  /** How calls to the provider have gone, for health. */
+  status?(): import('./embedding.ts').EmbeddingStatus;
 };
 /** How many texts one embedding request carries. */
 export const EMBED_BATCH = 64;
@@ -59,6 +61,36 @@ export type IndexableRevision = {
 export function validateVector(vector: number[], dimensions: number) {
   if (vector.length !== dimensions || !vector.every(Number.isFinite))
     throw new MemoryError('embedding_space_mismatch');
+}
+const VECTOR_PREFIX = 'f32:';
+/**
+ * A vector as it is stored: float32, base64, about a quarter the size of JSON
+ * numbers and read without parsing each one.
+ */
+export function encodeVector(vector: readonly number[]): string {
+  const floats = Float32Array.from(vector);
+  return `${VECTOR_PREFIX}${Buffer.from(floats.buffer, floats.byteOffset, floats.byteLength).toString('base64')}`;
+}
+/** A stored vector, as `encodeVector` wrote it or as JSON numbers; null when it is neither, or of another size. */
+export function decodeVector(value: unknown, dimensions: number): Float32Array | null {
+  if (typeof value === 'string' && value.startsWith(VECTOR_PREFIX)) {
+    const bytes = Buffer.from(value.slice(VECTOR_PREFIX.length), 'base64');
+    if (bytes.byteLength !== dimensions * 4) return null;
+    const floats = new Float32Array(dimensions);
+    new Uint8Array(floats.buffer).set(bytes);
+    return floats.every(Number.isFinite) ? floats : null;
+  }
+  if (Array.isArray(value) && value.length === dimensions && value.every(Number.isFinite))
+    return Float32Array.from(value as number[]);
+  return null;
+}
+/** The vector scaled to length one, so a dot product is its cosine; null for a zero vector. */
+export function normalized(vector: ArrayLike<number>): Float32Array | null {
+  let length = 0;
+  for (let i = 0; i < vector.length; i++) length += (vector[i] ?? 0) ** 2;
+  if (!length) return null;
+  const scale = 1 / Math.sqrt(length);
+  return Float32Array.from(vector as ArrayLike<number>, (x) => x * scale);
 }
 export function cosine(a: number[], b: number[]) {
   validateVector(b, a.length);
@@ -115,9 +147,8 @@ async function keptVectors(
       and dimensions = ${embedding.dimensions} and recipe = ${embedding.recipe}`;
   const kept = new Map<string, number[]>();
   for (const row of rows) {
-    const vector = row.vector as number[];
-    if (Array.isArray(vector) && vector.length === embedding.dimensions)
-      kept.set(`${row.claim_id}:${row.revision}`, vector);
+    const vector = decodeVector(row.vector, embedding.dimensions);
+    if (vector) kept.set(`${row.claim_id}:${row.revision}`, Array.from(vector));
   }
   return kept;
 }
@@ -128,14 +159,14 @@ async function keptVectors(
  * build. What a cloud embedder may not read (memory learned in a private
  * conversation, or anything in a space marked private) gets no vector and is
  * recalled lexically. A provider that fails or refuses leaves the rest for the
- * next build; a vector of the wrong shape fails the build.
+ * next build (`partial`); a vector of the wrong shape fails the build.
  */
 async function vectorsFor(
   sql: MemorySql,
   scope: MemoryScope,
   rows: IndexableRevision[],
   embedding: EmbeddingProvider,
-): Promise<Map<string, number[]>> {
+): Promise<{ vectors: Map<string, number[]>; partial: boolean }> {
   if (
     !Number.isInteger(embedding.dimensions) ||
     embedding.dimensions < 1 ||
@@ -151,14 +182,23 @@ async function vectorsFor(
     if (vector) vectors.set(key, vector);
     else if (embedding.local || !row.private) missing.push(row);
   }
-  if (!missing.length) return vectors;
-  const texts = embedding.screen
-    ? await embedding.screen(
-        scope.spaceId,
-        missing.map((row) => row.text),
-      )
-    : missing.map((row) => row.text);
-  if (!texts || texts.length !== missing.length) return vectors;
+  if (!missing.length) return { vectors, partial: false };
+  let texts: string[] | null;
+  try {
+    texts = embedding.screen
+      ? await embedding.screen(
+          scope.spaceId,
+          missing.map((row) => row.text),
+        )
+      : missing.map((row) => row.text);
+  } catch {
+    process.stderr.write('memory: embedding_screen_failed\n');
+    return { vectors, partial: true };
+  }
+  // A space marked private sends nothing, by design: that is not a gap to retry.
+  if (!texts) return { vectors, partial: false };
+  if (texts.length !== missing.length) return { vectors, partial: true };
+  let partial = false;
   const signal = AbortSignal.timeout(15000);
   for (let start = 0; start < missing.length; start += EMBED_BATCH) {
     const batch = missing.slice(start, start + EMBED_BATCH);
@@ -170,7 +210,12 @@ async function vectorsFor(
       });
     } catch (error) {
       if (error instanceof MemoryError && error.code === 'embedding_space_mismatch') throw error;
-      // Not this time: the lexical index is still built, and the next build tries again.
+      // Not this time: the lexical index is still built, and the space is
+      // marked partly embedded so a later build tries again.
+      process.stderr.write(
+        `memory: embedding_build_failed:${error instanceof MemoryError ? error.code : 'unreachable'}\n`,
+      );
+      partial = true;
       break;
     }
     if (made.length !== batch.length) throw new MemoryError('embedding_space_mismatch');
@@ -180,7 +225,7 @@ async function vectorsFor(
       vectors.set(`${row.claim_id}:${row.revision}`, vector);
     });
   }
-  return vectors;
+  return { vectors, partial };
 }
 /** Embedding work is outside the transaction. The manifest moves only after a fresh validation. */
 export async function buildViews(
@@ -192,9 +237,9 @@ export async function buildViews(
     const space = await lockSpace(tx, scope);
     return { generation: generation(space), rows: await indexableRows(tx, scope) };
   });
-  const vectors = embedding
+  const { vectors, partial } = embedding
     ? await vectorsFor(sql, scope, snapshot.rows, embedding)
-    : new Map<string, number[]>();
+    : { vectors: new Map<string, number[]>(), partial: false };
   return sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope);
     if (
@@ -214,13 +259,13 @@ export async function buildViews(
       const vector = vectors.get(`${row.claim_id}:${row.revision}`);
       if (embedding && vector)
         await tx`insert into memory_dense_entries (space_id, generation, claim_id, revision, model, version, dimensions, recipe, vector)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(vector)}::text::jsonb)`;
+        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(encodeVector(vector))}::text::jsonb)`;
     }
     const embeddingInfo = embedding
       ? { model: embedding.model, version: embedding.version, dimensions: embedding.dimensions }
       : null;
     await tx`update memory_index_manifest set generation = ${nextGeneration}, coverage_revision = ${space.data_revision}, method = 'lexical',
-      recipe = ${LEXICAL_RECIPE}, embedding = ${embeddingInfo ? JSON.stringify(embeddingInfo) : null}::text::jsonb where space_id = ${scope.spaceId}`;
+      recipe = ${LEXICAL_RECIPE}, embedding = ${embeddingInfo ? JSON.stringify({ ...embeddingInfo, ...(partial ? { partial: true } : {}) }) : null}::text::jsonb where space_id = ${scope.spaceId}`;
     // The inspection copy of what recall reads from the claims themselves.
     const profile = (await profileCandidates(tx, scope, ['private', 'space', 'public'])).map(
       ({ claim_id, revision }) => ({ claim_id, revision }),

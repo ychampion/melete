@@ -1,28 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { PriceTable } from '../gateway/prices.ts';
 import type { GatewayPrincipal, GatewaySettlement } from '../gateway/types.ts';
-import type { ResolvedSettings } from '../privacy/store.ts';
+import { MemoryError } from './db.ts';
 import {
+  BREAKER_FAILURES,
   createEmbeddingProvider,
   embeddingFromEnv,
   onceForQueries,
-  screenText,
 } from './embedding.ts';
-
-const settings = (overrides: Partial<ResolvedSettings> = {}): ResolvedSettings => ({
-  version: 1,
-  enabled: new Set(['phone', 'email', 'address', 'name']),
-  topics: [],
-  privateSpace: false,
-  privateAgents: new Set(),
-  local: null,
-  localDetection: false,
-  known: [],
-  onDeviceUrl: null,
-  screenshotsOwn: true,
-  screenshotsDevices: false,
-  ...overrides,
-});
 
 /** A stand-in embeddings endpoint: records each request and answers in the OpenAI shape. */
 function endpoint(dimensions = 3) {
@@ -46,26 +31,15 @@ function endpoint(dimensions = 3) {
 }
 
 describe('what a cloud embedder may read', () => {
-  test('detected details and listed values are swapped for their kind', () => {
-    const text = screenText(
-      'Call Priya on +1 415 555 0100 or priya@example.com about the lease.',
-      settings({
-        known: [{ id: 'pv_1', label: 'Sister', category: 'name', value: 'Priya' }],
-      }),
-    );
-    expect(text).not.toContain('555');
-    expect(text).not.toContain('example.com');
-    expect(text).not.toContain('Priya');
-    expect(text).toContain('[phone]');
-    expect(text).toContain('[email]');
-    expect(text).toContain('[name]');
-    expect(text).toContain('about the lease');
-  });
-
-  test('a space marked private sends nothing; a local model reads memory as written', async () => {
+  test('a cloud embedder reads only what the privacy router hands it; a local model reads as written', async () => {
     const { fetch } = endpoint();
+    const asked: { spaceId: string; texts: readonly string[]; jobId: string | null | undefined }[] =
+      [];
     const privacy = {
-      settingsFor: async () => settings({ privateSpace: true }),
+      async screenForCloud(spaceId: string, texts: readonly string[], jobId?: string | null) {
+        asked.push({ spaceId, texts, jobId });
+        return spaceId === 'sp_private' ? null : texts.map(() => 'call \u27e6PHONE_1\u27e7');
+      },
     };
     const cloud = createEmbeddingProvider({
       baseUrl: 'https://api.fireworks.ai/inference/v1/',
@@ -76,7 +50,21 @@ describe('what a cloud embedder may read', () => {
       privacy,
       fetch,
     });
-    expect(await cloud.screen?.('sp_x', ['anything'])).toBeNull();
+    expect(await cloud.screen?.('sp_x', ['call 415 555 0100'], 'job_1')).toEqual([
+      'call \u27e6PHONE_1\u27e7',
+    ]);
+    expect(asked[0]).toEqual({ spaceId: 'sp_x', texts: ['call 415 555 0100'], jobId: 'job_1' });
+    expect(await cloud.screen?.('sp_private', ['anything'])).toBeNull();
+    // Without the router a cloud embedder is sent nothing at all.
+    const unrouted = createEmbeddingProvider({
+      baseUrl: 'https://api.fireworks.ai/inference/v1/',
+      apiKey: 'k',
+      provider: 'fireworks',
+      model: { model: 'nomic-ai/nomic-embed-text-v1.5', dimensions: 3 },
+      local: false,
+      fetch,
+    });
+    expect(await unrouted.screen?.('sp_x', ['anything'])).toBeNull();
     const local = createEmbeddingProvider({
       baseUrl: 'http://127.0.0.1:11434/v1',
       provider: 'local',
@@ -86,6 +74,35 @@ describe('what a cloud embedder may read', () => {
       fetch,
     });
     expect(await local.screen?.('sp_x', ['call 415 555 0100'])).toEqual(['call 415 555 0100']);
+  });
+
+  test('a provider that keeps failing is left alone for a while, and health says so', async () => {
+    let calls = 0;
+    const provider = createEmbeddingProvider({
+      baseUrl: 'https://api.openai.com/v1/',
+      apiKey: 'k',
+      provider: 'openai',
+      model: { model: 'text-embedding-3-small', dimensions: 3 },
+      local: false,
+      fetch: async () => {
+        calls++;
+        return new Response('down', { status: 503 });
+      },
+    });
+    for (let i = 0; i < BREAKER_FAILURES; i++)
+      await expect(provider.embed(['x'], AbortSignal.timeout(1000))).rejects.toThrow(
+        'embedding_provider_failed',
+      );
+    expect(provider.status?.()).toMatchObject({
+      consecutive_failures: BREAKER_FAILURES,
+      last_error: 'embedding_provider_failed',
+    });
+    expect(provider.status?.().paused_until).not.toBeNull();
+    // Paused: the next request does not wait on the provider at all.
+    const error = await provider.embed(['x'], AbortSignal.timeout(1000)).catch((e) => e);
+    expect(error).toBeInstanceOf(MemoryError);
+    expect((error as MemoryError).code).toBe('embedding_paused');
+    expect(calls).toBe(BREAKER_FAILURES);
   });
 });
 

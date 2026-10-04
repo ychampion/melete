@@ -184,7 +184,8 @@ export async function queueEmbeddingBackfill(sql: MemorySql, embedding: Embeddin
   const spaces = await sql`select p.space_id, p.data_revision from memory_spaces p
     join memory_index_manifest m on m.space_id = p.space_id
     where p.restore_ready and not p.revoked and p.data_revision > 0
-      and (m.embedding is null or m.embedding->>'model' is distinct from ${embedding.model}
+      and (m.embedding is null or (m.embedding->>'partial')::boolean is true
+        or m.embedding->>'model' is distinct from ${embedding.model}
         or m.embedding->>'version' is distinct from ${embedding.version}
         or (m.embedding->>'dimensions')::integer is distinct from ${embedding.dimensions})`;
   for (const space of spaces) {

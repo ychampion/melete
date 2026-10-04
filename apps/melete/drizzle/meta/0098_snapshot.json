@@ -1,5 +1,5 @@
 {
-  "id": "0f96ce00-b9e1-471c-8371-fe89e8f5401d",
+  "id": "b543eb35-f21e-4fc1-96e0-fcc577a07a2e",
   "prevId": "ccf3b7bb-93de-421b-88ad-ac9c9748690d",
   "version": "7",
   "dialect": "postgresql",
@@ -7125,6 +7125,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'agent'"
+        },
         "embedding_model": {
           "name": "embedding_model",
           "type": "text",
@@ -7196,6 +7203,10 @@
         "memory_agent_notes_content": {
           "name": "memory_agent_notes_content",
           "value": "char_length(\"memory_agent_notes\".\"content\") between 1 and 2000"
+        },
+        "memory_agent_notes_origin": {
+          "name": "memory_agent_notes_origin",
+          "value": "\"memory_agent_notes\".\"origin\" in ('agent', 'outside')"
         }
       },
       "isRLSEnabled": false

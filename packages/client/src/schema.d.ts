@@ -6704,6 +6704,16 @@ export interface paths {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
                             memory?: {
+                                embedding?: {
+                                    configured: boolean;
+                                    consecutive_failures: number;
+                                    last_error: string | null;
+                                    last_success_at: components["schemas"]["__schema184"] | null;
+                                    local: boolean;
+                                    model: string | null;
+                                    paused_until: components["schemas"]["__schema184"] | null;
+                                    spaces_not_embedded: number;
+                                };
                                 failed: number;
                                 failed_reason: ("provider_auth" | "provider_refused" | "provider_unavailable" | "provider_slow" | "daily_budget" | "unreadable_answer" | "answer_cut_off" | "answer_refused" | "too_large" | "no_memory_model" | "other") | null;
                                 reason: ("provider_unavailable" | "provider_slow" | "daily_budget") | null;
@@ -11194,7 +11204,7 @@ export interface paths {
                                 authoritative_revision: components["schemas"]["__schema413"];
                                 indexed_revision: components["schemas"]["__schema413"];
                                 /** @enum {string} */
-                                reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment" | "withheld";
+                                reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment" | "withheld" | "dense_unavailable";
                                 supplemented: components["schemas"]["__schema413"];
                                 truncated: boolean;
                             };

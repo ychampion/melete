@@ -5,10 +5,12 @@ CREATE TABLE "memory_agent_notes" (
 	"job_id" text,
 	"content" text NOT NULL,
 	"private_origin" text,
+	"origin" text DEFAULT 'agent' NOT NULL,
 	"embedding_model" text,
 	"embedding" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "memory_agent_notes_content" CHECK (char_length("memory_agent_notes"."content") between 1 and 2000)
+	CONSTRAINT "memory_agent_notes_content" CHECK (char_length("memory_agent_notes"."content") between 1 and 2000),
+	CONSTRAINT "memory_agent_notes_origin" CHECK ("memory_agent_notes"."origin" in ('agent', 'outside'))
 );
 --> statement-breakpoint
 ALTER TABLE "memory_agent_notes" ADD CONSTRAINT "memory_agent_notes_space_id_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."space"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

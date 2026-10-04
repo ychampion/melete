@@ -13474,7 +13474,8 @@
                             "index_failure",
                             "restore_pending",
                             "public_compartment",
-                            "withheld"
+                            "withheld",
+                            "dense_unavailable"
                           ]
                         }
                       },
@@ -14802,6 +14803,70 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "embedding": {
+                          "type": "object",
+                          "properties": {
+                            "configured": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "local": {
+                              "type": "boolean"
+                            },
+                            "last_success_at": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/components/schemas/__schema184"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "last_error": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "consecutive_failures": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "paused_until": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/components/schemas/__schema184"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "spaces_not_embedded": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "configured",
+                            "model",
+                            "local",
+                            "last_success_at",
+                            "last_error",
+                            "consecutive_failures",
+                            "paused_until",
+                            "spaces_not_embedded"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [

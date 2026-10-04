@@ -1337,8 +1337,10 @@ needs the model and its dimensions named.
 Embeddings follow the privacy settings. A cloud embedder never reads what memory
 learned in a private conversation, nor anything in a space marked private, nor a
 request from a private or sensitive conversation; that memory is recalled by its
-words alone. The details the privacy settings detect are swapped for their kind
-before anything is sent. A local embedder reads memory as written. Memory is
+words alone. Everything sent goes through the same redaction as a cloud model
+request, what memory learned privately included. A provider that fails three
+times in a row is left alone for a minute, and `/health` shows it under
+`memory.embedding`. A local embedder reads memory as written. Memory is
 embedded as it is written; memory kept before an embedding model was configured
 is embedded the next time the service starts. Each call is counted in the
 spending caps, charged to the person whose memory it read. Vectors are kept in

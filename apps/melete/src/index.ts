@@ -668,6 +668,7 @@ export async function bootstrap(
   let blobs: ReturnType<typeof startBlobs> | undefined;
   let attachments: AttachmentService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
+  let memoryEmbedder: Awaited<ReturnType<typeof embeddingFromEnv>> = null;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
@@ -946,6 +947,7 @@ export async function bootstrap(
 `),
         })
       : null;
+    memoryEmbedder = memoryEmbedding;
     const embedsQuery = (jobId: string, text: string) => privacy.cloudEmbedsRequest(jobId, text);
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
@@ -1448,7 +1450,7 @@ export async function bootstrap(
     voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase,
     attachments,
-    ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
+    ...(handle ? { checkMemory: () => memoryHealth(handle.sql, memoryEmbedder) } : {}),
   });
 
   return {

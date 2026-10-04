@@ -227,11 +227,25 @@ authoritative revision, source, suppression and audience checks. Vectors of
 another embedding are never compared, and an embedder that is missing, slow or
 failing leaves recall lexical rather than unavailable (`lexical and dense
 candidates are independent and incompatible embeddings fall back to lexical`).
-Each index build embeds only the revisions it has no vector for. A cloud
-embedder never reads memory learned in a private conversation or anything in a
-space marked private, and the details the privacy settings detect are swapped
-for their kind first; a local one reads memory as written (`semantic recall` in
-`test/integration/semantic-recall.test.ts`). On a held-out set of 24
+Each index build embeds only the revisions it has no vector for; a build the
+provider failed part way marks the space partly embedded, and the next start
+fills it in. A cloud embedder never reads memory learned in a private
+conversation or anything in a space marked private, and every text it is sent
+(the request, memory and notes) first goes through the gateway's own redactor:
+the listed values, every value memory learned privately, the detectors, the
+local name detector and the conversation's vault. A local embedder reads memory
+as written (`semantic recall` in `test/integration/semantic-recall.test.ts`).
+
+Vectors are stored as float32 in base64 and compared in the service. A space's
+vectors are read once per index generation and kept in memory (16 spaces at a
+time), in their own short read: a read that is slow, or a space with more than
+2,000 vectors, leaves recall lexical and is logged, never empty. Indexing
+itself stops at 2,000 claim revisions a space, so a larger space is recalled by
+words alone until that limit is lifted. The request is embedded while the rest
+of the attempt is prepared, and not at all when the space was not indexed with
+the embedding. A provider that fails three times in a row is left alone for a
+minute; `/health` reports the embedder's state (`memory.embedding`), and a recall
+that could not use it says `dense_unavailable`. On a held-out set of 24
 paraphrases ("favourite colour" for a `color` claim), recall@3 with
 `nomic-embed-text-v1.5` was 0.83 to 0.92 against 0.08 for words alone; set
 `MELETE_LIVE_EMBEDDINGS=1` with a Fireworks key to run it.
@@ -241,7 +255,9 @@ paraphrases ("favourite colour" for a `color` claim), recall@3 with
 The agent keeps notes for itself with the `notes.write` tool: something it found
 out or worked out in one chat that will help in a later one. A note is never the
 person's statement. It comes back to the agent, when a later request matches it
-by words or meaning, labelled as its own note at `inferred` trust, and the
+by words or meaning, labelled as its own note at `inferred` trust (or, for a
+note written in a chat that had read a page, message or file, at
+`external_content`, labelled as unverified and never an instruction), and the
 person sees each one in Memory as Melete's note and can delete it. Notes are
 kept only in a person's own space and are read back only into their own work
 there, as private memory is: never for a reader of a shared space, a public
@@ -249,7 +265,8 @@ compartment or an agent set not to read memory. A note written in a private
 conversation is read back only into requests that stay on the person's own
 model, and a cloud embedder never reads it. One person keeps at most 500 notes
 in a space; the oldest go first. Deleting a chat and what Melete learned from it
-deletes the notes written there too.
+deletes the notes written there too, and forgetting everything deletes every
+note written before it.
 
 A request is matched by any of its meaningful words, ranked by how many match
 and how closely, so "Email Ana the agenda for Thursday" finds the claim on

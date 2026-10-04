@@ -55,6 +55,23 @@ export const healthResponse = z.object({
           'other',
         ])
         .nullable(),
+      /**
+       * Semantic recall's embedder: whether one is configured, how its calls
+       * have gone, whether it is paused after failing in a row (recall stays
+       * lexical meanwhile), and how many spaces are not yet fully embedded.
+       */
+      embedding: z
+        .object({
+          configured: z.boolean(),
+          model: z.string().nullable(),
+          local: z.boolean(),
+          last_success_at: timestamp.nullable(),
+          last_error: z.string().nullable(),
+          consecutive_failures: z.number().int().nonnegative(),
+          paused_until: timestamp.nullable(),
+          spaces_not_embedded: z.number().int().nonnegative(),
+        })
+        .optional(),
     })
     .optional(),
   time: timestamp,
