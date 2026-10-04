@@ -1162,6 +1162,9 @@ export class ExperienceMock {
   }
   message(chat: Chat, raw: unknown, key?: string, scenarioId?: string) {
     const input = C.conversationMessage.parse(raw);
+    const most = C.DEFAULT_ATTACHMENT_LIMITS.per_message;
+    if ((input.attachments?.length ?? 0) > most)
+      throw new MockExperienceError(400, `A message can carry up to ${most} files, each once.`);
     const fingerprint = `${chat.view.id}:${key}`;
     const previous = key ? this.submissions.get(fingerprint) : undefined;
     const files = (input.attachments ?? []).map((id) => {

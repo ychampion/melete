@@ -14,16 +14,22 @@
  * instructions, whatever it says.
  *
  * Every limit here is one the interface states in a sentence when a file is
- * refused.
+ * refused. The size of one file and the number per message are the defaults an
+ * operator may change; `GET /attachments/limits` says what this installation
+ * takes. Uploads per person are not limited unless the operator sets a limit.
  */
 import { z } from 'zod';
 import { MAX_IMAGE_ENCODED_BYTES } from './model-vision.ts';
 
 export const ATTACHMENT_LIMITS = {
-  /** The largest file one upload may carry. */
+  /** The largest file one upload may carry, unless the operator sets another. */
   file_bytes: 20 * 1024 * 1024,
-  /** The most files one message may carry. */
+  /** The most files one message may carry, unless the operator sets another. */
   per_message: 10,
+  /** The most an operator may raise the size of one file to. */
+  file_bytes_ceiling: 100 * 1024 * 1024,
+  /** The most an operator may raise the files per message to. */
+  per_message_ceiling: 100,
   /**
    * The largest copy of a picture the model is shown: its base64 text fits the
    * gateway's per-picture limit exactly. The browser makes this copy (at most
@@ -103,8 +109,12 @@ export function attachmentSize(bytes: number): string {
 }
 
 /** The sentence a file over the size limit is refused with. */
-export function attachmentTooLarge(name: string, bytes: number): string {
-  const limit = attachmentSize(ATTACHMENT_LIMITS.file_bytes);
+export function attachmentTooLarge(
+  name: string,
+  bytes: number,
+  limitBytes: number = ATTACHMENT_LIMITS.file_bytes,
+): string {
+  const limit = attachmentSize(limitBytes);
   const size = attachmentSize(bytes);
   return `Files can be up to ${limit}. ${name} is ${size === limit ? 'larger' : size}.`;
 }
@@ -132,3 +142,24 @@ export const attachmentResponse = z.strictObject({ attachment: attachmentView })
 export const attachmentContentQuery = z.strictObject({
   variant: z.enum(['original', 'preview']).optional(),
 });
+
+/**
+ * What this installation takes: the largest file, the most files in one
+ * message, and how many uploads one person may have under way at once. The
+ * service gives that last as its fair share of what it holds (half, by
+ * default 8) or the operator's lower limit; null means no limit at all. A
+ * client queues its uploads to it.
+ */
+export const attachmentLimits = z.strictObject({
+  file_bytes: z.number().int().positive().max(ATTACHMENT_LIMITS.file_bytes_ceiling),
+  per_message: z.number().int().positive().max(ATTACHMENT_LIMITS.per_message_ceiling),
+  uploads_at_once: z.number().int().positive().nullable(),
+});
+export type AttachmentLimits = z.infer<typeof attachmentLimits>;
+
+/** The defaults for a client that has not read the installation's limits yet. */
+export const DEFAULT_ATTACHMENT_LIMITS: AttachmentLimits = {
+  file_bytes: ATTACHMENT_LIMITS.file_bytes,
+  per_message: ATTACHMENT_LIMITS.per_message,
+  uploads_at_once: null,
+};

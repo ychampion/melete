@@ -46,6 +46,7 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
+import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
@@ -750,7 +751,7 @@ export async function bootstrap(
       blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
         leading(leases, 'blob-collector'),
       );
-      attachments = new AttachmentService(handle.sql, blobs.store);
+      attachments = new AttachmentService(handle.sql, blobs.store, attachmentSettingsFromEnv(env));
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
@@ -870,6 +871,7 @@ export async function bootstrap(
     }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+    if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
     runs = jobs ? new RunService(jobs) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
     // one. Both memory startups deliver through it.
