@@ -175,3 +175,28 @@ The activity for the same turn has a row for the recall, the skill, the page, th
 - These still ask: saving over a file the person already keeps, moving a file out of their Files or renaming one there, a path that is not a plain name inside them, and sending a file by email. The permission card names where the file goes ("Save imgtest.png to your Files", "Move “a.png” out of your Files").
 - The person's stricter settings still apply: "Ask me for everything", an agent set to ask before acting, and the switch for work in the agent's own workspace.
 - Work in the agent's own workspace (`area: work`, the default) does not ask.
+
+## Deleting files
+
+Every delete can be undone. `files.delete` removes one file or folder, in the agent's workspace or the person's Files, by moving it into a trash beside that tree: `<work root>/.trash/<job>/` for the workspace, `<space>/.trash/<job>/` for the person's Files. Nothing there is synced to the agent's computer or mounted in a code runner. The trash is kept for `MELETE_TRASH_DAYS` (7 by default) and then swept. A conversation's trash goes when the conversation is deleted, and a space's goes when the space is emptied.
+
+Before anyone is asked, Melete checks what the delete would take and whose it is, and binds that into the action:
+
+- **Melete's own** goes through, with a receipt: anything in the conversation's workspace, and a file the conversation saved as a new file in the person's Files that has not changed since.
+- **The person's** asks first: anything else in their Files, any folder there, and a file in the workspace that they gave the agent (saved from their upload, or moved out of their Files). The card names the target, lists the first entries of a folder with a count of the rest, says why it asks, and says it can be restored from the trash.
+- Only the entries listed in that check go. Each is renamed into the trash first and checked there. One that changed since goes back to its name and is kept. A file added to a folder after the check stays, with its folder.
+- With the switch for work in the agent's own workspace turned off, deleting Melete's own files asks too.
+- Refused outright: a path that leaves its area, the root of an area, a link, Melete's own records under `.melete/` (stored command output and screenshots), and files saved in other conversations.
+
+The receipt gives the total (`deleted_count`), names the first 20, and carries a `trash_id`. The receipt's Undo, or the agent's `files.restore` with that `trash_id`, puts every file back at its own path. A file whose path has been taken since stays in the trash, and the receipt of the restore says so.
+
+A command on the agent's sandbox computer (`terminal.run`) can delete files in `/work` too. After the command, a file it deleted goes to the workspace's trash as well, when all of these hold:
+
+- this command's own sync-in sent it;
+- it is Melete's own, and not under `.melete/`;
+- it is unchanged;
+- no background process that another conversation started is still running on that computer.
+
+Any other deleted file is kept, comes back in `/work` on the next command, and is named with the reason. The receipt says how many files went (`workspace_deleted_count`), names the first 50, and gives the `workspace_trash` to restore from, which the receipt's Undo also uses. When the command never started, the same note is in its failure reason.
+
+The code runner (`exec.run`, `exec.python`) works on the workspace directly rather than on a copy, so a delete there is immediate. It is not put in the trash and is not checked against who the file belongs to. Use `files.delete` for anything that may need to come back.

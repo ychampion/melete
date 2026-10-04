@@ -232,13 +232,14 @@ export class ExperienceEffects {
     kind: string,
     payload: JsonObject,
     retry?: string,
+    connectionId: string = source.connection_id,
   ) {
-    if (!(await this.supports(spaceId, source.connection_id, kind)))
+    if (!(await this.supports(spaceId, connectionId, kind)))
       return unavailable('This connection does not support that change with its current access.');
     const jobId = await this.command(spaceId, source, verb, retry);
-    const claims = await this.claims(jobId, source.connection_id);
+    const claims = await this.claims(jobId, connectionId);
     const proposed = await this.broker.propose(claims, {
-      connection_id: source.connection_id,
+      connection_id: connectionId,
       kind,
       payload,
       client_ref: verb,
@@ -258,8 +259,41 @@ export class ExperienceEffects {
     );
   }
 
-  private reversal(source: Action): { kind: string; payload: JsonObject } | null {
+  private async reversal(
+    spaceId: string,
+    source: Action,
+  ): Promise<{
+    kind: string;
+    payload: JsonObject;
+    connectionId?: string;
+    validUntil?: string;
+  } | null> {
     const detail = object(source.receipt?.detail);
+    // A delete went to the trash: undoing it restores everything it took.
+    if (source.kind === 'files.delete' && typeof detail.trash_id === 'string')
+      return {
+        kind: 'files.restore',
+        payload: { trash_id: detail.trash_id },
+        ...(typeof detail.restorable_until === 'string'
+          ? { validUntil: detail.restorable_until }
+          : {}),
+      };
+    // So did what a command deleted in the agent's computer; the space's own
+    // Files connection restores it.
+    if (typeof detail.workspace_trash === 'string') {
+      const [files] = await this.sql`select id from connection
+        where space_id = ${spaceId} and provider = 'files' and status = 'active'
+        order by created_at limit 1`;
+      if (!files) return null;
+      return {
+        kind: 'files.restore',
+        payload: { trash_id: detail.workspace_trash },
+        connectionId: String(files.id),
+        ...(typeof detail.workspace_restorable_until === 'string'
+          ? { validUntil: detail.workspace_restorable_until }
+          : {}),
+      };
+    }
     if (
       source.kind === 'calendar.create' &&
       typeof detail.uid === 'string' &&
@@ -272,16 +306,15 @@ export class ExperienceEffects {
   }
 
   async undoHandle(spaceId: string, source: Action) {
-    const reversal = this.reversal(source);
+    const reversal = source.status === 'succeeded' ? await this.reversal(spaceId, source) : null;
     if (
-      source.status !== 'succeeded' ||
       !reversal ||
-      !(await this.supports(spaceId, source.connection_id, reversal.kind))
+      !(await this.supports(spaceId, reversal.connectionId ?? source.connection_id, reversal.kind))
     )
       return undefined;
-    const validUntil = new Date(
-      Date.parse(source.resolved_at ?? source.created_at) + 24 * 3600000,
-    ).toISOString();
+    const validUntil =
+      reversal.validUntil ??
+      new Date(Date.parse(source.resolved_at ?? source.created_at) + 24 * 3600000).toISOString();
     await this.sql`insert into experience_undo (action_id, handle, valid_until)
       values (${source.id}, ${recordId('undo')}, ${validUntil}) on conflict (action_id) do nothing`;
     const [row] = await this.sql`select * from experience_undo where action_id = ${source.id}
@@ -300,7 +333,7 @@ export class ExperienceEffects {
       join job j on j.id = a.job_id where (u.action_id = ${id} or u.handle = ${id})
       and j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}`;
     const { action: source } = await this.source(spaceId, lookup ? String(lookup.action_id) : id);
-    const reversal = this.reversal(source);
+    const reversal = await this.reversal(spaceId, source);
     if (!reversal)
       return unavailable(
         source.kind === 'email.send'
@@ -320,7 +353,15 @@ export class ExperienceEffects {
     }
     if (Date.parse(String(lookup.valid_until)) <= Date.now())
       return unavailable('The time to undo this change has passed.');
-    let effect = await this.execute(spaceId, source, 'undo', reversal.kind, reversal.payload);
+    let effect = await this.execute(
+      spaceId,
+      source,
+      'undo',
+      reversal.kind,
+      reversal.payload,
+      undefined,
+      reversal.connectionId,
+    );
     if ('reason' in effect) return effect;
     if (effect.status === 'needs_approval') {
       // This route is the explicit owner decision for these exact reversal bytes.

@@ -306,6 +306,7 @@ function actionInput(row: ActionRow): ToolSummary | null {
     case 'files.read':
     case 'files.write':
     case 'files.restore':
+    case 'files.delete':
     case 'files.list':
       return payload.path === undefined
         ? null
@@ -433,6 +434,12 @@ function actionOutput(
       return summary('Moved');
     case 'files.restore':
       return summary('Restored');
+    case 'files.delete': {
+      const count = typeof detail.deleted_count === 'number' ? detail.deleted_count : 1;
+      return summary(
+        `Deleted ${count === 1 ? 'a file' : `${count} files`}, restorable from the trash`,
+      );
+    }
     case 'web.fetch':
       return summary('Page read', quote(pageTitle(detail), 'page'));
     case 'web.search': {
@@ -457,16 +464,25 @@ function actionOutput(
     case 'exec.run':
     case 'exec.python':
     case 'terminal.run':
-    case 'device.run':
-      return summary(
+    case 'device.run': {
+      // Files a command deleted lead, however the command itself ended: they
+      // are in the trash, and the receipt's Undo puts them back.
+      const deleted =
+        typeof detail.workspace_deleted_count === 'number' ? detail.workspace_deleted_count : 0;
+      const ended =
         detail.timed_out === true
           ? 'Stopped after running too long'
           : typeof detail.exit_code === 'number' && detail.exit_code !== 0
             ? `Finished with exit code ${detail.exit_code}`
-            : 'Finished',
+            : 'Finished';
+      return summary(
+        deleted
+          ? `Deleted ${deleted === 1 ? 'a file' : `${deleted} files`} from the workspace, restorable from the trash. ${ended}`
+          : ended,
         // What a command printed is outside text; binary output is never shown.
         detail.output_binary === true ? undefined : quote(firstLine(detail.output), 'app'),
       );
+    }
     case 'artifact.publish':
       return summary('Published');
     case 'audio.synthesize':

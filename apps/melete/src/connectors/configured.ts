@@ -202,6 +202,8 @@ export type ConnectorOptions = {
   sql: Sql;
   workRoot: string;
   spacesRoot: string;
+  /** How many days a delete stays in the trash (`MELETE_TRASH_DAYS`). */
+  trashDays?: number;
   masterKey?: string;
   connections?: ConfiguredConnection[];
   enableTestConnector?: boolean;
@@ -465,6 +467,7 @@ export class ConnectorFactory {
         project: sandbox.project,
         workRoot: options.workRoot,
         sql: options.sql,
+        ...(options.trashDays ? { trashDays: options.trashDays } : {}),
         e2bPlan: sandbox.e2bPlan,
         maxConcurrent: sandbox.maxConcurrent,
         maxPerConnection: sandbox.maxPerConnection,
@@ -886,6 +889,7 @@ export function connectorOptionsFromEnv(
     sql,
     workRoot: env.MELETE_WORK_DIR,
     spacesRoot: env.MELETE_SPACES_DIR,
+    trashDays: env.MELETE_TRASH_DAYS,
     masterKey: env.MELETE_MASTER_KEY,
     connections: extra.connections,
     enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,

@@ -56,7 +56,7 @@ const NEVER_COUNTED = ['space_removal'];
 const NOT_YET_DUE = ['space_membership'];
 
 /** The directories a space's content lives in, which an emptied space has empty. */
-const CONTENT_DIRECTORIES = ['knowledge', 'raw', 'artifacts', 'skills', 'browser'];
+const CONTENT_DIRECTORIES = ['knowledge', 'raw', 'artifacts', 'skills', 'browser', '.trash'];
 
 /**
  * Children whose only key is their parent's. Their rows go through the parent,

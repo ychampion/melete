@@ -67,6 +67,7 @@ import {
   connectorsFromEnv,
   readConnectionConfig,
 } from './connectors/configured.ts';
+import { startTrashSweep } from './connectors/files-trash.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
@@ -644,6 +645,7 @@ export async function bootstrap(
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
+  let stopTrashSweep: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -684,6 +686,7 @@ export async function bootstrap(
     supervisedRuntime?.beginShutdown();
     stopEpisodeRetention?.();
     stopEgressRetention?.();
+    stopTrashSweep?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -767,6 +770,12 @@ export async function bootstrap(
         env.MELETE_EGRESS_RECORD_DAYS,
         undefined,
         () => leading(leases, 'egress-retention'),
+      );
+      // Deleted files are kept in the trash for MELETE_TRASH_DAYS, then go.
+      stopTrashSweep = startTrashSweep(
+        { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
+        env.MELETE_TRASH_DAYS,
+        () => leading(leases, 'trash-sweep'),
       );
     }
     if (handle) {
