@@ -16,7 +16,8 @@ socket grants **host-root equivalent** authority, so `melete-cells` holds no
 database address and no service key, answers only the `melete` service on a
 private network with its key, and starts only the fixed attempt, computer and
 MCP server profiles (`apps/melete/src/cells/policy.ts`). The `melete` service
-has no socket, and its database role cannot read sealed credentials;
+has no socket, and its database role cannot read the `secret` table of
+connected accounts' credentials;
 `database-roles` sets the roles up and migrates before it starts
 ([docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md#database-roles)). Attempt containers
 receive no Docker socket and are launched with the separately tested isolation

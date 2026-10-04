@@ -33,8 +33,9 @@ connected account, the secret is added on the way out by a relay in the
 service, and every change it makes asks the person
 (`a computer uses a connected account through the relay, and its environment, files and output never hold the secret`).
 
-**The service's public side holds no keys to the host or to the secrets.** The
-service that answers the web app has no Docker socket. One small service,
+**The service that answers the web app has no Docker socket, and its database
+role cannot read connected accounts' credentials.** That service has no Docker
+socket. One small service,
 `melete-cells`, holds it, with no database address and no service key, and
 starts containers for the service only in fixed shapes: an attempt's engine, an
 agent's computer and an MCP server, each unprivileged on a read-only root with
@@ -42,14 +43,19 @@ its own network and volumes. Any other image, host path, privilege or network
 is refused, and so is any request on a container it did not start
 (`melete-cells refuses a container outside its profiles`;
 `compose-check: the API has no socket`). The service's own database role cannot
-read the table of sealed account credentials at all
-(`as melete_api, SELECT on secret fails`); only the code that opens a
-credential to act through an account reads it, as a second role, and the
-service refuses to start if its own role could
+read the `secret` table, which holds each connected account's credentials
+sealed (`as melete_api, SELECT on secret fails`); only the code that opens one
+to act through an account reads that table, as a second role, and the service
+refuses to start if its own role could
 (`a service role that can read secrets is refused at start`). An existing
 installation gains both by upgrading, with its data and every connected account
 in place
 (`an upgrade from the current main's deployment, with data, works and keeps secrets readable for effects`).
+Other sealed values, model provider keys and sign-in tokens, the privacy
+router's vault and the relay's certificate authority key, are still readable by
+the service's role; they move with the code that dispatches effects into a
+process of its own. Both roles are used by the one service process, which also
+holds the master key.
 
 **Model providers see less.** Before a cloud model reads a request, account
 numbers, IDs, contact details and keys are swapped for placeholders, and

@@ -27,7 +27,7 @@ container:
 | Service | Networks | Relevant configuration |
 | --- | --- | --- |
 | Postgres | `database` (`internal: true`) | Unpublished port, persistent database volume |
-| Melete | `edge`, `database`, `internal`, `cells` | Owner API bound only to its `edge` address (port 8787); broker and model gateway on port 8788 for the runtime network; reaches the engine through `melete-cells`, with no socket of its own; its database role cannot read sealed secrets |
+| Melete | `edge`, `database`, `internal`, `cells` | Owner API bound only to its `edge` address (port 8787); broker and model gateway on port 8788 for the runtime network; reaches the engine through `melete-cells`, with no socket of its own; its database role cannot read the `secret` table |
 | `melete-cells` | `cells` (`internal: true`) | The only holder of the Docker socket; answers the service alone, with its key, and starts only the fixed attempt, computer and MCP server profiles; no database address and no service key |
 | `database-roles` | `database` | Runs before the service at every start: creates the database roles, migrates as the schema's owner, and writes the service's two addresses |
 | Warm runtime cell | `internal` (`internal: true`, isolated bridge gateway) | Non-root UID 10001, read-only root, dropped capabilities, no-new-privileges, process and memory limits, only the `_probe` work subpath; no valid job capability |

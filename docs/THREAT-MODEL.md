@@ -392,8 +392,9 @@ rows of a space rather than of a person, so a shared space offers them to its
 owner only. A file whose job row was deleted is scoped by its space alone.
 Accounts share one service process, one database role and one master key;
 isolation between them is an application check, not an operating-system or
-database boundary. That role is `melete_api`, which cannot read sealed
-credentials at all ([Database roles](DEPLOYMENT.md#database-roles)).
+database boundary. That role is `melete_api`, which cannot read the `secret`
+table of connected accounts' credentials
+([Database roles](DEPLOYMENT.md#database-roles)).
 
 ## Attacker 8: an assistant connected over MCP
 
@@ -957,8 +958,11 @@ compromise of that process, or of the host, exposes them. Its database role,
 melete_api, SELECT on secret fails`); only the secret store reads it, on a
 second pool as `melete_effects`, and the service refuses to start if its own
 role can (`a service role that can read secrets is refused at start`). A query
-the API runs, a forgotten clause or an injected one included, therefore never
-returns a sealed credential.
+the service runs as its own role, a forgotten clause or an injected one
+included, therefore never returns a row of `secret`. The process holds both
+roles' addresses and the master key, so code running in it reaches both; and
+model provider keys and sign-in tokens, the privacy vault and the relay's
+certificate authority key are sealed in tables its own role can read.
 
 Memory restrictions are checked in Postgres before recall, not merely in a
 filesystem search index. `source and space revocation invalidate delivered

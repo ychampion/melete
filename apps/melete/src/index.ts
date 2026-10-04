@@ -1,7 +1,7 @@
 /**
  * The Melete service. One process with separate modules: api, jobs, broker,
  * gateway, connectors, knowledge, events. In Compose its database role cannot
- * read sealed secrets; only the secret store, on the effects role's pool, can
+ * read the `secret` table; only the secret store, on the effects role's pool, can
  * (db/roles.ts). It holds no Docker socket: melete-cells does, and starts
  * containers for it from fixed profiles only (cells/policy.ts).
  *
@@ -624,7 +624,7 @@ export async function bootstrap(
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
     await assertDockerEngine(new DockerSocketApi(docker), endpointName(docker));
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
-  // With separate database roles, the one role that may read sealed secrets
+  // With separate database roles, the one role that may read the secret table
   // has a pool of its own, and only the secret store uses it.
   const effectsHandle =
     handle && env.MELETE_EFFECTS_DATABASE_URL

@@ -39,7 +39,7 @@ if (import.meta.main) {
     writeWhole(join(directory, 'api.url'), urls.api);
     writeWhole(join(directory, 'effects.url'), urls.effects);
     process.stdout.write(
-      'The database roles are in place, every migration has run, and the service may not read sealed secrets.\n',
+      'The database roles are in place, every migration has run, and the service's role may not read the secret table.\n',
     );
   } catch (error) {
     if (error instanceof RolesRefusal) {

@@ -72,7 +72,7 @@ services:
   # creates the database roles, hands the schema to melete_migrate, runs every
   # migration as it, grants, and writes the service's two addresses into
   # database-access. The service is never given DATABASE_URL itself, and its
-  # own role cannot read sealed secrets (docs/DEPLOYMENT.md, "Database roles").
+  # own role cannot read the secret table (docs/DEPLOYMENT.md, "Database roles").
   database-roles:
     image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
     restart: "no"
@@ -160,7 +160,7 @@ services:
       MELETE_API_BIND: melete-api
       # The only peer believed about a browser's address, for login limits.
       MELETE_TRUSTED_PROXY: web
-      # Its own role, which cannot read sealed secrets, and the effects role,
+      # Its own role, which cannot read the secret table, and the effects role,
       # which can, as database-roles wrote them. Never the operator's address.
       DATABASE_URL_FILE: /data/database-access/api.url
       MELETE_EFFECTS_DATABASE_URL_FILE: /data/database-access/effects.url

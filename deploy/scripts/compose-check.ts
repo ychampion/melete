@@ -249,7 +249,7 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
       (cells.security_opt ?? []).some((o) => o.replace(/\s/g, '') === 'no-new-privileges:true'),
     `${CELLS} must sit alone with melete on the internal cells network, publish nothing, drop every capability, and take only ${CELLS_SETTINGS.join(', ')} (it has ${cellsSettings.join(', ')})`,
   );
-  // The API's database role cannot read sealed secrets; only the setup step has
+  // The API's database role cannot read the secret table; only the setup step has
   // the operator's address, and the service reads the two addresses it wrote.
   const roles = compose.services?.[DATABASE_ROLES];
   const rolesCommand = Array.isArray(roles?.command)

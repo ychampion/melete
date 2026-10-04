@@ -1,7 +1,13 @@
 # Follows SETUP-WITH-AN-AGENT.md's main path on a clean runner, as a coding
 # agent would: the commands come from the guide's own `bash setup` blocks. It
-# pulls the published images for main, starts them, checks the status report,
-# creates the owner account the way the person would, and removes everything.
+# pulls the images for main, starts them, checks the status report, creates the
+# owner account the way the person would, and removes everything.
+#
+# On main it runs once the Images workflow has published that commit's images,
+# so it pulls the images the guide names. On a pull request the published images
+# are main's, which may not run the pull request's Compose file, so the images
+# are built from the pull request and served under the same names from a
+# registry on the runner; the guide's commands are unchanged.
 # No secret is read. deploy/scripts/setup-guide.test.ts checks this file.
 name: Setup guide
 
@@ -11,7 +17,9 @@ on:
       - SETUP-WITH-AN-AGENT.md
       - deploy/**
       - .github/workflows/setup-guide.yml
-  push:
+  workflow_run:
+    workflows: [Images]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -25,12 +33,33 @@ jobs:
   guide:
     name: Set up from the guide on a clean machine
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    # On main, only after the images were published.
+    if: github.event_name == 'pull_request' || github.event.workflow_run.conclusion == 'success'
+    env:
+      # Compose reads this before deploy/.env, so a pull request's guide pulls its own images.
+      MELETE_IMAGE_REGISTRY: ${{ github.event_name == 'pull_request' && 'localhost:5000' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || '' }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      - name: Build this pull request's images and serve them as main's
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          docker run -d --name guide-registry -p 127.0.0.1:5000:5000 registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          # The same builds docker-compose.yml names; deploy/.env does not exist yet.
+          docker build -f deploy/Dockerfile.melete -t localhost:5000/melete-service:main .
+          docker build -f deploy/Dockerfile.web --build-arg VITE_MELETE_API=/api -t localhost:5000/melete-web:main .
+          docker build -t localhost:5000/melete-runtime:main packages/runtime-hermes
+          for image in service web runtime; do
+            docker push "localhost:5000/melete-$image:main"
+            # Removed here, so the guide's own pull is what puts them back.
+            docker image rm "localhost:5000/melete-$image:main"
+          done
       - name: Read the main path from the guide
         run: |
           bun run deploy/scripts/setup-guide.ts script > "$RUNNER_TEMP/setup.sh"
@@ -56,4 +85,6 @@ jobs:
         run: docker compose -f deploy/docker-compose.yml logs --tail=100
       - name: Remove it
         if: always()
-        run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans
+        run: |
+          docker compose -f deploy/docker-compose.yml down -v --remove-orphans
+          docker rm -f guide-registry || true

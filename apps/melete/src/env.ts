@@ -126,7 +126,7 @@ const variables = z.object({
     .optional(),
   /**
    * The database role the code that dispatches effects uses: the one role that
-   * may read sealed secrets. Set, DATABASE_URL is the service's own role, which
+   * may read the `secret` table. Set, DATABASE_URL is the service's own role, which
    * cannot; the database's setup step creates both and runs the migrations, so
    * the service checks the roles and the journal instead of migrating
    * (docs/DEPLOYMENT.md, "Database roles"). Left unset, one role does all of it.

@@ -4,7 +4,9 @@
  * - `melete_migrate` owns the schema and runs the migrations. Only the setup
  *   step uses it; the service is never given it.
  * - `melete_api` is the service's own role. It reads and writes every table
- *   except the sealed secrets (`SECRET_TABLES`), which it cannot read at all.
+ *   except `SECRET_TABLES`, which it cannot read at all. Other sealed values
+ *   (provider keys, sign-in tokens, the privacy vault, the relay CA key) stay
+ *   in tables it can read until effects run in a process of their own.
  *   It owns the wake queue's schema, whose tables the queue manages itself.
  * - `melete_effects` is the role of the code that dispatches effects, the only
  *   code that opens a sealed secret. It reads and writes the secrets and

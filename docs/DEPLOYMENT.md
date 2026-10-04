@@ -1796,7 +1796,7 @@ The service runs under three Postgres roles:
 | Role | What it may do |
 | --- | --- |
 | `melete_migrate` | Owns the schema and runs the migrations. The service is never given it. |
-| `melete_api` | The service's own role. It reads and writes every table but `secret`, which holds each connected account's sealed credentials, and cannot read that one at all. It owns the wake queue's schema. |
+| `melete_api` | The service's own role. It reads and writes every table but `secret`, which holds each connected account's sealed credentials, and cannot read that one at all. It owns the wake queue's schema. Other sealed values (model provider keys and sign-in tokens, the privacy vault, the relay's certificate authority key) are in tables it can read. |
 | `melete_effects` | The role of the code that opens a sealed credential to act through an account: it reads and writes `secret` and nothing else. |
 
 `database-roles` sets them up before the service starts, every time the stack
@@ -1809,8 +1809,12 @@ service mounts read-only. Each role's password is derived from `DATABASE_URL`,
 so every host of one installation derives the same ones, and a new host after a
 restore needs nothing copied.
 
-The service checks at start that every migration of its release has run and
-that its own role cannot read `secret`, and refuses to start otherwise. An
+Both addresses go to the one service process, which uses the effects role
+only for `secret` and still holds the master key; the separation is in what
+each query can read, so a query the service runs as itself, however it was
+built, cannot return a row of `secret`. The service checks at start that every
+migration of its release has run and that its own role cannot read `secret`,
+and refuses to start otherwise. An
 upgrade needs no change to `deploy/.env`: the first start of the new release
 creates the roles and hands over the existing tables, with their data, in the
 same step (`an upgrade from the current main's deployment, with data, works
