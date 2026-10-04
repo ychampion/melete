@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import type { Action, ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
-import { createTableTrustResolver } from '../../src/broker/trust.ts';
+import { createTableTrustResolver, type TrustTableEntry } from '../../src/broker/trust.ts';
 import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -139,17 +139,17 @@ async function setup(
       values (${other}, ${seed.claims.space_id}, 'caldav', 'Work', '[]'::jsonb)`;
     registry.register(other, fakeConnector(calendarManifest, options.otherCalendar).connector);
   }
+  // Where values came from, as the trust resolver answers; tests add to it.
+  const trust = new Map<string, TrustTableEntry>([
+    ['alex@example.test', { origin_trust: 'owner' }],
+    // The event the person pointed at themselves.
+    ['act_theirs', { origin_trust: 'owner' }],
+  ]);
   const brokerFor = () =>
     new BrokerService({
       sql,
       connectors: registry,
-      resolveTrust: createTableTrustResolver(
-        new Map([
-          ['alex@example.test', { origin_trust: 'owner' as const }],
-          // The event the person pointed at themselves.
-          ['act_theirs', { origin_trust: 'owner' as const }],
-        ]),
-      ),
+      resolveTrust: createTableTrustResolver(trust),
       // No reviewer: what goes ahead unasked is decided by fixed rules alone.
       autoReview: { reviewer: null },
       sendHoldMs: options.sendHoldMs ?? 0,
@@ -158,7 +158,7 @@ async function setup(
   const effects = new ExperienceEffects(sql, broker, registry);
   const propose = (kind: string, payload: JsonObject) =>
     broker.propose(seed.claims, { connection_id: seed.connectionId, kind, payload });
-  return { ...seed, ...fake, sql, registry, broker, brokerFor, effects, propose };
+  return { ...seed, ...fake, sql, registry, broker, brokerFor, effects, propose, trust };
 }
 
 describe('undo send', () => {
@@ -524,6 +524,53 @@ describe('events on the person’s own calendar', () => {
       expect(proposed.message).toContain('It overlaps “Planning” on your calendar');
     },
   );
+
+  databaseTest(
+    'an id of Melete’s own event that arrives through outside content asks before a move or removal',
+    async () => {
+      const s = await setup(calendarManifest);
+      const created = await s.propose('calendar.create', event);
+      expect(created.status).toBe('succeeded');
+      // An invitation or an email handed the agent this event's id.
+      s.trust.set(created.action_id.toLowerCase(), {
+        origin_trust: 'external_content',
+        description: 'From an email.',
+      });
+      const moved = await s.propose('calendar.update', {
+        uid: created.action_id,
+        etag: '"1"',
+        summary: 'Focus time',
+        start: later(50),
+        end: later(51),
+      });
+      expect(moved.status).toBe('needs_approval');
+      const removed = await s.propose('calendar.delete', { uid: created.action_id, etag: '"1"' });
+      expect(removed.status).toBe('needs_approval');
+      expect(s.executed.map((action) => action.kind)).toEqual(['calendar.create']);
+    },
+  );
+
+  databaseTest('an event another task created is not this task’s to move unasked', async () => {
+    const s = await setup(calendarManifest);
+    const created = await s.propose('calendar.create', event);
+    expect(created.status).toBe('succeeded');
+    // A different task in the same space, holding only the id.
+    const otherJob = recordId('job');
+    const otherAttempt = recordId('att');
+    await s.sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget, constraints)
+      select ${otherJob}, space_id, title, objective, state, lease_epoch, budget, constraints
+      from job where id = ${s.claims.job_id}`;
+    await s.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${otherAttempt}, ${otherJob}, 1, 'fake', 'fake', 'scripted')`;
+    const claims = { ...s.claims, job_id: otherJob, attempt_id: otherAttempt };
+    const removed = await s.broker.propose(claims, {
+      connection_id: s.connectionId,
+      kind: 'calendar.delete',
+      payload: { uid: created.action_id, etag: '"1"' },
+    });
+    expect(removed.status).toBe('needs_approval');
+    expect(s.executed.map((action) => action.kind)).toEqual(['calendar.create']);
+  });
 
   databaseTest('a clash on another of the person’s calendars asks first', async () => {
     const s = await setup(calendarManifest, {

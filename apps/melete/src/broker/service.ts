@@ -481,16 +481,21 @@ export class BrokerService implements BrokerOperations {
 
   /** The owner adapter asks the same origin resolver as admission, inside its decision lock. */
   async origins(tx: Query, job: LockedJob, action: Action) {
-    return resolveOriginWarnings(tx, this.options.resolveTrust ?? createTableTrustResolver({}), {
-      space_id: job.space_id,
-      job_id: job.id,
-      connection_id: action.connection_id,
-      kind: action.kind,
-      effect_class: action.effect_class,
-      canonical_payload: action.canonical_payload,
-      // The same fields admission checks, so the two agree on what was in doubt.
-      fields: await this.withoutOwnEvent(tx, job.space_id, action, this.originFields(action)),
-    });
+    const warnings = await resolveOriginWarnings(
+      tx,
+      this.options.resolveTrust ?? createTableTrustResolver({}),
+      {
+        space_id: job.space_id,
+        job_id: job.id,
+        connection_id: action.connection_id,
+        kind: action.kind,
+        effect_class: action.effect_class,
+        canonical_payload: action.canonical_payload,
+        fields: this.originFields(action),
+      },
+    );
+    // The same forgiveness admission applies, so the two agree on what was in doubt.
+    return this.forgiveOwnEvent(tx, job, action, warnings);
   }
 
   /**
@@ -498,25 +503,31 @@ export class BrokerService implements BrokerOperations {
    * finds, less the resource fields the action's connector proved itself.
    */
   /**
-   * A change to an event Melete itself created, here, names it by the action
-   * that created it: Melete's own record vouches for that id, wherever the
-   * conversation got it. Only that `uid` is left out of origin checking, and
-   * only when the record is there; every other value keeps its check.
+   * A change to an event this very task created names it by the action that
+   * created it. That id is still checked for where it came from like any other
+   * value; only when the resolver cannot say (`unknown`, never `external_content`
+   * or `inferred`) and Melete's own records show the event was created by this
+   * job, or by the conversation this undo or command belongs to, on this
+   * calendar, is the doubt about it set aside. An id that reached the agent
+   * from an invitation or an email still asks.
    */
-  private async withoutOwnEvent<T extends { path: string; category: string }>(
+  private async forgiveOwnEvent(
     tx: Query,
-    spaceId: string,
+    job: Pick<LockedJob, 'id' | 'space_id'>,
     action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
-    fields: T[],
-  ): Promise<T[]> {
+    warnings: OriginWarning[],
+  ): Promise<OriginWarning[]> {
     const uid = (action.canonical_payload as { uid?: unknown }).uid;
-    if (!CHANGES_EXISTING_EVENT.has(action.kind) || typeof uid !== 'string') return fields;
+    if (!CHANGES_EXISTING_EVENT.has(action.kind) || typeof uid !== 'string') return warnings;
+    const doubt = warnings.find((warning) => warning.field === 'uid');
+    if (!doubt || doubt.origin_trust !== 'unknown') return warnings;
     const [made] = await tx`select 1 from action a join job j on j.id = a.job_id
       where a.id = ${uid} and a.kind = 'calendar.create' and a.status = 'succeeded'
-        and a.connection_id = ${action.connection_id} and j.space_id = ${spaceId}`;
-    return made
-      ? fields.filter((field) => !(field.category === 'resource' && field.path === 'uid'))
-      : fields;
+        and a.connection_id = ${action.connection_id} and j.space_id = ${job.space_id}
+        and a.receipt->'detail'->>'uid' = ${uid}
+        and (a.job_id = ${job.id} or a.job_id = (select experience_parent_id from job
+          where id = ${job.id}))`;
+    return made ? warnings.filter((warning) => warning !== doubt) : warnings;
   }
 
   private originFields(
@@ -945,10 +956,8 @@ export class BrokerService implements BrokerOperations {
         changes &&
         (tierOf([]).tier === 'sandbox' || tool.name === 'files.delete'));
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated
-      ? await this.withoutOwnEvent(tx, job.space_id, action, this.originFields(action, action.kind))
-      : [];
-    const warnings = await resolveOriginWarnings(
+    const fields = gated ? this.originFields(action, action.kind) : [];
+    const resolved = await resolveOriginWarnings(
       tx,
       gated
         ? (this.options.resolveTrust ??
@@ -964,6 +973,7 @@ export class BrokerService implements BrokerOperations {
         fields,
       },
     );
+    const warnings = await this.forgiveOwnEvent(tx, job, action, resolved);
     // A grant is only ever a shortcut past a question nobody needs to ask. A
     // standing grant never covers a value whose origin Melete cannot vouch for;
     // only a grant scoped to this job, over values the person approved in it,

@@ -56,8 +56,9 @@ wide as that date can be anywhere.
 An event counts as Melete's own only when Melete's own record says it created
 it, on that calendar, in this space; what an event says about itself does not
 count. An event you made stays yours even after Melete changed it, so removing
-it always asks. Moving or removing an event Melete created needs no other
-proof of where its id came from.
+it always asks. The task that created an event may move or remove it unasked;
+an event's id that reached Melete from an invitation, an email or another
+task still asks.
 
 Melete's own events with no guests, and your events marked free, may be
 overlapped. This is the **Its own events on your calendar** switch in
@@ -85,6 +86,8 @@ wait for approval on their card. Only the person whose work it was can undo it.
   - "only the person whose work it was can undo it"
   - "the person’s event, updated by Melete and marked free, asks before removal"
   - "moving and removing an event Melete made go ahead unasked, vouched for by its own record"
+  - "an id of Melete’s own event that arrives through outside content asks before a move or removal"
+  - "an event another task created is not this task’s to move unasked"
   - "an event that only claims to be Melete’s, and blocks the time, asks first"
   - "a clash on another of the person’s calendars asks first"
   - "an event put back after a removal that had guests says it comes back without them"
