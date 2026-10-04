@@ -817,6 +817,13 @@ const variables = z.object({
   MELETE_TRASH_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(365).default(7)),
   /** The most one conversation's trash holds, in MiB; older trash makes room first. */
   MELETE_TRASH_MAX_MB: unsetWhenBlank(z.coerce.number().int().min(1).max(1048576).default(1024)),
+  /**
+   * How many days an observation read from a connected mailbox or calendar is
+   * kept when no job, situation or listening trigger holds it.
+   */
+  MELETE_OBSERVATION_RETENTION_DAYS: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(3650).default(14),
+  ),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
   /**

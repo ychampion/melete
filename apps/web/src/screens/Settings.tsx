@@ -114,12 +114,20 @@ export function ConnectionCard({
   );
 }
 
+/** What the watch switch says it does, for a mailbox or a calendar, on or off. */
+export function watchWords(app: string, on: boolean): string {
+  if (!on) return 'Off. Melete still reads this account for things you asked it to watch.';
+  return /calendar/i.test(app)
+    ? 'Melete reads each event’s title, time and place to notice changes and clashes.'
+    : 'Melete reads new mail’s sender and subject to notice what needs you.';
+}
+
 /**
  * The switch on a mailbox or calendar: whether Melete watches it for changes
  * without being asked. It reads only what changed (who wrote and the subject
  * line, or when and where a meeting is), so work that is waiting hears of it.
  */
-function WatchSwitch({
+export function WatchSwitch({
   connection,
   onChanged,
 }: {
@@ -129,9 +137,7 @@ function WatchSwitch({
   const [saving, setSaving] = useState(false);
   const on = connection.watching === true;
   const title = 'Watch this account for changes';
-  const reads = /calendar/i.test(connection.app)
-    ? 'Melete notices meetings that are added, moved or cancelled, reading only when and where they are.'
-    : 'Melete notices new mail, reading only who wrote and the subject line.';
+  const reads = watchWords(connection.app, on);
   return (
     <div
       className="row"
@@ -144,9 +150,7 @@ function WatchSwitch({
     >
       <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-          {on ? 'On' : 'Off'} · {reads}
-        </span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{reads}</span>
       </span>
       {/* Kept enabled while saving, so the switch keeps its focus for the keyboard. */}
       <Toggle

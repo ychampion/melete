@@ -260,8 +260,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     },
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
     'PUT /experience/connections/{id}/watching': async (spaceId, c, input) => {
+      if (!deps.sql) return unavailable('Watching accounts is not connected yet.');
       await setWatching(
-        deps.db,
+        deps.sql,
         spaceId,
         c.req.param('id') ?? '',
         connectionWatching.parse(input).on,

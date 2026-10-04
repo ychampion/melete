@@ -195,6 +195,7 @@ import {
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
 import { SignalPoller } from './signals/poller.ts';
+import { startObservationRetention } from './signals/retention.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -669,6 +670,7 @@ export async function bootstrap(
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
+  let stopObservationRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
@@ -713,6 +715,7 @@ export async function bootstrap(
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     stopEpisodeRetention?.();
+    stopObservationRetention?.();
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
@@ -805,6 +808,12 @@ export async function bootstrap(
       spending = spendingFromEnv(handle.sql, env);
       stopEpisodeRetention = startEpisodeRetention(handle.sql, () =>
         leading(leases, 'episode-retention'),
+      );
+      // What connected accounts reported and nothing used goes after a while.
+      stopObservationRetention = startObservationRetention(
+        handle.sql,
+        env.MELETE_OBSERVATION_RETENTION_DAYS,
+        () => leading(leases, 'observation-retention'),
       );
       stopEgressRetention = startEgressRetention(
         handle.sql,

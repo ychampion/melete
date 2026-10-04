@@ -4,6 +4,7 @@
  * owners turn it on, and the switch stops the reads and forgets the cursor.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import type { WaitSpec } from '@melete/contracts';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import type { MailMessage, MailTransport } from '../../src/connectors/mail-transport.ts';
 import { connection, owner, space } from '../../src/db/schema.ts';
@@ -14,7 +15,8 @@ import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { DEFAULT_WATCH_SECONDS, SignalPoller } from '../../src/signals/poller.ts';
-import type { SignalSource } from '../../src/signals/types.ts';
+import { expireObservations, sweepObservations } from '../../src/signals/retention.ts';
+import { type SignalSource, SourceError } from '../../src/signals/types.ts';
 import { setWatching } from '../../src/signals/watching.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -75,7 +77,7 @@ async function connectMailbox(label: string, inSpace = spaceId, sharedUse = 'own
     label,
     sharedUse,
   });
-  const box = { messages: [] as MailMessage[], reads: 0 };
+  const box = { messages: [] as MailMessage[], reads: 0, fail: null as Error | null };
   const transport: MailTransport = {
     search: async () => [],
     read: async () => null,
@@ -84,6 +86,7 @@ async function connectMailbox(label: string, inSpace = spaceId, sharedUse = 'own
     health: async () => {},
     changes: async (cursor) => {
       box.reads += 1;
+      if (box.fail) throw box.fail;
       const from = cursor === null ? box.messages.length : Number(cursor);
       const messages = cursor === null ? [] : box.messages.slice(from);
       return {
@@ -146,16 +149,17 @@ withDb('watching connected accounts by default', () => {
     box.messages.push(header(2, 'First'));
     await poll();
     expect(box.reads).toBe(2);
-    await setWatching(required(handle).db, spaceId, id, false);
+    await setWatching(required(handle).sql, spaceId, id, false);
     expect(await cursors(id)).toEqual({ count: 0, every: null });
     box.messages.push(header(3, 'Second'));
     await poll();
     await poll();
     expect(box.reads).toBe(2);
     expect(await cursors(id)).toEqual({ count: 0, every: null });
-    expect(await received(id)).toEqual(['First']);
+    // What watching read, and nothing used, went with it.
+    expect(await received(id)).toEqual([]);
     // On again, watching starts afresh from now.
-    await setWatching(required(handle).db, spaceId, id, true);
+    await setWatching(required(handle).sql, spaceId, id, true);
     await poll();
     expect(box.reads).toBe(3);
     expect(await cursors(id)).toEqual({ count: 1, every: DEFAULT_WATCH_SECONDS });
@@ -172,7 +176,7 @@ withDb('watching connected accounts by default', () => {
     expect(box.reads).toBe(0);
     expect(await cursors(id)).toEqual({ count: 0, every: null });
     // The room's owners turn it on: from then on the room's mailbox is read.
-    await setWatching(required(handle).db, roomId, id, true);
+    await setWatching(required(handle).sql, roomId, id, true);
     await poll();
     box.messages.push(header(5, 'Team news'));
     await poll();
@@ -199,12 +203,173 @@ withDb('watching connected accounts by default', () => {
       provider: 'web',
       label: 'Web',
     });
-    await expect(setWatching(required(handle).db, spaceId, other, true)).rejects.toMatchObject({
+    await expect(setWatching(required(handle).sql, spaceId, other, true)).rejects.toMatchObject({
       code: 'not_watchable',
     });
     const { id } = await connectMailbox('Elsewhere');
-    await expect(setWatching(required(handle).db, newId('sp'), id, false)).rejects.toMatchObject({
+    await expect(setWatching(required(handle).sql, newId('sp'), id, false)).rejects.toMatchObject({
       code: 'not_found',
     });
+  }, 60_000);
+  /** A job waiting on a watch for mail whose subject holds `word`. */
+  async function waitingFor(connectionId: string, word: string) {
+    const row = await required(jobs).create({ space_id: spaceId, title: 'W', objective: 'W' });
+    const made = await required(triggers).create(row.id, {
+      kind: 'watch',
+      connection_id: connectionId,
+      event_name: 'mail.received',
+      poll_seconds: 300,
+      predicate: { all: [{ field: 'subject', op: 'contains', value: word }] },
+    });
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'created',
+      }),
+    );
+    const wait: WaitSpec = { kind: 'event', trigger_id: made.id, deadline_at: null };
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'waiting_for_event_or_time',
+      wait,
+    });
+    return { jobId: row.id, triggerId: made.id };
+  }
+  const subjects = async (connectionId: string) => (await received(connectionId)).sort();
+
+  test('turning watching off removes what it read, and keeps what work took in', async () => {
+    const { id, box } = await connectMailbox('Mail with a private thread');
+    const { jobId } = await waitingFor(id, 'Kept');
+    await poll();
+    box.messages.push(header(10, 'Settlement terms (private)'), header(11, 'Kept by the work'));
+    await poll();
+    expect(await subjects(id)).toEqual(['Kept by the work', 'Settlement terms (private)']);
+    expect((await required(jobs).get(jobId)).state).toBe('queued');
+    await setWatching(required(handle).sql, spaceId, id, false);
+    // The observation the work woke on stays; the one nothing used is gone.
+    expect(await subjects(id)).toEqual(['Kept by the work']);
+    const [copies] = await required(handle).sql`select count(*)::int as n from event
+      where job_id = ${jobId} and payload->>'kind' = 'trigger_event'`;
+    expect(copies?.n).toBe(1);
+    const [leftover] = await required(handle).sql`select count(*)::int as n from event
+      where payload::text like '%Settlement terms%'`;
+    expect(leftover?.n).toBe(0);
+  }, 60_000);
+
+  test('observations nothing used go after the retention period, on the leading instance only', async () => {
+    const { id, box } = await connectMailbox('Mail that ages');
+    const { triggerId } = await waitingFor(id, 'Cited');
+    await poll();
+    box.messages.push(
+      header(20, 'Old and unused'),
+      header(21, 'Cited by the work'),
+      header(22, 'Recent and unused'),
+    );
+    await poll();
+    // The work stops listening, so nothing still waits to read these.
+    await required(handle).sql`update trigger set enabled = false where id = ${triggerId}`;
+    await required(handle).sql`update event set created_at = now() - interval '15 days'
+      where job_id is null and payload->>'connection_id' = ${id}
+        and payload->'payload'->>'subject' in ('Old and unused', 'Cited by the work')`;
+    // Not leading: nothing goes.
+    expect(await sweepObservations(required(handle).sql, 14, () => false)).toBe(0);
+    expect(await subjects(id)).toHaveLength(3);
+    // Kept for 30 days instead: nothing is old enough yet.
+    expect(await expireObservations(required(handle).sql, 30)).toBe(0);
+    await expireObservations(required(handle).sql, 14);
+    expect(await subjects(id)).toEqual(['Cited by the work', 'Recent and unused']);
+  }, 60_000);
+
+  test('a read in flight when watching is turned off keeps nothing it found', async () => {
+    const calendarId = newId('conn');
+    await required(handle).db.insert(connection).values({
+      id: calendarId,
+      spaceId,
+      provider: 'caldav',
+      label: 'Calendar turned off mid-read',
+    });
+    let turnOff = false;
+    sources.set(calendarId, {
+      signals: {
+        stream: 'calendar',
+        occurrences: async () => {
+          if (turnOff) await setWatching(required(handle).sql, spaceId, calendarId, false);
+          return {
+            items: [
+              {
+                uid: 'meeting@example.test',
+                occurrence: null,
+                title: 'Board meeting',
+                start: new Date(clock + 86_400_000).toISOString(),
+                end: new Date(clock + 90_000_000).toISOString(),
+                all_day: false,
+                location: 'Room 1',
+                status: 'confirmed',
+                attendees: 3,
+                time_zone: null,
+              },
+            ],
+            complete: true,
+          };
+        },
+      },
+    });
+    turnOff = true;
+    await poll();
+    const [kept] = await required(handle).sql`select
+        (select count(*)::int from subject_state where connection_id = ${calendarId}) as kept,
+        (select count(*)::int from source_cursor where connection_id = ${calendarId}) as cursors`;
+    expect([kept?.kept, kept?.cursors]).toEqual([0, 0]);
+  }, 60_000);
+
+  test('a provider in trouble pauses its own accounts, and the others keep being read', async () => {
+    // Accounts left from earlier tests stay quiet here.
+    await required(handle)
+      .sql`update connection set watch_changes = false where space_id = ${spaceId}`;
+    const failing: Awaited<ReturnType<typeof connectMailbox>>[] = [];
+    for (let index = 0; index < 5; index++) {
+      const account = await connectMailbox(`Down mailbox ${index}`);
+      account.box.fail = new SourceError(503, null);
+      failing.push(account);
+    }
+    const calendarId = newId('conn');
+    await required(handle).db.insert(connection).values({
+      id: calendarId,
+      spaceId,
+      provider: 'caldav',
+      label: 'Calendar elsewhere',
+    });
+    let calendarReads = 0;
+    sources.set(calendarId, {
+      signals: {
+        stream: 'calendar',
+        occurrences: async () => {
+          calendarReads += 1;
+          return { items: [], complete: true };
+        },
+      },
+    });
+    const sequential = new SignalPoller({
+      sql: required(handle).sql,
+      triggers: required(triggers),
+      connectors: sources,
+      now: () => clock,
+      concurrency: 1,
+    });
+    await sequential.runOnce();
+    const reads = () => failing.reduce((sum, account) => sum + account.box.reads, 0);
+    // Three failures in a row open the breaker; the other two are not read.
+    expect(reads()).toBe(3);
+    expect(calendarReads).toBe(1);
+    const [paused] = await required(handle).sql`select count(*)::int as n from source_cursor
+      where connection_id in ${required(handle).sql(failing.map((account) => account.id))}
+        and failures = 0 and last_error like '%provider%'`;
+    expect(paused?.n).toBe(2);
+    // Once the pause is over, they are read again.
+    clock += 600_000;
+    await sequential.runOnce();
+    expect(reads()).toBeGreaterThan(3);
+    clock += 3_600_000;
   }, 60_000);
 });

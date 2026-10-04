@@ -137,7 +137,38 @@ type CursorRow = {
   cursor: unknown;
   interval_s: number;
   failures: number;
+  /** Which provider, and which of its servers, the account is read from. */
+  provider_key: string;
 };
+
+/** Failures in a row at one provider before its reads pause. */
+export const BREAKER_THRESHOLD = 3;
+/** The first pause, doubled each time it opens again without a read working in between. */
+export const BREAKER_PAUSE_SECONDS = 300;
+
+/**
+ * Whether a failure says the provider itself is in trouble (it timed out, asked
+ * to be left alone, or answered with a server error), not this one account.
+ */
+function providerTrouble(error: unknown): boolean {
+  if (error instanceof ReadTimeout) return true;
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
+/** The provider an account is read from: its kind of connection, and the server where it names one. */
+function providerKey(provider: string, configuration: Record<string, unknown> | null): string {
+  const kind = typeof configuration?.kind === 'string' ? configuration.kind : '';
+  const server = (() => {
+    const mail = (configuration?.mail as { imap?: { host?: unknown } } | undefined)?.imap?.host;
+    if (typeof mail === 'string') return mail.toLowerCase();
+    const calendar = (configuration?.caldav as { calendar_url?: unknown } | undefined)
+      ?.calendar_url;
+    if (typeof calendar === 'string' && URL.canParse(calendar)) return new URL(calendar).host;
+    return '';
+  })();
+  return `${provider}:${kind}:${server}`;
+}
 
 /** What one read is allowed to do while it runs. */
 type ReadContext = { generation: number; abandoned: boolean };
@@ -181,6 +212,46 @@ const shortCursor = (cursor: string) =>
 
 export class SignalPoller {
   private started = false;
+  /**
+   * Per provider: failures in a row, and until when its reads are paused.
+   * An outage or a rate limit at one provider pauses that provider's accounts
+   * rather than holding the shared read slots on timeouts; the others go on.
+   */
+  private readonly breakers = new Map<
+    string,
+    { failures: number; openUntil: number; pause: number }
+  >();
+
+  /** Until when a provider's reads are paused, or null when they are not. */
+  pausedUntil(providerKey: string): number | null {
+    const breaker = this.breakers.get(providerKey);
+    return breaker && breaker.openUntil > this.now() ? breaker.openUntil : null;
+  }
+
+  private providerFailed(providerKey: string, error: unknown) {
+    if (!providerTrouble(error)) return;
+    const breaker = this.breakers.get(providerKey) ?? { failures: 0, openUntil: 0, pause: 0 };
+    breaker.failures += 1;
+    if (breaker.failures >= BREAKER_THRESHOLD) {
+      breaker.pause = Math.min(
+        MAX_POLL_SECONDS,
+        breaker.pause ? breaker.pause * 2 : BREAKER_PAUSE_SECONDS,
+      );
+      const said = (error as { retryAfter?: unknown } | null)?.retryAfter;
+      const pause =
+        typeof said === 'number' && said > breaker.pause
+          ? Math.min(MAX_RETRY_AFTER_SECONDS, said)
+          : breaker.pause;
+      breaker.openUntil = this.now() + pause * 1000;
+      breaker.failures = 0;
+      process.stderr.write(`signals: provider_paused ${pause}s\n`);
+    }
+    this.breakers.set(providerKey, breaker);
+  }
+
+  private providerWorked(providerKey: string) {
+    this.breakers.delete(providerKey);
+  }
 
   constructor(readonly deps: SignalPollerDeps) {}
 
@@ -298,8 +369,16 @@ export class SignalPoller {
         for update skip locked
       ) due
       where s.connection_id = due.connection_id and s.stream = due.stream
-      returning s.connection_id, s.stream, s.space_id, s.cursor, s.interval_s, s.failures`;
-    return rows as unknown as CursorRow[];
+      returning s.connection_id, s.stream, s.space_id, s.cursor, s.interval_s, s.failures,
+        (select provider from connection c where c.id = s.connection_id) as provider,
+        (select configuration from connection c where c.id = s.connection_id) as configuration`;
+    return rows.map((row) => ({
+      ...(row as unknown as CursorRow),
+      provider_key: providerKey(
+        String(row.provider ?? ''),
+        (row.configuration as Record<string, unknown> | null) ?? null,
+      ),
+    }));
   }
 
   /** The scheduled work: one tick, when this instance leads. */
@@ -342,6 +421,15 @@ export class SignalPoller {
   }
 
   private async readAccount(row: CursorRow): Promise<{ delivered: number; failed: boolean }> {
+    // Its provider is in trouble: left until the pause ends, with no failure counted.
+    const paused = this.pausedUntil(row.provider_key);
+    if (paused !== null) {
+      await this.deps.sql`update source_cursor
+        set next_poll_at = ${new Date(paused).toISOString()}::timestamptz,
+          last_error = ${'The provider of this account is not answering for now; it is read again when it recovers.'}
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
+      return { delivered: 0, failed: false };
+    }
     let source: SignalSource | undefined;
     try {
       source = (
@@ -381,6 +469,7 @@ export class SignalPoller {
           last_ok_at = ${new Date(this.now()).toISOString()}::timestamptz,
           next_poll_at = ${new Date(this.now() + row.interval_s * 1000).toISOString()}::timestamptz
         where connection_id = ${row.connection_id} and stream = ${row.stream}`;
+      this.providerWorked(row.provider_key);
       return { delivered: read.delivered, failed: false };
     } catch (error) {
       context.abandoned = true;
@@ -406,6 +495,7 @@ export class SignalPoller {
           : asked !== null
             ? Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(asked, row.interval_s))
             : backoff;
+      this.providerFailed(row.provider_key, error);
       await this.deps.sql`update source_cursor
         set failures = failures + 1, last_error = ${failureWords(error)},
           next_poll_at = ${new Date(this.now() + wait * 1000).toISOString()}::timestamptz
@@ -420,11 +510,17 @@ export class SignalPoller {
   }
 
   /** Stops a read whose connection changed, or that timed out, before it writes anything. */
-  private async stillCurrent(connectionId: string, context: ReadContext) {
+  private async stillCurrent(row: CursorRow, context: ReadContext) {
     if (context.abandoned) throw new ReadAbandoned('read abandoned');
-    const [current] = await this.deps.sql`select generation, status from connection
-      where id = ${connectionId}`;
-    if (current?.status !== 'active' || Number(current.generation) !== context.generation) {
+    const [current] = await this.deps.sql`select c.generation, c.status,
+        exists (select 1 from source_cursor s
+          where s.connection_id = c.id and s.stream = ${row.stream}) as wanted
+      from connection c where c.id = ${row.connection_id}`;
+    if (
+      current?.status !== 'active' ||
+      Number(current.generation) !== context.generation ||
+      !current.wanted
+    ) {
       context.abandoned = true;
       throw new ReadAbandoned('connection changed');
     }
@@ -499,7 +595,7 @@ export class SignalPoller {
           process.stderr.write(`signals: item_skipped unreadable ${row.connection_id} mail\n`);
         }
       }
-      await this.stillCurrent(row.connection_id, context);
+      await this.stillCurrent(row, context);
       return {
         cursor: { value: read.cursor },
         delivered: await this.deliverAll(row.connection_id, read.cursor, observations, context),
@@ -543,7 +639,7 @@ export class SignalPoller {
       }
     }
     const diff = diffCalendar({ ...input, confirmed });
-    await this.stillCurrent(row.connection_id, context);
+    await this.stillCurrent(row, context);
     const delivered = await this.deliverAll(
       row.connection_id,
       diff.window_end,
@@ -554,12 +650,18 @@ export class SignalPoller {
     // stop in between reads the same differences next time, with the same
     // keys, so nothing is delivered twice and nothing is lost.
     await this.deps.sql.begin(async (tx) => {
+      // Shared with other reads, exclusive of a revocation, a switch of
+      // credential, or watching being turned off: if one of those committed
+      // since this read began, nothing it found is kept.
       const [current] = await tx`select generation, status from connection
         where id = ${row.connection_id} for share`;
+      const [wanted] = await tx`select 1 as present from source_cursor
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
       if (
         context.abandoned ||
         current?.status !== 'active' ||
-        Number(current.generation) !== context.generation
+        Number(current.generation) !== context.generation ||
+        !wanted
       )
         throw new ReadAbandoned('connection changed');
       const at = new Date(now).toISOString();
