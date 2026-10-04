@@ -1,0 +1,45 @@
+{
+  "id": "private-search",
+  "title": "A search that names something private",
+  "summary": "In a chat about personal finances with no local model, Melete asks before sending a redacted version, then holds back a search that would carry an account number and says so.",
+  "match": ["bank account number", "12345678 bank"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "This conversation looks like it is about personal finances. There is no local model set up in Settings → Privacy, so Melete has not sent anything. It can send a redacted version to the cloud model instead: account and card numbers, IDs, contact details, keys and the details you listed are swapped for placeholders, but the rest of the text goes as written."
+    },
+    {
+      "step": "ask",
+      "delay_ms": 200,
+      "question": "This conversation looks like it is about personal finances. There is no local model set up in Settings → Privacy, so Melete has not sent anything. It can send a redacted version to the cloud model instead: account and card numbers, IDs, contact details, keys and the details you listed are swapped for placeholders, but the rest of the text goes as written.",
+      "why": "Nothing is sent to a cloud model until you answer.",
+      "options": [{ "label": "Send a redacted version" }, { "label": "Keep it private" }]
+    },
+    {
+      "step": "tool",
+      "delay_ms": 600,
+      "name": "web_search",
+      "kind": "web",
+      "title": "Search held back: it named something private",
+      "active_title": "Searching the web",
+      "output": {
+        "text": "Nothing was sent to a search service, because the search carried a personal detail your privacy settings keep from outside services."
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "I didn't run that search: it carried your account number, and that stays out of outside search services. Nothing from this chat was saved to memory either, because it is private and there is no local model to read it."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "I didn't run that search: it carried your account number, and that stays out of outside search services. Nothing from this chat was saved to memory either, because it is private and there is no local model to read it."
+    }
+  ]
+}
