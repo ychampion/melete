@@ -1089,6 +1089,181 @@ def test_the_sandbox_toolset_gives_the_terminal_and_no_background_processes(herm
         assert "process_manage" in model_tools._select_tool_names(["terminal"], None, True)
 
 
+@contextlib.contextmanager
+def _broker_tools(*names: str):
+    """Plugin tools in the `melete` toolset, as the plugin registers them."""
+    from tools.registry import registry
+
+    for name in names:
+        registry.register(name=name, toolset="melete",
+                          schema={"description": f"{name} probe", "parameters": {"type": "object", "properties": {}}},
+                          handler=lambda args, **kw: "{}")
+    try:
+        yield names
+    finally:
+        for name in names:
+            registry.deregister(name)
+
+
+#: Built-in tools that act outside the engine process. None may be offered:
+#: Melete offers what they do as broker tools.
+OUTSIDE_EFFECT_TOOLS = {
+    "terminal", "process_manage", "read_file", "write_file", "patch", "search_files",
+    "web_search", "web_extract", "browser_navigate", "execute_code", "vision_analyze",
+    "image_generate", "memory", "session_search", "skill_manage", "cronjob_manage",
+    "text_to_speech", "clarify", "computer_use",
+}
+
+#: Broker tools only the agent that delegated may call (runtime_support).
+PARENT_ONLY_TOOLS = ("ask_person", "say", "react", "job.wait", "search_tools", "load_tool",
+                     "run.start", "run.delegate")
+
+
+def _with_helpers(config: dict) -> dict:
+    """The configuration an attempt with a conversation's budget is booted with."""
+    toolsets = [*config["platform_toolsets"]["api_server"], "delegation"]
+    return {**config, "platform_toolsets": {"api_server": toolsets}}
+
+
+def test_the_shipped_toolsets_offer_the_engine_only_builtins_and_nothing_else(hermes_home):
+    """engine-config.ts: the task list for every attempt, and helpers only when
+    the boot script adds them for a budget that fits. Each acts only inside the
+    engine (tools/todo_tool.py, tools/delegate_tool.py)."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    with _broker_tools("files.read"):
+        for config, expected in ((shipped_config(), {"files.read", "todo_list"}),
+                                 (_with_helpers(shipped_config()), {"files.read", "todo_list", "delegate_task"})):
+            write_config(hermes_home, config)
+            enabled = sorted(_get_platform_tools(config, "api_server"))
+            names = {d["function"]["name"] for d in
+                     model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+            assert names == expected
+            assert not names & OUTSIDE_EFFECT_TOOLS
+
+
+def _parent_agent(base_url: str, toolsets: list):
+    from run_agent import AIAgent
+
+    return AIAgent(base_url=base_url, api_key="melete-surrogate-probe", provider="custom",
+                   requested_provider="melete-gateway", model="probe-model",
+                   api_mode="chat_completions", enabled_toolsets=toolsets, quiet_mode=True,
+                   skip_context_files=True, skip_memory=True, max_iterations=4)
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_a_helper_is_melete_with_the_parents_tools_less_the_parent_only_ones(hermes_home, monkeypatch, sandbox):
+    """A helper built by the pinned engine with the delegation seam applied:
+    the parent's toolsets less delegation, the question tool and memory
+    (tools/delegate_tool_toolsets.py), less the broker tools that speak to the
+    person, park the job or start more helpers; Melete's identity from the
+    engine home's SOUL.md, not the engine's own; and the gateway's metering
+    header on its client, keyed on the gateway's address (agent/agent_init.py)."""
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools import delegate_tool
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    base = "http://127.0.0.1:9/providers/probe/v1"
+    config = _with_helpers(shipped_config())
+    if sandbox:
+        monkeypatch.setenv("TERMINAL_ENV", "melete_sandbox")
+        monkeypatch.setenv("TERMINAL_CWD", "/work")
+        config["platform_toolsets"]["api_server"].append("terminal_tools")
+    config["providers"]["melete-gateway"].update({"base_url": base, "extra_headers": {CAPABILITY_HEADER: "attempt-token"}})
+    write_config(hermes_home, config)
+    (hermes_home / "SOUL.md").write_text((Path(__file__).parents[1] / "config" / "SOUL.md").read_text(encoding="utf-8"),
+                                         encoding="utf-8")
+    ok = (201, {"action_id": "act_probe", "status": "succeeded", "message": "ran"})
+    with _sandbox_backend(ok), _broker_tools("files.read", *PARENT_ONLY_TOOLS):
+        parent = _parent_agent(base, sorted(_get_platform_tools(config, "api_server")))
+        assert {"ask_person", "delegate_task"} <= parent.valid_tool_names
+        child = delegate_tool._build_child_agent(0, "probe goal", None, None, None, 5, 1, parent)
+        expected = {"files.read", "todo_list"} | ({"terminal"} if sandbox else set())
+        assert set(child.valid_tool_names) == expected
+        assert {d["function"]["name"] for d in child.tools} == expected
+        prompt = child._build_system_prompt()
+        assert prompt.lstrip().startswith("# Melete\n\nYou are Melete")
+        assert "Hermes Agent" not in prompt
+        assert child._client_kwargs["default_headers"][CAPABILITY_HEADER] == "attempt-token"
+
+
+def test_a_helper_cannot_use_a_parent_only_tool_even_if_offered(monkeypatch):
+    """The plugin refuses them inside a helper whatever the helper's list says,
+    since the engine may rebuild that list from the toolsets mid-run."""
+    from agent.delegation_context import delegated_child_context
+    from melete_plugin import build_handler
+
+    class _Unreached:
+        def __getattr__(self, name):
+            raise AssertionError("a parent-only tool reached the broker from a helper")
+
+    for name in PARENT_ONLY_TOOLS:
+        handler = build_handler(_Unreached(), {"name": name, "connection_id": None})
+        with delegated_child_context("helper-session"):
+            refused = handler({"text": "hello"})
+        assert refused["error"]["code"] == "parent_only"
+
+
+def test_helpers_are_bounded_by_the_shipped_configuration(hermes_home):
+    """tools/delegate_tool_config.py reads the `delegation` section: three at a
+    time, one level deep, ten minutes each, no helper of a helper, no
+    self-approved commands."""
+    from tools import delegate_tool, delegate_tool_config
+
+    write_config(hermes_home, shipped_config())
+    assert delegate_tool._get_max_concurrent_children() == 3
+    assert delegate_tool_config._get_max_spawn_depth() == 1
+    assert delegate_tool_config._get_orchestrator_enabled() is False
+    assert delegate_tool_config._get_child_timeout() == 600
+    assert delegate_tool_config._get_subagent_approval_callback() is delegate_tool_config._subagent_auto_deny
+    assert delegate_tool._load_config()["max_iterations"] == 50
+
+
+def test_a_delegation_runs_inside_the_turn_and_returns_what_its_helpers_left_parked(monkeypatch):
+    """The delegation seam (patches/observer_bridge.py), as the image applies it:
+    both dispatch paths ask for the synchronous run, the model is told so, and
+    an action a helper left waiting for approval comes back to the parent as
+    data beside the summaries."""
+    import json as _json
+
+    import melete_runtime_hooks
+    import run_agent
+    from tools import delegate_tool
+
+    seen: dict = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(delegate_tool, "delegate_task", capture)
+        parent = type("Parent", (), {"_delegate_depth": 0})()
+        run_agent.AIAgent._dispatch_delegate_task(parent, {"tasks": [{"goal": "probe"}]})
+    assert seen["background"] is False, "the delegation seam is not applied to this engine"
+    assert delegate_tool._model_background_value({}, parent) is False
+    description = delegate_tool._build_top_level_description()
+    assert "Runs inside this turn" in description
+    assert "END YOUR TURN" not in description
+    assert "-> execute_code" not in description and "-> cronjob" not in description
+
+    melete_runtime_hooks.note_helper_parked("act_parked", "email.send")
+    monkeypatch.setattr("tools.delegate_tool._run_batch",
+                        lambda batch, background: _json.dumps({"results": [{"summary": "drafted"}]}))
+    monkeypatch.setattr("tools.delegate_tool._build_children", lambda *a, **k: ([], None))
+    monkeypatch.setattr("tools.delegate_tool._Batch", lambda *a, **k: None)
+    real_parent = type("Parent", (), {"_delegate_depth": 0, "model": "probe-model", "provider": "custom",
+                                      "base_url": "http://127.0.0.1:9/v1", "api_key": "k"})()
+    out = _json.loads(delegate_tool.delegate_task(tasks=[{"goal": "probe"}], parent_agent=real_parent))
+    assert out["results"] == [{"summary": "drafted"}]
+    assert out["awaiting_approval"] == [{"action_id": "act_parked", "tool": "email.send"}]
+    assert "NOT happened" in out["awaiting_approval_note"]
+
+
 class _CatalogBroker(http.server.BaseHTTPRequestHandler):
     """Serves one attempt's catalog on `GET /tools` and nothing else."""
 

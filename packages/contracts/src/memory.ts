@@ -350,6 +350,8 @@ export const recallResult = z.strictObject({
       'public_compartment',
       /** The agent answering was set not to read memory, so nothing was looked up. */
       'withheld',
+      /** Semantic recall could not be used (provider down, index not built, too big); words only. */
+      'dense_unavailable',
     ]),
   }),
   recipe: boundedIdentity,

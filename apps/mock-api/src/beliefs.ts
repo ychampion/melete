@@ -62,6 +62,8 @@ export class MockBeliefs {
     { id: string; label: string; subject: string; created_at: string }
   >();
   readonly rewinds = new Map<string, MockRewind>();
+  /** Notes Melete kept for itself, newest first. */
+  readonly notes = new Map<string, C.AgentNote>();
   digest: C.MemoryDigest | null = null;
 
   constructor(
@@ -115,6 +117,13 @@ export class MockBeliefs {
     const chat = chatId
       ? { kind: 'conversation' as const, id: chatId, label: 'Open “Plan the week”' }
       : null;
+    const note: C.AgentNote = {
+      id: newId('note'),
+      text: 'The school portal only takes PDF uploads under 5 MB; photos of forms have to be converted first.',
+      created: ago(2, 3),
+      chat: chatId ? { id: chatId, title: 'Plan the week' } : null,
+    };
+    this.notes.set(note.id, note);
     const add = (
       subject: string,
       label: string,
@@ -640,6 +649,13 @@ export class MockBeliefs {
         return this.history(id);
       case 'POST /memory/beliefs/{id}/block':
         this.block(id);
+        return { status: 'ok' };
+      case 'GET /memory/notes':
+        return {
+          notes: [...this.notes.values()].sort((a, b) => b.created.localeCompare(a.created)),
+        };
+      case 'DELETE /memory/notes/{id}':
+        if (!this.notes.delete(id)) throw new MockBeliefError(404, 'This note is already gone.');
         return { status: 'ok' };
       case 'GET /memory/blocks':
         return {

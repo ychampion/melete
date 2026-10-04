@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  agentNoteList,
   memoryItem,
   memoryItemCreate,
   memoryItemEdit,
@@ -21,6 +22,7 @@ import { enqueue, lockSpace, type MemoryScope } from '../memory/db.ts';
 import { persistEvidence } from '../memory/evidence.ts';
 import { deleteMemorySource, forgetMemory } from '../memory/forget.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from '../memory/invalidate.ts';
+import { deleteNote, listNotes } from '../memory/notes.ts';
 import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ASSISTANT_STREAM } from '../memory/trust.ts';
@@ -308,6 +310,33 @@ export class ExperienceMemory {
     for (const sourceId of ids) await deleteMemorySource(this.sql, scope, sourceId, this.journal);
     const [after] = await shown();
     return Math.max(0, Number(before?.n ?? 0) - Number(after?.n ?? 0));
+  }
+  /**
+   * The notes Melete kept for itself in this person's chats here, newest
+   * first. They are Melete's, not the person's statements, so they are listed
+   * apart from the details and can only be deleted, not edited.
+   */
+  async notes(spaceId: string, ownerId: string) {
+    const scope = await this.scope(spaceId, ownerId);
+    if (!scope) return unavailable('Your saved details are not connected yet.');
+    const notes = await listNotes(this.sql, spaceId, ownerId);
+    return agentNoteList.parse({
+      notes: notes.map((note) => ({
+        id: note.id,
+        text: note.content,
+        created: note.created_at,
+        chat:
+          note.job_id && note.job_title
+            ? { id: note.job_id, title: plainText(note.job_title, 'A chat', 400) }
+            : null,
+      })),
+    });
+  }
+  async forgetNote(spaceId: string, ownerId: string, id: string) {
+    const scope = await this.scope(spaceId, ownerId);
+    if (!scope) return unavailable('Your saved details are not connected yet.');
+    if (!(await deleteNote(this.sql, spaceId, ownerId, id))) throw experienceMissing();
+    return { status: 'ok' };
   }
   /** Whether new things this person says in chat are kept. On until they say otherwise. */
   async settings(principalId: string) {

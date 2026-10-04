@@ -105,6 +105,29 @@ const allow: Verdict = { allow: true };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/**
+ * Whether a body repeats a field under another case. Go's `encoding/json`
+ * matches a struct field to an incoming key case-insensitively and lets the
+ * last of several matches win, so `{"Detach":false,"detach":true}` decodes to
+ * `Detach:true` though we validate the `Detach:false` we read. Our exact-case
+ * allow-lists already refuse a lone mis-cased key as unknown, but a key next to
+ * its own case variant must be refused outright, at every level, so the object
+ * the engine decodes is the one we judged.
+ */
+function caseCollision(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(caseCollision);
+  if (!isRecord(value)) return false;
+  const folded = new Map<string, string>();
+  for (const key of Object.keys(value)) {
+    const lower = key.toLowerCase();
+    const seen = folded.get(lower);
+    if (seen !== undefined && seen !== key) return true;
+    folded.set(lower, key);
+    if (caseCollision(value[key])) return true;
+  }
+  return false;
+}
+
 function projectFor(profile: Profile, config: CellsPolicyConfig): string | undefined {
   return OWNERS[profile].project === 'compose' ? config.project : config.sandboxProject;
 }
@@ -411,6 +434,8 @@ export async function judge(
   lookup: CellsLookup,
 ): Promise<Verdict> {
   const { method, path, query } = request;
+  if (request.body !== undefined && caseCollision(request.body))
+    return refuse('a request body does not repeat a field under another case');
   const parts = path.split('/').slice(1);
   // An image is named by its reference, encoded as one part; nothing else is encoded.
   const encodedAllowed = (index: number) => parts[0] === 'images' && index === 1;
@@ -507,7 +532,10 @@ export async function judge(
     if (method === 'GET' && action === 'json') return allow;
     if (method === 'POST' && action === 'start') {
       const body = request.body;
-      return isRecord(body) && body.Detach === false && body.Tty === false
+      if (!isRecord(body)) return refuse('an exec is started from a JSON body');
+      const extra = Object.keys(body).filter((key) => key !== 'Detach' && key !== 'Tty');
+      if (extra.length) return refuse(`an exec start does not set ${extra.join(', ')}`);
+      return body.Detach === false && body.Tty === false
         ? allow
         : refuse('an exec starts attached, without a terminal');
     }

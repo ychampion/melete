@@ -173,6 +173,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.read': ['Reading the page', 'Read the page'],
   'browser.submit': ['Submitting a form', 'Submitted a form'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
+  'notes.write': ['Noting this for later', 'Noted this for later'],
   'apps.publish': ['Publishing an app', 'Published an app'],
   'apps.rollback': ['Changing the version of an app', 'Changed the version of an app'],
   'apps.list': ['Looking through your apps', 'Looked through your apps'],

@@ -404,6 +404,8 @@ async function seedMemory(
   await sql`insert into memory_dense_entries
     (space_id, generation, claim_id, revision, model, version, dimensions, recipe, vector)
     values (${spaceId}, 0, ${claimId}, 1, 'fake', 'v1', 2, 'simple', ${json([0.1, 0.2])}::text::jsonb)`;
+  await sql`insert into memory_agent_notes (id, space_id, principal_id, content)
+    values (${newId('note')}, ${spaceId}, 'prn_fixture', 'The portal wants the district login.')`;
   await sql`insert into memory_contexts
     (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision,
      access_generation, audience, purpose, items, recipe, token_budget, recall_status)

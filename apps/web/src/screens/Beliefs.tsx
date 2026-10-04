@@ -311,6 +311,63 @@ function BeliefRow({
   );
 }
 
+/** When a note was written, as a short date in the viewer's own time. */
+const noteDate = (at: string) =>
+  new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+/**
+ * Notes Melete kept for itself in chats: its own findings, never things the
+ * person said, so they sit apart from the beliefs and can only be deleted.
+ */
+function AgentNotes() {
+  const notes = useLoad(() => adapter.agentNotes(), []);
+  const list = notes.data?.notes ?? [];
+  if (!list.length) return null;
+  return (
+    <section className="col" style={{ gap: 8 }} aria-labelledby="bc-notes">
+      <h3 id="bc-notes" className="belief-group">
+        Melete’s own notes
+      </h3>
+      <span className="belief-note">
+        What Melete wrote down for itself in your chats, so it has it next time. These are its
+        notes, not things you said.
+      </span>
+      <div className="card-12 belief-list">
+        {list.map((note) => (
+          <div key={note.id} className="belief-row">
+            <div className="belief-main">
+              <span className="belief-value">{note.text}</span>
+              <span className="belief-meta">
+                <Badge tone="neutral" style={{ height: 20, fontSize: 11 }}>
+                  Melete’s note
+                </Badge>
+                <span className="belief-note">
+                  {noteDate(note.created)}
+                  {note.chat ? ` · ${note.chat.title}` : ''}
+                </span>
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Delete Melete’s note: ${note.text.slice(0, 60)}`}
+              onClick={() =>
+                void adapter.deleteAgentNote(note.id).then((r) => {
+                  if (r.data === null) return failed(r, 'Couldn’t delete that note');
+                  toast({ kind: 'ok', title: 'Note deleted' });
+                  notes.reload();
+                })
+              }
+            >
+              Delete
+            </Button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function BeliefsView({ focus }: { focus: string | null }) {
   const beliefs = useLoad(() => adapter.beliefs(), []);
   const blocks = useLoad(() => adapter.beliefBlocks(), []);
@@ -374,6 +431,7 @@ function BeliefsView({ focus }: { focus: string | null }) {
           <span>Melete adds to this as you talk, and tells you when it does.</span>
         </div>
       ) : null}
+      <AgentNotes />
       {(blocks.data?.blocks.length ?? 0) > 0 ? (
         <section className="col" style={{ gap: 8 }} aria-labelledby="bc-blocked">
           <h3 id="bc-blocked" className="belief-group">

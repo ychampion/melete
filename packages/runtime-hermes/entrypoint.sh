@@ -29,6 +29,10 @@
 #    renderer, and this writes the terminal section and toolset that go with
 #    it. No other backend is accepted: a cell never runs a local terminal.
 #
+#    An attempt whose budget can carry the engine's helpers is started with
+#    MELETE_ENGINE_DELEGATION=1, from the same renderer, and this adds their
+#    toolset. Without it they are off.
+#
 # Everything else the engine is configured to do is in the image's own copy of
 # the rendered configuration. This script adds the attempt to it and nothing more.
 #
@@ -96,6 +100,16 @@ max_turns = whole("MELETE_ENGINE_MAX_TURNS")
 if max_turns:
     config.setdefault("agent", {})["max_turns"] = max_turns
 config["model"] = model_section
+# The engine's helpers, for an attempt whose budget can carry them. Only the
+# value the renderer writes is read; anything else stops the boot.
+delegation = os.environ.get("MELETE_ENGINE_DELEGATION", "")
+if delegation not in ("", "1"):
+    raise SystemExit("MELETE_ENGINE_DELEGATION must be 1 or unset")
+toolsets = config.setdefault("platform_toolsets", {}).setdefault("api_server", [])
+if "delegation" in toolsets:
+    toolsets.remove("delegation")
+if delegation:
+    toolsets.append("delegation")
 terminal = os.environ.get("TERMINAL_ENV", "")
 config.pop("terminal", None)
 if terminal:

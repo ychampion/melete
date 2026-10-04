@@ -49,8 +49,9 @@ logger = logging.getLogger("melete.plugin")
 SPARE_ENV = "MELETE_RUNTIME_SPARE"
 
 #: Every broker tool lands in this one toolset. `platform_toolsets.api_server`
-#: names it and nothing else, which is how the built-ins stay off: the model's
-#: entire catalog is what the broker served for this job.
+#: names it beside only the engine's task list and, for a budget that can carry
+#: them, its helpers, which act inside the engine, so every effect the model can
+#: have is a tool the broker served for this job.
 TOOLSET = "melete"
 
 #: The job this container is working on. It scopes the proposal reference, and
@@ -65,6 +66,36 @@ JOB_ID_ENV = "MELETE_JOB_ID"
 ATTEMPT_ID_ENV = "MELETE_ATTEMPT_ID"
 
 __all__ = ["register", "TOOLSET", "build_handler", "tool_schema"]
+
+#: What a helper reads when its action parks. Unlike the parent, it does not
+#: ask the person: the parent is handed the parked action and decides.
+HELPER_PARKED_INSTRUCTION = (
+    "This action is waiting for the person's decision and has NOT happened. "
+    "Stop now. Do not retry it, do not work around it, and do not say it is "
+    "done. Finish with a summary that says it is waiting for the person's approval."
+)
+
+
+def _parent_only(name: str) -> bool:
+    try:
+        from melete_runtime_hooks import parent_only
+    except ImportError:  # the support module ships beside the plugin in every engine
+        return False
+    return parent_only(name)
+
+
+def _in_helper() -> bool:
+    try:
+        from melete_runtime_hooks import in_helper
+    except ImportError:
+        return False
+    return in_helper()
+
+
+def _note_helper_parked(action_id: Any, name: str) -> None:
+    from melete_runtime_hooks import note_helper_parked
+
+    note_helper_parked(action_id, name)
 
 
 def tool_schema(tool: Dict[str, Any]) -> Dict[str, Any]:
@@ -123,7 +154,13 @@ def build_handler(
     def settle(response: Dict[str, Any]) -> Dict[str, Any]:
         """Turn a broker disposition into what the model reads, with its receipt."""
         if needs_approval(response):
-            return from_response(response)
+            parked = from_response(response)
+            if _in_helper():
+                # The parent is handed it when the delegation returns, and the
+                # helper is not sent to ask the person itself.
+                _note_helper_parked(response.get("action_id"), name)
+                parked["instruction"] = HELPER_PARKED_INSTRUCTION
+            return parked
         receipt = None
         if response.get("status") == SUCCEEDED and response.get("action_id"):
             # The receipt is the evidence a completion has to point at. If it
@@ -138,6 +175,12 @@ def build_handler(
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
         if terminal_error is not None:
             return terminal_error
+        if _parent_only(name) and _in_helper():
+            return from_error(
+                "parent_only",
+                f"A helper cannot use {name}. Finish, and say in your summary what the person "
+                "should be asked or told; the agent that handed you this task decides.",
+            )
         # Hermes dispatches as `handler(args, **kwargs)` with the model's
         # arguments in one positional dict (`tools/registry.py:822`), not as
         # keyword arguments. A `**kwargs`-only signature raises TypeError before

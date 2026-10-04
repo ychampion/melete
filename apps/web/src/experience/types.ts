@@ -115,6 +115,7 @@ export type Belief = Success<Ok<paths['/memory/beliefs'], 'get'>>['beliefs'][num
 export type BeliefCategory = Belief['category'];
 export type BeliefHistory = Success<Ok<paths['/memory/beliefs/{id}/history'], 'get'>>;
 export type BeliefBlock = Success<Ok<paths['/memory/blocks'], 'get'>>['blocks'][number];
+export type AgentNote = Success<Ok<paths['/memory/notes'], 'get'>>['notes'][number];
 export type MemoryTimeline = Success<Ok<paths['/memory/timeline'], 'get'>>;
 export type MemoryDay = MemoryTimeline['days'][number];
 export type RewindTarget = Body<paths['/memory/rewind'], 'post'>;

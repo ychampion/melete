@@ -1200,13 +1200,18 @@ withDb('installing each kind of connection through the API', () => {
     expect((await h.revoke(teamId)).status).toBe(200);
 
     // A new account's space and a new shared space receive the defaults as they are created.
-    for (const created of [installed.space_id, sharedId]) {
+    // A personal space also keeps the agent's own notes; a shared one does not.
+    for (const [created, notes] of [
+      [installed.space_id, ['notes']],
+      [sharedId, []],
+    ] as const) {
       const defaults =
         await h.sql`select provider from connection where space_id = ${created} and configuration ? 'builtin' order by provider`;
       expect(defaults.map((row) => row.provider)).toEqual([
         'apps',
         'artifacts',
         'files',
+        ...notes,
         'room',
         'web',
       ]);

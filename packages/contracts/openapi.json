@@ -4921,6 +4921,128 @@
         }
       }
     },
+    "/memory/notes": {
+      "get": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "GET /memory/notes",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "notes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "$ref": "#/components/schemas/__schema251"
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 2000
+                              },
+                              "created": {
+                                "$ref": "#/components/schemas/__schema255"
+                              },
+                              "chat": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "$ref": "#/components/schemas/__schema251"
+                                      },
+                                      "title": {
+                                        "type": "string",
+                                        "maxLength": 400
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "title"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "text",
+                              "created",
+                              "chat"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "notes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema257"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/memory/notes/{id}": {
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /memory/notes/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema288"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema257"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/memory/settings": {
       "get": {
         "tags": [
@@ -13352,7 +13474,8 @@
                             "index_failure",
                             "restore_pending",
                             "public_compartment",
-                            "withheld"
+                            "withheld",
+                            "dense_unavailable"
                           ]
                         }
                       },
@@ -14680,6 +14803,70 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "embedding": {
+                          "type": "object",
+                          "properties": {
+                            "configured": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "local": {
+                              "type": "boolean"
+                            },
+                            "last_success_at": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/components/schemas/__schema186"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "last_error": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "consecutive_failures": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "paused_until": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/components/schemas/__schema186"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "spaces_not_embedded": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "configured",
+                            "model",
+                            "local",
+                            "last_success_at",
+                            "last_error",
+                            "consecutive_failures",
+                            "paused_until",
+                            "spaces_not_embedded"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -17329,7 +17516,8 @@
                       "device",
                       "command_line",
                       "apps",
-                      "room"
+                      "room",
+                      "notes"
                     ]
                   },
                   "label": {
@@ -39214,7 +39402,8 @@
           "device",
           "command_line",
           "apps",
-          "room"
+          "room",
+          "notes"
         ]
       },
       "__schema493": {

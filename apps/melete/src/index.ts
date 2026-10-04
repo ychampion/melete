@@ -112,7 +112,7 @@ import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { connectionScopesForJob } from './jobs/scopes.ts';
-import { JobService } from './jobs/service.ts';
+import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
@@ -137,6 +137,7 @@ import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
+import { embeddingFromEnv } from './memory/embedding.ts';
 import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
@@ -674,6 +675,7 @@ export async function bootstrap(
   let blobs: ReturnType<typeof startBlobs> | undefined;
   let attachments: AttachmentService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
+  let memoryEmbedder: Awaited<ReturnType<typeof embeddingFromEnv>> = null;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
@@ -856,6 +858,8 @@ export async function bootstrap(
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
+        // A note the agent keeps from a private conversation stays on the person's own model.
+        privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
         webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
         // Paid search and reading calls count toward the same spending caps.
         spending,
@@ -940,6 +944,20 @@ export async function bootstrap(
         privacy,
         { settings: modelSettings, signIn, spending },
       );
+    // Semantic recall: memory and the agent's notes are embedded with the
+    // configured provider's embedding model, under the privacy router's rules,
+    // and charged to whose memory it is. With none, recall stays lexical.
+    const memoryEmbedding = handle
+      ? await embeddingFromEnv(env, {
+          privacy,
+          spending,
+          onError: (code) =>
+            process.stderr.write(`memory: ${code}
+`),
+        })
+      : null;
+    memoryEmbedder = memoryEmbedding;
+    const embedsQuery = (jobId: string, text: string) => privacy.cloudEmbedsRequest(jobId, text);
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
     if (handle && voiceProvidersFromEnv(env).live)
@@ -957,6 +975,7 @@ export async function bootstrap(
         workers: options.workers,
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,
+        ...(memoryEmbedding ? { embedding: memoryEmbedding } : {}),
         privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
         roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
       });
@@ -1014,7 +1033,9 @@ export async function bootstrap(
         const next = await modelSettings?.activeChoice().catch(() => undefined);
         const provider = next?.provider ?? env.MELETE_DEFAULT_PROVIDER;
         const model = next?.model ?? env.MELETE_DEFAULT_MODEL;
-        if (provider && model) supervisedRuntime.warm({ provider, model, fallback: null });
+        // The first reply is a conversation's, so the spare carries its features.
+        if (provider && model)
+          supervisedRuntime.warm({ provider, model, fallback: null }, [], CONVERSATION_BUDGET);
       }
       let hermesRuntime: SupervisedHermesRuntime | undefined;
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
@@ -1028,11 +1049,15 @@ export async function bootstrap(
           options.workers !== false
             ? {
                 gateway: memoryGateway?.gateway,
+                ...(memoryEmbedding ? { embedding: memoryEmbedding } : {}),
                 captureChat: true,
                 privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
                 roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
               }
-            : { gateway: memoryGateway?.gateway },
+            : {
+                gateway: memoryGateway?.gateway,
+                ...(memoryEmbedding ? { embedding: memoryEmbedding } : {}),
+              },
         );
       }
       if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime && handle && queue) {
@@ -1113,9 +1138,11 @@ export async function bootstrap(
               sql: handle.sql,
               spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
               scopeForJob: deploymentMemory.scopeForJob,
+              ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
+                ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 // Judged by the model the attempt runs on, which may not be the server's default.
                 recallsPrivateMemory: async (jobId, attemptId, model) =>
@@ -1480,7 +1507,7 @@ export async function bootstrap(
     voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase,
     attachments,
-    ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
+    ...(handle ? { checkMemory: () => memoryHealth(handle.sql, memoryEmbedder) } : {}),
   });
 
   return {

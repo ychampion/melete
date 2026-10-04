@@ -19,6 +19,7 @@ import { calendarManifest } from './calendar.ts';
 import { emailManifest } from './email.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
+import { notesManifest } from './notes.ts';
 import { roomManifest } from './room.ts';
 import { sandboxExecManifest } from './sandbox-exec.ts';
 import { webManifest } from './web.ts';
@@ -34,6 +35,7 @@ describe('default connections', () => {
       apps: appsManifest,
       exec: execManifest,
       sandbox: sandboxExecManifest,
+      notes: notesManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
       'apps',
@@ -43,6 +45,8 @@ describe('default connections', () => {
       // Speech and transcription: two rows of the one generation provider.
       'generation',
       'generation',
+      // The agent's own notes, in a person's own space.
+      'notes',
       // A person's own tools for rooms they are in, and a room's request's hand-off.
       'room',
       'room',
@@ -193,6 +197,7 @@ describe('default connections', () => {
       'apps',
       'rooms',
       'room_handoff',
+      'notes',
     ]);
     expect(
       wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
@@ -206,6 +211,7 @@ describe('default connections', () => {
       'exec',
       'rooms',
       'room_handoff',
+      'notes',
     ]);
   });
 });
