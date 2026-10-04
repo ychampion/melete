@@ -5,8 +5,12 @@
  * hygiene. Messages are addressed by Gmail's own id instead of an IMAP UID.
  */
 import { simpleParser } from 'mailparser';
+import { retryAfterOf } from '../signals/types.ts';
 import {
   composeMail,
+  headerBlock,
+  headerMessage,
+  MAX_HEADER_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
@@ -33,6 +37,8 @@ export class GmailError extends Error {
   constructor(
     readonly status: number,
     readonly authenticationFailed = status === 401,
+    /** Seconds Gmail asked to be left alone for, from Retry-After. */
+    readonly retryAfter: number | null = null,
   ) {
     super(`gmail_${status}`);
   }
@@ -61,8 +67,9 @@ export class GmailApiTransport implements MailTransport {
       return null;
     }
     if (!response.ok) {
+      const retryAfter = retryAfterOf(response);
       await response.body?.cancel().catch(() => {});
-      throw new GmailError(response.status);
+      throw new GmailError(response.status, response.status === 401, retryAfter);
     }
     return boundedJson(response, limit);
   }
@@ -108,6 +115,112 @@ export class GmailApiTransport implements MailTransport {
 
   async read(key: number | string): Promise<MailMessage | null> {
     return typeof key === 'string' ? this.message(key) : null;
+  }
+
+  /** One message's headers, without its body; null when it is gone. */
+  private async headers(id: string): Promise<MailMessage | null> {
+    if (!GMAIL_MESSAGE_ID.test(id)) return null;
+    let found: { payload?: { headers?: { name?: unknown; value?: unknown }[] } } | null;
+    try {
+      found = (await this.get(`/messages/${id}?format=metadata`, MAX_HEADER_BYTES)) as typeof found;
+    } catch (error) {
+      if (error instanceof ResponseTooLarge) return null;
+      throw error;
+    }
+    const headers = (found?.payload?.headers ?? []).flatMap((header) =>
+      typeof header.name === 'string' && typeof header.value === 'string'
+        ? [{ name: header.name, value: header.value }]
+        : [],
+    );
+    return found ? headerMessage(id, headerBlock(headers)) : null;
+  }
+
+  private async historyId(): Promise<string> {
+    const profile = (await this.get('/profile', MAX_LIST_RESPONSE_BYTES)) as {
+      historyId?: unknown;
+    } | null;
+    const id = String(profile?.historyId ?? '');
+    if (!/^\d{1,30}$/.test(id)) throw new Error('Gmail history unavailable');
+    return id;
+  }
+
+  /**
+   * What arrived in the inbox since `cursor`, a Gmail history id, read from
+   * the mailbox's history. A first read starts at the current history id. A
+   * history id Gmail no longer keeps (it answers 404) starts again from the
+   * current one, after reading the last two days of the inbox; messages
+   * already delivered are skipped by their id.
+   */
+  async changes(
+    cursor: string | null,
+    options: { limit: number; seen?: (key: string) => Promise<boolean> },
+  ) {
+    const take = async (ids: readonly string[]) => {
+      const messages: (MailMessage & { key: string; read_key: string })[] = [];
+      for (const id of [...new Set(ids)]) {
+        const key = `gmail:${id}`;
+        if (await options.seen?.(key)) continue;
+        const message = await this.headers(id);
+        if (message) messages.push({ ...message, key, read_key: id });
+      }
+      return messages;
+    };
+    if (cursor === null || !/^\d{1,30}$/.test(cursor))
+      return { cursor: await this.historyId(), messages: [] };
+    const ids: string[] = [];
+    let next = cursor;
+    let pageToken: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const params = new URLSearchParams({
+        startHistoryId: cursor,
+        historyTypes: 'messageAdded',
+        labelId: 'INBOX',
+        maxResults: '100',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const listed = (await this.get(`/history?${params}`, MAX_LIST_RESPONSE_BYTES)) as {
+        history?: {
+          id?: unknown;
+          messagesAdded?: { message?: { id?: unknown; labelIds?: unknown } }[];
+        }[];
+        historyId?: unknown;
+        nextPageToken?: unknown;
+      } | null;
+      if (listed === null) {
+        const current = await this.historyId();
+        const recent = await this.ids(
+          new URLSearchParams({
+            labelIds: 'INBOX',
+            q: 'newer_than:2d',
+            maxResults: String(options.limit),
+          }),
+        );
+        return { cursor: current, messages: await take(recent.reverse()) };
+      }
+      let full = false;
+      for (const record of listed.history ?? []) {
+        if (ids.length >= options.limit) {
+          full = true;
+          break;
+        }
+        for (const added of record.messagesAdded ?? []) {
+          const id = added.message?.id;
+          const labels = added.message?.labelIds;
+          if (typeof id !== 'string' || !GMAIL_MESSAGE_ID.test(id)) continue;
+          if (Array.isArray(labels) && !labels.includes('INBOX')) continue;
+          ids.push(id);
+        }
+        if (typeof record.id === 'string' && /^\d{1,30}$/.test(record.id)) next = record.id;
+      }
+      pageToken = typeof listed.nextPageToken === 'string' ? listed.nextPageToken : undefined;
+      if (full) break;
+      if (!pageToken) {
+        if (typeof listed.historyId === 'string' && /^\d{1,30}$/.test(listed.historyId))
+          next = listed.historyId;
+        break;
+      }
+    }
+    return { cursor: next, messages: await take(ids) };
   }
 
   async send(

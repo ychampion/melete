@@ -180,7 +180,11 @@ standing work.
   `{ kind: "schedule", cron, timezone? }`, `{ kind: "event", connection_id,
   event_name }` for anything new on one of the space's active connections, or
   `{ kind: "watch", connection_id, event_name, predicate }` for only the
-  observations that pass a watch's test. A new wake replaces the old one.
+  observations that pass a watch's test. The event name is one the connection
+  reports, such as `mail.received` or `calendar.event.changed`
+  ([SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)), and the connection
+  must serve the run under the space's sharing rule; anything else is refused.
+  A new wake replaces the old one.
   `"drop_trigger"` stops it standing and goes on now. Helpers cannot stand.
 - The time zone defaults to the person's profile time zone. A schedule the
   person sets (`POST /runs` with `repeat`) may wake the work at most every 5

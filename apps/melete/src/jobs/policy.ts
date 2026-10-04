@@ -1,9 +1,11 @@
 import {
+  CALENDAR_EVENT_NAMES,
   type ConnectionLifecycle,
   type ContextInvalidated,
   connectionGeneration,
   connectionLifecycle,
   jobBudget,
+  MAIL_EVENT_NAMES,
   policyGeneration,
   waitSpec,
 } from '@melete/contracts';
@@ -28,6 +30,12 @@ import type { AttemptRunner } from './runner.ts';
 import { type JobService, routineRest } from './service.ts';
 
 /** Account changes commit fences before signalling disposable inference processes. */
+
+/** The names of what a mailbox or calendar reports, as a SQL list. Fixed strings only. */
+const OBSERVATION_NAMES = [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES]
+  .map((name) => `'${name}'`)
+  .join(', ');
+
 export class PolicyService {
   constructor(
     readonly jobs: JobService,
@@ -335,6 +343,18 @@ export class PolicyService {
           .where(eq(connection.id, id))
           .returning();
         if (!updated) throw new Error('Locked connection disappeared');
+        // What was read from the old account, and where its feed was read to,
+        // say nothing about the next one; a revoked one is read no more.
+        await tx.execute(sql`delete from source_cursor where connection_id = ${id}`);
+        await tx.execute(sql`delete from subject_state where connection_id = ${id}`);
+        // So do the mail and calendar observations read from it that no job
+        // took in: headers, titles and places from an account the connection
+        // no longer stands for. A revocation takes everything it reported.
+        await tx.execute(sql`delete from event
+          where job_id is null and payload->>'kind' = 'connector_event'
+            and payload->>'connection_id' = ${id}
+            and (${request.kind === 'revoke'}
+              or payload->>'event_name' in ${sql.raw(`(${OBSERVATION_NAMES})`)})`);
         if (request.kind === 'revoke')
           await tx
             .update(trigger)

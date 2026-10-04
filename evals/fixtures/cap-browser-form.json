@@ -8,6 +8,7 @@
       "feature": "browser"
     }
   ],
+  "max_turns": 12,
   "tools": [],
   "approve": {
     "kind": "browser.submit",
@@ -80,20 +81,6 @@
         },
         "label": "Dietary needs",
         "value": "vegetarian",
-        "after_observation": {
-          "$ref": "observation.id"
-        }
-      }
-    },
-    {
-      "tool": "browser.observe",
-      "arguments": {
-        "session_id": {
-          "$ref": "session_id"
-        },
-        "control_epoch": {
-          "$ref": "control_epoch"
-        },
         "after_observation": {
           "$ref": "observation.id"
         }

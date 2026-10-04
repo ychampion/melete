@@ -10,6 +10,7 @@ import type {
 } from '@melete/contracts';
 import type { CatalogMetadata } from '../broker/catalog.ts';
 import type { Query } from '../broker/records.ts';
+import type { SignalSource } from '../signals/types.ts';
 import type { ConnectorDescription, RepairAttemptContext } from './faults.ts';
 
 /** Trusted service context, assembled from persisted job state, never tool arguments. */
@@ -116,6 +117,12 @@ export interface Connector {
    */
   verifiedFields?(action: Pick<Action, 'kind' | 'canonical_payload'>): readonly string[];
   health(): Promise<ConnectorHealth>;
+  /**
+   * How the signal poller reads what changed in this account: new mail, or the
+   * occurrences on a calendar. Only reads; a connector without it is never
+   * polled.
+   */
+  signals?: SignalSource;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault
    * so the policy can compare it with what was sent and propose a mapping. A

@@ -22,6 +22,8 @@
  * came from, so a test pins every boundary, and the broker recomputes it at
  * admission rather than trusting what the proposal decided.
  */
+
+import { isIP } from 'node:net';
 import {
   type ActionReview,
   type ApprovalSettings,
@@ -33,6 +35,7 @@ import {
   type JsonValue,
   type OriginWarning,
 } from '@melete/contracts';
+import { isPublicAddress } from '../connectors/web.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
@@ -119,6 +122,45 @@ const CREDENTIAL_KEY =
 const CREDENTIAL_LABEL =
   /\b(?:password|passcode|passphrase|secret|token|api key|card number|credit card|cvv|cvc|security code|one[- ]time|verification code|otp|pin|ssn|social security)\b/i;
 const GUEST_FIELDS = /^(?:attendees?|guests?|invitees?|to|cc|bcc|recipients?|participants?)$/i;
+/** Names this machine or a private network answers to, never a public site. */
+const PRIVATE_NAME = /(?:^|\.)(?:localhost|local|internal|intranet|lan|home|corp|arpa)$/i;
+
+/**
+ * A public web page: an http or https address with no sign-in or key in it,
+ * whose host is a name with a dot or a globally routable address, and not one
+ * that only this machine or a private network answers to.
+ */
+export function publicPage(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  if (url.username || url.password) return false;
+  for (const key of url.searchParams.keys()) if (CREDENTIAL_KEY.test(words(key))) return false;
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (isIP(host)) return isPublicAddress(host);
+  return host.includes('.') && !PRIVATE_NAME.test(host);
+}
+
+/**
+ * The address the agent's own browser is asked to open, at a doubted field:
+ * `computer.open`'s, or an open step's in a batch. Null for anything else.
+ */
+function ownBrowserAddress(name: string, payload: JsonObject, field: string): unknown {
+  if (name === 'computer.open') return field === 'url' ? payload.url : null;
+  if (name !== 'computer.batch') return null;
+  const index = /^actions\[(\d+)\]\.url$/.exec(field)?.[1];
+  const steps = payload.actions;
+  if (index === undefined || !Array.isArray(steps)) return null;
+  const step = steps[Number(index)];
+  return step && typeof step === 'object' && !Array.isArray(step) && step.action === 'open'
+    ? step.url
+    : null;
+}
 
 /** A camel- or Pascal-case name with its words split, so `deleteIssue` reads as `delete_Issue`. */
 const words = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
@@ -155,8 +197,16 @@ export function reviewTier(input: {
   doubts: readonly OriginWarning[];
   existingGuests?: number | null;
 }): TierDecision {
-  const { tool, provider, payload, doubts } = input;
+  const { tool, provider, payload } = input;
   const person = (reason: string): TierDecision => ({ tier: 'person', actionClass: null, reason });
+  // Opening a public page in the agent's own browser reads it there and sends
+  // nothing anywhere, wherever the address came from: it is not a destination
+  // to vouch for. A form sent from it is a submit, which still asks.
+  const doubts = SANDBOX_PROVIDERS.has(provider)
+    ? input.doubts.filter(
+        (doubt) => !publicPage(ownBrowserAddress(tool.name, payload, doubt.field)),
+      )
+    : input.doubts;
   if (tool.effect_class === 'spend') return person('It spends money.');
   // A change a command in the agent's computer makes with a connected account
   // leaves Melete with the person's own identity, and always asks.

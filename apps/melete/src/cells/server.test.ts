@@ -119,6 +119,43 @@ describe('the cell service', () => {
     });
   });
 
+  test('forwards the re-serialized body it judged, not the bytes it was sent', async () => {
+    const forwarded: Array<{ path: string; body: string }> = [];
+    const engine = async (path: string, init: RequestInit) => {
+      if (path === '/_ping' || path === '/version') return Response.json({ ApiVersion: '1.48' });
+      if (/\/(containers|images)\/[^/]+\/json$/.test(path))
+        return new Response('{}', { status: 404 });
+      forwarded.push({ path, body: init.body ? String(init.body) : '' });
+      return Response.json({ Name: 'ok' });
+    };
+    const server = startCellsServer({
+      socket: '/unused.sock',
+      key: KEY,
+      hostname: '127.0.0.1',
+      port: 0,
+      project: 'melete',
+      runtimeImage: 'melete-runtime:local',
+      mcpImages: [],
+      workVolume: 'melete_work',
+      engine,
+    });
+    servers.push(server);
+    const labels = { 'com.melete.mcp-launcher': 'v1', 'com.melete.project': 'melete' };
+    const parsed = { Name: 'melete-mcp-conn_abc-data', Labels: labels };
+    // Hand-crafted bytes: non-canonical spacing the engine must never decode itself.
+    const raw = `{"Name" :  "melete-mcp-conn_abc-data" ,  "Labels": ${JSON.stringify(labels)}}`;
+    const response = await fetch(`http://127.0.0.1:${server.port}/docker/v1.48/volumes/create`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' },
+      body: raw,
+    });
+    expect(response.status).toBe(200);
+    expect(forwarded).toHaveLength(1);
+    // The engine receives exactly the object the policy judged, re-serialized.
+    expect(forwarded[0]?.body).toBe(JSON.stringify(parsed));
+    expect(forwarded[0]?.body).not.toBe(raw);
+  });
+
   test("carries a server's attached streams both ways, for a server's container only", async () => {
     const { url } = start();
     const stream = await attachThroughCells({ url, key: KEY }, SERVER);
