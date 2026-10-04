@@ -1,7 +1,7 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
 Three observer seams, one prompt seam, one reasoning seam, one picture
-seam and one live-tools seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
+seam, one live-tools seam and one delegation seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
 product pointer, its profile line and its host runtime block, which describe
 the engine's install rather than the attempt. It is inert unless that key is
 set. The reasoning seam puts the model's reasoning on a run's event stream as
@@ -11,9 +11,10 @@ puts a paired computer's back from the broker, so the next run of the same
 session still shows it to the model. The live-tools seam hands the run's agent
 to the support module, so a tool the broker loads part way through a run can be
 added to that run's tool list by the engine's own live refresh instead of
-ending the run and starting another.
+ending the run and starting another. The delegation seam keeps a delegation
+inside the turn that made it, so its results reach the attempt that asked.
 
-All six original source hashes are checked before any write. A subsequent
+All eight original source hashes are checked before any write. A subsequent
 run accepts only the same patch, or a named earlier version of it, never an
 arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
@@ -183,6 +184,60 @@ def _durable_content(content: Any) -> Any:
 """),
         ],
     ),
+    # The delegation seam. At the pin a top-level delegation always runs in the
+    # background: the call returns a handle at once, the model is told to end
+    # its turn, and the results come back later as a new message, which on this
+    # platform the engine delivers by posting to its own API. An attempt ends
+    # with its run, so those results would arrive after it, or never. With the
+    # seam the call runs its helpers to the end inside the turn and returns
+    # their summaries, which is what the engine already does for a helper's own
+    # delegations.
+    "run_agent.py": (
+        "51e28e8905ebe1c9442e0c67a7eca0d53e6315414cf8c6927501b130d7650872",
+        [
+            ("            background=not (getattr(self, \"_delegate_depth\", 0) > 0), action=function_args.get(\"action\"),\n",
+             "            background=False, action=function_args.get(\"action\"),  # Melete delegation seam\n"),
+        ],
+    ),
+    "tools/delegate_tool.py": (
+        "6beafa1235e378a414a8bfdbe1cd14cbc6e553a2a1727657d8d52ab4ccc4c94f",
+        [
+            # The registry's own path, taken when the call above is bypassed.
+            ("    return not getattr(parent_agent, \"_delegate_depth\", 0) > 0\n",
+             "    return False  # Melete delegation seam\n"),
+            # What the model is told: the call returns the results.
+            ("    \"Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter \"\n"
+             "    \"the conversation as a new message when its subagents finish (one message per call by default; with \"\n"
+             "    \"delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only \"\n"
+             "    \"BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never \"\n"
+             "    \"wait or poll on transcripts, artifact files, or CI for a child. \"\n"
+             "    \"While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a \"\n"
+             "    \"child drifting.\\n\\n\"\n",
+             "    # Melete delegation seam: a delegation runs inside the turn that made it.\n"
+             "    \"Runs inside this turn: the call returns once its subagents finish, with each one's final summary in \"\n"
+             "    \"the result.\\n\\n\"\n"),
+            # Tools the engine does not offer here are not suggested instead.
+            ("    \"- Mechanical multi-step work with no reasoning needed -> execute_code\\n\"\n",
+             "    # Melete delegation seam: no code-execution tool is offered here.\n"),
+            ("    \"- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, \"\n"
+             "    \"or process exit discards running subagents.\\n\\n\"\n",
+             "    \"- Anything for the person to see or answer -> have the subagent report it; you decide what to ask\\n\\n\"\n"),
+            # A helper speaks as Melete: the engine home's SOUL.md is Melete's identity.
+            ("                skip_context_files=True, skip_memory=True, clarify_callback=None,\n",
+             "                skip_context_files=True, skip_memory=True, clarify_callback=None,\n"
+             "                load_soul_identity=True,  # Melete delegation seam\n"),
+            # The broker tools that speak to the person, park the job or start
+            # more helpers stay with the parent; the plugin also refuses them.
+            ("    child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role\n",
+             "    child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role\n"
+             "    from melete_runtime_hooks import hide_parent_only  # Melete delegation seam\n"
+             "    hide_parent_only(child)  # Melete delegation seam\n"),
+            # Actions a helper left waiting for approval go back to the parent as data.
+            ("    return _run_batch(batch, background)\n",
+             "    from melete_runtime_hooks import attach_helper_parked  # Melete delegation seam\n"
+             "    return attach_helper_parked(_run_batch(batch, background))  # Melete delegation seam\n"),
+        ],
+    ),
 }
 
 # A checkout patched by an earlier reviewed version of a file's patch is
@@ -249,7 +304,7 @@ def main() -> None:
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:
         target.write_text(content, encoding="utf-8", newline="\n")
-    print("Melete observer bridge applied: 6 checked source files and 1 support module")
+    print("Melete observer bridge applied: 8 checked source files and 1 support module")
 
 
 if __name__ == "__main__":

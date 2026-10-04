@@ -12,10 +12,17 @@
 # observer bridge in patches/observer_bridge.py.
 
 # The API server agent is built with exactly these toolsets. An explicit list
-# replaces the hermes-api-server default, so naming only the plugin's toolset is
-# what turns every built-in off. There is no separate "enabled_toolsets: []" key.
+# replaces the hermes-api-server default, so a built-in not named here is off.
+# There is no separate "enabled_toolsets: []" key.
+#
+# Beside the plugin's toolset, `todo`: a task list kept in the agent's memory,
+# which acts only inside the engine. The engine's helpers (`delegation`) are
+# added by the boot script only for an attempt whose budget can carry them
+# (MELETE_ENGINE_DELEGATION, from delegationFits in engine-config.ts). Files,
+# the terminal, the web, the browser, code execution, vision, memory and
+# session search stay off; the ones that act outside the engine are broker tools.
 platform_toolsets:
-  api_server: [melete]
+  api_server: [melete, todo]
 
 plugins:
   # An ALLOW-LIST of registry keys, not a boolean and not "allow".
@@ -57,6 +64,19 @@ memory:
 # or title-generation requests may spend a job's model budget in the background.
 curator:
   enabled: false
+
+# Helpers, when an attempt has them: three at a time, one level deep, fifty
+# turns and ten minutes each, and never allowed to approve a command
+# themselves. A helper that runs out of time ends with a timed-out result to the
+# parent. No provider or model is named, so a helper runs on the attempt's own
+# model through the same gateway, which meters it under the same capability.
+delegation:
+  max_concurrent_children: 3
+  max_spawn_depth: 1
+  orchestrator_enabled: false
+  max_iterations: 50
+  child_timeout_seconds: 600
+  subagent_auto_approve: false
 
 # Conversation checkpoints are engine-side state with its own lifetime. Job
 # continuity is Melete's, recorded on the ledger and replayable from it.

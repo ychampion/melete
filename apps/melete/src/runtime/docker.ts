@@ -200,7 +200,11 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * space's features rather than its attempt, and the key a spare must match
    * for an attempt to take it: exactly what the attempt would have been given.
    */
-  private engineSetup(model: AttemptBundle['model'], tools: AttemptBundle['tools']): EngineSetup {
+  private engineSetup(
+    model: AttemptBundle['model'],
+    tools: AttemptBundle['tools'],
+    budget?: AttemptBundle['budget'],
+  ): EngineSetup {
     const broker = this.brokerUrl();
     const environment = [
       `MELETE_MODEL_PROVIDER=${model.provider}`,
@@ -218,7 +222,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
           ...engineSettingsFromEnvironment(),
           // TERMINAL_ENV, when the space has a sandbox; the boot script
           // writes the terminal section from it and refuses any other.
-          features: attemptEngineFeatures(tools),
+          features: attemptEngineFeatures(tools, budget),
         }),
       ).map(([key, value]) => `${key}=${value}`),
     ];
@@ -280,7 +284,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       signal.throwIfAborted();
       // Before the job's directory is mounted, nothing of a paired computer's screen is in it.
       await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
-      const setup = this.engineSetup(bundle.model, bundle.tools);
+      const setup = this.engineSetup(bundle.model, bundle.tools, bundle.budget);
       const warm = sharing ? undefined : await this.claimSpare(setup, bundle, signal);
       let url: string;
       let apiKey: string;
@@ -325,9 +329,13 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * Keeps spares loaded for this model and these tools' features, up to the
    * configured number. The oldest spare set up for anything else gives way.
    */
-  warm(model: AttemptBundle['model'], tools: AttemptBundle['tools'] = []): void {
+  warm(
+    model: AttemptBundle['model'],
+    tools: AttemptBundle['tools'] = [],
+    budget?: AttemptBundle['budget'],
+  ): void {
     if (this.shutdown.signal.aborted || this.spareCount < 1) return;
-    const setup = this.engineSetup(model, tools);
+    const setup = this.engineSetup(model, tools, budget);
     if (this.spares.some((spare) => spare.key === setup.key)) return;
     while (this.spares.length >= this.spareCount) {
       const oldest = this.spares.shift();
@@ -425,7 +433,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     const spare = matching.find((candidate) => candidate.loaded) ?? matching[0];
     if (spare) this.spares.splice(this.spares.indexOf(spare), 1);
     // The next attempt most likely has this one's setup.
-    this.warm(bundle.model, bundle.tools);
+    this.warm(bundle.model, bundle.tools, bundle.budget);
     if (!spare) return undefined;
     const allowance = this.options.startTimeoutMs ?? 120_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
