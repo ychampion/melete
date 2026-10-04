@@ -188,8 +188,16 @@ A suspended workspace nobody resumes is removed after
 - **Computer.** `computer.screenshot` captures the desktop and stores the PNG
   with the job. `computer.open` opens an address in the browser;
   `computer.click`, `computer.type`, `computer.key` and `computer.scroll` drive
-  the pointer and keyboard. While a person holds control, every one of them is
-  refused.
+  the pointer and keyboard, and `computer.batch` runs up to five of those steps
+  in one call, stopping at the first that fails. Each of them ends with a
+  screenshot stored the same way, which a model that reads images is shown
+  with the result. While a person holds control, every one of them is refused,
+  and a batch stops at the step where a person took over.
+
+Opening a public `http` or `https` page in the agent's own browser runs without
+asking, wherever the address came from: it reads the page in the sandbox and
+sends nothing. Private and local addresses, and addresses carrying a sign-in or
+key, are treated like any other unvouched destination.
 
 Commands and desktop actions change only the sandbox, like a command in any
 other sandbox. They run without asking unless the agent is set to ask before

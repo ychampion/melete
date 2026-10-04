@@ -97,6 +97,11 @@ export type Scenario = {
   };
   trigger?: { name: string; payload: JsonObject };
   rubric: string;
+  /**
+   * Model turns the engine allows one run of this scenario, when a task needs
+   * more steps than the suite's default ceiling (`DEFAULT_MAX_TURNS`).
+   */
+  max_turns?: number;
   /** Capability scenarios: the fixture connection's own tools. */
   tools?: FixtureTool[];
   requires?: Requirement[];

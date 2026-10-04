@@ -375,9 +375,17 @@ export async function openStack(): Promise<Stack> {
   };
 }
 
+/**
+ * Model turns one suite run allows, unless its scenario asks for more. A suite
+ * run is short by design, so it keeps a low ceiling rather than the runaway one.
+ */
+export const DEFAULT_MAX_TURNS = 6;
+
 /** One light engine per attempt, driven by the same adapter the container path uses. */
 export class LightRuntime implements RuntimeAdapter {
   observe?: (bundle: AttemptBundle, event: RuntimeEvent) => Promise<void>;
+  /** Model turns for the scenario running now; the lab sets it per scenario. */
+  maxTurns = DEFAULT_MAX_TURNS;
   constructor(
     readonly stack: Stack,
     readonly parked: (bundle: AttemptBundle) => Promise<string[]>,
@@ -397,7 +405,7 @@ export class LightRuntime implements RuntimeAdapter {
       model: bundle.model.model,
       serverKey,
       // The same per-run ceilings the container path renders for a suite run.
-      maxTurns: 6,
+      maxTurns: this.maxTurns,
       maxTokens: 4096,
     });
     const baseUrl = engine.start();
@@ -430,6 +438,8 @@ export class LightRuntime implements RuntimeAdapter {
 export class ContainerRuntime implements RuntimeAdapter {
   last: { job: string; events: unknown[]; output: string } | null = null;
   observe?: (bundle: AttemptBundle, event: RuntimeEvent) => Promise<void>;
+  /** Model turns for the scenario running now; the lab sets it per scenario. */
+  maxTurns = DEFAULT_MAX_TURNS;
   constructor(
     readonly stack: Stack,
     readonly parked: (bundle: AttemptBundle) => Promise<string[]>,
@@ -443,13 +453,13 @@ export class ContainerRuntime implements RuntimeAdapter {
     const home = resolve(DATA, 'homes', bundle.attempt.job_id);
     await mkdir(home, { recursive: true, mode: 0o700 });
     await chown(home, 10001, 10001);
-    // The same renderer the image and the supervisors use. A suite run is short
-    // by design, so it keeps its own low turn ceiling rather than the runaway one.
+    // The same renderer the image and the supervisors use, with the suite's turn
+    // ceiling rather than the runaway one.
     const config = renderEngineConfig({
       provider: bundle.model.provider,
       model: bundle.model.model,
       brokerUrl: this.stack.brokerUrl,
-      maxTurns: 6,
+      maxTurns: this.maxTurns,
     }) as Record<string, Record<string, unknown>>;
     (config.model as Record<string, unknown>).max_tokens = 4096;
     const configPath = resolve(PRIVATE, `config-${bundle.attempt.id}.yaml`);
