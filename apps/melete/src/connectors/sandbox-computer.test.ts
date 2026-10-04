@@ -15,7 +15,9 @@ import {
   COMPUTER_TOOLS,
   ComputerPayloadRefusal,
   desktopCommandFor,
+  desktopCommandsFor,
   HumanControlRefusal,
+  MAX_BATCH_ACTIONS,
   pngSize,
   runComputerAction,
 } from './sandbox-computer.ts';
@@ -53,6 +55,7 @@ test('every computer tool is a sandbox tool the manifest offers, with the deskto
     'computer.type',
     'computer.key',
     'computer.scroll',
+    'computer.batch',
   ]);
   // Looking is a read; everything else changes the sandbox and nothing outside it.
   expect(COMPUTER_TOOLS.map((tool) => [tool.name, tool.effect_class])).toEqual([
@@ -62,6 +65,7 @@ test('every computer tool is a sandbox tool the manifest offers, with the deskto
     ['computer.type', 'write_reversible'],
     ['computer.key', 'write_reversible'],
     ['computer.scroll', 'write_reversible'],
+    ['computer.batch', 'write_reversible'],
   ]);
   for (const tool of COMPUTER_TOOLS) {
     expect(tool.required_scopes).toEqual([tool.name]);
@@ -78,7 +82,11 @@ test('every computer tool is a sandbox tool the manifest offers, with the deskto
   ]);
   expect(
     sandboxDispatchBudgetMs({ kind: 'computer.open', canonical_payload: {} } as never),
-  ).toBeGreaterThan(60_000);
+  ).toBeGreaterThan(120_000);
+  // Every step of the longest batch, and the screenshot after it.
+  expect(
+    sandboxDispatchBudgetMs({ kind: 'computer.batch', canonical_payload: {} } as never),
+  ).toBeGreaterThan(60_000 * (MAX_BATCH_ACTIONS + 1));
 });
 
 test('admitted payloads become desktop commands', () => {
@@ -119,6 +127,57 @@ test('a payload that is not a computer action is refused before the desktop is a
     ['terminal.run', { command: 'true' }],
   ] as const)
     expect(() => desktopCommandFor(action(kind, payload))).toThrow(ComputerPayloadRefusal);
+});
+
+test('a batch becomes its steps in order, and one refused step refuses it whole', () => {
+  expect(
+    desktopCommandsFor(
+      action('computer.batch', {
+        actions: [
+          { action: 'click', x: 10, y: 20 },
+          { action: 'type', text: 'Dana Reyes' },
+          { action: 'key', keys: ['Tab'] },
+          { action: 'open', url: 'https://example.com/' },
+          { action: 'scroll', x: 1, y: 2, amount: 3 },
+        ],
+      }),
+    ),
+  ).toEqual([
+    { kind: 'click', x: 10, y: 20, button: 1, count: 1 },
+    { kind: 'type', text: 'Dana Reyes' },
+    { kind: 'key', keys: ['Tab'] },
+    { kind: 'open', url: 'https://example.com/' },
+    { kind: 'scroll', x: 1, y: 2, dy: 3 },
+  ]);
+  // A single action is one command.
+  expect(desktopCommandsFor(action('computer.key', { keys: ['Return'] }))).toEqual([
+    { kind: 'key', keys: ['Return'] },
+  ]);
+  for (const actions of [
+    [],
+    Array.from({ length: MAX_BATCH_ACTIONS + 1 }, () => ({ action: 'key', keys: ['Tab'] })),
+    [{ action: 'screenshot' }],
+    [{ action: 'batch', actions: [] }],
+    [{ x: 1, y: 1 }],
+    ['click'],
+    [
+      { action: 'click', x: 1, y: 1 },
+      { action: 'open', url: 'file:///etc/passwd' },
+    ],
+  ])
+    expect(() => desktopCommandsFor(action('computer.batch', { actions }))).toThrow(
+      ComputerPayloadRefusal,
+    );
+  expect(() =>
+    desktopCommandsFor(
+      action('computer.batch', {
+        actions: [
+          { action: 'click', x: 1, y: 1 },
+          { action: 'type', text: '' },
+        ],
+      }),
+    ),
+  ).toThrow('step 2 of the batch');
 });
 
 test('a PNG header is read for its size; anything else is not an image', () => {
@@ -239,4 +298,213 @@ test('a takeover that lands while an action runs is said so in its receipt', asy
     signal: AbortSignal.timeout(5_000),
   });
   expect(detail.control_changed).toBe(true);
+});
+
+test('every step ends with a screenshot kept in the job workspace, so the agent need not ask for one', async () => {
+  const { provider, session, seen } = fixture({
+    screenshot: png(1024, 768),
+    click: new TextEncoder().encode('{"window":"Form - Chromium"}'),
+  });
+  const root = await workRoot();
+  const detail = await runComputerAction({
+    action: action('computer.click', { x: 10, y: 20 }, 'act_CLICK1'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(detail).toMatchObject({
+    computer: 'click',
+    window: 'Form - Chromium',
+    path: '.melete/computer/act_CLICK1.png',
+    width: 1024,
+    height: 768,
+  });
+  expect(detail.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(seen.map((command) => command.kind)).toEqual(['click', 'screenshot']);
+  const kept = await readFile(
+    path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CLICK1.png'),
+  );
+  expect(kept.byteLength).toBe(64);
+});
+
+test('a screenshot that fails after a step never turns the step that happened into a failure', async () => {
+  const { provider, session } = fixture({ screenshot: new TextEncoder().encode('not a png') });
+  const detail = await runComputerAction({
+    action: action('computer.type', { text: 'hi' }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(detail.computer).toBe('type');
+  expect(detail.path).toBeUndefined();
+  expect(detail.screenshot).toBe('not taken: the desktop did not answer with an image');
+});
+
+test('a batch runs its steps in order and looks once, after the last', async () => {
+  const { provider, session, seen } = fixture({ screenshot: png(1024, 768) });
+  const detail = await runComputerAction({
+    action: action(
+      'computer.batch',
+      {
+        actions: [
+          { action: 'click', x: 10, y: 20 },
+          { action: 'type', text: 'Dana Reyes' },
+          { action: 'key', keys: ['Tab'] },
+        ],
+      },
+      'act_BATCH1',
+    ),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(seen.map((command) => command.kind)).toEqual(['click', 'type', 'key', 'screenshot']);
+  expect(detail).toMatchObject({
+    computer: 'batch',
+    completed: 3,
+    requested: 3,
+    path: '.melete/computer/act_BATCH1.png',
+  });
+  expect((detail.steps as { computer: string }[]).map((step) => step.computer)).toEqual([
+    'click',
+    'type',
+    'key',
+  ]);
+  expect(detail.stopped).toBeUndefined();
+});
+
+test('a batch stops at the first step that fails and says which, still showing the screen', async () => {
+  const { session } = fixture();
+  const seen: string[] = [];
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      seen.push(command.kind);
+      if (command.kind === 'screenshot') return png(1024, 768);
+      if (command.kind === 'type') throw new Error('xdotool exited 1');
+      return new TextEncoder().encode('{}');
+    },
+  } as unknown as DockerSandboxProvider;
+  const root = await workRoot();
+  const run = (actions: unknown[]) =>
+    runComputerAction({
+      action: action('computer.batch', { actions }),
+      jobId: 'job_COMPUTER',
+      workRoot: root,
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+      settleMs: 0,
+    });
+  const detail = await run([
+    { action: 'click', x: 1, y: 1 },
+    { action: 'type', text: 'x' },
+    { action: 'key', keys: ['Return'] },
+  ]);
+  expect(seen).toEqual(['click', 'type', 'screenshot']);
+  expect(detail).toMatchObject({ completed: 1, requested: 3 });
+  expect(detail.stopped).toContain('step 2 (type) failed: xdotool exited 1');
+  expect(detail.path).toBe('.melete/computer/act_COMPUTER1.png');
+  // The first step failing is the action failing, as for a single step.
+  await expect(run([{ action: 'type', text: 'x' }])).rejects.toThrow('xdotool exited 1');
+});
+
+test('a person who takes the computer during a batch stops the rest, and nothing is captured', async () => {
+  const { session, sandbox } = fixture();
+  const seen: string[] = [];
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      seen.push(command.kind);
+      if (command.kind === 'click') await controls.change(sandbox, 'human');
+      return new TextEncoder().encode('{}');
+    },
+  } as unknown as DockerSandboxProvider;
+  const detail = await runComputerAction({
+    action: action('computer.batch', {
+      actions: [
+        { action: 'click', x: 1, y: 1 },
+        { action: 'type', text: 'secret' },
+      ],
+    }),
+    jobId: 'job_COMPUTER',
+    workRoot: '/nowhere',
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(seen).toEqual(['click']);
+  expect(detail).toMatchObject({ completed: 1, control_changed: true });
+  expect(detail.stopped).toContain('a person took control');
+  expect(detail.screenshot).toBe('not taken: a person took control');
+});
+
+test('a person who takes the computer while the screen settles is not captured', async () => {
+  const { session, sandbox, provider, seen } = fixture({ screenshot: png(1024, 768) });
+  const root = await workRoot();
+  const step = runComputerAction({
+    action: action('computer.click', { x: 1, y: 1 }, 'act_SETTLE1'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 100,
+  });
+  setTimeout(() => void controls.change(sandbox, 'human'), 10);
+  const detail = await step;
+  expect(seen.map((command) => command.kind)).toEqual(['click']);
+  expect(detail).toMatchObject({
+    computer: 'click',
+    control_changed: true,
+    screenshot: 'not taken: a person took control',
+  });
+  expect(detail.path).toBeUndefined();
+});
+
+test('a person who takes the computer while it is captured is not kept or shown', async () => {
+  const { session, sandbox } = fixture();
+  const seen: string[] = [];
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      seen.push(command.kind);
+      if (command.kind !== 'screenshot') return new TextEncoder().encode('{}');
+      await controls.change(sandbox, 'human');
+      return png(1024, 768);
+    },
+  } as unknown as DockerSandboxProvider;
+  const root = await workRoot();
+  const detail = await runComputerAction({
+    action: action('computer.key', { keys: ['Tab'] }, 'act_CAPTURE1'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(seen).toEqual(['key', 'screenshot']);
+  expect(detail).toMatchObject({ screenshot: 'not taken: a person took control' });
+  expect(detail.path).toBeUndefined();
+  await expect(
+    readFile(path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CAPTURE1.png')),
+  ).rejects.toThrow();
 });

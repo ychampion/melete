@@ -69,7 +69,16 @@ receives no private memory.
 Email hygiene matches the known shapes of one-time codes, password resets and
 magic links, tested by `withholds OTP, password resets and magic links from
 search and direct read`; a sensitive message in any other shape is read like
-any other message. Approval fatigue, misleading summaries, harmful reads within
+any other message. The mail observations that wake waiting work keep that
+hygiene and add a stricter rule on the subject line, which withholds anything
+that names a code, a PIN or a verification, or sets a 4 to 8 digit number beside
+such a word (`every code-shaped subject is withheld, and ordinary mail is not`).
+Those observations carry headers only, marked as outside content, a watch tests
+them with a fixed, deterministic predicate before anything wakes, and revoking
+the connection removes every one no job took in
+([SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md)). A calendar feed is
+someone else's file, so expanding its repeating events is held to a fixed
+budget per read. Approval fatigue, misleading summaries, harmful reads within
 granted scope and social engineering of the owner rest on the owner's judgement
 rather than on these checks.
 
@@ -388,7 +397,10 @@ space's connections serve its owner unless marked for the room, and the
 built-in tools a room is given are marked for the room's requests. A member's
 own job is offered none of them, cannot act through
 them, and cannot watch what they receive, and the broker checks this again
-before anything is sent. Every answer to a permission records the person who
+before anything is sent. The service reads an account's changes only for
+triggers whose job the connection serves, and checks the rule again for each
+waiting job when an observation is delivered (`a room member's job never
+receives the owner's mail observations`). Every answer to a permission records the person who
 gave it; one made with the operator's approval key is recorded as the service's.
 [shared-space-scope.test.ts](../apps/melete/test/integration/shared-space-scope.test.ts)
 drives a member's job against the owner's private memory and connections.

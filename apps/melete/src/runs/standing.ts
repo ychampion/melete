@@ -24,8 +24,9 @@ import { connection, event, experienceProfile, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
-import { checkTriggerSpec, type TriggerRow } from '../jobs/triggers.ts';
+import { checkEventSource, checkTriggerSpec, type TriggerRow } from '../jobs/triggers.ts';
 import { clip, object } from './record.ts';
 
 /** The shortest time a schedule the person set may leave between two wakes. */
@@ -107,12 +108,21 @@ export async function stand(
       .select()
       .from(connection)
       .where(eq(connection.id, spec.connection_id));
-    if (!source || source.spaceId !== row.spaceId || source.status !== 'active')
+    // Watching what a connection receives is using it, so the shared-use rule
+    // decides here too: a wake on a connection that does not serve this work
+    // would never come.
+    if (
+      !source ||
+      source.spaceId !== row.spaceId ||
+      source.status !== 'active' ||
+      !(await jobMayUseConnection(tx, row.id, source.id))
+    )
       throw new ServiceError(
         'unknown_connection',
         'Choose an active connection in this space.',
         400,
       );
+    checkEventSource(source.provider, spec.event_name);
   }
   const before = await standingTrigger(tx, row.id);
   await tx.delete(trigger).where(eq(trigger.jobId, row.id));
