@@ -29,6 +29,7 @@ import {
   API_PORT,
   BROKER_PORT,
   ContainerRuntime,
+  DEFAULT_MAX_TURNS,
   LightRuntime,
   openStack,
   PRIVATE,
@@ -183,6 +184,9 @@ export async function openLab(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(20_000),
+      // A pooled connection the server closed while idle can hang the next
+      // request instead of failing it, so each call opens its own.
+      keepalive: false,
     });
     const setCookie = response.headers.get('set-cookie');
     if (setCookie) cookie = setCookie.split(';')[0] ?? '';
@@ -429,6 +433,7 @@ export async function openLab(
   }
   async function run(scenario: Scenario, cellKey: string): Promise<GradeContext> {
     scripted.scenario = scenario;
+    runtime.maxTurns = scenario.max_turns ?? DEFAULT_MAX_TURNS;
     let cell = state.get(cellKey);
     const spaceId = cell.space_id ?? newId(ID_PREFIXES.space);
     state.identities(cellKey, spaceId);
