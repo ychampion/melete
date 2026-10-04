@@ -26,7 +26,7 @@ import type { GatewayOptions } from '../gateway/index.ts';
 import { ModelSettingsService } from '../gateway/model-settings.ts';
 import { routingFromEnv } from '../gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from '../gateway/spending.ts';
-import { startQueue } from '../jobs/queue.ts';
+import { queueCreatesSchema, startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
@@ -106,6 +106,7 @@ export async function startEffectBoundary(
       privateContext: ({ spaceId, agentId }, query) =>
         dependencies.privacy.marksPrivate(spaceId, agentId, query),
       webSearch: webSearchFromEnv(env, { native: search?.backend }),
+      spending,
       searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
@@ -136,7 +137,7 @@ export async function startEffectBoundary(
         }
       }
     }
-    queue = await startQueue(env.DATABASE_URL);
+    queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     const activeQueue = queue;
     const spaces = filesystemSpaces(env.MELETE_SPACES_DIR);
     queue.boss.on('error', () => process.stderr.write('effect queue error\n'));

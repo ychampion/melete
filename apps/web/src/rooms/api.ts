@@ -40,6 +40,7 @@ export type RoomInvite = InviteList['invites'][number];
 export type InviteCreated = Ok<paths['/rooms/{id}/invites'], 'post'>;
 export type InviteView = Ok<paths['/invites/view'], 'post'>;
 export type Handoff = Ok<paths['/handoffs'], 'get'>['handoffs'][number];
+export type RoomConnection = Ok<paths['/rooms/{id}/connections'], 'get'>['connections'][number];
 
 /** One frame of a thread's live stream; its `seq` resumes the stream. */
 export type RoomFrame =
@@ -83,6 +84,9 @@ export const roomsApi = {
       api.POST('/rooms', { body: purpose.trim() ? { name, purpose } : { name } }),
     ),
   detail: (id: string) => call<RoomDetail>(() => api.GET('/rooms/{id}', room(id))),
+  /** The accounts in the room's space; owners also see those kept for their own work. */
+  connections: (id: string) =>
+    call<{ connections: RoomConnection[] }>(() => api.GET('/rooms/{id}/connections', room(id))),
   people: (query: string) =>
     call<{ people: Person[] }>(() =>
       api.GET('/people', { params: { query: query.trim() ? { query } : {} } }),

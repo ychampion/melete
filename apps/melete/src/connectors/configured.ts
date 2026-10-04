@@ -7,6 +7,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { jobPaidMeter } from '../broker/paid-meter.ts';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
 import {
@@ -22,6 +23,7 @@ import { egressRecorder } from '../egress/records.ts';
 import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import type { GatewaySpending } from '../gateway/types.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
   createSandboxProvider,
@@ -78,7 +80,12 @@ import {
   type PrivateContext,
   type SearchPrivacy,
 } from './web.ts';
-import { type WebSearch, webSearchFromEnv } from './web-search.ts';
+import {
+  type PageExtractor,
+  type WebSearch,
+  webExtractFromEnv,
+  webSearchFromEnv,
+} from './web-search.ts';
 
 const endpoint = z
   .object({
@@ -217,6 +224,10 @@ export type ConnectorOptions = {
   privateContext?: PrivateContext;
   /** Where `web.search` searches; without one, the keyless search only. */
   webSearch?: WebSearch;
+  /** A hosted reader for a public page `web.fetch` got no text from; without one, none. */
+  webExtract?: PageExtractor;
+  /** The installation's spending caps, which paid search and reading calls count toward. */
+  spending?: GatewaySpending;
   /** Whether a query may go to an outside search; without one, none does. */
   searchPrivacy?: SearchPrivacy;
   /** The files people sent in chat, which the agent may save into its workspace. */
@@ -424,6 +435,9 @@ export class ConnectorFactory {
           privateContext: options.privateContext,
         }),
         ...(options.webSearch ? { search: options.webSearch } : {}),
+        ...(options.webExtract ? { extract: options.webExtract } : {}),
+        // Paid search and reading calls are charged to the job that made them.
+        meter: jobPaidMeter(options.sql, options.spending),
         ...(options.searchPrivacy ? { searchPrivacy: options.searchPrivacy } : {}),
       });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
@@ -834,6 +848,7 @@ type ConnectorExtras = {
   webSearch?: WebSearch;
   searchPrivacy?: SearchPrivacy;
   attachments?: SentFiles;
+  spending?: GatewaySpending;
 };
 
 /** The docker settings, with egress records and, where offered, command-line accounts. */
@@ -895,6 +910,8 @@ export function connectorOptionsFromEnv(
     privateContext: extra.privateContext,
     // Configured search keys apply even where no model gateway searches.
     webSearch: extra.webSearch ?? webSearchFromEnv(env),
+    webExtract: webExtractFromEnv(env),
+    ...(extra.spending ? { spending: extra.spending } : {}),
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
