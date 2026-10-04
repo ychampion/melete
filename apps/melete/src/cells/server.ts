@@ -150,10 +150,22 @@ export function startCellsServer(options: CellsServerOptions) {
       const headers = new Headers();
       const type = request.headers.get('content-type');
       if (type) headers.set('content-type', type);
-      const answer = await engine(`${versioned}${path}${url.search}`, {
+      // Forward exactly what was judged: the re-serialized object for a JSON
+      // body (so the engine cannot decode the original bytes into a different
+      // object), the original bytes for a tar body, and the query rebuilt from
+      // the parameters that were read, never the raw string.
+      const forwardBody: Uint8Array | string | undefined = binary
+        ? raw?.length
+          ? raw
+          : undefined
+        : body !== undefined
+          ? JSON.stringify(body)
+          : undefined;
+      const forwardQuery = url.search ? `?${url.searchParams.toString()}` : '';
+      const answer = await engine(`${versioned}${path}${forwardQuery}`, {
         method: request.method,
         headers,
-        ...(raw?.length ? { body: raw } : {}),
+        ...(forwardBody !== undefined ? { body: forwardBody } : {}),
         signal: request.signal,
       });
       if (verdict.redact && answer.ok) {

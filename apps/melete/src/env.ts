@@ -478,6 +478,16 @@ const variables = z.object({
   /** Extraction calls one person's memory may make in a day. */
   MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
   /**
+   * Semantic recall embeds memory with this model. Unset, the default
+   * provider's embedding model when it has one (Fireworks, OpenAI, Google),
+   * else the first such provider with a key; with none, recall stays lexical.
+   * `off` turns it off. `local` as the provider embeds on the local model
+   * server, which then needs the model and its dimensions named.
+   */
+  MELETE_EMBEDDING_PROVIDER: unsetWhenBlank(z.string().max(100).optional()),
+  MELETE_EMBEDDING_MODEL: unsetWhenBlank(z.string().max(200).optional()),
+  MELETE_EMBEDDING_DIMENSIONS: unsetWhenBlank(z.coerce.number().int().min(1).max(4096).optional()),
+  /**
    * Auto-review asks this model whether a reversible action may go ahead
    * without the person. Unset, it uses the default provider and model; `off`
    * runs no reviewer, and every action it would have reviewed asks the person.

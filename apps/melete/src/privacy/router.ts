@@ -231,6 +231,52 @@ export class PrivacyRouter {
     return null;
   }
 
+  /**
+   * Texts as a cloud embedder may read them, through the same redactor the
+   * gateway runs on a cloud request: the listed values, what memory learned in
+   * private conversations, the detectors, the local name detector when it is
+   * on, and, for a job's own words, that conversation's vault. Null when
+   * nothing from the space (or the job's private agent) may leave at all.
+   */
+  async screenForCloud(
+    spaceId: string,
+    texts: readonly string[],
+    jobId?: string | null,
+  ): Promise<string[] | null> {
+    const settings = await this.settingsFor(spaceId);
+    if (settings.privateSpace) return null;
+    let scope: Scope = {
+      jobId: '',
+      attemptId: '',
+      spaceId,
+      conversationId: null,
+      agentId: null,
+      turnId: null,
+    };
+    if (jobId) {
+      const own = await this.store.scope(jobId, '');
+      if (own.spaceId !== spaceId) return null;
+      if (own.agentId !== null && settings.privateAgents.has(own.agentId)) return null;
+      scope = own;
+    }
+    const remembered = await this.store.privateMemory(spaceId);
+    const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
+    if (settings.localDetection && settings.local)
+      await this.detectLocally(
+        state,
+        { messages: texts.map((content) => ({ role: 'user', content })) },
+        'chat/completions',
+        settings.local,
+      );
+    const redactor = new Redactor(state.vault, {
+      enabled: settings.enabled,
+      known: [...settings.known, ...memoryValues(remembered)],
+      cache: state.cache,
+      extra: (text) => state.ner.get(text),
+    });
+    return texts.map((text) => redactor.text(text));
+  }
+
   /** A settings change applies to the next request, not after the cache expires. */
   invalidate(spaceId: string) {
     this.settingsCache.delete(spaceId);
@@ -565,6 +611,27 @@ export class PrivacyRouter {
       (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) ||
       !!conversation?.sensitive;
     return isPrivate && (await this.readyLocal(settings, engine.protocol)) !== null;
+  }
+
+  /**
+   * Whether a cloud embedder may read this job's words to recall memory by
+   * meaning: not in a space or agent marked private, nor in a conversation
+   * found sensitive, nor a request about a sensitive topic. Such a request is
+   * recalled by its words alone, on this machine. What is sent is still
+   * redacted by the embedder.
+   */
+  async cloudEmbedsRequest(jobId: string, text = ''): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return false;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (settings.privateSpace) return false;
+    if (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) return false;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    if (conversation?.sensitive) return false;
+    // The person said this conversation is not sensitive: it is not read for a topic.
+    return !text || Boolean(conversation?.cleared) || classify(text, settings.topics) === null;
   }
 
   /**

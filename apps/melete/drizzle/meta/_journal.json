@@ -706,6 +706,13 @@
       "idx": 100,
       "version": "7",
       "when": 1789232400080,
+      "tag": "0100_agent_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1789232400081,
       "tag": "0102_situations",
       "breakpoints": true
     }

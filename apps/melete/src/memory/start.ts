@@ -13,6 +13,7 @@ import { MarkdownViews, prepareSpaceRepository } from './markdown.ts';
 import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, type RestrictionJournal } from './restore.ts';
 import { startMemoryService } from './service.ts';
+import type { EmbeddingProvider } from './views.ts';
 
 /** The retained restriction log is never silently recreated over existing memory. */
 /**
@@ -48,9 +49,11 @@ export async function startServiceMemory(
   spacesRoot: string,
   onJobRecompute?: (jobId: string) => Promise<void>,
   automatic:
-    | { gateway?: ExtractionGateway; captureChat?: false }
+    | { gateway?: ExtractionGateway; embedding?: EmbeddingProvider; captureChat?: false }
     | {
         gateway?: ExtractionGateway;
+        /** Semantic recall's embedder; left out, recall stays lexical. */
+        embedding?: EmbeddingProvider;
         captureChat: true;
         /** Why a chat message is private, recorded on what memory learns from it. */
         privacyOrigin: CaptureOptions['privacyOrigin'];
@@ -84,6 +87,7 @@ export async function startServiceMemory(
     journal,
     markdown,
     gateway: automatic.gateway,
+    ...(automatic.embedding ? { embedding: automatic.embedding } : {}),
     onError,
   });
   const recompute = onJobRecompute ? startJobRecompute(sql, onJobRecompute) : undefined;

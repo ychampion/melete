@@ -3472,7 +3472,7 @@ export interface paths {
                             tools: components["schemas"]["__schema96"];
                         };
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes";
                         sandbox?: {
                             /** @enum {string} */
                             adapter: "e2b" | "daytona" | "modal" | "docker";
@@ -6704,6 +6704,16 @@ export interface paths {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
                             memory?: {
+                                embedding?: {
+                                    configured: boolean;
+                                    consecutive_failures: number;
+                                    last_error: string | null;
+                                    last_success_at: components["schemas"]["__schema188"] | null;
+                                    local: boolean;
+                                    model: string | null;
+                                    paused_until: components["schemas"]["__schema188"] | null;
+                                    spaces_not_embedded: number;
+                                };
                                 failed: number;
                                 failed_reason: ("provider_auth" | "provider_refused" | "provider_unavailable" | "provider_slow" | "daily_budget" | "unreadable_answer" | "answer_cut_off" | "answer_refused" | "too_large" | "no_memory_model" | "other") | null;
                                 reason: ("provider_unavailable" | "provider_slow" | "daily_budget") | null;
@@ -10938,6 +10948,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/memory/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /memory/notes
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            notes: {
+                                chat: {
+                                    id: components["schemas"]["__schema255"];
+                                    title: string;
+                                } | null;
+                                created: components["schemas"]["__schema259"];
+                                id: components["schemas"]["__schema255"];
+                                text: string;
+                            }[];
+                        } | components["schemas"]["__schema261"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/notes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /memory/notes/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema292"] | components["schemas"]["__schema261"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/memory/outputs": {
         parameters: {
             query?: never;
@@ -11106,7 +11206,7 @@ export interface paths {
                                 authoritative_revision: components["schemas"]["__schema419"];
                                 indexed_revision: components["schemas"]["__schema419"];
                                 /** @enum {string} */
-                                reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment" | "withheld";
+                                reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment" | "withheld" | "dense_unavailable";
                                 supplemented: components["schemas"]["__schema419"];
                                 truncated: boolean;
                             };
@@ -23266,7 +23366,7 @@ export interface components {
         __schema496: string;
         __schema497: string;
         /** @enum {string} */
-        __schema498: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room";
+        __schema498: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes";
         __schema499: string;
         __schema500: string[];
         /** @enum {string} */
