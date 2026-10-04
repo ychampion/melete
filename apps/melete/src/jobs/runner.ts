@@ -49,6 +49,8 @@ import { appendEvent } from '../events/store.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
+import type { LimitReached } from '../gateway/spending.ts';
+import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -73,6 +75,16 @@ import {
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
+import {
+  attemptCause,
+  emptyWakes,
+  guardPauses,
+  pauseForWakes,
+  tellOnce,
+  usageClassOf,
+  WAKE_GUARD_LIMIT,
+  WAKE_GUARD_QUESTION,
+} from './wake-guard.ts';
 import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -97,6 +109,7 @@ export type RunnerOptions = {
   resolveModel?: (
     tx: Transaction,
     row: JobRow,
+    usageClass: UsageClass,
   ) => Promise<{ provider: string; model: string; vision?: boolean }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
@@ -120,9 +133,11 @@ export type RunnerOptions = {
   /**
    * The sentence for a spending limit this job's person has reached, or null.
    * An attempt is not started past it, and one that ends while it holds ends
-   * with that sentence rather than as a failure to retry.
+   * with that sentence rather than as a failure to retry. A background
+   * attempt is also held to the person's background limits; an interactive
+   * one never is.
    */
-  spendingLimit?: (jobId: string) => Promise<string | null>;
+  spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<LimitReached | null>;
 };
 
 /**
@@ -226,12 +241,28 @@ export class AttemptRunner {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
       }
       if (row.state !== 'queued') return null;
+      const [previous] = await tx
+        .select()
+        .from(attempt)
+        .where(eq(attempt.jobId, row.id))
+        .orderBy(desc(attempt.epoch))
+        .limit(1);
+      const cause = await attemptCause(tx, row, previous, previous?.inputCursor ?? 0);
+      // Work that keeps waking with nothing to show is stopped before this
+      // wake does anything, and the person is told once: a run or a routine
+      // is paused here; anything else asks the person, below.
+      const guarded =
+        cause.usageClass === 'background' && (await emptyWakes(tx, row.id)) >= WAKE_GUARD_LIMIT;
+      if (guarded && guardPauses(row.kind)) {
+        await pauseForWakes(tx, row);
+        return null;
+      }
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const chosen: { provider: string; model: string; vision?: boolean } =
-        (await this.options.resolveModel?.(tx, row)) ?? {
+        (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
           provider: this.options.provider ?? 'stub',
           model: this.options.model ?? 'script',
         };
@@ -242,12 +273,6 @@ export class AttemptRunner {
         ...(typeof chosen.vision === 'boolean' ? { vision: chosen.vision } : {}),
       };
       const budget = jobBudget.parse(row.budget);
-      const [previous] = await tx
-        .select()
-        .from(attempt)
-        .where(eq(attempt.jobId, row.id))
-        .orderBy(desc(attempt.epoch))
-        .limit(1);
       const [latest] = await tx
         .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
         .from(event)
@@ -317,6 +342,8 @@ export class AttemptRunner {
         usage: attemptUsage.parse({}),
         leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
+        usageClass: cause.usageClass,
+        triggerId: cause.triggerId,
       });
       await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its
@@ -372,11 +399,47 @@ export class AttemptRunner {
         await this.finish(tx, row, attemptId, settled);
         return null;
       }
+      // An attempt that starts no engine reads none of its inputs: they are
+      // left for the next attempt, so what woke this one is not lost.
+      const unread = async () =>
+        tx
+          .update(attempt)
+          .set({ inputCursor: previous?.inputCursor ?? 0 })
+          .where(eq(attempt.id, attemptId));
+      if (guarded) {
+        await unread();
+        await this.finish(tx, row, attemptId, {
+          kind: 'waiting_for_input',
+          question: WAKE_GUARD_QUESTION,
+        });
+        await tellOnce(tx, row, WAKE_GUARD_QUESTION, `wake-guard:${row.id}:${attemptId}`);
+        return null;
+      }
       // Past a spending limit no engine is started: the turn, routine run or
       // background job ends at once with the sentence that says when it resets.
-      const capped = await this.options.spendingLimit?.(row.id);
+      // Background long work instead rests until then, keeping what arrives
+      // for it, and the person is told the limit once, in its own words.
+      const capped = await this.options.spendingLimit?.(row.id, cause.usageClass);
+      if (capped) await unread();
+      if (capped && cause.usageClass === 'background' && isRunKind(row.kind)) {
+        await this.finish(tx, row, attemptId, {
+          kind: 'waiting_for_event_or_time',
+          wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
+        });
+        await tellOnce(
+          tx,
+          row,
+          capped.message,
+          `spending-limit:${row.id}:${capped.resetsAt.toISOString()}`,
+          'spending_limit',
+        );
+        return null;
+      }
       if (capped) {
-        await this.finish(tx, row, attemptId, { kind: 'budget_exhausted', summary: capped });
+        await this.finish(tx, row, attemptId, {
+          kind: 'budget_exhausted',
+          summary: capped.message,
+        });
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
@@ -640,7 +703,8 @@ export class AttemptRunner {
     // that limit, not as a failure to run again while it still holds.
     const capped =
       (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
-        ? await this.options.spendingLimit(row.id)
+        ? ((await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId)))?.message ??
+          null)
         : null;
     const original: AttemptOutcome = capped ? { kind: 'budget_exhausted', summary: capped } : given;
     let carried = raised;

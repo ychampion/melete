@@ -462,6 +462,49 @@ def test_a_parked_action_tells_the_model_to_stop(client, broker):
     assert [r["path"] for r in broker.requests] == ["/actions"]
 
 
+@pytest.mark.parametrize("name", ["ask_person", "say", "react", "job.wait", "search_tools", "load_tool",
+                                  "run.start", "run.delegate", "run.try"])
+def test_a_helper_is_refused_the_parent_only_tools_and_the_parent_is_not(client, broker, monkeypatch, name):
+    """A delegated helper reports what the person needs; the parent decides."""
+    import melete_runtime_hooks
+
+    monkeypatch.setattr(melete_runtime_hooks, "in_helper", lambda: True)
+    refused = build_handler(client, {"name": name, "connection_id": None})({"text": "hello"})
+    assert refused["error"]["code"] == "parent_only"
+    assert broker.requests == []
+    monkeypatch.setattr(melete_runtime_hooks, "in_helper", lambda: False)
+    if name == "say":
+        build_handler(client, {"name": name, "connection_id": None})({"text": "hello"})
+        assert broker.requests
+
+
+def test_a_helper_may_still_use_the_parents_other_broker_tools(client, broker, monkeypatch):
+    import melete_runtime_hooks
+
+    monkeypatch.setattr(melete_runtime_hooks, "in_helper", lambda: True)
+    assert build_handler(client, CATALOG[1])(query="invoices")["status"] == "succeeded"
+
+
+def test_an_action_a_helper_parks_goes_back_to_the_parent_and_the_helper_asks_nobody(client, broker, monkeypatch):
+    import melete_runtime_hooks
+    from melete_plugin import HELPER_PARKED_INSTRUCTION
+
+    broker.propose_response = {
+        "action_id": ACTION, "status": "needs_approval", "effect_class": "write_external",
+        "payload_hash": HASH, "canonical_payload": {}, "requires_approval": True, "approval_id": APPROVAL,
+    }
+    monkeypatch.setattr(melete_runtime_hooks, "in_helper", lambda: True)
+    result = build_handler(client, CATALOG[0])(to=["a@example.com"], subject="hi", body="hello")
+    assert result["status"] == "needs_approval"
+    assert result["instruction"] == HELPER_PARKED_INSTRUCTION
+    assert "ask_person" not in result["instruction"]
+    attached = json.loads(melete_runtime_hooks.attach_helper_parked(json.dumps({"results": []})))
+    assert attached["awaiting_approval"] == [{"action_id": ACTION, "tool": "email.send"}]
+    assert "NOT happened" in attached["awaiting_approval_note"]
+    # Taken once: the next delegation starts with nothing parked.
+    assert melete_runtime_hooks.attach_helper_parked("{}") == "{}"
+
+
 def test_requires_approval_alone_is_enough_to_park(client, broker):
     broker.propose_response = {
         "action_id": ACTION,

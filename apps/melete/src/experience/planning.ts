@@ -11,6 +11,7 @@ import {
 import { and, desc, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { databaseNow } from '../db/clock.ts';
 import {
   artifact,
   attempt,
@@ -554,7 +555,8 @@ export class ExperiencePlanning {
         'This routine is already running or needs your answer.',
         409,
       );
-    await this.triggers.fireSchedule(id, newId('op'));
+    // The person asked for this run of it, so it is theirs, not background work.
+    await this.triggers.fireSchedule(id, newId('op'), { principalId: null });
     return { status: 'ok' };
   }
   /**
@@ -571,7 +573,7 @@ export class ExperiencePlanning {
     const jobs = this.service.jobs;
     if (!jobs) return unavailable('Scheduled routines are not connected yet.');
     await jobs.transaction(async (tx) => {
-      await jobs.lock(tx, row.job.id);
+      const locked = await jobs.lock(tx, row.job.id);
       const [latest] = await tx
         .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
         .from(event);
@@ -579,6 +581,17 @@ export class ExperiencePlanning {
         .update(trigger)
         .set({ enabled, cursor: String(latest?.seq ?? 0) })
         .where(eq(trigger.id, id));
+      // A routine paused for waking with nothing to show was held as it was
+      // about to run; resumed, it runs that once.
+      if (enabled && locked?.paused) {
+        const now = await databaseNow(tx);
+        const [resumed] = await tx
+          .update(job)
+          .set({ paused: false, ...(locked.state === 'queued' ? { nextWakeAt: now } : {}) })
+          .where(eq(job.id, locked.id))
+          .returning();
+        if (resumed?.state === 'queued') await jobs.enqueue(tx, resumed, 'recovery');
+      }
     });
     await this.triggers.syncSchedules();
     return {

@@ -257,7 +257,7 @@ withDb('spending caps', () => {
     };
     const runner = new AttemptRunner(jobs, blocking, {
       key,
-      spendingLimit: (jobId) => guard.reachedForJob(jobId),
+      spendingLimit: (jobId) => guard.limitForJob(jobId),
     });
     guard.onRefused = (_scope, refused, message) => {
       if (refused.privacy.kind === 'job')

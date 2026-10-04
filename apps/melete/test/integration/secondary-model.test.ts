@@ -174,7 +174,13 @@ async function sideCall(
   return provider.reached;
 }
 
-/** The model an attempt of a new job of this kind, for this person, is claimed on. */
+/**
+ * The model an attempt of a new job of this kind, for this person, is claimed
+ * on. What caused the attempt decides it, as it decides how the attempt is
+ * metered: a chat's turn answers the person's message, one-off work is the
+ * person's own start, and work with a trigger is woken by it. `trigger` on a
+ * chat is a watch it was left on waking it with nobody writing.
+ */
 async function attemptModel(
   api: ReturnType<typeof service>,
   spaceId: string,
@@ -187,14 +193,27 @@ async function attemptModel(
   const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
     key: 'secondary-model-signing-key-32-chars!',
     scopes: [],
-    resolveModel: (tx, row) => api.settings.routedChoice(NO_ROUTING, tx, row),
+    resolveModel: (tx, row, usageClass) =>
+      api.settings.routedChoice(NO_ROUTING, tx, { spaceId: row.spaceId, usageClass }),
   });
   const job = await jobs.create({ space_id: spaceId, title: kind, objective: 'model check' });
   const sql = database().sql;
   await sql`update job set kind = ${kind}, principal_id = ${personId} where id = ${job.id}`;
-  if (options.trigger)
+  if (options.trigger) {
+    const triggerId = newId('trg');
     await sql`insert into trigger (id, job_id, kind, spec)
-      values (${newId('trg')}, ${job.id}, 'schedule', ${JSON.stringify({ kind: 'schedule' })}::jsonb)`;
+      values (${triggerId}, ${job.id}, 'schedule', ${JSON.stringify({ kind: 'schedule' })}::jsonb)`;
+    await sql`insert into event (job_id, type, payload, dedup_key)
+      values (${job.id}, 'notice', ${JSON.stringify({ kind: 'trigger_event', trigger_id: triggerId, event: {} })}::jsonb,
+        ${`${triggerId}:consumed:1`})`;
+  } else if (kind === 'chat')
+    await sql`insert into event (job_id, type, payload, dedup_key)
+      values (${job.id}, 'notice', ${JSON.stringify({ kind: 'user_message', text: 'hello', principal_id: personId })}::jsonb,
+        ${`${job.id}:input:1`})`;
+  else if (kind === 'responsibility')
+    await sql`insert into event (job_id, type, payload, dedup_key)
+      values (${job.id}, 'notice', ${JSON.stringify({ kind: 'person_started', principal_id: personId })}::jsonb,
+        ${`${job.id}:person_started:1`})`;
   const claimed = await runner.claim({
     job_id: job.id,
     expected_epoch: job.leaseEpoch,
@@ -285,9 +304,11 @@ describeWithDb('a secondary model beside the primary', () => {
     expect(await attemptModel(api, spaceId, owner.id, 'responsibility', { trigger: true })).toBe(
       SMALL,
     );
-    // One-off work with no trigger, and chats, stay on the primary.
+    // One-off work the person started, and chats they write in, stay on the primary.
     expect(await attemptModel(api, spaceId, owner.id, 'responsibility')).toBe(PRIMARY);
     expect(await attemptModel(api, spaceId, owner.id, 'chat')).toBe(PRIMARY);
+    // A chat woken by its watch with nobody writing is background work, routed as metered.
+    expect(await attemptModel(api, spaceId, owner.id, 'chat', { trigger: true })).toBe(SMALL);
 
     // Side calls can be kept on the primary too; removing the secondary undoes it all.
     await api.call('/model-settings/secondary/uses', owner.cookie, put({ side_tasks: 'primary' }));
@@ -528,5 +549,39 @@ describeWithDb('a secondary model beside the primary', () => {
     expect(prepared.route).toBe('cloud');
     expect(JSON.stringify(prepared.body)).not.toContain('jamie.davis@fastmail.example');
     expect(JSON.stringify(prepared.body)).toContain('⟦EMAIL_');
+  }, 60_000);
+  test('background work on the secondary keeps the vision model and the fallbacks', async () => {
+    const api = service();
+    const { owner, spaceId } = await people(api);
+    await api.call(
+      '/model-settings/secondary',
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
+    );
+    await api.call('/model-settings/secondary/uses', owner.cookie, put({ scheduled: 'secondary' }));
+    const VISION = 'accounts/fireworks/models/fixture-vision';
+    const SPARE = 'accounts/fireworks/models/fixture-spare';
+    const routing = {
+      fast: null,
+      vision: { provider: 'fireworks', model: VISION },
+      fallback: [{ provider: 'fireworks', model: SPARE }],
+    };
+    // A woken attempt runs on the secondary, and is told it may send pictures.
+    const woken = await api.settings.routedChoice(routing, database().db, {
+      spaceId,
+      usageClass: 'background',
+    });
+    expect(woken).toMatchObject({ model: SMALL, vision: true });
+    // Its calls may go to the vision model and, when limited, to the fallback.
+    expect(
+      await api.settings.attemptRoutes(routing, {
+        provider: 'fireworks',
+        model: SMALL,
+        usageClass: 'background',
+      }),
+    ).toEqual({
+      vision: { provider: 'fireworks', model: VISION },
+      fallback: [{ provider: 'fireworks', model: SPARE }],
+    });
   }, 60_000);
 });

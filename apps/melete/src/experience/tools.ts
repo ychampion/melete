@@ -880,6 +880,7 @@ const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   vision_analyze: ['tool', 'Looking at an image', 'Looked at an image'],
   text_to_speech: ['artifact', 'Making audio', 'Made audio'],
   delegate_task: ['tool', 'Handing off a smaller task', 'Handed off a smaller task'],
+  todo_list: ['tool', 'Planning the steps', 'Planned the steps'],
 };
 
 /** How a runtime-named tool is shown, or null when another record already shows it. */

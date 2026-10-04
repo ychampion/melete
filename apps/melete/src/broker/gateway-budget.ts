@@ -1,6 +1,8 @@
 import { type CapabilityClaims, inputTokenAllowance, inputTokenCeiling } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import type { PriceTable } from '../gateway/prices.ts';
 import { allowedWithRoutes } from '../gateway/routing.ts';
+import { settledCost } from '../gateway/spending.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -10,10 +12,10 @@ import {
   type GatewayRoutes,
   type GatewaySettlement,
 } from '../gateway/types.ts';
-import { remainingOutputTokensLocked, reserveLocked } from './budget.ts';
+import { dollarsSpentLocked, remainingOutputTokensLocked, reserveLocked } from './budget.ts';
 import { verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
-import { appendEvent, checkAttempt, lockJob } from './records.ts';
+import { appendEvent, checkAttempt, lockJob, recordId } from './records.ts';
 
 type ModelChoice = { provider: string; model: string };
 
@@ -29,7 +31,15 @@ export class PostgresGatewayBudget implements GatewayBudget {
        * The operator's alternatives for an attempt on this model: a vision
        * model and fallbacks. None for a model the owner chose in the app.
        */
-      routes?: (attempt: ModelChoice) => Promise<GatewayRoutes | undefined>;
+      routes?: (
+        attempt: ModelChoice & { usageClass: 'interactive' | 'background' },
+      ) => Promise<GatewayRoutes | undefined>;
+      /**
+       * Set, each model call is charged its estimated cost from this price
+       * table against the job's dollar limit (`max_usd_est`), beside its
+       * actions; a call is refused once the limit is spent.
+       */
+      modelDollars?: PriceTable;
     },
   ) {}
 
@@ -45,10 +55,13 @@ export class PostgresGatewayBudget implements GatewayBudget {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
         const [attempt] =
-          await tx`select provider, model from attempt where id = ${claims.attempt_id}`;
+          await tx`select provider, model, class from attempt where id = ${claims.attempt_id}`;
         if (!attempt) throw new BrokerFault('stale_epoch');
         const primary = { provider: String(attempt.provider), model: String(attempt.model) };
-        const routes = await this.options.routes?.(primary);
+        const routes = await this.options.routes?.({
+          ...primary,
+          usageClass: attempt.class === 'background' ? 'background' : 'interactive',
+        });
         const allowedModels = allowedWithRoutes(primary, routes);
         return {
           jobId: job.id,
@@ -114,6 +127,8 @@ export class PostgresGatewayBudget implements GatewayBudget {
           inputTokenAllowance(request.model, request.maxOutputTokens, claims.budget),
         );
         if (inputTokens > inputLimit) throw new GatewayError(413, 'input_context_exceeded');
+        if (this.options.modelDollars && (await dollarsSpentLocked(tx, job, claims)))
+          throw new BrokerFault('budget_exceeded');
         const reservations = await reserveLocked(tx, job, claims, null, [
           { kind: 'calls', amount: 1 },
           { kind: 'tokens', amount: request.maxOutputTokens },
@@ -186,6 +201,13 @@ export class PostgresGatewayBudget implements GatewayBudget {
       if (usage)
         await tx`update budget_ledger set settled = ${usage.outputTokens} where id = ${reservation.id}`;
       await tx`update budget_ledger set settled = reserved where id = ${request.payload.calls_ledger_id}`;
+      // The call's dollars, against the job's dollar limit, where they count.
+      const dollars = this.options.modelDollars
+        ? settledCost(this.options.modelDollars, result)
+        : 0;
+      if (dollars > 0)
+        await tx`insert into budget_ledger (id, job_id, attempt_id, action_id, kind, reserved, settled)
+          values (${recordId('led')}, ${job.id}, ${entry.attempt_id}, null, 'usd_est', ${dollars}, ${dollars})`;
       const previous = attempt.usage ?? {};
       const accumulated = {
         input_tokens: Number(previous.input_tokens ?? 0) + (usage?.inputTokens ?? 0),
@@ -198,7 +220,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           Number(previous.charged_input_tokens ?? previous.input_tokens ?? 0) +
           (usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0),
         requests: Number(previous.requests ?? 0) + 1,
-        usd_est: Number(previous.usd_est ?? 0),
+        usd_est: Number(previous.usd_est ?? 0) + dollars,
       };
       const detail = {
         ...(attempt.outcome_detail ?? {}),
