@@ -223,6 +223,7 @@ describeWithDb('a secondary model beside the primary', () => {
       model: null,
       uses: { side_tasks: 'secondary', scheduled: 'primary' },
       can_edit: true,
+      leaves_local_primary: false,
       updated_at: null,
     });
     // Side calls keep the operator's fast model; jobs of every kind the primary.
@@ -474,6 +475,7 @@ describeWithDb('a secondary model beside the primary', () => {
       MELETE_DEFAULT_PROVIDER: 'openai-compatible',
       MELETE_DEFAULT_MODEL: 'llama3.3',
       OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OPENAI_COMPAT_API_KEY: 'local-fixture-key-1a2b',
     });
     const { owner, spaceId } = await people(api);
     await api.call(
