@@ -266,6 +266,10 @@ export async function removeJobs(
     await tx`delete from memory_outputs where job_id = any(${list})`;
     await tx`delete from memory_repair_briefs where job_id = any(${list})`;
     await tx`delete from memory_invalidations where job_id = any(${list})`;
+    // The agent's own notes from these chats go with what Melete learned from
+    // them; otherwise they stay, no longer naming the chat.
+    if (forget) await tx`delete from memory_agent_notes where job_id = any(${list})`;
+    else await tx`update memory_agent_notes set job_id = null where job_id = any(${list})`;
     // The files sent in these chats, and the store's record that they need
     // their bytes; the bytes themselves go once this commits.
     fileKeys = await releaseJobAttachments(tx, list);

@@ -248,7 +248,8 @@ there, as private memory is: never for a reader of a shared space, a public
 compartment or an agent set not to read memory. A note written in a private
 conversation is read back only into requests that stay on the person's own
 model, and a cloud embedder never reads it. One person keeps at most 500 notes
-in a space; the oldest go first.
+in a space; the oldest go first. Deleting a chat and what Melete learned from it
+deletes the notes written there too.
 
 A request is matched by any of its meaningful words, ranked by how many match
 and how closely, so "Email Ana the agenda for Thursday" finds the claim on
