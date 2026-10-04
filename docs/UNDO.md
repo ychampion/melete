@@ -47,6 +47,9 @@ It asks first, with the reason on the card, when the change:
 - overlaps an event of yours that blocks the time (anything not marked free);
 - or when the calendar could not be read in full.
 
+An event counts as Melete's own only when Melete created it; an event you made
+stays yours even after Melete changed it, so removing it always asks.
+
 Melete's own events with no guests, and your events marked free, may be
 overlapped. This is the **Its own events on your calendar** switch in
 Settings → Approvals (`own_calendar`), on by default; a space whose settings
@@ -71,6 +74,7 @@ wait for approval on their card. Only the person whose work it was can undo it.
   - "undoing an event that has guests now waits for approval instead of telling them"
   - "a calendar that cannot be read asks first, and nothing is written"
   - "only the person whose work it was can undo it"
+  - "the person’s event, updated by Melete and marked free, asks before removal"
 - `apps/melete/src/broker/calendar-check.test.ts`: what makes a change important.
 - `apps/melete/src/broker/reversals.test.ts`: the registry, and taking back a
   series of changes newest first.

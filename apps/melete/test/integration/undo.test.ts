@@ -67,6 +67,8 @@ function fakeConnector(manifest: ConnectorManifest, existing: Occurrence[] = [])
         });
         detail = { uid: action.id, etag: '"1"', action_id: action.id };
       }
+      if (action.kind === 'calendar.update')
+        detail = { uid: String(payload.uid), etag: '"2"', action_id: action.id };
       if (action.kind === 'calendar.delete') {
         events.delete(String(payload.uid));
         detail = { uid: String(payload.uid), removed: true };
@@ -110,7 +112,11 @@ async function setup(
       sql,
       connectors: registry,
       resolveTrust: createTableTrustResolver(
-        new Map([['alex@example.test', { origin_trust: 'owner' as const }]]),
+        new Map([
+          ['alex@example.test', { origin_trust: 'owner' as const }],
+          // The event the person pointed at themselves.
+          ['act_theirs', { origin_trust: 'owner' as const }],
+        ]),
       ),
       // No reviewer: what goes ahead unasked is decided by fixed rules alone.
       autoReview: { reviewer: null },
@@ -329,6 +335,48 @@ describe('events on the person’s own calendar', () => {
     expect(String(refused)).toContain('That item is not here.');
     expect(s.executed.map((action) => action.kind)).toEqual(['calendar.create']);
   });
+
+  databaseTest(
+    'the person’s event, updated by Melete and marked free, asks before removal',
+    async () => {
+      // The person's own event, which Melete updated once (and so carries its mark),
+      // marked free: nothing about the time it holds would make it important.
+      const theirs: Occurrence = {
+        uid: 'act_theirs',
+        occurrence: null,
+        title: 'Gym',
+        start: later(40),
+        end: later(41),
+        all_day: false,
+        location: '',
+        status: 'confirmed',
+        attendees: 0,
+        time_zone: null,
+        busy: false,
+        melete: true,
+      };
+      const s = await setup(calendarManifest, { existing: [theirs] });
+      const update = await s.propose('calendar.update', {
+        uid: 'act_theirs',
+        etag: '"1"',
+        summary: 'Gym',
+        start: later(40),
+        end: later(41),
+      });
+      // Changing an event Melete did not create asks first: there is no earlier
+      // version of it on record to put back.
+      expect(update.status).toBe('needs_approval');
+      await s.broker.decide(update.action_id, {
+        decision: 'approved',
+        payload_hash: update.payload_hash,
+      });
+      expect((await s.broker.resume(s.claims, update.action_id)).status).toBe('succeeded');
+      // Removing it is never Melete undoing its own booking: it asks.
+      const removal = await s.propose('calendar.delete', { uid: 'act_theirs', etag: '"2"' });
+      expect(removal.status).toBe('needs_approval');
+      expect(s.executed.map((action) => action.kind)).toEqual(['calendar.update']);
+    },
+  );
 
   databaseTest('anything within the next few hours asks first, too', async () => {
     const s = await setup(calendarManifest);

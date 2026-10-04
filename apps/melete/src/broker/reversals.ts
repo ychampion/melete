@@ -106,9 +106,11 @@ const QUOTED_ETAG = /^"[^"\r\n]+"$/;
 const EVENT_FIELDS = ['summary', 'start', 'end', 'description', 'location'] as const;
 
 /**
- * The last write Melete made to an event it made, before `before` if given:
- * the create that named it, or an update since. Only a write that succeeded,
- * on the same connection, in the same space, counts.
+ * The last write Melete made to an event it created, before `before` if
+ * given: the create that named it, or an update since. Only a write that
+ * succeeded, on the same connection, in the same space, counts, and only for
+ * an event whose create is on record there: an event the person made stays
+ * theirs however often Melete updated it, so removing it always asks.
  */
 async function lastWrite(
   q: Query,
@@ -123,6 +125,11 @@ async function lastWrite(
       and ((a.kind = 'calendar.create' and a.id = ${uid})
         or (a.kind = 'calendar.update' and a.canonical_payload->>'uid' = ${uid}))
       ${before ? q`and a.id <> ${before.id} and a.resolved_at <= ${before.resolved_at ?? before.created_at}` : q``}
+      -- Only an event Melete itself created, on this connection in this space, is
+      -- Melete's own; one it only updated is still the person's.
+      and exists (select 1 from action c join job cj on cj.id = c.job_id
+        where c.id = ${uid} and c.kind = 'calendar.create' and c.status = 'succeeded'
+          and c.connection_id = ${connectionId} and cj.space_id = ${spaceId})
     order by a.resolved_at desc nulls last, a.id desc limit 1`;
   const row = rows[0];
   return row ? (row as unknown as Action) : null;
