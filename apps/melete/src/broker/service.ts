@@ -110,7 +110,7 @@ import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } fro
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
-import { readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
+import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -677,7 +677,10 @@ export class BrokerService implements BrokerOperations {
     const workRoot = this.options.workRoot;
     if (!workRoot || !SCREENSHOT_TOOLS.includes(action.kind) || action.status !== 'succeeded')
       throw new BrokerFault('action_not_found');
-    if (action.kind !== 'computer.screenshot' && !(await this.deviceScreenShared(action)))
+    if (
+      !OWN_COMPUTER_PICTURE_TOOLS.includes(action.kind) &&
+      !(await this.deviceScreenShared(action))
+    )
       return { withheld: true, reason: DEVICE_SCREEN_WITHHELD };
     const bytes = await readScreenshot(workRoot, action);
     if (!bytes) throw new BrokerFault('action_not_found');

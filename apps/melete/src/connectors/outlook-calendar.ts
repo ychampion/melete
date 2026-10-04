@@ -19,6 +19,12 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  type CalendarRead,
+  type Occurrence,
+  type SignalSource,
+  sourceError,
+} from '../signals/types.ts';
+import {
   byStart,
   calendarManifest,
   createPayload,
@@ -82,6 +88,63 @@ const mark = (event: GraphEvent) =>
 const toolEtag = (etag: string | undefined) => (etag ? etag.replace(/^W\//, '') : null);
 const graphEtag = (etag: string) => (etag.startsWith('W/') ? etag : `W/${etag}`);
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+/** An instance as `calendarView` lists it, with the fields only a listing of instances carries. */
+export type GraphInstance = GraphEvent & {
+  type?: string;
+  seriesMasterId?: string;
+  originalStart?: string;
+  originalStartTimeZone?: string;
+  isAllDay?: boolean;
+  showAs?: string;
+  lastModifiedDateTime?: string;
+};
+
+/**
+ * One instance as Graph's `calendarView` lists it. An instance of a series
+ * (`occurrence`, or an `exception` someone changed) is named by the series and
+ * the start it was scheduled at, which stays put when it is moved. Times come
+ * in UTC because every request asks for them so.
+ */
+export function graphOccurrence(event: GraphInstance): Occurrence | null {
+  const allDay = event.isAllDay === true;
+  const time = (value: { dateTime?: string } | undefined) => {
+    if (allDay && value?.dateTime) return value.dateTime.slice(0, 10);
+    const at = instant(value?.dateTime);
+    return Number.isNaN(at) ? null : new Date(at).toISOString();
+  };
+  const start = time(event.start);
+  if (!start) return null;
+  const series =
+    (event.type === 'occurrence' || event.type === 'exception') && event.seriesMasterId;
+  const original = event.originalStart ? instant(event.originalStart) : Number.NaN;
+  const uid = series ? event.seriesMasterId : (event.iCalUId ?? event.id);
+  if (!uid) return null;
+  return {
+    uid,
+    occurrence: series && !Number.isNaN(original) ? new Date(original).toISOString() : null,
+    title: event.subject ?? '',
+    start,
+    end: time(event.end) ?? start,
+    all_day: allDay,
+    location: event.location?.displayName ?? '',
+    status: event.isCancelled
+      ? 'cancelled'
+      : event.showAs === 'tentative'
+        ? 'tentative'
+        : 'confirmed',
+    attendees: Array.isArray(event.attendees) ? event.attendees.length : 0,
+    time_zone: event.originalStartTimeZone ?? null,
+    ref: event.id ?? null,
+    updated_at:
+      event.lastModifiedDateTime && !Number.isNaN(Date.parse(event.lastModifiedDateTime))
+        ? new Date(Date.parse(event.lastModifiedDateTime)).toISOString()
+        : null,
+  };
+}
+
+/** Most pages of instances one read walks through. */
+const MAX_OCCURRENCE_PAGES = 10;
 
 function eventView(event: GraphEvent): EventView {
   const time = (value: { dateTime?: string } | undefined) => {
@@ -148,6 +211,71 @@ export class OutlookCalendarConnector implements Connector {
       this.config.fetcher,
     );
   }
+
+  /** Every instance touching the window, from Graph's `calendarView`, which expands series itself. */
+  readonly signals: SignalSource = {
+    stream: 'calendar',
+    occurrences: async (window): Promise<CalendarRead> => {
+      const items: Occurrence[] = [];
+      let complete = false;
+      let link: string | undefined = `${this.config.base}/calendarView?${new URLSearchParams({
+        startDateTime: window.from,
+        endDateTime: window.to,
+        $top: '100',
+        $orderby: 'start/dateTime',
+        $select:
+          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+      })}`;
+      for (let page = 0; page < MAX_OCCURRENCE_PAGES && link; page++) {
+        const response = await bearerRequest(
+          this.config.access,
+          link,
+          { headers: { prefer: PREFER } },
+          this.config.fetcher,
+        );
+        if (!response.ok) throw await sourceError(response);
+        const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
+          value?: GraphInstance[];
+          '@odata.nextLink'?: unknown;
+        } | null;
+        for (const event of listed?.value ?? []) {
+          const occurrence = graphOccurrence(event);
+          if (occurrence) items.push(occurrence);
+        }
+        const next = listed?.['@odata.nextLink'];
+        if (next === undefined || next === null) {
+          complete = true;
+          break;
+        }
+        // Only Graph's own address for this account is followed.
+        link =
+          typeof next === 'string' && next.startsWith(`${this.config.base}/`) ? next : undefined;
+      }
+      return { items, complete };
+    },
+    // An instance no longer listed is looked up by its own id: gone, or moved.
+    confirm: async ({ ref }) => {
+      if (!ref || !/^[A-Za-z0-9=_-]{1,1024}$/.test(ref)) return 'unknown';
+      const response = await bearerRequest(
+        this.config.access,
+        `${this.config.base}/events/${encodeURIComponent(ref)}?${new URLSearchParams({
+          $select:
+            'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime',
+        })}`,
+        { headers: { prefer: PREFER } },
+        this.config.fetcher,
+      );
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {});
+        return 'gone';
+      }
+      if (!response.ok) throw await sourceError(response);
+      return (
+        graphOccurrence((await boundedJson(response, MAX_RESPONSE_BYTES)) as GraphInstance) ??
+        'unknown'
+      );
+    },
+  };
 
   private success(action: Action, detail: JsonObject, uid: string | null = null): DispatchResult {
     return {
