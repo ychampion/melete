@@ -1335,6 +1335,45 @@ withDb('room approvals', () => {
     expect(runs).toBe(1);
   }, 90_000);
 
+  test("turning guests' asks off ends the requests guests made, withdraws what they wait on, and says so", async () => {
+    const { sql } = database();
+    const { roomId, notes } = await makeRoom('Guests off');
+    const guests = await askAndWait(world.dan, roomId, notes);
+    const members = await askAndWait(world.bob, roomId, notes);
+    const { card: seen } = await card(world.alice, roomId, guests.threadId, guests.approvalId);
+    await setPolicy(roomId, { guests_may_ask: false });
+
+    // The guest's request ends, and the permission it waited on is withdrawn.
+    const [ended] = await sql`select state from job where id = ${guests.requestId}`;
+    expect(ended?.state).toBe('cancelled');
+    expect(await decision(guests.approvalId)).toEqual({ decision: 'denied', decided_by: 'policy' });
+    const [effect] = await sql`select status from action where id = ${guests.actionId}`;
+    expect(effect?.status).toBe('failed');
+    const late = await answer(world.alice, roomId, guests.approvalId, {
+      option: 'allow_once',
+      version: seen.version,
+      payload_hash: guests.hash,
+    });
+    expect(late.status).not.toBe(200);
+    // The thread tells everyone in it why, the guest included.
+    const view = roomThreadView.parse(
+      await ok(send(world.dan.cookie, `/rooms/${roomId}/threads/${guests.threadId}`)),
+    );
+    expect(
+      view.messages.some(
+        (message) =>
+          message.kind === 'system' &&
+          message.text ===
+            'Guests can no longer ask the agent in this room, so this request has stopped.',
+      ),
+    ).toBe(true);
+
+    // A member's request is untouched.
+    const [kept] = await sql`select state from job where id = ${members.requestId}`;
+    expect(kept?.state).toBe('waiting_for_approval');
+    expect(await decision(members.approvalId)).toEqual({ decision: null, decided_by: null });
+  }, 90_000);
+
   test("only the room's owner adds an account to it: a member and a guest are refused, and nothing is made", async () => {
     const { sql } = database();
     const { roomId } = await makeRoom('Who adds');

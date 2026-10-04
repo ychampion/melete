@@ -7,6 +7,8 @@
 import { createHash } from 'node:crypto';
 import {
   displayNameText,
+  isTerminal,
+  type JobState,
   type RoomPolicy,
   type RoomRole,
   type RoomStreamFrame,
@@ -38,6 +40,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
+import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
@@ -616,15 +619,76 @@ export class RoomService {
   /**
    * Change how the room works. Owners only. A new approver rule applies to
    * every permission answered from now on, the ones already waiting included:
-   * who may answer is checked when the answer is given.
+   * who may answer is checked when the answer is given. Turning guests' asks
+   * off ends the requests guests already made, as removing a guest would.
    */
   async setPolicy(spaceId: string, actor: string, patch: Partial<RoomPolicy>) {
-    const policy = await this.deps.jobs.transaction(async (tx) => {
+    const jobs = this.deps.jobs;
+    const result = await jobs.transaction(async (tx) => {
       const access = await this.access(tx, spaceId, actor, true);
       if (access.role !== 'owner') throw roomOwnerOnly();
-      return writeRoomPolicy(tx, spaceId, actor, patch);
+      const before = await readRoomPolicy(tx, spaceId);
+      const policy = await writeRoomPolicy(tx, spaceId, actor, patch);
+      const cancelled =
+        before.guests_may_ask && !policy.guests_may_ask
+          ? await this.endGuestRequests(tx, spaceId)
+          : [];
+      return { policy, cancelled };
     });
-    return { policy };
+    for (const id of result.cancelled) jobs.onCancelled?.(id);
+    return { policy: result.policy };
+  }
+
+  /**
+   * End every request a guest asked of the room that is still under way, once
+   * guests may no longer ask. Work in flight is fenced as a change to the
+   * room's connections fences it, the permissions it waits on are withdrawn,
+   * and the thread says why the request stopped.
+   */
+  private async endGuestRequests(tx: Transaction, spaceId: string): Promise<string[]> {
+    const asked = (
+      await tx
+        .select({ id: job.id, state: job.state })
+        .from(job)
+        .innerJoin(principal, eq(principal.id, job.requestedByPrincipalId))
+        .where(and(eq(job.spaceId, spaceId), eq(job.audience, 'room'), eq(principal.kind, 'guest')))
+        .orderBy(job.id)
+    ).filter((row) => !isTerminal(row.state as JobState));
+    if (!asked.length) return [];
+    const [parent] = await tx
+      .update(space)
+      .set({ policyGeneration: sql`${space.policyGeneration} + 1` })
+      .where(eq(space.id, spaceId))
+      .returning();
+    if (!parent) throw missing();
+    const ids = asked.map((row) => row.id);
+    await new PolicyService(this.deps.jobs).invalidateInTransaction(
+      tx,
+      spaceId,
+      parent.policyGeneration,
+      null,
+      'policy_changed',
+      ids,
+    );
+    const room = await roomPrincipalOf(tx, spaceId);
+    const cancelled: string[] = [];
+    for (const id of ids) {
+      const row = await this.deps.jobs.lock(tx, id);
+      if (!row || isTerminal(row.state as JobState)) continue;
+      await this.deps.jobs.cancelInTransaction(tx, row, 'guests_may_not_ask', { end: true });
+      cancelled.push(id);
+      if (row.roomThreadId)
+        await postToThread(tx, {
+          spaceId,
+          threadId: row.roomThreadId,
+          author: room.id,
+          kind: 'system',
+          viaAgent: false,
+          text: 'Guests can no longer ask the agent in this room, so this request has stopped.',
+          key: `guests-off:${id}`,
+        });
+    }
+    return cancelled;
   }
 
   /**
