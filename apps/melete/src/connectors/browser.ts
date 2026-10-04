@@ -1,6 +1,8 @@
 import type { ConnectorManifest, JsonObject, JsonValue } from '@melete/contracts';
 import { jsonObject, jsonValue } from '@melete/contracts';
 import { z } from 'zod';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
 import type { BrowserArtifactSink } from '../workers/browser/artifacts.ts';
 import { planBrowserRecipe, recipePlanDetail } from '../workers/browser/planning.ts';
 import type { BrowserRecipeStore } from '../workers/browser/recipes.ts';
@@ -9,9 +11,27 @@ import { BrowserFault } from '../workers/browser/sessions.ts';
 import type { Connector } from './types.ts';
 
 const text = { type: 'string', minLength: 1, maxLength: 8000 };
+/**
+ * A job's browser tools act on that job's current browser session, opened on first use. The id
+ * and epoch are optional: they come back in every result, for a caller that wants to name them.
+ */
 const sessionProperties = {
-  session_id: { type: 'string', minLength: 1 },
-  control_epoch: { type: 'integer', minimum: 0 },
+  session_id: {
+    type: 'string',
+    minLength: 1,
+    description:
+      "Optional. Leave it out to use this job's current browser session; pass one only as returned by an earlier browser result.",
+  },
+  control_epoch: {
+    type: 'integer',
+    minimum: 0,
+    description: 'Optional. The control_epoch returned with session_id.',
+  },
+};
+const observationProperty = {
+  ...text,
+  description:
+    'Optional. The id of the latest observation; pass it to repeat an earlier identical step.',
 };
 const schema = (properties: Record<string, JsonValue>, required: string[]) => ({
   type: 'object',
@@ -19,7 +39,6 @@ const schema = (properties: Record<string, JsonValue>, required: string[]) => ({
   required,
   additionalProperties: false,
 });
-const inputRequired = ['session_id', 'control_epoch'];
 const intentSchema = {
   type: 'object',
   properties: {
@@ -45,18 +64,18 @@ const definitions: Array<{
   {
     name: 'open',
     description:
-      'Open an allowed HTTP(S) URL. Pass the latest observation id as after_observation. First observe to obtain the session and control epoch.',
+      "Open an allowed HTTP(S) URL in this job's browser, starting the browser if needed. Returns an observation of the page.",
     effect: 'read',
-    properties: { url: { type: 'string', format: 'uri' }, after_observation: text },
-    required: [...inputRequired, 'url', 'after_observation'],
+    properties: { url: { type: 'string', format: 'uri' }, after_observation: observationProperty },
+    required: ['url'],
   },
   {
     name: 'observe',
     description:
-      'Initially call with {}. To refresh, pass session_id, control_epoch and after_observation equal to the previous observation id. Optional recipe_id and recipe_version check a stored recipe against the visible schema. Returns artifact handles.',
+      "Look at the current page in this job's browser; {} is enough. To look again after a change, pass after_observation equal to the previous observation id. Optional recipe_id and recipe_version check a stored recipe against the visible schema. Returns artifact handles and submit intents.",
     effect: 'read',
     properties: {
-      after_observation: text,
+      after_observation: observationProperty,
       recipe_id: { type: 'string', minLength: 1, maxLength: 120 },
       recipe_version: { type: 'integer', minimum: 1 },
     },
@@ -65,46 +84,46 @@ const definitions: Array<{
   {
     name: 'fill',
     description:
-      'Fill one visible field by exact accessible label. Pass the latest observation id as after_observation; observe again before repeating an earlier edit. Authentication fields require human control.',
+      'Fill one visible field by exact accessible label. To repeat an earlier edit, observe again and pass that observation id as after_observation. Authentication fields require human control.',
     effect: 'write_reversible',
     properties: {
       label: text,
       value: { type: 'string', maxLength: 8000 },
-      after_observation: text,
+      after_observation: observationProperty,
     },
-    required: [...inputRequired, 'label', 'value', 'after_observation'],
+    required: ['label', 'value'],
   },
   {
     name: 'click',
     description:
-      'Click one reversible control by exact role and name. Pass the latest observation id as after_observation; observe before repeating an earlier click. Consequential controls require browser.submit.',
+      'Click one reversible control by exact role and name. To repeat an earlier click, observe again and pass that observation id as after_observation. Consequential controls require browser.submit.',
     effect: 'write_reversible',
-    properties: { role: text, name: text, after_observation: text },
-    required: [...inputRequired, 'role', 'name', 'after_observation'],
+    properties: { role: text, name: text, after_observation: observationProperty },
+    required: ['role', 'name'],
   },
   {
     name: 'select',
     description:
-      'Select a visible choice by exact accessible label. Pass the latest observation id as after_observation; observe before repeating an earlier choice.',
+      'Select a visible choice by exact accessible label. To repeat an earlier choice, observe again and pass that observation id as after_observation.',
     effect: 'write_reversible',
-    properties: { label: text, value: text, after_observation: text },
-    required: [...inputRequired, 'label', 'value', 'after_observation'],
+    properties: { label: text, value: text, after_observation: observationProperty },
+    required: ['label', 'value'],
   },
   {
     name: 'read',
     description:
       'Read a visible element by selector or accessible role and name. Pass the latest observation id as after_observation to refresh an earlier read.',
     effect: 'read',
-    properties: { selector: text, role: text, name: text, after_observation: text },
-    required: [...inputRequired],
+    properties: { selector: text, role: text, name: text, after_observation: observationProperty },
+    required: [],
   },
   {
     name: 'submit',
     description:
-      'Submit exactly one observed intent, including its destination and complete field values. Approval is required.',
+      'Submit exactly one intent from the latest observation, copied whole, including its destination and complete field values. Approval is required.',
     effect: 'write_external',
     properties: { intent: intentSchema },
-    required: [...inputRequired, 'intent'],
+    required: ['intent'],
   },
 ];
 
@@ -148,6 +167,22 @@ const output = z.strictObject({
   result: jsonObject.optional(),
 });
 
+const LEAVE_OUT =
+  "Leave session_id and control_epoch out to use this job's current browser session.";
+
+/** The sessions this job has held, newest first. Scoped to the job and its space, never wider. */
+async function jobSessions(
+  tx: Query,
+  scope: { space_id: string; job_id: string },
+): Promise<Array<{ id: string; control_epoch: number }>> {
+  return (await tx`select id, control_epoch from browser_session_binding
+    where space_id = ${scope.space_id} and job_id = ${scope.job_id}
+    order by updated_at desc, id limit 5`) as unknown as Array<{
+    id: string;
+    control_epoch: number;
+  }>;
+}
+
 export function createBrowserConnector(options: {
   sessions: Pick<BrowserSessionService, 'lease' | 'park'>;
   artifacts: BrowserArtifactSink;
@@ -156,6 +191,36 @@ export function createBrowserConnector(options: {
 }): Connector {
   return {
     manifest: browserManifest,
+    /**
+     * A named session must be one this job holds; anything else is refused with the job's own
+     * sessions listed, never another job's. A submit with no session is bound here, at proposal,
+     * to the job's current session and the epoch it was observed under, so an approval waits on
+     * exactly what was seen.
+     */
+    async prepare(payload, ctx, tx) {
+      const named = typeof payload.session_id === 'string' ? payload.session_id : undefined;
+      if (!named && payload.intent === undefined) return payload;
+      const held = await jobSessions(tx, ctx);
+      const bound = named ? held.find((session) => session.id === named) : held[0];
+      if (!bound) {
+        if (!named)
+          throw new BrokerFault(
+            'payload_invalid',
+            'This job has no browser page to submit from yet. Open the page, fill it, then submit an intent from the latest observation.',
+          );
+        throw new BrokerFault(
+          'payload_invalid',
+          `There is no browser session ${named} in this job. ${LEAVE_OUT}${
+            held.length
+              ? ` This job's sessions: ${held.map((session) => session.id).join(', ')}.`
+              : ''
+          }`,
+        );
+      }
+      if (payload.intent === undefined || Number.isSafeInteger(payload.control_epoch))
+        return { ...payload, session_id: bound.id };
+      return { ...payload, session_id: bound.id, control_epoch: bound.control_epoch };
+    },
     async execute(action, ctx) {
       if (
         action.job_id !== ctx.job_id ||
@@ -170,17 +235,26 @@ export function createBrowserConnector(options: {
       const payload = action.canonical_payload;
       const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       let activeSessionId = sessionId;
-      if (kind !== 'observe' && (!sessionId || !Number.isSafeInteger(payload.control_epoch)))
+      // A commit is bound at proposal to the session and epoch it was planned under (see prepare).
+      if (kind === 'submit' && (!sessionId || !Number.isSafeInteger(payload.control_epoch)))
         throw new Error('A planned browser session and control epoch are required');
-      if (
-        ['open', 'fill', 'click', 'select'].includes(kind) &&
-        (typeof payload.after_observation !== 'string' || !payload.after_observation)
-      )
-        throw new Error('The latest browser observation id is required');
       try {
         ctx.signal?.throwIfAborted();
-        const { session, worker } = await options.sessions.lease(ctx, sessionId);
+        const { session, worker, opened } = await options.sessions.lease(ctx, sessionId);
         activeSessionId = session.id;
+        // A browser this call just started shows a blank page. Looking at it once lets the first
+        // step act; every later epoch still needs an observation the model asked for.
+        if (opened && kind !== 'observe') {
+          const first = output.parse(
+            await worker.request('/command', {
+              session_id: session.id,
+              job_id: ctx.job_id,
+              control_epoch: session.control_epoch,
+              operation: { kind: 'observe' },
+            }),
+          );
+          if (first.session_id !== session.id) throw new Error('worker session identity mismatch');
+        }
         const operation: JsonObject = { kind };
         for (const [key, value] of Object.entries(payload))
           if (
@@ -253,6 +327,9 @@ export function createBrowserConnector(options: {
               reason += '; browser_park_failed';
             }
           }
+          // A named session that has closed since: the job's current one is a call away.
+          if (sessionId && error.reason === 'session_not_found')
+            reason = `session_not_found: browser session ${sessionId} is no longer open. ${LEAVE_OUT}`;
           return { outcome: 'failed', reason, retryable: false };
         }
         // A transport loss after an approved commit has an unknown effect and must never be retried.
