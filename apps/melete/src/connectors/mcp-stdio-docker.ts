@@ -20,7 +20,11 @@
  * uses, so a server with no network is still reachable.
  */
 import { connect } from 'node:net';
-import type { McpStdioLaunch } from '@melete/contracts';
+import {
+  MCP_IMAGE_REGISTRIES,
+  type McpStdioLaunch,
+  pullsFromPublicRegistry,
+} from '@melete/contracts';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import {
   type DockerApi,
@@ -635,7 +639,9 @@ export class DockerStdioLauncher implements StdioLauncher {
   /**
    * The image's id, pulled first when the host does not have it. A reference
    * that pins a digest runs only if the image on this host carries that
-   * digest, whatever its tag now points to.
+   * digest, whatever its tag now points to. The engine pulls only the
+   * runners' images and images on a public registry (`MCP_IMAGE_REGISTRIES`):
+   * it pulls from the host's own network, wherever a registry sends it.
    */
   private async image(reference: string, signal: AbortSignal): Promise<string> {
     const path = `/images/${encodeURIComponent(reference)}/json`;
@@ -647,6 +653,11 @@ export class DockerStdioLauncher implements StdioLauncher {
       if (!(error instanceof DockerError && error.status === 404)) throw error;
     }
     if (!found) {
+      const runner = reference === this.images.node || reference === this.images.python;
+      if (!runner && !pullsFromPublicRegistry(reference))
+        throw new Error(
+          `Server images are pulled from ${MCP_IMAGE_REGISTRIES.join(', ')}. An image from another registry runs once it is on this host.`,
+        );
       await this.docker.pull(reference, signal);
       found = (await this.docker.request('GET', path)) as Found;
     }
