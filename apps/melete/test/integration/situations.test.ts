@@ -483,6 +483,7 @@ withDb('situations', () => {
     // Read again and again, unchanged, it is the same situation, not rewritten.
     expect(conflicts[0]?.sightings).toBe(1);
     const stamp = new Date(conflicts[0]?.updated_at).getTime();
+    clock += MINUTE;
     await poll();
     const unchanged = await live(gus.id, 'meeting.conflict');
     expect([unchanged[0]?.sightings, new Date(unchanged[0]?.updated_at).getTime()]).toEqual([
@@ -801,24 +802,41 @@ withDb('situations', () => {
   }, 60_000);
 
   test('two people keeping a deadline on the same subject each keep their own', async () => {
+    // One shared space: Sam owns it and keeps a deadline through his own account;
+    // Tia asks the room, whose work reads the room's account, about the same document.
     const sam = await person('sam', { start: '08:00', end: '22:00' });
     const tia = await person('tia', { start: '08:00', end: '22:00' });
+    const { sql } = required(handle);
+    const shared = newId('sp');
+    await sql`insert into space (id, name, git_path, kind, owner_principal_id)
+      values (${shared}, 'Office', ${`/s/${shared}`}, 'shared', ${sam.id})`;
+    await sql`insert into space_membership (principal_id, space_id, role) values
+      (${sam.id}, ${shared}, 'owner'), (${tia.id}, ${shared}, 'member')`;
+    const own = newId('conn');
+    const room = newId('conn');
+    await sql`insert into connection (id, space_id, provider, label, shared_use) values
+      (${own}, ${shared}, 'test', 'Sam documents', 'owner'),
+      (${room}, ${shared}, 'test', 'Room documents', 'room')`;
+    documentSource(own, { signed: false });
+    documentSource(room, { signed: false });
+    const roomWork = await required(jobs).create({ space_id: shared, title: 'T', objective: 'T' });
+    await sql`update job set audience = 'room', principal_id = ${tia.id} where id = ${roomWork.id}`;
     const due = clock + 30 * MINUTE;
-    for (const who of [sam, tia]) {
-      const docs = await account(who, 'test', 'Documents');
-      documentSource(docs, { signed: false });
-      await required(situations).setDeadline({
-        spaceId: who.spaceId,
+    const keep = (who: Person, connectionId: string, jobId: string | null) =>
+      required(situations).setDeadline({
+        spaceId: shared,
         principalId: who.id,
         subjectKey: 'doc:shared',
-        connectionId: docs,
+        connectionId,
         title: 'The plan is signed',
         dueAt: new Date(due),
         leadSeconds: 5 * 60,
         atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
         personSet: true,
+        jobId,
       });
-    }
+    await keep(sam, own, null);
+    await keep(tia, room, roomWork.id);
     expect((await armed('doc:shared')).map((row) => row.principal_id).sort()).toEqual(
       [sam.id, tia.id].sort(),
     );
