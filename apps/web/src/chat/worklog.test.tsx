@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { applyEvents, applyHistory, fromTurns, type TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type { ExperienceEvent, Turn } from '../experience/types.ts';
-import { EditCard, ShellBlock, WorkGroup, WorkLine, WorkLog } from './WorkLog.tsx';
+import { EditCard, ShellBlock, SourcesLine, WorkGroup, WorkLine, WorkLog } from './WorkLog.tsx';
 import {
   editOf,
   foldedTurns,
@@ -334,4 +334,110 @@ test('a long message folds under "Show more"', () => {
   expect(longMessage('short')).toBe(false);
   expect(longMessage('x'.repeat(700))).toBe(true);
   expect(longMessage(Array.from({ length: 12 }, () => 'line').join('\n'))).toBe(true);
+});
+
+/** A page a search found, as the service sends it: a link and nothing to act on. */
+const page = (n: number, url: string, title: string) => ({
+  id: `act_${n}:0`,
+  title,
+  meta: 'Web',
+  facts: [],
+  primary_action: { kind: 'open' as const, label: 'Open', handle: `act_${n}:0`, url },
+  secondary_actions: [],
+  source_connection: 'conn_web',
+});
+
+test('the last word of a message drawn after a tool row joins its message', () => {
+  const transcript = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    say("I'll check the current date and look up Bun's latest"),
+    tool(entry('call:date', { title: 'Ran `date`' })),
+    say(' release.'),
+    tool(entry('call:search', { kind: 'web', title: 'Searched the web for “Bun release”' })),
+    say('Bun 1.4.2 is the latest.'),
+  ]);
+  const items = logItems(only(transcript.turns[0]));
+  expect(items.map((item) => item.type)).toEqual(['message', 'work', 'message']);
+  expect(items[0]).toMatchObject({
+    text: "I'll check the current date and look up Bun's latest release.",
+  });
+  expect(items[1]).toMatchObject({
+    work: [{ tool: { id: 'call:date' } }, { tool: { id: 'call:search' } }],
+  });
+  // A message that ended is never joined, whatever the next one starts with.
+  const ended = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    say('I checked the date.'),
+    tool(entry('call:date')),
+    say('then'),
+  ]);
+  expect(logItems(only(ended.turns[0])).map((item) => item.type)).toEqual([
+    'message',
+    'work',
+    'message',
+  ]);
+});
+
+test('the pages a search found are one quiet row of links, not a card each', () => {
+  const transcript = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    tool(entry('call:search', { kind: 'web', title: 'Searched the web for “Bun release”' })),
+    event({ type: 'card', card: page(1, 'https://github.com/oven-sh/bun/releases', 'Releases') }),
+    event({ type: 'card', card: page(2, 'https://www.bun.com/blog/bun-v1.4', 'Bun 1.4') }),
+    event({ type: 'card', card: page(3, 'https://npmjs.com/package/bun', 'bun - npm') }),
+    event({ type: 'card', card: page(4, 'https://api.github.com/repos/x', 'api.github.com') }),
+  ]);
+  const items = logItems(only(transcript.turns[0]));
+  expect(items.map((item) => item.type)).toEqual(['work', 'sources']);
+  const html = renderToStaticMarkup(
+    <WorkLog
+      turn={only(transcript.turns[0])}
+      now={0}
+      items={items}
+      finished={false}
+      renderBlock={() => 'CARD'}
+    />,
+  );
+  expect(html).toContain('4 sources');
+  expect(html).toContain('github.com, bun.com, npmjs.com +1');
+  expect(html).not.toContain('CARD');
+  const sources = only(items[1]);
+  if (sources.type !== 'sources') throw new Error('not sources');
+  const opened = renderToStaticMarkup(<SourcesLine cards={sources.cards} initiallyOpen />);
+  expect(opened).toContain('href="https://www.bun.com/blog/bun-v1.4"');
+  expect(opened).toContain('Releases');
+});
+
+test('a question that repeats the message before it is told once', () => {
+  const words =
+    'This conversation looks like it is about personal finances. There is no local model set up.';
+  const question = {
+    id: 'q_privacy',
+    conversation_id: 'job_1',
+    text: words,
+    why: [],
+    if_ignored: 'Nothing is sent to a cloud model until you answer.',
+    free_text: false,
+    options: [],
+    created_at: AT,
+  };
+  const waiting = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    say(words),
+    event({ type: 'question', question }),
+    event({ type: 'status', status: 'needs_you', composer: 'send' }),
+  ]);
+  const turn = only(waiting.turns[0]);
+  expect(layoutTurn(turn).log.map((item) => item.type)).toEqual(['block']);
+  // Saved as the answer too, it is still told once.
+  const saved = { ...turn, status: 'done' as const, turn: { ...turn.turn, answer: words } };
+  expect(layoutTurn(saved).answer).toBe('');
+});
+
+test('a search held back is its own quiet row and is counted as held back', () => {
+  const held = entry('held-search:1', {
+    kind: 'web',
+    title: 'Search held back: it named something private',
+    output_summary: { text: 'Nothing was sent to a search service.' },
+  });
+  expect(summarize([{ type: 'tool', tool: held }])).toBe('Held back a search');
+  const html = renderToStaticMarkup(<WorkLine work={{ type: 'tool', tool: held }} live={false} />);
+  expect(html).toContain('Search held back: it named something private');
+  expect(html).not.toContain('Didn’t work');
 });

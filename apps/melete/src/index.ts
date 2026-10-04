@@ -1074,6 +1074,12 @@ export async function bootstrap(
                     protocol: engineProtocol(env),
                     providerUrl: providerAddress(env),
                   }),
+                // The agent is told when what the person just wrote will not be kept.
+                refusesMemoryRead: (jobId) =>
+                  privacy.refusesServiceRead(jobId, {
+                    protocol: engineProtocol(env),
+                    providerUrl: providerAddress(env),
+                  }),
                 catalog: async (bundle) =>
                   boundaryForCatalog
                     ? boundaryForCatalog.broker.catalog(

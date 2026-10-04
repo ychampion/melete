@@ -804,15 +804,19 @@ export function projectReceipt(
   review?: ActionReview | null,
   because?: BecauseLink[],
 ) {
+  // A web search is a read, but its words left Melete for an outside service,
+  // so it keeps a receipt like any change does.
+  const search = row.kind === 'web.search';
   if (
     row.status !== 'succeeded' ||
-    !['write_external', 'write_reversible', 'spend'].includes(row.effectClass) ||
+    !(search || ['write_external', 'write_reversible', 'spend'].includes(row.effectClass)) ||
     !row.receipt
   )
     return null;
+  const query = search ? plainText(object(object(row.receipt).detail).query, '', 200) : '';
   return experienceReceipt.parse({
     id: row.id,
-    what: actionLabel(row),
+    what: query ? `Searched the web for “${query}”` : actionLabel(row),
     where: plainText(connection.label, appName(connection)),
     when: row.resolvedAt?.toISOString() ?? row.createdAt.toISOString(),
     ...(undo ? { undo } : {}),
