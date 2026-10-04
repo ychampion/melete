@@ -613,7 +613,11 @@ export const filesManifest: ConnectorManifest = {
         {
           path: pathSchema,
           area: areaSchema,
-          checked: { type: 'object', description: 'Filled in by Melete; leave it out.' },
+          checked: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Filled in by Melete; leave it out.',
+          },
         },
         ['path'],
       ),
