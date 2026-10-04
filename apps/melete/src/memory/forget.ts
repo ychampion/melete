@@ -123,6 +123,9 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
     const claims = await tx`select id from memory_claims where space_id = ${record.space_id}`;
     for (const claim of claims) affected.add(claim.id);
     await tx`update memory_sources set state = ${record.operation === 'revoke' ? 'revoked' : 'suppressed'} where space_id = ${record.space_id} and eligibility_generation <= ${record.eligibility_cutoff}`;
+    // Forgetting everything takes the agent's own notes too: those written
+    // before it, so a replay never takes notes kept since.
+    await tx`delete from memory_agent_notes where space_id = ${record.space_id} and created_at <= ${record.recorded_at}::timestamptz`;
   }
   const kept = new Set<string>();
   /** For each kept claim, the revisions removed from it. */

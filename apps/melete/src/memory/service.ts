@@ -1,11 +1,12 @@
 import type { PgBoss } from 'pg-boss';
 import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
 import { type CommitResult, commitExtraction } from './commit.ts';
-import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
+import { lockSpace, MemoryError, type MemoryScope, type MemorySql, stableId } from './db.ts';
 import { runDigests } from './digest.ts';
 import { type ExtractionGateway, proposeExtraction } from './extract.ts';
 import { cleanupMemory } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
+import { embedNotes } from './notes.ts';
 import { type RestrictionJournal, restoreMemory } from './restore.ts';
 import { observationProposals } from './tier0.ts';
 import { type EmbeddingProvider, runViewWork } from './views.ts';
@@ -26,6 +27,7 @@ export type MemoryServiceOptions = {
   boss: PgBoss;
   journal: RestrictionJournal;
   gateway?: ExtractionGateway;
+  /** Semantic recall's embedder; left out, recall and notes stay lexical. */
   embedding?: EmbeddingProvider;
   markdown?: MarkdownViews;
   onError?: (code: string) => void;
@@ -154,10 +156,53 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
     await options.markdown?.build(scope);
     await options.markdown?.proposals(scope);
   }
+  // A note is embedded shortly after it is written. A failing provider is
+  // asked again after a growing pause, up to five minutes, not every tick.
+  const embedding = options.embedding;
+  if (embedding) {
+    const pause = notePauses.get(embedding);
+    if (!pause || Date.now() >= pause.until)
+      await embedNotes(options.sql, embedding)
+        .then(() => notePauses.delete(embedding))
+        .catch(() => {
+          const failures = (pause?.failures ?? 0) + 1;
+          notePauses.set(embedding, {
+            failures,
+            until: Date.now() + Math.min(300_000, 2_000 * 2 ** failures),
+          });
+          options.onError?.('memory_note_embedding_failed');
+        });
+  }
+}
+const notePauses = new WeakMap<EmbeddingProvider, { failures: number; until: number }>();
+/**
+ * Spaces whose index was built without this embedding (or with another) are
+ * rebuilt once, so memory kept before semantic recall was configured is
+ * embedded too. Until then their recall stays lexical.
+ */
+export async function queueEmbeddingBackfill(sql: MemorySql, embedding: EmbeddingProvider) {
+  const spaces = await sql`select p.space_id, p.data_revision from memory_spaces p
+    join memory_index_manifest m on m.space_id = p.space_id
+    where p.restore_ready and not p.revoked and p.data_revision > 0
+      and (m.embedding is null or (m.embedding->>'partial')::boolean is true
+        or m.embedding->>'model' is distinct from ${embedding.model}
+        or m.embedding->>'version' is distinct from ${embedding.version}
+        or (m.embedding->>'dimensions')::integer is distinct from ${embedding.dimensions})`;
+  for (const space of spaces) {
+    const target = String(space.data_revision);
+    await sql`insert into memory_outbox (id, space_id, kind, target_id)
+      values (${stableId(space.space_id, 'index', target)}, ${space.space_id}, 'index', ${target})
+      on conflict (id) do update set completed_at = null`;
+  }
+  return spaces.length;
 }
 /** The restore check precedes queue delivery, inference, derived work, and accepting memory traffic. */
 export async function startMemoryService(options: MemoryServiceOptions) {
   await restoreMemory(options.sql, options.journal);
+  if (options.embedding)
+    await queueEmbeddingBackfill(options.sql, options.embedding).catch(() =>
+      options.onError?.('memory_embedding_backfill_failed'),
+    );
   await options.boss.createQueue(MEMORY_EXTRACT_QUEUE);
   // Structured observations use Tier 0 without a model. Other evidence has a
   // durable attempt cap when no extraction gateway is configured.

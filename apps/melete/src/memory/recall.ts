@@ -20,7 +20,13 @@ import {
   type MemoryTx,
   stableId,
 } from './db.ts';
-import { cosine, type EmbeddingProvider, LEXICAL_RECIPE, validateVector } from './views.ts';
+import {
+  decodeVector,
+  type EmbeddingProvider,
+  LEXICAL_RECIPE,
+  normalized,
+  validateVector,
+} from './views.ts';
 
 export type Candidate = { claim_id: string; revision: number; score: number };
 export type ReadAudience = {
@@ -80,6 +86,8 @@ export type RecallOptions = {
   privateOrigin?: boolean;
   /** The agent answering may not read memory: nothing is looked up or returned. */
   withheld?: boolean;
+  /** Told, with a short code, when semantic recall could not be used and recall stayed lexical. */
+  onError?: (code: string) => void;
 };
 export const recipeFor = (options: RecallOptions) =>
   options.embedding
@@ -337,6 +345,16 @@ export function attemptRecallQuery(bundle: {
   return [...said, bundle.job.objective].join('\n').slice(0, 2000);
 }
 export const PROFILE_SIZE = 8;
+/** The most semantic candidates one recall ranks beside the lexical ones. */
+export const DENSE_CANDIDATES = 100;
+/**
+ * A semantic candidate's least similarity, as a share of the closest one's.
+ * Measured on held-out paraphrases with the default model, the memory asked
+ * for was never below 0.86 of the closest, and most unrelated ones were.
+ */
+export const DENSE_RELATIVE_FLOOR = 0.85;
+/** How long a recall waits for its query's embedding before recalling lexically. */
+export const QUERY_EMBED_MS = 2000;
 /**
  * The preferences every attempt carries, newest first, read from the claims
  * themselves. The profile view is rebuilt behind every write, so reading it
@@ -357,6 +375,201 @@ export async function profileCandidates(
     order by r.data_revision desc, c.id limit ${PROFILE_SIZE}`;
   return rows.map((row) => ({ claim_id: row.claim_id, revision: row.revision, score: 1 }));
 }
+/** The most vectors one space's semantic recall loads; past it, recall stays lexical. */
+export const DENSE_ROW_CAP = 2000;
+/** How long loading a space's vectors may take before recall goes ahead lexically. */
+export const DENSE_LOAD_MS = 1500;
+/** How many of the closest vectors are checked for eligibility, at most. */
+const DENSE_SHORTLIST = 300;
+
+/** One space's vectors for one index generation, scaled to length one, side by side. */
+type DenseMatrix = {
+  claimIds: string[];
+  revisions: number[];
+  dimensions: number;
+  vectors: Float32Array;
+  query: Float32Array;
+};
+type Loaded = Omit<DenseMatrix, 'query'>;
+
+/**
+ * Loaded vectors, by space, generation and embedding. Every write moves the
+ * generation, so an entry is never stale: an old one is simply not asked for.
+ */
+const loadedVectors = new Map<string, Loaded>();
+const LOADED_SPACES = 16;
+
+const logDense = (code: string) => process.stderr.write(`memory: recall_lexical:${code}\n`);
+
+async function loadVectors(
+  sql: MemorySql,
+  spaceId: string,
+  generation: number,
+  embedding: EmbeddingProvider,
+): Promise<Loaded> {
+  const key = `${spaceId}\u0000${generation}\u0000${embedding.model}@${embedding.version}:${embedding.dimensions}:${embedding.recipe}`;
+  const hit = loadedVectors.get(key);
+  if (hit) {
+    loadedVectors.delete(key);
+    loadedVectors.set(key, hit);
+    return hit;
+  }
+  const rows = await sql.begin(async (tx) => {
+    await tx`select set_config('statement_timeout', ${String(DENSE_LOAD_MS)}, true)`;
+    return tx`select claim_id, revision, model, version, dimensions, recipe, vector from memory_dense_entries
+      where space_id = ${spaceId} and generation = ${generation} limit ${DENSE_ROW_CAP + 1}`;
+  });
+  if (rows.length > DENSE_ROW_CAP) throw new MemoryError('dense_over_cap');
+  const d = embedding.dimensions;
+  const loaded: Loaded = {
+    claimIds: [],
+    revisions: [],
+    dimensions: d,
+    vectors: new Float32Array(rows.length * d),
+  };
+  for (const row of rows) {
+    // Vectors of another embedding are never compared, whatever a row says.
+    if (
+      row.model !== embedding.model ||
+      row.version !== embedding.version ||
+      row.dimensions !== d ||
+      row.recipe !== embedding.recipe
+    )
+      throw new MemoryError('embedding_space_mismatch');
+    const vector = normalized(decodeVector(row.vector, d) ?? []);
+    if (!vector) continue;
+    loaded.vectors.set(vector, loaded.claimIds.length * d);
+    loaded.claimIds.push(String(row.claim_id));
+    loaded.revisions.push(Number(row.revision));
+  }
+  loadedVectors.set(key, loaded);
+  while (loadedVectors.size > LOADED_SPACES) {
+    const oldest = loadedVectors.keys().next().value;
+    if (oldest === undefined) break;
+    loadedVectors.delete(oldest);
+  }
+  return loaded;
+}
+
+/**
+ * The request's vector and the space's vectors, or why semantic recall cannot
+ * be used now. Null `matrix` with no reason means it is not wanted: the
+ * request is empty or may not leave (a space marked private).
+ */
+async function prepareDense(
+  sql: MemorySql,
+  scope: MemoryScope,
+  request: RecallRequest,
+  embedding: EmbeddingProvider,
+): Promise<{ matrix: DenseMatrix | null; generation: number | null; unavailable?: string }> {
+  if (!request.query.trim()) return { matrix: null, generation: null };
+  try {
+    const [manifest] =
+      await sql`select generation, embedding from memory_index_manifest where space_id = ${scope.spaceId}`;
+    const info = manifest?.embedding as {
+      model?: string;
+      version?: string;
+      dimensions?: number;
+    } | null;
+    // Not built with this embedding (yet): the provider is not asked at all.
+    if (
+      !manifest ||
+      !info ||
+      info.model !== embedding.model ||
+      info.version !== embedding.version ||
+      info.dimensions !== embedding.dimensions
+    )
+      return { matrix: null, generation: null, unavailable: 'dense_not_built' };
+    const generation = Number(manifest.generation);
+    const vectors = loadVectors(sql, scope.spaceId, generation, embedding);
+    // A rejection is read below; this keeps it from going unhandled meanwhile.
+    vectors.catch(() => {});
+    const screened = embedding.screen
+      ? await embedding.screen(scope.spaceId, [request.query], request.job_id ?? null)
+      : [request.query];
+    const text = screened?.[0];
+    if (!text) return { matrix: null, generation };
+    const made = (
+      await embedding.embed([text], AbortSignal.timeout(QUERY_EMBED_MS), {
+        purpose: 'query',
+        call: {
+          spaceId: scope.spaceId,
+          jobId: request.job_id ?? null,
+          actor: scope.principalId ?? null,
+        },
+      })
+    )[0];
+    if (!made) throw new MemoryError('embedding_space_mismatch');
+    validateVector(made, embedding.dimensions);
+    const query = normalized(made);
+    if (!query) return { matrix: null, generation };
+    return { matrix: { ...(await vectors), query }, generation };
+  } catch (error) {
+    const code =
+      error instanceof MemoryError
+        ? error.code
+        : error && typeof error === 'object' && 'code' in error && error.code === '57014'
+          ? 'dense_timeout'
+          : error instanceof Error && error.name === 'TimeoutError'
+            ? 'embedding_timeout'
+            : 'dense_failed';
+    return { matrix: null, generation: null, unavailable: code };
+  }
+}
+
+/**
+ * The closest eligible revisions to the request, best first. Scored in
+ * memory; only the shortlist is read back, its audience checked in one query,
+ * and each kept one revalidated like any other candidate. Only what is nearly
+ * as close as the closest eligible one is kept.
+ */
+async function rankDense(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  request: RecallRequest,
+  matrix: DenseMatrix,
+  audiences: readonly string[],
+  kept: ReadonlySet<string> | null,
+  disputed: ReadonlySet<string>,
+): Promise<Candidate[]> {
+  const d = matrix.dimensions;
+  const scored: Candidate[] = [];
+  for (let row = 0; row < matrix.claimIds.length; row++) {
+    let score = 0;
+    const offset = row * d;
+    for (let i = 0; i < d; i++) score += (matrix.vectors[offset + i] ?? 0) * (matrix.query[i] ?? 0);
+    if (score > 0)
+      scored.push({
+        claim_id: matrix.claimIds[row] ?? '',
+        revision: matrix.revisions[row] ?? 0,
+        score,
+      });
+  }
+  scored.sort((a, b) => b.score - a.score || a.claim_id.localeCompare(b.claim_id));
+  const shortlist = scored
+    .filter((candidate) => !kept?.has(`${candidate.claim_id}:${candidate.revision}`))
+    .slice(0, DENSE_SHORTLIST);
+  if (!shortlist.length || !audiences.length) return [];
+  const visible = new Set(
+    (
+      await tx`select id from memory_claims where space_id = ${scope.spaceId}
+        and id = any(${shortlist.map((candidate) => candidate.claim_id)}::text[])
+        and not hidden and audience = any(${[...audiences]})`
+    ).map((row) => String(row.id)),
+  );
+  const ranked: Candidate[] = [];
+  let floor = 0;
+  for (const candidate of shortlist) {
+    if (ranked.length >= DENSE_CANDIDATES || candidate.score < floor) break;
+    if (!visible.has(candidate.claim_id)) continue;
+    if (!(await itemAt(tx, scope, candidate, request, disputed))) continue;
+    // The floor is set by the closest one this read may return.
+    if (!ranked.length) floor = candidate.score * DENSE_RELATIVE_FLOOR;
+    ranked.push(candidate);
+  }
+  return ranked;
+}
+
 /** A bounded read revalidates every item under the same lock that protects corrections. */
 export async function recall(
   sql: MemorySql,
@@ -365,32 +578,27 @@ export async function recall(
   options: RecallOptions = {},
 ): Promise<RecallResult> {
   const request = recallRequest.parse(raw);
-  const recipe = recipeFor(options);
+  let recipe = recipeFor(options);
   let snapshot: SpaceGeneration | null = null;
   let indexGeneration: number | null = null;
   let indexed = 0;
-  const started = Date.now();
   const deadlineMs = Math.min(
     options.deadlineMs ?? (request.path === 'investigative' ? 1500 : 500),
     3000,
   );
-  let queryVector: number[] | null = null;
-  // Embedding sees only the caller's query, never a mixed/private candidate pool.
-  if (options.embedding) {
-    try {
-      queryVector =
-        (
-          await options.embedding.embed(
-            [request.query],
-            AbortSignal.timeout(Math.max(1, deadlineMs)),
-          )
-        )[0] ?? null;
-      if (!queryVector) throw new MemoryError('embedding_space_mismatch');
-      validateVector(queryVector, options.embedding.dimensions);
-    } catch {
-      return empty(request, recipe, 'unavailable', 'index_failure');
-    }
-  }
+  // Semantic recall is prepared before the read, outside its transaction and
+  // its deadline: the request embedded, and the space's vectors loaded (or
+  // taken from the cache). Anything that goes wrong here, or is too big,
+  // leaves recall lexical, never empty.
+  const dense =
+    options.embedding && !options.withheld
+      ? await prepareDense(sql, scope, request, options.embedding)
+      : null;
+  let denseUnavailable = dense?.unavailable !== undefined;
+  if (dense?.unavailable) (options.onError ?? logDense)(dense.unavailable);
+  if (!dense?.matrix) recipe = LEXICAL_RECIPE;
+  // The deadline is the read's own: the embedding call above has its own timeout.
+  const started = Date.now();
   try {
     return await sql.begin(async (tx) => {
       await tx`select set_config('statement_timeout', ${String(Math.max(1, deadlineMs))}, true)`;
@@ -424,51 +632,6 @@ export async function recall(
         audience,
       );
       const supplement = await supplementalCandidates(tx, scope, request, indexed, audience);
-      const dense: Candidate[] = [];
-      if (options.embedding && queryVector) {
-        const info = manifest.embedding as {
-          model: string;
-          version: string;
-          dimensions: number;
-        } | null;
-        if (
-          !info ||
-          info.model !== options.embedding.model ||
-          info.version !== options.embedding.version ||
-          info.dimensions !== options.embedding.dimensions
-        )
-          throw new MemoryError('embedding_space_mismatch');
-        const rows =
-          await tx`select d.* from memory_dense_entries d join memory_claims c on c.id = d.claim_id
-          where d.space_id = ${scope.spaceId} and d.generation = ${manifest.generation} and not c.hidden and c.audience = any(${audience.audiences}) limit 2001`;
-        if (rows.length > 2000) throw new MemoryError('index_failure');
-        for (const row of rows) {
-          const candidate = { claim_id: row.claim_id, revision: row.revision, score: 0 };
-          // Access and temporal authority precede dense ranking too.
-          if (!(await itemAt(tx, scope, candidate, request, disputed))) continue;
-          if (
-            row.model !== info.model ||
-            row.version !== info.version ||
-            row.dimensions !== info.dimensions ||
-            row.recipe !== options.embedding.recipe
-          )
-            throw new MemoryError('embedding_space_mismatch');
-          const score = cosine(queryVector, row.vector as number[]);
-          if (score > 0) dense.push({ ...candidate, score });
-        }
-        dense.sort((a, b) => b.score - a.score);
-      }
-      const merged = new Map<string, Candidate>();
-      // Independent candidate sets are merged before ranking; lexical-only matches are retained.
-      for (const set of [lexical, dense.slice(0, 100), supplement])
-        set.forEach((candidate, rank) => {
-          const key = `${candidate.claim_id}:${candidate.revision}`;
-          const prior = merged.get(key);
-          merged.set(key, { ...candidate, score: (prior?.score ?? 0) + 1 / (60 + rank) });
-        });
-      if (options.includeProfile && request.mode === 'current')
-        for (const item of await profileCandidates(tx, scope, audience.audiences))
-          merged.set(`${item.claim_id}:${item.revision}`, { ...item, score: 1 });
       // Claim revisions learned from a private conversation, left out unless asked for.
       const kept = options.privateOrigin
         ? null
@@ -479,6 +642,37 @@ export async function recall(
                 where s.space_id = ${scope.spaceId} and s.private_origin is not null`
             ).map((row) => `${row.claim_id}:${row.revision}`),
           );
+      const semantic: Candidate[] = [];
+      if (dense?.matrix) {
+        if (dense.generation !== manifest.generation) {
+          // The index moved on since the vectors were read: words alone this time.
+          recipe = LEXICAL_RECIPE;
+          denseUnavailable = true;
+          (options.onError ?? logDense)('dense_generation_moved');
+        } else
+          semantic.push(
+            ...(await rankDense(
+              tx,
+              scope,
+              request,
+              dense.matrix,
+              audience.audiences,
+              kept,
+              disputed,
+            )),
+          );
+      }
+      const merged = new Map<string, Candidate>();
+      // Independent candidate sets are merged before ranking; lexical-only matches are retained.
+      for (const set of [lexical, semantic, supplement])
+        set.forEach((candidate, rank) => {
+          const key = `${candidate.claim_id}:${candidate.revision}`;
+          const prior = merged.get(key);
+          merged.set(key, { ...candidate, score: (prior?.score ?? 0) + 1 / (60 + rank) });
+        });
+      if (options.includeProfile && request.mode === 'current')
+        for (const item of await profileCandidates(tx, scope, audience.audiences))
+          merged.set(`${item.claim_id}:${item.revision}`, { ...item, score: 1 });
       const items: RecallItem[] = [];
       let used = 0;
       let truncated = supplement.length > (request.path === 'investigative' ? 200 : 100);
@@ -498,7 +692,7 @@ export async function recall(
       }
       const lag = indexed < space.data_revision;
       return {
-        status: lag || truncated ? 'degraded' : 'complete',
+        status: lag || truncated || denseUnavailable ? 'degraded' : 'complete',
         snapshot,
         index_generation: indexGeneration,
         items,
@@ -508,7 +702,13 @@ export async function recall(
           authoritative_revision: space.data_revision as number,
           supplemented: supplement.length,
           truncated,
-          reason: lag ? 'index_lag' : truncated ? 'budget' : 'ready',
+          reason: lag
+            ? 'index_lag'
+            : truncated
+              ? 'budget'
+              : denseUnavailable
+                ? 'dense_unavailable'
+                : 'ready',
         },
         recipe,
         token_budget: { limit: request.max_tokens, used, counter: TOKEN_COUNTER },

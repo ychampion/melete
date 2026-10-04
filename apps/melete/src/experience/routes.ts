@@ -334,6 +334,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /memory/items/{id}/why': (spaceId, c) =>
       memory?.why(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
       unavailable('Your saved details are not connected yet.'),
+    'GET /memory/notes': (spaceId, c) =>
+      memory?.notes(spaceId, c.get('owner').id) ??
+      unavailable('Your saved details are not connected yet.'),
+    'DELETE /memory/notes/{id}': (spaceId, c) =>
+      memory?.forgetNote(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable('Your saved details are not connected yet.'),
     'GET /memory/settings': (_spaceId, c) =>
       memory?.settings(c.get('owner').id) ??
       unavailable('Your saved details are not connected yet.'),

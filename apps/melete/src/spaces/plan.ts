@@ -276,6 +276,7 @@ const MEMORY_TABLES = [
   'memory_claims',
   'memory_index_entries',
   'memory_dense_entries',
+  'memory_agent_notes',
   'memory_work',
   'memory_sources',
   'memory_streams',

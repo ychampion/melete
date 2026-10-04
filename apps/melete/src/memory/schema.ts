@@ -702,3 +702,40 @@ export const memoryRoomCapture = pgTable(
   },
   (t) => [index('memory_room_capture_source').on(t.sourceId)],
 );
+/**
+ * What the agent learned for itself across chats: its own working notes. A note
+ * is never the person's statement. It is recalled to the agent labelled as its
+ * own, at `inferred` trust, and the person sees and deletes it in Memory.
+ *
+ * A note belongs to the person whose work wrote it and to the space that work
+ * ran in. Like private memory it is read back only for that person as the
+ * space's owner, never into a public compartment, and a note written in a
+ * private conversation (`private_origin`) only into requests that stay on the
+ * person's own model. `embedding` holds its vector for semantic recall, under
+ * the embedding identity in `embedding_model`; a private note is embedded only
+ * by a model on the person's own machine, or not at all.
+ */
+export const memoryAgentNotes = pgTable(
+  'memory_agent_notes',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id),
+    principalId: text('principal_id').notNull(),
+    /** The chat the note was written in; kept as a plain id, since chats can be removed. */
+    jobId: text('job_id'),
+    content: text('content').notNull(),
+    privateOrigin: text('private_origin'),
+    /** `outside` when the chat it was written in had read outside content: never an instruction. */
+    origin: text('origin').notNull().default('agent'),
+    embeddingModel: text('embedding_model'),
+    embedding: jsonb('embedding'),
+    createdAt: created(),
+  },
+  (t) => [
+    index('memory_agent_notes_owner').on(t.spaceId, t.principalId, t.createdAt),
+    check('memory_agent_notes_content', sql`char_length(${t.content}) between 1 and 2000`),
+    check('memory_agent_notes_origin', sql`${t.origin} in ('agent', 'outside')`),
+  ],
+);

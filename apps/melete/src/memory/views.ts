@@ -12,23 +12,85 @@ import { profileCandidates } from './recall.ts';
 
 export const LEXICAL_RECIPE = 'simple-lexical-v1';
 export const MAX_INDEX_ROWS = 2000;
+/** Whose memory an embedding call reads, so its cost is charged to that person. */
+export type EmbeddingCall = {
+  spaceId: string;
+  /** The conversation the text came from, when it came from one. */
+  jobId?: string | null;
+  /** The person who caused the call, when the caller knows them. */
+  actor?: string | null;
+};
 export type EmbeddingProvider = {
   model: string;
   version: string;
   dimensions: number;
   recipe: string;
-  embed(text: string[], signal: AbortSignal): Promise<number[][]>;
+  /**
+   * The model runs on the person's own machine or network. Only such a model
+   * may read what memory learned in a private conversation; a cloud embedder
+   * never sees it, and that memory is recalled lexically.
+   */
+  local?: boolean;
+  /** `purpose` tells a model that embeds questions and passages differently which this is. */
+  embed(
+    text: string[],
+    signal: AbortSignal,
+    options?: { purpose?: 'query' | 'document'; call?: EmbeddingCall },
+  ): Promise<number[][]>;
+  /**
+   * What of each text may be sent for this space: the details the privacy
+   * settings detect swapped for their kind, or null when nothing from the
+   * space may leave (a space the person marked private). Left out, texts are
+   * sent as given, which only a local model should do.
+   */
+  screen?(spaceId: string, texts: string[], jobId?: string | null): Promise<string[] | null>;
+  /** How calls to the provider have gone, for health. */
+  status?(): import('./embedding.ts').EmbeddingStatus;
 };
+/** How many texts one embedding request carries. */
+export const EMBED_BATCH = 64;
 export type IndexableRevision = {
   claim_id: string;
   revision: number;
   text: string;
   kind: string;
   status: string;
+  /** Learned from a conversation that was private when it was captured. */
+  private: boolean;
 };
 export function validateVector(vector: number[], dimensions: number) {
   if (vector.length !== dimensions || !vector.every(Number.isFinite))
     throw new MemoryError('embedding_space_mismatch');
+}
+const VECTOR_PREFIX = 'f32:';
+/**
+ * A vector as it is stored: float32, base64, about a quarter the size of JSON
+ * numbers and read without parsing each one.
+ */
+export function encodeVector(vector: readonly number[]): string {
+  const floats = Float32Array.from(vector);
+  return `${VECTOR_PREFIX}${Buffer.from(floats.buffer, floats.byteOffset, floats.byteLength).toString('base64')}`;
+}
+/** A stored vector, as `encodeVector` wrote it or as JSON numbers; null when it is neither, or of another size. */
+export function decodeVector(value: unknown, dimensions: number): Float32Array | null {
+  if (typeof value === 'string' && value.startsWith(VECTOR_PREFIX)) {
+    const bytes = Buffer.from(value.slice(VECTOR_PREFIX.length), 'base64');
+    if (bytes.byteLength !== dimensions * 4) return null;
+    const floats = new Float32Array(dimensions);
+    new Uint8Array(floats.buffer).set(bytes);
+    return floats.every(Number.isFinite) ? floats : null;
+  }
+  if (Array.isArray(value) && value.length === dimensions && value.every(Number.isFinite))
+    return Float32Array.from(value as number[]);
+  return null;
+}
+/** The vector scaled to length one, so a dot product is its cosine; null for a zero vector. */
+export function normalized(vector: ArrayLike<number>): Float32Array | null {
+  let length = 0;
+  for (let i = 0; i < vector.length; i++) length += (vector[i] ?? 0) ** 2;
+  if (!length) return null;
+  const scale = 1 / Math.sqrt(length);
+  return Float32Array.from(vector as ArrayLike<number>, (x) => x * scale);
 }
 export function cosine(a: number[], b: number[]) {
   validateVector(b, a.length);
@@ -53,6 +115,13 @@ export async function indexableRows(
     from memory_claims c join memory_revisions r on r.claim_id = c.id join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden and r.status <> 'retracted' order by c.id, r.revision limit ${MAX_INDEX_ROWS + 1}`;
   if (rows.length > MAX_INDEX_ROWS) throw new MemoryError('index_build_budget');
+  const learnedPrivately = new Set(
+    (
+      await tx`select distinct ref.claim_id, ref.revision from memory_references ref
+        join memory_sources s on s.id = ref.source_id
+        where s.space_id = ${scope.spaceId} and s.private_origin is not null`
+    ).map((row) => `${row.claim_id}:${row.revision}`),
+  );
   const eligible: IndexableRevision[] = [];
   for (const row of rows) {
     if (!(await eligibleRevision(tx, scope, row.claim_id, row.revision))) continue;
@@ -62,9 +131,101 @@ export async function indexableRows(
       text: `${(row.domain_key as string).replace(/[.:]/g, ' ')} ${row.content} ${(await sourceExcerpts(tx, row.claim_id, row.revision)).join(' ')}`,
       kind: row.kind,
       status: row.status,
+      private: learnedPrivately.has(`${row.claim_id}:${row.revision}`),
     });
   }
   return eligible;
+}
+/** The vectors already made for this space under this embedding, by claim revision. */
+async function keptVectors(
+  sql: MemorySql,
+  scope: MemoryScope,
+  embedding: EmbeddingProvider,
+): Promise<Map<string, number[]>> {
+  const rows = await sql`select claim_id, revision, vector from memory_dense_entries
+    where space_id = ${scope.spaceId} and model = ${embedding.model} and version = ${embedding.version}
+      and dimensions = ${embedding.dimensions} and recipe = ${embedding.recipe}`;
+  const kept = new Map<string, number[]>();
+  for (const row of rows) {
+    const vector = decodeVector(row.vector, embedding.dimensions);
+    if (vector) kept.set(`${row.claim_id}:${row.revision}`, Array.from(vector));
+  }
+  return kept;
+}
+/**
+ * Vectors for the revisions this build indexes. A revision embedded by an
+ * earlier build keeps its vector, so each write embeds only what it added and
+ * a space indexed before embeddings were configured is filled in on its next
+ * build. What a cloud embedder may not read (memory learned in a private
+ * conversation, or anything in a space marked private) gets no vector and is
+ * recalled lexically. A provider that fails or refuses leaves the rest for the
+ * next build (`partial`); a vector of the wrong shape fails the build.
+ */
+async function vectorsFor(
+  sql: MemorySql,
+  scope: MemoryScope,
+  rows: IndexableRevision[],
+  embedding: EmbeddingProvider,
+): Promise<{ vectors: Map<string, number[]>; partial: boolean }> {
+  if (
+    !Number.isInteger(embedding.dimensions) ||
+    embedding.dimensions < 1 ||
+    embedding.dimensions > 4096
+  )
+    throw new MemoryError('embedding_space_mismatch');
+  const kept = await keptVectors(sql, scope, embedding);
+  const vectors = new Map<string, number[]>();
+  const missing: IndexableRevision[] = [];
+  for (const row of rows) {
+    const key = `${row.claim_id}:${row.revision}`;
+    const vector = kept.get(key);
+    if (vector) vectors.set(key, vector);
+    else if (embedding.local || !row.private) missing.push(row);
+  }
+  if (!missing.length) return { vectors, partial: false };
+  let texts: string[] | null;
+  try {
+    texts = embedding.screen
+      ? await embedding.screen(
+          scope.spaceId,
+          missing.map((row) => row.text),
+        )
+      : missing.map((row) => row.text);
+  } catch {
+    process.stderr.write('memory: embedding_screen_failed\n');
+    return { vectors, partial: true };
+  }
+  // A space marked private sends nothing, by design: that is not a gap to retry.
+  if (!texts) return { vectors, partial: false };
+  if (texts.length !== missing.length) return { vectors, partial: true };
+  let partial = false;
+  const signal = AbortSignal.timeout(15000);
+  for (let start = 0; start < missing.length; start += EMBED_BATCH) {
+    const batch = missing.slice(start, start + EMBED_BATCH);
+    let made: number[][];
+    try {
+      made = await embedding.embed(texts.slice(start, start + EMBED_BATCH), signal, {
+        purpose: 'document',
+        call: { spaceId: scope.spaceId },
+      });
+    } catch (error) {
+      if (error instanceof MemoryError && error.code === 'embedding_space_mismatch') throw error;
+      // Not this time: the lexical index is still built, and the space is
+      // marked partly embedded so a later build tries again.
+      process.stderr.write(
+        `memory: embedding_build_failed:${error instanceof MemoryError ? error.code : 'unreachable'}\n`,
+      );
+      partial = true;
+      break;
+    }
+    if (made.length !== batch.length) throw new MemoryError('embedding_space_mismatch');
+    batch.forEach((row, i) => {
+      const vector = made[i] ?? [];
+      validateVector(vector, embedding.dimensions);
+      vectors.set(`${row.claim_id}:${row.revision}`, vector);
+    });
+  }
+  return { vectors, partial };
 }
 /** Embedding work is outside the transaction. The manifest moves only after a fresh validation. */
 export async function buildViews(
@@ -76,22 +237,9 @@ export async function buildViews(
     const space = await lockSpace(tx, scope);
     return { generation: generation(space), rows: await indexableRows(tx, scope) };
   });
-  const vectors = embedding
-    ? await embedding.embed(
-        snapshot.rows.map((row) => row.text),
-        AbortSignal.timeout(15000),
-      )
-    : [];
-  if (embedding) {
-    if (
-      !Number.isInteger(embedding.dimensions) ||
-      embedding.dimensions < 1 ||
-      embedding.dimensions > 4096 ||
-      vectors.length !== snapshot.rows.length
-    )
-      throw new MemoryError('embedding_space_mismatch');
-    for (const vector of vectors) validateVector(vector, embedding.dimensions);
-  }
+  const { vectors, partial } = embedding
+    ? await vectorsFor(sql, scope, snapshot.rows, embedding)
+    : { vectors: new Map<string, number[]>(), partial: false };
   return sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope);
     if (
@@ -108,15 +256,16 @@ export async function buildViews(
       if (!row) continue;
       await tx`insert into memory_index_entries (space_id, generation, claim_id, revision, tokens)
         values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, to_tsvector('simple', ${row.text}))`;
-      if (embedding)
+      const vector = vectors.get(`${row.claim_id}:${row.revision}`);
+      if (embedding && vector)
         await tx`insert into memory_dense_entries (space_id, generation, claim_id, revision, model, version, dimensions, recipe, vector)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(vectors[i] ?? [])}::text::jsonb)`;
+        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(encodeVector(vector))}::text::jsonb)`;
     }
     const embeddingInfo = embedding
       ? { model: embedding.model, version: embedding.version, dimensions: embedding.dimensions }
       : null;
     await tx`update memory_index_manifest set generation = ${nextGeneration}, coverage_revision = ${space.data_revision}, method = 'lexical',
-      recipe = ${LEXICAL_RECIPE}, embedding = ${embeddingInfo ? JSON.stringify(embeddingInfo) : null}::text::jsonb where space_id = ${scope.spaceId}`;
+      recipe = ${LEXICAL_RECIPE}, embedding = ${embeddingInfo ? JSON.stringify({ ...embeddingInfo, ...(partial ? { partial: true } : {}) }) : null}::text::jsonb where space_id = ${scope.spaceId}`;
     // The inspection copy of what recall reads from the claims themselves.
     const profile = (await profileCandidates(tx, scope, ['private', 'space', 'public'])).map(
       ({ claim_id, revision }) => ({ claim_id, revision }),
