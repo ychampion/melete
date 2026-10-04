@@ -8,9 +8,28 @@ export interface SecretRepository {
   get(id: string, spaceId: string): Promise<string | null>;
 }
 
-/** This repository is deliberately private to the trusted connector process. */
+/**
+ * The pool of the effects database role, when the service runs with separate
+ * roles (MELETE_EFFECTS_DATABASE_URL, db/roles.ts). The service's own role
+ * cannot read `secret`, so every statement on that table runs here instead.
+ */
+let effectsPool: Sql | undefined;
+
+/** Set once at start-up by the service that opened the effects role's pool; undefined clears it. */
+export function useEffectsPool(sql: Sql | undefined): void {
+  effectsPool = sql;
+}
+
+/**
+ * The only code that reads, writes or deletes rows of `secret`. It runs on the
+ * effects role's pool when there is one, and on the pool it was given otherwise.
+ */
 export class PostgresSecretRepository implements SecretRepository {
-  constructor(private readonly sql: Sql) {}
+  constructor(private readonly fallback: Sql) {}
+
+  private get sql(): Sql {
+    return effectsPool ?? this.fallback;
+  }
 
   async put(id: string, spaceId: string, ciphertext: string): Promise<void> {
     await this.sql`insert into secret (id, space_id, ciphertext)
@@ -21,6 +40,24 @@ export class PostgresSecretRepository implements SecretRepository {
     const rows = await this.sql<{ ciphertext: string }[]>`
       select ciphertext from secret where id = ${id} and space_id = ${spaceId}`;
     return rows[0]?.ciphertext ?? null;
+  }
+
+  /** Removes one sealed secret of a space. */
+  async forget(id: string, spaceId: string): Promise<void> {
+    await this.sql`delete from secret where id = ${id} and space_id = ${spaceId}`;
+  }
+
+  /** Removes every sealed secret of a space, and says how many went. */
+  async forgetSpace(spaceId: string): Promise<number> {
+    const rows = await this.sql`delete from secret where space_id = ${spaceId}`;
+    return rows.count;
+  }
+
+  /** How many sealed secrets a space still has, for a removal's verification. */
+  async countSpace(spaceId: string): Promise<number> {
+    const [row] = await this.sql<{ count: number }[]>`select count(*)::int as count
+      from secret where space_id = ${spaceId}`;
+    return Number(row?.count ?? 0);
   }
 }
 

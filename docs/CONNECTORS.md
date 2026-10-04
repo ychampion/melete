@@ -86,7 +86,7 @@ does not depend on isolation the running deployment lacks.
 
 | Default | Tools | Condition |
 | --- | --- | --- |
-| Files | `files.list`, `files.read` (text, and the words in PDFs, Word documents and spreadsheets), `files.write`, `files.move`, `files.save_attachment` (a file the person sent in chat, into the workspace) | always |
+| Files | `files.list`, `files.read` (text, and the words in PDFs, Word documents and spreadsheets), `files.write`, `files.move`, `files.delete` and `files.restore` (deletes go to a trash, restorable for `MELETE_TRASH_DAYS`), `files.save_attachment` (a file the person sent in chat, into the workspace) | always |
 | Web | `web.search`, `web.fetch` | always; the address and compartment checks below still apply, and the space's Public web reads setting turns both off |
 | Finished work | `artifact.publish` | always; a new file saved to the space needs no approval, replacing one or emailing it does |
 | Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |
@@ -895,8 +895,8 @@ and an unclassified tool is an external write.
 Stdio servers run only where attempts run in containers
 (`MELETE_RUNTIME_ADAPTER=docker`); elsewhere the kind and the catalog are not
 offered and installation answers `400`. The service reaches the Docker engine
-through the socket its runtime supervisor already uses and gives each
-connection:
+through `melete-cells`, as its runtime supervisor does, which starts a server
+only in this shape and gives each connection:
 
 - one container at a time, as uid 10001, on a read-only root filesystem, with
   every capability dropped, `no-new-privileges`, Docker's default seccomp

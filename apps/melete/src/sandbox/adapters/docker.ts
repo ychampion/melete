@@ -2,8 +2,9 @@
  * Sandboxes on this service's own Docker engine: one container per agent,
  * with a desktop the agent can drive and a person can watch.
  *
- * The service already holds the engine socket to supervise attempts, so this
- * adapter needs no account and no key. Each sandbox is a container from a local
+ * The service already reaches the engine to supervise attempts, over its
+ * socket or through `melete-cells` (cells/policy.ts, the sandbox profile), so
+ * this adapter needs no account and no key. Each sandbox is a container from a local
  * image, running as an unprivileged user on a read-only root filesystem with
  * every capability dropped, no privilege escalation, the engine's default
  * seccomp profile, an init process and bounded CPU, memory, processes and
@@ -34,7 +35,13 @@ import type { ComputerTrust, EgressCredentialPort } from '../../egress/credentia
 import type { InterceptOptions } from '../../egress/intercept.ts';
 import type { EgressRecordSink } from '../../egress/records.ts';
 import type { AttributedCommand, CommandEgress, EgressAttribution } from '../../egress/tokens.ts';
-import { DockerError, DockerSocketApi } from '../../runtime/docker.ts';
+import {
+  type DockerEndpoint,
+  DockerError,
+  DockerSocketApi,
+  dockerFetch,
+  endpointName,
+} from '../../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../../runtime/docker-engine.ts';
 import { LABEL_CONNECTION, LABEL_PROJECT, LABEL_SESSION, ownedLabels } from '../manifest.ts';
 import { reattachByMarker } from '../marker.ts';
@@ -94,7 +101,8 @@ const READ =
 const USAGE = 'exec du -sk -x /work /home/agent 2>/dev/null';
 
 export type DockerSandboxSettings = {
-  socket: string;
+  /** The engine's socket, or the cell service that holds it. */
+  socket: DockerEndpoint;
   /**
    * This installation's label. The idle clock stops only its own containers,
    * never another installation's on the same engine.
@@ -204,13 +212,12 @@ export interface DockerSandboxApi {
 }
 
 export class DockerSandboxSocket extends DockerSocketApi implements DockerSandboxApi {
-  constructor(private readonly path: string) {
+  constructor(private readonly path: DockerEndpoint) {
     super(path);
   }
 
   async startExec(id: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-    const response = await fetch(`http://localhost/v${DOCKER_API_VERSION}/exec/${id}/start`, {
-      unix: this.path,
+    const response = await dockerFetch(this.path, `/v${DOCKER_API_VERSION}/exec/${id}/start`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ Detach: false, Tty: false }),
@@ -229,10 +236,10 @@ export class DockerSandboxSocket extends DockerSocketApi implements DockerSandbo
     tar: Uint8Array,
     signal: AbortSignal,
   ): Promise<void> {
-    const response = await fetch(
-      `http://localhost/v${DOCKER_API_VERSION}/containers/${container}/archive?path=${encodeURIComponent(path)}&copyUIDGID=1`,
+    const response = await dockerFetch(
+      this.path,
+      `/v${DOCKER_API_VERSION}/containers/${container}/archive?path=${encodeURIComponent(path)}&copyUIDGID=1`,
       {
-        unix: this.path,
         method: 'PUT',
         headers: { 'content-type': 'application/x-tar' },
         body: tar,
@@ -1430,11 +1437,11 @@ const hosts = new Map<string, DockerSandboxHost>();
 
 /** One host per socket in a process: one idle clock, one egress guard, one reaper. */
 export function dockerSandboxHost(settings: DockerSandboxSettings): DockerSandboxHost {
-  let host = hosts.get(settings.socket);
+  let host = hosts.get(endpointName(settings.socket));
   if (!host) {
     host = new DockerSandboxHost(settings);
     host.startReaper();
-    hosts.set(settings.socket, host);
+    hosts.set(endpointName(settings.socket), host);
   }
   return host;
 }

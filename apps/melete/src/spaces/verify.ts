@@ -16,6 +16,7 @@ import { access, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { PhaseOmission, RemovalCounts, RemovalPhase } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { PostgresSecretRepository } from '../connectors/secrets.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 
 export type VerifyOptions = {
@@ -56,7 +57,7 @@ const NEVER_COUNTED = ['space_removal'];
 const NOT_YET_DUE = ['space_membership'];
 
 /** The directories a space's content lives in, which an emptied space has empty. */
-const CONTENT_DIRECTORIES = ['knowledge', 'raw', 'artifacts', 'skills', 'browser'];
+const CONTENT_DIRECTORIES = ['knowledge', 'raw', 'artifacts', 'skills', 'browser', '.trash'];
 
 /**
  * Children whose only key is their parent's. Their rows go through the parent,
@@ -92,9 +93,11 @@ export async function verifyRemoval(raw: Sql, options: VerifyOptions): Promise<R
     order by c.table_name`;
   for (const row of keyed) {
     const name = String(row.table_name);
-    if (skip.has(name)) continue;
+    if (skip.has(name) || name === 'secret') continue;
     tables[name] = await countWhere(raw, name, raw`space_id = ${options.spaceId}`);
   }
+  // Counted by the role that may read it; the service's own role sees no such table.
+  tables.secret = await new PostgresSecretRepository(raw).countSpace(options.spaceId);
 
   // A job row is gone by now, so its leftovers are found by the ids the fence
   // captured rather than by the space they belonged to.

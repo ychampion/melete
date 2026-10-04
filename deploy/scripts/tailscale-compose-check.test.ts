@@ -51,7 +51,9 @@ describe('the Tailscale deployment', () => {
     // Compose merges by service name; nothing here may replace a base service.
     const merged = { ...base.services, ...override.services };
     expect(Object.keys(merged).sort()).toEqual([
+      'database-roles',
       'melete',
+      'melete-cells',
       'postgres',
       'runtime',
       'runtime-image',

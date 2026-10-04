@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import type { DatabaseHandle } from './client.ts';
@@ -41,4 +42,31 @@ export async function migrateDatabase(
     await connection`select pg_advisory_unlock(31003102)`;
     connection.release();
   }
+}
+
+/**
+ * With separate database roles the service may not migrate: the setup step
+ * did, as the schema's owner (db/roles.ts). This checks it did all of this
+ * release's journal, so a service never runs on a schema behind its code.
+ */
+export async function assertMigrated(
+  handle: DatabaseHandle,
+  journal = `${JOURNAL}/meta/_journal.json`,
+): Promise<void> {
+  const entries = (JSON.parse(readFileSync(journal, 'utf8')) as { entries: { when: number }[] })
+    .entries;
+  let recorded: Set<number>;
+  try {
+    const rows = await handle.sql<{ created_at: string }[]>`
+      select created_at from drizzle.__drizzle_migrations`;
+    recorded = new Set(rows.map((row) => Number(row.created_at)));
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === '42P01') recorded = new Set();
+    else throw new Error(unreachable(handle, error));
+  }
+  const missing = entries.filter((entry) => !recorded.has(entry.when)).length;
+  if (missing)
+    throw new Error(
+      `The database has not run ${missing} of this release's ${entries.length} migrations. The database setup step (database-roles) runs them before the service starts; see its log.`,
+    );
 }

@@ -22,7 +22,13 @@
 import { connect } from 'node:net';
 import type { McpStdioLaunch } from '@melete/contracts';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
-import { type DockerApi, DockerError, DockerSocketApi } from '../runtime/docker.ts';
+import {
+  type DockerApi,
+  type DockerEndpoint,
+  DockerError,
+  DockerSocketApi,
+  dockerFetch,
+} from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
 import { StdioCapacityError, type StdioLauncher, type StdioLaunchSpec } from './mcp-stdio.ts';
@@ -72,7 +78,8 @@ export type AttachedStream = {
 
 export type DockerStdioOptions = {
   project: string;
-  socket: string;
+  /** The engine's socket, or the cell service that holds it. */
+  socket: DockerEndpoint;
   /** The service's own container, which joins a server's egress network as the proxy. */
   selfId?: string;
   /** The port the egress proxy listens on inside the service's container. */
@@ -345,16 +352,17 @@ type Names = {
   packages: string;
 };
 
-/** Docker over its socket, including the hijacked attach that `fetch` cannot make. */
+/** Docker over its socket or the cell service, including the attach that `fetch` cannot make. */
 export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi {
-  constructor(private readonly path: string) {
+  constructor(private readonly path: DockerEndpoint) {
     super(path);
   }
 
   async pull(image: string, signal: AbortSignal): Promise<void> {
-    const response = await fetch(
-      `http://localhost/v${DOCKER_API_VERSION}/images/create?fromImage=${encodeURIComponent(image)}`,
-      { unix: this.path, method: 'POST', signal },
+    const response = await dockerFetch(
+      this.path,
+      `/v${DOCKER_API_VERSION}/images/create?fromImage=${encodeURIComponent(image)}`,
+      { method: 'POST', signal },
     );
     if (!response.ok) throw new DockerError(response.status, 'POST', '/images/create');
     // The engine streams progress as JSON lines; a failure arrives as one with `error`.
@@ -365,10 +373,10 @@ export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi
   }
 
   async putArchive(container: string, path: string, tar: Uint8Array): Promise<void> {
-    const response = await fetch(
-      `http://localhost/v${DOCKER_API_VERSION}/containers/${container}/archive?path=${encodeURIComponent(path)}&copyUIDGID=1`,
+    const response = await dockerFetch(
+      this.path,
+      `/v${DOCKER_API_VERSION}/containers/${container}/archive?path=${encodeURIComponent(path)}&copyUIDGID=1`,
       {
-        unix: this.path,
         method: 'PUT',
         headers: { 'content-type': 'application/x-tar' },
         body: tar,
@@ -380,9 +388,10 @@ export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi
   }
 
   async logs(container: string): Promise<string> {
-    const response = await fetch(
-      `http://localhost/v${DOCKER_API_VERSION}/containers/${container}/logs?stdout=1&stderr=1&tail=20`,
-      { unix: this.path, signal: AbortSignal.timeout(10_000) },
+    const response = await dockerFetch(
+      this.path,
+      `/v${DOCKER_API_VERSION}/containers/${container}/logs?stdout=1&stderr=1&tail=20`,
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!response.ok) return '';
     const chunks: string[] = [];
@@ -398,72 +407,146 @@ export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi
 
   attach(container: string): Promise<AttachedStream> {
     if (!/^[a-f0-9]{12,64}$/.test(container)) throw new Error('Invalid container id');
-    return new Promise((resolve, reject) => {
-      const socket = connect({ path: this.path });
-      let head = Buffer.alloc(0);
-      let upgraded = false;
-      const listeners: Array<(bytes: Uint8Array) => void> = [];
-      const early: Uint8Array[] = [];
-      let closed = false;
-      let onClose: (() => void) | undefined;
-      const fail = (error: Error) => {
-        socket.destroy();
-        reject(error);
-      };
-      socket.setTimeout(30_000, () => {
-        if (!upgraded) fail(new Error('Docker attach timed out'));
-      });
-      socket.once('connect', () => {
-        socket.write(
-          `POST /v${DOCKER_API_VERSION}/containers/${container}/attach?stream=1&stdin=1&stdout=1&stderr=1 HTTP/1.1\r\n` +
-            'Host: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Length: 0\r\n\r\n',
-        );
-      });
-      socket.on('error', (error) => {
-        if (!upgraded) fail(error);
-      });
-      socket.on('close', () => {
-        closed = true;
-        onClose?.();
-      });
-      socket.on('data', (chunk: Buffer) => {
-        if (upgraded) {
-          if (listeners.length) for (const listener of listeners) listener(chunk);
-          else early.push(chunk);
-          return;
-        }
-        head = Buffer.concat([head, chunk]);
-        const end = head.indexOf('\r\n\r\n');
-        if (end < 0) {
-          if (head.length > 16_384) fail(new Error('Docker attach answered too much'));
-          return;
-        }
-        const status = /^HTTP\/1\.[01] (\d{3})/.exec(head.subarray(0, end).toString('latin1'));
-        if (!status || !['101', '200'].includes(status[1] ?? '')) {
-          fail(new Error(`Docker attach answered ${status?.[1] ?? 'nothing'}`));
-          return;
-        }
-        upgraded = true;
-        socket.setTimeout(0);
-        const rest = head.subarray(end + 4);
-        if (rest.length) early.push(rest);
-        resolve({
-          write: (bytes) => {
-            if (!closed) socket.write(bytes);
-          },
-          onData: (listener) => {
-            listeners.push(listener);
-            for (const chunk of early.splice(0)) listener(chunk);
-          },
-          onClose: (listener) => {
-            onClose = listener;
-            if (closed) listener();
-          },
-          destroy: () => socket.destroy(),
-        });
+    return typeof this.path === 'string'
+      ? attachOverSocket(this.path, container)
+      : attachThroughCells(this.path, container);
+  }
+}
+
+/**
+ * A container's standard streams, attached over the engine's socket with the
+ * hijacked HTTP upgrade Docker uses. The cell service makes the same attach for
+ * a server it accepted.
+ */
+export function attachOverSocket(path: string, container: string): Promise<AttachedStream> {
+  if (!/^[a-f0-9]{12,64}$/.test(container)) throw new Error('Invalid container id');
+  return new Promise((resolve, reject) => {
+    const socket = connect({ path });
+    let head = Buffer.alloc(0);
+    let upgraded = false;
+    const listeners: Array<(bytes: Uint8Array) => void> = [];
+    const early: Uint8Array[] = [];
+    let closed = false;
+    let onClose: (() => void) | undefined;
+    const fail = (error: Error) => {
+      socket.destroy();
+      reject(error);
+    };
+    socket.setTimeout(30_000, () => {
+      if (!upgraded) fail(new Error('Docker attach timed out'));
+    });
+    socket.once('connect', () => {
+      socket.write(
+        `POST /v${DOCKER_API_VERSION}/containers/${container}/attach?stream=1&stdin=1&stdout=1&stderr=1 HTTP/1.1\r\n` +
+          'Host: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Length: 0\r\n\r\n',
+      );
+    });
+    socket.on('error', (error) => {
+      if (!upgraded) fail(error);
+    });
+    socket.on('close', () => {
+      closed = true;
+      onClose?.();
+    });
+    socket.on('data', (chunk: Buffer) => {
+      if (upgraded) {
+        if (listeners.length) for (const listener of listeners) listener(chunk);
+        else early.push(chunk);
+        return;
+      }
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf('\r\n\r\n');
+      if (end < 0) {
+        if (head.length > 16_384) fail(new Error('Docker attach answered too much'));
+        return;
+      }
+      const status = /^HTTP\/1\.[01] (\d{3})/.exec(head.subarray(0, end).toString('latin1'));
+      if (!status || !['101', '200'].includes(status[1] ?? '')) {
+        fail(new Error(`Docker attach answered ${status?.[1] ?? 'nothing'}`));
+        return;
+      }
+      upgraded = true;
+      socket.setTimeout(0);
+      const rest = head.subarray(end + 4);
+      if (rest.length) early.push(rest);
+      resolve({
+        write: (bytes) => {
+          if (!closed) socket.write(bytes);
+        },
+        onData: (listener) => {
+          listeners.push(listener);
+          for (const chunk of early.splice(0)) listener(chunk);
+        },
+        onClose: (listener) => {
+          onClose = listener;
+          if (closed) listener();
+        },
+        destroy: () => socket.destroy(),
       });
     });
-  }
+  });
+}
+
+/**
+ * The same streams through the cell service, which attaches over the socket
+ * and carries the bytes both ways on a WebSocket.
+ */
+export function attachThroughCells(
+  endpoint: { url: string; key: string },
+  container: string,
+): Promise<AttachedStream> {
+  if (!/^[a-f0-9]{12,64}$/.test(container)) throw new Error('Invalid container id');
+  const url = `${endpoint.url.replace(/\/+$/, '').replace(/^http/, 'ws')}/attach/${container}`;
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, {
+      headers: { authorization: `Bearer ${endpoint.key}` },
+    } as unknown as string[]);
+    socket.binaryType = 'arraybuffer';
+    const listeners: Array<(bytes: Uint8Array) => void> = [];
+    const early: Uint8Array[] = [];
+    let opened = false;
+    let closed = false;
+    let onClose: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (!opened) {
+        socket.close();
+        reject(new Error('Docker attach timed out'));
+      }
+    }, 30_000);
+    socket.addEventListener('open', () => {
+      opened = true;
+      clearTimeout(timer);
+      resolve({
+        write: (bytes) => {
+          if (!closed) socket.send(bytes);
+        },
+        onData: (listener) => {
+          listeners.push(listener);
+          for (const chunk of early.splice(0)) listener(chunk);
+        },
+        onClose: (listener) => {
+          onClose = listener;
+          if (closed) listener();
+        },
+        destroy: () => socket.close(),
+      });
+    });
+    socket.addEventListener('message', (event) => {
+      const data = event.data;
+      const chunk =
+        typeof data === 'string'
+          ? new TextEncoder().encode(data)
+          : new Uint8Array(data as ArrayBuffer);
+      if (listeners.length) for (const listener of listeners) listener(chunk);
+      else early.push(chunk);
+    });
+    socket.addEventListener('close', () => {
+      closed = true;
+      clearTimeout(timer);
+      if (!opened) reject(new Error('Docker attach was refused'));
+      onClose?.();
+    });
+  });
 }
 
 /** Stdio MCP servers in local containers, reached through the Docker socket. */
