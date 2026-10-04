@@ -302,7 +302,8 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       // already names a job is already being handled, so the job it names is the
       // answer and the playbook is not asked again — the same rule the rest of
       // the product follows about never saying the same thing twice.
-      if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
+      if (found.item.job_id)
+        return { job_id: found.item.job_id, status: 200 as const, owner: found.owner };
       // Which mailbox the message would leave from is the installation's to decide,
       // not the caller's: it is looked up from the space the item was found in.
       const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
@@ -324,9 +325,10 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       await store.setJob(found.owner, found.item.id, result.job_id);
       return { job_id: result.job_id, status: 201 as const, owner: found.owner };
     });
-    // Taken up just now. Only the person themselves, not an assistant they
-    // connected, makes its due date one that may reach them at any hour.
-    if (answer.status === 201 && 'owner' in answer && deps.accepted)
+    // Taken up, now or again. Only the person themselves, not an assistant
+    // they connected, makes its due date one that may reach them at any hour;
+    // pressing again moves its deadline to the due date the item has now.
+    if (deps.accepted)
       await deps.accepted(answer.owner, id, !mcpActorOf(c.env)).catch(() => {
         process.stderr.write('companies: accept_hook_failed\n');
       });

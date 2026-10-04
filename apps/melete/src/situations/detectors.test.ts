@@ -8,10 +8,12 @@ import {
   dueWords,
   endOfLocalDay,
   type KeptMeeting,
+  localInstant,
   meetingChange,
   meetingConflicts,
   situationKey,
   urgencyFor,
+  withinDay,
 } from './detectors.ts';
 
 const now = Date.parse('2026-10-05T12:00:00.000Z');
@@ -166,6 +168,30 @@ describe('dates and invitations', () => {
     expect(new Date(endOfLocalDay('2026-10-10', 'Asia/Tokyo')).toISOString()).toBe(
       '2026-10-10T15:00:00.000Z',
     );
+  });
+
+  test('a look that would fall outside the person’s day waits for the start of it', () => {
+    const day = { start: '08:00', end: '22:00', timeZone: 'America/Los_Angeles' };
+    const quiet = (at: number) => {
+      const hour = Number(
+        new Intl.DateTimeFormat('en-US', {
+          hour: 'numeric',
+          hourCycle: 'h23',
+          timeZone: day.timeZone,
+        }).format(at),
+      );
+      return hour < 8 || hour >= 22;
+    };
+    // 11:45 PM Tuesday in Los Angeles waits for 8:00 AM Wednesday.
+    const late = localInstant('2026-10-06', '23:45', day.timeZone);
+    expect(new Date(withinDay(late, day, quiet)).toISOString()).toBe(
+      new Date(localInstant('2026-10-07', '08:00', day.timeZone)).toISOString(),
+    );
+    // 2:00 AM waits for 8:00 AM the same day; 5:00 PM stays.
+    const early = localInstant('2026-10-07', '02:00', day.timeZone);
+    expect(withinDay(early, day, quiet)).toBe(localInstant('2026-10-07', '08:00', day.timeZone));
+    const evening = localInstant('2026-10-07', '17:00', day.timeZone);
+    expect(withinDay(evening, day, quiet)).toBe(evening);
   });
 
   test('an invitation the person has not accepted is not their meeting', () => {

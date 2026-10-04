@@ -72,17 +72,19 @@ import {
   type Awaited,
   answers,
   conflictReason,
+  DATE_ONLY_DUE,
   dueWords,
-  endOfLocalDay,
   type Finding,
   fingerprintOf,
   higher,
   type KeptMeeting,
+  localInstant,
   louder,
   meetingChange,
   meetingConflicts,
   situationKey,
   urgencyFor,
+  withinDay,
 } from './detectors.ts';
 import { clock, situation } from './schema.ts';
 
@@ -131,8 +133,14 @@ export type ClockCheck = {
   ceiling?: Urgency;
   /** Later looks, as leads in seconds before the due time, after this one. */
   leads?: number[];
-  /** A deadline given as a date alone: that date, said as a day. */
+  /**
+   * A deadline given as a date alone: that date, said as a day. It is due at
+   * the end of a working day there, is never urgent, and is never looked at
+   * outside the person's day.
+   */
   date_only?: string | null;
+  /** For a commitment: the due date its clock was made from, to notice a rescan moving it. */
+  ledger_due?: string | null;
   /** For a reply clock: the wait it guards. */
   awaited?: Awaited & { id: string; found_at: string };
 };
@@ -248,6 +256,35 @@ export class SituationService {
 
   get detectors(): boolean {
     return this.deps.detectors !== false;
+  }
+
+  /** The person's day, read from their profile: when Melete may speak, and where. */
+  private async dayOf(
+    tx: Transaction | Database,
+    principalId: string,
+  ): Promise<{ start: string; end: string; timeZone: string }> {
+    const [row] = rows<{ day_start: string; day_end: string; time_zone: string }>(
+      await tx.execute(sql`select p.day_start, p.day_end, p.time_zone from experience_profile p
+        join space s on s.id = p.space_id
+        where s.owner_principal_id = ${principalId} and s.kind = 'personal' limit 1`),
+    );
+    return {
+      start: row?.day_start ?? '08:00',
+      end: row?.day_end ?? '22:00',
+      timeZone: row?.time_zone ?? 'UTC',
+    };
+  }
+
+  /** A look at a date-only deadline that would fall outside the person's day waits for its start. */
+  private async lookAt(
+    tx: Transaction | Database,
+    principalId: string,
+    at: number,
+    check: Pick<ClockCheck, 'date_only'>,
+  ): Promise<number> {
+    if (!check.date_only) return at;
+    const day = await this.dayOf(tx, principalId);
+    return withinDay(at, day, (when) => isQuiet(new Date(when), day));
   }
 
   /** The person's own time zone, for the times a situation names. */
@@ -773,7 +810,12 @@ export class SituationService {
         check: {
           at_risk: atRisk,
           fresh: input.fresh ?? true,
-          ...(input.ceiling ? { ceiling: input.ceiling } : {}),
+          ...(input.ceiling || input.dateOnly
+            ? {
+                ceiling:
+                  input.ceiling === 'normal' ? 'normal' : input.dateOnly ? 'soon' : input.ceiling,
+              }
+            : {}),
           ...(input.dateOnly ? { date_only: input.dateOnly } : {}),
         },
         personSet: input.personSet,
@@ -869,6 +911,12 @@ export class SituationService {
     const ahead = ordered.filter((lead) => input.due - lead * 1000 > now);
     const [lead = ordered.at(-1) ?? 0, ...later] = ahead.length ? ahead : [ordered.at(-1) ?? 0];
     const check: ClockCheck = { ...input.check, ...(later.length ? { leads: later } : {}) };
+    const fireAt = await this.lookAt(
+      tx,
+      input.principalId,
+      Math.max(now, input.due - lead * 1000),
+      check,
+    );
     const values = {
       spaceId: input.spaceId,
       principalId: input.principalId,
@@ -877,7 +925,7 @@ export class SituationService {
       title: input.title,
       dueAt: new Date(input.due),
       leadSeconds: lead,
-      fireAt: new Date(Math.max(now, input.due - lead * 1000)),
+      fireAt: new Date(fireAt),
       anchor: input.anchor,
       check: check as Record<string, unknown>,
       personSet: input.personSet,
@@ -937,16 +985,45 @@ export class SituationService {
             and principal_id = ${input.principalId}`),
       );
       if (!item?.due_at || !OPEN_LEDGER.includes(item.status)) return null;
-      return this.keepCommitment(tx, item, input.byPerson);
+      // Pressed again: the clock moves to the current due date. Once the
+      // person took it up it stays theirs, whoever presses after.
+      const [live] = rows<{ person_set: boolean }>(
+        await tx.execute(sql`select person_set from clock
+          where space_id = ${item.space_id} and principal_id = ${item.principal_id}
+            and rule = ${SITUATION_KINDS.deadlineAtRisk} and subject_key = ${`ledger:${item.id}`}
+            and state in ('armed', 'checking')`),
+      );
+      return this.keepCommitment(tx, item, input.byPerson || live?.person_set === true);
     });
     if (made) this.timeNext(made.fireAt.getTime());
   }
 
+  /**
+   * The clock for a commitment. With a time, it is looked at a day before and,
+   * once the person took it up, fifteen minutes before. With a date alone it is
+   * due at the end of that working day where the person is (17:00), is looked
+   * at the day before and on the morning of the day, inside their day, and is
+   * never urgent: a date is not a time.
+   */
   private async keepCommitment(tx: Transaction, item: CommitmentRow, byPerson: boolean) {
-    const zone = await this.timeZoneOf(tx, item.principal_id);
+    const day = await this.dayOf(tx, item.principal_id);
     const date = item.due_date_only ? new Date(item.due_at).toISOString().slice(0, 10) : null;
-    const due = date ? endOfLocalDay(date, zone) : new Date(item.due_at).getTime();
+    const due = date
+      ? localInstant(date, DATE_ONLY_DUE, day.timeZone)
+      : new Date(item.due_at).getTime();
     if (due <= this.now()) return null;
+    const morning = date ? localInstant(date, day.start, day.timeZone) : null;
+    const leads: number[] = date
+      ? [
+          COMMITMENT_LEADS[0],
+          ...(byPerson && morning !== null && morning < due
+            ? [Math.round((due - morning) / 1000)]
+            : []),
+        ]
+      : byPerson
+        ? [...COMMITMENT_LEADS]
+        : [COMMITMENT_LEADS[0]];
+    const ceiling: Urgency | null = !byPerson ? 'normal' : date ? 'soon' : null;
     return this.keepClock(tx, {
       spaceId: item.space_id,
       principalId: item.principal_id,
@@ -956,15 +1033,16 @@ export class SituationService {
       subjectRef: null,
       title: 'A commitment is due',
       due,
-      leads: byPerson ? [...COMMITMENT_LEADS] : [COMMITMENT_LEADS[0]],
+      leads,
       anchor: null,
       check: {
         at_risk: watchPredicate.parse({
           all: [{ field: 'status', op: 'matches', value: `^(${OPEN_LEDGER.join('|')})$` }],
         }),
         fresh: true,
-        ...(byPerson ? {} : { ceiling: 'normal' as Urgency }),
+        ...(ceiling ? { ceiling } : {}),
         ...(date ? { date_only: date } : {}),
+        ledger_due: `${new Date(item.due_at).toISOString()}${item.due_date_only ? '/date' : ''}`,
       },
       personSet: byPerson,
       jobId: item.job_id,
@@ -1443,7 +1521,10 @@ export class SituationService {
       });
       // The next look, when one is still ahead; otherwise done.
       const [nextLead, ...rest] = check.leads ?? [];
-      const nextFire = nextLead === undefined ? null : dueAt.getTime() - nextLead * 1000;
+      const nextFire =
+        nextLead === undefined
+          ? null
+          : await this.lookAt(tx, current.principalId, dueAt.getTime() - nextLead * 1000, check);
       const again = nextLead !== undefined && nextFire !== null && nextFire > this.now();
       await tx
         .update(clock)
@@ -1503,6 +1584,38 @@ export class SituationService {
           limit 200`),
       );
       for (const item of items) await this.keepCommitment(tx, item, false);
+      // A rescan that moved a commitment's due date moves its clock; one that
+      // took the commitment off the list clears it. No clock is left on a date
+      // the list no longer says.
+      const followed = rows<
+        CommitmentRow & { clock_id: string; person_set: boolean; kept_due: string | null }
+      >(
+        await tx.execute(sql`select k.id as clock_id, k.person_set, k."check"->>'ledger_due' as kept_due,
+            li.id, k.space_id, k.principal_id, li.status, li.due_at, li.due_date_only, li.job_id
+          from clock k left join ledger_item li
+            on 'ledger:' || li.id = k.subject_key and li.space_id = k.space_id
+          where k.rule = ${SITUATION_KINDS.deadlineAtRisk} and k.subject_key like 'ledger:%'
+            and k.state = 'armed'
+          limit 500`),
+      );
+      for (const entry of followed) {
+        const current =
+          entry.id && entry.due_at
+            ? `${new Date(entry.due_at).toISOString()}${entry.due_date_only ? '/date' : ''}`
+            : null;
+        if (current !== null && current === entry.kept_due) continue;
+        const kept =
+          current !== null ? await this.keepCommitment(tx, entry, entry.person_set) : null;
+        if (kept) continue;
+        await tx
+          .update(clock)
+          .set({
+            state: 'cleared',
+            note: 'The commitment is no longer on the list with a date ahead.',
+            updatedAt: new Date(now),
+          })
+          .where(and(eq(clock.id, entry.clock_id), eq(clock.state, 'armed')));
+      }
       // Settled or dropped: its clock and its situation end.
       await tx.execute(sql`update clock k set state = 'met', note = 'It was settled.',
           updated_at = now()
@@ -1511,9 +1624,11 @@ export class SituationService {
           and k.state = 'armed' and li.status not in ${sqlList(OPEN_LEDGER)}`);
       await this.settle(
         tx,
-        sql`subject_key like 'ledger:%' and exists (select 1 from ledger_item li
-          where 'ledger:' || li.id = situation.subject_key and li.space_id = situation.space_id
-            and li.status not in ${sqlList(OPEN_LEDGER)})`,
+        sql`subject_key like 'ledger:%' and (exists (select 1 from ledger_item li
+            where 'ledger:' || li.id = situation.subject_key and li.space_id = situation.space_id
+              and li.status not in ${sqlList(OPEN_LEDGER)})
+          or not exists (select 1 from ledger_item li
+            where 'ledger:' || li.id = situation.subject_key and li.space_id = situation.space_id))`,
         'resolved',
       );
       const waits = rows<{

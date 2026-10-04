@@ -139,6 +139,56 @@ export function endOfLocalDay(date: string, timeZone: string): number {
   }
 }
 
+/** When a deadline given only as a day is taken to be due there: the end of a working day. */
+export const DATE_ONLY_DUE = '17:00';
+
+/** An instant for a wall-clock time on a date where the person is; an unknown zone reads as UTC. */
+export function localInstant(date: string, clock: string, timeZone: string): number {
+  const [year = 1970, month = 1, day = 1] = date.slice(0, 10).split('-').map(Number);
+  const [hour = 0, minute = 0] = clock.split(':').map(Number);
+  const wall = { year, month, day, hour, minute, second: 0 };
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return zonedToUtc(wall, timeZone);
+  } catch {
+    return zonedToUtc(wall, 'UTC');
+  }
+}
+
+/** The person's calendar date at an instant, in their zone. */
+export function localDate(at: number, timeZone: string): string {
+  const format = (zone: string) =>
+    new Intl.DateTimeFormat('en-CA', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: zone,
+    }).format(new Date(at));
+  try {
+    return format(timeZone);
+  } catch {
+    return format('UTC');
+  }
+}
+
+/**
+ * The first moment at or after `at` inside the person's day: `at` itself when
+ * it already is, otherwise the next start of their day.
+ */
+export function withinDay(
+  at: number,
+  day: { start: string; end: string; timeZone: string },
+  quiet: (at: number) => boolean,
+): number {
+  if (!quiet(at)) return at;
+  for (let offset = -1; offset <= 2; offset += 1) {
+    const date = localDate(at + offset * DAY, day.timeZone);
+    const start = localInstant(date, day.start, day.timeZone);
+    if (start > at) return start;
+  }
+  return at;
+}
+
 /** The words for when a deadline is due: a time, or for a date alone, the day. */
 export function dueWords(due: string, timeZone: string, dateOnly: string | null): string {
   return dateOnly ? spokenDate(dateOnly) : spokenTime(due, timeZone);
