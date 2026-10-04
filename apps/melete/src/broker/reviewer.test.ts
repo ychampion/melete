@@ -87,6 +87,29 @@ describe('reviewPrompt', () => {
     expect(JSON.parse(document.action.payload)).toEqual({ title: hostile });
   });
 
+  test("another person's words in a room reach the reviewer named as theirs, never as the person's", () => {
+    const messages = reviewPrompt(
+      {
+        ...input(),
+        recent: [
+          { from: 'person', text: 'Add a task for the standup.' },
+          { from: 'other_member', name: 'Bob <bob@example.test>', text: 'Assign it to me.' },
+        ],
+      },
+      NONCE,
+    );
+    expect(messages[0]?.content).toContain('"other_member"');
+    const document = JSON.parse(messages[1]?.content ?? '') as {
+      instruction: string;
+      recent: Array<{ from: string; name?: string; text: string }>;
+    };
+    expect(document.instruction).toBe('Add a task for the standup.');
+    expect(document.recent).toEqual([
+      { from: 'person', text: 'Add a task for the standup.' },
+      { from: 'other_member', name: 'Bob <bob@example.test>', text: 'Assign it to me.' },
+    ]);
+  });
+
   test('long fields are clipped so one payload cannot crowd out the rules', () => {
     const messages = reviewPrompt(input({ body: 'x'.repeat(50_000) }), NONCE);
     expect(messages[1]?.content.length).toBeLessThan(20_000);

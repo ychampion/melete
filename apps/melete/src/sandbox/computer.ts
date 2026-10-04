@@ -34,6 +34,7 @@ import {
   SSE_KEEPALIVE,
   sandboxComputerList,
   sandboxComputerQuery,
+  sandboxControlRequest,
   sandboxControlResponse,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -43,7 +44,11 @@ import { appendEvent } from '../broker/records.ts';
 import { lockEventOrderIn } from '../db/transaction.ts';
 import { liveFrame, requestPeer } from '../workers/browser/live-service.ts';
 import { type DockerSandboxProvider, isDesktopProvider } from './adapters/docker.ts';
-import { type ComputerControls, computerControls } from './computer-control.ts';
+import {
+  type ComputerControlState,
+  type ComputerControls,
+  PostgresComputerControls,
+} from './computer-control.ts';
 import type { SandboxProviders } from './wiring.ts';
 
 /** Frames a second from the desktop: enough to follow a pointer, within the live byte budget. */
@@ -110,7 +115,17 @@ type Channel = {
   pump?: AbortController;
   ended: boolean;
   timer?: ReturnType<typeof setInterval>;
+  /** A tick still reading the database; the next one waits for it. */
+  ticking?: boolean;
+  /** When this view last recorded that the holder is watching. */
+  seenAt?: number;
+  /** When the viewer's place was last checked, and whether a check is under way. */
+  checkedAt: number;
+  checking: boolean;
 };
+
+/** How often an open view records that the person holding the computer is watching. */
+const SEEN_EVERY_MS = 30_000;
 
 /** Browser reads of the stream must come from this API, as its writes already must. */
 function sameOrigin(c: Context): boolean {
@@ -124,8 +139,15 @@ export type SandboxComputerOptions = {
   controls?: ComputerControls;
   presence?: Partial<typeof LIVE_PRESENCE>;
   fps?: number;
+  /** How often an open view asks again whether its viewer may still see the computer. */
+  recheckMs?: number;
 };
 
+/** An open view is checked against its viewer's place this often. */
+export const LIVE_RECHECK_MS = 5_000;
+
+/** `steer`: take over, hand back and send input. `watch`: see the screen. */
+type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
@@ -135,6 +157,7 @@ export class SandboxComputerService {
   private readonly controls: ComputerControls;
   private readonly presence: typeof LIVE_PRESENCE;
   private readonly fps: number;
+  private readonly recheckMs: number;
 
   constructor(
     private readonly sql: Sql,
@@ -142,9 +165,10 @@ export class SandboxComputerService {
     options: SandboxComputerOptions = {},
   ) {
     this.now = options.now ?? Date.now;
-    this.controls = options.controls ?? computerControls;
+    this.controls = options.controls ?? new PostgresComputerControls(sql);
     this.presence = { ...LIVE_PRESENCE, ...options.presence };
     this.fps = options.fps ?? LIVE_FPS;
+    this.recheckMs = options.recheckMs ?? LIVE_RECHECK_MS;
     // Any change of hands ends the view opened under the epoch before it.
     this.controls.onChange((sandbox) => {
       const channel = this.bySandbox.get(sandbox);
@@ -185,19 +209,37 @@ export class SandboxComputerService {
     };
   }
 
-  /** The computer a person may steer, or a refusal that reads as an absent session. */
-  async steerable(sessionId: string, principalId: string): Promise<Binding> {
+  /**
+   * What a principal may do with a job's computer. Their own job's they steer.
+   * A room's request belongs to the room: its members may watch the computer,
+   * and only the room's owners take it over. Anything else is nothing.
+   */
+  private async reach(jobId: string, principalId: string): Promise<Reach | null> {
+    if (await this.owns(jobId, principalId)) return 'steer';
+    const [room] = await this.sql`select m.role from job j
+      join space s on s.id = j.space_id
+      join space_membership m on m.space_id = s.id
+        and m.principal_id = ${principalId} and m.revoked_at is null
+        and (m.expires_at is null or m.expires_at > now())
+      where j.id = ${jobId} and j.audience = 'room' and s.kind = 'shared' and s.removed_at is null`;
+    if (room?.role === 'owner') return 'steer';
+    return room?.role === 'member' || room?.role === 'guest' ? 'watch' : null;
+  }
+
+  /** The computer a person may steer (or, with `watch`, look at), or a refusal that reads as an absent session. */
+  async steerable(sessionId: string, principalId: string, need: Reach = 'steer'): Promise<Binding> {
     const [row] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session where id = ${sessionId} and status in ('ready', 'paused')`;
     const binding = row ? this.bindingOf(row) : null;
-    if (!binding || !(await this.owns(binding.jobId, principalId)))
+    const reach = binding ? await this.reach(binding.jobId, principalId) : null;
+    if (!binding || !reach || (need === 'steer' && reach !== 'steer'))
       throw new ComputerFault('session_not_found');
     return binding;
   }
 
   async list(jobId: string, principalId: string): Promise<SandboxComputer[]> {
-    if (!(await this.owns(jobId, principalId))) throw new ComputerFault('session_not_found');
+    if (!(await this.reach(jobId, principalId))) throw new ComputerFault('session_not_found');
     const rows = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session
@@ -213,7 +255,7 @@ export class SandboxComputerService {
           AbortSignal.timeout(10_000),
         )
         .catch(() => false);
-      const held = this.controls.state(binding.sandbox);
+      const held = await this.controls.state(binding.sandbox);
       computers.push({
         session_id: binding.sessionId,
         job_id: binding.jobId,
@@ -229,12 +271,33 @@ export class SandboxComputerService {
     return computers;
   }
 
-  async control(sessionId: string, operation: 'takeover' | 'handback', principalId: string) {
+  /**
+   * Take the computer over or hand it back, only from the epoch the person
+   * last saw (`seenEpoch`), else the one read before the session is: of two
+   * changes at once, on any instance, one lands and the other is told the
+   * computer moved on. The epoch is read before the session, so a hand-over
+   * to another attempt in between moves it and this takeover fails, rather
+   * than parking a job that no longer runs on the computer.
+   */
+  async control(
+    sessionId: string,
+    operation: 'takeover' | 'handback',
+    principalId: string,
+    seenEpoch?: number,
+  ) {
+    const [located] = await this.sql`select provider_sandbox_id from sandbox_session
+      where id = ${sessionId}`;
+    const before = located
+      ? await this.controls.state(String(located.provider_sandbox_id))
+      : undefined;
     const binding = await this.steerable(sessionId, principalId);
-    const next = this.controls.change(
+    const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.sandbox)).epoch;
+    const next = await this.controls.change(
       binding.sandbox,
       operation === 'takeover' ? 'human' : 'agent',
+      { from, principalId },
     );
+    if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
     else
       await this.sql.begin(async (tx) => {
@@ -305,8 +368,8 @@ export class SandboxComputerService {
   // ---- live view ------------------------------------------------------------
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
-    const binding = await this.steerable(sessionId, principalId);
-    const held = this.controls.state(binding.sandbox);
+    const binding = await this.steerable(sessionId, principalId, 'watch');
+    const held = await this.controls.state(binding.sandbox);
     const current = this.bySandbox.get(binding.sandbox);
     if (current && !current.ended) {
       const recent =
@@ -330,10 +393,18 @@ export class SandboxComputerService {
       inputs: [],
       detachedAt: this.now(),
       ended: false,
+      checkedAt: this.now(),
+      checking: false,
     };
+    // Opening the view counts as watching at once, so a hold reopened right at
+    // its limit is not handed back before the first tick.
+    if (held.control === 'human') {
+      await this.controls.seen(binding.sandbox);
+      channel.seenAt = this.now();
+    }
     this.byId.set(channel.id, channel);
     this.bySandbox.set(binding.sandbox, channel);
-    channel.timer = setInterval(() => this.tick(channel), 1000);
+    channel.timer = setInterval(() => void this.tick(channel), 1000);
     channel.timer.unref?.();
     return {
       live_id: channel.id,
@@ -344,16 +415,16 @@ export class SandboxComputerService {
     };
   }
 
-  private async bound(c: Context, sessionId: string, id: string) {
+  private async bound(c: Context, sessionId: string, id: string, need: Reach = 'steer') {
     if (!sameOrigin(c)) throw new ComputerFault('origin_refused');
     const principalId = c.get('owner').id as string;
-    const binding = await this.steerable(sessionId, principalId);
+    const binding = await this.steerable(sessionId, principalId, need);
     const channel = this.byId.get(id);
     if (!channel || channel.ended || channel.sessionId !== sessionId)
       throw new ComputerFault('live_closed');
     if (channel.principalId !== principalId || channel.peer !== requestPeer(c))
       throw new ComputerFault('not_you');
-    if (this.controls.state(binding.sandbox).epoch !== channel.epoch) {
+    if ((await this.controls.state(binding.sandbox)).epoch !== channel.epoch) {
       this.finish(channel, 'epoch_changed');
       throw new ComputerFault('epoch_changed');
     }
@@ -361,7 +432,7 @@ export class SandboxComputerService {
   }
 
   async frames(c: Context, sessionId: string, id: string, lastEventId: number): Promise<Response> {
-    const { channel, binding } = await this.bound(c, sessionId, id);
+    const { channel, binding } = await this.bound(c, sessionId, id, 'watch');
     this.detach(channel);
     channel.ack = Math.max(channel.ack, lastEventId);
     const encoder = new TextEncoder();
@@ -448,7 +519,7 @@ export class SandboxComputerService {
     const { channel, binding } = await this.bound(c, sessionId, request.live_id);
     channel.ack = Math.max(channel.ack, request.ack_through);
     if (!request.events.length) return { accepted: 0 };
-    if (this.controls.state(binding.sandbox).control !== 'human')
+    if ((await this.controls.state(binding.sandbox)).control !== 'human')
       throw new ComputerFault('agent_control');
     const now = this.now();
     channel.inputs = channel.inputs.filter((at) => now - at < 1000);
@@ -469,19 +540,53 @@ export class SandboxComputerService {
 
   async close(c: Context, sessionId: string, body: unknown): Promise<{ closed: true }> {
     const request = liveClose.parse(body);
-    const { channel } = await this.bound(c, sessionId, request.live_id);
+    const { channel } = await this.bound(c, sessionId, request.live_id, 'watch');
     this.finish(channel, 'closed');
     return { closed: true };
   }
 
   /** Ends the view that has run its course; called every second while it is open. */
-  tick(channel: Channel): void {
-    const ending = this.ending(channel);
+  async tick(channel: Channel): Promise<void> {
+    if (channel.ended || channel.ticking) return;
+    channel.ticking = true;
+    try {
+      await this.tickOnce(channel);
+    } finally {
+      channel.ticking = false;
+    }
+  }
+
+  private async tickOnce(channel: Channel): Promise<void> {
+    // Read from the database each second, so a change made on another
+    // instance ends this view as one made here does.
+    let held: ComputerControlState;
+    try {
+      held = await this.controls.state(channel.sandbox);
+    } catch (error) {
+      // Without knowing who holds the computer the view cannot be kept honest.
+      process.stderr.write(
+        `computer live view ${channel.sessionId} closed: control could not be read: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      this.finish(channel, 'closed');
+      return;
+    }
+    if (channel.ended) return;
+    // An open view keeps the person's hold; with none for long it is handed back.
+    if (held.control === 'human' && this.now() - (channel.seenAt ?? 0) >= SEEN_EVERY_MS) {
+      channel.seenAt = this.now();
+      await this.controls.seen(channel.sandbox).catch(() => {});
+    }
+    if (held.epoch !== channel.epoch) {
+      this.finish(channel, 'epoch_changed');
+      return;
+    }
+    const ending = this.ending(channel, held);
     if (ending) {
       this.finish(channel, ending);
       return;
     }
-    if (channel.ended || this.controls.state(channel.sandbox).control !== 'human') return;
+    this.recheck(channel);
+    if (channel.ended || held.control !== 'human') return;
     const idle = this.now() - channel.lastInputAt;
     if (idle >= this.presence.still_there_ms && !channel.askedStillThere) {
       channel.askedStillThere = true;
@@ -489,13 +594,35 @@ export class SandboxComputerService {
     }
   }
 
-  private ending(channel: Channel): LiveEndCode | null {
+  /**
+   * Whether the viewer may still see this computer. A room's member who is
+   * removed or leaves, or a guest whose time is up, loses the view within one
+   * interval, as they lose every other room route at once.
+   */
+  private recheck(channel: Channel): void {
+    if (channel.ended || channel.checking || this.now() - channel.checkedAt < this.recheckMs)
+      return;
+    channel.checking = true;
+    this.steerable(channel.sessionId, channel.principalId, 'watch')
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          if (error instanceof ComputerFault) this.finish(channel, 'session_not_found');
+        },
+      )
+      .finally(() => {
+        channel.checking = false;
+        channel.checkedAt = this.now();
+      });
+  }
+
+  private ending(channel: Channel, held: ComputerControlState): LiveEndCode | null {
     if (channel.ended) return null;
     const now = this.now();
     if (now - channel.openedAt >= LIVE_LIMITS.takeover_ms) return 'live_timeout';
     if (!channel.stream && now - channel.detachedAt >= this.presence.reconnect_ms) return 'closed';
     // A watcher is not expected to type; a person holding control is.
-    if (this.controls.state(channel.sandbox).control !== 'human') return null;
+    if (held.control !== 'human') return null;
     return now - channel.lastInputAt >= this.presence.idle_close_ms ? 'live_idle' : null;
   }
 
@@ -551,8 +678,9 @@ export function mountSandboxComputers(app: Hono, service: SandboxComputerService
   for (const operation of ['takeover', 'handback'] as const)
     app.post(`/sandbox/sessions/:id/${operation}`, async (c) => {
       if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
+      const seen = sandboxControlRequest.parse(await c.req.json().catch(() => ({})));
       const changed = await service
-        .control(id(c), operation, c.get('owner').id)
+        .control(id(c), operation, c.get('owner').id, seen.control_epoch)
         .catch((error: unknown) => refused(error));
       return c.json(sandboxControlResponse.parse(changed));
     });

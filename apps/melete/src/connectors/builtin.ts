@@ -30,6 +30,7 @@
 import {
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
+  ROOM_TOOL_SCOPES,
   type SandboxConnectionConfig,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -65,6 +66,8 @@ type Builtin = {
   when?: (environment: BuiltinEnvironment) => boolean;
   /** What the row stores beside the builtin marker, for a default that carries its own settings. */
   configuration?: (environment: BuiltinEnvironment) => Record<string, unknown>;
+  /** The kinds of space it belongs in; left out, every kind. */
+  spaceKind?: 'personal' | 'shared';
 };
 
 const grants = (manifest: ConnectorManifest): string[] => [
@@ -112,6 +115,23 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     when: (environment) => Boolean(environment.sandbox),
     // Read back by the connector factory as any other sandbox connection.
     configuration: (environment) => ({ kind: 'sandbox', sandbox: environment.sandbox }),
+  },
+  // A person's own work reaches a room they are in only by posting or adding
+  // a file, each with their approval; a room's request reaches a person only
+  // by handing them a task they read whole and choose to run.
+  {
+    key: 'rooms',
+    provider: 'room',
+    label: 'Rooms',
+    scopes: [...ROOM_TOOL_SCOPES.personal],
+    spaceKind: 'personal',
+  },
+  {
+    key: 'room_handoff',
+    provider: 'room',
+    label: 'Hand to a person',
+    scopes: [...ROOM_TOOL_SCOPES.room],
+    spaceKind: 'shared',
   },
 ];
 
@@ -177,13 +197,14 @@ export async function ensureBuiltinConnections(
     await tx`select pg_advisory_xact_lock(${BUILTIN_LOCK})`;
     const created: CreatedBuiltin[] = [];
     for (const builtin of wanted) {
-      const spaces = await tx<{ id: string }[]>`select s.id from space s
+      const spaces = await tx<{ id: string; kind: string }[]>`select s.id, s.kind from space s
         where (${spaceId ?? null}::text is null or s.id = ${spaceId ?? null})
           and s.git_path not like ${`${EVALUATION_SPACE_PATH}%`}
           -- A space being removed is never furnished again, by a request that
           -- lands mid-sweep or by the pass over every space at startup. Without
           -- this, either one puts back the connections the sweep just deleted.
           and s.removed_at is null
+          and (${builtin.spaceKind ?? null}::text is null or s.kind = ${builtin.spaceKind ?? null})
           and not exists (
             select 1 from connection c, jsonb_array_elements_text(c.scopes) granted
             where c.space_id = s.id and c.provider = ${builtin.provider}
@@ -195,11 +216,14 @@ export async function ensureBuiltinConnections(
           ...builtin.configuration?.(environment),
           builtin: builtin.key,
         };
+        // A room's own tools (its files, the web, its computer) are for the
+        // requests people make of the room's agent.
+        const sharedUse = space.kind === 'shared' ? 'room' : 'owner';
         await tx`insert into connection
-          (id, space_id, provider, label, scopes, configuration, setup_state, status, health)
+          (id, space_id, provider, label, scopes, configuration, setup_state, status, health, shared_use)
           values (${id}, ${space.id}, ${builtin.provider}, ${builtin.label},
             ${JSON.stringify(builtin.scopes)}::jsonb, ${JSON.stringify(configuration)}::jsonb,
-            'connected', 'active', 'ok')`;
+            'connected', 'active', 'ok', ${sharedUse})`;
         created.push({
           id,
           spaceId: space.id,

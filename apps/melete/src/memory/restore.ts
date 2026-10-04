@@ -7,6 +7,7 @@ import { requeueSpaceRemoval } from '../spaces/requeue.ts';
 import { MemoryError, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
+import { applyRoomRecord, isRoomRecord } from './room-records.ts';
 import { memorySeams } from './seams.ts';
 
 const target = z.strictObject({
@@ -25,7 +26,19 @@ export const restrictionRecord = z.strictObject({
   // `remove_space` is the whole space going, not a span of it being suppressed:
   // it carries no targets and no claim ids, and the replay below handles it
   // rather than applyRestriction, which has the wrong shape for it.
-  operation: z.enum(['forget', 'delete', 'revoke', 'clear', 'remove_space']),
+  // `redact_room_message` and `withdraw_room_share` are a room's own removals:
+  // a message its author deleted, and a person's detail they stopped sharing
+  // into the room. Like `remove_space` they carry no targets; their replay
+  // (`applyRoomRecord`) redoes them by the id they name.
+  operation: z.enum([
+    'forget',
+    'delete',
+    'revoke',
+    'clear',
+    'remove_space',
+    'redact_room_message',
+    'withdraw_room_share',
+  ]),
   all: z.boolean(),
   claim_ids: z.array(prefixedId('k')),
   targets: z.array(target),
@@ -35,6 +48,10 @@ export const restrictionRecord = z.strictObject({
   removal_epoch: z.number().int().positive().optional(),
   /** A `remove_space` record only: who asked, so a replayed removal still answers to them. */
   requested_by: z.string().min(1).optional(),
+  /** A `redact_room_message` record only: the message its author deleted. */
+  room_message_id: z.string().min(1).max(240).optional(),
+  /** A `withdraw_room_share` record only: the share that was withdrawn. */
+  grant_id: z.string().min(1).max(240).optional(),
   recorded_at: timestamp,
 });
 export type RestrictionRecord = z.infer<typeof restrictionRecord>;
@@ -119,6 +136,11 @@ export async function restoreMemory(sql: MemorySql, journal: RestrictionJournal)
       // queues leaves the space unserved until it is.
       if (record.operation === 'remove_space') {
         await requeueSpaceRemoval(tx, record);
+        continue;
+      }
+      // A room's own removals hold whether or not the room's memory came back.
+      if (isRoomRecord(record)) {
+        await applyRoomRecord(tx, record);
         continue;
       }
       const [space] =

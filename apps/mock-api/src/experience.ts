@@ -174,6 +174,8 @@ export class ExperienceMock {
   welcomed = false;
   /** After POST /signout every route but sign-in answers 401 until a link is consumed. */
   signedOut = false;
+  /** Tasks rooms handed the person, and results waiting for them: shown on Home and with approvals. */
+  handoffsWaiting: () => C.RoomHandoff[] = () => [];
   readonly submissions = new Map<
     string,
     { text: string; result: ReturnType<typeof C.messageAcceptance.parse> }
@@ -1840,7 +1842,7 @@ export class ExperienceMock {
         return { conversation: chat.view };
       }
       case 'GET /permissions':
-        return { permissions: [...this.permissions.values()] };
+        return { permissions: [...this.permissions.values()], handoffs: this.handoffsWaiting() };
       case 'POST /permissions/{id}':
         return this.decide(id, input);
       case 'GET /rules':
@@ -1979,6 +1981,7 @@ export class ExperienceMock {
           tasks,
           open_task_count: tasks.length,
           routine_results: [],
+          handoffs: this.handoffsWaiting(),
         };
       }
       case 'GET /tasks':
