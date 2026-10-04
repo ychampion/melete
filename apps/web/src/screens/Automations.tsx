@@ -411,7 +411,8 @@ export function RepeatingWorkCard({
         {confirming ? (
           <>
             <span id={`stop-${run.id}`} style={{ fontSize: 13, color: 'var(--secondary)' }}>
-              It stops for good and its schedule is removed. What it found stays in its record.
+              “{run.title}” stops for good and its schedule is removed. What it found stays in its
+              record.
             </span>
             <Button
               size="sm"

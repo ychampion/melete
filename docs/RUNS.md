@@ -237,7 +237,7 @@ in step with what the run asked for.
 | `run.start` | conversations | starts a run tied to the conversation, optionally repeating on a schedule |
 | `run.list` | conversations | lists the person's own runs in the space (open ones, or all with `include_ended`): id, title, status, schedule and next run |
 | `run.pause`, `run.resume` | conversations | pause or resume one of the person's own runs, named by id or title, as the Runs page does |
-| `run.stop` | conversations | stops one of the person's own runs, removing its schedule, and answers with a receipt |
+| `run.stop` | conversations | turns one of the person's own runs off: it is paused at once, with a receipt that `run.resume` undoes; removing it for good is the person's own Stop |
 | `run.log` | runs and helpers | adds to the record; a `report` also notifies the person; `dead_end` marks an approach not to repeat |
 | `run.try` | runs and helpers | runs a try in the sandbox and records its measured value |
 | `run.delegate` | runs | starts a helper; refused once the shift has given its result |
@@ -246,10 +246,17 @@ in step with what the run asked for.
 
 They are native broker tools, pinned in the attempt's core catalog for the
 kinds of job their scopes are given to. `run.list`, `run.pause`, `run.resume` and `run.stop`
-reach only the runs of the conversation's own person in its space, the ones
-the Runs page shows them; another member's work is not found by id or by
-title. They act at once without asking: a pause is undone by resuming, and a
-stop is what the person asked for. A repeating `run.start` answers with the
+act for the person who asked the turn: in a room, the member whose request it
+is, never the room. They reach that person's own runs in the space, the ones
+the Runs page shows them, and in a room also the runs the room's requests
+started that the room lets them manage: those their own requests started, or
+all of them for an owner of the room, as a room's Stop allows. Another
+member's work is not listed and not found by id or by title, and a member who
+has left reaches nothing. They act at once without asking, because nothing
+they do is permanent: words the model read in a page, a file or an email could
+ask it to "stop every routine", so `run.stop` only pauses, and removing work
+for good stays with the person (Stop on its card, confirmed by name). What
+`run.list` returns is marked as data, not instructions. A repeating `run.start` answers with the
 schedule in words and its next time, and tells the model there is nothing to
 wait for, so it ends the reply instead of waiting for the first shift. Effects outside Melete go through the
 broker and the person's approval rules exactly as in a conversation. Runs and
