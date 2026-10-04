@@ -355,6 +355,11 @@ export class PolicyService {
             and payload->>'connection_id' = ${id}
             and (${request.kind === 'revoke'}
               or payload->>'event_name' in ${sql.raw(`(${OBSERVATION_NAMES})`)})`);
+        // What Melete noticed in it goes too, and the clocks that read it:
+        // their facts came from the account it no longer stands for.
+        await tx.execute(sql`delete from clock where connection_id = ${id}`);
+        await tx.execute(sql`delete from situation where connection_id = ${id}
+          or (kind = 'meeting.conflict' and evidence::text like ${`%"calendar:${id}:%`})`);
         if (request.kind === 'revoke')
           await tx
             .update(trigger)

@@ -34,7 +34,14 @@ import {
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
-import { type DayWindow, type IntentKind, localTime, planPush, type Waiting } from './policy.ts';
+import {
+  type DayWindow,
+  type IntentKind,
+  localTime,
+  planPush,
+  type SentToday,
+  type Waiting,
+} from './policy.ts';
 import { type PushOutcome, sendPush, subscriptionKeysUsable, type VapidKeys } from './webpush.ts';
 
 /**
@@ -444,11 +451,18 @@ export class PushService {
       .onConflictDoNothing({ target: pushIntent.dedupKey });
   }
 
-  /** Pushes this person has had today, in their own day. */
-  private async sentToday(principalId: string, day: DayWindow, now: Date): Promise<number> {
+  /**
+   * Pushes this person has had today, in their own day, in each lane. A batch
+   * counts in the lane it went out in, which its fastest intent names.
+   */
+  private async sentToday(principalId: string, day: DayWindow, now: Date): Promise<SentToday> {
     const today = localTime(now, day.timeZone).day;
     const rows = await this.db
-      .selectDistinct({ batchId: pushIntent.batchId, sentAt: pushIntent.sentAt })
+      .selectDistinct({
+        batchId: pushIntent.batchId,
+        sentAt: pushIntent.sentAt,
+        urgency: pushIntent.urgency,
+      })
       .from(pushIntent)
       .where(
         and(
@@ -456,12 +470,18 @@ export class PushService {
           gte(pushIntent.sentAt, new Date(now.getTime() - 36 * 3600_000)),
         ),
       );
-    const batches = new Set(
-      rows
-        .filter((row) => row.sentAt && localTime(row.sentAt, day.timeZone).day === today)
-        .map((row) => row.batchId),
-    );
-    return batches.size;
+    const rank = { normal: 0, soon: 1, urgent: 2 } as const;
+    const lanes = new Map<string, keyof SentToday>();
+    for (const row of rows) {
+      if (!row.sentAt || !row.batchId || localTime(row.sentAt, day.timeZone).day !== today)
+        continue;
+      const lane = (row.urgency in rank ? row.urgency : 'normal') as keyof SentToday;
+      const before = lanes.get(row.batchId);
+      if (!before || rank[lane] > rank[before]) lanes.set(row.batchId, lane);
+    }
+    const counted: SentToday = { normal: 0, soon: 0, urgent: 0 };
+    for (const lane of lanes.values()) counted[lane] += 1;
+    return counted;
   }
 
   /** One pass for one person: send what the policy allows, to each of their devices. */
@@ -469,10 +489,12 @@ export class PushService {
     if (!this.config.keys) return 'not_configured';
     const pacing = await this.pacingOf(principalId);
     // Only the kinds turned on, whatever was recorded around the moment one went off.
+    // What Melete noticed has no switch of its own: it is paced by its urgency.
     const on: IntentKind[] = [
       ...(pacing.decisions ? (['decision'] as const) : []),
       ...(pacing.settled ? (['settled', 'progress'] as const) : []),
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
+      'situation',
     ];
     const waiting = on.length
       ? await this.db
@@ -498,6 +520,9 @@ export class PushService {
           because: row.because,
           url: row.url,
           createdAt: row.createdAt,
+          urgency: row.urgency as Waiting['urgency'],
+          personSet: row.personSet,
+          ...(row.situationId ? { ack: `/situations/${row.situationId}/ack` } : {}),
         }),
       ),
       day,
@@ -519,7 +544,7 @@ export class PushService {
         payload,
         { keys: this.config.keys, subject },
         {
-          urgency: payload.tag === 'decision' ? 'high' : 'normal',
+          urgency: payload.tag === 'decision' || plan.urgency !== 'normal' ? 'high' : 'normal',
           ...(this.config.fetcher ? { fetcher: this.config.fetcher } : {}),
         },
       );

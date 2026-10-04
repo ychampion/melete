@@ -197,6 +197,11 @@ const SPACE_KEYED_OPERATIONAL = [
   // kept about each calendar occurrence. They name connections, which go next.
   'source_cursor',
   'subject_state',
+  // What Melete noticed in the space, the times it keeps to look again, and
+  // which work cares about what. Clocks and situations name connections.
+  'subject_link',
+  'situation',
+  'clock',
 ] as const;
 
 /**

@@ -27,6 +27,7 @@ export default defineConfig({
     './src/rooms/schema.ts',
     './src/attachments/schema.ts',
     './src/signals/schema.ts',
+    './src/situations/schema.ts',
   ],
   out: './drizzle',
   strict: true,

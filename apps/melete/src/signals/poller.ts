@@ -109,6 +109,15 @@ export type SignalPollerDeps = {
   load?: (connectionId: string) => Promise<Readable>;
   /** Whether this instance is the one that reads now. Without it, it always is. */
   leads?: () => Promise<boolean>;
+  /**
+   * Accounts read for Melete's own detectors, beside those triggers listen
+   * to (see situations/service.ts `demand`).
+   */
+  detectorDemand?: () => Promise<
+    Array<{ connectionId: string; spaceId: string; stream: Stream; seconds: number }>
+  >;
+  /** Called after a calendar read has kept its fields, to move clocks and look for overlaps. */
+  afterCalendarRead?: (connectionId: string) => Promise<void>;
   now?: () => number;
   readTimeoutMs?: number;
   concurrency?: number;
@@ -207,6 +216,16 @@ export class SignalPoller {
       wanted.set(key, {
         spaceId: String(row.space_id),
         stream,
+        seconds: Math.min(before?.seconds ?? seconds, seconds),
+      });
+    }
+    for (const extra of (await this.deps.detectorDemand?.()) ?? []) {
+      const key = `${extra.connectionId} ${extra.stream}`;
+      const seconds = clampInterval(extra.seconds);
+      const before = wanted.get(key);
+      wanted.set(key, {
+        spaceId: extra.spaceId,
+        stream: extra.stream,
         seconds: Math.min(before?.seconds ?? seconds, seconds),
       });
     }
@@ -538,6 +557,13 @@ export class SignalPoller {
         await tx`delete from subject_state
           where connection_id = ${row.connection_id} and subject_key in ${tx(diff.remove)}`;
     });
+    // Clocks that follow a meeting move with it, and overlaps are looked for,
+    // from what was just kept. A failure here never fails the read.
+    if (this.deps.afterCalendarRead)
+      await this.deps.afterCalendarRead(row.connection_id).catch(() => {
+        process.stderr.write(`signals: after_read_failed ${row.connection_id}
+`);
+      });
     return { cursor: { window_end: diff.window_end }, delivered, note: diff.note ?? null };
   }
 

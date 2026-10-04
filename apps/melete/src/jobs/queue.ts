@@ -33,6 +33,8 @@ export const QUEUES = {
   companyReplies: 'melete.company-replies',
   /** Sends what a person's devices may be told, once a minute. */
   pushDispatch: 'melete.push-dispatch',
+  /** Looks at the clocks that are due: deadlines and waits on a reply. */
+  clockSweep: 'melete.clock-sweep',
 } as const;
 
 export const ATTEMPT_QUEUES: Record<SchedulingClass, string> = {

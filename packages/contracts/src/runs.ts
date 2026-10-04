@@ -396,6 +396,19 @@ export const RUN_DELEGATE_TOOL: ToolSpec = {
   ),
 };
 
+/** Watch clauses as a tool takes them; `before`, `after` and `older_than` take seconds from now. */
+const WATCH_CLAUSES = {
+  type: 'array',
+  items: obj(
+    {
+      field: { type: 'string' },
+      op: { type: 'string', enum: [...WATCH_OPERATORS] },
+      value: { type: ['string', 'number', 'boolean', 'null'] },
+    },
+    ['field', 'op'],
+  ),
+};
+
 export const RUN_CHECKPOINT_TOOL: ToolSpec = {
   name: 'run.checkpoint',
   description:
@@ -416,28 +429,13 @@ export const RUN_CHECKPOINT_TOOL: ToolSpec = {
               timezone: { type: 'string' },
               connection_id: { type: 'string' },
               event_name: { type: 'string' },
-              predicate: obj(
-                {
-                  all: {
-                    type: 'array',
-                    items: obj(
-                      {
-                        field: { type: 'string' },
-                        op: { type: 'string', enum: [...WATCH_OPERATORS] },
-                        value: { type: ['string', 'number', 'boolean', 'null'] },
-                      },
-                      ['field', 'op'],
-                    ),
-                  },
-                },
-                ['all'],
-              ),
+              predicate: obj({ all: WATCH_CLAUSES, any: WATCH_CLAUSES }, []),
             },
             ['kind'],
           ),
         ],
         description:
-          '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}]}}. "drop_trigger" ends that.',
+          '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}],any?:[...]}} (before/after take seconds from now, older_than an age in seconds). "drop_trigger" ends that.',
       },
     },
     ['summary', 'next'],
