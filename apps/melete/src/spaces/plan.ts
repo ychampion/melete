@@ -220,6 +220,10 @@ const SPACE_KEYED_OPERATIONAL = [
   'subject_link',
   'situation',
   'clock',
+  // Incoming messages and calendar changes as they were sorted, and the labels
+  // kept for them. They name connections and the space's owner.
+  'triage_item',
+  'triage_verdict',
 ] as const;
 
 /**

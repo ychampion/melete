@@ -33,7 +33,7 @@ The step (`tier`) says which part of the service made the call:
 | `interactive` | an agent turn a person is waiting on |
 | `t2` | an agent turn something else woke |
 | `service` | one of the service's own side calls: memory, learning, voice, reviews, searches, scans |
-| `t1` | a batched look at what came in, for the step that sorts observations before anything wakes |
+| `t1` | a batched look at what came in: sorting new mail and calendar changes ([Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in)) |
 
 Each row also keeps `charged_input_tokens` (the input at full-price-equivalent
 tokens, with cached reads and cache writes at their own prices) and

@@ -32,6 +32,8 @@ export type MockOptions = {
   space?: 'personal' | 'shared';
   /** `none` starts with nothing connected, as before the person connects an app. */
   connections?: 'seeded' | 'none';
+  /** `none` shows Home's "Needs you" with nothing in it. */
+  needsYou?: 'seeded' | 'none';
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -52,6 +54,7 @@ export function createMock(options: MockOptions = {}) {
     voice: options.voice ?? true,
     computer: options.computer ?? true,
     space: options.space ?? 'personal',
+    needsYou: options.needsYou !== 'none',
   });
   if (options.connections === 'none') store.connections.clear();
   return { app, store, runner, scenarios, spaceId, connections };
@@ -65,6 +68,7 @@ if (import.meta.main) {
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     connections: process.env.MELETE_MOCK_CONNECTIONS === 'none' ? 'none' : 'seeded',
+    needsYou: process.env.MELETE_MOCK_NEEDS_YOU === 'none' ? 'none' : 'seeded',
     voice:
       process.env.MELETE_MOCK_VOICE === 'private'
         ? 'private'

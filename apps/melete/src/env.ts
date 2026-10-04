@@ -614,6 +614,18 @@ const variables = z.object({
   MELETE_MODEL_FAST: unsetWhenBlank(z.string().max(400).optional()),
   MELETE_MODEL_VISION: unsetWhenBlank(z.string().max(400).optional()),
   MELETE_MODEL_FALLBACK: unsetWhenBlank(z.string().max(2000).optional()),
+  /**
+   * The model that sorts new mail and calendar changes into needs you, for
+   * your information, or ignore, written `provider/model`, or `off` to turn
+   * sorting off. Unset, sorting uses the owner's secondary model for scheduled
+   * work, else MELETE_MODEL_FAST, else the default model. Its calls are
+   * background calls, held to the MELETE_SPEND_PERSON_BACKGROUND_* limits.
+   */
+  MELETE_MODEL_TRIAGE: unsetWhenBlank(z.string().max(400).optional()),
+  /** How often waiting items are sorted, in seconds. */
+  MELETE_TRIAGE_INTERVAL_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(10).max(86_400).default(120),
+  ),
   /** Reasoning effort for the agent's turns and for the service's side calls. */
   MELETE_REASONING_EFFORT_AGENT: unsetWhenBlank(z.enum(REASONING_EFFORTS).default('medium')),
   MELETE_REASONING_EFFORT_SIDE: unsetWhenBlank(z.enum(REASONING_EFFORTS).default('low')),
@@ -909,6 +921,16 @@ export const envSchema = variables.transform((value, context) => {
       } catch (error) {
         context.addIssue({ code: 'custom', path: [name], message: (error as Error).message });
       }
+  if (value.MELETE_MODEL_TRIAGE && value.MELETE_MODEL_TRIAGE.trim() !== 'off')
+    try {
+      parseModelChoice(value.MELETE_MODEL_TRIAGE, 'MELETE_MODEL_TRIAGE');
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['MELETE_MODEL_TRIAGE'],
+        message: (error as Error).message,
+      });
+    }
   if (value.MELETE_ALERT_EMAIL_TO && !value.MELETE_ALERT_SMTP_URL)
     context.addIssue({
       code: 'custom',

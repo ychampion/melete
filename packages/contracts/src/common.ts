@@ -52,6 +52,8 @@ export const ID_PREFIXES = {
   situation: 'sit',
   /** A time Melete keeps to look at something again. */
   clock: 'clk',
+  /** One incoming message or calendar change, as it was sorted. */
+  triage_item: 'tri',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
