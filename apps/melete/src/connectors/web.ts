@@ -15,8 +15,6 @@ import {
   type PaidApiMeter,
   PaidCallRefused,
   publicGetter,
-  SEARCH_RECENCY,
-  type SearchRecency,
   SearchRefused,
   SearchUnavailable,
   type WebSearch,
@@ -246,6 +244,14 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
     if (options.signal?.aborted) aborted();
     else req.end();
   });
+
+/**
+ * How recent the results of a search must be. Defined here, not beside the
+ * search backends, because the tool manifest below reads it while this module
+ * loads, and web-search.ts may be the module that started loading first.
+ */
+export const SEARCH_RECENCY = ['day', 'week', 'month', 'year'] as const;
+export type SearchRecency = (typeof SEARCH_RECENCY)[number];
 
 /** The longest query a search sends. */
 export const MAX_SEARCH_QUERY = 400;

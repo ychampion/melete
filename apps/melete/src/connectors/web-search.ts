@@ -28,6 +28,7 @@ import {
   type ResolvedAddress,
   receiptUrl,
   resolveHost,
+  type SearchRecency,
   type WebTransport,
 } from './web.ts';
 
@@ -40,10 +41,6 @@ export type SearchResult = {
   /** When the page was published (an ISO day), when the backend says. */
   published?: string;
 };
-
-/** How recent the results of a search must be. */
-export const SEARCH_RECENCY = ['day', 'week', 'month', 'year'] as const;
-export type SearchRecency = (typeof SEARCH_RECENCY)[number];
 
 /** One search, with the job it is for. Everything but the query comes from trusted state. */
 export type SearchRequest = {

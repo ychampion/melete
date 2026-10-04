@@ -32,7 +32,7 @@ const withDb = handle ? describe : describe.skip;
 
 afterAll(async () => {
   await handle?.close();
-});
+}, 15_000);
 
 function db() {
   if (!handle) throw new Error('Postgres unavailable');
