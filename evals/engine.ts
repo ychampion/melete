@@ -462,6 +462,8 @@ export class LightEngine {
       if (last) messages.push({ role: 'user', content: STEP_LIMIT_NOTE });
       const reply = await this.model(messages, tools, !last);
       outputTokens += reply.outputTokens;
+      if (process.env.EVALS_ENGINE_TRACE === '1')
+        console.error(`engine: model call ${turn + 1}, ${reply.toolCalls.length} tool calls`);
       const calls = last ? [] : reply.toolCalls;
       messages.push({
         role: 'assistant',

@@ -13,9 +13,23 @@ import { createHash } from 'node:crypto';
 import { readDeviceScreen } from '../devices/screens.ts';
 import { readWorkspaceFile } from '../sandbox/workspace.ts';
 
+/**
+ * The agent's own computer's tools whose succeeded receipts may carry a
+ * screenshot: looking, and every step that ends with one.
+ */
+export const OWN_COMPUTER_PICTURE_TOOLS: readonly string[] = [
+  'computer.screenshot',
+  'computer.open',
+  'computer.click',
+  'computer.type',
+  'computer.key',
+  'computer.scroll',
+  'computer.batch',
+];
+
 /** The tools whose succeeded receipts stand for a screenshot. */
 export const SCREENSHOT_TOOLS: readonly string[] = [
-  'computer.screenshot',
+  ...OWN_COMPUTER_PICTURE_TOOLS,
   'device.screenshot',
   'device.browser_screenshot',
 ];
@@ -42,7 +56,7 @@ export async function readScreenshot(
 ): Promise<Buffer | null> {
   if (!SCREENSHOT_TOOLS.includes(action.kind) || action.status !== 'succeeded') return null;
   const detail = (action.receipt?.detail ?? {}) as Record<string, unknown>;
-  const own = action.kind === 'computer.screenshot';
+  const own = OWN_COMPUTER_PICTURE_TOOLS.includes(action.kind);
   const recorded = own ? detail.sha256 : detail.content_hash;
   if (typeof recorded !== 'string') return null;
   let bytes: Buffer;

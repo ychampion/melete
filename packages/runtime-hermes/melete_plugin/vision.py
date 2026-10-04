@@ -1,5 +1,10 @@
 """A screenshot as the model sees it.
 
+The agent's own computer ends every step with a screenshot (``computer.open``,
+``click``, ``type``, ``key``, ``scroll`` and ``batch``), so a step's result is
+shaped here like ``computer.screenshot``'s: the model sees what its step did
+without asking again.
+
 The broker's answer to a screenshot is a receipt: where the picture was saved
 in the job's workspace, its size and its digest. A model that reads images is
 also given the picture itself, through the engine's multimodal tool result
@@ -48,8 +53,25 @@ logger = logging.getLogger("melete.plugin")
 #: Set to ``1`` by whatever starts the engine when the attempt's model reads images.
 VISION_ENV = "MELETE_ENGINE_SUPPORTS_VISION"
 
-#: The tools whose receipt names a screenshot saved in the job's workspace.
-SCREENSHOT_TOOLS = frozenset({"computer.screenshot", "device.screenshot", "device.browser_screenshot"})
+#: The agent's own computer's tools whose receipt may name a screenshot saved in
+#: the job's workspace: looking, and every step that ends with one.
+OWN_SCREENSHOT_TOOLS = frozenset(
+    {
+        "computer.screenshot",
+        "computer.open",
+        "computer.click",
+        "computer.type",
+        "computer.key",
+        "computer.scroll",
+        "computer.batch",
+    }
+)
+
+#: The steps whose screenshot is taken after them, rather than being the step itself.
+STEP_TOOLS = OWN_SCREENSHOT_TOOLS - {"computer.screenshot"}
+
+#: The tools whose receipt names a screenshot.
+SCREENSHOT_TOOLS = OWN_SCREENSHOT_TOOLS | {"device.screenshot", "device.browser_screenshot"}
 
 #: ``SOURCE_MARK`` in apps/melete/src/gateway/images.ts.
 SOURCE_MARK = "melete-screenshot:"
@@ -155,7 +177,9 @@ def text_summary(name: str, result: Dict[str, Any], path: Optional[str]) -> str:
     if isinstance(detail.get("width"), int) and isinstance(detail.get("height"), int):
         size = f" ({detail['width']}x{detail['height']})"
     where = f" saved at {path}" if path else ""
-    return f"Screenshot from {name}{where}{size}. " + json.dumps(result, ensure_ascii=False)
+    tool = _ACCOUNT_SUFFIX.sub("", name)
+    lead = "Screenshot after" if tool in STEP_TOOLS else "Screenshot from"
+    return f"{lead} {name}{where}{size}. " + json.dumps(result, ensure_ascii=False)
 
 
 def attach(
@@ -171,7 +195,7 @@ def attach(
     tool = _ACCOUNT_SUFFIX.sub("", name)
     if tool not in SCREENSHOT_TOOLS or result.get("status") != "succeeded":
         return result
-    own = tool == "computer.screenshot"
+    own = tool in OWN_SCREENSHOT_TOOLS
     if not enabled() or fetch is None:
         return result if own else {**result, "picture": NOT_SHOWN}
     path = screenshot_path(result)
@@ -214,7 +238,7 @@ def restore(name: Any, content: Any, fetch: Optional[Callable[[str], Any]] = Non
     if not isinstance(name, str) or not isinstance(content, str) or not content.endswith(STORED_PICTURE):
         return content
     tool = _ACCOUNT_SUFFIX.sub("", name)
-    if tool not in SCREENSHOT_TOOLS or tool == "computer.screenshot":
+    if tool not in SCREENSHOT_TOOLS or tool in OWN_SCREENSHOT_TOOLS:
         return content
     try:
         result = json.loads(content[: -len(STORED_PICTURE)])

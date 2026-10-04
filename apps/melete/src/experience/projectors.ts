@@ -126,6 +126,7 @@ const LABELS: Record<string, string> = {
   'computer.type': 'Typed in its computer',
   'computer.key': 'Pressed keys in its computer',
   'computer.scroll': 'Scrolled in its computer',
+  'computer.batch': 'Did a few steps in its computer',
   'browser.open': 'Opened a page in its browser',
   'browser.observe': 'Read the page in its browser',
   'browser.read': 'Read the page in its browser',
@@ -294,6 +295,8 @@ export function stepAsk(kind: string, payload: Record<string, unknown>): string 
         : `Press keys on ${AGENT} computer`;
     case 'computer.scroll':
       return `Scroll on ${AGENT} screen`;
+    case 'computer.batch':
+      return `Do a few steps on ${AGENT} computer`;
     case 'browser.observe':
     case 'browser.read':
       return `Read the page in ${AGENT} browser`;
