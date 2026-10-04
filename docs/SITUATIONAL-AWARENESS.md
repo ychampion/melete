@@ -58,7 +58,18 @@ starts watching afresh from then.
 An observation that no job, situation or listening trigger holds is removed
 after `MELETE_OBSERVATION_RETENTION_DAYS` days (14 by default), by one instance
 at a time under the `observation-retention` lease (`observations nothing used go
-after the retention period, on the leading instance only`).
+after the retention period, on the leading instance only`). Mail an open wait on
+an answer may still be checked against stays while the wait is open (`mail an
+open wait on an answer may still need is kept while the wait is open`).
+
+When an observation goes, its delivery key stays, with no word of what it said,
+for `MELETE_OBSERVATION_TOMBSTONE_DAYS` days (180 by default), so a mailbox that
+hands the same message back later is recognised (`a message read again after
+its observation expired is not delivered twice`). Every read that starts again
+after a provider lost its place (an Outlook delta link Graph no longer honours,
+a Gmail history id it no longer keeps, an IMAP mailbox renumbered) goes back two
+days at most (`a Graph delta it no longer honours is read again from two days
+back, not from when watching began`).
 
 A room's own accounts, such as a team mailbox, are watched only once the room's
 owners turn the switch on (`a room account is not observed by default`). What
@@ -81,12 +92,13 @@ the connector of an account installed through another instance when that
 account is first due. It reads a few accounts at once, claimed with `SKIP LOCKED`,
 and each read has two minutes. An account that fails to answer is tried again
 later: after the time it asked for when it sends `Retry-After`, otherwise less
-often the longer it keeps failing. Three failures in a row at one provider
-that look like the provider's own trouble (a timeout, a request to slow down, a
-server error) pause every account read from it, for five minutes and then
-longer if it keeps happening, while accounts at other providers go on being
-read (`a provider in trouble pauses its own accounts, and the others keep being
-read`). Its cursor stays where it was, so nothing it holds is skipped, and
+often the longer it keeps failing. A request to slow down is about one account
+and pauses that account alone (`a request to slow down from one account pauses
+that account alone`). A timeout or a server error at three different accounts
+of one provider in a row says the provider itself is in trouble: every account
+read from it pauses, for five minutes and then longer if it keeps happening,
+while accounts at other providers go on being read (`a provider in trouble
+pauses its own accounts, and the others keep being read`). Its cursor stays where it was, so nothing it holds is skipped, and
 `source_cursor.last_error` says in plain words why the
 last read failed (`a provider asking for time is left alone that long; a stuck
 or oversized read is skipped with a reason`, `a second instance without the
