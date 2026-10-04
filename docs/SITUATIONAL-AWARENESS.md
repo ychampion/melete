@@ -333,12 +333,29 @@ clocks alone, `absent` (nothing of a kind seen since).
 Deadlines come from two places today. Work can keep one for the person
 (`SituationService.setDeadline`). And a commitment the companies map found with
 a due date has one. Until the person takes it up it is shown on Home and not
-pushed. Once they press "Handle it" in Melete it is theirs: it is looked at a
-day before it is due and again fifteen minutes before, and that last look can
-reach them at once, at any hour (`pressed by the person, it reaches them fifteen
-minutes before it is due, even in quiet hours`). Taken up by an outside
-assistant over MCP instead, it stays one Melete found (`pressed by an outside
-assistant, it stays one Melete found: on Home, never urgent`).
+pushed. Once they press "Handle it" in Melete it is theirs: a due date with a
+time is looked at a day before and again fifteen minutes before, and that last
+look can reach them at once, at any hour (`pressed by the person, it reaches
+them fifteen minutes before it is due, even in quiet hours`). Taken up by an
+outside assistant over MCP instead, it stays one Melete found (`pressed by an
+outside assistant, it stays one Melete found: on Home, never urgent`).
+
+A due date with no time, which is how most dates in mail are written, is never
+taken as a time. It is due at 17:00, the end of a working day, on that date
+where the person is. It is looked at the day before and on the morning of the
+day, at the start of the person's day, and at most it is `soon`: it never
+breaks quiet hours, and a look that would fall in them waits for the morning
+(`a commitment due on a date is due at the end of that working day, looked at
+only inside the person’s day, and never urgent`, `a look at a date-only
+commitment that would fall outside the person’s day waits for the morning`).
+The same holds for a deadline work keeps with a date alone.
+
+Pressing "Handle it" again moves the deadline to the date the item has now; once
+the person has pressed it, it stays theirs whoever presses after (`pressing
+Handle it again moves the deadline to the date the item has now, and keeps it
+the person’s`). A rescan that moves a commitment's date moves its deadline, and
+one that takes the commitment off the list clears it (`a rescan that moves a
+commitment moves its clock, and one that removes it clears it`).
 
 ### How soon the person hears
 
@@ -421,7 +438,8 @@ that work sets are kept.
   even mid-check, conflicts and dismissals, waking linked work, replies,
   detector faults, what the detectors read, revocation and switching.
 - `apps/melete/test/integration/situations-commitments.test.ts`: "Handle it"
-  by the person, and by an outside assistant, over the real route.
+  by the person, and by an outside assistant, over the real route; date-only
+  due dates; pressing again; rescans.
 - `apps/melete/src/situations/detectors.test.ts` and
   `apps/melete/src/push/policy.test.ts`: the detectors' rules and the urgency
   lanes as plain functions.
