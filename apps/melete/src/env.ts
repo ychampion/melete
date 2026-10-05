@@ -336,6 +336,15 @@ const variables = z.object({
   MELETE_REACH_CODES_PER_HOUR: unsetWhenBlank(
     z.coerce.number().int().min(1).max(10_000).default(30),
   ),
+  /**
+   * Rooms, shared spaces, guests, hand-offs and linked chat platform accounts.
+   * Off, their routes answer 404 `not_available`, their tools are not offered
+   * and new spaces are not given them; what was stored stays as it is.
+   */
+  MELETE_PREVIEW_MULTIPLAYER: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')

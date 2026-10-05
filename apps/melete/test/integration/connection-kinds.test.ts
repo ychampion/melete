@@ -223,7 +223,11 @@ const awsSts = {
 
 async function harness() {
   if (!fixture || !queue) throw new Error('Postgres unavailable');
-  const env = loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: MASTER_KEY });
+  const env = loadEnv({
+    MELETE_PREVIEW_MULTIPLAYER: 'true',
+    NODE_ENV: 'test',
+    MELETE_MASTER_KEY: MASTER_KEY,
+  });
   // Only this fixture factory may speak plaintext, and only to loopback.
   useConnectorFactory(
     registry,
@@ -1338,7 +1342,7 @@ withDb('installing each kind of connection through the API', () => {
   test('a service without a master key installs nothing that needs sealing, and says why', async () => {
     if (!h || !fixture || !queue) throw new Error('Postgres unavailable');
     const keyless = createApp({
-      env: loadEnv({ NODE_ENV: 'test' }),
+      env: loadEnv({ MELETE_PREVIEW_MULTIPLAYER: 'true', NODE_ENV: 'test' }),
       db: fixture.db,
       sql: fixture.sql,
       registry: new ConnectorRegistry(),

@@ -19899,7 +19899,7 @@ export interface paths {
         };
         /**
          * Whether the first account still needs to be created
-         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists.
+         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists. `multiplayer` says whether rooms, shared spaces, guests and hand-offs are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 `not_available`.
          */
         get: {
             parameters: {
@@ -19917,6 +19917,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            multiplayer: boolean;
                             needed: boolean;
                         };
                     };

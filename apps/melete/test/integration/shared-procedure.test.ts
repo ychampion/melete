@@ -91,7 +91,11 @@ const later: RecordCase = {
     const proposer = new ProcedureProposer(fixture.jobs, gateway);
     const evaluator = new ProcedureEvaluator(fixture.jobs, runtime, fixture.runner.options);
     const app = createApp({
-      env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
+      env: loadEnv({
+        MELETE_PREVIEW_MULTIPLAYER: 'true',
+        NODE_ENV: 'test',
+        MELETE_SPACES_DIR: root,
+      }),
       db: fixture.handle.db,
       sql: fixture.handle.sql,
       jobs: fixture.jobs,

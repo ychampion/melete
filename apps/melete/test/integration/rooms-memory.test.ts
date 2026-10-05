@@ -110,7 +110,11 @@ const runner = jobs ? new AttemptRunner(jobs, new StubRuntimeAdapter(), { key: s
 const app =
   handle && jobs && runner && memory
     ? createApp({
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: join(directory, 'spaces') }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: join(directory, 'spaces'),
+        }),
         db: handle.db,
         sql: handle.sql,
         jobs,

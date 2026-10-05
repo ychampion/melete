@@ -74,6 +74,7 @@ import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { signInStore } from '../ops/signin-store.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
+import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
 import {
   checkSandboxConfiguration,
   createSandboxProvider,
@@ -243,6 +244,14 @@ export function mountDefaultConnections(app: Hono, deps: ConnectionDeps) {
 
 /** Installation is an owner API action; a model cannot select endpoints or declare tool authority. */
 export function mountConnections(app: Hono, deps: ConnectionDeps) {
+  // A room's own accounts are installed only while rooms are switched on.
+  const multiplayer = multiplayerEnabled(deps.env);
+  const installer = async (...args: Parameters<typeof requireInstaller>) => {
+    const access = await requireInstaller(...args);
+    if (!multiplayer && access.space.kind === 'shared')
+      throw new ServiceError(MULTIPLAYER_UNAVAILABLE.code, MULTIPLAYER_UNAVAILABLE.message, 404);
+    return access;
+  };
   const factory = factoryFor(deps);
   const secrets = factory.secrets;
 
@@ -444,7 +453,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const spaceId = requestedSpace ?? (await personalSpace(deps.db, actor));
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
-    await requireInstaller(deps.db, spaceId, actor, installation.kind);
+    await installer(deps.db, spaceId, actor, installation.kind);
     // An MCP server outside the setup owner's own space must be a public
     // address; the connector holds it to that again on every request.
     if (installation.kind === 'mcp' && !(await setupOwnersSpace(deps.sql, spaceId))) {
@@ -465,7 +474,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const secretRef = stored.secret ? await secrets.put(spaceId, stored.secret) : null;
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
-      const access = await requireInstaller(tx, spaceId, actor, installation.kind, true);
+      const access = await installer(tx, spaceId, actor, installation.kind, true);
       if (installation.kind === 'sandbox') {
         // One execution backend per space, as one browser worker per space:
         // two would mean two places a command could run, and two answers to
@@ -608,7 +617,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     clientMetadata: deps.env.MELETE_OAUTH_CLIENT_METADATA,
     authorize: async (actor, requested) => {
       const spaceId = requested ?? (await personalSpace(deps.db, actor));
-      await requireInstaller(deps.db, spaceId, actor, 'mcp');
+      await installer(deps.db, spaceId, actor, 'mcp');
       if (!factory.options.masterKey)
         throw new ServiceError(
           'sealing_unavailable',
@@ -626,7 +635,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       const [row] = await deps.db.select().from(connection).where(eq(connection.id, connectionId));
       if (!row || row.provider !== 'mcp' || row.status === 'revoked')
         throw new ServiceError('not_found', 'Connection not found.', 404);
-      await requireInstaller(deps.db, row.spaceId, actor, 'mcp');
+      await installer(deps.db, row.spaceId, actor, 'mcp');
       const server = mcpServerConfig.safeParse(row.configuration.server);
       if (!server.success || server.data.endpoint.transport !== 'http')
         throw new ServiceError('invalid_request', 'Only a remote MCP server is signed in to.', 400);
@@ -662,7 +671,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         throw new ServiceError('not_found', 'Connection not found.', 404);
       const secretRef = await secrets.put(row.spaceId, JSON.stringify(credential));
       const updated = await serviceTransaction(deps.db, async (tx) => {
-        await requireInstaller(tx, row.spaceId, actor, 'mcp', true);
+        await installer(tx, row.spaceId, actor, 'mcp', true);
         const { needs_scope: _answered, ...configuration } = row.configuration;
         const [next] = await tx
           .update(connection)
@@ -765,7 +774,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   ): Promise<ConnectionResponse> => {
     const secretRef = await secrets.put(row.spaceId, JSON.stringify(installation.credential));
     const updated = await serviceTransaction(deps.db, async (tx) => {
-      await requireInstaller(tx, row.spaceId, actor, installation.kind, true);
+      await installer(tx, row.spaceId, actor, installation.kind, true);
       const [next] = await tx
         .update(connection)
         .set({ secretRef, scopes: installation.scopes })
@@ -862,7 +871,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       ...(provider ? { provider } : {}),
       authorize: async (actor, requested) => {
         const spaceId = requested ?? (await personalSpace(deps.db, actor));
-        await requireInstaller(deps.db, spaceId, actor, ACCOUNT_KINDS[name].mail);
+        await installer(deps.db, spaceId, actor, ACCOUNT_KINDS[name].mail);
         if (!factory.options.masterKey)
           throw new ServiceError(
             'sealing_unavailable',

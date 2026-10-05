@@ -65,6 +65,7 @@ const { AUTHORING_KEY } = await import('../../src/sandbox/adapters/e2b-standin.t
 async function harness() {
   if (!fixture || !queue) throw new Error('Postgres unavailable');
   const env = loadEnv({
+    MELETE_PREVIEW_MULTIPLAYER: 'true',
     NODE_ENV: 'test',
     MELETE_MASTER_KEY: MASTER_KEY,
     MELETE_SANDBOX_PROJECT: PROJECT,

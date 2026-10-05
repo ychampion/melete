@@ -121,11 +121,11 @@ describeWithDb('single-owner authentication against Postgres', () => {
     const api = app();
     const before = await api.request('/setup');
     expect(before.status).toBe(200);
-    expect(await before.json()).toEqual({ needed: true });
+    expect(await before.json()).toEqual({ needed: true, multiplayer: false });
     expect((await api.request('/setup', credentials())).status).toBe(201);
     const after = await api.request('/setup');
     expect(after.status).toBe(200);
-    expect(await after.json()).toEqual({ needed: false });
+    expect(await after.json()).toEqual({ needed: false, multiplayer: false });
   });
 
   test('all other routes require a valid cookie while health and setup status stay public', async () => {

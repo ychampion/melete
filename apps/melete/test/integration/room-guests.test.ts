@@ -57,6 +57,7 @@ const app =
   handle && jobs && runner && broker
     ? createApp({
         env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: directory,
           MELETE_PUBLIC_URL: PUBLIC_URL,
@@ -132,7 +133,7 @@ let carol: Person;
 function everyRoute(): Array<{ method: string; path: string }> {
   const stub = new Proxy({}, { get: () => () => undefined }) as never;
   const deps: AppDeps = {
-    env: loadEnv({ MELETE_PUBLIC_URL: PUBLIC_URL }),
+    env: loadEnv({ MELETE_PREVIEW_MULTIPLAYER: 'true', MELETE_PUBLIC_URL: PUBLIC_URL }),
     checkDatabase: async () => 'ok',
     db: stub,
     sql: stub,

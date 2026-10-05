@@ -125,7 +125,11 @@ const broker = handle
 const app =
   handle && jobs && runner && broker
     ? createApp({
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: directory }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: directory,
+        }),
         db: handle.db,
         sql: handle.sql,
         jobs,

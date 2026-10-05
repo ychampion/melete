@@ -50,7 +50,12 @@ const app =
     ? createApp({
         db: handle.db,
         sql: handle.sql,
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root, MELETE_PUBLIC_URL: PUBLIC }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: root,
+          MELETE_PUBLIC_URL: PUBLIC,
+        }),
         jobs,
         memory: { sql: handle.sql, journal: { read: async () => [], append: async () => {} } },
         checkDatabase: async () => 'ok',
@@ -90,7 +95,11 @@ withDb('the MCP server without a public address', () => {
     const off = createApp({
       db: required(handle).db,
       sql: required(handle).sql,
-      env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
+      env: loadEnv({
+        MELETE_PREVIEW_MULTIPLAYER: 'true',
+        NODE_ENV: 'test',
+        MELETE_SPACES_DIR: root,
+      }),
       checkDatabase: async () => 'ok',
     });
     for (const [method, path] of [

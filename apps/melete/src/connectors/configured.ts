@@ -24,6 +24,7 @@ import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { GatewaySpending } from '../gateway/types.ts';
+import { multiplayerEnabled } from '../rooms/preview.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
   createSandboxProvider,
@@ -224,6 +225,11 @@ export type ConnectorOptions = {
   /** True when attempts run in a container; a default exec connection is inert without it. */
   cellIsolated?: boolean;
   /**
+   * Whether rooms are switched on (`MELETE_PREVIEW_MULTIPLAYER`). Off, a room
+   * connection offers nothing. Left out, it is read from `env`.
+   */
+  multiplayer?: boolean;
+  /**
    * Whether a space or agent is private. A private one reads no public web
    * pages beyond what a job was explicitly given. Without it, none is.
    */
@@ -411,11 +417,14 @@ export class ConnectorFactory {
         ? undefined
         : createExecConnector(options);
     if (row.provider === 'room')
-      return createRoomConnector({
-        sql: options.sql,
-        workRoot: options.workRoot,
-        spacesRoot: options.spacesRoot,
-      });
+      // Rooms switched off: the rows stay, and none of their tools is offered.
+      return !(options.multiplayer ?? multiplayerEnabled(options.env ?? process.env))
+        ? undefined
+        : createRoomConnector({
+            sql: options.sql,
+            workRoot: options.workRoot,
+            spacesRoot: options.spacesRoot,
+          });
     if (row.provider === 'notes')
       return createNotesConnector({
         sql: options.sql,
@@ -949,6 +958,7 @@ export function connectorOptionsFromEnv(
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    multiplayer: env.MELETE_PREVIEW_MULTIPLAYER,
     // Nothing is created until the first write.
     blobs: configuredBlobStore(env),
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET

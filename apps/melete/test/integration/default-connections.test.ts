@@ -45,6 +45,7 @@ const service = (url: string, extra: Record<string, string> = {}) =>
   bootstrap({
     workers: false,
     env: loadEnv({
+      MELETE_PREVIEW_MULTIPLAYER: 'true',
       NODE_ENV: 'test',
       DATABASE_URL: url,
       MELETE_CAPABILITY_KEY: 'default-connections-key'.repeat(2),

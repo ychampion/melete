@@ -282,6 +282,7 @@ proof(
       service = await bootstrap({
         workers: false,
         env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
           NODE_ENV: 'test',
           DATABASE_URL: handle.url,
           PORT: '3160',

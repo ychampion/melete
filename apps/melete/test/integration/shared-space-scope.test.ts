@@ -67,7 +67,11 @@ const broker = handle ? new BrokerService({ sql: handle.sql, connectors: registr
 const app =
   handle && memory && jobs
     ? createApp({
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: directory }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: directory,
+        }),
         db: handle.db,
         sql: handle.sql,
         jobs,
