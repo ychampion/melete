@@ -22983,6 +22983,11 @@ export interface components {
                 builtin?: boolean;
                 id: components["schemas"]["__schema255"];
                 label: components["schemas"]["__schema256"];
+                problem?: {
+                    detail: components["schemas"]["__schema256"];
+                    /** @enum {string} */
+                    kind: "not_running" | "failing";
+                };
                 /** @enum {string} */
                 status: "available" | "connecting" | "connected" | "error";
                 watching?: boolean;

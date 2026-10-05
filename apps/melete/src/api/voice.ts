@@ -30,7 +30,7 @@ import {
   voiceTranscription,
   voiceTranscriptionQuery,
 } from '@melete/contracts';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import {
@@ -41,7 +41,7 @@ import {
 import type { TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { wavDurationMs } from '../connectors/wav.ts';
 import type { Database } from '../db/client.ts';
-import { agent, experienceTurn, job, question } from '../db/schema.ts';
+import { agent, connection, experienceTurn, job, question } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
@@ -202,6 +202,29 @@ const providerFailed = (what: string) =>
     502,
   );
 
+/**
+ * A refused key stops Speech and Transcription as surely as voice: the default
+ * rows for both read the same key, so they are shown failing at once rather
+ * than Connected until someone presses Test. A passing Test sets them back.
+ */
+async function markSpeechFailing(db: Database) {
+  try {
+    await db
+      .update(connection)
+      .set({ health: 'failing', lastCheckedAt: new Date() })
+      .where(
+        and(
+          eq(connection.provider, 'generation'),
+          eq(connection.status, 'active'),
+          ne(connection.health, 'failing'),
+          inArray(sql`${connection.configuration}->>'builtin'`, ['generation', 'transcription']),
+        ),
+      );
+  } catch {
+    process.stderr.write('voice: speech connections could not be marked failing\n');
+  }
+}
+
 export function mountVoice(
   app: Hono,
   deps: {
@@ -305,7 +328,12 @@ export function mountVoice(
       // came back may have been served, and stays counted.
       if (error instanceof VoiceProviderError && error.status !== null)
         await allowance.giveBack(reservation).catch(() => undefined);
-      if (error instanceof VoiceProviderError) throw providerFailed(what);
+      if (error instanceof VoiceProviderError) {
+        // The operator reads why; the person is told only that it failed.
+        process.stderr.write(`voice: ${kind} failed: ${error.message}\n`);
+        if (error.keyRefused) await markSpeechFailing(db);
+        throw providerFailed(what);
+      }
       throw error;
     }
   }

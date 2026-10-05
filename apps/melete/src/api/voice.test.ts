@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { VOICE_LIMITS, voiceStatus } from '@melete/contracts';
 import { Hono } from 'hono';
 import { VoiceProviderError } from '../connectors/elevenlabs.ts';
@@ -253,6 +253,30 @@ describe('push-to-talk transcription', () => {
       },
     });
     expect(allowance?.rows.size).toBe(0);
+  });
+
+  test('a refusal is logged with its reason for the operator, never the key', async () => {
+    const adapter: TranscriptionAdapter = {
+      model: 'm',
+      async transcribe() {
+        throw new VoiceProviderError(401, 'invalid_api_key');
+      },
+    };
+    const written: string[] = [];
+    const spy = spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const { built } = app({ transcription: adapter });
+      const response = await built.request(clip(new Uint8Array(10), 3000, 'audio/webm'));
+      expect(response.status).toBe(502);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(written).toContain(
+      'voice: transcribe failed: 401 from ElevenLabs: key rejected (invalid_api_key)\n',
+    );
   });
 
   test('a provider that never answered keeps the seconds counted: it may have done the work', async () => {

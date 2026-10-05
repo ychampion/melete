@@ -21,7 +21,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
-import { mountConnections, mountDefaultConnections } from './api/connections.ts';
+import { connectorLiveness, mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
@@ -492,6 +492,7 @@ export function createApp(deps: AppDeps) {
       privacy,
       runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
       attachments: deps.attachments,
+      ...(connections ? { liveness: connectorLiveness(connections) } : {}),
     });
   // Rooms: shared spaces where several people talk to one agent.
   if (deps.db && deps.jobs && submissions)

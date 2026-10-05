@@ -12,8 +12,9 @@
  * - a single-use token for Scribe realtime, which the browser presents
  *   instead of the key. It expires after fifteen minutes and is consumed on use.
  *
- * A failure is reported by status only. What the provider said is never passed
- * on: it can quote the request, and it is not written for the person anyway.
+ * A failure is reported by status, and by the provider's error code when it is
+ * one of a known few. What the provider wrote is never passed on: it can quote
+ * the request, and it is not written for the person anyway.
  */
 import { z } from 'zod';
 import type { Transcript, TranscriptionAdapter } from './transcribe.ts';
@@ -47,12 +48,88 @@ export type ElevenLabsOptions = {
   fetch?: typeof fetch;
 };
 
-/** The provider answered with an error, or not at all. Carries the status, never the body. */
+/**
+ * Error codes ElevenLabs puts in `detail.status`. Only a code on this list is
+ * kept from a refusal, so a log line can say why without repeating anything
+ * the provider wrote.
+ */
+const KNOWN_CODES = [
+  'invalid_api_key',
+  'missing_permissions',
+  'quota_exceeded',
+  'payment_required',
+  'detected_unusual_activity',
+  'voice_not_found',
+  'model_not_found',
+  'too_many_concurrent_requests',
+  'system_busy',
+] as const;
+export type VoiceProviderCode = (typeof KNOWN_CODES)[number];
+
+/** What a status means, in words an operator can act on. */
+function meaning(status: number | null, code: VoiceProviderCode | null): string {
+  if (status === null) return 'the service could not be reached';
+  if (code === 'invalid_api_key') return 'key rejected';
+  if (code === 'missing_permissions') return 'the key lacks a permission this call needs';
+  if (code === 'quota_exceeded') return 'the account is out of credits';
+  if (code === 'payment_required') return 'the plan does not cover this call';
+  if (code === 'detected_unusual_activity') return 'the account is held for unusual activity';
+  if (code === 'voice_not_found') return 'the configured voice does not exist';
+  if (code === 'model_not_found') return 'the configured model does not exist';
+  if (code === 'too_many_concurrent_requests' || status === 429)
+    return 'rate or concurrency limit reached';
+  if (status === 401) return 'key rejected';
+  if (status === 402) return 'the plan or credits do not cover this call';
+  if (status === 403) return 'the key is not allowed to make this call';
+  if (status === 404) return 'the voice or model was not found';
+  if (status >= 500) return 'the service had an error';
+  return 'the request was refused';
+}
+
+/**
+ * The provider answered with an error, or not at all. Carries the status and,
+ * when the provider gave one of the known codes, that code; never the body.
+ * The message is fit for a log line: it names no key and quotes nothing.
+ */
 export class VoiceProviderError extends Error {
-  constructor(readonly status: number | null) {
-    super(status === null ? 'voice provider unreachable' : `voice provider answered ${status}`);
+  readonly code: VoiceProviderCode | null;
+  constructor(
+    readonly status: number | null,
+    code: string | null = null,
+  ) {
+    const known = KNOWN_CODES.find((candidate) => candidate === code) ?? null;
+    super(
+      status === null
+        ? `ElevenLabs did not answer: ${meaning(null, null)}`
+        : `${status} from ElevenLabs: ${meaning(status, known)}${known ? ` (${known})` : ''}`,
+    );
+    this.code = known;
+  }
+
+  /** The key itself was refused, rather than one call. */
+  get keyRefused(): boolean {
+    if (this.code === 'missing_permissions') return false;
+    return this.status === 401 || this.code === 'invalid_api_key';
   }
 }
+
+/** The `detail.status` of an error body, read only to match it against the known codes. */
+async function refusalCode(response: Response): Promise<string | null> {
+  const text = await response.text().catch(() => '');
+  try {
+    const parsed = JSON.parse(text.slice(0, 4096)) as { detail?: { status?: unknown } } | null;
+    const status = parsed?.detail?.status;
+    return typeof status === 'string' ? status : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the key is accepted, as a connector's health check reads it. */
+export type ProviderCheck = { ok: true } | { ok: false; keyRefused: boolean; detail: string };
+
+/** How long one answer about the key is reused, so checks do not call the provider each time. */
+const CHECK_REUSE_MS = 5 * 60 * 1000;
 
 /** Reading a reply aloud, and opening a realtime transcription session, for voice mode. */
 export type LiveVoice = {
@@ -98,11 +175,37 @@ function client(options: ElevenLabsOptions) {
       throw new VoiceProviderError(null);
     }
     if (!response.ok) {
-      // The body is drained and dropped: nothing the provider wrote is passed on.
-      await response.body?.cancel().catch(() => undefined);
-      throw new VoiceProviderError(response.status);
+      // The body is read for its error code alone: nothing the provider wrote is passed on.
+      throw new VoiceProviderError(response.status, await refusalCode(response));
     }
     return response;
+  };
+}
+
+/**
+ * A cheap call that tells whether the key is accepted: the account's own
+ * record, which costs no characters. A key scoped without that read is still
+ * a working key, so a missing permission here counts as accepted. One answer
+ * is reused for a few minutes.
+ */
+function keyCheck(options: ElevenLabsOptions): () => Promise<ProviderCheck> {
+  const request = client(options);
+  let last: { at: number; result: ProviderCheck } | null = null;
+  return async () => {
+    if (last && Date.now() - last.at < CHECK_REUSE_MS) return last.result;
+    let result: ProviderCheck;
+    try {
+      await request('v1/user', { method: 'GET' });
+      result = { ok: true };
+    } catch (error) {
+      if (!(error instanceof VoiceProviderError)) throw error;
+      result =
+        error.code === 'missing_permissions'
+          ? { ok: true }
+          : { ok: false, keyRefused: error.keyRefused, detail: error.message };
+    }
+    last = { at: Date.now(), result };
+    return result;
   };
 }
 
@@ -115,6 +218,7 @@ export function elevenLabsSpeechAdapter(options: ElevenLabsOptions): SpeechAdapt
   const second = options.secondVoiceId ?? first;
   return {
     model,
+    verify: keyCheck(options),
     async synthesize({ script, voice }) {
       const response = await request(
         `v1/text-to-speech/${voicePath(voice === 'tenor' ? second : first)}?output_format=pcm_${SPEECH_SAMPLE_RATE}`,
@@ -134,6 +238,7 @@ export function elevenLabsTranscriptionAdapter(options: ElevenLabsOptions): Tran
   const model = options.transcriptionModel ?? ELEVENLABS_DEFAULT_TRANSCRIPTION_MODEL;
   return {
     model,
+    verify: keyCheck(options),
     async transcribe(input, signal): Promise<Transcript> {
       const form = new FormData();
       form.set('model_id', model);

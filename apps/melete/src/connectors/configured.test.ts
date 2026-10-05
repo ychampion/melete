@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readConnectionConfig } from './configured.ts';
+import type { Sql } from 'postgres';
+import { loadEnv } from '../env.ts';
+import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import { connectorOptionsFromEnv, readConnectionConfig } from './configured.ts';
 
 const withFile = async (content: string, check: (path: string) => Promise<void>) => {
   const directory = await mkdtemp(join(tmpdir(), 'melete-connections-'));
@@ -55,5 +58,19 @@ describe('the connection configuration file', () => {
         expect(message).toContain('0.smtp');
       },
     );
+  });
+});
+
+describe('the provider settings connectors open with', () => {
+  // The default Speech and Transcription rows are created from the full
+  // environment; their connectors open from these options. A key missing here
+  // left both rows installed with nothing running behind them.
+  test('an ElevenLabs key reaches the speech and transcription connectors', () => {
+    const env = loadEnv({ ELEVENLABS_API_KEY: 'el-test-key' });
+    const options = connectorOptionsFromEnv(null as unknown as Sql, env);
+    const configured = capabilitiesFromEnv(options.env);
+    expect(configured.provider).toBe('elevenlabs');
+    expect(configured.speech).not.toBeNull();
+    expect(configured.transcription).not.toBeNull();
   });
 });

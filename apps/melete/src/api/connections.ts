@@ -223,6 +223,51 @@ export async function ensureDefaultConnections(deps: ConnectionDeps, spaceId?: s
   }
 }
 
+/** How long a list of connections waits to learn whether one runs, before showing it as it is. */
+const LIVENESS_WAIT_MS = 3_000;
+
+/**
+ * Whether an active connection has a connector running on this instance. One
+ * installed through another instance may not be open here yet, so it is opened
+ * now, as the signal poller opens one when it is first due, and kept. Only a
+ * row this service cannot run at all (its provider's settings are missing, or
+ * it refused to open) is `not_running`; one still opening after a short wait
+ * is `unknown`, and its open carries on and is kept.
+ */
+export function connectorLiveness(deps: ConnectionDeps) {
+  const factory = factoryFor(deps);
+  const opening = new Map<string, Promise<'running' | 'not_running'>>();
+  const open = (row: typeof connection.$inferSelect) => {
+    const pending = opening.get(row.id);
+    if (pending) return pending;
+    const started = (async () => {
+      const opened = await factory.open(source(row)).catch(() => undefined);
+      if (!opened) return 'not_running' as const;
+      if (deps.registry.get(row.id)) await opened.close?.().catch(() => {});
+      else factory.register(deps.registry, row.id, opened);
+      return 'running' as const;
+    })().finally(() => opening.delete(row.id));
+    opening.set(row.id, started);
+    return started;
+  };
+  return async (
+    row: typeof connection.$inferSelect,
+  ): Promise<'running' | 'not_running' | 'unknown'> => {
+    if (deps.registry.get(row.id)) return 'running';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        open(row),
+        new Promise<'unknown'>((settle) => {
+          timer = setTimeout(() => settle('unknown'), LIVENESS_WAIT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 /**
  * A space an account makes by signing up, by being provisioned, or by asking
  * for a shared one is furnished once that request has answered, and only that
