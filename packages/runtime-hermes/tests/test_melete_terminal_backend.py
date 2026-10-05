@@ -26,11 +26,12 @@ from melete_plugin.execution import child_environment  # noqa: E402
 from melete_plugin.results import OWN_COMPUTER_INSTRUCTION  # noqa: E402
 from melete_plugin.terminal_backend import (  # noqa: E402
     BACKEND_NAME,
-    INTERRUPTED_STATUS,
+    INTERRUPTED_OUTPUT,
     MAX_TIMEOUT_MS,
     SESSION_MARGIN_SECONDS,
     REFUSED_STATUS,
     TERMINAL_TOOL,
+    UNKNOWN_STATUS,
     SandboxTerminal,
     blocked_command_result,
     engine_classes,
@@ -458,7 +459,10 @@ def test_an_interrupt_stops_the_wait_and_reports_the_outcome_unknown():
     finally:
         broker.hold.set()
         timer.cancel()
-    assert result["returncode"] == INTERRUPTED_STATUS
+    # The run ending is not the command being stopped, and nothing says the person stopped it.
+    assert result["returncode"] == UNKNOWN_STATUS
+    assert result["output"].startswith(INTERRUPTED_OUTPUT)
+    assert "nobody stopped the command" in result["output"]
     assert "already sent" in result["output"] and OWN_COMPUTER_INSTRUCTION in result["output"]
     assert len(broker.proposals) == 1
     assert beats, "the engine's activity heartbeat ran while the command was waited on"
