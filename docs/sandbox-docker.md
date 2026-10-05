@@ -152,7 +152,15 @@ with their space.
 
 The sandbox browser starts with a clean profile and none of your sessions. If
 you take over and sign in to a site there, the agent can use that session after
-you hand the computer back; sign in only where you would let it act.
+you hand the computer back; sign in only where you would let it act. The
+browser saves no passwords, payment cards or addresses, and signs in to no
+browser account.
+
+A command that looks for or reads the places programs keep saved passwords,
+cards, sign-in cookies or keys (browser profiles, key and token files) asks you
+first, with that reason, whatever your settings let the agent do in its own
+computer. This is judged from the command's text, so it is a signal rather
+than a wall; the computer holds none of your own browser profiles or keys.
 
 ## Idle stop and resume
 

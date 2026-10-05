@@ -36,6 +36,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
+import { seeksCredentials } from '../broker/credential-stores.ts';
 import { appendEvent } from '../broker/records.ts';
 import { egressHostsFor } from '../egress/records.ts';
 import { type EgressHostSummary, hasCommandEgress } from '../egress/tokens.ts';
@@ -885,6 +886,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     dispatchBudgetMs: sandboxDispatchBudgetMs,
 
     ownComputer: true,
+
+    // A command that looks for saved passwords, cards or keys asks first,
+    // whatever the person's settings let through as the agent's own work.
+    asksFirst: (action) => seeksCredentials(action.kind, action.canonical_payload),
 
     async execute(action, ctx) {
       checkIdentity(action, ctx);

@@ -104,6 +104,10 @@ RUN arch="${TARGETARCH:-amd64}" \
     && printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN?}' > /usr/local/etc/npmrc \
     && node --version && npm --version
 
+# The desktop browser saves no passwords, payment cards or addresses, and signs
+# in to no browser account, so its profile never holds them.
+COPY deploy/sandbox/chromium-policy.json /etc/chromium/policies/managed/melete.json
+
 # melete-proc keeps the agent's background processes: their output ring, input
 # and exit status, on the home volume.
 COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init deploy/sandbox/melete-proc /usr/local/bin/
