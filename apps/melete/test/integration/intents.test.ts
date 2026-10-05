@@ -21,6 +21,7 @@ import { connection, experienceProfile, job, owner, space } from '../../src/db/s
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { whenWords } from '../../src/intents/origins.ts';
 import { intent } from '../../src/intents/schema.ts';
 import { IntentService, type ReversalStep } from '../../src/intents/service.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -30,6 +31,7 @@ import { TriggerService } from '../../src/jobs/triggers.ts';
 import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { localInstant } from '../../src/situations/detectors.ts';
 import { SituationService } from '../../src/situations/service.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -835,6 +837,40 @@ withDb('intents', () => {
       (await h.sql`select count(*)::int as n from intent where source_key = ${`ledger:${item}`}`)[0]
         ?.n,
     ).toBe(1);
+  }, 60_000);
+
+  test('a commitment moved to a day keeps that day where the person is', async () => {
+    const h = required(handle);
+    // The person's zone, read from their own space's profile.
+    await h.sql`update experience_profile set time_zone = 'America/Los_Angeles'
+      where space_id = ${spaceId}`;
+    await h.sql`update space set owner_principal_id = ${ownerId} where id = ${spaceId}`;
+    try {
+      const { item, row } = await commitment(new Date(clock + 5 * DAY));
+      const day = dayAhead(7).iso;
+      const edit = await request(`/intents/${row.id}`, 'PATCH', {
+        version: row.version,
+        values: { deadline_at: day },
+      });
+      expect(edit.status).toBe(200);
+      const [ledger] =
+        await h.sql`select due_at, due_date_only from ledger_item where id = ${item}`;
+      expect(new Date(ledger?.due_at).toISOString()).toBe(`${day}T00:00:00.000Z`);
+      expect(ledger?.due_date_only).toBe(true);
+      // Its clock reads the same day: due at the end of that working day in Los Angeles.
+      const kept = required(await liveClock(row.subjectKey));
+      expect(kept.check.date_only).toBe(day);
+      expect(new Date(kept.due_at).getTime()).toBe(
+        localInstant(day, '17:00', 'America/Los_Angeles'),
+      );
+      const shown = required((await listed()).find((entry) => entry.id === row.id));
+      expect(shown.read_back.parts.find((part) => part.path === 'deadline_at')?.text).toBe(
+        `by ${whenWords(day, 'America/Los_Angeles')}`,
+      );
+    } finally {
+      await h.sql`update experience_profile set time_zone = 'UTC' where space_id = ${spaceId}`;
+      await h.sql`update space set owner_principal_id = null where id = ${spaceId}`;
+    }
   }, 60_000);
 
   test('cancelling a commitment taken up hands it back and lets its clock go', async () => {

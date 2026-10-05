@@ -712,8 +712,16 @@ export class IntentService {
       if (movesDeadline && row.source === 'commitment') {
         // The commitment's own due date moves, and its own clock with it.
         commitment = row.sourceKey.slice('ledger:'.length);
+        // A day alone is kept the way commitments keep one: that date at UTC
+        // midnight, read back as the day itself wherever the person is.
+        const stored =
+          due === null
+            ? null
+            : updated.deadlineDay
+              ? `${updated.deadlineDay}T00:00:00.000Z`
+              : new Date(due).toISOString();
         await tx.execute(sql`update ledger_item set
-            due_at = ${due === null ? null : new Date(due).toISOString()}::timestamptz,
+            due_at = ${stored}::timestamptz,
             due_date_only = ${Boolean(updated.deadlineDay)}
           where id = ${commitment} and space_id = ${row.spaceId}
             and principal_id = ${row.principalId}`);
