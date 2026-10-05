@@ -5,6 +5,26 @@ in threads, every message shows who wrote it, and the agent answers when it is
 asked. The agent acts as the room: it reads only what the room has, and it
 never acts as any one person in it.
 
+## Turning rooms on
+
+Rooms are a preview behind one setting, `MELETE_PREVIEW_MULTIPLAYER`, which is
+off by default. Set `MELETE_PREVIEW_MULTIPLAYER=true` in `deploy/.env` and
+recreate the service to turn on everything on this page: rooms, shared spaces,
+members, invites and guests, a room's own accounts and approval settings,
+hand-offs, the `room.*` tools, and chat platform accounts linked to rooms.
+
+While it is off:
+
+- the routes on this page, `POST /spaces/shared` and
+  `POST /spaces/{id}/memberships` answer `404` with the code `not_available`;
+- agents are offered no `room.*` tool, and new spaces are given none;
+- a guest cannot sign in, and no room request is started;
+- the web app shows no Rooms section, invite pages, hand-offs or "Share to a
+  room" action, and `GET /setup` reports `multiplayer: false`.
+
+Nothing stored is changed or removed. Turning the setting on again brings back
+every room, member and message as it was.
+
 ## Making a room and adding people
 
 Anyone with an account makes a room with a name and, if they like, a purpose

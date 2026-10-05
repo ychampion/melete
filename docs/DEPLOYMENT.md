@@ -711,6 +711,23 @@ which browsers honour over HTTPS and on localhost, so reach a remote
 installation through the SSH tunnel or a TLS proxy rather than over plain HTTP
 to its address.
 
+### Rooms
+
+Rooms, shared spaces, guests and hand-offs are a preview behind
+`MELETE_PREVIEW_MULTIPLAYER`, off by default. To turn them on, set it in
+`deploy/.env` and recreate the service:
+
+```dotenv
+MELETE_PREVIEW_MULTIPLAYER=true
+```
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
+```
+
+Turning it off again keeps every room and message; their routes answer 404
+until it is back on. [Rooms](ROOMS.md#turning-rooms-on) lists what it covers.
+
 ## Tailscale
 
 Reach your installation from your own devices over your tailnet, with no
