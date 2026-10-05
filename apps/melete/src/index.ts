@@ -54,6 +54,7 @@ import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
+import { reverseInOrder } from './broker/reversals.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -87,6 +88,7 @@ import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { ExperienceEffects } from './experience/effects.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
@@ -445,6 +447,16 @@ export function createApp(deps: AppDeps) {
     (deps.jobs && longWork
       ? new IntentService({ jobs: deps.jobs, runs: longWork, situations: noticing })
       : undefined);
+  // Cancelling an intent takes back what its work changed, newest first, the
+  // way the person's own Undo would, each step on its own receipt.
+  if (intents && !intents.deps.reverse && deps.sql && deps.broker && deps.registry) {
+    const undoing = new ExperienceEffects(deps.sql, deps.broker, deps.registry);
+    intents.deps.reverse = (effects, kept) =>
+      reverseInOrder(effects, async (effect) => {
+        const done = await undoing.undo(kept.spaceId, effect.actionId);
+        return 'reason' in done ? { ok: false, reason: done.reason } : { ok: true };
+      });
+  }
   if (intents) mountIntents(app, intents);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the

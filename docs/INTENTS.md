@@ -65,8 +65,9 @@ the person is told. See [Noticing what changes](SITUATIONAL-AWARENESS.md).
 ## Cancelling
 
 **Cancel** on Home stops the intent's work and lets go of its deadline
-(`a cancelled intent stops its run`). The answer lists what the work had
-already changed outside Melete, newest first
+(`a cancelled intent stops its run`). It then takes back what the work had
+already changed outside Melete, newest first, each step the way the person's
+own Undo would (see [Undo](UNDO.md)), and lists anything that stays as it is
 (`cancelling takes back what the work changed, newest first, and lists what it kept`).
 
 ## For developers

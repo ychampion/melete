@@ -72,7 +72,7 @@ export type IntentDeps = {
    * step tried even after one fails. Without it, cancelling stops the work
    * and lists what it changed as kept.
    */
-  reverse?: (effects: readonly IntentEffectRow[]) => Promise<ReversalStep[]>;
+  reverse?: (effects: readonly IntentEffectRow[], intent: IntentRow) => Promise<ReversalStep[]>;
   now?: () => number;
 };
 
@@ -689,7 +689,7 @@ export class IntentService {
       ).map((entry) => [entry.id, entry.kind]),
     );
     const steps: ReversalStep[] = this.deps.reverse
-      ? await this.deps.reverse(effects)
+      ? await this.deps.reverse(effects, row)
       : [...effects].reverse().map((effect) => ({ effect, ok: false, reason: 'kept' }));
     const out: CancelledEffect[] = [];
     for (const step of steps) {
