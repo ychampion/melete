@@ -76,11 +76,13 @@ import { mountAttachmentsMock } from './attachments.ts';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
+import { mountIntentsMock } from './intents.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountModelsMock } from './models.ts';
 import { mountNeedsYouMock } from './needs-you.ts';
 import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
+import { mountReachMock } from './reach.ts';
 import { mountRoomsMock } from './rooms.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
@@ -118,6 +120,8 @@ export type AppDeps = {
   computer?: boolean;
   /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
   space?: 'personal' | 'shared';
+  /** Texts and calls to the person's own number; off shows an installation without a provider. */
+  reach?: boolean;
   /** Seeded "Needs you" items with the demonstration's seed; off shows the empty list. */
   needsYou?: boolean;
 };
@@ -195,6 +199,7 @@ export function createMockApp(deps: AppDeps) {
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);
+  mountIntentsMock(app, { seeded: Boolean(deps.seedExperience) });
   mountNeedsYouMock(app, {
     seeded: Boolean(deps.seedExperience) && deps.needsYou !== false,
     attach: (name, text) => {
@@ -226,6 +231,7 @@ export function createMockApp(deps: AppDeps) {
   });
   mountModelsMock(app);
   mountPushMock(app, () => experience.profile);
+  mountReachMock(app, deps.reach !== false);
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is

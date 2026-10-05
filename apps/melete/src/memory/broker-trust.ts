@@ -17,6 +17,7 @@ import type { OriginResolution, TrustResolution } from '@melete/contracts';
 import { originResolution } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
 import { describeOrigin, type TrustResolutionInput, type TrustResolver } from '../broker/trust.ts';
+import { leaves } from '../intents/values.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { MemoryScope, MemoryTx } from './db.ts';
 import { resolveTrustIn } from './trust.ts';
@@ -106,11 +107,13 @@ export function createMemoryTrustResolver(): TrustResolver {
       if (!job) return [];
       const room = await roomAuthorityOf(tx, input.job_id);
       // Work a room handed the person: the task is the room's words, not theirs.
+      // Work carrying out something the person asked for: the details they
+      // said are theirs. Melete's own reading of the rest vouches for nothing.
       const said = room
         ? await roomOrigins(tx, room, input)
         : job.objective_origin === 'room_handoff'
           ? await handoffOrigins(tx, String(job.space_id), String(job.id), input)
-          : [];
+          : await intentOrigins(tx, String(job.space_id), String(job.id), input);
       const scope = await memoryScopeForSpace(
         tx,
         input.space_id,
@@ -257,6 +260,81 @@ export async function handoffOrigins(
         origin_trust: 'external_content',
         handle: null,
         description: `This value came from a request in the room ${JSON.stringify(String(row.name ?? ''))}, not from something you typed.`,
+      }),
+    );
+}
+
+const sameValue = (said: string, value: string) => {
+  const a = said.trim().toLowerCase();
+  const b = value.trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const numbers = [Number(a), Number(b)];
+  if (numbers.every((n) => a !== '' && b !== '' && Number.isFinite(n)))
+    return numbers[0] === numbers[1];
+  const times = [Date.parse(said), Date.parse(value)];
+  return (
+    /\d{4}-\d{2}-\d{2}T/.test(said) &&
+    /\d{4}-\d{2}-\d{2}T/.test(value) &&
+    times.every(Number.isFinite) &&
+    times[0] === times[1]
+  );
+};
+
+/** Which details of an intent can vouch for a gated field of each kind. */
+const INTENT_PATHS_FOR: Record<string, readonly string[]> = {
+  recipient: ['counterparties', 'party.contacts'],
+  destination: ['counterparties', 'place'],
+  amount: ['budget.max'],
+  resource: ['place', 'deliverable'],
+};
+
+/**
+ * Where the gated values of an intent's work came from. A value equal to a
+ * detail the person said when they asked for it is theirs: `owner` trust, for
+ * this work only. A detail Melete inferred answers nothing here, so it never
+ * counts as the person's instruction: it is left to memory, and to the
+ * approval card, like any value the work cannot account for.
+ */
+export async function intentOrigins(
+  tx: Query,
+  spaceId: string,
+  jobId: string,
+  input: TrustResolutionInput,
+): Promise<OriginResolution[]> {
+  if (input.fields.length === 0) return [];
+  const kept = await tx`select i.constraints, i.origins, i.deadline_at, i.deadline_day
+    from intent i
+    where i.space_id = ${spaceId} and i.state in ('active', 'waiting', 'at_risk')
+      and i.source = 'chat'
+      and (i.run_id = ${jobId}
+        or i.run_id = (select parent_run_id from run_state where job_id = ${jobId}))`;
+  const theirs: { path: string; value: string }[] = [];
+  for (const row of kept) {
+    const origins = (row.origins ?? {}) as Record<string, string>;
+    const deadline =
+      (row.deadline_day as string | null) ??
+      (row.deadline_at ? new Date(row.deadline_at as Date).toISOString() : null);
+    for (const leaf of leaves((row.constraints ?? {}) as never, deadline))
+      if (origins[leaf.path] === 'person')
+        theirs.push({ path: leaf.path, value: String(leaf.value) });
+  }
+  if (!theirs.length) return [];
+  // A detail vouches only for a field of its own kind: a party size is never an amount.
+  const fits = (category: string, path: string) =>
+    (INTENT_PATHS_FOR[category] ?? []).some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}[`) || path.startsWith(`${prefix}.`),
+    );
+  return input.fields
+    .filter((field) =>
+      theirs.some((said) => fits(field.category, said.path) && sameValue(said.value, field.value)),
+    )
+    .map((field) =>
+      originResolution.parse({
+        ...field,
+        origin_trust: 'owner',
+        handle: null,
+        description: 'You said this when you asked Melete to do it.',
       }),
     );
 }

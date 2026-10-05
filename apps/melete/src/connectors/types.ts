@@ -11,7 +11,7 @@ import type {
 import type { CatalogMetadata } from '../broker/catalog.ts';
 import type { Query } from '../broker/records.ts';
 import type { Declaration, ReversalPlan } from '../broker/reversals.ts';
-import type { SignalSource } from '../signals/types.ts';
+import type { SignalSource, SubjectReader } from '../signals/types.ts';
 import type { ConnectorDescription, RepairAttemptContext } from './faults.ts';
 
 /** Trusted service context, assembled from persisted job state, never tool arguments. */
@@ -167,6 +167,11 @@ export interface Connector {
    * polled.
    */
   signals?: SignalSource;
+  /**
+   * Reads one thing the account holds as it is now (a Drive file's metadata),
+   * for a deadline's fresh look when its clock fires. Only reads.
+   */
+  subjects?: SubjectReader;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault
    * so the policy can compare it with what was sent and propose a mapping. A

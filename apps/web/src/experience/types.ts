@@ -93,6 +93,8 @@ export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
 export type PushSubscriptionInput = Body<paths['/push/subscriptions'], 'post'>;
+/** The person's own number, their agreement to texts and calls, and what Melete sent. */
+export type ReachState = Ok<paths['/reach'], 'get'>['reach'];
 /** Another assistant the person let use Melete over MCP. */
 export type ConnectedAssistant = Ok<paths['/mcp/clients'], 'get'>['clients'][number];
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
@@ -251,6 +253,10 @@ export type WaitingOnEntry = WaitingOn['top'][number];
 /** What needs the person: sorted mail and calendar changes, and what Melete noticed. */
 export type NeedsYou = Ok<paths['/needs-you'], 'get'>;
 export type NeedsYouItem = NeedsYou['items'][number];
+/** What the person asked Melete to see through, with every detail it guessed marked. */
+export type Intents = Ok<paths['/intents'], 'get'>;
+export type IntentItem = Intents['intents'][number];
+export type IntentCancelled = Ok<paths['/intents/{id}/cancel'], 'post'>;
 
 /* ---------- problem reports ---------- */
 

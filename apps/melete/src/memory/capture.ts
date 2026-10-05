@@ -80,8 +80,8 @@ const FIELD_WORDS: Record<string, string[]> = {
 };
 const REFERS_BACK = /^(?:that|it|what i (?:just )?(?:said|told you|wrote))$/i;
 /** Text the person pasted or passed on, not said: a quotation, a forward, a reply chain. */
-const QUOTED = /^\s*(?:>|["“‘'`]|-{3,}|fwd?:|forwarded message|begin forwarded)/i;
-const FORWARDED = /^-{2,}\s*forwarded message|^on .{3,80} wrote:$/im;
+export const QUOTED = /^\s*(?:>|["“‘'`]|-{3,}|fwd?:|forwarded message|begin forwarded)/i;
+export const FORWARDED = /^-{2,}\s*forwarded message|^on .{3,80} wrote:$/im;
 
 /** What a message asks of memory, read from its opening words alone. */
 export function chatIntent(text: string): ChatIntent {

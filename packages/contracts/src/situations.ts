@@ -20,6 +20,8 @@ export const SITUATION_KINDS = {
   deadlineAtRisk: 'deadline.at_risk',
   /** A message the person sent asking for something has had no answer. */
   replyOverdue: 'reply.overdue',
+  /** Something the person wanted done reached its deadline before it was done. */
+  intentExpired: 'intent.expired',
 } as const;
 export const SITUATION_KIND_NAMES = Object.values(SITUATION_KINDS);
 export const situationKind = z.enum(SITUATION_KIND_NAMES as [string, ...string[]]);
@@ -69,3 +71,51 @@ export const situationView = z.strictObject({
 export type SituationView = z.infer<typeof situationView>;
 export const situationResponse = z.strictObject({ situation: situationView });
 export const situationList = z.strictObject({ situations: z.array(situationView) });
+
+/**
+ * Whose change ends a deadline on a file: the person's own (`me`), or someone
+ * else's (`others`). Drive's metadata cannot say a file was signed, so the
+ * deadline names whose edit counts.
+ */
+export const DOCUMENT_TOUCHERS = ['me', 'others'] as const;
+
+/**
+ * Keep a deadline on a Google Drive file: by `due_at`, the person (`by: me`)
+ * or someone else (`by: others`) should have changed it since `since` (now,
+ * unless said; never later than now). Melete looks at the file as Drive has it
+ * `lead_seconds` before it is due and raises `deadline.at_risk` unless that
+ * look shows such a change. Naming `job_id` links the work handling it, so
+ * that work hears about it too.
+ */
+export const documentDeadlineRequest = z
+  .strictObject({
+    /** The Drive account; left out, the session space's own Drive. */
+    connection_id: z.string().min(1).max(200).optional(),
+    /** The file id, or a docs.google.com or drive.google.com link to it. */
+    file: z.string().min(1).max(2048),
+    title: z.string().trim().min(1).max(120),
+    due_at: timestamp,
+    lead_seconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(7 * 86_400)
+      .default(300),
+    since: timestamp.optional(),
+    by: z.enum(DOCUMENT_TOUCHERS),
+    job_id: z.string().min(1).max(200).optional(),
+  })
+  .meta({ id: 'DocumentDeadlineRequest' });
+export type DocumentDeadlineRequest = z.infer<typeof documentDeadlineRequest>;
+
+export const deadlineView = z.strictObject({
+  id: z.string(),
+  subject_key: z.string(),
+  title: z.string(),
+  due_at: timestamp,
+  /** When Melete looks next. */
+  fire_at: timestamp,
+  person_set: z.boolean(),
+  state: z.string(),
+});
+export const deadlineResponse = z.strictObject({ deadline: deadlineView });

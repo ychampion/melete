@@ -1,0 +1,2 @@
+ALTER TABLE "source_cursor" DROP CONSTRAINT "source_cursor_stream_check";--> statement-breakpoint
+ALTER TABLE "source_cursor" ADD CONSTRAINT "source_cursor_stream_check" CHECK ("source_cursor"."stream" in ('mail', 'calendar', 'documents'));

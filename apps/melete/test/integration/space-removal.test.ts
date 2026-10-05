@@ -378,6 +378,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   situation: 'operational',
   clock: 'operational',
   subject_link: 'operational',
+  intent: 'operational',
   triage_item: 'operational',
   triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
@@ -731,6 +732,11 @@ describe.if(handle !== null)('removing a space', () => {
         now() + interval '1 day', 300, now() + interval '1 day', '{}'::jsonb)`;
     await sql`insert into subject_link (subject_key, job_id, space_id, role)
       values ('subject:one', ${seeded.jobId}, ${seeded.spaceId}, 'deadline')`;
+    // Something the person asked Melete to see through there.
+    await sql`insert into intent (id, space_id, principal_id, source, source_key, run_id, title,
+        kind, subject_key)
+      values (${`int_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'chat',
+        'message:1:a', ${seeded.jobId}, 'Book a table', 'booking', ${`intent:int_${seeded.spaceId}`})`;
     // An incoming message as it was sorted, and the label kept for it.
     const [observed] = await sql`insert into event (job_id, type, payload, dedup_key)
       values (null, 'notice', '{}'::jsonb, ${`triage:${seeded.spaceId}`}) returning seq`;

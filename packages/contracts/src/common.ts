@@ -54,6 +54,8 @@ export const ID_PREFIXES = {
   clock: 'clk',
   /** One incoming message or calendar change, as it was sorted. */
   triage_item: 'tri',
+  /** Something the person wants done, kept until it is. */
+  intent: 'int',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

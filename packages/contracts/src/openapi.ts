@@ -99,6 +99,7 @@ import {
   handoffResultDecision,
 } from './handoffs.ts';
 import { hookObservation } from './hooks.ts';
+import { intentCancelResponse, intentEdit, intentList, intentResponse } from './intents.ts';
 import {
   engineSkillApprovalRequest,
   engineSkillEditRequest,
@@ -208,6 +209,12 @@ import {
   pushSubscriptionRequest,
   pushSubscriptionResponse,
 } from './push.ts';
+import {
+  reachConsentRequest,
+  reachNumberRequest,
+  reachStateResponse,
+  reachVerifyRequest,
+} from './reach.ts';
 import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
@@ -287,7 +294,12 @@ import {
   sandboxControlRequest,
   sandboxControlResponse,
 } from './sandbox-computer.ts';
-import { situationList, situationResponse } from './situations.ts';
+import {
+  deadlineResponse,
+  documentDeadlineRequest,
+  situationList,
+  situationResponse,
+} from './situations.ts';
 import {
   deleteSpaceRequest,
   spaceRemoval,
@@ -1301,6 +1313,8 @@ export function buildOpenApiDocument() {
         { name: 'voice' },
         { name: 'push' },
         { name: 'situations' },
+        { name: 'intents' },
+        { name: 'reach' },
         { name: 'assistants' },
         { name: 'feedback' },
       ],
@@ -1364,6 +1378,18 @@ export function buildOpenApiDocument() {
             responses: { '200': jsonResponse('Situations', situationList) },
           },
         },
+        '/situations/deadlines': {
+          post: {
+            tags: ['situations'],
+            summary:
+              'Keep a deadline on a Google Drive file: if it is still untouched shortly before it is due, Melete raises it',
+            requestBody: json(documentDeadlineRequest),
+            responses: {
+              '201': jsonResponse('Kept', deadlineResponse),
+              '400': problem('Not a file or an account this person can keep a deadline on'),
+            },
+          },
+        },
         '/situations/{id}/ack': {
           post: {
             tags: ['situations'],
@@ -1383,6 +1409,129 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Dismissed', situationResponse),
               '404': problem('No such situation for this person'),
+            },
+          },
+        },
+        '/intents': {
+          get: {
+            tags: ['intents'],
+            summary:
+              'What this person asked Melete to see through: open ones, and those that ended in the last day',
+            description:
+              'Each carries the person’s own words, Melete’s one-line reading with every detail it chose marked as its guess, where it stands, what happens next and its deadline.',
+            responses: { '200': jsonResponse('Intents', intentList) },
+          },
+        },
+        '/intents/{id}': {
+          patch: {
+            tags: ['intents'],
+            summary: 'Correct a detail; what the person types becomes theirs',
+            requestParams: idParam('id', 'Intent id'),
+            requestBody: json(intentEdit),
+            responses: {
+              '200': jsonResponse('Corrected', intentResponse),
+              '400': problem('Not a detail Melete can keep, or a time already passed'),
+              '404': problem('No such intent for this person'),
+              '409': problem('It ended, or changed since it was read'),
+            },
+          },
+        },
+        '/intents/{id}/cancel': {
+          post: {
+            tags: ['intents'],
+            summary:
+              'Stop it: its work stops, and what it changed is taken back newest first where it can be',
+            requestParams: idParam('id', 'Intent id'),
+            responses: {
+              '200': jsonResponse('Cancelled', intentCancelResponse),
+              '404': problem('No such intent for this person'),
+            },
+          },
+        },
+        '/reach': {
+          get: {
+            tags: ['reach'],
+            summary:
+              'Whether Melete may text and call this person’s own verified number about deadlines they set, and what it did',
+            responses: { '200': jsonResponse('Reach', reachStateResponse) },
+          },
+        },
+        '/reach/number': {
+          post: {
+            tags: ['reach'],
+            summary: 'Text a six-digit code to a number the person says is theirs',
+            requestBody: json(reachNumberRequest),
+            responses: {
+              '200': jsonResponse('Code sent', reachStateResponse),
+              '429': problem('Too many codes were asked for'),
+              '503': problem('Texts are not set up on this installation'),
+            },
+          },
+          delete: {
+            tags: ['reach'],
+            summary: 'Forget the number and end the agreement',
+            responses: { '200': jsonResponse('Forgotten', reachStateResponse) },
+          },
+        },
+        '/reach/number/verify': {
+          post: {
+            tags: ['reach'],
+            summary: 'Prove the number with the code that was texted to it',
+            requestBody: json(reachVerifyRequest),
+            responses: {
+              '200': jsonResponse('Verified', reachStateResponse),
+              '400': problem('The code is wrong or has run out'),
+            },
+          },
+        },
+        '/reach/consent': {
+          post: {
+            tags: ['reach'],
+            summary:
+              'Agree, once, that Melete may text and optionally call the verified number about deadlines the person set; recorded with the time, the number and the wording',
+            requestBody: json(reachConsentRequest),
+            responses: {
+              '200': jsonResponse('Agreed', reachStateResponse),
+              '409': problem('No verified number, or the person replied STOP since'),
+            },
+          },
+          delete: {
+            tags: ['reach'],
+            summary: 'Withdraw the agreement; nothing more is texted or called',
+            responses: { '200': jsonResponse('Withdrawn', reachStateResponse) },
+          },
+        },
+        '/reach/twilio/sms': {
+          post: {
+            tags: ['reach'],
+            summary:
+              'Twilio’s incoming-text webhook: a form POST, believed only with a valid X-Twilio-Signature for this address. STOP ends texts and calls, START undoes it, any other reply from a verified number acknowledges what Melete was escalating',
+            responses: {
+              '200': { description: 'An empty TwiML document' },
+              '403': { description: 'Not signed by this installation’s Twilio account' },
+            },
+          },
+        },
+        '/reach/twilio/status/{id}': {
+          post: {
+            tags: ['reach'],
+            summary: 'Twilio’s delivery receipt for one text or call, signed as above',
+            requestParams: idParam('id', 'Contact id'),
+            responses: {
+              '204': { description: 'Recorded' },
+              '403': { description: 'Not signed by this installation’s Twilio account' },
+            },
+          },
+        },
+        '/reach/twilio/key/{id}': {
+          post: {
+            tags: ['reach'],
+            summary:
+              'A key pressed on a call, signed as above: 1 acknowledges, 9 ends texts and calls',
+            requestParams: idParam('id', 'Contact id'),
+            responses: {
+              '200': { description: 'TwiML with what the call says next' },
+              '403': { description: 'Not signed by this installation’s Twilio account' },
             },
           },
         },

@@ -40,6 +40,7 @@ export function createInternalServer(options: {
   recordStandingScope?: BrokerOptions['recordStandingScope'];
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
   runs?: BrokerOptions['runs'];
+  intents?: BrokerOptions['intents'];
   autoReview?: BrokerOptions['autoReview'];
   sendHoldMs?: BrokerOptions['sendHoldMs'];
   /** A broker the service already built, shared with its own routes. */
@@ -94,6 +95,7 @@ export function createInternalServer(options: {
       recordStandingScope: options.recordStandingScope,
       chaseFollowUp: options.chaseFollowUp,
       runs: options.runs,
+      intents: options.intents,
       autoReview: options.autoReview,
       sendHoldMs: options.sendHoldMs,
     });

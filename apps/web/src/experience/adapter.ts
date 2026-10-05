@@ -90,6 +90,7 @@ import type {
   PushSettingsUpdate,
   PushSubscriptionInput,
   Question,
+  ReachState,
   Reaction,
   Receipt,
   ResultCard,
@@ -352,6 +353,16 @@ export const adapter = {
   pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
+  /* ---------- texts and calls to the person's own number ---------- */
+  reach: () => guard<{ reach: ReachState }>(() => api.GET('/reach')),
+  reachSendCode: (number: string) =>
+    guard<{ reach: ReachState }>(() => api.POST('/reach/number', { body: { number } })),
+  reachVerify: (code: string) =>
+    guard<{ reach: ReachState }>(() => api.POST('/reach/number/verify', { body: { code } })),
+  reachForget: () => guard<{ reach: ReachState }>(() => api.DELETE('/reach/number')),
+  reachAgree: (choice: { calls: boolean; nights: boolean }) =>
+    guard<{ reach: ReachState }>(() => api.POST('/reach/consent', { body: choice })),
+  reachWithdraw: () => guard<{ reach: ReachState }>(() => api.DELETE('/reach/consent')),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
   approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
   saveApprovalSettings: (body: ApprovalSettings) =>

@@ -192,6 +192,66 @@ test('an ask to send something waits on a permission only the asker may answer',
   expect(request?.decisions).toEqual([]);
 });
 
+test("a send through an account the room uses is answered under the room's team-account rule", async () => {
+  const mock = createMock({ speed: 0 });
+  const { id, priya } = await room(mock);
+  const detail = C.roomDetail.parse((await call(mock, 'GET', `/rooms/${id}`)).json);
+  expect(detail.policy.team_account_approvers).toBe('any_member');
+  const added = await call(mock, 'POST', '/connections', {
+    space_id: id,
+    provider: 'caldav',
+    label: 'Team calendar',
+    scopes: ['calendar.list'],
+    credentials: { password: 'hunter2' },
+    caldav: { calendar_url: 'https://dav.example.com/calendars/team/', username: 'team' },
+  });
+  expect(added.status).toBe(201);
+  const started = C.roomMessageResponse.parse(
+    (
+      await call(mock, 'POST', `/rooms/${id}/threads`, {
+        text: 'Email the notes to the agency',
+        ask_agent: true,
+        submission_id: 'team-send-1',
+      })
+    ).json,
+  );
+  const waiting = async () =>
+    C.roomThreadView.parse(
+      (await call(mock, 'GET', `/rooms/${id}/threads/${started.thread.id}`)).json,
+    ).requests[0]?.permissions?.[0];
+  const me = C.ownerResponse.parse((await call(mock, 'GET', '/me')).json).owner.id;
+  // Anyone in the room answers, the person who asked included.
+  expect((await waiting())?.eligible_approvers?.map((p) => p.principal_id).sort()).toEqual(
+    [me, priya.id].sort(),
+  );
+  const set = await call(mock, 'PUT', `/rooms/${id}/policy`, { team_account_approvers: 'owners' });
+  expect(C.roomPolicyResponse.parse(set.json).policy.team_account_approvers).toBe('owners');
+  const now = await waiting();
+  expect(now?.eligible_approvers?.map((p) => p.principal_id)).toEqual([me]);
+  expect(now?.why[0]).toContain("Waiting for one of the room's owners");
+
+  // Kept for the owner, the account no longer serves the room: a new send follows the general rule.
+  const account = C.connectionResponse.parse(added.json).connection.id;
+  const kept = await call(mock, 'PUT', `/rooms/${id}/connections/${account}`, {
+    shared_use: 'owner',
+  });
+  expect(C.roomConnectionResponse.parse(kept.json).connection.shared_use).toBe('owner');
+  const again = C.roomMessageResponse.parse(
+    (
+      await call(mock, 'POST', `/rooms/${id}/threads`, {
+        text: 'Email the plan to the agency',
+        ask_agent: true,
+        submission_id: 'team-send-2',
+      })
+    ).json,
+  );
+  const general = C.roomThreadView.parse(
+    (await call(mock, 'GET', `/rooms/${id}/threads/${again.thread.id}`)).json,
+  ).requests[0]?.permissions?.[0];
+  expect(general?.eligible_approvers?.map((p) => p.principal_id)).toEqual([me]);
+  expect(general?.why[0]).toContain('who asked for it');
+});
+
 const answerPermission = (
   mock: Mock,
   roomId: string,

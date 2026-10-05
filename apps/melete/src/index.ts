@@ -87,6 +87,7 @@ import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { ExperienceEffects } from './experience/effects.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
@@ -106,6 +107,8 @@ import {
   healthDetail,
   spendAlertsFromEnv,
 } from './health/monitor.ts';
+import { mountIntents } from './intents/routes.ts';
+import { IntentService, undoThrough } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -169,6 +172,9 @@ import {
 } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { reachConfigFromEnv } from './reach/provider.ts';
+import { mountReach } from './reach/routes.ts';
+import { ReachService } from './reach/service.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -228,6 +234,10 @@ export type AppDeps = {
   jobs?: JobService;
   triggers?: TriggerService;
   situations?: SituationService;
+  /** What the person asked Melete to see through; built from `jobs` and `runs` when left out. */
+  intents?: IntentService;
+  /** Texts and calls to a person's own verified number. */
+  reach?: ReachService;
   approvals?: ApprovalService;
   events?: EventStream;
   submissions?: SubmissionService;
@@ -434,6 +444,30 @@ export function createApp(deps: AppDeps) {
       ? new SituationService({ jobs: deps.jobs, triggers: deps.triggers })
       : undefined);
   if (noticing) mountSituations(app, noticing);
+  const longWork =
+    deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined);
+  const intents =
+    deps.intents ??
+    (deps.jobs && longWork
+      ? new IntentService({ jobs: deps.jobs, runs: longWork, situations: noticing })
+      : undefined);
+  // Cancelling an intent takes back what its work changed, newest first, the
+  // way the person's own Undo would, each step on its own receipt.
+  if (intents && !intents.deps.reverse && deps.sql && deps.broker && deps.registry) {
+    const undoing = new ExperienceEffects(deps.sql, deps.broker, deps.registry);
+    intents.deps.reverse = undoThrough((spaceId, actionId) => undoing.undo(spaceId, actionId));
+  }
+  if (intents) mountIntents(app, intents);
+  const reaching =
+    deps.reach ??
+    (deps.db
+      ? new ReachService({
+          db: deps.db,
+          config: reachConfigFromEnv(deps.env),
+          ...(noticing ? { ack: (principalId, id) => noticing.ack(principalId, id) } : {}),
+        })
+      : undefined);
+  if (reaching) mountReach(app, reaching);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -490,7 +524,7 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       browser: Boolean(deps.browserSessions),
       privacy,
-      runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
+      runs: longWork,
       attachments: deps.attachments,
     });
   // Rooms: shared spaces where several people talk to one agent.
@@ -525,13 +559,23 @@ export function createApp(deps: AppDeps) {
       }),
       ...(noticing
         ? {
-            accepted: (owner, itemId, byPerson) =>
-              noticing.acceptCommitment({
+            accepted: async (owner, itemId, byPerson) => {
+              await noticing.acceptCommitment({
                 spaceId: owner.spaceId,
                 principalId: owner.principalId,
                 itemId,
                 byPerson,
-              }),
+              });
+              // Taken up by the person, it is something they asked Melete to see through.
+              if (byPerson) await intents?.adoptCommitment({ ...owner, itemId });
+            },
+          }
+        : {}),
+      ...(intents
+        ? {
+            chased: async (owner, awaitedId, byPerson) => {
+              if (byPerson) await intents.adoptChase({ ...owner, awaitedId });
+            },
           }
         : {}),
       ...deps.companies,
@@ -697,6 +741,8 @@ export async function bootstrap(
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
   let situations: SituationService | undefined;
+  let intents: IntentService | undefined;
+  let reach: ReachService | undefined;
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
@@ -780,6 +826,7 @@ export async function bootstrap(
           signalPoller?.stop(),
           triage?.stop(),
           situations?.stop(QUEUES.clockSweep),
+          reach?.stop(QUEUES.reachSweep),
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
@@ -987,6 +1034,7 @@ export async function bootstrap(
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
     runs = jobs ? new RunService(jobs) : undefined;
+    intents = jobs && runs ? new IntentService({ jobs, runs }) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
     // one. Both memory startups deliver through it.
     const activeJobs = jobs;
@@ -1135,6 +1183,7 @@ export async function bootstrap(
         effectBoundary = await startEffectBoundary(handle, env, {
           privacy,
           runs,
+          intents,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -1330,6 +1379,12 @@ export async function bootstrap(
       // observation as it is delivered, and clocks look again at deadlines.
       const noticing = new SituationService({ jobs, triggers, detectors: env.MELETE_DETECTORS });
       situations = noticing;
+      // An intent's deadline is kept on these clocks, and expires on their sweep.
+      if (intents) {
+        const keeping = intents;
+        keeping.deps.situations = noticing;
+        noticing.deps.sweeps = [() => keeping.sweep()];
+      }
       triggers.observers.push((tx, delivery, seq) => noticing.observe(tx, delivery, seq));
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -1373,6 +1428,7 @@ export async function bootstrap(
           privacy,
           modelSettings,
           runs,
+          intents,
           spending,
           blobs: blobs?.store,
         });
@@ -1542,6 +1598,19 @@ export async function bootstrap(
           if (situations && push.enabled)
             situations.deps.notify = (principalId) => push.dispatch(principalId, new Date());
         }
+        // A deadline the person set that goes unanswered climbs from push to
+        // a text and a call to their own verified number.
+        if (handle && situations) {
+          const noticing = situations;
+          reach = new ReachService({
+            db: handle.db,
+            config: reachConfigFromEnv(env),
+            ack: (principalId, id) => noticing.ack(principalId, id),
+          });
+          const climbing = reach;
+          noticing.deps.escalate = (tx, row, pushed) => climbing.escalate(tx, row, pushed);
+          await reach.start(triggers.jobs.boss, QUEUES.reachSweep);
+        }
         // Clocks are looked at every minute, and in between when one is close.
         await situations?.start(QUEUES.clockSweep);
       }
@@ -1593,6 +1662,8 @@ export async function bootstrap(
     jobs,
     triggers,
     situations,
+    intents,
+    ...(reach ? { reach } : {}),
     approvals,
     events,
     submissions,

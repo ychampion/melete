@@ -1,6 +1,7 @@
 import {
   CRON_FORMAT,
   compileWatchPattern,
+  DOCUMENT_CHANGED,
   evaluateWatch,
   eventCatalog,
   ID_PREFIXES,
@@ -121,6 +122,35 @@ export function checkEventSource(provider: string, eventName: string): void {
     names.length
       ? `This connection never reports ${eventName}. It reports: ${names.join(', ')}.`
       : `This connection never reports ${eventName}; it reports nothing a trigger can wait for.`,
+    400,
+  );
+}
+
+/**
+ * The Drive files a trigger follows: those its watch names with `about.key`.
+ * Only a watch that names a file follows anything; a Drive is read for the
+ * files someone named, never the whole of it.
+ */
+export function namedDocuments(spec: TriggerSpec): string[] {
+  if (spec.kind !== 'watch') return [];
+  return spec.predicate.all.flatMap((clause) =>
+    clause.field === 'about.key' && clause.op === 'eq' && typeof clause.value === 'string'
+      ? [clause.value]
+      : [],
+  );
+}
+
+/**
+ * Refuses a Drive trigger that names no file, whoever makes it: a person, or
+ * long work setting what it stands on. Such a trigger would ask for every
+ * change in the Drive, names included.
+ */
+export function checkTriggerScope(spec: TriggerSpec): void {
+  if (spec.kind === 'schedule' || spec.event_name !== DOCUMENT_CHANGED) return;
+  if (namedDocuments(spec).length) return;
+  throw new ServiceError(
+    'document_not_named',
+    'Name the document to watch: a Drive trigger watches one file, by its `about.key`.',
     400,
   );
 }
@@ -378,6 +408,7 @@ export class TriggerService {
             400,
           );
         checkEventSource(source.provider, spec.event_name);
+        checkTriggerScope(spec);
       }
       const [start] = await tx
         .select({ seq: event.seq })
@@ -665,6 +696,12 @@ export class TriggerService {
           ),
         );
       for (const registration of registrations) {
+        // A Drive trigger that names no file, made before they were refused, hears nothing.
+        if (value.event_name === DOCUMENT_CHANGED) {
+          const spec = triggerSpec.safeParse(registration.spec);
+          const key = (value.payload as { about?: { key?: unknown } }).about?.key;
+          if (!spec.success || !namedDocuments(spec.data).includes(String(key))) continue;
+        }
         const row = await this.jobs.lock(tx, registration.jobId);
         if (row?.spaceId === source.spaceId) await this.registerWait(tx, row);
       }

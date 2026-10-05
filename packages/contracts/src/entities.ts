@@ -85,6 +85,8 @@ export const CONNECTION_PROVIDERS = [
   'room',
   /** The agent's own working notes, kept in the person's space and shown in Memory. */
   'notes',
+  /** A signed-in Google Drive: what changes in its files, read as metadata only. */
+  'drive',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

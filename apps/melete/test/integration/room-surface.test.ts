@@ -263,8 +263,11 @@ async function makeRoom(name: string) {
   const token = new URLSearchParams(invited.path.split('?')[1] ?? '').get('token');
   await ok(send(world.dan.cookie, '/invites/accept', 'POST', { token }));
   const notes = recordId('conn');
-  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
-    values (${notes}, ${roomId}, 'test', 'notes', ${JSON.stringify(['notes.post'])}::jsonb, 'room')`;
+  // One of the room's own tools, so the room's general rule answers it.
+  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use,
+      configuration)
+    values (${notes}, ${roomId}, 'test', 'notes', ${JSON.stringify(['notes.post'])}::jsonb, 'room',
+      ${JSON.stringify({ builtin: 'test_notes' })}::jsonb)`;
   registry.register(notes, notesConnector);
   return { roomId, notes };
 }

@@ -70,6 +70,8 @@ export type CompaniesDeps = {
    * acting for them. Its due date becomes a deadline Melete keeps.
    */
   accepted?: (owner: Owner, itemId: string, byPerson: boolean) => Promise<void>;
+  /** A reply was put to chasing: by the person in Melete, or by an outside assistant. */
+  chased?: (owner: Owner, awaitedId: string, byPerson: boolean) => Promise<void>;
 };
 
 /**
@@ -414,7 +416,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       for (const owner of owners) {
         const found = await store.awaitedReply(owner, id);
         if (!found) continue;
-        if (found.reply.job_id) return { job_id: found.reply.job_id, status: 200 as const };
+        if (found.reply.job_id) return { job_id: found.reply.job_id, status: 200 as const, owner };
         if (!handler.handleAwaitedReply)
           throw new ServiceError('not_connected', 'Chasing is not connected yet.', 503);
         const connectionId = (await deps.sendConnection?.(owner)) ?? null;
@@ -433,10 +435,15 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
           throw error;
         }
         await store.setAwaitedJob(owner, id, result.job_id);
-        return { job_id: result.job_id, status: 201 as const };
+        return { job_id: result.job_id, status: 201 as const, owner };
       }
       throw new ServiceError('not_found', 'Not found.', 404);
     });
+    // Taken up, now or again; only the person themselves makes it theirs to follow.
+    if (deps.chased && answer.owner)
+      await deps.chased(answer.owner, id, !mcpActorOf(c.env)).catch(() => {
+        process.stderr.write('companies: chase_hook_failed\n');
+      });
     return c.json({ job_id: answer.job_id }, answer.status);
   });
 }

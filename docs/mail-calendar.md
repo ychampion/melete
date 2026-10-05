@@ -32,6 +32,20 @@ screen, and Melete connects exactly what was granted: a mailbox without
 `gmail.send` has no `email.send` grant, and a sign-in without `calendar.events`
 connects no calendar.
 
+### Adding Google Drive
+
+Drive is asked for on a step of its own, the first time a person keeps a
+deadline on a Drive file. `POST /google-sign-ins` with `{ "documents": true }`
+asks Google only for `drive.metadata.readonly`, with `include_granted_scopes`,
+so what the account granted before is kept, and its answer carries a `reason`
+in plain words. The step connects the Drive alone, as a connection of its own
+(see [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md#drive-files)) with one
+read tool, `documents.status`: a file's name, type, last change and sharing,
+from its id or link, never its contents. The account's mail and calendar
+connections keep their ids, and taking the step again renews the same Drive
+(`the Drive step adds Drive beside an account’s mail and calendar, which keep
+their ids`). An ordinary sign-in never asks for Drive.
+
 To start, `POST /google-sign-ins` answers with an `authorize_url` to open in
 the browser. Google returns the browser to
 `<MELETE_PUBLIC_URL>/api/oauth/google/callback`, and
@@ -54,9 +68,10 @@ account's grant to your Google client is listed, and can be withdrawn, at
 
 Signing in with Google needs an OAuth client in your own Google Cloud project:
 
-1. Create a project in the Google Cloud console and enable the **Gmail API**
-   and the **Google Calendar API**.
-2. Configure the OAuth consent screen and add the three scopes above.
+1. Create a project in the Google Cloud console and enable the **Gmail API**,
+   the **Google Calendar API** and the **Google Drive API**.
+2. Configure the OAuth consent screen and add the three scopes above, and
+   `drive.metadata.readonly` if Drive deadlines are wanted.
 3. Create an OAuth client of type **Web application**, with the authorized
    redirect URI `<MELETE_PUBLIC_URL>/api/oauth/google/callback`.
    `GET /google-sign-ins` shows the exact address. `MELETE_PUBLIC_URL` must be
@@ -64,7 +79,7 @@ Signing in with Google needs an OAuth client in your own Google Cloud project:
 4. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and restart
    the service.
 
-`gmail.readonly` is a restricted scope and `gmail.send` a sensitive one, so how
+`gmail.readonly` and `drive.metadata.readonly` are restricted scopes and `gmail.send` a sensitive one, so how
 you publish the consent screen decides how long a sign-in lasts:
 
 | Publishing status | What it means |

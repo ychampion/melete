@@ -288,7 +288,7 @@ _PARENT_ONLY = frozenset(("ask_person", "say", "react", "job.wait", "search_tool
 
 def parent_only(name: str) -> bool:
     """A broker tool only the agent that delegated may call."""
-    return name in _PARENT_ONLY or name.startswith("run.")
+    return name in _PARENT_ONLY or name.startswith(("run.", "intent."))
 
 
 def in_helper() -> bool:

@@ -31,6 +31,7 @@ export interface BrokerOperations {
   askPerson?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   /** Long work's own tools: its record, helpers, handoffs and finish. */
   runTool?(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
+  intentTool?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
@@ -229,6 +230,16 @@ export function createBrokerApp(options: {
       )
         throw new BrokerFault('unknown_tool');
       return Response.json(await options.broker.runTool(claims, body.name, body.arguments));
+    }
+    if (body.name === 'intent.capture') {
+      const claims = c.get('claims');
+      const catalog = await options.broker.catalog(claims);
+      if (
+        !options.broker.intentTool ||
+        !catalog.some((tool) => tool.name === body.name && tool.connection_id === null)
+      )
+        throw new BrokerFault('unknown_tool');
+      return Response.json(await options.broker.intentTool(claims, body.arguments));
     }
     if (body.name === 'compose') {
       const claims = c.get('claims');

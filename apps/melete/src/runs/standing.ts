@@ -28,6 +28,7 @@ import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import {
   checkEventSource,
+  checkTriggerScope,
   checkTriggerSpec,
   linkWatchedSubject,
   type TriggerRow,
@@ -128,6 +129,7 @@ export async function stand(
         400,
       );
     checkEventSource(source.provider, spec.event_name);
+    checkTriggerScope(spec);
   }
   const before = await standingTrigger(tx, row.id);
   await tx.delete(trigger).where(eq(trigger.jobId, row.id));
