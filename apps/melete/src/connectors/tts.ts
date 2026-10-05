@@ -9,6 +9,7 @@
  * key is configured, because a capability that is advertised and then refused
  * is worse than one that was never offered.
  */
+
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename } from 'node:fs/promises';
@@ -30,6 +31,7 @@ import {
   receipt,
 } from '@melete/contracts';
 import { z } from 'zod';
+import type { ProviderCheck } from './elevenlabs.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
@@ -108,6 +110,11 @@ export type SpeechRequest = { script: string; voice: string };
 /** What an adapter has to do: bytes in, bytes out. Nothing about files or rows. */
 export type SpeechAdapter = {
   model: string;
+  /**
+   * Whether the provider accepts this installation's key, by a call that costs
+   * nothing. Left out, a configured adapter is taken to work until a call fails.
+   */
+  verify?(): Promise<ProviderCheck>;
   synthesize(request: SpeechRequest): Promise<Uint8Array>;
 };
 
@@ -323,6 +330,14 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
       };
     },
     async health(): Promise<ConnectorHealth> {
+      const verified = await options.adapter?.verify?.();
+      if (verified && !verified.ok)
+        return {
+          status: 'failing',
+          detail: verified.detail,
+          checked_at: new Date().toISOString(),
+          ...(verified.keyRefused ? { reason: 'credential_refused' as const } : {}),
+        };
       return {
         status: options.adapter ? 'ok' : 'degraded',
         detail: options.adapter

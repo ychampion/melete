@@ -1134,7 +1134,17 @@ export const experienceConnection = z.strictObject({
    * changes (new mail, meetings that move) without being asked.
    */
   watching: z.boolean().optional(),
+  /**
+   * Present when an installed connection is not working now, with `status`
+   * `error`: `not_running` when nothing on this server runs it, `failing` when
+   * its last check, or a real call, found its destination refusing or absent.
+   * The detail is a plain sentence for the person.
+   */
+  problem: z.strictObject({ kind: z.enum(['not_running', 'failing']), detail: text }).optional(),
 });
+export type ExperienceConnectionProblem = NonNullable<
+  z.infer<typeof experienceConnection>['problem']
+>;
 export const experienceConnectionList = z.strictObject({
   connections: z.array(experienceConnection),
 });
