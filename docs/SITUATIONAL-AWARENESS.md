@@ -243,9 +243,11 @@ watched by default. It is read while a deadline is kept on one of its files, or
 while that deadline's alert is open, and while a trigger listens to it. A
 change to a file nothing follows is read past and dropped: no observation, no
 name and no state is kept for it (`a Drive is not watched by default, and a file
-nothing follows leaves no name or state`). A deadline follows its file; a
-trigger follows the file its watch names in `about.key`, or every file when it
-names none. Shared drives are read only while a deadline follows a file in one.
+nothing follows leaves no name or state`). A deadline follows its file, and a
+trigger follows the file its watch names in `about.key`. A Drive trigger that
+names no file is refused, whoever sets it, with "Name the document to watch"
+(`a Drive trigger must name its document, and one that does hears only that
+file`). Shared drives are read only while a deadline follows a file in one.
 
 Its first read takes
 Drive's current page token and lists nothing: watching starts then. Each later

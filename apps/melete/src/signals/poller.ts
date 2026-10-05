@@ -53,7 +53,7 @@ import {
   type JobConnectionAudience,
   jobConnectionAudience,
 } from '../jobs/scopes.ts';
-import type { TriggerService } from '../jobs/triggers.ts';
+import { namedDocuments, type TriggerService } from '../jobs/triggers.ts';
 import { isQuiet } from '../push/policy.ts';
 import {
   type CalendarCursor,
@@ -639,11 +639,11 @@ export class SignalPoller {
   /**
    * The files of a Drive read that something follows. A deadline follows its
    * file while its clock is armed or being checked, or has fired and its alert
-   * is still open. A live trigger on `document.changed` follows the file its
-   * watch names (`about.key`), or every file when it names none.
+   * is still open. A live trigger on `document.changed` follows the files its
+   * watch names (`about.key`); one that names none follows nothing.
    */
   private async followedDocuments(row: CursorRow, changes: DocumentChange[]) {
-    const none = { byClock: new Set<string>(), byTrigger: new Set<string>(), everything: false };
+    const none = { byClock: new Set<string>(), byTrigger: new Set<string>() };
     if (!changes.length) return none;
     const { sql } = this.deps;
     const keys = [...new Set(changes.map((c) => documentSubjectKey(row.connection_id, c.file_id)))];
@@ -659,18 +659,8 @@ export class SignalPoller {
       const state = jobState.safeParse(entry.state);
       if (!state.success || isTerminal(state.data)) continue;
       const spec = triggerSpec.safeParse(entry.spec);
-      if (!spec.success || spec.data.kind === 'schedule') continue;
-      const named =
-        spec.data.kind === 'watch'
-          ? spec.data.predicate.all.filter(
-              (clause) =>
-                clause.field === 'about.key' &&
-                clause.op === 'eq' &&
-                typeof clause.value === 'string',
-            )
-          : [];
-      if (!named.length) followed.everything = true;
-      for (const clause of named) followed.byTrigger.add(String(clause.value));
+      if (!spec.success) continue;
+      for (const key of namedDocuments(spec.data)) followed.byTrigger.add(key);
     }
     return followed;
   }
@@ -748,8 +738,7 @@ export class SignalPoller {
       const observations: Observation[] = [];
       for (const change of read.changes) {
         const key = documentSubjectKey(row.connection_id, change.file_id);
-        if (!followed.everything && !followed.byClock.has(key) && !followed.byTrigger.has(key))
-          continue;
+        if (!followed.byClock.has(key) && !followed.byTrigger.has(key)) continue;
         try {
           observations.push(documentObservation(row.connection_id, change, readAt));
         } catch {

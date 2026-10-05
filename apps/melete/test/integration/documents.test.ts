@@ -395,6 +395,62 @@ withDb('a Drive as a document source', () => {
     expect(await events(drive)).toHaveLength(1);
   }, 60_000);
 
+  test('a Drive trigger must name its document, and one that does hears only that file', async () => {
+    // The reviewer's Q2a: a watch that names no file would take in the whole Drive.
+    const drive = await connectDrive();
+    const fake = required(google);
+    const { sql } = required(handle);
+    const kept = fileId('q2keepread');
+    fake.putFile({ id: kept, modifiedTime: at(clock - 60 * MINUTE) });
+    expect((await keep(drive, kept, 600 * MINUTE)).status).toBe(201);
+    const work = await required(jobs).create({ space_id: spaceId, title: 'W', objective: 'W' });
+    const refused = await required(triggers)
+      .create(work.id, {
+        kind: 'watch',
+        connection_id: drive,
+        event_name: 'document.changed',
+        poll_seconds: 300,
+        predicate: { all: [{ field: 'shared', op: 'eq', value: true }] },
+      })
+      .then(
+        () => null,
+        (error: unknown) => error as { code?: string; message?: string },
+      );
+    expect(refused?.code).toBe('document_not_named');
+    expect(refused?.message).toContain('Name the document to watch');
+    // One made before the rule, if any, hears nothing and makes nothing be kept.
+    await sql`insert into trigger (id, job_id, kind, spec, enabled)
+      values (${newId('trg')}, ${work.id}, 'watch', ${JSON.stringify({
+        kind: 'watch',
+        connection_id: drive,
+        event_name: 'document.changed',
+        poll_seconds: 300,
+        predicate: { all: [{ field: 'shared', op: 'eq', value: true }] },
+      })}::jsonb, true)`;
+    const named = fileId('q2named');
+    fake.putFile({ id: named, name: 'Q2 Board pack', modifiedTime: at(clock - MINUTE) });
+    await required(triggers).create(work.id, {
+      kind: 'watch',
+      connection_id: drive,
+      event_name: 'document.changed',
+      poll_seconds: 300,
+      predicate: {
+        all: [{ field: 'about.key', op: 'eq', value: documentSubjectKey(drive, named) }],
+      },
+    });
+    await poll();
+    const other = fileId('q2unrelated');
+    fake.putFile({ id: other, name: 'Q2 Medical letter', modifiedTime: at(clock), shared: true });
+    fake.putFile({ id: named, modifiedTime: at(clock) });
+    await poll();
+    const [unrelated] = await sql`select count(*)::int as n from event
+      where payload::text like '%Q2 Medical letter%'`;
+    expect(unrelated?.n).toBe(0);
+    const [watched] = await sql`select count(*)::int as n from event
+      where payload->>'connection_id' = ${drive} and payload::text like '%Q2 Board pack%'`;
+    expect(watched?.n).toBe(1);
+  }, 60_000);
+
   test('a read that stops at its limit is read again at the next tick', async () => {
     const drive = await connectDrive();
     const fake = required(google);
