@@ -498,6 +498,11 @@ const variables = z.object({
   MELETE_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(12_000),
   /** Reviews one space may ask for in an hour; past it, the person is asked. */
   MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
+  /**
+   * Undo send: how many seconds a message waits after it is cleared to go,
+   * while the person can still cancel it. 0 sends at once.
+   */
+  MELETE_SEND_HOLD_SECONDS: z.coerce.number().int().min(0).max(120).default(20),
 
   /**
    * Spending caps on model calls, in US dollars (estimated from the price

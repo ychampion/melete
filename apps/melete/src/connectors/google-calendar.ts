@@ -26,6 +26,7 @@ import {
 import {
   byStart,
   calendarManifest,
+  changedUid,
   createPayload,
   deletePayload,
   type EventView,
@@ -168,6 +169,9 @@ export function googleOccurrence(event: GoogleEvent): Occurrence | null {
     ),
     melete_action: event.extendedProperties?.private?.melete_action_id ?? null,
     response: googleResponse(event),
+    ...(event.extendedProperties?.private?.melete_uid
+      ? { melete_uid: event.extendedProperties.private.melete_uid }
+      : {}),
   };
 }
 
@@ -351,8 +355,7 @@ export class GoogleCalendarConnector implements Connector {
   /** The guests of the event an update rewrites, not counting the calendar's own account. */
   async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
     this.assertContext(action, ctx);
-    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
-    const found = await this.event(updatePayload.parse(action.canonical_payload).uid, ctx);
+    const found = await this.event(changedUid(action), ctx);
     if (!found || found.status === 'cancelled') throw new Error('Calendar event unavailable');
     return (found.attendees ?? []).filter((attendee) => !attendee.self).length;
   }

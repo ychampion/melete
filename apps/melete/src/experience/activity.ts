@@ -24,7 +24,7 @@ export function plainReference(ref: unknown): string | null {
 
 export async function listActivity(sql: Sql, spaceId: string, principalId: string) {
   const rows = await sql`select id, kind, connection_label, destination, external_ref, outcome,
-      source, happened_at
+      source, happened_at, reversal, undo_until, undone_at
     from activity_record
     where space_id = ${spaceId}
       and coalesce(principal_id, (select id from owner limit 1)) = ${principalId}
@@ -40,6 +40,10 @@ export async function listActivity(sql: Sql, spaceId: string, principalId: strin
       outcome: 'succeeded',
       source: plainText(row.source, 'A deleted chat', 200),
       happened_at: new Date(row.happened_at).toISOString(),
+      ...(row.reversal && !row.undone_at && row.undo_until && new Date(row.undo_until) > new Date()
+        ? { undo: { valid_until: new Date(row.undo_until).toISOString() } }
+        : {}),
+      ...(row.undone_at ? { undone_at: new Date(row.undone_at).toISOString() } : {}),
     })),
   });
 }

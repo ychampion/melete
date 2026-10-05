@@ -8,6 +8,11 @@
  * - `reviewable`: a reversible or low-impact change outside the sandbox. An
  *   independent reviewer judges it, and it goes ahead only when the reviewer
  *   approves at low risk and the person has switched that class on.
+ * - `own_calendar`: an event on the person's own calendar with no guests,
+ *   or removing one Melete made, when it can be undone and touches nothing
+ *   important (`calendar-check.ts` says what that means). A fixed rule
+ *   approves it when the person allows calendar changes; anything important
+ *   puts it in the person's tier, with the reason.
  * - `apps`: publishing an app, a new version of one, or going back to an
  *   earlier version, through Melete's own Apps connection, when nobody new can
  *   open it, its code opens no direct connections and it shows no data its
@@ -38,11 +43,12 @@ import {
 import { isPublicAddress } from '../connectors/web.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
+import type { CalendarCheck } from './calendar-check.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
 import type { Reviewer, ReviewInput, ReviewVerdict } from './reviewer.ts';
 import { collectOriginFields, type TrustResolver } from './trust.ts';
 
-export type ReviewTier = 'sandbox' | 'apps' | 'reviewable' | 'person';
+export type ReviewTier = 'sandbox' | 'apps' | 'own_calendar' | 'reviewable' | 'person';
 export type TierDecision = {
   tier: ReviewTier;
   /** The switch that governs it; null for the person's tier. */
@@ -84,14 +90,14 @@ const SANDBOX_BROWSER = new Set(['browser.fill', 'browser.click', 'browser.selec
 /** A draft in the person's own mailbox, and discarding one. */
 const DRAFT_KINDS = new Set(['email.draft', 'email.discard']);
 /** External writes that land on the person's own calendar and carry no guest. */
-const OWN_CALENDAR = new Set(['calendar.create', 'calendar.update']);
+const OWN_CALENDAR = new Set(['calendar.create', 'calendar.update', 'calendar.delete']);
 /**
  * Writes that change an event which already exists. The event may have guests
  * the payload never names (a person can add them in the calendar itself), and
  * changing it notifies them, so it only counts as the person's own when the
  * calendar says it has none.
  */
-export const CHANGES_EXISTING_EVENT = new Set(['calendar.update']);
+export const CHANGES_EXISTING_EVENT = new Set(['calendar.update', 'calendar.delete']);
 
 /**
  * Publishing through Melete's own Apps connection. Its connector binds, before
@@ -188,7 +194,9 @@ function carriesCredentials(kind: string, payload: JsonObject): boolean {
  * amount values whose origin is not the person or a verified app.
  * `existingGuests` is how many guests the event a change rewrites has now, as
  * the calendar reported it; left out or null, nobody could say, and a change
- * to an existing event then stays with the person.
+ * to an existing event then stays with the person. `calendar` is what the
+ * person's calendar says about the time a calendar change touches: left out
+ * when the connection cannot be read that way, null when reading it failed.
  */
 export function reviewTier(input: {
   tool: Pick<ConnectorTool, 'name' | 'effect_class' | 'requires_approval' | 'execution'>;
@@ -196,8 +204,17 @@ export function reviewTier(input: {
   payload: JsonObject;
   doubts: readonly OriginWarning[];
   existingGuests?: number | null;
+  calendar?: CalendarCheck | null;
 }): TierDecision {
   const { tool, provider, payload } = input;
+  const calendarWrite =
+    tool.effect_class === 'write_external' &&
+    OWN_CALENDAR.has(tool.name) &&
+    !keys(payload).some((key) => GUEST_FIELDS.test(key));
+  // Removing an event Melete made is judged by what it touches, like making one,
+  // once the calendar could be checked; otherwise it is a delete like any other.
+  const ownRemoval =
+    calendarWrite && tool.name === 'calendar.delete' && input.calendar !== undefined;
   const person = (reason: string): TierDecision => ({ tier: 'person', actionClass: null, reason });
   // Opening a public page in the agent's own browser reads it there and sends
   // nothing anywhere, wherever the address came from: it is not a destination
@@ -218,7 +235,8 @@ export function reviewTier(input: {
     );
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
-  if (DESTRUCTIVE.test(words(tool.name))) return person('It deletes or removes something.');
+  if (DESTRUCTIVE.test(words(tool.name)) && !ownRemoval)
+    return person('It deletes or removes something.');
   if (doubts.length > 0)
     return person(
       'A recipient, destination or amount in it did not come from you or a connected app you verified.',
@@ -263,21 +281,32 @@ export function reviewTier(input: {
       actionClass: 'app_changes',
       reason: 'It is a change in a connected app that can be reversed.',
     };
-  if (
-    tool.effect_class === 'write_external' &&
-    OWN_CALENDAR.has(tool.name) &&
-    !keys(payload).some((key) => GUEST_FIELDS.test(key))
-  ) {
+  if (calendarWrite) {
     if (CHANGES_EXISTING_EVENT.has(tool.name) && input.existingGuests !== 0)
       return person(
         typeof input.existingGuests === 'number'
           ? 'It changes a meeting that has guests, and they would be told.'
           : 'Melete could not check whether this event has guests.',
       );
+    // A calendar that cannot be read for its context leaves the change to the reviewer.
+    if (input.calendar === undefined)
+      return {
+        tier: 'reviewable',
+        actionClass: 'calendar',
+        reason: 'It changes an event on your own calendar, with no guests.',
+      };
+    if (input.calendar === null)
+      return person('Melete could not read your calendar around that time.');
+    if (input.calendar.concern) return person(input.calendar.concern);
+    if (!input.calendar.reversible)
+      return person('Melete could not keep a way to undo it, because the event changed since.');
     return {
-      tier: 'reviewable',
-      actionClass: 'calendar',
-      reason: 'It changes an event on your own calendar, with no guests.',
+      tier: 'own_calendar',
+      actionClass: 'own_calendar',
+      reason:
+        tool.name === 'calendar.delete'
+          ? 'It removes an event Melete made on your own calendar, touches nothing important, and can be put back.'
+          : 'It is on your own calendar with no guests, touches nothing important, and can be undone.',
     };
   }
   return person('It sends or publishes outside Melete and cannot be taken back.');
@@ -301,6 +330,10 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
       ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'apps')
         ? { apps: stored.sandbox }
         : {}),
+      // So does a row saved before own-calendar events had theirs.
+      ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'own_calendar')
+        ? { own_calendar: stored.sandbox }
+        : {}),
       ...Object.fromEntries(
         Object.entries(stored).filter(
           ([key, value]) => key in DEFAULT_APPROVAL_SETTINGS.classes && typeof value === 'boolean',
@@ -313,7 +346,13 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
     ? parsed.data
     : {
         mode: 'ask',
-        classes: { sandbox: false, calendar: false, app_changes: false, apps: false },
+        classes: {
+          sandbox: false,
+          calendar: false,
+          own_calendar: false,
+          app_changes: false,
+          apps: false,
+        },
       };
 }
 

@@ -1309,6 +1309,17 @@ export const activityRecord = pgTable(
     source: text('source').notNull(),
     happenedAt: timestamp('happened_at', { withTimezone: true }).notNull(),
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * How to take it back, kept from the reversal registry when the chat was
+     * deleted: the tool, its payload and the connection it runs on. Null when
+     * it has none.
+     */
+    reversal: jsonb('reversal'),
+    /** Until when Undo is offered. */
+    undoUntil: timestamp('undo_until', { withTimezone: true }),
+    /** When it was taken back, and by which action. */
+    undoneAt: timestamp('undone_at', { withTimezone: true }),
+    undoneBy: text('undone_by'),
   },
   (t) => [
     uniqueIndex('activity_record_action_idx').on(t.actionId),

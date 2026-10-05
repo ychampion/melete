@@ -862,6 +862,8 @@ export function projectReceipt(
   undo?: { handle: string; valid_until: string },
   review?: ActionReview | null,
   because?: BecauseLink[],
+  /** The change this one took back, when it was an undo. */
+  reverses?: string,
 ) {
   // A web search is a read, but its words left Melete for an outside service,
   // so it keeps a receipt like any change does.
@@ -882,6 +884,27 @@ export function projectReceipt(
     // Only an approval auto-review gave is shown here; an escalation was the person's call.
     ...(review?.outcome === 'auto_approved' ? { review } : {}),
     ...(because?.length ? { because } : {}),
+    ...(reverses ? { reverses } : {}),
+  });
+}
+
+/**
+ * The receipt of a message that is held before sending (Undo cancels it), or
+ * that was cancelled while it was held, so nothing left. Null for anything else.
+ */
+export function projectHeldReceipt(
+  row: ActionRow,
+  connection: ConnectionRow,
+  held: { until: string; undo?: { handle: string; valid_until: string } } | { cancelled: true },
+) {
+  return experienceReceipt.parse({
+    id: row.id,
+    what: 'cancelled' in held ? 'Cancelled a message before it was sent' : 'Sending a message',
+    where: plainText(connection.label, appName(connection)),
+    when: row.resolvedAt?.toISOString() ?? row.createdAt.toISOString(),
+    ...('until' in held
+      ? { sending_until: held.until, ...(held.undo ? { undo: held.undo } : {}) }
+      : {}),
   });
 }
 

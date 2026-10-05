@@ -10,6 +10,7 @@ import type {
 } from '@melete/contracts';
 import type { CatalogMetadata } from '../broker/catalog.ts';
 import type { Query } from '../broker/records.ts';
+import type { Declaration, ReversalPlan } from '../broker/reversals.ts';
 import type { SignalSource, SubjectReader } from '../signals/types.ts';
 import type { ConnectorDescription, RepairAttemptContext } from './faults.ts';
 
@@ -149,6 +150,17 @@ export interface Connector {
    */
   verifiedFields?(action: Pick<Action, 'kind' | 'canonical_payload'>): readonly string[];
   health(): Promise<ConnectorHealth>;
+  /**
+   * For a connected app's own tools, which the built-in list in
+   * `broker/reversals.ts` does not know: how one of them is taken back
+   * (`reversal`, `compensation`, `hold` or `none`). Left out, it is `none`.
+   */
+  reversalDeclared?(kind: string): Declaration | null;
+  /**
+   * The reversal or compensation for one of its own changes that succeeded,
+   * built from that change's receipt and payload only. Null when it has none.
+   */
+  reversal?(action: Action): ReversalPlan | null;
   /**
    * How the signal poller reads what changed in this account: new mail, or the
    * occurrences on a calendar. Only reads; a connector without it is never

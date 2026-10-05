@@ -361,7 +361,14 @@ export type PublishInput = {
   recheck?: (tx: TransactionSql) => Promise<void>;
 };
 
-export type Published = { appId: string; versionId: string; created: boolean; slug: string };
+export type Published = {
+  appId: string;
+  versionId: string;
+  created: boolean;
+  slug: string;
+  /** The version people saw before this one; null for a new app. */
+  previousVersionId: string | null;
+};
 
 export class AppUnavailable extends Error {
   readonly code = 'app_unavailable';
@@ -397,8 +404,8 @@ export async function publishVersion(
           }
         }
         const [row] = await tx<
-          { space_id: string; status: string; slug: string }[]
-        >`select space_id, status, slug from app where id = ${input.appId} for update`;
+          { space_id: string; status: string; slug: string; current_version_id: string | null }[]
+        >`select space_id, status, slug, current_version_id from app where id = ${input.appId} for update`;
         if (!row || row.space_id !== input.spaceId || row.status !== 'active')
           throw new AppUnavailable('the app is no longer there to publish to');
         if (!created && (await appRoleFor(tx, input.appId, input.publisherId)) !== 'manage')
@@ -419,7 +426,16 @@ export async function publishVersion(
           where id = ${input.appId}`;
         if (input.grants)
           await replaceGrants(tx, input.appId, input.grants, input.publisherId, true);
-        return { appId: input.appId, versionId, created, slug: row.slug };
+        return {
+          appId: input.appId,
+          versionId,
+          created,
+          slug: row.slug,
+          previousVersionId:
+            row.current_version_id && row.current_version_id !== versionId
+              ? row.current_version_id
+              : null,
+        };
       });
     } catch (error) {
       if (!(error instanceof BlobNotFound) || attempt > 0) throw error;
@@ -433,16 +449,20 @@ export async function setCurrentVersion(
   appId: string,
   versionId: string,
   actionId: string | null = null,
-): Promise<void> {
+): Promise<string | null> {
   const [row] = await tx<
-    { status: string }[]
-  >`select status from app where id = ${appId} for update`;
+    { status: string; current_version_id: string | null }[]
+  >`select status, current_version_id from app where id = ${appId} for update`;
   if (row?.status !== 'active') throw new AppUnavailable('no such app');
   const [version] =
     await tx`select 1 from app_version where id = ${versionId} and app_id = ${appId}`;
   if (!version) throw new AppUnavailable('that version is not one of this app');
   await tx`update app set current_version_id = ${versionId}, last_action_id = ${actionId},
     updated_at = now() where id = ${appId}`;
+  // The version people saw before, which going back again restores.
+  return row.current_version_id && row.current_version_id !== versionId
+    ? row.current_version_id
+    : null;
 }
 
 /**

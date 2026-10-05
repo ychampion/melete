@@ -551,6 +551,10 @@ export function ReceiptRow({
     Boolean(receipt.undo) &&
     !reversed &&
     (receipt.undo ? Date.parse(receipt.undo.valid_until) > now : false);
+  // A message held before sending: Undo cancels it until then.
+  const sendingIn = receipt.sending_until
+    ? Math.max(0, Math.ceil((Date.parse(receipt.sending_until) - now) / 1000))
+    : null;
   const reversal = receipt.what.startsWith('Removed again');
   return (
     <div className="receipt" data-standalone={standalone ? 'true' : undefined}>
@@ -578,7 +582,8 @@ export function ReceiptRow({
         >
           {receipt.what}{' '}
           <span style={{ color: 'var(--muted)' }}>
-            · {timeOf(receipt.when)} · {receipt.where}
+            · {sendingIn !== null ? `sends in ${sendingIn} s` : timeOf(receipt.when)} ·{' '}
+            {receipt.where}
           </span>
         </span>
         {receipt.review ? <ReviewNote review={receipt.review} /> : null}
@@ -590,7 +595,11 @@ export function ReceiptRow({
           size="sm"
           className="btn-undo"
           onClick={onUndo}
-          title={`Undo until ${timeOf(receipt.undo?.valid_until ?? receipt.when)}`}
+          title={
+            sendingIn !== null
+              ? 'Cancel this message before it is sent'
+              : `Undo until ${timeOf(receipt.undo?.valid_until ?? receipt.when)}`
+          }
         >
           Undo
         </Button>

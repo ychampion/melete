@@ -482,6 +482,13 @@ describe('auto-review tiers', () => {
       });
       expect((await free.propose('calendar.create', { title: 'Focus' })).status).toBe('succeeded');
       expect(seen).toHaveLength(1);
+      // Left at the defaults, a calendar change the reviewer would judge still asks:
+      // only the own-calendar rule, which reads the calendar first, is on by default.
+      const defaults = await setup({ reviewer, agentAsks: false });
+      expect((await defaults.propose('calendar.create', { title: 'Focus' })).status).toBe(
+        'needs_approval',
+      );
+      expect(seen).toHaveLength(1);
       // An asking agent's reversible app change is reviewed when the person switched it on.
       const apps = await setup({
         reviewer,
@@ -874,7 +881,7 @@ describe('approval settings', () => {
       // A class the caller does not name keeps its stored value, here the default.
       expect(await loadApprovalSettings(fixture.sql, claims.space_id)).toEqual({
         ...saved,
-        classes: { ...saved.classes, apps: true },
+        classes: { ...saved.classes, apps: true, own_calendar: true },
       });
       await saveApprovalSettings(fixture.sql, claims.space_id, {
         ...saved,
@@ -896,6 +903,10 @@ describe('approval settings', () => {
         expect((await loadApprovalSettings(fixture.sql, claims.space_id)).classes.apps).toBe(
           sandbox,
         );
+        // So does own-calendar events' switch: someone asked more is not asked less.
+        expect(
+          (await loadApprovalSettings(fixture.sql, claims.space_id)).classes.own_calendar,
+        ).toBe(sandbox);
       }
       await fixture.sql`update approval_review_policy set classes = '{"calendar":"yes","extra":true}'::jsonb
       where space_id = ${claims.space_id}`;

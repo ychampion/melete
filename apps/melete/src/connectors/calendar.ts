@@ -170,6 +170,12 @@ export const deletePayload = z.strictObject({
     .max(500)
     .regex(/^"[^"\r\n]+"$/),
 });
+/** The event an update or a removal changes; anything else changes no existing event. */
+export function changedUid(action: Pick<Action, 'kind' | 'canonical_payload'>): string {
+  if (action.kind === 'calendar.update') return updatePayload.parse(action.canonical_payload).uid;
+  if (action.kind === 'calendar.delete') return deletePayload.parse(action.canonical_payload).uid;
+  throw new Error('Only an update or a removal changes an event');
+}
 const properties = {
   summary: { type: 'string', minLength: 1, maxLength: 1000 },
   start: { type: 'string', format: 'date-time' },
@@ -928,8 +934,7 @@ export class CalendarConnector implements Connector {
   /** The attendees of the event an update rewrites, across every instance stored under its UID. */
   async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
     this.assertContext(action, ctx);
-    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
-    const { uid } = updatePayload.parse(action.canonical_payload);
+    const uid = changedUid(action);
     const response = await this.request('GET', uid, null, ctx);
     if (!response.ok) {
       await response.body?.cancel();

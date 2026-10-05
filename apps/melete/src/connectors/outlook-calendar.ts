@@ -30,6 +30,7 @@ import {
 import {
   byStart,
   calendarManifest,
+  changedUid,
   createPayload,
   deletePayload,
   type EventView,
@@ -112,6 +113,8 @@ export type GraphInstance = GraphEvent & {
   originalStart?: string;
   originalStartTimeZone?: string;
   isAllDay?: boolean;
+  showAs?: string;
+  importance?: string;
   lastModifiedDateTime?: string;
   isOrganizer?: boolean;
   /** The account's own answer to an invitation. */
@@ -182,6 +185,8 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
     transparent: event.showAs === 'free' || event.showAs === 'workingElsewhere',
     declined: event.responseStatus?.response === 'declined',
     melete_action: mark(event)?.split(' ')[1] ?? null,
+    ...(event.importance === 'high' ? { important: true } : {}),
+    ...(mark(event) ? { melete_uid: String(mark(event)).split(' ')[0] } : {}),
   };
 }
 
@@ -266,7 +271,7 @@ export class OutlookCalendarConnector implements Connector {
         $top: '100',
         $orderby: 'start/dateTime',
         $select:
-          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,attendees,lastModifiedDateTime,isOrganizer,responseStatus',
+          'id,iCalUId,seriesMasterId,type,originalStart,originalStartTimeZone,subject,start,end,location,isCancelled,isAllDay,showAs,importance,attendees,lastModifiedDateTime,isOrganizer,responseStatus',
         // Melete's own mark, so an event it wrote is known as its own.
         $expand: `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`,
       })}`;
@@ -418,8 +423,7 @@ export class OutlookCalendarConnector implements Connector {
   /** The attendees of the event an update rewrites; Graph lists the organizer apart from them. */
   async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
     this.assertContext(action, ctx);
-    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
-    const found = await this.find(updatePayload.parse(action.canonical_payload).uid, ctx);
+    const found = await this.find(changedUid(action), ctx);
     if (!found || found.isCancelled) throw new Error('Calendar event unavailable');
     // Graph always lists attendees, as [] when there are none; a missing list is no answer.
     if (!Array.isArray(found.attendees)) throw new Error('Calendar event attendees unavailable');

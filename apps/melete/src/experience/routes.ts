@@ -132,6 +132,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         (await questions.list(spaceId)).questions.find((item) => item.id === id),
       because: async (spaceId, actionId) =>
         deps.sql ? actionBecause(deps.sql, spaceId, actionId) : [],
+      ...(ownerEffects
+        ? {
+            receiptState: (spaceId: string, actionId: string) =>
+              ownerEffects.receiptState(spaceId, actionId),
+          }
+        : {}),
       rehydrate: deps.privacy
         ? async (jobId, attemptId, value) =>
             (await deps.privacy?.resolvePayload(jobId, attemptId, value))?.value ?? value
@@ -260,6 +266,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       deps.sql
         ? listActivity(deps.sql, spaceId, c.get('owner').id)
         : unavailable('Activity is not connected yet.'),
+    'POST /activity/{id}/undo': (spaceId, c) =>
+      ownerEffects?.undoActivity(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable('Activity is not connected yet.'),
     'GET /space/members': (spaceId, c) =>
       deps.sql
         ? listMembers(deps.sql, spaceId, c.get('owner').id)
