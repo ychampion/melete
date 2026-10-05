@@ -300,12 +300,15 @@ async function installAs(
   manifest: ConnectorManifest,
   sharedUse: 'owner' | 'room',
   connector: Connector,
+  builtin = false,
 ) {
   const id = recordId('conn');
   const scopes = manifest.tools.map((tool) => tool.name);
-  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+  const configuration = builtin ? { builtin: `test_${manifest.name}` } : {};
+  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use,
+      configuration)
     values (${id}, ${spaceId}, ${manifest.provider}, ${`${manifest.name} ${sharedUse}`},
-      ${JSON.stringify(scopes)}::jsonb, ${sharedUse})`;
+      ${JSON.stringify(scopes)}::jsonb, ${sharedUse}, ${JSON.stringify(configuration)}::jsonb)`;
   registry.register(id, connector);
   return id;
 }
@@ -821,7 +824,8 @@ withDb('room approvals', () => {
     const reviewing = reviewingBroker();
     const { roomId } = await makeRoom('Saved');
     await saveApprovalSettings(sql, roomId, AUTO);
-    const inRoom = await installAs(roomId, keepManifest, 'room', keeping(roomId));
+    // The room's files are one of the tools every room has.
+    const inRoom = await installAs(roomId, keepManifest, 'room', keeping(roomId), true);
     const opened = await startThread(world.bob, roomId, '@Melete save the agenda as agenda.md');
     const { claims } = await claim(opened.request_job_id ?? '');
     const saved = await reviewing.propose(claims as CapabilityClaims, {
@@ -1211,7 +1215,8 @@ withDb('room approvals', () => {
       payload: {},
     });
     expect(read.status).toBe('succeeded');
-    // A write waits for the person the room's rule names: Bob, who asked.
+    // A write waits for the people the room's rule for its own accounts names:
+    // anyone in it who is not a guest.
     const write = await broker.propose(claims as CapabilityClaims, {
       connection_id: id,
       kind: 'mcp_fixture.write',
@@ -1228,14 +1233,18 @@ withDb('room approvals', () => {
       opened.thread.id,
       write.approval_id ?? '',
     );
-    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.bob.id]);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([
+      world.alice.id,
+      world.bob.id,
+      world.carol.id,
+    ]);
     const body = {
       option: 'allow_once' as const,
       version: seen.version,
       payload_hash: write.payload_hash,
     };
-    expect((await answer(world.carol, roomId, write.approval_id ?? '', body)).status).toBe(403);
-    await ok(answer(world.bob, roomId, write.approval_id ?? '', body));
+    expect((await answer(world.dan, roomId, write.approval_id ?? '', body)).status).toBe(403);
+    await ok(answer(world.carol, roomId, write.approval_id ?? '', body));
     const again = await claim(requestId);
     await broker.admit(again.claims as CapabilityClaims, write.action_id, write.payload_hash);
     expect((await broker.dispatch(write.action_id)).status).toBe('succeeded');
@@ -1647,7 +1656,7 @@ withDb('room approvals', () => {
       [asked.approvalId, 'policy_changed'],
     ]);
     // Asked again, it names only who is still in the room; Carol finds nothing.
-    const again = await proposeNotes(asked.requestId, team, ['dana@example.test']);
+    const again = await proposeNotes(asked.requestId, team, ['lee@example.test']);
     const { card: next } = await card(world.alice, roomId, asked.threadId, again.approvalId);
     expect(next.eligible_approvers?.map((person) => person.principal_id)).toEqual([
       world.alice.id,
