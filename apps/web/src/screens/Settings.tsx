@@ -65,7 +65,11 @@ export function ConnectionCard({
       </span>
     ) : connection.status === 'error' ? (
       <Badge tone="danger" dot>
-        Needs attention
+        {connection.problem?.kind === 'not_running'
+          ? 'Not running'
+          : connection.problem?.kind === 'failing'
+            ? 'Failing'
+            : 'Needs attention'}
       </Badge>
     ) : (
       <Badge tone="outline">Available</Badge>
@@ -105,6 +109,9 @@ export function ConnectionCard({
           <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
             {connection.app} · {ACCESS_LABEL[connection.access]}
           </span>
+          {connection.status === 'error' && connection.problem ? (
+            <span className="connection-problem">{connection.problem.detail}</span>
+          ) : null}
         </div>
       </div>
       {tail}

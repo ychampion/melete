@@ -42,6 +42,19 @@ export type MailMessage = {
    * Auto-Submitted other than `no`, or Precedence bulk, list or junk.
    */
   automated?: boolean;
+  /**
+   * Headers-only reads: the topmost Authentication-Results value, the one the
+   * receiving server added; null when the message carried none.
+   */
+  authentication_results?: string | null;
+  /** Headers-only reads: the provider filed or flagged it as spam. */
+  spam?: boolean;
+  /**
+   * Headers-only reads: the provider itself vouches for the sender, as Graph
+   * does for mail from inside the same organisation, which carries no
+   * internet headers to check.
+   */
+  sender_verified?: boolean;
 };
 
 /**
@@ -152,7 +165,21 @@ export type MailFolder = 'inbox' | 'sent';
  */
 export async function headerMessage(key: number | string, block: string): Promise<MailMessage> {
   const head = block.replace(/(\r?\n)+$/, '');
-  return toMailMessage(key, await simpleParser(`${head}\r\n\r\n`, { skipImageLinks: true }));
+  const parsed = await simpleParser(`${head}\r\n\r\n`, { skipImageLinks: true });
+  // Header lines in the order the message carries them: the receiving server
+  // writes above everything that came with the message, so the first one of a
+  // name is its own and any below it may be the sender's.
+  const topmost = (name: string) => {
+    const line = parsed.headerLines.find((entry) => entry.key === name)?.line;
+    if (line === undefined) return null;
+    const unfolded = line.replace(/\r?\n[ \t]+/g, ' ');
+    return unfolded.slice(unfolded.indexOf(':') + 1).trim();
+  };
+  return {
+    ...toMailMessage(key, parsed),
+    authentication_results: topmost('authentication-results'),
+    spam: /^yes\b/i.test(topmost('x-spam-flag') ?? ''),
+  };
 }
 
 /** A header block from name and value pairs, one header per line whatever a value holds. */

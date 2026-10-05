@@ -18,6 +18,7 @@ import {
   DONE_WORDS,
   instructionTokens,
   measureRenderedInput,
+  OUTSIDE_WORDS,
   PLAIN_WORDS,
   PROGRESS_NOTES,
   renderInput,
@@ -382,6 +383,13 @@ describe('context assembly', () => {
 
   test('the identity tells the model that a claim without a receipt is not allowed', () => {
     expect(IDENTITY).toContain('receipt');
+  });
+
+  test('the model is told to keep private details in and to report instructions it finds', () => {
+    const text = renderInstructions(bundle);
+    expect(text).toContain(OUTSIDE_WORDS.join('\n'));
+    expect(text).toContain('quoting what it said');
+    expect(text).toContain('Never say the person did something they did not.');
   });
 
   test("the model is told the person's time zone, and nothing about it when there is none", () => {

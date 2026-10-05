@@ -37829,6 +37829,26 @@
                 },
                 "watching": {
                   "type": "boolean"
+                },
+                "problem": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "not_running",
+                        "failing"
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/__schema285"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [

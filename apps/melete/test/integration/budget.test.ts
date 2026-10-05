@@ -174,3 +174,28 @@ databaseTest('negative reservations fail before writing any ledger row', async (
     await fixture.sql`select * from budget_ledger where job_id = ${s.claims.job_id}`,
   ).toHaveLength(0);
 });
+
+databaseTest(
+  "an attempt answering a person's short message is issued as a brief turn",
+  async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const s = await seedJob(fixture.sql);
+    const budget = new PostgresGatewayBudget({ sql: fixture.sql, capabilityKey: key });
+    // Woken by something other than a person's message: the full effort.
+    expect((await budget.authenticate(signCapability(s.claims, key))).briefTurn).toBeUndefined();
+    const agentId = recordId('agent');
+    await fixture.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+    values (${agentId}, ${s.claims.space_id}, 'Melete', 'assistant', 'blue', 'soft', 'dark', 'plain', '')`;
+    const turn = async (text: string) => {
+      const turnId = recordId('turn');
+      await fixture.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text)
+      values (${turnId}, ${s.claims.job_id}, ${agentId}, ${recordId('sub')}, ${text})`;
+      await fixture.sql`update attempt set turn_id = ${turnId} where id = ${s.claims.attempt_id}`;
+      return (await budget.authenticate(signCapability(s.claims, key))).briefTurn;
+    };
+    expect(
+      await turn("I'm flying to Chicago next Friday for a work dinner. Just note that for now."),
+    ).toBe(true);
+    expect(await turn('x'.repeat(281))).toBeUndefined();
+  },
+);

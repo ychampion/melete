@@ -973,7 +973,16 @@ export function connectorOptionsFromEnv(
         }
       : {}),
     ...(env.MELETE_SANDBOX_PROJECT ? { sandbox: sandboxOptions(sql, env) } : {}),
+    // Everything capabilitiesFromEnv reads: the default speech and transcription
+    // rows are created from the full environment, so a provider left out here
+    // would leave them installed with nothing running behind them.
     env: {
+      ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY,
+      ELEVENLABS_VOICE_ID: env.ELEVENLABS_VOICE_ID,
+      ELEVENLABS_SECOND_VOICE_ID: env.ELEVENLABS_SECOND_VOICE_ID,
+      ELEVENLABS_SPEECH_MODEL: env.ELEVENLABS_SPEECH_MODEL,
+      ELEVENLABS_STREAMING_MODEL: env.ELEVENLABS_STREAMING_MODEL,
+      ELEVENLABS_TRANSCRIPTION_MODEL: env.ELEVENLABS_TRANSCRIPTION_MODEL,
       OPENAI_API_KEY: env.OPENAI_API_KEY,
       OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
       OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,

@@ -58,10 +58,24 @@ export function dayGreeting(profile: ReturnType<typeof profileInput.parse>, now 
   };
 }
 
+/**
+ * Whether a connector runs for an active connection on this server. `unknown`
+ * when it could not be found out in time; that is never shown as a problem.
+ */
+export type ConnectionLiveness = (
+  row: typeof connection.$inferSelect,
+) => Promise<'running' | 'not_running' | 'unknown'>;
+
+const NOT_RUNNING =
+  'Installed, but not running on this server, so Melete cannot use it. Whoever runs Melete can check its settings and service log.';
+const FAILING = 'Its last check failed. Press Test to check it again, or reconnect it.';
+
 export class ExperienceHome {
   constructor(
     readonly db: Database,
     readonly effects?: ExperienceEffects,
+    /** Left out, the stored state is all there is to show. */
+    readonly liveness?: ConnectionLiveness,
   ) {}
   async profile(spaceId: string) {
     const [row] = await this.db
@@ -197,18 +211,30 @@ export class ExperienceHome {
       .select({ kind: space.kind })
       .from(space)
       .where(eq(space.id, spaceId));
+    const settled = (row: typeof connection.$inferSelect) =>
+      row.setupState !== 'connecting' && row.setupState !== 'available';
+    // A stored "active" says it was installed, not that it runs: each is asked, together.
+    const live = await Promise.all(
+      rows.map((row) =>
+        this.liveness && row.status === 'active' && settled(row)
+          ? this.liveness(row).catch(() => 'unknown' as const)
+          : ('unknown' as const),
+      ),
+    );
     return {
-      connections: rows.map((row) =>
-        experienceConnection.parse({
+      connections: rows.map((row, index) => {
+        const problem = !settled(row)
+          ? undefined
+          : row.status === 'active' && live[index] === 'not_running'
+            ? { kind: 'not_running' as const, detail: NOT_RUNNING }
+            : row.status !== 'active' || row.health === 'failing'
+              ? { kind: 'failing' as const, detail: FAILING }
+              : undefined;
+        return experienceConnection.parse({
           id: row.id,
           app: appName(row),
           label: builtinLabel(row.configuration) ?? plainText(row.label, appName(row)),
-          status:
-            row.setupState === 'connecting' || row.setupState === 'available'
-              ? row.setupState
-              : row.status !== 'active' || row.health === 'failing'
-                ? 'error'
-                : 'connected',
+          status: !settled(row) ? row.setupState : problem ? 'error' : 'connected',
           access: row.scopes.some((scope) =>
             // Running commands and driving a desktop act too, not only writes.
             /(?:send|create|update|delete|write|move|run|click|type|key|scroll|open)$/.test(scope),
@@ -221,8 +247,9 @@ export class ExperienceHome {
           ...(watchable(row.provider)
             ? { watching: watchedByDefault(parent?.kind ?? 'personal', row.watchChanges) }
             : {}),
-        }),
-      ),
+          ...(problem ? { problem } : {}),
+        });
+      }),
     };
   }
   calendarEvents(connectionId: string, detail: unknown) {

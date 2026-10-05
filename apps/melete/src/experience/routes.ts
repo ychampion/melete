@@ -41,7 +41,7 @@ import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, type ComputerProcessRow, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { type EventChanges, ExperienceEvents } from './events.ts';
-import { ExperienceHome } from './home.ts';
+import { type ConnectionLiveness, ExperienceHome } from './home.ts';
 import { listMembers, removeMember } from './members.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
@@ -74,6 +74,8 @@ export type ExperienceDeps = {
   runs?: RunService;
   /** The files people send in chat. */
   attachments?: AttachmentService;
+  /** Whether an active connection's connector runs here; see connectorLiveness. */
+  liveness?: ConnectionLiveness;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -121,7 +123,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     deps.sql && deps.broker && ownerEffects
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
-  const home = new ExperienceHome(deps.db, ownerEffects);
+  const home = new ExperienceHome(deps.db, ownerEffects, deps.liveness);
   // Work rooms handed the person, shown on their Home and with their approvals.
   const handoffs = deps.jobs
     ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })

@@ -485,3 +485,121 @@ describe('Docker spare engines', () => {
     expect(f.engines.calls.some((call) => call.method === 'DELETE')).toBe(false);
   });
 });
+
+describe('an engine got ready while the attempt is put together', () => {
+  /** Time from the attempt's preparation beginning to the engine's first run. */
+  async function firstRunAfter(
+    f: Awaited<ReturnType<typeof setup>>,
+    attempt: AttemptBundle,
+    assemblyMs: number,
+    early: boolean,
+  ): Promise<number> {
+    const before = f.engines.runsAt.length;
+    const began = Date.now();
+    const signal = new AbortController().signal;
+    const giveUp = early ? f.runtime.prepare(attempt, signal) : () => {};
+    // Memory recall, knowledge and the rest of the bundle.
+    await Bun.sleep(assemblyMs);
+    try {
+      const outcome = await f.runtime.start(attempt, f.sink, signal);
+      expect(outcome.kind).toBe('completed');
+    } finally {
+      giveUp();
+    }
+    return (f.engines.runsAt[before] ?? Number.POSITIVE_INFINITY) - began;
+  }
+
+  test('the handoff and the engine coming up overlap the bundle being put together', async () => {
+    const after = await setup({ spares: 1, bootMs: 300, serveMs: 400 });
+    await after.runtime.initialize();
+    after.runtime.warm(bundle().model);
+    await Bun.sleep(450);
+    const sequentialMs = await firstRunAfter(after, bundle(0), 400, false);
+    const ahead = await setup({ spares: 1, bootMs: 300, serveMs: 400 });
+    await ahead.runtime.initialize();
+    ahead.runtime.warm(bundle().model);
+    await Bun.sleep(450);
+    const overlappedMs = await firstRunAfter(ahead, bundle(1), 400, true);
+    process.stdout.write(
+      `bundle 400 ms + engine 400 ms to first run: after ${sequentialMs} ms, overlapped ${overlappedMs} ms\n`,
+    );
+    expect(sequentialMs).toBeGreaterThanOrEqual(800);
+    expect(overlappedMs).toBeLessThan(sequentialMs - 250);
+    // The engine got ready is the one that ran: one handoff, to this attempt.
+    const handed = ahead.engines.containers.filter((entry) => entry.handoff);
+    expect(handed.map((entry) => entry.handoff?.env.MELETE_ATTEMPT_ID)).toEqual([
+      identity('att', 1),
+    ]);
+    expect(handed[0]?.removed).toBe(true);
+  });
+
+  test('an engine of its own starts while the bundle is put together when no spare is loaded', async () => {
+    const f = await setup({ spares: 0, bootMs: 400, serveMs: 20 });
+    await f.runtime.initialize();
+    const overlappedMs = await firstRunAfter(f, bundle(0), 400, true);
+    expect(overlappedMs).toBeLessThan(700);
+    expect(f.engines.containers).toHaveLength(1);
+    expect(f.engines.containers[0]?.config.Env).toContain(
+      'MELETE_ATTEMPT_TOKEN=capability-of-attempt-0',
+    );
+    expect(f.engines.containers[0]?.removed).toBe(true);
+  });
+
+  test('an attempt that never starts gives its engine up, and its job takes the next spare', async () => {
+    const f = await setup();
+    await f.runtime.initialize();
+    f.runtime.warm(bundle().model);
+    await Bun.sleep(400);
+    const [first] = f.engines.spares();
+    const giveUp = f.runtime.prepare(bundle(0), new AbortController().signal);
+    await until(() => first?.handoff !== undefined);
+    giveUp();
+    await until(() => first?.removed === true);
+    // Nothing of the job is counted as mounted any more: its next attempt takes a spare.
+    await Bun.sleep(400);
+    const retry = bundle(0);
+    retry.attempt.id = identity('att', 7);
+    await f.runtime.start(retry, f.sink, new AbortController().signal);
+    const handed = f.engines.containers.filter((entry) => entry.handoff);
+    expect(handed.map((entry) => entry.handoff?.env.MELETE_ATTEMPT_ID)).toEqual([
+      identity('att', 0),
+      identity('att', 7),
+    ]);
+    expect(
+      f.engines.containers.filter((entry) => !entry.config.Env.includes('MELETE_RUNTIME_SPARE=1')),
+    ).toEqual([]);
+    // Once taken, giving up does nothing.
+    giveUp();
+  });
+
+  test('a bundle that now asks for another engine gets one of its own', async () => {
+    const f = await setup();
+    await f.runtime.initialize();
+    f.runtime.warm(bundle().model);
+    await Bun.sleep(400);
+    const signal = new AbortController().signal;
+    const giveUp = f.runtime.prepare(bundle(0), signal);
+    const outcome = await f.runtime.start(bundle(0, 'other-model'), f.sink, signal);
+    giveUp();
+    expect(outcome.kind).toBe('completed');
+    // Whatever was got ready for the old setup is gone; a spare it never claimed stays loaded.
+    await until(() => f.engines.containers.every((entry) => !entry.handoff || entry.removed));
+    const own = f.engines.containers.find(
+      (entry) => !entry.config.Env.includes('MELETE_RUNTIME_SPARE=1'),
+    );
+    expect(own?.config.Env).toContain('MELETE_MODEL_NAME=other-model');
+    expect(own?.removed).toBe(true);
+  });
+
+  test('shutdown removes an engine got ready for an attempt that has not started', async () => {
+    const f = await setup();
+    await f.runtime.initialize();
+    f.runtime.warm(bundle().model);
+    await Bun.sleep(400);
+    const [first] = f.engines.spares();
+    f.runtime.prepare(bundle(0), new AbortController().signal);
+    await until(() => first?.handoff !== undefined);
+    await f.runtime.close();
+    expect(first?.removed).toBe(true);
+  });
+});

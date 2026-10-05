@@ -111,6 +111,21 @@ type Spare = {
   stop: AbortController;
 };
 
+/** An engine that answers its API, ready for its attempt's first run. */
+type Engine = { cell: CellHandle; url: string; apiKey: string };
+/**
+ * An engine being got ready for an attempt before the attempt starts, while
+ * the rest of its bundle is still being put together. Its job's workspace is
+ * counted as mounted from the moment it was asked for.
+ */
+type Prepared = {
+  jobId: string;
+  key: string;
+  engine: Promise<Engine>;
+  stop: AbortController;
+  taken: boolean;
+};
+
 /** A claimed attempt gets one mount root and one network with exactly the broker peer. */
 export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   private readonly host: CellHost;
@@ -126,6 +141,8 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   private readonly mounted = new Map<string, number>();
   /** Off for good once a spare could not be used: every later one would fail the same way. */
   private spareCount: number;
+  /** Engines got ready ahead of their attempts' start, by attempt. */
+  private readonly prepared = new Map<string, Prepared>();
 
   constructor(private readonly options: DockerRuntimeOptions) {
     this.host =
@@ -269,41 +286,136 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     else this.mounted.delete(jobId);
   }
 
+  /**
+   * Starts getting this attempt's engine ready (a loaded spare handed the
+   * attempt, or a container of its own, up to its API answering) while the
+   * caller is still putting the attempt's bundle together. `start` then takes
+   * it, provided the bundle still asks for an engine set up the same way;
+   * otherwise it is removed and the attempt starts its own. Returns what gives
+   * the engine up when the attempt never starts; once taken, it does nothing.
+   *
+   * Only what an engine is started with is used here: the model, the tools'
+   * features and the attempt's own values. Nothing the attempt is told (its
+   * knowledge, its instructions, its input) reaches the engine before `start`.
+   */
+  prepare(bundle: AttemptBundle, signal: AbortSignal): () => void {
+    const attemptId = bundle.attempt.id;
+    const jobId = bundle.attempt.job_id;
+    if (
+      this.shutdown.signal.aborted ||
+      signal.aborted ||
+      this.active.has(attemptId) ||
+      this.prepared.has(attemptId)
+    )
+      return () => {};
+    prefixedId('att').parse(attemptId);
+    prefixedId('job').parse(jobId);
+    if (!/^[a-zA-Z0-9_-]+$/.test(bundle.model.provider)) return () => {};
+    const setup = this.engineSetup(bundle.model, bundle.tools, bundle.budget);
+    // Counted before anything waits, as `run` counts it.
+    const sharing = this.mounted.has(jobId);
+    this.mount(jobId);
+    const stop = new AbortController();
+    const engine = this.acquire(
+      bundle,
+      setup,
+      sharing,
+      AbortSignal.any([signal, stop.signal, this.shutdown.signal]),
+    );
+    // Observed here; whoever takes or discards it sees the failure too.
+    engine.catch(() => {});
+    const entry: Prepared = { jobId, key: setup.key, engine, stop, taken: false };
+    this.prepared.set(attemptId, entry);
+    return () => this.discard(attemptId, entry);
+  }
+
+  /** Gives up an engine got ready for an attempt that did not take it. */
+  private discard(attemptId: string, entry: Prepared) {
+    if (entry.taken || this.prepared.get(attemptId) !== entry) return;
+    this.prepared.delete(attemptId);
+    entry.stop.abort(new Error('The attempt did not start'));
+    const removal = entry.engine
+      .then(
+        (engine) => engine.cell.release(),
+        () => undefined,
+      )
+      .catch(() => {})
+      .finally(() => this.unmount(entry.jobId));
+    this.retiring.add(removal);
+    void removal.finally(() => this.retiring.delete(removal));
+  }
+
+  /** The engine got ready for this attempt, when it was set up as the attempt now asks. */
+  private take(attemptId: string, key: string): Prepared | undefined {
+    const entry = this.prepared.get(attemptId);
+    if (!entry) return undefined;
+    if (entry.key !== key) {
+      this.discard(attemptId, entry);
+      return undefined;
+    }
+    this.prepared.delete(attemptId);
+    entry.taken = true;
+    return entry;
+  }
+
+  /**
+   * A loaded spare handed this attempt, or a container of its own, once its
+   * API answers. Whatever it started is removed again if it fails on the way.
+   */
+  private async acquire(
+    bundle: AttemptBundle,
+    setup: EngineSetup,
+    sharing: boolean,
+    signal: AbortSignal,
+  ): Promise<Engine> {
+    await this.initialize();
+    signal.throwIfAborted();
+    // Before the job's directory is mounted, nothing of a paired computer's screen is in it.
+    await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
+    const warm = sharing ? undefined : await this.claimSpare(setup, bundle, signal);
+    let engine: Engine;
+    if (warm) {
+      engine = warm;
+    } else {
+      const apiKey = randomBytes(32).toString('hex');
+      const values = this.attemptValues(bundle);
+      const cell = this.host.cell({
+        cell: { attempt: bundle.attempt.id, job: bundle.attempt.job_id },
+        environment: [
+          ...this.baseEnvironment(apiKey),
+          ...CONTAINER_ATTEMPT_KEYS.map((key) => `${key}=${values[key]}`),
+          ...setup.environment,
+        ],
+      });
+      engine = { cell, apiKey, url: '' };
+    }
+    try {
+      if (!warm) engine.url = await engine.cell.start(signal);
+      await this.waitForApi(engine.url, engine.apiKey, signal);
+    } catch (error) {
+      await engine.cell.release();
+      throw error;
+    }
+    return engine;
+  }
+
   private async run(
     bundle: AttemptBundle,
     sink: EventSink,
     signal: AbortSignal,
   ): Promise<AttemptOutcome> {
+    const setup = this.engineSetup(bundle.model, bundle.tools, bundle.budget);
+    const early = this.take(bundle.attempt.id, setup.key);
     // Counted before anything waits, so a spare is never handed a workspace
-    // another container of this job still has mounted.
-    const sharing = this.mounted.has(bundle.attempt.job_id);
-    this.mount(bundle.attempt.job_id);
-    let cell: CellHandle | undefined;
+    // another container of this job still has mounted. An engine got ready
+    // ahead of the attempt was counted when it was asked for.
+    const sharing = early ? false : this.mounted.has(bundle.attempt.job_id);
+    if (!early) this.mount(bundle.attempt.job_id);
+    let engine: Engine | undefined;
     try {
-      await this.initialize();
+      engine = await (early?.engine ?? this.acquire(bundle, setup, sharing, signal));
       signal.throwIfAborted();
-      // Before the job's directory is mounted, nothing of a paired computer's screen is in it.
-      await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
-      const setup = this.engineSetup(bundle.model, bundle.tools, bundle.budget);
-      const warm = sharing ? undefined : await this.claimSpare(setup, bundle, signal);
-      let url: string;
-      let apiKey: string;
-      if (warm) {
-        ({ cell, url, apiKey } = warm);
-      } else {
-        apiKey = randomBytes(32).toString('hex');
-        const values = this.attemptValues(bundle);
-        cell = this.host.cell({
-          cell: { attempt: bundle.attempt.id, job: bundle.attempt.job_id },
-          environment: [
-            ...this.baseEnvironment(apiKey),
-            ...CONTAINER_ATTEMPT_KEYS.map((key) => `${key}=${values[key]}`),
-            ...setup.environment,
-          ],
-        });
-        url = await cell.start(signal);
-      }
-      await this.waitForApi(url, apiKey, signal);
+      const { url, apiKey } = engine;
       return await new HermesRuntimeAdapter({
         baseUrl: url,
         token: apiKey,
@@ -318,7 +430,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       }).start(bundle, sink, signal);
     } finally {
       try {
-        if (cell) await cell.release();
+        if (engine) await engine.cell.release();
       } finally {
         this.unmount(bundle.attempt.job_id);
       }
@@ -427,7 +539,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     setup: EngineSetup,
     bundle: AttemptBundle,
     signal: AbortSignal,
-  ): Promise<{ cell: CellHandle; url: string; apiKey: string } | undefined> {
+  ): Promise<Engine | undefined> {
     if (this.spareCount < 1) return undefined;
     const matching = this.spares.filter((spare) => spare.key === setup.key);
     const spare = matching.find((candidate) => candidate.loaded) ?? matching[0];
@@ -533,6 +645,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
   async close(): Promise<void> {
     this.beginShutdown();
     for (const spare of this.spares.splice(0)) this.retire(spare);
+    for (const [attemptId, entry] of [...this.prepared]) this.discard(attemptId, entry);
     // The runner races an abort against start(), so runner.stop alone cannot await child removal.
     const results = await Promise.allSettled([...this.active.values(), ...this.retiring]);
     // Any leftovers are reconciled at the next boot. Emit no capability-bearing exception text.

@@ -1651,12 +1651,20 @@ export class ExperienceMock {
           id: row.id,
           app: row.provider === 'smtp' ? 'Mail' : appName(row),
           label: plainText(row.label, 'Connected app'),
-          status: row.status === 'active' ? 'connected' : 'error',
+          status: row.status === 'active' && row.health !== 'failing' ? 'connected' : 'error',
           access: row.scopes.some((scope) => /send|create|write/.test(scope))
             ? 'asks_before_acting'
             : 'read_only',
           ...(row.provider === 'imap' || row.provider === 'caldav'
             ? { watching: !this.unwatched.has(row.id) }
+            : {}),
+          ...(row.status !== 'active' || row.health === 'failing'
+            ? {
+                problem: {
+                  kind: 'failing' as const,
+                  detail: 'Its last check failed. Press Test to check it again, or reconnect it.',
+                },
+              }
             : {}),
         }),
       );
