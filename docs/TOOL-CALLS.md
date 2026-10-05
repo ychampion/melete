@@ -188,7 +188,7 @@ Before anyone is asked, Melete checks what the delete would take and whose it is
 - With the switch for work in the agent's own workspace turned off, deleting Melete's own files asks too.
 - Refused outright: a path that leaves its area, the root of an area, a link, Melete's own records under `.melete/` (stored command output and screenshots), and files saved in other conversations.
 
-The receipt gives the total (`deleted_count`), names the first 20, and carries a `trash_id`. The receipt's Undo, or the agent's `files.restore` with that `trash_id`, puts every file back at its own path. A file whose path has been taken since stays in the trash, and the receipt of the restore says so.
+The receipt gives the total (`deleted_count`), names the first 20, and carries a `trash_id`. The receipt's Undo, or the agent's `files.restore`, puts every file back at its own path. `files.restore` takes that `trash_id`, or a `path` to bring back the latest delete that took it; with neither, it restores the conversation's latest delete. Deleting Melete's own files is work in its own workspace: it goes through under the same switch as other workspace work, even for an agent set to ask before acting. A file whose path has been taken since stays in the trash, and the receipt of the restore says so.
 
 A command on the agent's sandbox computer (`terminal.run`) can delete files in `/work` too. After the command, a file it deleted goes to the workspace's trash as well, when all of these hold:
 
