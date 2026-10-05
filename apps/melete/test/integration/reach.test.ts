@@ -8,10 +8,15 @@
  * its webhooks the way Twilio does; clocks run on a clock the test moves.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pushPayload } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import { connection, experienceProfile, space } from '../../src/db/schema.ts';
+import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
+import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -245,6 +250,34 @@ async function refusal(work: Promise<unknown>): Promise<string> {
 async function at(ms: number) {
   clock = ms;
   return required(reach).sweep();
+}
+
+/** The service as a provider reaches it: the whole app, with no session. */
+const app =
+  handle && jobs && reach
+    ? createApp({
+        env: loadEnv({
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: await mkdtemp(join(tmpdir(), 'melete-reach-')),
+          MELETE_PUBLIC_URL: 'https://melete.example',
+        }),
+        db: handle.db,
+        sql: handle.sql,
+        jobs,
+        reach,
+        checkDatabase: async () => 'ok',
+      })
+    : null;
+async function webhook(path: string, fields: Record<string, string>, signature?: string) {
+  const request = signed(path, fields);
+  return required(app).request(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Twilio-Signature': signature ?? request.signature,
+    },
+    body: request.params.toString(),
+  });
 }
 
 const rungs = async (situationId: string) =>
@@ -535,6 +568,33 @@ withDb('the reach-me ladder', () => {
     expect((await required(reach).state(fay.id)).opted_out_at).not.toBeNull();
     expect((await required(reach).state(fay.id)).consent).toBeNull();
   }, 120_000);
+
+  test('the provider’s webhooks reach the service without a session, and only with its signature', async () => {
+    const ivy = await optedIn('ivy');
+    // Unsigned, or signed for another address: refused before anything is read.
+    expect(
+      (await webhook('/reach/twilio/sms', { From: ivy.number, To: FROM, Body: 'STOP' }, 'x'))
+        .status,
+    ).toBe(403);
+    expect((await required(reach).state(ivy.id)).consent).not.toBeNull();
+    const stop = await webhook('/reach/twilio/sms', { From: ivy.number, To: FROM, Body: 'STOP' });
+    expect(stop.status).toBe(200);
+    expect(stop.headers.get('content-type')).toContain('text/xml');
+    expect((await required(reach).state(ivy.id)).consent).toBeNull();
+    // A receipt and a keypress for a contact that isn't theirs are refused.
+    const receipt = await webhook(`/reach/twilio/status/rch_${'0'.repeat(26)}`, {
+      MessageSid: 'SMnone',
+      MessageStatus: 'delivered',
+    });
+    expect(receipt.status).toBe(204);
+    const key = await webhook(`/reach/twilio/key/rch_${'0'.repeat(26)}`, {
+      CallSid: 'CAnone',
+      Digits: '1',
+    });
+    expect(key.status).toBe(403);
+    // The signed-in routes still need a session.
+    expect((await required(app).request('/reach')).status).toBe(401);
+  }, 60_000);
 
   test('without a provider, the ladder stops at push and says so', async () => {
     const gus = await person('gus');

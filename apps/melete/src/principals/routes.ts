@@ -21,6 +21,7 @@ import {
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { mcpPublicPath } from '../mcp-server/actor.ts';
+import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
@@ -48,6 +49,9 @@ export function mountPrincipals(
       return next();
     // A paired computer's companion has no session; each of its routes checks its token.
     if (c.req.path.startsWith('/device/')) return next();
+    // The telephony provider's webhooks carry no session; reach/routes.ts checks their signature.
+    if (c.req.method === 'POST' && REACH_WEBHOOK_PATH.test(c.req.path) && !c.get('owner'))
+      return next();
     // A framed app's file read carries a token, not a session; apps/serve.ts checks it.
     if (viewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
     // So does a preview's; sandbox/preview.ts checks its token.
