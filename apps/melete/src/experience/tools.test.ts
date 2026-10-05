@@ -23,6 +23,7 @@ import {
   modelCall,
   runtimeCall,
   runtimeTool,
+  sentCalls,
   toolText,
   traceCall,
 } from './tools.ts';
@@ -634,5 +635,70 @@ describe('work waiting for the person’s computer', () => {
       at,
     });
     expect(browser.title).toBe('Waiting for your browser on Test laptop');
+  });
+});
+
+describe('where a command sent something for the first time', () => {
+  const command = (detail: Record<string, unknown>) =>
+    row('terminal.run', {
+      effectClass: 'write_reversible',
+      status: 'succeeded',
+      receipt: { detail } as ActionRow['receipt'],
+    });
+
+  test('a first-time destination is one quiet row under the command, never a question', () => {
+    const calls = sentCalls(
+      command({
+        egress_hosts: [
+          { host: 'httpbin.org', tunnels: 1, refused: 0, bytes_up: 2048, bytes_down: 900 },
+          { host: 'pypi.org', tunnels: 2, refused: 0, bytes_up: 4096, bytes_down: 9000 },
+        ],
+        egress_new_hosts: ['httpbin.org'],
+      }),
+      'succeeded',
+      later,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      kind: 'sandbox',
+      title: 'Sent 2 KB to httpbin.org from its computer',
+      status: 'done',
+      parent: 'action:act_01J00000000000000000000000',
+      detail: null,
+    });
+  });
+
+  test('nothing is shown for a known host, nothing sent, an unfinished command or another tool', () => {
+    const hosts = [{ host: 'example.com', tunnels: 1, refused: 1, bytes_up: 0, bytes_down: 0 }];
+    expect(
+      sentCalls(
+        command({ egress_hosts: hosts, egress_new_hosts: ['example.com'] }),
+        'succeeded',
+        later,
+      ),
+    ).toEqual([]);
+    const sent = [{ host: 'example.com', tunnels: 1, refused: 0, bytes_up: 700, bytes_down: 0 }];
+    expect(
+      sentCalls(command({ egress_hosts: sent, egress_new_hosts: [] }), 'succeeded', later),
+    ).toEqual([]);
+    expect(sentCalls(command({ egress_hosts: sent }), 'succeeded', later)).toEqual([]);
+    expect(
+      sentCalls(
+        command({ egress_hosts: sent, egress_new_hosts: ['example.com'] }),
+        'admitted',
+        later,
+      ),
+    ).toEqual([]);
+    expect(
+      sentCalls(
+        row('web.fetch', {
+          receipt: {
+            detail: { egress_hosts: sent, egress_new_hosts: ['example.com'] },
+          } as ActionRow['receipt'],
+        }),
+        'succeeded',
+        later,
+      ),
+    ).toEqual([]);
   });
 });

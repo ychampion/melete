@@ -50,6 +50,7 @@ import {
   modelCall,
   retryCall,
   runtimeCall,
+  sentCalls,
   toolId,
   traceCall,
 } from './tools.ts';
@@ -233,7 +234,10 @@ async function toolCalls(
             .orderBy(desc(approval.requestedAt))
             .limit(1)
         : [];
-    return [actionCall({ ...row, raw, at: source.createdAt, approvalId: pending?.id })];
+    return [
+      actionCall({ ...row, raw, at: source.createdAt, approvalId: pending?.id }),
+      ...sentCalls(row.action, raw, source.createdAt),
+    ];
   }
   if (source.type === 'notice' && payload.phase === 'admission_rejected') {
     const row = await effect(payload.action_id);
