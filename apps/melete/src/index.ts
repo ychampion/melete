@@ -169,6 +169,9 @@ import {
 } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { reachConfigFromEnv } from './reach/provider.ts';
+import { mountReach } from './reach/routes.ts';
+import { ReachService } from './reach/service.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -228,6 +231,8 @@ export type AppDeps = {
   jobs?: JobService;
   triggers?: TriggerService;
   situations?: SituationService;
+  /** Texts and calls to a person's own verified number. */
+  reach?: ReachService;
   approvals?: ApprovalService;
   events?: EventStream;
   submissions?: SubmissionService;
@@ -434,6 +439,16 @@ export function createApp(deps: AppDeps) {
       ? new SituationService({ jobs: deps.jobs, triggers: deps.triggers })
       : undefined);
   if (noticing) mountSituations(app, noticing);
+  const reaching =
+    deps.reach ??
+    (deps.db
+      ? new ReachService({
+          db: deps.db,
+          config: reachConfigFromEnv(deps.env),
+          ...(noticing ? { ack: (principalId, id) => noticing.ack(principalId, id) } : {}),
+        })
+      : undefined);
+  if (reaching) mountReach(app, reaching);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -697,6 +712,7 @@ export async function bootstrap(
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
   let situations: SituationService | undefined;
+  let reach: ReachService | undefined;
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
@@ -780,6 +796,7 @@ export async function bootstrap(
           signalPoller?.stop(),
           triage?.stop(),
           situations?.stop(QUEUES.clockSweep),
+          reach?.stop(QUEUES.reachSweep),
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
@@ -1542,6 +1559,19 @@ export async function bootstrap(
           if (situations && push.enabled)
             situations.deps.notify = (principalId) => push.dispatch(principalId, new Date());
         }
+        // A deadline the person set that goes unanswered climbs from push to
+        // a text and a call to their own verified number.
+        if (handle && situations) {
+          const noticing = situations;
+          reach = new ReachService({
+            db: handle.db,
+            config: reachConfigFromEnv(env),
+            ack: (principalId, id) => noticing.ack(principalId, id),
+          });
+          const climbing = reach;
+          noticing.deps.escalate = (tx, row, pushed) => climbing.escalate(tx, row, pushed);
+          await reach.start(triggers.jobs.boss, QUEUES.reachSweep);
+        }
         // Clocks are looked at every minute, and in between when one is close.
         await situations?.start(QUEUES.clockSweep);
       }
@@ -1593,6 +1623,7 @@ export async function bootstrap(
     jobs,
     triggers,
     situations,
+    ...(reach ? { reach } : {}),
     approvals,
     events,
     submissions,
