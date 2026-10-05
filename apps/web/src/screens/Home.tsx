@@ -57,6 +57,7 @@ import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
+import { WhatImOnSection } from './WhatImOnSection.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
   {
@@ -1082,6 +1083,7 @@ export function HomeScreen() {
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />
+          <WhatImOnSection />
           <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />

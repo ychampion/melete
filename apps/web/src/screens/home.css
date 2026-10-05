@@ -636,3 +636,69 @@ a.suggestion:hover {
 .task-add:hover {
   color: var(--heading);
 }
+
+/* ---------- what I'm on ---------- */
+
+.intent-readback {
+  overflow-wrap: anywhere;
+}
+/* A detail the person never said: Melete's guess, marked in words and with a dotted line. */
+.intent-guess {
+  color: var(--sand-ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.intent-guess-mark {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--sand-ink);
+}
+.intent-meta,
+.intent-words {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+}
+.intent-row[data-state="at_risk"] .intent-meta {
+  color: var(--danger);
+}
+.intent-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+.intent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+}
+.intent-field input {
+  height: 32px;
+  max-width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-button, 10px);
+  background: var(--surface);
+  color: var(--heading);
+  font: inherit;
+  font-size: 14px;
+}
+.intent-field input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.intent-edit-actions {
+  display: flex;
+  gap: 4px;
+}
+.intent-problem {
+  flex-basis: 100%;
+  font-size: 13px;
+  color: var(--danger);
+}

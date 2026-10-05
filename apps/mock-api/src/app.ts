@@ -76,6 +76,7 @@ import { mountAttachmentsMock } from './attachments.ts';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
+import { mountIntentsMock } from './intents.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountModelsMock } from './models.ts';
 import { mountNeedsYouMock } from './needs-you.ts';
@@ -195,6 +196,7 @@ export function createMockApp(deps: AppDeps) {
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);
+  mountIntentsMock(app, { seeded: Boolean(deps.seedExperience) });
   mountNeedsYouMock(app, {
     seeded: Boolean(deps.seedExperience) && deps.needsYou !== false,
     attach: (name, text) => {

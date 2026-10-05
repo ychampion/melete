@@ -251,6 +251,10 @@ export type WaitingOnEntry = WaitingOn['top'][number];
 /** What needs the person: sorted mail and calendar changes, and what Melete noticed. */
 export type NeedsYou = Ok<paths['/needs-you'], 'get'>;
 export type NeedsYouItem = NeedsYou['items'][number];
+/** What the person asked Melete to see through, with every detail it guessed marked. */
+export type Intents = Ok<paths['/intents'], 'get'>;
+export type IntentItem = Intents['intents'][number];
+export type IntentCancelled = Ok<paths['/intents/{id}/cancel'], 'post'>;
 
 /* ---------- problem reports ---------- */
 
