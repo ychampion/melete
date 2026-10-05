@@ -261,7 +261,9 @@ withDb('a Drive as a document source', () => {
     await required(handle)
       .sql`update source_cursor set cursor = ${JSON.stringify(start?.cursor)}::jsonb
       where connection_id = ${drive} and stream = 'documents'`;
+    clock += MINUTE;
     await poll();
+    clock += MINUTE;
     await poll();
     expect(await events(drive)).toHaveLength(1);
     // A later change to the same file is a new one.
