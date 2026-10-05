@@ -508,6 +508,73 @@ carries where to say it was seen, and tapping it tells Melete so. A push about a
 situation that was resolved, dismissed or removed before it went out is not
 sent.
 
+### Reaching your phone
+
+When a deadline the person set is about to be missed, its push is the first
+step. If nobody opens it, Melete texts the person's own number three minutes
+later, and calls it five minutes after that (`an unacknowledged urgent
+deadline: push, text at +3 min, call at +8; acknowledging stops it`). Opening
+the push, replying to the text, or pressing 1 on the call marks the situation
+seen, and nothing more is sent about it. Only an urgent situation about a
+deadline the person set climbs past the push (`only a deadline the person set
+climbs`).
+
+The person turns this on once, in Settings, Notifications:
+
+1. They enter their number, and Melete texts it a six-digit code. A code lasts
+   ten minutes and takes five tries; a person, and a number, get at most five
+   codes a day, and a number someone else here has verified can't be claimed.
+2. They agree to texts, and choose whether a call may follow and whether
+   Melete may reach them outside their day hours. The words they agree to are
+   shown beside the button and kept with the agreement, with the time and the
+   number (`reach_consent`). Changing the choice records a new agreement; ending
+   it records when and how.
+
+Melete texts and calls only that verified number, and only while the agreement
+names it. A new number ends the agreement given for the old one until the
+person agrees again (`no contact to any number but the verified one without
+approval`). The only other text Melete sends is the code to a number the
+person is verifying, at their request.
+
+| Rule | |
+| --- | --- |
+| A day, at most | 6 texts and 3 calls, in the person's own day |
+| Outside the person's day hours | nothing, unless they agreed to that too |
+| From | the installation's own number, which is also the caller ID |
+| What it says | Melete's own words for the deadline and its due time, never text from mail |
+| Stopping | reply STOP (or quit, end, revoke, opt out, cancel, unsubscribe, or "stop texting me"), press 9 on a call, or turn it off in Settings |
+
+A text or call that would break a rule is not sent, and says why in Settings
+under "What Melete did" (`at most six texts and three calls a day`, `nothing
+is texted or called outside the person’s day unless they asked for nights`).
+
+**STOP.** A reply of STOP ends the agreement at once, cancels anything still
+waiting, and nothing is texted or called until the person texts START and
+agrees again in Settings. The agreement's record is kept, with when and how it
+ended. A number the provider reports as unsubscribed is treated the same way
+(`STOP opts out`). Twilio answers STOP, START and HELP itself; Melete sends no
+reply of its own.
+
+**Calls.** A call says who is calling, names the deadline and its due time in
+one sentence, then offers 1 to say it was seen and 9 to stop texts and calls.
+
+**Receipts and cost.** Each text and call carries a delivery receipt address;
+the provider's status is kept with it. Each one is counted toward the person's
+spend as a background cost in `model_usage` (purpose `reach`), at
+`MELETE_REACH_TEXT_USD` a text and `MELETE_REACH_CALL_USD_PER_MINUTE` a started
+minute of an answered call; an unanswered call costs nothing. A text or call
+whose answer was lost is never sent again.
+
+**Setting it up.** An operator sets `MELETE_TWILIO_ACCOUNT_SID`,
+`MELETE_TWILIO_AUTH_TOKEN`, `MELETE_TWILIO_FROM_NUMBER` and an https
+`MELETE_PUBLIC_URL`, and points the number's incoming messages at
+`MELETE_PUBLIC_URL/api/reach/twilio/sms`. Every request Twilio makes is
+believed only with its `X-Twilio-Signature` for that exact address. Without all
+of these, Settings says that Melete reaches the person by push only, and the
+ladder stops at the push (`without a provider, the ladder stops at push and
+says so`). In the US, carriers deliver texts from a local number only once it
+is registered for A2P 10DLC, or from a verified toll-free number.
+
 ### Reaching work
 
 Work names the subjects it cares about: a watch on one subject (`about.key`
@@ -573,5 +640,11 @@ that work sets are kept.
   lanes as plain functions.
 - `packages/contracts/src/watch.test.ts`: `before`, `after`, `older_than`,
   `any` and `absent`.
+- `apps/melete/test/integration/reach.test.ts`: the push, text and call
+  ladder and what stops it, the verified number only, the daily caps, nights,
+  STOP, receipts and cost, and an installation with no provider.
+- `apps/melete/src/reach/policy.test.ts` and
+  `apps/melete/src/reach/twilio.test.ts`: the ladder's rules and the reply words
+  as plain functions; Twilio's signature against its documented example.
 - Conformance 12, [`12-deadline-fresh-check.test.ts`](../conformance/scenarios/12-deadline-fresh-check.test.ts):
   a deadline is checked against fresh state at its time, once.

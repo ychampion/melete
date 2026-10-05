@@ -23,6 +23,7 @@ import {
 } from '../experience/push.ts';
 import type { PushDevice, PushSettings } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
+import { ReachMe } from './ReachMe.tsx';
 
 export const CAP_OPTIONS = [1, 2, 3, 4, 6, 8, 12].map((n) => ({
   value: String(n),
@@ -270,6 +271,8 @@ export function NotificationsTab() {
           </div>
         </>
       ) : null}
+
+      <ReachMe />
     </div>
   );
 }
