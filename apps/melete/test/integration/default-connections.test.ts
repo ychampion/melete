@@ -118,9 +118,18 @@ const journey = late ? await database() : null;
       ]);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
       // Settings is told which connections the service keeps, so it offers no removal for them.
+      type Shown = {
+        connections: Array<{
+          id: string;
+          label: string;
+          builtin?: boolean;
+          status: string;
+          problem?: { kind: string; detail: string };
+        }>;
+      };
       const shown = (await (
         await running.app.request('/experience/connections', { headers: { cookie } })
-      ).json()) as { connections: Array<{ label: string; builtin?: boolean }> };
+      ).json()) as Shown;
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Apps', true],
         ['Files', true],
@@ -129,6 +138,26 @@ const journey = late ? await database() : null;
         ['Saved results', true],
         ['Web', true],
       ]);
+      // Each runs here, so each is shown connected, with nothing wrong.
+      expect(shown.connections.every((row) => row.status === 'connected' && !row.problem)).toBe(
+        true,
+      );
+
+      // A default Speech row left behind by a provider this service no longer
+      // has is installed but runs nowhere: it says so, not Connected.
+      const speechId = newId('conn');
+      await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status,
+          health, setup_state, configuration)
+        values (${speechId}, ${space.id}, 'generation', 'Speech', '["audio.synthesize"]'::jsonb,
+          'active', 'ok', 'connected', '{"builtin":"generation"}'::jsonb)`;
+      const after = (await (
+        await running.app.request('/experience/connections', { headers: { cookie } })
+      ).json()) as Shown;
+      expect(after.connections.find((row) => row.id === speechId)).toMatchObject({
+        status: 'error',
+        problem: { kind: 'not_running' },
+      });
+      await fixture.sql`delete from connection where id = ${speechId}`;
 
       // A second setup is refused before it reads a password, and refusing it
       // makes nothing: the defaults stay the rows the first setup created.
