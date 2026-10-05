@@ -21,6 +21,7 @@ import {
 } from '@melete/contracts';
 import { messageSender, messageSenderDomain } from '../companies/replies.ts';
 import { instantMs } from './occurrences.ts';
+import { senderAuthentication } from './sender-auth.ts';
 import type {
   CalendarRead,
   DocumentChange,
@@ -59,7 +60,9 @@ export const mailDedupKey = (key: string) => `${MAIL_RECEIVED}:${keyOf(key)}`;
 /**
  * A new message as an observation. The words in it were written by whoever
  * sent it, so it is marked as outside content, and only the headers a watch
- * can test travel: who sent it, to how many, its subject line, when.
+ * can test travel: who sent it, to how many, its subject line, when, the thread
+ * it continues, whether the receiving server authenticated its sender, and
+ * whether the provider filed it as spam.
  */
 export function mailObservation(
   connectionId: string,
@@ -96,8 +99,18 @@ export function mailObservation(
       subject: clip(message.subject, 300),
       received_at: receivedAt,
       to_count: message.to_addresses?.length ?? 0,
-      in_reply_to: message.in_reply_to ?? null,
+      in_reply_to:
+        message.in_reply_to === null || message.in_reply_to === undefined
+          ? null
+          : clip(message.in_reply_to, 500),
+      // The thread's last few Message-IDs: enough to tell a reply to the person's own message.
+      references: (message.references ?? []).slice(-20).map((id) => clip(id, 500)),
       automated: message.automated === true,
+      // Whether the receiving server authenticated the sender for the From domain.
+      sender_auth: message.sender_verified
+        ? 'pass'
+        : senderAuthentication(message.authentication_results, message.from_addresses ?? []),
+      in_inbox: message.spam !== true,
     },
   };
 }

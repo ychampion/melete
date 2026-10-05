@@ -23,7 +23,11 @@ import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { SignalPoller } from '../../src/signals/poller.ts';
 import type { NewMail, Occurrence, SignalSource } from '../../src/signals/types.ts';
 import { meetingConflicts, spokenTime } from '../../src/situations/detectors.ts';
-import { SituationService, type SubjectReader } from '../../src/situations/service.ts';
+import {
+  SituationService,
+  type SubjectReader,
+  UNVERIFIED_REPLY,
+} from '../../src/situations/service.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -680,6 +684,116 @@ withDb('situations', () => {
     });
     await poll();
     expect(await live(jo.id, 'reply.overdue')).toHaveLength(0);
+  }, 60_000);
+
+  test('a forged From leaves a wait open, noted as unverified; an authenticated reply ends it', async () => {
+    const lu = await person('lu', inDay());
+    const mailbox = await account(lu, 'imap', 'Inbox');
+    const box = { messages: [] as NewMail[] };
+    sources.set(mailbox, {
+      signals: {
+        stream: 'mail',
+        changes: async (cursor, options) => {
+          if (cursor === null) return { cursor: '0', messages: [] };
+          const messages = box.messages.slice(Number(cursor), Number(cursor) + options.limit);
+          return { cursor: String(Number(cursor) + messages.length), messages };
+        },
+      },
+    });
+    const { sql } = required(handle);
+    const awaitedId = newId('awr');
+    await sql`insert into awaited_reply (id, space_id, principal_id, message_id, to_address,
+        subject, sent_at, evidence, status, scan_id)
+      values (${awaitedId}, ${lu.spaceId}, ${lu.id}, '<ask@lu.test>', 'ana@acme.test',
+        'Quote for October', ${new Date(clock - 4 * 86_400_000).toISOString()}::timestamptz,
+        '{}'::jsonb, 'found', 'scn_fixture')`;
+    await required(situations).sweep();
+    await poll();
+    clock += 11 * MINUTE;
+    await poll();
+    await required(situations).sweep();
+    expect(await live(lu.id, 'reply.overdue')).toHaveLength(1);
+    const reply = (uid: number, authentication_results: string | null): NewMail => ({
+      uid,
+      message_id: `<r${uid}@acme.test>`,
+      from: 'ana@acme.test',
+      from_addresses: ['ana@acme.test'],
+      to: 'lu@example.test',
+      to_addresses: ['lu@example.test'],
+      subject: 'Re: Quote for October',
+      text: '',
+      html: '',
+      date: new Date(clock).toISOString(),
+      authentication_results,
+      key: `msgid:<r${uid}@acme.test>`,
+      read_key: uid,
+    });
+    // Same From and subject, no thread: one failing DMARC, one with no result at all.
+    box.messages.push(
+      reply(
+        1,
+        'mx.example.net; spf=fail smtp.mailfrom=acme.test; dmarc=fail header.from=acme.test',
+      ),
+      reply(2, null),
+    );
+    await poll();
+    expect(await live(lu.id, 'reply.overdue')).toHaveLength(1);
+    const [noted] = await sql`select state, note from clock
+      where subject_key = ${`awaited:${awaitedId}`}`;
+    expect(noted?.note).toBe(UNVERIFIED_REPLY);
+    box.messages.push(
+      reply(3, 'mx.example.net; dkim=pass header.d=acme.test; dmarc=pass header.from=acme.test'),
+    );
+    await poll();
+    expect(await live(lu.id, 'reply.overdue')).toHaveLength(0);
+  }, 60_000);
+
+  test('a wait whose only answer could not be verified is raised, and says so', async () => {
+    const mo = await person('mo', inDay());
+    const mailbox = await account(mo, 'imap', 'Inbox');
+    const box = { messages: [] as NewMail[] };
+    sources.set(mailbox, {
+      signals: {
+        stream: 'mail',
+        changes: async (cursor, options) => {
+          if (cursor === null) return { cursor: '0', messages: [] };
+          const messages = box.messages.slice(Number(cursor), Number(cursor) + options.limit);
+          return { cursor: String(Number(cursor) + messages.length), messages };
+        },
+      },
+    });
+    const { sql } = required(handle);
+    const awaitedId = newId('awr');
+    await sql`insert into awaited_reply (id, space_id, principal_id, message_id, to_address,
+        subject, sent_at, evidence, status, scan_id)
+      values (${awaitedId}, ${mo.spaceId}, ${mo.id}, '<ask@mo.test>', 'ana@acme.test',
+        'Quote for October', ${new Date(clock - 4 * 86_400_000).toISOString()}::timestamptz,
+        '{}'::jsonb, 'found', 'scn_fixture')`;
+    await required(situations).sweep();
+    await poll();
+    // A forged answer arrives before the clock is due: the look-back must not count it.
+    box.messages.push({
+      uid: 1,
+      message_id: '<forged@attacker.test>',
+      from: 'ana@acme.test',
+      from_addresses: ['ana@acme.test'],
+      to: 'mo@example.test',
+      to_addresses: ['mo@example.test'],
+      subject: 'Re: Quote for October',
+      text: '',
+      html: '',
+      date: new Date(clock).toISOString(),
+      authentication_results: null,
+      key: 'msgid:<forged@attacker.test>',
+      read_key: 1,
+    });
+    await poll();
+    clock += 11 * MINUTE;
+    await poll();
+    await required(situations).sweep();
+    const raised = await live(mo.id, 'reply.overdue');
+    expect(raised).toHaveLength(1);
+    expect(raised[0]?.reason).toContain(UNVERIFIED_REPLY);
   }, 60_000);
 
   test('revoking an account takes what was noticed in it and its clocks', async () => {
