@@ -54,7 +54,6 @@ import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
-import { reverseInOrder } from './broker/reversals.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -109,7 +108,7 @@ import {
   spendAlertsFromEnv,
 } from './health/monitor.ts';
 import { mountIntents } from './intents/routes.ts';
-import { IntentService } from './intents/service.ts';
+import { IntentService, undoThrough } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -451,11 +450,7 @@ export function createApp(deps: AppDeps) {
   // way the person's own Undo would, each step on its own receipt.
   if (intents && !intents.deps.reverse && deps.sql && deps.broker && deps.registry) {
     const undoing = new ExperienceEffects(deps.sql, deps.broker, deps.registry);
-    intents.deps.reverse = (effects, kept) =>
-      reverseInOrder(effects, async (effect) => {
-        const done = await undoing.undo(kept.spaceId, effect.actionId);
-        return 'reason' in done ? { ok: false, reason: done.reason } : { ok: true };
-      });
+    intents.deps.reverse = undoThrough((spaceId, actionId) => undoing.undo(spaceId, actionId));
   }
   if (intents) mountIntents(app, intents);
   if (deps.approvals) mountApprovals(app, deps.approvals);

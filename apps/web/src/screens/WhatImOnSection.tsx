@@ -118,7 +118,10 @@ function EditForm({
   const paths = [
     ...item.read_back.parts.map((part) => part.path).filter((path) => FIELDS[path]),
     ...(item.deadline_at ? [] : ['deadline_at']),
-  ].filter((path, index, all) => all.indexOf(path) === index);
+  ]
+    // A reply being chased follows the reply itself: it has no deadline of its own.
+    .filter((path) => !(item.source === 'chase' && path === 'deadline_at'))
+    .filter((path, index, all) => all.indexOf(path) === index);
   const start = Object.fromEntries(paths.map((path) => [path, localInput(valueAt(item, path))]));
   const [values, setValues] = useState<Record<string, string>>(start);
   const [problem, setProblem] = useState<string | null>(null);

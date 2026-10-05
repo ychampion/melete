@@ -14,9 +14,9 @@
  */
 import type { IntentConstraints, IntentKind, ReadBackPart, ValueOrigin } from '@melete/contracts';
 import * as chrono from 'chrono-node';
-import { saysVerbatim } from '../memory/broker-trust.ts';
 import { tier0Values, zoneOffsetMinutes } from '../memory/tier0.ts';
 import { DATE_ONLY_DUE, localDate, localInstant } from '../situations/detectors.ts';
+import { ownWords, saysNumber, saysWanted } from './said.ts';
 import { type Leaf, leaves } from './values.ts';
 
 export { leaves };
@@ -116,37 +116,35 @@ function spokenMoments(said: Said): { at: number; minute: boolean }[] {
   return found;
 }
 
-/** Whether the person's words say this value. Only then is it theirs. */
+/** Whether the person's own words say this value as something they want. Only then is it theirs. */
 function said(leaf: Leaf, words: Said, moments: () => { at: number; minute: boolean }[]): boolean {
   const text = words.words;
   switch (leaf.type) {
     case 'text':
-      return saysVerbatim(text, String(leaf.value));
+      return saysWanted(text, String(leaf.value));
     case 'tag':
-      return saysVerbatim(text, String(leaf.value).replace(/[_-]+/g, ' '));
+      return saysWanted(text, String(leaf.value).replace(/[_-]+/g, ' '));
     case 'number': {
       const n = Number(leaf.value);
       return (
-        saysVerbatim(text, String(n)) ||
+        saysNumber(text, n) ||
         (Number.isInteger(n) &&
           n < NUMBER_WORDS.length &&
-          saysVerbatim(text, NUMBER_WORDS[n] ?? '')) ||
-        (n === 12 && saysVerbatim(text, 'dozen'))
+          saysWanted(text, NUMBER_WORDS[n] ?? '')) ||
+        (n === 12 && saysWanted(text, 'dozen'))
       );
     }
     case 'amount': {
+      // An amount is said only as an amount: "$4,800" is 4800, never 4 or 800.
       const n = Number(leaf.value);
-      const amounts = tier0Values(text, { eventAt: words.eventAt, timeZone: words.timeZone })
-        .filter((value) => value.type === 'amount')
-        .map((value) => Number(value.value));
-      return amounts.includes(n) || saysVerbatim(text, String(n));
+      return tier0Values(text, { eventAt: words.eventAt, timeZone: words.timeZone }).some(
+        (value) => value.type === 'amount' && Number(value.value) === n,
+      );
     }
     case 'currency': {
       const code = String(leaf.value).toUpperCase();
-      return (
-        tier0Values(text, { eventAt: words.eventAt, timeZone: words.timeZone }).some(
-          (value) => value.type === 'amount' && value.currency === code,
-        ) || saysVerbatim(text, code)
+      return tier0Values(text, { eventAt: words.eventAt, timeZone: words.timeZone }).some(
+        (value) => value.type === 'amount' && value.currency === code,
       );
     }
     case 'when': {
@@ -168,14 +166,16 @@ export function markOrigins(
   deadline: string | null | undefined,
   words: Said,
 ): Record<string, ValueOrigin> {
+  // Only the person's own lines: a quote, a forward or pasted headers say nothing for them.
+  const own: Said = { ...words, words: ownWords(words.words) };
   let cached: { at: number; minute: boolean }[] | null = null;
   const moments = () => {
-    cached ??= words.words.trim() ? spokenMoments(words) : [];
+    cached ??= own.words ? spokenMoments(own) : [];
     return cached;
   };
   const origins: Record<string, ValueOrigin> = {};
   for (const leaf of leaves(constraints, deadline))
-    origins[leaf.path] = words.words.trim() && said(leaf, words, moments) ? 'person' : 'inferred';
+    origins[leaf.path] = own.words && said(leaf, own, moments) ? 'person' : 'inferred';
   return origins;
 }
 

@@ -281,6 +281,14 @@ const sameValue = (said: string, value: string) => {
   );
 };
 
+/** Which details of an intent can vouch for a gated field of each kind. */
+const INTENT_PATHS_FOR: Record<string, readonly string[]> = {
+  recipient: ['counterparties', 'party.contacts'],
+  destination: ['counterparties', 'place'],
+  amount: ['budget.max'],
+  resource: ['place', 'deliverable'],
+};
+
 /**
  * Where the gated values of an intent's work came from. A value equal to a
  * detail the person said when they asked for it is theirs: `owner` trust, for
@@ -301,18 +309,26 @@ export async function intentOrigins(
       and i.source = 'chat'
       and (i.run_id = ${jobId}
         or i.run_id = (select parent_run_id from run_state where job_id = ${jobId}))`;
-  const theirs: string[] = [];
+  const theirs: { path: string; value: string }[] = [];
   for (const row of kept) {
     const origins = (row.origins ?? {}) as Record<string, string>;
     const deadline =
       (row.deadline_day as string | null) ??
       (row.deadline_at ? new Date(row.deadline_at as Date).toISOString() : null);
     for (const leaf of leaves((row.constraints ?? {}) as never, deadline))
-      if (origins[leaf.path] === 'person') theirs.push(String(leaf.value));
+      if (origins[leaf.path] === 'person')
+        theirs.push({ path: leaf.path, value: String(leaf.value) });
   }
   if (!theirs.length) return [];
+  // A detail vouches only for a field of its own kind: a party size is never an amount.
+  const fits = (category: string, path: string) =>
+    (INTENT_PATHS_FOR[category] ?? []).some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}[`) || path.startsWith(`${prefix}.`),
+    );
   return input.fields
-    .filter((field) => theirs.some((value) => sameValue(value, field.value)))
+    .filter((field) =>
+      theirs.some((said) => fits(field.category, said.path) && sameValue(said.value, field.value)),
+    )
     .map((field) =>
       originResolution.parse({
         ...field,

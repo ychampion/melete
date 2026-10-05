@@ -847,12 +847,24 @@ export class SituationService {
    * Let go of the live deadline clocks on a subject: what they guarded is no
    * longer wanted. Situations they raised are resolved.
    */
-  async clearSubject(tx: Transaction, spaceId: string, subjectKey: string, note: string) {
+  async clearSubject(
+    tx: Transaction,
+    spaceId: string,
+    subjectKey: string,
+    note: string,
+    /** Only clocks of this rule, and situations of this kind; left out, all of them. */
+    rule?: string,
+  ) {
+    const only = (column: string) => (rule ? sql`and ${sql.raw(column)} = ${rule}` : sql``);
     await tx.execute(sql`update clock set state = 'cleared', note = ${note}, claimed_until = null,
         updated_at = ${new Date(this.now()).toISOString()}::timestamptz
       where space_id = ${spaceId} and subject_key = ${subjectKey}
-        and state in ('armed', 'checking')`);
-    await this.settle(tx, sql`space_id = ${spaceId} and subject_key = ${subjectKey}`, 'resolved');
+        and state in ('armed', 'checking') ${only('rule')}`);
+    await this.settle(
+      tx,
+      sql`space_id = ${spaceId} and subject_key = ${subjectKey} ${only('kind')}`,
+      'resolved',
+    );
   }
 
   /**

@@ -38,15 +38,19 @@ import {
 } from '@melete/contracts';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { REVERSALS, reverseInOrder } from '../broker/reversals.ts';
 import type { Database } from '../db/client.ts';
-import { job } from '../db/schema.ts';
+import { action, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { JobService } from '../jobs/service.ts';
+import { OUTDATED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
+import { principalContext } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import type { SituationService } from '../situations/service.ts';
+import { intentStateNow } from '../situations/service.ts';
 import { dueOf, GUESS, intentLeadSeconds, markOrigins, readBack } from './origins.ts';
 import { intent, intentEffect } from './schema.ts';
 
@@ -69,8 +73,9 @@ export type IntentDeps = {
   situations?: SituationService;
   /**
    * Takes back an intent's changes, given oldest first, newest first, each
-   * step tried even after one fails. Without it, cancelling stops the work
-   * and lists what it changed as kept.
+   * step tried even after one fails, with each reason in words for the
+   * person (`undoThrough` builds one on Undo). Without it, cancelling stops
+   * the work and lists what it changed as kept.
    */
   reverse?: (effects: readonly IntentEffectRow[], intent: IntentRow) => Promise<ReversalStep[]>;
   now?: () => number;
@@ -211,7 +216,7 @@ export class IntentService {
       const shown = readBack({ title: input.title, constraints, deadline, origins }, zone);
       const doneWhen = input.done_when ?? `${input.title.replace(/[.\s]+$/, '')} is done.`;
       const deadlineOrigin = deadline ? (origins.deadline_at ?? 'inferred') : null;
-      const run = await this.deps.runs.create(
+      const run = await this.startWork(
         tx,
         chat.spaceId,
         {
@@ -277,6 +282,29 @@ export class IntentService {
   }
 
   /**
+   * The run that carries an intent out. Long work in one space is capped; past
+   * the cap the person is told plainly, in the words the model relays.
+   */
+  private async startWork(
+    tx: Transaction,
+    spaceId: string,
+    input: Parameters<RunService['create']>[2],
+    origin: Parameters<RunService['create']>[3],
+  ) {
+    try {
+      return await this.deps.runs.create(tx, spaceId, input, origin);
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === 'too_many_runs')
+        throw new ServiceError(
+          'too_many_intents',
+          'Melete is already working on as many things in the background here as it can at once. Tell the person this one is not kept yet, and that they can cancel something under What I’m on at Home, then ask again.',
+          409,
+        );
+      throw error;
+    }
+  }
+
+  /**
    * The clock for an intent's deadline: looked at T − lead, raising one
    * situation if it is still open then. A deadline is the person's only when
    * they said it; a day alone is never urgent.
@@ -327,8 +355,10 @@ export class IntentService {
       );
       if (!item || !['found', 'handling', 'waiting'].includes(item.status)) return;
       const zone = await this.timeZone(tx, input.spaceId);
-      const day = item.due_at && item.due_date_only ? item.due_at.toISOString().slice(0, 10) : null;
-      const deadline = item.due_at ? (day ?? item.due_at.toISOString()) : null;
+      // A raw row's timestamp may arrive as text.
+      const dueAt = item.due_at ? new Date(item.due_at) : null;
+      const day = dueAt && item.due_date_only ? dueAt.toISOString().slice(0, 10) : null;
+      const deadline = dueAt ? (day ?? dueAt.toISOString()) : null;
       await this.adopt(tx, {
         ...input,
         source: 'commitment',
@@ -391,7 +421,8 @@ export class IntentService {
     const origins: Record<string, ValueOrigin> = input.deadlineAt
       ? { deadline_at: 'inferred' }
       : {};
-    // Taken up again after it was let go: it is open again, with the work it has now.
+    // Taken up again after it was let go: it is open again, with the work it
+    // has now. A deadline the person set on it stays theirs.
     await tx.execute(sql`insert into intent (id, space_id, principal_id, source, source_key,
         run_id, words, title, kind, constraints, origins, success, state, deadline_at,
         deadline_day, deadline_origin, subject_key, created_at, updated_at)
@@ -410,7 +441,14 @@ export class IntentService {
           then intent.closed_reason else null end,
         closed_at = case when intent.state in ('active', 'waiting', 'at_risk')
           then intent.closed_at else null end,
-        deadline_at = excluded.deadline_at, deadline_day = excluded.deadline_day,
+        deadline_at = case when intent.deadline_origin = 'person' then intent.deadline_at
+          else excluded.deadline_at end,
+        deadline_day = case when intent.deadline_origin = 'person' then intent.deadline_day
+          else excluded.deadline_day end,
+        origins = case when intent.deadline_origin = 'person' then intent.origins
+          else excluded.origins end,
+        deadline_origin = case when intent.deadline_origin = 'person' then 'person'
+          else excluded.deadline_origin end,
         updated_at = excluded.updated_at`);
   }
 
@@ -418,9 +456,12 @@ export class IntentService {
   // what the person reads and does
   // ------------------------------------------------------------------------
 
-  /** The person's open intents, and those that ended in the last day, deadline first. */
+  /**
+   * The person's open intents, and those that ended in the last day, deadline
+   * first. Reading writes nothing: where each one stands is worked out from its
+   * work and its source as they are now, and the sweep catches the rows up.
+   */
   async list(principalId: string): Promise<IntentView[]> {
-    await this.settle();
     const since = new Date(this.now() - CLOSED_SHOWN_MS);
     const found = rows<{ id: string }>(
       await this.db.execute(sql`select i.id from intent i
@@ -439,7 +480,55 @@ export class IntentService {
     return this.views(ids.flatMap((id) => byId.get(id) ?? []));
   }
 
+  /** Where each intent stands now, from its row, its work and what it was taken up from. */
+  private async standings(
+    tx: Transaction | Database,
+    list: IntentRow[],
+  ): Promise<
+    Map<string, { state: IntentRow['state']; reason: string | null; runState: string | null }>
+  > {
+    const runIds = list.flatMap((row) => (row.runId ? [row.runId] : []));
+    const runStates = new Map(
+      runIds.length
+        ? rows<{ id: string; state: string }>(
+            await tx.execute(sql`select id, state from job where id in ${sqlList(runIds)}`),
+          ).map((entry) => [entry.id, entry.state])
+        : [],
+    );
+    const sourceIds = (prefix: string) =>
+      list.flatMap((row) =>
+        row.sourceKey.startsWith(prefix) ? [row.sourceKey.slice(prefix.length)] : [],
+      );
+    const statuses = new Map<string, string>();
+    for (const [table, prefix] of [
+      ['ledger_item', 'ledger:'],
+      ['awaited_reply', 'awaited:'],
+    ] as const) {
+      const wanted = sourceIds(prefix);
+      if (!wanted.length) continue;
+      for (const entry of rows<{ id: string; status: string }>(
+        await tx.execute(
+          sql`select id, status from ${sql.raw(table)} where id in ${sqlList(wanted)}`,
+        ),
+      ))
+        statuses.set(`${prefix}${entry.id}`, entry.status);
+    }
+    const out = new Map<
+      string,
+      { state: IntentRow['state']; reason: string | null; runState: string | null }
+    >();
+    for (const row of list) {
+      const runState = row.runId ? (runStates.get(row.runId) ?? null) : null;
+      out.set(row.id, {
+        ...standingOf(row, runState, statuses.get(row.sourceKey) ?? null),
+        runState,
+      });
+    }
+    return out;
+  }
+
   private async views(list: IntentRow[]): Promise<IntentView[]> {
+    const standing = await this.standings(this.db, list);
     const runIds = list.flatMap((row) => (row.runId ? [row.runId] : []));
     const runRows = runIds.length
       ? await this.db.select().from(job).where(inArray(job.id, runIds))
@@ -450,7 +539,6 @@ export class IntentService {
         view,
       ]),
     );
-    const runStates = new Map(runRows.map((row) => [row.id, row.state]));
     const zones = new Map<string, string>();
     const out: IntentView[] = [];
     for (const row of list) {
@@ -464,7 +552,11 @@ export class IntentService {
       const deadline = row.deadlineDay ?? iso(row.deadlineAt);
       const shown = readBack({ title: row.title, constraints, deadline, origins }, zone);
       const run = row.runId ? runViews.get(row.runId) : undefined;
-      const runState = row.runId ? (runStates.get(row.runId) ?? null) : null;
+      const now = standing.get(row.id) ?? {
+        state: row.state,
+        reason: row.closedReason,
+        runState: null,
+      };
       out.push(
         intentView.parse({
           id: row.id,
@@ -475,14 +567,14 @@ export class IntentService {
           read_back: shown,
           constraints,
           origins,
-          state: row.state,
-          next_step: isOpenIntent(row.state)
+          state: now.state,
+          next_step: isOpenIntent(now.state)
             ? nextStep(
-                row,
+                { ...row, state: now.state },
                 run?.question ?? null,
                 run?.next ?? null,
                 run?.status_line ?? null,
-                runState,
+                now.runState,
               )
             : null,
           deadline_at: iso(row.deadlineAt),
@@ -490,7 +582,7 @@ export class IntentService {
           conversation_id: row.conversationId,
           run_id: row.runId,
           version: row.version,
-          closed_reason: row.closedReason,
+          closed_reason: now.reason,
           created_at: row.createdAt.toISOString(),
           updated_at: row.updatedAt.toISOString(),
         }),
@@ -505,32 +597,54 @@ export class IntentService {
     return view;
   }
 
-  private async own(tx: Transaction, principalId: string, id: string): Promise<IntentRow> {
+  /** The caller's own intent, locked, with where it stands now. */
+  private async own(
+    tx: Transaction,
+    principalId: string,
+    id: string,
+  ): Promise<{ row: IntentRow; state: IntentRow['state'] }> {
     const [row] = await tx
       .select()
       .from(intent)
       .where(and(eq(intent.id, id), eq(intent.principalId, principalId)))
       .for('update');
     if (!row) throw missing();
-    return row;
+    const now = (await this.standings(tx, [row])).get(row.id);
+    return { row, state: now?.state ?? row.state };
+  }
+
+  /** The jobs an intent's work runs in: its run and the run's helpers. */
+  private async workOf(tx: Transaction, runId: string): Promise<string[]> {
+    const steps = rows<{ job_id: string }>(
+      await tx.execute(sql`select job_id from run_state where parent_run_id = ${runId}`),
+    );
+    return [runId, ...steps.map((step) => step.job_id)];
   }
 
   /**
    * The person corrects the read-back. What they type becomes theirs; what
    * they leave stays as it was, guesses included. A new version, a deadline
-   * clock kept to the new time, and the work told what changed.
+   * kept to the new time, approvals still waiting on the old details
+   * withdrawn, and the work told what changed. A commitment's deadline is the
+   * commitment's own: changing it moves the commitment's due date and its clock.
    */
   async edit(principalId: string, id: string, raw: unknown): Promise<IntentView> {
-    await this.settle();
     const input = intentEdit.parse(raw);
     const made = await this.deps.jobs.transaction(async (tx) => {
-      const row = await this.own(tx, principalId, id);
-      if (!isOpenIntent(row.state))
+      const { row, state } = await this.own(tx, principalId, id);
+      if (!isOpenIntent(state))
         throw new ServiceError('intent_closed', 'This has already ended.', 409);
       if (row.version !== input.version)
         throw new ServiceError(
           'revision_mismatch',
           'This changed since you opened it. Look again and make the change.',
+          409,
+        );
+      const movesDeadline = Object.hasOwn(input.values, 'deadline_at');
+      if (movesDeadline && row.source === 'chase')
+        throw new ServiceError(
+          'intent_follows_source',
+          'This follows the reply itself, so it has no deadline of its own to change.',
           409,
         );
       const zone = await this.timeZone(tx, row.spaceId);
@@ -587,14 +701,31 @@ export class IntentService {
           deadlineDay: deadline && /^\d{4}-\d{2}-\d{2}$/.test(deadline) ? deadline : null,
           deadlineOrigin: deadline ? (origins.deadline_at ?? 'inferred') : null,
           version: row.version + 1,
-          state: row.state === 'at_risk' && changed.includes('deadline_at') ? 'active' : row.state,
+          state: row.state === 'at_risk' && movesDeadline ? 'active' : row.state,
           updatedAt: new Date(this.now()),
         })
         .where(eq(intent.id, row.id))
         .returning();
       if (!updated) throw new Error('intent update lost');
       let clock = null;
-      if (changed.includes('deadline_at')) {
+      let commitment: string | null = null;
+      if (movesDeadline && row.source === 'commitment') {
+        // The commitment's own due date moves, and its own clock with it.
+        commitment = row.sourceKey.slice('ledger:'.length);
+        await tx.execute(sql`update ledger_item set
+            due_at = ${due === null ? null : new Date(due).toISOString()}::timestamptz,
+            due_date_only = ${Boolean(updated.deadlineDay)}
+          where id = ${commitment} and space_id = ${row.spaceId}
+            and principal_id = ${row.principalId}`);
+        if (due === null)
+          await this.deps.situations?.clearSubject(
+            tx,
+            row.spaceId,
+            row.sourceKey,
+            'The person took the deadline away.',
+            SITUATION_KINDS.deadlineAtRisk,
+          );
+      } else if (movesDeadline) {
         if (updated.deadlineAt) clock = await this.keepClock(tx, updated);
         else
           await this.deps.situations?.clearSubject(
@@ -602,10 +733,18 @@ export class IntentService {
             updated.spaceId,
             updated.subjectKey,
             'The person took the deadline away.',
+            SITUATION_KINDS.deadlineAtRisk,
           );
       }
-      // The work reads what changed at its next shift.
       if (updated.runId) {
+        // An approval still waiting was asked about the old details: it goes,
+        // and the work asks again with the new ones if it still needs to.
+        await withdrawPermissions(
+          tx,
+          inArray(action.jobId, await this.workOf(tx, updated.runId)),
+          OUTDATED_NOTE,
+        );
+        // The work reads what changed at its next shift.
         const shown = readBack(
           { title: updated.title, constraints: parsed.data, deadline, origins },
           zone,
@@ -626,25 +765,34 @@ export class IntentService {
           dedupKey: `intent:${updated.id}:v${updated.version}`,
         });
       }
-      return { row: updated, clock };
+      return { row: updated, clock, commitment, due };
     });
     if (made.clock) this.deps.situations?.wake(made.clock);
+    // A commitment kept to its new date by the commitment's own rules: the person set it.
+    if (made.commitment && made.due !== null)
+      await this.deps.situations?.acceptCommitment({
+        spaceId: made.row.spaceId,
+        principalId: made.row.principalId,
+        itemId: made.commitment,
+        byPerson: true,
+      });
     return this.view(made.row);
   }
 
   /**
    * The person cancels: the work stops, the deadline is let go, and what the
-   * work changed is taken back newest first where it can be. Cancelling again
-   * answers with how it ended.
+   * work changed is taken back newest first where it can be. Something taken
+   * up from Companies or Waiting on is handed back there, as Stop does, and its
+   * own deadline clock is let go. Cancelling again answers with how it ended,
+   * and takes back anything still left from a cancel that stopped partway.
    */
   async cancel(
     principalId: string,
     id: string,
   ): Promise<{ intent: IntentView; effects: CancelledEffect[] }> {
-    await this.settle();
     const closed = await this.deps.jobs.transaction(async (tx) => {
-      const row = await this.own(tx, principalId, id);
-      if (!isOpenIntent(row.state)) return { row, fresh: false };
+      const { row, state } = await this.own(tx, principalId, id);
+      if (!isOpenIntent(state)) return { row, fresh: false };
       const at = new Date(this.now());
       const [updated] = await tx
         .update(intent)
@@ -656,9 +804,21 @@ export class IntentService {
         })
         .where(eq(intent.id, row.id))
         .returning();
-      // Its own clock goes with it; one it shares with what it was taken up from stays.
-      if (row.subjectKey === `intent:${row.id}`)
-        await this.deps.situations?.clearSubject(tx, row.spaceId, row.subjectKey, 'Cancelled.');
+      await this.deps.situations?.clearSubject(
+        tx,
+        row.spaceId,
+        row.subjectKey,
+        'Cancelled.',
+        SITUATION_KINDS.deadlineAtRisk,
+      );
+      if (row.source === 'commitment')
+        await tx.execute(sql`update ledger_item set status = 'found', job_id = null
+          where id = ${row.sourceKey.slice('ledger:'.length)} and space_id = ${row.spaceId}
+            and status in ('handling', 'waiting')`);
+      if (row.source === 'chase')
+        await tx.execute(sql`update awaited_reply set status = 'found', job_id = null
+          where id = ${row.sourceKey.slice('awaited:'.length)} and space_id = ${row.spaceId}
+            and status in ('handling', 'waiting')`);
       return { row: updated ?? row, fresh: true };
     });
     if (closed.fresh && closed.row.runId) {
@@ -669,35 +829,55 @@ export class IntentService {
           .cancel(work.id, 'The person cancelled what this was for.')
           .catch(() => undefined);
     }
-    const effects = closed.fresh ? await this.takeBack(closed.row) : [];
-    return { intent: await this.view(closed.row), effects };
+    const effects =
+      closed.fresh || closed.row.state === 'cancelled' ? await this.takeBack(closed.row) : [];
+    const [now] = await this.db.select().from(intent).where(eq(intent.id, closed.row.id));
+    return { intent: await this.view(now ?? closed.row), effects };
   }
 
-  /** What the work changed, taken back newest first through `reverse`, or listed as kept. */
-  private async takeBack(row: IntentRow): Promise<CancelledEffect[]> {
-    await this.recordEffects(row);
-    const effects = await this.db
-      .select()
-      .from(intentEffect)
-      .where(and(eq(intentEffect.intentId, row.id), eq(intentEffect.state, 'done')))
-      .orderBy(intentEffect.doneAt, intentEffect.actionId);
-    if (!effects.length) return [];
+  /**
+   * What the work changed, taken back newest first through `reverse`, or
+   * listed as kept. A step left undone by a failure on the way is tried again
+   * by the next cancel or by the sweep, and the intent says so meanwhile.
+   */
+  async takeBack(row: IntentRow): Promise<CancelledEffect[]> {
+    let steps: ReversalStep[];
+    let effects: IntentEffectRow[];
+    try {
+      await this.recordEffects(row);
+      effects = await this.db
+        .select()
+        .from(intentEffect)
+        .where(and(eq(intentEffect.intentId, row.id), eq(intentEffect.state, 'done')))
+        .orderBy(intentEffect.doneAt, intentEffect.actionId);
+      if (!effects.length) return [];
+      steps = this.deps.reverse
+        ? await this.deps.reverse(effects, row)
+        : [...effects].reverse().map((effect) => ({ effect, ok: false }));
+    } catch {
+      await this.db
+        .update(intent)
+        .set({
+          closedReason: STILL_TAKING_BACK,
+          updatedAt: new Date(this.now()),
+        })
+        .where(eq(intent.id, row.id));
+      return [];
+    }
     const kinds = new Map(
       rows<{ id: string; kind: string }>(
         await this.db.execute(sql`select id, kind from action
           where id in ${sqlList(effects.map((effect) => effect.actionId))}`),
       ).map((entry) => [entry.id, entry.kind]),
     );
-    const steps: ReversalStep[] = this.deps.reverse
-      ? await this.deps.reverse(effects, row)
-      : [...effects].reverse().map((effect) => ({ effect, ok: false, reason: 'kept' }));
     const out: CancelledEffect[] = [];
     for (const step of steps) {
       const kept = !this.deps.reverse;
       const state = step.ok ? 'reversed' : kept ? 'kept' : 'failed';
+      const reason = state === 'failed' ? plainReason(step.reason) : null;
       await this.db
         .update(intentEffect)
-        .set({ state, note: step.ok ? null : kept ? null : (step.reason ?? null) })
+        .set({ state, note: reason })
         .where(
           and(
             eq(intentEffect.intentId, step.effect.intentId),
@@ -708,22 +888,40 @@ export class IntentService {
         action_id: step.effect.actionId,
         title: effectTitle(kinds.get(step.effect.actionId) ?? 'change'),
         outcome: state,
-        reason: state === 'failed' ? (step.reason ?? 'It could not be taken back.') : null,
+        reason,
       });
     }
+    // What stays as it is, said where the person looks for this intent.
+    const staying = out.filter((step) => step.outcome !== 'reversed');
+    await this.db
+      .update(intent)
+      .set({
+        closedReason: staying.length
+          ? `You cancelled it. Still in place: ${staying.map((step) => step.title.toLowerCase()).join(', ')}.`
+          : 'You cancelled it.',
+        updatedAt: new Date(this.now()),
+      })
+      .where(eq(intent.id, row.id));
     return out;
   }
 
-  /** What the intent's work changed outside Melete so far, in the order it happened. */
+  /**
+   * What the intent's work changed so far, in the order it happened: what
+   * reached outside Melete, and what declares a way to take it back. Work in
+   * the agent's own computer is not listed.
+   */
   async recordEffects(row: Pick<IntentRow, 'id' | 'runId' | 'spaceId'>) {
     if (!row.runId) return;
+    const undoable = Object.entries(REVERSALS)
+      .filter(([, declared]) => declared.mode === 'reversal' || declared.mode === 'compensation')
+      .map(([kind]) => kind);
     await this.db.execute(sql`insert into intent_effect (intent_id, action_id, role, state, done_at)
       select ${row.id}, a.id, 'primary', 'done', coalesce(a.resolved_at, a.dispatched_at, now())
       from action a join job j on j.id = a.job_id
       left join run_state r on r.job_id = j.id
       where (j.id = ${row.runId} or r.parent_run_id = ${row.runId})
-        and j.space_id = ${row.spaceId}
-        and a.status = 'succeeded' and a.effect_class <> 'read'
+        and j.space_id = ${row.spaceId} and a.status = 'succeeded'
+        and (a.effect_class in ('write_external', 'spend') or a.kind in ${sqlList(undoable)})
       on conflict (intent_id, action_id) do nothing`);
   }
 
@@ -733,7 +931,8 @@ export class IntentService {
 
   /**
    * Bring intents in line with their work and their sources: work that ended
-   * ends its intent; a commitment or a chase settled or dropped ends its.
+   * ends its intent; work that was removed fails it; a commitment or a chase
+   * settled or dropped ends its. Runs on the sweep, never on a read.
    */
   async settle(): Promise<void> {
     const at = new Date(this.now()).toISOString();
@@ -747,6 +946,9 @@ export class IntentService {
       where j.id = i.run_id and i.source = 'chat'
         and i.state in ('active', 'waiting', 'at_risk')
         and j.state in ('completed', 'failed', 'cancelled')`);
+    await this.db.execute(sql`update intent set state = 'failed',
+        closed_reason = ${REMOVED}, closed_at = ${at}::timestamptz, updated_at = ${at}::timestamptz
+      where source = 'chat' and run_id is null and state in ('active', 'waiting', 'at_risk')`);
     for (const [table, prefix] of [
       ['ledger_item', 'ledger:'],
       ['awaited_reply', 'awaited:'],
@@ -766,6 +968,28 @@ export class IntentService {
           and (s.status in ('settled', 'dropped')
             or (s.status = 'waiting') <> (i.state = 'waiting')
             or s.job_id is distinct from i.run_id)`);
+  }
+
+  /**
+   * Cancels that stopped partway: what is still to be taken back is tried
+   * again, as the person who cancelled, for a day after they did.
+   */
+  async retryCancels(): Promise<number> {
+    const since = new Date(this.now() - CLOSED_SHOWN_MS).toISOString();
+    const left = await this.db
+      .select()
+      .from(intent)
+      .where(
+        and(
+          eq(intent.state, 'cancelled'),
+          sql`${intent.closedAt} > ${since}::timestamptz`,
+          sql`(${intent.closedReason} = ${STILL_TAKING_BACK} or exists (select 1 from intent_effect e
+            where e.intent_id = ${intent.id} and e.state = 'done'))`,
+        ),
+      )
+      .limit(20);
+    for (const row of left) await principalContext.run(row.principalId, () => this.takeBack(row));
+    return left.length;
   }
 
   /**
@@ -831,9 +1055,10 @@ export class IntentService {
     return ended.length;
   }
 
-  /** One pass, run with the clock sweep. */
+  /** One pass, run with the clock sweep: catch rows up, expire what is due, finish cancels. */
   async sweep(): Promise<void> {
     await this.expire();
+    await this.retryCancels();
   }
 }
 
@@ -860,6 +1085,73 @@ function nextStep(
   if (row.state === 'at_risk') return 'Running out of time';
   if (!runState) return 'Getting started';
   return next ?? statusLine ?? 'Working on it';
+}
+
+/** Said where a cancel stopped partway, until what it changed has been taken back. */
+const STILL_TAKING_BACK = 'You cancelled it. Melete is still taking back what it changed.';
+const REMOVED = 'Its work was removed, so nothing more is being done on it.';
+
+/** Why a step could not be taken back, in the words `reverse` gave, or plainly. */
+function plainReason(reason: string | undefined): string {
+  return reason?.trim() ? reason.trim().slice(0, 300) : 'It could not be taken back just now.';
+}
+
+/**
+ * The `reverse` an IntentService takes, built on the person's own Undo: each
+ * change taken back newest first, every step tried, and a step that cannot be
+ * done explained in Undo's own words. Anything that goes wrong inside says only
+ * that it could not be taken back.
+ */
+export function undoThrough(
+  undo: (
+    spaceId: string,
+    actionId: string,
+  ) => Promise<{ status: 'not_available'; reason: string } | object>,
+): NonNullable<IntentDeps['reverse']> {
+  return (effects, kept) =>
+    reverseInOrder(effects, async (effect) => {
+      try {
+        const done = await undo(kept.spaceId, effect.actionId);
+        // Undo's own reasons are written for the person.
+        if ('status' in done && done.status === 'not_available')
+          return { ok: false, reason: done.reason };
+        return { ok: true };
+      } catch {
+        return { ok: false, reason: 'It could not be taken back just now.' };
+      }
+    });
+}
+
+/**
+ * Where an intent stands now: its row, unless its work ended or was removed,
+ * or what it was taken up from was settled, handed back or dropped.
+ */
+export function standingOf(
+  row: Pick<IntentRow, 'state' | 'source' | 'runId' | 'closedReason'>,
+  runState: string | null,
+  sourceStatus: string | null,
+): { state: IntentRow['state']; reason: string | null } {
+  const open = isOpenIntent(row.state);
+  if (!open) return { state: row.state, reason: row.closedReason };
+  if (row.source === 'chat') {
+    if (!row.runId) return { state: 'failed', reason: REMOVED };
+    const state = intentStateNow({ state: row.state, run_state: runState });
+    if (state === row.state) return { state, reason: null };
+    return {
+      state: state as IntentRow['state'],
+      reason:
+        state === 'done'
+          ? 'Done.'
+          : state === 'failed'
+            ? 'The work on it failed.'
+            : 'Its work was stopped.',
+    };
+  }
+  if (sourceStatus === 'settled') return { state: 'done', reason: 'Settled.' };
+  if (sourceStatus === 'dropped') return { state: 'cancelled', reason: 'It was let go.' };
+  if (sourceStatus === 'waiting' && row.state === 'active')
+    return { state: 'waiting', reason: null };
+  return { state: row.state, reason: null };
 }
 
 function effectTitle(kind: string): string {
