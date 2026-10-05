@@ -9,7 +9,7 @@ import {
   type NotAvailable,
   unavailable,
 } from '@melete/contracts';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { actionReviewView } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
@@ -67,6 +67,14 @@ export const actionProjectionRow = (value: Action): ActionRow => ({
  * capability. Every lookup is fenced twice: by the session's space and by the
  * signed-in principal, because an action belongs to a job and a job is private.
  */
+/**
+ * The space's policy generation as it is now, for a command's attempt: the
+ * broker refuses an attempt from before the space's last policy change, and a
+ * command the person starts now is not from before it.
+ */
+const currentPolicy = (tx: Sql | TransactionSql, spaceId: string) =>
+  tx`(select policy_generation from space where id = ${spaceId})`;
+
 export class ExperienceEffects {
   constructor(
     readonly sql: Sql,
@@ -110,8 +118,9 @@ export class ExperienceEffects {
       const id = recordId('job');
       await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch, experience_command_key, constraints, budget)
         values (${id}, ${spaceId}, ${principalId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(budget)}::jsonb)`;
-      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at)
-        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes')`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at, policy_generation)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes',
+          ${currentPolicy(tx, spaceId)})`;
       return id;
     });
     try {
@@ -211,8 +220,9 @@ export class ExperienceEffects {
         ${verb === 'send' ? 'Send the reviewed draft' : 'Undo the selected change'}, 'command', 'running', 1,
         ${turn?.agent_id ?? parent.agent_id}, ${parent.id}, ${key}, ${JSON.stringify(parent.constraints)}::jsonb,
         ${JSON.stringify(parent.budget)}::jsonb)`;
-      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
-        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, policy_generation)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command',
+          ${currentPolicy(tx, spaceId)})`;
       return id;
     });
   }
@@ -476,8 +486,9 @@ export class ExperienceEffects {
           experience_command_key, constraints, budget)
         values (${job}, ${spaceId}, ${principalId}, 'Undo the selected change', 'Undo the selected change',
           'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
-      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
-        values (${recordId('att')}, ${job}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, policy_generation)
+        values (${recordId('att')}, ${job}, 1, 'experience-v1', 'owner', 'explicit-command',
+          ${currentPolicy(tx, spaceId)})`;
       return job;
     });
     const [existing] = await this
@@ -680,8 +691,9 @@ export class ExperienceEffects {
         experience_command_key, constraints, budget)
         values (${id}, ${input.spaceId}, ${input.principalId}, ${title}, ${title}, 'command', 'running', 1,
         ${`${stem}${recordId('req')}`}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
-      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
-        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'assistant-command')`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, policy_generation)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'assistant-command',
+          ${currentPolicy(tx, input.spaceId)})`;
       return id;
     });
     if (typeof started !== 'string') return started;

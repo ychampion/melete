@@ -235,6 +235,22 @@ export function reviewTier(input: {
     );
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
+  // Deleting what Melete made in this conversation moves it to the trash,
+  // where Undo puts it back: work in its own workspace, under the same switch.
+  // The files connector binds `checked.owner` before anyone is asked and checks
+  // it again before anything moves, so the agent cannot claim it.
+  if (
+    tool.name === 'files.delete' &&
+    provider === 'files' &&
+    (payload.checked as { owner?: unknown } | undefined)?.owner === 'agent' &&
+    doubts.length === 0
+  )
+    return {
+      tier: 'sandbox',
+      actionClass: 'sandbox',
+      reason:
+        'Melete made it in this conversation, and it goes to the trash, where Undo puts it back.',
+    };
   if (DESTRUCTIVE.test(words(tool.name)) && !ownRemoval)
     return person('It deletes or removes something.');
   if (doubts.length > 0)

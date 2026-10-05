@@ -393,7 +393,9 @@ function deleteFacts(payload: Record<string, unknown>) {
           },
         ]
       : []),
-    ...(typeof checked.reason === 'string'
+    // Only the person's own files are asked about for being theirs; Melete's
+    // own work asks only when the person's settings say so.
+    ...(typeof checked.reason === 'string' && checked.owner !== 'agent'
       ? [{ label: 'Why you are asked', value: plainText(checked.reason, 'It is yours.') }]
       : []),
     ...(typeof checked.warning === 'string'

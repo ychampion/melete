@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Belief, claimHandleOf } from '@melete/contracts';
+import { type Belief, claimHandleOf, memoryDigestResponse } from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { ExperienceMemory } from '../../src/experience/memory.ts';
@@ -498,6 +498,18 @@ withDb('the weekly digest', () => {
       version: null,
     });
     expect(latest.next_at).toBe(zonedInstant('2026-10-04', '08:00', zone).toISOString());
+    // A belief forgotten after the digest was written leaves it, and the digest
+    // still answers in its contract shape (forgetting erases the item's values).
+    await forgetMemory(db.sql, scope, { claim_id: coffee }, await journalFor('digest-forget'));
+    const [stored] =
+      await db.sql`select items from memory_digests where space_id = ${scope.spaceId}`;
+    expect(
+      ((stored?.items ?? []) as { belief_id: string; value: string | null }[]).find(
+        (item) => item.belief_id === coffee,
+      )?.value,
+    ).toBeNull();
+    const after = memoryDigestResponse.parse(await latestDigest(db.sql, scope, at));
+    expect(after.digest?.items.map((item) => item.label)).toEqual(['Gym: days']);
   });
 });
 
