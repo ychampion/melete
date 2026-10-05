@@ -188,7 +188,11 @@ export class OutlookMailTransport implements MailTransport {
             : '',
       },
     ].filter((header) => header.value);
-    return headerMessage(id, headerBlock(written));
+    const message = await headerMessage(id, headerBlock(written));
+    // No internet headers at all: mail that never left the organisation's own
+    // Exchange, whose sender Exchange itself records. Headers that are there
+    // but leave out From vouch for nobody.
+    return given.length === 0 ? { ...message, sender_verified: true } : message;
   }
 
   /**

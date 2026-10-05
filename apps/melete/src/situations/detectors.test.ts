@@ -13,6 +13,7 @@ import {
   localInstant,
   meetingChange,
   meetingConflicts,
+  replyVerdict,
   situationKey,
   urgencyFor,
   withinDay,
@@ -275,7 +276,7 @@ describe('reply rule', () => {
 
   test('a threaded reply, the person asked, or a colleague on the same subject answers', () => {
     expect(answers(awaited, mail({ in_reply_to: '<q1@me.test>' }))).toBe(true);
-    expect(answers(awaited, mail({ sender: 'ANA@acme.test' }))).toBe(true);
+    expect(answers(awaited, mail({ sender: 'ANA@acme.test', sender_auth: 'pass' }))).toBe(true);
     expect(
       answers(
         awaited,
@@ -283,13 +284,57 @@ describe('reply rule', () => {
           sender: 'bo@acme.test',
           sender_domain: 'acme.test',
           subject: 'Re: Quote for October',
+          sender_auth: 'pass',
         }),
       ),
     ).toBe(true);
   });
 
+  test('a forged From address, unauthenticated or failing DMARC, leaves the wait open', () => {
+    for (const sender_auth of ['none', 'fail', undefined])
+      expect(replyVerdict(awaited, mail({ sender: 'ana@acme.test', sender_auth }))).toBe(
+        'unverified',
+      );
+    expect(
+      replyVerdict(
+        awaited,
+        mail({
+          sender: 'bo@acme.test',
+          sender_domain: 'acme.test',
+          subject: 'Re: Quote for October',
+          sender_auth: 'fail',
+        }),
+      ),
+    ).toBe('unverified');
+  });
+
+  test("a reply naming the person's own Message-ID answers without authentication, unless it went to spam", () => {
+    expect(
+      answers(
+        awaited,
+        mail({ references: ['<older@me.test>', '<q1@me.test>'], sender_auth: 'none' }),
+      ),
+    ).toBe(true);
+    expect(answers(awaited, mail({ in_reply_to: '<q1@me.test>', sender_auth: 'fail' }))).toBe(true);
+    expect(
+      replyVerdict(
+        awaited,
+        mail({
+          sender: 'ana@acme.test',
+          in_reply_to: '<q1@me.test>',
+          sender_auth: 'none',
+          in_inbox: false,
+        }),
+      ),
+    ).toBe('unverified');
+    // Another of the person's messages in the thread is not this one.
+    expect(answers(awaited, mail({ references: ['<other@me.test>'] }))).toBe(false);
+  });
+
   test('an automatic reply, an older message, a stranger, or a colleague on another subject does not', () => {
-    expect(answers(awaited, mail({ sender: 'ana@acme.test', automated: true }))).toBe(false);
+    expect(
+      answers(awaited, mail({ sender: 'ana@acme.test', automated: true, sender_auth: 'pass' })),
+    ).toBe(false);
     expect(
       answers(awaited, mail({ sender: 'ana@acme.test', received_at: '2026-09-30T09:00:00.000Z' })),
     ).toBe(false);

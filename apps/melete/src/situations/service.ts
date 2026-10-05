@@ -74,7 +74,6 @@ import { documentSubjectKey } from '../signals/observations.ts';
 import type { DocumentFile, Occurrence, SignalSource, SubjectReader } from '../signals/types.ts';
 import {
   type Awaited,
-  answers,
   changedSince,
   conflictReason,
   DATE_ONLY_DUE,
@@ -89,6 +88,7 @@ import {
   louder,
   meetingChange,
   meetingConflicts,
+  replyVerdict,
   situationKey,
   urgencyFor,
   withinDay,
@@ -111,6 +111,8 @@ export const LATE_MS = 15 * MINUTE;
 export const MAX_REPLY_TRIES = 30;
 /** How long after a wait was found its mailbox must have been watched for silence to count. */
 export const REPLY_COVER_MS = 10 * MINUTE;
+/** Said of a wait when mail looked like its answer but its sender could not be verified. */
+export const UNVERIFIED_REPLY = "A reply came that couldn't be verified as from them.";
 /** One situation wakes one piece of work at most this often; later ones wait for its next wake. */
 export const WAKE_SPACING_MS = 5 * MINUTE;
 /** How far ahead a commitment's due date is watched. */
@@ -675,8 +677,16 @@ export class SituationService {
         subject: entry.subject,
         sentAt: new Date(entry.sent_at).toISOString(),
       };
-      if (!answers(awaited, delivery.payload)) continue;
+      const verdict = replyVerdict(awaited, delivery.payload);
+      if (!verdict) continue;
       const subject = `awaited:${entry.id}`;
+      if (verdict === 'unverified') {
+        // Its From address matches, but nothing proves who sent it: the wait stays open.
+        await tx.execute(sql`update clock set note = ${UNVERIFIED_REPLY}, updated_at = now()
+          where rule = ${SITUATION_KINDS.replyOverdue} and subject_key = ${subject}
+            and principal_id = ${principalId} and state in ('armed', 'checking', 'fired')`);
+        continue;
+      }
       await this.settle(
         tx,
         sql`kind = ${SITUATION_KINDS.replyOverdue} and subject_key = ${subject}
@@ -1416,6 +1426,7 @@ export class SituationService {
       due,
       generation: read.generation,
       ...(changed ? { note: 'changed' as const } : {}),
+      ...(read.fields.unverified_reply === true ? { unverified: true } : {}),
     });
   }
 
@@ -1672,10 +1683,14 @@ export class SituationService {
           and created_at >= ${awaited?.sentAt ?? entry.createdAt.toISOString()}::timestamptz
         order by seq desc limit 500`),
     );
-    const answered =
-      awaited !== undefined && arrived.some((row) => answers(awaited, row.payload ?? {}));
+    const verdicts =
+      awaited === undefined ? [] : arrived.map((row) => replyVerdict(awaited, row.payload ?? {}));
+    const answered = verdicts.includes('answers');
     return {
-      fields: { status: wait.status },
+      fields: {
+        status: wait.status,
+        unverified_reply: !answered && verdicts.includes('unverified'),
+      },
       seen: (kind) => kind === 'mail.received' && answered,
       generation: null,
     };
@@ -1691,7 +1706,13 @@ export class SituationService {
   private async fire(
     entry: ClockRow,
     check: ClockCheck,
-    read: { due: number; generation: number | null; note?: 'removed' | 'changed' },
+    read: {
+      due: number;
+      generation: number | null;
+      note?: 'removed' | 'changed';
+      /** A reply came that couldn't be verified as from the person asked. */
+      unverified?: boolean;
+    },
   ): Promise<'fired' | 'deferred'> {
     const pendingUrgent: string[] = [];
     const result = await this.deps.jobs.transaction(async (tx) => {
@@ -1769,7 +1790,9 @@ export class SituationService {
         urgency,
         title: current.title,
         reason: reply
-          ? 'You asked for something, and nobody has answered yet.'
+          ? read.unverified
+            ? `You asked for something, and nobody has answered yet. ${UNVERIFIED_REPLY}`
+            : 'You asked for something, and nobody has answered yet.'
           : read.note === 'removed'
             ? `Due ${words}, and the document was removed or moved to the bin.`
             : read.note === 'changed'
@@ -1780,6 +1803,7 @@ export class SituationService {
           checked_at: new Date(this.now()).toISOString(),
           fresh: check.fresh !== false,
           ...(read.note ? { document: read.note } : {}),
+          ...(read.unverified ? { unverified_reply: true } : {}),
           ...(check.date_only ? { date_only: check.date_only } : {}),
         },
         deadlineAt: reply ? null : due,
