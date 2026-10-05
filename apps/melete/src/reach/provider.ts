@@ -89,6 +89,10 @@ export type ReachConfig = {
   /** When texts and calls are off here, the sentence that says so. */
   unavailable: string | null;
   prices: ReachPrices;
+  /** Calling-code prefixes verification codes may be texted to, such as `+1`. */
+  codePrefixes: readonly string[];
+  /** Verification codes the whole installation may send in an hour. */
+  codesPerHour: number;
 };
 
 const PUSH_ONLY =
@@ -102,10 +106,18 @@ export function reachConfigFromEnv(env: {
   MELETE_PUBLIC_URL?: string | undefined;
   MELETE_REACH_TEXT_USD: number;
   MELETE_REACH_CALL_USD_PER_MINUTE: number;
+  MELETE_REACH_CODE_PREFIXES: string;
+  MELETE_REACH_CODES_PER_HOUR: number;
 }): ReachConfig {
-  const prices = {
-    textUsd: env.MELETE_REACH_TEXT_USD,
-    callUsdPerMinute: env.MELETE_REACH_CALL_USD_PER_MINUTE,
+  const limits = {
+    prices: {
+      textUsd: env.MELETE_REACH_TEXT_USD,
+      callUsdPerMinute: env.MELETE_REACH_CALL_USD_PER_MINUTE,
+    },
+    codePrefixes: env.MELETE_REACH_CODE_PREFIXES.split(',')
+      .map((prefix) => prefix.trim())
+      .filter(Boolean),
+    codesPerHour: env.MELETE_REACH_CODES_PER_HOUR,
   };
   const callbackBase = callbackBaseOf(env.MELETE_PUBLIC_URL);
   if (
@@ -114,7 +126,7 @@ export function reachConfigFromEnv(env: {
     !env.MELETE_TWILIO_FROM_NUMBER ||
     !callbackBase
   )
-    return { provider: null, callbackBase, unavailable: PUSH_ONLY, prices };
+    return { provider: null, callbackBase, unavailable: PUSH_ONLY, ...limits };
   return {
     provider: new TwilioReach({
       accountSid: env.MELETE_TWILIO_ACCOUNT_SID,
@@ -123,7 +135,7 @@ export function reachConfigFromEnv(env: {
     }),
     callbackBase,
     unavailable: null,
-    prices,
+    ...limits,
   };
 }
 

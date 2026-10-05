@@ -31,14 +31,17 @@ import {
   agreedWording,
   CODE_RULES,
   type Consent,
-  callSentence,
+  callWords,
+  codeAllowed,
   codeBody,
   consentWording,
   DAILY_CAPS,
   decideRung,
   LADDER,
+  OPT_OUT_CONFIRMATION,
+  providerAnswers,
   replyKind,
-  textBody,
+  TEXT_BODY,
 } from './policy.ts';
 import { type ReachConfig, ReachSendFailure, type Sent } from './provider.ts';
 import { xml } from './twilio.ts';
@@ -129,21 +132,21 @@ export class ReachService {
     return row ?? null;
   }
 
-  private async dayOf(tx: Transaction | Database, principalId: string): Promise<DayWindow> {
+  /** The person's day from their profile; null when they have none, which counts as all night. */
+  private async dayOf(tx: Transaction | Database, principalId: string): Promise<DayWindow | null> {
     const [row] = rows<{ start: string; end: string; time_zone: string }>(
       await tx.execute(sql`select p.day_start as start, p.day_end as end, p.time_zone
         from experience_profile p join space s on s.id = p.space_id
         where s.owner_principal_id = ${principalId} and s.kind = 'personal' limit 1`),
     );
-    return row
-      ? { start: row.start, end: row.end, timeZone: row.time_zone }
-      : { start: '08:00', end: '22:00', timeZone: 'UTC' };
+    return row ? { start: row.start, end: row.end, timeZone: row.time_zone } : null;
   }
 
   /** Ladder texts and calls that reached the provider in the person's day so far. */
-  private async sentToday(tx: Transaction | Database, principalId: string, day: DayWindow) {
+  private async sentToday(tx: Transaction | Database, principalId: string, day: DayWindow | null) {
     const now = new Date(this.now());
-    const today = localTime(now, day.timeZone).day;
+    const zone = day?.timeZone ?? 'UTC';
+    const today = localTime(now, zone).day;
     const sent = rows<{ channel: 'text' | 'call'; sent_at: Date }>(
       await tx.execute(sql`select channel, sent_at from reach_contact
         where principal_id = ${principalId} and purpose = 'ladder'
@@ -153,7 +156,7 @@ export class ReachService {
     );
     const counted = { text: 0, call: 0 };
     for (const row of sent)
-      if (localTime(new Date(row.sent_at), day.timeZone).day === today) counted[row.channel] += 1;
+      if (localTime(new Date(row.sent_at), zone).day === today) counted[row.channel] += 1;
     return counted;
   }
 
@@ -201,7 +204,7 @@ export class ReachService {
       recent: recent.map((row) => ({
         id: row.id,
         channel: row.channel,
-        purpose: row.purpose as 'ladder' | 'code',
+        purpose: row.purpose as 'ladder' | 'code' | 'notice',
         state: row.state,
         reason: row.reason,
         situation_id: row.situation_id,
@@ -226,12 +229,29 @@ export class ReachService {
       );
     if (number === provider.from)
       throw new ServiceError('reach_number_refused', 'That is Melete’s own number.', 400);
+    if (!codeAllowed(number, this.deps.config.codePrefixes))
+      throw new ServiceError(
+        'reach_country_refused',
+        'Melete can’t text numbers in that country from this installation.',
+        400,
+      );
     const contactId = newId('rch');
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const now = new Date(this.now());
     await this.db.transaction(async (tx) => {
-      // One request at a time per person, so the daily count holds.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`reach:${principalId}`}))`);
+      // One code request at a time across the installation, so every count
+      // below holds, the per-number one included, whoever asks.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('reach:codes'))`);
+      const [hour] = rows<{ n: number }>(
+        await tx.execute(sql`select count(*)::int as n from reach_contact where purpose = 'code'
+          and created_at >= ${new Date(now.getTime() - 3600_000).toISOString()}::timestamptz`),
+      );
+      if ((hour?.n ?? 0) >= this.deps.config.codesPerHour)
+        throw new ServiceError(
+          'reach_code_limit',
+          'Melete is sending too many codes right now. Try again in an hour.',
+          429,
+        );
       const [taken] = rows<{ principal_id: string }>(
         await tx.execute(sql`select principal_id from reach_number
           where number = ${number} and principal_id <> ${principalId}`),
@@ -263,10 +283,10 @@ export class ReachService {
           code_hash = excluded.code_hash, code_expires_at = excluded.code_expires_at,
           code_tries = 0, updated_at = now()`);
       await tx.execute(sql`insert into reach_contact (id, principal_id, purpose, channel, due_at,
-          state, reason, number, sent_at)
+          state, reason, number, sent_at, created_at)
         values (${contactId}, ${principalId}, 'code', 'text', ${now.toISOString()}::timestamptz,
           'sending', 'You asked for a code to verify this number.', ${number},
-          ${now.toISOString()}::timestamptz)`);
+          ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)`);
     });
     const outcome = await this.send(contactId, () =>
       provider.text(number, codeBody(code), this.callback('status', contactId)),
@@ -422,7 +442,7 @@ export class ReachService {
       if (!claimed) break;
       if (claimed.decision === 'skipped') skipped += 1;
       else if (claimed.decision === 'send') {
-        await this.sendRung(claimed.contact, claimed.to, claimed.words);
+        await this.sendRung(claimed.contact, claimed.to);
         sent += 1;
       }
     }
@@ -431,14 +451,7 @@ export class ReachService {
   }
 
   private async claimOne(): Promise<
-    | { decision: 'skipped' }
-    | {
-        decision: 'send';
-        contact: ContactRow;
-        to: string;
-        words: { title: string; reason: string };
-      }
-    | null
+    { decision: 'skipped' } | { decision: 'send'; contact: ContactRow; to: string } | null
   > {
     return this.db.transaction(async (tx) => {
       const [contact] = rows<ContactRow>(
@@ -447,17 +460,26 @@ export class ReachService {
           order by due_at limit 1 for update skip locked`),
       );
       if (!contact) return null;
+      // One claim at a time for each person, across the timer, the queue's
+      // worker and every instance: the daily count below then includes every
+      // send already decided, so the caps hold.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`reach:${contact.principal_id}`}))`,
+      );
       const [found] = rows<{
         state: string;
         urgency: string;
         person_set: boolean;
         acked_at: Date | null;
-        title: string;
-        reason: string;
         principal_id: string;
       }>(
-        await tx.execute(sql`select state, urgency, person_set, acked_at, title, reason, principal_id
+        await tx.execute(sql`select state, urgency, person_set, acked_at, principal_id
           from situation where id = ${contact.situation_id} for share`),
+      );
+      // A call follows only a text that went out (or may have).
+      const [text] = rows<{ state: string }>(
+        await tx.execute(sql`select state from reach_contact
+          where situation_id = ${contact.situation_id} and channel = 'text'`),
       );
       const number = await this.numberRow(tx, contact.principal_id);
       const consent = await this.liveConsent(tx, contact.principal_id);
@@ -479,6 +501,7 @@ export class ReachService {
         providerReady: this.available && this.deps.config.callbackBase !== null,
         sentToday: await this.sentToday(tx, contact.principal_id, day),
         day,
+        textWent: ['sent', 'delivered', 'unknown'].includes(text?.state ?? ''),
         now: new Date(this.now()),
       });
       if (!decision.send) {
@@ -490,37 +513,32 @@ export class ReachService {
       await tx.execute(sql`update reach_contact set state = 'sending', number = ${decision.to},
           sent_at = ${new Date(this.now()).toISOString()}::timestamptz, updated_at = now()
         where id = ${contact.id}`);
-      return {
-        decision: 'send' as const,
-        contact,
-        to: decision.to,
-        words: { title: found?.title ?? '', reason: found?.reason ?? '' },
-      };
+      return { decision: 'send' as const, contact, to: decision.to };
     });
   }
 
-  private async sendRung(
-    contact: ContactRow,
-    to: string,
-    words: { title: string; reason: string },
-  ): Promise<void> {
+  private async sendRung(contact: ContactRow, to: string): Promise<void> {
     const provider = this.deps.config.provider;
     if (!provider) return;
     const status = this.callback('status', contact.id);
     await this.send(contact.id, () =>
       contact.channel === 'call'
-        ? provider.call(to, this.callScript(contact.id, words), status)
-        : provider.text(to, textBody(words.title, words.reason), status),
+        ? provider.call(to, this.callScript(contact.id), status)
+        : provider.text(to, TEXT_BODY, status),
     );
   }
 
-  /** What the call says: who is calling, the deadline in one sentence, and the keys. */
-  callScript(contactId: string, words: { title: string; reason: string }): string {
-    const sentence = callSentence(words.title, words.reason);
+  /**
+   * What the call says: who is calling, that a deadline the person set is at
+   * risk, the keys, and the number to text Melete back on. The deadline's own
+   * words stay in Melete.
+   */
+  callScript(contactId: string): string {
+    const words = callWords(this.deps.config.provider?.from ?? '');
     const keys = this.callback('key', contactId);
     return `<Response><Gather numDigits="1" timeout="8" method="POST" action="${xml(keys ?? '')}"><Say>${xml(
-      sentence,
-    )} Press 1 if you've seen this. Press 9 to stop these calls and texts.</Say></Gather><Say>Melete won't call again about this. Goodbye.</Say></Response>`;
+      `${words.lead} ${words.keys}`,
+    )}</Say></Gather><Say>${xml(words.after)}</Say></Response>`;
   }
 
   private callback(kind: 'status' | 'key', contactId: string): string | null {
@@ -590,7 +608,7 @@ export class ReachService {
 
   /** A text or call as a background cost of the person's, beside their model calls. */
   private async meter(tx: Transaction, contact: ContactRow, cost: number) {
-    const model = contact.purpose === 'code' ? 'code' : contact.channel;
+    const model = contact.purpose === 'ladder' ? contact.channel : contact.purpose;
     await tx.execute(sql`insert into model_usage (id, created_at, space_id, principal_id, purpose,
         provider, model, status, cost_usd, usage_estimated, class, tier, situation_id)
       values (${contact.id}, now(),
@@ -614,57 +632,99 @@ export class ReachService {
 
   /**
    * A text to Melete's number. Believed only with the provider's signature for
-   * this exact address, from this account, to this number. Only a verified
-   * number is anyone's; a text from any other is ignored.
+   * this exact address, from this account, to this number, and only once for
+   * each message the provider names: a replayed request does nothing. Only a
+   * verified number is anyone's; a text from any other is ignored.
+   *
+   * Any sign of wanting it to stop ends texts and calls at once, and is never
+   * read as having seen something. A reply the provider doesn't answer itself
+   * gets one line saying so and how to restart (`reply`).
    */
   async inbound(
     url: string,
     params: URLSearchParams,
     signature: string | undefined,
-  ): Promise<'forbidden' | 'ignored' | 'stop' | 'start' | 'help' | 'acknowledged'> {
+  ): Promise<{
+    outcome: 'forbidden' | 'ignored' | 'stop' | 'start' | 'help' | 'acknowledged';
+    reply?: string;
+  }> {
     const provider = this.deps.config.provider;
     if (
       !provider?.authentic(url, params, signature) ||
       !provider.ownAccount(params) ||
       params.get('To') !== provider.from
     )
-      return 'forbidden';
+      return { outcome: 'forbidden' };
+    const sid = params.get('MessageSid') ?? params.get('SmsSid') ?? '';
+    if (!sid) return { outcome: 'ignored' };
+    const fresh = rows<{ message_sid: string }>(
+      await this.db.execute(sql`insert into reach_reply (message_sid) values (${sid})
+        on conflict (message_sid) do nothing returning message_sid`),
+    );
+    if (!fresh.length) return { outcome: 'ignored' };
     const from = params.get('From') ?? '';
     const [owner] = rows<{ principal_id: string; opted_out_at: Date | null }>(
       await this.db.execute(sql`select principal_id, opted_out_at from reach_number
         where number = ${from}`),
     );
-    if (!owner) return 'ignored';
+    if (!owner) return { outcome: 'ignored' };
+    const body = params.get('Body') ?? '';
     // With Advanced Opt-Out on, the provider names the kind itself.
     const named = (params.get('OptOutType') ?? '').toLowerCase();
-    let kind =
-      named === 'stop' || named === 'start' || named === 'help'
-        ? named
-        : replyKind(params.get('Body') ?? '');
+    let kind = named === 'stop' || named === 'start' || named === 'help' ? named : replyKind(body);
     // "Yes" from someone who never stopped is an answer.
     if (kind === 'start' && !owner.opted_out_at) kind = 'answer';
     if (kind === 'stop') {
       await this.db.transaction((tx) => this.optOut(tx, owner.principal_id, 'stop'));
-      return 'stop';
+      if (named || providerAnswers(body)) return { outcome: 'stop' };
+      await this.confirmOptOut(owner.principal_id, from);
+      return { outcome: 'stop', reply: OPT_OUT_CONFIRMATION };
     }
     if (kind === 'start') {
       await this.db.execute(sql`update reach_number set opted_out_at = null, updated_at = now()
         where principal_id = ${owner.principal_id}`);
-      return 'start';
+      return { outcome: 'start' };
     }
-    if (kind === 'help') return 'help';
+    if (kind === 'help') return { outcome: 'help' };
     await this.acknowledgeClimbing(owner.principal_id);
-    return 'acknowledged';
+    return { outcome: 'acknowledged' };
   }
 
-  /** The person answered: every deadline the ladder is climbing for them is seen. */
+  /** The one confirmation an opt-out gets, recorded and counted like any other text. */
+  private async confirmOptOut(principalId: string, number: string) {
+    const id = newId('rch');
+    const cost = this.deps.config.prices.textUsd;
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`insert into reach_contact (id, principal_id, purpose, channel, due_at,
+          state, reason, number, sent_at, cost_usd)
+        values (${id}, ${principalId}, 'notice', 'text', now(), 'sent',
+          'You asked Melete to stop, so it said it had.', ${number}, now(), ${cost})`);
+      const [contact] = rows<ContactRow>(
+        await tx.execute(sql`select * from reach_contact where id = ${id}`),
+      );
+      if (contact) await this.meter(tx, contact, cost);
+    });
+  }
+
+  /**
+   * The person answered. With a situation named (a key pressed on its call),
+   * that one is seen. A text reply covers only the deadlines Melete actually
+   * texted or called about before it arrived; one that so far had only a push
+   * keeps climbing.
+   */
   private async acknowledgeClimbing(principalId: string, situationId?: string) {
     const climbing = rows<{ situation_id: string }>(
       await this.db.execute(sql`select distinct c.situation_id from reach_contact c
         join situation s on s.id = c.situation_id
         where c.principal_id = ${principalId} and c.purpose = 'ladder'
           and s.state in ('open', 'routed') and s.acked_at is null
-          ${situationId ? sql`and c.situation_id = ${situationId}` : sql``}`),
+          ${
+            situationId
+              ? sql`and c.situation_id = ${situationId}`
+              : sql`and c.channel in ('text', 'call')
+                  and c.state in ('sending', 'sent', 'delivered', 'unknown')
+                  and c.sent_at <= ${new Date(this.now()).toISOString()}::timestamptz`
+          }`),
     );
     for (const { situation_id } of climbing) {
       if (this.deps.ack) await this.deps.ack(principalId, situation_id);

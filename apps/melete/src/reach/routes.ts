@@ -52,10 +52,11 @@ export function mountReach(app: Hono, service: ReachService) {
   app.post('/reach/twilio/sms', async (c) => {
     const request = await signed(c);
     if (!request) return c.text('Forbidden', 403);
-    const outcome = await service.inbound(request.url, request.params, request.signature);
-    if (outcome === 'forbidden') return c.text('Forbidden', 403);
-    // The provider answers STOP, START and HELP itself; nothing else is replied to.
-    return twiml(c);
+    const answer = await service.inbound(request.url, request.params, request.signature);
+    if (answer.outcome === 'forbidden') return c.text('Forbidden', 403);
+    // The provider answers its own keywords (STOP, START, HELP); an opt-out in
+    // other words gets Melete's one confirmation.
+    return twiml(c, answer.reply ? `<Message>${xml(answer.reply)}</Message>` : '');
   });
   app.post('/reach/twilio/status/:id', async (c) => {
     const request = await signed(c);

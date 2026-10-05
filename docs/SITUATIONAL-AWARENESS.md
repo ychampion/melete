@@ -515,15 +515,23 @@ step. If nobody opens it, Melete texts the person's own number three minutes
 later, and calls it five minutes after that (`an unacknowledged urgent
 deadline: push, text at +3 min, call at +8; acknowledging stops it`). Opening
 the push, replying to the text, or pressing 1 on the call marks the situation
-seen, and nothing more is sent about it. Only an urgent situation about a
-deadline the person set climbs past the push (`only a deadline the person set
-climbs`).
+seen, and nothing more is sent about it. A text reply covers only the deadlines
+Melete has already texted or called about; one that so far had only its push
+keeps climbing (`a reply covers only the deadlines Melete texted or called
+about`). A call follows only a text that went out (`a call follows only a text
+that went out`). Only an urgent situation about a deadline the person set
+climbs past the push (`only a deadline the person set climbs`).
 
 The person turns this on once, in Settings, Notifications:
 
 1. They enter their number, and Melete texts it a six-digit code. A code lasts
    ten minutes and takes five tries; a person, and a number, get at most five
    codes a day, and a number someone else here has verified can't be claimed.
+   Codes go only to the calling codes the operator allows (`+1` by default:
+   the US and Canada, without the Caribbean area codes), and the installation
+   sends at most `MELETE_REACH_CODES_PER_HOUR` (30) an hour (`codes go only to
+   supported countries, and the installation sends a limited number an
+   hour`).
 2. They agree to texts, and choose whether a call may follow and whether
    Melete may reach them outside their day hours. The words they agree to are
    shown beside the button and kept with the agreement, with the time and the
@@ -538,25 +546,35 @@ person is verifying, at their request.
 
 | Rule | |
 | --- | --- |
-| A day, at most | 6 texts and 3 calls, in the person's own day |
-| Outside the person's day hours | nothing, unless they agreed to that too |
+| A day, at most | 6 texts and 3 calls, in the person's own day, however many sweeps run at once (`the daily caps hold when several sweeps run at once`) |
+| Outside the person's day hours | nothing, unless they agreed to that too; a person whose day hours aren't known, or start when they end, is treated as off all day (`a person with no day hours known is not texted or called at night`) |
 | From | the installation's own number, which is also the caller ID |
-| What it says | Melete's own words for the deadline and its due time, never text from mail |
-| Stopping | reply STOP (or quit, end, revoke, opt out, cancel, unsubscribe, or "stop texting me"), press 9 on a call, or turn it off in Settings |
+| What it says | only that a deadline the person set is at risk, how to answer, and how to stop; the deadline's own words stay in Melete |
+| Stopping | any reply that asks it to stop, press 9 on a call, or turn it off in Settings |
 
 A text or call that would break a rule is not sent, and says why in Settings
 under "What Melete did" (`at most six texts and three calls a day`, `nothing
 is texted or called outside the person’s day unless they asked for nights`).
 
-**STOP.** A reply of STOP ends the agreement at once, cancels anything still
-waiting, and nothing is texted or called until the person texts START and
-agrees again in Settings. The agreement's record is kept, with when and how it
-ended. A number the provider reports as unsubscribed is treated the same way
-(`STOP opts out`). Twilio answers STOP, START and HELP itself; Melete sends no
-reply of its own.
+**Stopping.** A reply that carries any sign of wanting it to stop ends the
+agreement at once, cancels anything still waiting, and is never read as having
+seen anything: the words stop, quit, end, revoke, opt out, cancel or unsubscribe
+anywhere in it, or asking not to be texted, called or messaged ("Please stop",
+"End texts", "don’t text me"), in any case. Nothing is texted or called until
+the person texts START and agrees again in Settings. The agreement's record is
+kept, with when and how it ended. A number the provider reports as
+unsubscribed is treated the same way (`STOP opts out`, `an opt-out in any words
+ends texts and calls at once, and is never read as seen`). Twilio answers its
+own keywords (STOP, START, HELP); any other opt-out gets one line back from
+Melete saying so and how to restart. Each incoming text is handled once, by
+the provider's id for it (`a reply the provider already delivered once does
+nothing again`).
 
-**Calls.** A call says who is calling, names the deadline and its due time in
-one sentence, then offers 1 to say it was seen and 9 to stop texts and calls.
+**Calls.** A call says who is calling and that a deadline the person set is at
+risk, offers 1 to say it was seen and 9 to stop texts and calls, then reads out
+the number to text Melete back on, or to reply STOP to. An answer that arrives
+while a text or call is already on its way to the provider doesn't recall that
+one; it stops everything after it.
 
 **Receipts and cost.** Each text and call carries a delivery receipt address;
 the provider's status is kept with it. Each one is counted toward the person's

@@ -31,8 +31,8 @@ export type ReachConsentRequest = z.infer<typeof reachConsentRequest>;
 export const reachContactView = z.strictObject({
   id: z.string(),
   channel: z.enum(['push', 'text', 'call']),
-  /** `ladder` for a deadline, `code` for a verification code. */
-  purpose: z.enum(['ladder', 'code']),
+  /** `ladder` for a deadline, `code` for a verification code, `notice` for an opt-out's confirmation. */
+  purpose: z.enum(['ladder', 'code', 'notice']),
   /** `waiting`, `sending`, `sent`, `delivered`, `failed`, `skipped`, `cancelled` or `unknown`. */
   state: z.string(),
   /** Why it was made, or why it was not, in plain words. */

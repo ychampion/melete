@@ -22340,7 +22340,7 @@ export interface components {
             due_at: components["schemas"]["__schema188"];
             id: string;
             /** @enum {string} */
-            purpose: "ladder" | "code";
+            purpose: "ladder" | "code" | "notice";
             reason: string;
             sent_at: components["schemas"]["__schema188"] | null;
             situation_id: string | null;

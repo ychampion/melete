@@ -94,7 +94,7 @@ export const reachContact = pgTable(
       .references(() => principal.id, { onDelete: 'cascade' }),
     /** The deadline it was about, for a rung of the ladder. */
     situationId: text('situation_id').references(() => situation.id, { onDelete: 'cascade' }),
-    /** `ladder` or `code`. */
+    /** `ladder`, `code`, or `notice` (the one confirmation an opt-out gets). */
     purpose: text('purpose').notNull(),
     /** `push`, `text` or `call`. */
     channel: text('channel').notNull(),
@@ -124,7 +124,7 @@ export const reachContact = pgTable(
     index('reach_contact_due_idx').on(t.dueAt).where(sql`${t.state} = 'waiting'`),
     index('reach_contact_ref_idx').on(t.providerRef),
     check('reach_contact_channel', sql`${t.channel} in ('push', 'text', 'call')`),
-    check('reach_contact_purpose', sql`${t.purpose} in ('ladder', 'code')`),
+    check('reach_contact_purpose', sql`${t.purpose} in ('ladder', 'code', 'notice')`),
     check(
       'reach_contact_state',
       sql`${t.state} in ('waiting', 'sending', 'sent', 'delivered', 'failed', 'skipped', 'cancelled', 'unknown')`,
@@ -135,3 +135,9 @@ export const reachContact = pgTable(
     ),
   ],
 );
+
+/** Each text that reached Melete's number, by the provider's id, so a replay does nothing. */
+export const reachReply = pgTable('reach_reply', {
+  messageSid: text('message_sid').primaryKey(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+});

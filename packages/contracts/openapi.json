@@ -31943,7 +31943,8 @@
               "type": "string",
               "enum": [
                 "ladder",
-                "code"
+                "code",
+                "notice"
               ]
             },
             "state": {

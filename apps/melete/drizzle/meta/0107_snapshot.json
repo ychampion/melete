@@ -1,5 +1,5 @@
 {
-  "id": "03ac16fd-4b2d-47dd-b31f-b2d31ab04da3",
+  "id": "6314e7af-7149-4590-9507-f7409223b31b",
   "prevId": "e7770a52-1680-452c-b6d1-03e103651c67",
   "version": "7",
   "dialect": "postgresql",
@@ -19958,7 +19958,7 @@
         },
         "reach_contact_purpose": {
           "name": "reach_contact_purpose",
-          "value": "\"reach_contact\".\"purpose\" in ('ladder', 'code')"
+          "value": "\"reach_contact\".\"purpose\" in ('ladder', 'code', 'notice')"
         },
         "reach_contact_state": {
           "name": "reach_contact_state",
@@ -20081,6 +20081,32 @@
           "value": "(\"reach_number\".\"number\" is null) = (\"reach_number\".\"verified_at\" is null)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.reach_reply": {
+      "name": "reach_reply",
+      "schema": "",
+      "columns": {
+        "message_sid": {
+          "name": "message_sid",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

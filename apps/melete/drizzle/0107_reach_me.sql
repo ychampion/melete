@@ -29,7 +29,7 @@ CREATE TABLE "reach_contact" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "reach_contact_channel" CHECK ("reach_contact"."channel" in ('push', 'text', 'call')),
-	CONSTRAINT "reach_contact_purpose" CHECK ("reach_contact"."purpose" in ('ladder', 'code')),
+	CONSTRAINT "reach_contact_purpose" CHECK ("reach_contact"."purpose" in ('ladder', 'code', 'notice')),
 	CONSTRAINT "reach_contact_state" CHECK ("reach_contact"."state" in ('waiting', 'sending', 'sent', 'delivered', 'failed', 'skipped', 'cancelled', 'unknown')),
 	CONSTRAINT "reach_contact_ladder_situation" CHECK ("reach_contact"."purpose" <> 'ladder' or "reach_contact"."situation_id" is not null)
 );
@@ -46,6 +46,11 @@ CREATE TABLE "reach_number" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "reach_number_verified" CHECK (("reach_number"."number" is null) = ("reach_number"."verified_at" is null))
+);
+--> statement-breakpoint
+CREATE TABLE "reach_reply" (
+	"message_sid" text PRIMARY KEY NOT NULL,
+	"received_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "reach_consent" ADD CONSTRAINT "reach_consent_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

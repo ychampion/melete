@@ -23,7 +23,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { PushService } from '../../src/push/service.ts';
 import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/webpush.ts';
-import { DAILY_CAPS } from '../../src/reach/policy.ts';
+import { DAILY_CAPS, OPT_OUT_CONFIRMATION, TEXT_BODY } from '../../src/reach/policy.ts';
 import {
   type ReachConfig,
   type ReachProvider,
@@ -71,12 +71,15 @@ const made: Made[] = [];
 const fake = {
   /** Numbers that replied STOP on the provider's side. */
   unsubscribed: new Set<string>(),
+  /** Numbers the provider turns down for any other reason. */
+  refused: new Set<string>(),
 };
 const provider: ReachProvider = {
   from: FROM,
   name: 'fake',
   async text(to, body, callback) {
     if (fake.unsubscribed.has(to)) throw new ReachSendFailure('opted_out');
+    if (fake.refused.has(to)) throw new ReachSendFailure('refused');
     const ref = `SM${made.length}`;
     made.push({ channel: 'text', to, body, ref, callback });
     return { ref, status: 'queued' };
@@ -91,11 +94,22 @@ const provider: ReachProvider = {
   ownAccount: (params) => params.get('AccountSid') === ACCOUNT,
 };
 const PRICES = { textUsd: 0.01, callUsdPerMinute: 0.02 };
-const config: ReachConfig = { provider, callbackBase: BASE, unavailable: null, prices: PRICES };
+const LIMITS = { codePrefixes: ['+1'], codesPerHour: 1000 };
+const config: ReachConfig = {
+  provider,
+  callbackBase: BASE,
+  unavailable: null,
+  prices: PRICES,
+  ...LIMITS,
+};
 
 /** A webhook request as the provider sends it, signed for its exact address. */
+let messages = 0;
 function signed(path: string, fields: Record<string, string>) {
-  const params = new URLSearchParams({ AccountSid: ACCOUNT, ...fields });
+  // Each incoming text carries the provider's own id for it.
+  const sid: Record<string, string> =
+    path === '/reach/twilio/sms' ? { MessageSid: `SMin${messages++}` } : {};
+  const params = new URLSearchParams({ AccountSid: ACCOUNT, ...sid, ...fields });
   const url = `${BASE}${path}`;
   return { url, params, signature: twilioSignature(url, params.entries(), TOKEN) };
 }
@@ -322,13 +336,13 @@ withDb('the reach-me ladder', () => {
     expect((await rungs(id)).text?.state).toBe('waiting');
     await at(start + 2 * MINUTE + 59_000);
     expect(sentTo(ana)).toHaveLength(0);
-    // Three minutes unanswered: one text, to the verified number, in Melete's words.
+    // Three minutes unanswered: one text, to the verified number, in fixed words.
     await at(start + 3 * MINUTE);
     await at(start + 3 * MINUTE + 1000);
     expect(sentTo(ana, 'text')).toHaveLength(1);
     const text = required(sentTo(ana, 'text')[0]);
-    expect(text.body).toContain('The contract is signed');
-    expect(text.body).toContain('Reply STOP');
+    expect(text.body).toBe(TEXT_BODY);
+    expect(text.body).not.toContain('contract');
     expect(text.callback).toMatch(/^https:\/\/melete\.example\/api\/reach\/twilio\/status\/rch_/);
     await at(start + 7 * MINUTE);
     expect(sentTo(ana, 'call')).toHaveLength(0);
@@ -336,10 +350,11 @@ withDb('the reach-me ladder', () => {
     await at(start + 8 * MINUTE);
     expect(sentTo(ana, 'call')).toHaveLength(1);
     const call = required(sentTo(ana, 'call')[0]);
-    expect(call.body).toContain(
-      'This is Melete, about a deadline you set. The contract is signed.',
-    );
+    expect(call.body).toContain('This is Melete, calling about a deadline you set.');
+    expect(call.body).not.toContain('contract');
     expect(call.body).toContain('Press 1');
+    // How to reach Melete back, or stop: its number, read out.
+    expect(call.body).toContain('You can text Melete at 1 5 5 5 0 0 0 1 0 0 0');
     expect(call.body).toContain('/api/reach/twilio/key/rch_');
     // Pressing 1 says it was seen.
     const callRow = (await rungs(id)).call;
@@ -415,9 +430,11 @@ withDb('the reach-me ladder', () => {
     await at(third + 3 * MINUTE);
     expect(sentTo(ana, 'text')).toHaveLength(3);
     const reply = signed('/reach/twilio/sms', { From: ana.number, To: FROM, Body: 'on it' });
-    expect(await required(reach).inbound(reply.url, reply.params, reply.signature)).toBe(
-      'acknowledged',
-    );
+    expect(
+      await required(reach)
+        .inbound(reply.url, reply.params, reply.signature)
+        .then((a) => a.outcome),
+    ).toBe('acknowledged');
     await at(third + 8 * MINUTE);
     expect(sentTo(ana, 'call')).toHaveLength(1);
     expect((await rungs(answered)).call?.state).toBe('cancelled');
@@ -435,7 +452,9 @@ withDb('the reach-me ladder', () => {
     const start = clock;
     await at(start + 3 * MINUTE);
     await at(start + 8 * MINUTE);
-    const ladder = made.filter((m) => m.body.includes('The form is filed'));
+    const ladder = made.filter(
+      (m) => [ben.number, other].includes(m.to) && !m.body.startsWith('Your Melete code'),
+    );
     expect(ladder.map((m) => [m.channel, m.to])).toEqual([
       ['text', ben.number],
       ['call', ben.number],
@@ -474,9 +493,11 @@ withDb('the reach-me ladder', () => {
 
     // A text from a number nobody verified is no one's: nothing is acknowledged or sent.
     const stranger = signed('/reach/twilio/sms', { From: '+15559990000', To: FROM, Body: 'STOP' });
-    expect(await required(reach).inbound(stranger.url, stranger.params, stranger.signature)).toBe(
-      'ignored',
-    );
+    expect(
+      await required(reach)
+        .inbound(stranger.url, stranger.params, stranger.signature)
+        .then((a) => a.outcome),
+    ).toBe('ignored');
     // And a number someone else verified can't be claimed.
     const cy = await person('cy');
     expect(await refusal(required(reach).requestCode(cy.id, other))).toContain('already verified');
@@ -528,10 +549,18 @@ withDb('the reach-me ladder', () => {
     expect(sentTo(fay, 'text')).toHaveLength(1);
     // A STOP that isn't signed for this address changes nothing.
     const forged = signed('/reach/twilio/sms', { From: fay.number, To: FROM, Body: 'STOP' });
-    expect(await required(reach).inbound(forged.url, forged.params, 'forged')).toBe('forbidden');
+    expect(
+      await required(reach)
+        .inbound(forged.url, forged.params, 'forged')
+        .then((a) => a.outcome),
+    ).toBe('forbidden');
     expect((await required(reach).state(fay.id)).consent).not.toBeNull();
     const stop = signed('/reach/twilio/sms', { From: fay.number, To: FROM, Body: 'Stop' });
-    expect(await required(reach).inbound(stop.url, stop.params, stop.signature)).toBe('stop');
+    expect(
+      await required(reach)
+        .inbound(stop.url, stop.params, stop.signature)
+        .then((a) => a.outcome),
+    ).toBe('stop');
     await at(start + 8 * MINUTE);
     expect(sentTo(fay, 'call')).toHaveLength(0);
     expect((await rungs(id)).call?.state).toBe('cancelled');
@@ -553,9 +582,11 @@ withDb('the reach-me ladder', () => {
       'START',
     );
     const start2 = signed('/reach/twilio/sms', { From: fay.number, To: FROM, Body: 'START' });
-    expect(await required(reach).inbound(start2.url, start2.params, start2.signature)).toBe(
-      'start',
-    );
+    expect(
+      await required(reach)
+        .inbound(start2.url, start2.params, start2.signature)
+        .then((a) => a.outcome),
+    ).toBe('start');
     expect(
       (await required(reach).agree(fay.id, { calls: false, nights: false })).consent?.calls,
     ).toBe(false);
@@ -596,6 +627,171 @@ withDb('the reach-me ladder', () => {
     expect((await required(app).request('/reach')).status).toBe(401);
   }, 60_000);
 
+  test('an opt-out in any words ends texts and calls at once, and is never read as seen', async () => {
+    const jo = await optedIn('jo');
+    const id = await urgent(jo);
+    const start = clock;
+    await at(start + 3 * MINUTE);
+    expect(sentTo(jo, 'text')).toHaveLength(1);
+    const please = signed('/reach/twilio/sms', { From: jo.number, To: FROM, Body: 'Please stop' });
+    const answer = await required(reach).inbound(please.url, please.params, please.signature);
+    // One line back, saying so and how to restart, recorded and counted like any text.
+    expect(answer).toEqual({ outcome: 'stop', reply: OPT_OUT_CONFIRMATION });
+    const [notice] = await required(handle).sql`select c.state, u.model from reach_contact c
+      join model_usage u on u.id = c.id where c.principal_id = ${jo.id} and c.purpose = 'notice'`;
+    expect([notice?.state, notice?.model]).toEqual(['sent', 'notice']);
+    // Not "seen": the deadline is still unacknowledged, and nothing more goes out.
+    const [still] = await required(handle).sql`select acked_at from situation where id = ${id}`;
+    expect(still?.acked_at).toBeNull();
+    const state = await required(reach).state(jo.id);
+    expect([state.consent, state.opted_out_at === null]).toEqual([null, false]);
+    await at(start + 8 * MINUTE);
+    expect(sentTo(jo, 'call')).toHaveLength(0);
+    expect((await rungs(id)).call?.state).toBe('cancelled');
+    await urgent(jo);
+    await at(clock + 3 * MINUTE);
+    expect(sentTo(jo, 'text')).toHaveLength(1);
+
+    // A phone's curly apostrophe, any case.
+    const kim = await optedIn('kim');
+    const curly = signed('/reach/twilio/sms', {
+      From: kim.number,
+      To: FROM,
+      Body: 'Don’t TEXT me',
+    });
+    expect((await required(reach).inbound(curly.url, curly.params, curly.signature)).outcome).toBe(
+      'stop',
+    );
+    expect((await required(reach).state(kim.id)).consent).toBeNull();
+    // A bare keyword is the provider's to confirm, so Melete sends nothing of its own.
+    const lee = await optedIn('lee');
+    const bare = signed('/reach/twilio/sms', { From: lee.number, To: FROM, Body: 'STOP' });
+    expect(await required(reach).inbound(bare.url, bare.params, bare.signature)).toEqual({
+      outcome: 'stop',
+    });
+  }, 120_000);
+
+  test('a reply covers only the deadlines Melete texted or called about', async () => {
+    const max = await optedIn('max');
+    const texted = await urgent(max);
+    await at(clock + 3 * MINUTE);
+    expect(sentTo(max, 'text')).toHaveLength(1);
+    // A newer deadline that so far had only its push.
+    const pushedOnly = await urgent(max);
+    const second = clock;
+    const ok = signed('/reach/twilio/sms', { From: max.number, To: FROM, Body: 'ok' });
+    expect((await required(reach).inbound(ok.url, ok.params, ok.signature)).outcome).toBe(
+      'acknowledged',
+    );
+    const acked = async (id: string) =>
+      (await required(handle).sql`select acked_at from situation where id = ${id}`)[0]?.acked_at;
+    expect(await acked(texted)).not.toBeNull();
+    expect(await acked(pushedOnly)).toBeNull();
+    // It keeps climbing.
+    await at(second + 3 * MINUTE);
+    expect(sentTo(max, 'text')).toHaveLength(2);
+    expect((await rungs(pushedOnly)).text?.state).toBe('sent');
+  }, 60_000);
+
+  test('a reply the provider already delivered once does nothing again', async () => {
+    const ned = await optedIn('ned');
+    await urgent(ned);
+    await at(clock + 3 * MINUTE);
+    const ok = signed('/reach/twilio/sms', { From: ned.number, To: FROM, Body: 'seen' });
+    expect((await required(reach).inbound(ok.url, ok.params, ok.signature)).outcome).toBe(
+      'acknowledged',
+    );
+    const later = await urgent(ned);
+    await at(clock + 3 * MINUTE);
+    // The same signed request, sent again.
+    expect((await required(reach).inbound(ok.url, ok.params, ok.signature)).outcome).toBe(
+      'ignored',
+    );
+    const [row] = await required(handle).sql`select acked_at from situation where id = ${later}`;
+    expect(row?.acked_at).toBeNull();
+  }, 60_000);
+
+  test('a call follows only a text that went out', async () => {
+    const ola = await optedIn('ola');
+    fake.refused.add(ola.number);
+    const id = await urgent(ola);
+    const start = clock;
+    await at(start + 3 * MINUTE);
+    await at(start + 8 * MINUTE);
+    const ladder = await rungs(id);
+    expect([ladder.text?.state, ladder.call?.state]).toEqual(['failed', 'skipped']);
+    expect(ladder.call?.reason).toBe('The text before it didn’t go, so Melete didn’t call.');
+    expect(sentTo(ola, 'call')).toHaveLength(0);
+  }, 60_000);
+
+  test('the daily caps hold when several sweeps run at once', async () => {
+    const sweepers = [0, 1, 2].map(
+      () =>
+        new ReachService({
+          db: required(handle).db,
+          config,
+          now: () => clock,
+          ack: (principalId, id) => required(situations).ack(principalId, id),
+        }),
+    );
+    for (let round = 0; round < 4; round++) {
+      const pat = await optedIn(`pat${round}`, { calls: false, nights: true });
+      // Five texts already sent today.
+      for (let i = 0; i < DAILY_CAPS.text - 1; i++) {
+        const done = await urgent(pat);
+        await required(handle).sql`update reach_contact set state = 'sent',
+            sent_at = ${new Date(clock).toISOString()}::timestamptz
+          where situation_id = ${done} and channel = 'text'`;
+        await required(handle).sql`update reach_contact set state = 'cancelled'
+          where situation_id = ${done} and channel = 'call'`;
+      }
+      // Two more come due together.
+      await urgent(pat);
+      await urgent(pat);
+      clock += 3 * MINUTE;
+      const before = sentTo(pat, 'text').length;
+      await Promise.all(sweepers.map((sweeper) => sweeper.sweep()));
+      expect([round, sentTo(pat, 'text').length - before]).toEqual([round, 1]);
+      const [counted] = await required(handle).sql`select count(*)::int as n from reach_contact
+        where principal_id = ${pat.id} and channel = 'text' and purpose = 'ladder'
+          and state in ('sending', 'sent', 'delivered', 'unknown')`;
+      expect([round, counted?.n]).toEqual([round, DAILY_CAPS.text]);
+      clock += 5 * MINUTE;
+      await Promise.all(sweepers.map((sweeper) => sweeper.sweep()));
+    }
+  }, 120_000);
+
+  test('codes go only to supported countries, and the installation sends a limited number an hour', async () => {
+    const quinn = await person('quinn');
+    expect(await refusal(required(reach).requestCode(quinn.id, '+18765550100'))).toContain(
+      'that country',
+    );
+    expect(await refusal(required(reach).requestCode(quinn.id, '+447700900100'))).toContain(
+      'that country',
+    );
+    // An hour ahead of everything else here, with room for one code an hour.
+    let later = clock + 30 * 24 * 60 * MINUTE;
+    const strict = new ReachService({
+      db: required(handle).db,
+      config: { ...config, codesPerHour: 1 },
+      now: () => later,
+    });
+    const rae = await person('rae');
+    await strict.requestCode(quinn.id, nextNumber());
+    expect(await refusal(strict.requestCode(rae.id, nextNumber()))).toContain('too many codes');
+    later += 61 * MINUTE;
+    expect((await strict.requestCode(rae.id, nextNumber())).pending_number).not.toBeNull();
+  }, 60_000);
+
+  test('a person with no day hours known is not texted or called at night', async () => {
+    const sid = await optedIn('sid');
+    await required(handle).sql`delete from experience_profile where space_id = ${sid.spaceId}`;
+    const id = await urgent(sid);
+    await at(clock + 3 * MINUTE);
+    expect(sentTo(sid)).toHaveLength(0);
+    expect((await rungs(id)).text?.reason).toContain('outside your day');
+  }, 60_000);
+
   test('without a provider, the ladder stops at push and says so', async () => {
     const gus = await person('gus');
     const bare = new ReachService({
@@ -605,6 +801,7 @@ withDb('the reach-me ladder', () => {
         callbackBase: null,
         unavailable: 'Push only here.',
         prices: PRICES,
+        ...LIMITS,
       },
       now: () => clock,
     });

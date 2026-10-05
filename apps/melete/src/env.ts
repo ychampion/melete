@@ -321,6 +321,21 @@ const variables = z.object({
   /** What one text and one started minute of a call cost, counted toward the person's spend. */
   MELETE_REACH_TEXT_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.0083)),
   MELETE_REACH_CALL_USD_PER_MINUTE: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.014)),
+  /**
+   * Calling-code prefixes a verification code may be texted to, comma
+   * separated. `+1` covers the US and Canada; a Caribbean area code under it
+   * needs its own entry, such as `+1876`.
+   */
+  MELETE_REACH_CODE_PREFIXES: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^\+\d{1,6}(,\s*\+\d{1,6})*$/, 'Prefixes such as +1,+44')
+      .default('+1'),
+  ),
+  /** Verification codes the whole installation may text in an hour. */
+  MELETE_REACH_CODES_PER_HOUR: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(10_000).default(30),
+  ),
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')
