@@ -184,7 +184,9 @@ export class ExperiencePermissions {
     if (parent) reasons.push(forLine(plainText(parent.title, 'your request')));
     // In a room the card says whose request it is and who may answer it; a
     // standing rule is never offered there, since it would answer for others.
-    const room = await roomAuthorityOf(this.sql, String(row.job_id));
+    const room = await roomAuthorityOf(this.sql, String(row.job_id), {
+      connectionId: action.connection_id,
+    });
     const eligible = room ? await eligibleApprovers(this.sql, room) : [];
     const names = room
       ? await labelsIn(this.sql, room.spaceId, [...eligible, room.requestedBy ?? ''])
@@ -272,7 +274,9 @@ export class ExperiencePermissions {
   ) {
     const row = await this.findInRoom(spaceId, id);
     // Asked here so a refusal reads plainly; the broker asks again under its lock.
-    const room = await roomAuthorityOf(this.sql, String(row.job_id));
+    const room = await roomAuthorityOf(this.sql, String(row.job_id), {
+      connectionId: row.connection_id ? String(row.connection_id) : null,
+    });
     if (!room || !(await mayDecide(this.sql, room, decider)))
       throw new ServiceError(
         'not_yours_to_answer',

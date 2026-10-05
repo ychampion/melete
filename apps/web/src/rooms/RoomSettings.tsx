@@ -1,7 +1,7 @@
 /**
  * Room → Settings: who answers the permissions the room's requests ask for,
  * whether guests may ask the room's agent, and the accounts the room uses as
- * its own. Everyone in the room reads them; owners change them. A change
+ * its own, with who approves what they send. Everyone in the room reads them; owners change them. A change
  * applies to permissions already waiting.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,8 +28,17 @@ export const APPROVER_CHOICES: readonly {
   {
     value: 'owners',
     title: 'The room’s owners',
-    sub: 'Owners see and answer everything the agent wants to do through the room’s connections.',
+    sub: 'Only owners answer what the agent wants to do for the room.',
   },
+];
+
+/** Who approves what the room's own accounts send. Guests never approve. */
+export const TEAM_ACCOUNT_APPROVER_CHOICES: readonly {
+  value: NonNullable<RoomPolicy['team_account_approvers']>;
+  title: string;
+}[] = [
+  { value: 'any_member', title: 'Anyone in the room' },
+  { value: 'owners', title: 'The room’s owners' },
 ];
 
 /** The rule in one line, as the room's people read it on the room's page. */
@@ -104,8 +113,8 @@ export function RoomSettings({
         <fieldset className="settings-group" disabled={!owner}>
           <legend className="people-field-label">Who answers permissions</legend>
           <span className="people-hint">
-            When {detail.room.agent_name} wants to send, change or spend something through the
-            room’s connections, it waits for one of these people.
+            When {detail.room.agent_name} wants to send, change or spend something for the room, it
+            waits for one of these people. What the team accounts send has its own choice below.
           </span>
           {APPROVER_CHOICES.map((choice) => (
             <label key={choice.value} className="settings-choice">
@@ -142,9 +151,8 @@ export function RoomSettings({
           <span className="people-field-label">Accounts the room uses</span>
           <span className="people-hint">
             The team’s own accounts, such as a shared mailbox or a team GitHub.{' '}
-            {detail.room.agent_name} uses them for the room’s requests, and the rule above answers
-            what it sends. A person’s own accounts stay theirs: the room hands them the task
-            instead.
+            {detail.room.agent_name} uses them for the room’s requests. A person’s own accounts stay
+            theirs: the room hands them the task instead.
           </span>
           {accounts === null ? null : accounts.length ? (
             <ul className="col" style={{ gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
@@ -157,6 +165,25 @@ export function RoomSettings({
           ) : (
             <span className="people-hint">None yet.</span>
           )}
+          <fieldset className="settings-group" disabled={!owner}>
+            <legend className="people-field-label">Who approves what the team accounts send</legend>
+            <span className="people-hint">
+              The person who asked can approve too. Guests never approve.
+            </span>
+            {TEAM_ACCOUNT_APPROVER_CHOICES.map((choice) => (
+              <label key={choice.value} className="settings-choice">
+                <input
+                  type="radio"
+                  className="radio"
+                  name="room-team-account-approvers"
+                  value={choice.value}
+                  checked={(policy.team_account_approvers ?? 'any_member') === choice.value}
+                  onChange={() => void save({ team_account_approvers: choice.value })}
+                />
+                <span className="settings-choice-title">{choice.title}</span>
+              </label>
+            ))}
+          </fieldset>
           {owner ? (
             adding ? (
               <AddConnection

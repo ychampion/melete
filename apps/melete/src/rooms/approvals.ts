@@ -8,18 +8,25 @@
  * - `any_member`: anyone in the room who is not a guest;
  * - `owners`: the room's owners.
  *
+ * What the agent does through the room's own accounts (team accounts: the
+ * connections in the room's space marked for the room, other than the tools
+ * every room has) follows the room's team-account rule instead: any member who
+ * is not a guest, the person who asked included (the default), or the room's
+ * owners. `approverRuleFor` is the one place that picks the rule for an action.
+ *
  * Guests, the room's own principal, the service's own key and anyone outside
  * the room never decide. The check runs when an answer is recorded, inside the
  * broker's decision transaction: that holds the event order lock, which every
  * change to a room's roster also takes, so a person removed a moment earlier
  * is already not a member here.
  */
-import type { RoomApprovers } from '@melete/contracts';
+import type { RoomApprovers, RoomTeamAccountApprovers } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
 import { personLabel } from './transcript.ts';
 
 export const ROOM_POLICY_DEFAULTS = {
   approvers: 'requester' as RoomApprovers,
+  team_account_approvers: 'any_member' as RoomTeamAccountApprovers,
   agent_turns: 'asked' as 'asked' | 'every_message',
   guests_may_ask: true,
   requests_per_hour: 30,
@@ -29,11 +36,12 @@ export type RoomPolicyValues = typeof ROOM_POLICY_DEFAULTS;
 
 /** A room's settings, or the defaults for a room that has never changed them. */
 export async function roomPolicyIn(tx: Query, spaceId: string): Promise<RoomPolicyValues> {
-  const [row] = await tx`select approvers, agent_turns, guests_may_ask, requests_per_hour,
-      requests_per_person_hour from room_policy where space_id = ${spaceId}`;
+  const [row] = await tx`select approvers, team_account_approvers, agent_turns, guests_may_ask,
+      requests_per_hour, requests_per_person_hour from room_policy where space_id = ${spaceId}`;
   if (!row) return { ...ROOM_POLICY_DEFAULTS };
   return {
     approvers: String(row.approvers) as RoomApprovers,
+    team_account_approvers: row.team_account_approvers === 'owners' ? 'owners' : 'any_member',
     agent_turns: row.agent_turns === 'every_message' ? 'every_message' : 'asked',
     guests_may_ask: row.guests_may_ask === true,
     requests_per_hour: Number(row.requests_per_hour),
@@ -50,7 +58,50 @@ export type RoomAuthority = {
   /** Null when nothing records who asked; then no one is the requester. */
   requestedBy: string | null;
   approvers: RoomApprovers;
+  /** Which of the room's rules named `approvers`: its general one, or its team-account one. */
+  rule: 'room' | 'team_accounts';
 };
+
+/** What one permission is about, as far as choosing its rule goes. */
+export type ApprovalSubject = {
+  /** The connection the action goes through, if any. */
+  connectionId: string | null;
+};
+
+/**
+ * The rule that names who decides one action of a room's request. An action
+ * through one of the room's own accounts follows the team-account rule; any
+ * other follows the room's rule, where a guest's request goes to the owners
+ * under "the person who asked". Rules for one account or one kind of action
+ * would be chosen here, ahead of these.
+ */
+export function approverRuleFor(
+  policy: Pick<RoomPolicyValues, 'approvers' | 'team_account_approvers'>,
+  action: { teamAccount: boolean; guestAsked: boolean },
+): Pick<RoomAuthority, 'approvers' | 'rule'> {
+  if (action.teamAccount)
+    return { approvers: policy.team_account_approvers, rule: 'team_accounts' };
+  return {
+    approvers: policy.approvers === 'requester' && action.guestAsked ? 'owners' : policy.approvers,
+    rule: 'room',
+  };
+}
+
+/**
+ * Whether a connection is one of a room's own accounts: in the room's space,
+ * marked for the room, and not one of the tools every room has. A person's own
+ * account lives in their own space, so it is never one.
+ */
+export async function isTeamAccount(
+  tx: Query,
+  spaceId: string,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (!connectionId) return false;
+  const [row] = await tx`select 1 from connection where id = ${connectionId}
+    and space_id = ${spaceId} and shared_use = 'room' and not (configuration ? 'builtin')`;
+  return Boolean(row);
+}
 
 /**
  * Whether a job is a room's work, and if so whose request it is. A job of a
@@ -58,8 +109,14 @@ export type RoomAuthority = {
  * principal holds are all the room's; anything else is a person's own and
  * returns null. A room's job that names no request decides under the room's
  * rule with no requester, so only `any_member` or `owners` can answer it.
+ * Given the action a permission is about, the rule is the one for that action
+ * (`approverRuleFor`); left out, it is the room's general rule.
  */
-export async function roomAuthorityOf(tx: Query, jobId: string): Promise<RoomAuthority | null> {
+export async function roomAuthorityOf(
+  tx: Query,
+  jobId: string,
+  subject?: ApprovalSubject,
+): Promise<RoomAuthority | null> {
   const [row] = await tx`select j.id, j.space_id, j.audience, j.requested_by_principal_id,
       j.room_thread_id, p.kind as principal_kind, r.id as parent_id, r.audience as parent_audience,
       r.requested_by_principal_id as parent_requested_by, r.room_thread_id as parent_thread_id
@@ -91,10 +148,10 @@ export async function roomAuthorityOf(tx: Query, jobId: string): Promise<RoomAut
     requestJobId: request.id,
     threadId: request.threadId,
     requestedBy: request.requestedBy,
-    approvers:
-      policy.approvers === 'requester' && (await guestAsked(tx, request.requestedBy))
-        ? 'owners'
-        : policy.approvers,
+    ...approverRuleFor(policy, {
+      teamAccount: await isTeamAccount(tx, spaceId, subject?.connectionId ?? null),
+      guestAsked: await guestAsked(tx, request.requestedBy),
+    }),
   };
 }
 
@@ -140,6 +197,10 @@ export async function mayDecide(
 
 /** Who the room is waiting for, in a person's words. */
 export function waitingFor(authority: RoomAuthority, names: ReadonlyMap<string, string>): string {
+  if (authority.rule === 'team_accounts')
+    return authority.approvers === 'owners'
+      ? "It goes through an account the room uses. Waiting for one of the room's owners to answer it."
+      : 'It goes through an account the room uses, so anyone in the room who is not a guest can answer it.';
   const asker = authority.requestedBy ? names.get(authority.requestedBy) : undefined;
   switch (authority.approvers) {
     case 'requester':

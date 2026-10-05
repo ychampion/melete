@@ -201,12 +201,24 @@ function succeeding(manifest: ConnectorManifest): Connector {
     },
   };
 }
-async function install(spaceId: string, manifest: ConnectorManifest, sharedUse: 'owner' | 'room') {
+/**
+ * Install a connection in a space. `builtin` marks it as one of the tools every
+ * room has, which the room's general rule answers; without it, a connection
+ * marked for a room is one of the room's own accounts.
+ */
+async function install(
+  spaceId: string,
+  manifest: ConnectorManifest,
+  sharedUse: 'owner' | 'room',
+  builtin = false,
+) {
   const id = recordId('conn');
   const scopes = manifest.tools.map((tool) => tool.name);
-  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+  const configuration = builtin ? { builtin: `test_${manifest.name}` } : {};
+  await database().sql`insert into connection (id, space_id, provider, label, scopes, shared_use,
+      configuration)
     values (${id}, ${spaceId}, ${manifest.provider}, ${`${manifest.name} ${sharedUse}`},
-      ${JSON.stringify(scopes)}::jsonb, ${sharedUse})`;
+      ${JSON.stringify(scopes)}::jsonb, ${sharedUse}, ${JSON.stringify(configuration)}::jsonb)`;
   registry.register(id, succeeding(manifest));
   return id;
 }
@@ -308,7 +320,10 @@ async function ownWork(person: Person, objective: string) {
   );
   return { spaceId: String(own.id), claims: (await claim(row.id)).claims as CapabilityClaims };
 }
-/** A room Alice owns, with Bob and Carol as members and Dan as a guest. */
+/**
+ * A room Alice owns, with Bob and Carol as members and Dan as a guest. `notes`
+ * is one of the room's own tools, so the room's general rule answers it.
+ */
 async function makeRoom(name: string) {
   const made = roomDetail.parse(
     await ok(send(world.alice.cookie, '/rooms', 'POST', { name }), 201),
@@ -326,7 +341,7 @@ async function makeRoom(name: string) {
   );
   const token = new URLSearchParams(invited.path.split('?')[1] ?? '').get('token');
   await ok(send(world.dan.cookie, '/invites/accept', 'POST', { token }));
-  const notes = await install(roomId, notesManifest, 'room');
+  const notes = await install(roomId, notesManifest, 'room', true);
   return { roomId, notes };
 }
 async function startThread(person: Person, roomId: string, text: string) {
@@ -1158,7 +1173,7 @@ withDb('room approvals', () => {
       kind: 'calendar.create',
       payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
     });
-    // The room's rule decides it: the person who asked answers.
+    // The room's rule for its own accounts decides it.
     expect(proposed.requires_approval).toBe(true);
   }, 90_000);
 
@@ -1440,12 +1455,217 @@ withDb('room approvals', () => {
       kind: 'tasks.create',
       payload: { title: 'Book the venue' },
     });
-    // It waits for the room's owner; the reviewer was never asked.
+    // It waits for the people the room names; the reviewer was never asked.
     expect(proposed.requires_approval).toBe(true);
     expect(reviews).toBe(0);
     expect(await decision(proposed.approval_id ?? '')).toEqual({
       decision: null,
       decided_by: null,
     });
+  }, 90_000);
+
+  /** A room as `makeRoom` makes it, plus a team account: notes posted from the room's own account. */
+  async function teamRoom(name: string) {
+    const made = await makeRoom(name);
+    return { ...made, team: await install(made.roomId, notesManifest, 'room') };
+  }
+  const allowOf = (seen: { version: string }, hash: string) => ({
+    option: 'allow_once' as const,
+    version: seen.version,
+    payload_hash: hash,
+  });
+  /** Who is told of a permission's decision, by push. */
+  async function toldOf(approvalId: string) {
+    const { db, sql } = database();
+    const push = new PushService(db, { keys: null, subject: null, extraOrigins: [] });
+    const since = new Date(Date.now() - 60_000);
+    for (const person of Object.values(world)) await push.collectDecisions(person.id, since);
+    const rows = await sql`select principal_id from push_intent
+      where dedup_key like ${`decision:approval:${approvalId}:%`} and dropped_at is null`;
+    return rows.map((row) => String(row.principal_id)).sort();
+  }
+
+  test("a member approves another member's send through a team account, whatever the room's general rule", async () => {
+    const { roomId, team } = await teamRoom('Team send');
+    // The room's general rule stays with the person who asked.
+    expect(
+      roomPolicyResponse.parse(await ok(send(world.carol.cookie, `/rooms/${roomId}/policy`)))
+        .policy,
+    ).toMatchObject({ approvers: 'requester', team_account_approvers: 'any_member' });
+    const asked = await askAndWait(world.bob, roomId, team);
+    const { card: seen } = await card(world.carol, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([
+      world.alice.id,
+      world.bob.id,
+      world.carol.id,
+    ]);
+    expect(seen.why.join(' ')).toContain(
+      'It goes through an account the room uses, so anyone in the room who is not a guest can answer it.',
+    );
+    expect(await toldOf(asked.approvalId)).toEqual(
+      [world.alice.id, world.bob.id, world.carol.id].sort(),
+    );
+    const answered = await ok<{ decided_by: { principal_id: string } }>(
+      answer(world.carol, roomId, asked.approvalId, allowOf(seen, asked.hash)),
+    );
+    expect(answered.decided_by.principal_id).toBe(world.carol.id);
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.carol.id,
+    });
+  }, 90_000);
+
+  test('the person who asked approves their own team-account send under the any-member rule', async () => {
+    const { broker } = database();
+    const { roomId, team } = await teamRoom('Own team send');
+    const asked = await askAndWait(world.bob, roomId, team);
+    // Checked where the answer is recorded, whichever route it came by.
+    await broker.decide(
+      asked.actionId,
+      { decision: 'approved', payload_hash: asked.hash },
+      undefined,
+      world.bob.id,
+    );
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.bob.id,
+    });
+  }, 90_000);
+
+  test('a guest never approves a team-account send, under either team-account rule, even their own', async () => {
+    const { broker } = database();
+    const { roomId, team } = await teamRoom('Guest team send');
+    const theirs = await askAndWait(world.dan, roomId, team);
+    const members = await askAndWait(world.bob, roomId, team);
+    const refusal = (asked: { actionId: string; hash: string }) =>
+      broker
+        .decide(
+          asked.actionId,
+          { decision: 'approved', payload_hash: asked.hash },
+          undefined,
+          world.dan.id,
+        )
+        .then(
+          () => 'decided',
+          (error: { code?: string }) => error.code,
+        );
+    for (const rule of ['any_member', 'owners'] as const) {
+      await setPolicy(roomId, { team_account_approvers: rule });
+      for (const asked of [theirs, members]) {
+        const { card: seen } = await card(world.dan, roomId, asked.threadId, asked.approvalId);
+        expect(seen.eligible_approvers?.map((person) => person.principal_id)).not.toContain(
+          world.dan.id,
+        );
+        for (const option of ['allow_once', 'deny'] as const)
+          expect(
+            (
+              await answer(world.dan, roomId, asked.approvalId, {
+                ...allowOf(seen, asked.hash),
+                option,
+              })
+            ).status,
+          ).toBe(403);
+        expect(await refusal(asked)).toBe('scope_denied');
+        expect(await toldOf(asked.approvalId)).not.toContain(world.dan.id);
+      }
+    }
+    expect(await decision(theirs.approvalId)).toEqual({ decision: null, decided_by: null });
+    expect(await decision(members.approvalId)).toEqual({ decision: null, decided_by: null });
+  }, 90_000);
+
+  test("under the owners' team-account rule only owners approve a team-account send, and only they are told", async () => {
+    const { roomId, team } = await teamRoom('Owners team send');
+    // A member may not change it.
+    expect(
+      (
+        await send(world.bob.cookie, `/rooms/${roomId}/policy`, 'PUT', {
+          team_account_approvers: 'owners',
+        })
+      ).status,
+    ).toBe(403);
+    // The general rule says anyone; the owners' rule for the team accounts is stricter and holds.
+    const policy = await setPolicy(roomId, {
+      approvers: 'any_member',
+      team_account_approvers: 'owners',
+    });
+    expect(policy).toMatchObject({ approvers: 'any_member', team_account_approvers: 'owners' });
+    const asked = await askAndWait(world.bob, roomId, team);
+    const { card: seen } = await card(world.bob, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.alice.id]);
+    expect(seen.why.join(' ')).toContain(
+      "It goes through an account the room uses. Waiting for one of the room's owners to answer it.",
+    );
+    expect(await toldOf(asked.approvalId)).toEqual([world.alice.id]);
+    // The agent is told who answers what goes through the room's own accounts.
+    const opened = await startThread(world.carol, roomId, '@Melete post the notes again');
+    const { bundle } = await claim(opened.request_job_id ?? '');
+    expect(bundle.job.objective).toContain(
+      "What it does through the room's own accounts is answered only by the room's owners.",
+    );
+    for (const person of [world.bob, world.carol, world.dan])
+      expect(
+        (await answer(person, roomId, asked.approvalId, allowOf(seen, asked.hash))).status,
+      ).toBe(403);
+    await ok(answer(world.alice, roomId, asked.approvalId, allowOf(seen, asked.hash)));
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.alice.id,
+    });
+  }, 90_000);
+
+  test("an action outside the team accounts still follows the room's general rule", async () => {
+    const { roomId, notes, team } = await teamRoom('Room tools');
+    expect(team).not.toBe(notes);
+    // One of the room's own tools, asked by Bob: Bob alone answers, as the general rule says.
+    const asked = await askAndWait(world.bob, roomId, notes);
+    const { card: seen } = await card(world.carol, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.bob.id]);
+    expect(await toldOf(asked.approvalId)).toEqual([world.bob.id]);
+    for (const person of [world.alice, world.carol, world.dan])
+      expect(
+        (await answer(person, roomId, asked.approvalId, allowOf(seen, asked.hash))).status,
+      ).toBe(403);
+    await ok(answer(world.bob, roomId, asked.approvalId, allowOf(seen, asked.hash)));
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.bob.id,
+    });
+  }, 90_000);
+
+  test('when approvers leave, a team-account permission is withdrawn and the request is told', async () => {
+    const { sql } = database();
+    const { roomId, team } = await teamRoom('Team leaving');
+    const asked = await askAndWait(world.bob, roomId, team);
+    const { card: seen } = await card(world.alice, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toContain(world.carol.id);
+    // Carol, who could answer it, leaves: it is withdrawn, and the request is told.
+    await ok(send(world.carol.cookie, `/rooms/${roomId}/members/${world.carol.id}`, 'DELETE'));
+    expect(await decision(asked.approvalId)).toEqual({ decision: 'denied', decided_by: 'policy' });
+    const told = await sql`select payload from event where job_id = ${asked.requestId}
+      and type = 'approval_decided'`;
+    expect(told.map((entry) => [entry.payload.approval_id, entry.payload.reason])).toEqual([
+      [asked.approvalId, 'policy_changed'],
+    ]);
+    // Asked again, it names only who is still in the room; Carol finds nothing.
+    const again = await proposeNotes(asked.requestId, team, ['dana@example.test']);
+    const { card: next } = await card(world.alice, roomId, asked.threadId, again.approvalId);
+    expect(next.eligible_approvers?.map((person) => person.principal_id)).toEqual([
+      world.alice.id,
+      world.bob.id,
+    ]);
+    expect(
+      (await answer(world.carol, roomId, again.approvalId, allowOf(next, again.hash))).status,
+    ).toBe(404);
+    // Bob, who asked, leaves too: his request ends with him, and nothing is left waiting.
+    await ok(send(world.bob.cookie, `/rooms/${roomId}/members/${world.bob.id}`, 'DELETE'));
+    expect(await decision(again.approvalId)).toEqual({ decision: 'denied', decided_by: 'policy' });
+    const [request] = await sql`select state from job where id = ${asked.requestId}`;
+    expect(request?.state).toBe('cancelled');
+    const view = roomThreadView.parse(
+      await ok(send(world.alice.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
+    );
+    expect(view.requests.find((entry) => entry.job_id === asked.requestId)?.permissions).toEqual(
+      [],
+    );
   }, 90_000);
 });

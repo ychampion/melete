@@ -46,6 +46,8 @@ type Request = {
   /** Permissions waiting now, each naming who may answer it. */
   permissions: Permission[];
   decisions: z.infer<typeof C.roomDecision>[];
+  /** What it sends goes through an account the room uses, so the team-account rule answers it. */
+  team_account?: boolean;
   timer?: ReturnType<typeof setTimeout>;
 };
 type Thread = {
@@ -395,6 +397,7 @@ export function mountRoomsMock(
       threads: new Map(),
       policy: {
         approvers: 'requester',
+        team_account_approvers: 'any_member',
         agent_turns: 'asked',
         guests_may_ask: true,
         requests_per_hour: 30,
@@ -474,16 +477,24 @@ export function mountRoomsMock(
   const eligibleFor = (room: Room, request: Request): string[] => {
     const asker = request.requested_by;
     const owners = [...room.members.keys()].filter((id) => roleIn(room, id) === 'owner');
-    if (room.policy.approvers === 'owners') return owners;
-    if (room.policy.approvers === 'any_member')
-      return [...room.members.keys()].filter((id) => {
+    const members = () =>
+      [...room.members.keys()].filter((id) => {
         const role = roleIn(room, id);
         return role === 'owner' || role === 'member';
       });
+    // Through the room's own accounts, the room's team-account rule answers.
+    if (request.team_account)
+      return room.policy.team_account_approvers === 'owners' ? owners : members();
+    if (room.policy.approvers === 'owners') return owners;
+    if (room.policy.approvers === 'any_member') return members();
     const role = roleIn(room, asker);
     return role === 'guest' ? owners : role ? [asker] : [];
   };
   const waitingLine = (room: Room, request: Request) => {
+    if (request.team_account)
+      return room.policy.team_account_approvers === 'owners'
+        ? "It goes through an account the room uses. Waiting for one of the room's owners to answer it."
+        : 'It goes through an account the room uses, so anyone in the room who is not a guest can answer it.';
     if (room.policy.approvers === 'owners') return "Waiting for one of the room's owners.";
     if (room.policy.approvers === 'any_member') return 'Any member of the room can answer it.';
     return roleIn(room, request.requested_by) === 'guest'
@@ -614,6 +625,10 @@ Thanks`,
         }
         // An ask to send something waits on the person the room's rule names.
         if (SENDS.test(text)) {
+          // Sent from an account the room uses, when its owners added one.
+          request.team_account = [...deps.store.connections.values()].some(
+            (entry) => entry.space_id === room.id && entry.status !== 'revoked' && !entry.builtin,
+          );
           const permission = permissionFor(room, request, `Send the notes on ${thread.title}`);
           request.permissions.push(permission);
           pushEvent(thread, request, { type: 'permission', permission });
