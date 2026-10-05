@@ -71,7 +71,8 @@ What each version ships.
 ### Preview (off by default)
 
 - **Rooms and shared work.** Shared rooms with one agent, their own memory and
-  approval rules, guests, hand-offs, team accounts and a chat-platform adapter.
+  approval rules, guests, hand-offs, team accounts and approvals, and a link to
+  a chat platform.
   These stay off unless an operator sets `MELETE_PREVIEW_MULTIPLAYER=true`, and
   they may change before they ship.
 
@@ -100,6 +101,9 @@ What each version ships.
    (20), `MELETE_TRASH_DAYS` (7) and `MELETE_TRASH_MAX_MB`, upload limits
    (`MELETE_ATTACHMENT_*`, off by default), and `MELETE_MODEL_TRIAGE`. See
    `deploy/.env.example` for every name.
+7. Rooms, team accounts and approvals, guests, hand-offs and the chat-platform
+   link are off by default. Set `MELETE_PREVIEW_MULTIPLAYER=true` to turn them
+   on. Existing rooms data is kept either way.
 
 ## v0.2.0 — 2026-09-18
 
