@@ -312,6 +312,12 @@ export async function assembleAttemptKnowledge(
   throw new MemoryError('stale_context');
 }
 
+/**
+ * Gets an attempt's engine ready ahead of its start; the function it returns
+ * gives that engine up when the attempt never starts.
+ */
+export type PrepareEngine = (bundle: AttemptBundle, signal: AbortSignal) => () => void;
+
 /** Existing runtime contract stays unchanged; aborted context is discarded rather than resumed. */
 export function withMemoryRuntime(
   runtime: RuntimeAdapter,
@@ -341,9 +347,15 @@ export function withMemoryRuntime(
      * reads a request, and recall stays lexical; a local one always may.
      */
     embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
+    /**
+     * Starts getting the attempt's engine ready while its memory is recalled,
+     * and returns what gives that engine up if the attempt never starts. The
+     * engine is told nothing of what is recalled until the attempt starts.
+     */
+    prepareEngine?: PrepareEngine;
   } = {},
 ): RuntimeAdapter {
-  return {
+  const recalling: RuntimeAdapter = {
     capabilities: () => runtime.capabilities(),
     async start(bundle, sink, signal) {
       const scope = await scopeForJob(bundle.attempt.job_id);
@@ -528,6 +540,20 @@ export function withMemoryRuntime(
         clearInterval(timer);
         unregister();
         next.knowledge.length = 0;
+      }
+    },
+  };
+  const prepareEngine = options.prepareEngine;
+  if (!prepareEngine) return recalling;
+  return {
+    capabilities: () => recalling.capabilities(),
+    async start(bundle, sink, signal) {
+      const giveUp = prepareEngine(bundle, signal);
+      try {
+        return await recalling.start(bundle, sink, signal);
+      } finally {
+        // Once the attempt took its engine, this does nothing.
+        giveUp();
       }
     },
   };
