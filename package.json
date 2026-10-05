@@ -1,6 +1,6 @@
 {
   "name": "melete",
-  "version": "0.1.0-pre",
+  "version": "0.2.1",
   "devDependencies": {
     "@biomejs/biome": "2.5.13",
     "@types/bun": "1.4.2",

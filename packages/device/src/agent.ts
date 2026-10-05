@@ -21,7 +21,7 @@ import {
 import { Refusal } from './policy.ts';
 import { runTool, type ToolContext } from './tools.ts';
 
-export const VERSION = '0.1.0-pre';
+export const VERSION = '0.2.1';
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 

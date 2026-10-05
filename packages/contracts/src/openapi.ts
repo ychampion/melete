@@ -1254,7 +1254,7 @@ function roomsPaths() {
   };
 }
 
-export const OPENAPI_VERSION = '0.1.0-pre';
+export const OPENAPI_VERSION = '0.2.1';
 
 export function buildOpenApiDocument() {
   return createDocument(
