@@ -4,7 +4,8 @@
  * A mailbox hands back the messages that arrived since its cursor and a new
  * cursor. A calendar hands back every occurrence in a window, one per
  * instance of a repeating event, and the poller works out what changed by
- * comparing with what it kept from the last read. Neither ever sends anything.
+ * comparing with what it kept from the last read. A Drive hands back the files
+ * that changed since its cursor, as metadata. None ever sends anything.
  */
 import type { MailMessage } from '../connectors/mail-transport.ts';
 
@@ -158,6 +159,56 @@ export async function sourceError(response: Response): Promise<SourceError> {
   return new SourceError(response.status, retryAfterOf(response));
 }
 
+/**
+ * What a Drive says about one file: metadata only, never its contents. The
+ * name and the last editor's name are words someone else chose, so they are
+ * treated as the account's content, as a mail subject is.
+ */
+export type DocumentFile = {
+  id: string;
+  name: string;
+  mime_type: string;
+  /** When anyone last changed it, as a UTC instant. */
+  modified_time: string | null;
+  /** When the account's own person last changed it; null when they never have. */
+  modified_by_me_time: string | null;
+  /** Whether the last change was the account's own. Null when the Drive does not say. */
+  last_modifier_me: boolean | null;
+  /** Who made the last change, as the Drive names them. */
+  last_modifier: string | null;
+  shared: boolean;
+  trashed: boolean;
+  /** The Drive's own version number, which grows with every change to the file. */
+  version: string | null;
+};
+
+/** One entry in a Drive's change feed: a file as it is now, or that it was removed. */
+export type DocumentChange = {
+  file_id: string;
+  removed: boolean;
+  /** Null when the file was removed or the account can no longer see it. */
+  file: DocumentFile | null;
+};
+
+export type DocumentRead = {
+  /** Where the next read starts. */
+  cursor: string;
+  changes: DocumentChange[];
+  /** False when the read stopped at its page budget; the cursor then resumes there. */
+  complete: boolean;
+};
+
+/** A Drive that can say what changed since a cursor. A null cursor starts from now. */
+export interface DocumentChanges {
+  changes(cursor: string | null, options: { limit: number }): Promise<DocumentRead>;
+}
+
+/** A connector that can read one subject's fields now, for a clock's fresh check. */
+export type SubjectReader = {
+  read(subject: { key: string; ref: string | null }): Promise<Record<string, unknown> | 'gone'>;
+};
+
 export type SignalSource =
   | ({ stream: 'mail' } & MailChanges)
-  | ({ stream: 'calendar' } & CalendarOccurrences);
+  | ({ stream: 'calendar' } & CalendarOccurrences)
+  | ({ stream: 'documents' } & DocumentChanges);

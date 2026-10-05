@@ -52,6 +52,7 @@ import { createFilesConnector, type SentFiles } from './files.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { GOOGLE_ENDPOINTS, type GoogleEndpoints, googleIssuer } from './google.ts';
 import { GoogleCalendarConnector } from './google-calendar.ts';
+import { GoogleDriveConnector } from './google-drive.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
 import { openConfiguredMcpConnector } from './mcp-connector.ts';
@@ -306,6 +307,7 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ics') }),
   z.object({ kind: z.literal('gmail'), account: z.email() }),
   z.object({ kind: z.literal('google_calendar'), account: z.email() }),
+  z.object({ kind: z.literal('google_drive'), account: z.email() }),
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
@@ -587,7 +589,8 @@ export class ConnectorFactory {
     }
     if (
       (stored?.kind === 'gmail' && row.provider === 'imap') ||
-      (stored?.kind === 'google_calendar' && row.provider === 'caldav')
+      (stored?.kind === 'google_calendar' && row.provider === 'caldav') ||
+      (stored?.kind === 'google_drive' && row.provider === 'drive')
     ) {
       const google = options.google;
       if (!google || !row.secretRef) return undefined;
@@ -600,6 +603,15 @@ export class ConnectorFactory {
         // A refresh sends no redirect address.
         issuer: googleIssuer(google.client, '', endpoints),
       });
+      if (stored.kind === 'google_drive')
+        return ownerOnly(
+          new GoogleDriveConnector({
+            id: row.id,
+            spaceId: row.spaceId,
+            base: endpoints.drive,
+            access,
+          }),
+        );
       if (stored.kind === 'google_calendar')
         return ownerOnly(
           new GoogleCalendarConnector({

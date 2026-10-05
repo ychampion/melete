@@ -8,6 +8,7 @@ import { jwtClaims, type OAuthIssuer } from '../gateway/oauth.ts';
 import {
   type AccountProvider,
   CALENDAR_GRANTS,
+  DOCUMENT_GRANTS,
   MAIL_READ_GRANTS,
   SignInFailure,
 } from './account-sign-in.ts';
@@ -21,6 +22,8 @@ export type GoogleEndpoints = {
   gmail: string;
   /** The signed-in person's primary calendar, `.../calendar/v3/calendars/primary`. */
   calendar: string;
+  /** The signed-in person's Drive, `.../drive/v3`. */
+  drive: string;
 };
 
 export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
@@ -29,18 +32,22 @@ export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
   revoke: 'https://oauth2.googleapis.com/revoke',
   gmail: 'https://gmail.googleapis.com/gmail/v1/users/me',
   calendar: 'https://www.googleapis.com/calendar/v3/calendars/primary',
+  drive: 'https://www.googleapis.com/drive/v3',
 };
 
 export const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 
 /**
- * Reading mail, sending it, and the calendar's events. Drafts stay in Melete,
- * where approval already covers them, so no Gmail draft scope is asked for.
+ * Reading mail, sending it, the calendar's events, and what changes in Drive.
+ * Drafts stay in Melete, where approval already covers them, so no Gmail draft
+ * scope is asked for. Drive is read as metadata only (names, times, who
+ * changed a file, whether it is shared), never a file's contents.
  */
 export const GOOGLE_SCOPES = {
   mailRead: 'https://www.googleapis.com/auth/gmail.readonly',
   mailSend: 'https://www.googleapis.com/auth/gmail.send',
   calendar: 'https://www.googleapis.com/auth/calendar.events',
+  documents: 'https://www.googleapis.com/auth/drive.metadata.readonly',
 } as const;
 
 export const GOOGLE_SIGN_IN_SCOPE = [
@@ -49,6 +56,7 @@ export const GOOGLE_SIGN_IN_SCOPE = [
   GOOGLE_SCOPES.mailRead,
   GOOGLE_SCOPES.mailSend,
   GOOGLE_SCOPES.calendar,
+  GOOGLE_SCOPES.documents,
 ].join(' ');
 
 export function googleIssuer(
@@ -107,9 +115,14 @@ export function googleProvider(
             }
           : {}),
         ...(scopes.has(GOOGLE_SCOPES.calendar) ? { calendar: CALENDAR_GRANTS } : {}),
+        ...(scopes.has(GOOGLE_SCOPES.documents) ? { documents: DOCUMENT_GRANTS } : {}),
       };
     },
-    labels: (account) => ({ mail: `Gmail (${account})`, calendar: `Google Calendar (${account})` }),
+    labels: (account) => ({
+      mail: `Gmail (${account})`,
+      calendar: `Google Calendar (${account})`,
+      documents: `Google Drive (${account})`,
+    }),
   };
 }
 

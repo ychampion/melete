@@ -814,7 +814,8 @@ export const connectionKindListResponse = z.object({
 });
 
 /**
- * Account sign-ins: one consent connects the account's mail and calendar. The
+ * Account sign-ins: one consent connects the account's mail and calendar, and
+ * with Google its Drive. The
  * issuer and scopes are the ones the service asks for, fixed in its connectors;
  * a test holds the two lists equal.
  */
@@ -823,7 +824,7 @@ export const ACCOUNT_CATALOG = [
     id: 'google',
     title: 'Google',
     description:
-      'Sign in with Google to connect Gmail and Google Calendar. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it.',
+      'Sign in with Google to connect Gmail, Google Calendar and Google Drive. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it. Drive is watched for changes to your files by name and time, never their contents.',
     covers: ['mail', 'calendar'],
     provider: 'google',
     issuer: 'https://accounts.google.com',
@@ -841,6 +842,10 @@ export const ACCOUNT_CATALOG = [
       {
         scope: 'https://www.googleapis.com/auth/calendar.events',
         label: 'See and change events in your Google calendars, each change after you approve it',
+      },
+      {
+        scope: 'https://www.googleapis.com/auth/drive.metadata.readonly',
+        label: 'See the names, times and sharing of your Google Drive files, never their contents',
       },
     ],
   },

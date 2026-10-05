@@ -69,3 +69,45 @@ export const situationView = z.strictObject({
 export type SituationView = z.infer<typeof situationView>;
 export const situationResponse = z.strictObject({ situation: situationView });
 export const situationList = z.strictObject({ situations: z.array(situationView) });
+
+/** Whose change ends a deadline on a file: anyone's, the person's own, or someone else's. */
+export const DOCUMENT_TOUCHERS = ['anyone', 'me', 'others'] as const;
+
+/**
+ * Keep a deadline on a Google Drive file: by `due_at`, the file should have
+ * been changed since `since` (now, unless said). Melete looks at the file as
+ * Drive has it `lead_seconds` before it is due and raises `deadline.at_risk`
+ * only if it is still untouched. Naming `job_id` links the work handling it,
+ * so that work hears about it too.
+ */
+export const documentDeadlineRequest = z
+  .strictObject({
+    connection_id: z.string().min(1).max(200),
+    /** The file id, or a docs.google.com or drive.google.com link to it. */
+    file: z.string().min(1).max(2048),
+    title: z.string().trim().min(1).max(120),
+    due_at: timestamp,
+    lead_seconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(7 * 86_400)
+      .default(300),
+    since: timestamp.optional(),
+    by: z.enum(DOCUMENT_TOUCHERS).default('anyone'),
+    job_id: z.string().min(1).max(200).optional(),
+  })
+  .meta({ id: 'DocumentDeadlineRequest' });
+export type DocumentDeadlineRequest = z.infer<typeof documentDeadlineRequest>;
+
+export const deadlineView = z.strictObject({
+  id: z.string(),
+  subject_key: z.string(),
+  title: z.string(),
+  due_at: timestamp,
+  /** When Melete looks next. */
+  fire_at: timestamp,
+  person_set: z.boolean(),
+  state: z.string(),
+});
+export const deadlineResponse = z.strictObject({ deadline: deadlineView });

@@ -1,10 +1,11 @@
 /**
  * Reading what changed in connected accounts.
  *
- * Something has to put a `mail.received` or a `calendar.event.changed` where a
- * waiting job or a standing run can hear it. This is that something. Once a
- * minute it looks for accounts that are due: a mailbox or calendar that some
- * live trigger listens to, whose job may use it. For each it reads what
+ * Something has to put a `mail.received`, a `calendar.event.changed` or a
+ * `document.changed` where a waiting job or a standing run can hear it. This
+ * is that something. Once a minute it looks for accounts that are due: a
+ * mailbox, calendar or Drive that some live trigger listens to, whose job may
+ * use it, or that one of Melete's own detectors or deadlines needs. For each it reads what
  * changed since its cursor, through the connector's own read-only code, and
  * hands each observation to `TriggerService.deliver`, which dedupes and wakes.
  *
@@ -36,6 +37,8 @@
 import { createHash } from 'node:crypto';
 import {
   CALENDAR_EVENT_NAMES,
+  DOCUMENT_CHANGED,
+  DOCUMENT_EVENT_NAMES,
   isTerminal,
   jobState,
   MAIL_RECEIVED,
@@ -54,6 +57,9 @@ import type { TriggerService } from '../jobs/triggers.ts';
 import {
   type CalendarCursor,
   diffCalendar,
+  documentFields,
+  documentObservation,
+  documentSubjectKey,
   type KeptOccurrence,
   mailDedupKey,
   mailObservation,
@@ -62,7 +68,7 @@ import {
   vanished,
 } from './observations.ts';
 import { CalendarTooLarge } from './occurrences.ts';
-import type { Lookup, SignalSource } from './types.ts';
+import type { DocumentChange, Lookup, SignalSource } from './types.ts';
 
 export type Stream = SignalSource['stream'];
 
@@ -70,6 +76,8 @@ export type Stream = SignalSource['stream'];
 export const CALENDAR_WINDOW_DAYS = 14;
 /** Most new messages one read of a mailbox takes; the cursor stops after the last. */
 export const MAIL_READ_LIMIT = 50;
+/** Most file changes one read of a Drive takes; the cursor stops after the last. */
+export const DOCUMENT_READ_LIMIT = 500;
 /** The shortest and longest time between two reads of one account. */
 export const MIN_POLL_SECONDS = 60;
 export const MAX_POLL_SECONDS = 3600;
@@ -92,6 +100,18 @@ export const MAX_CONFIRMS = 20;
 export function streamOf(eventName: string): Stream | null {
   if (eventName === MAIL_RECEIVED) return 'mail';
   if ((CALENDAR_EVENT_NAMES as readonly string[]).includes(eventName)) return 'calendar';
+  if (eventName === DOCUMENT_CHANGED) return 'documents';
+  return null;
+}
+
+/**
+ * The stream an account of this provider is read as, for reading it without
+ * a trigger (watching by default): its mail, its calendar, or its Drive.
+ */
+export function providerStream(provider: string): Stream | null {
+  if (provider === 'imap') return 'mail';
+  if (provider === 'caldav') return 'calendar';
+  if (provider === 'drive') return 'documents';
   return null;
 }
 
@@ -194,7 +214,7 @@ export class SignalPoller {
         join connection c on c.id = t.spec->>'connection_id'
       where t.enabled and t.kind in ('event', 'watch')
         and c.status = 'active' and c.space_id = j.space_id
-        and t.spec->>'event_name' in ${this.deps.sql([MAIL_RECEIVED, ...CALENDAR_EVENT_NAMES])}
+        and t.spec->>'event_name' in ${this.deps.sql([MAIL_RECEIVED, ...CALENDAR_EVENT_NAMES, ...DOCUMENT_EVENT_NAMES])}
       order by c.id, t.job_id`;
     const wanted = new Map<string, { spaceId: string; stream: Stream; seconds: number }>();
     const audiences = new Map<string, JobConnectionAudience | null>();
@@ -251,9 +271,10 @@ export class SignalPoller {
         if (wanted.has(`${row.connection_id} ${row.stream}`)) continue;
         await tx`delete from source_cursor
           where connection_id = ${row.connection_id} and stream = ${row.stream}`;
-        if (row.stream === 'calendar')
+        if (row.stream === 'calendar' || row.stream === 'documents')
           await tx`delete from subject_state
-            where connection_id = ${row.connection_id} and type = 'calendar_occurrence'`;
+            where connection_id = ${row.connection_id}
+              and type = ${row.stream === 'calendar' ? 'calendar_occurrence' : 'document'}`;
       }
       for (const [key, value] of wanted) {
         if (have.get(key) === value.seconds) continue;
@@ -456,11 +477,104 @@ export class SignalPoller {
     return delivered;
   }
 
+  /**
+   * Keep the state of the files a deadline or a piece of work follows, from
+   * what a Drive read found: when each last changed, and whether by the
+   * account's own person. Files nobody follows keep nothing; a removed or
+   * binned file's state goes. Written only while the account is still the one
+   * that was read.
+   */
+  /** The files of this read a deadline or a piece of work follows, by subject key. */
+  private async followedDocuments(row: CursorRow, changes: DocumentChange[]) {
+    if (!changes.length) return new Set<string>();
+    const keys = [...new Set(changes.map((c) => documentSubjectKey(row.connection_id, c.file_id)))];
+    const found = await this.deps.sql`select subject_key from clock
+        where connection_id = ${row.connection_id} and subject_key in ${this.deps.sql(keys)}
+      union
+      select subject_key from subject_link
+        where space_id = ${row.space_id} and subject_key in ${this.deps.sql(keys)}`;
+    return new Set(found.map((entry) => String(entry.subject_key)));
+  }
+
+  /**
+   * Keep the state of the files a deadline or a piece of work follows, from
+   * what a Drive read found: when each last changed, and whether by the
+   * account's own person. Files nobody follows keep nothing; a removed or
+   * binned file's state goes. Written only while the account is still the one
+   * that was read.
+   */
+  private async keepDocuments(
+    row: CursorRow,
+    changes: DocumentChange[],
+    followed: Set<string>,
+    context: ReadContext,
+  ) {
+    if (!followed.size) return;
+    await this.deps.sql.begin(async (tx) => {
+      const [current] = await tx`select generation, status from connection
+        where id = ${row.connection_id} for share`;
+      if (
+        context.abandoned ||
+        current?.status !== 'active' ||
+        Number(current.generation) !== context.generation
+      )
+        throw new ReadAbandoned('connection changed');
+      const at = new Date(this.now()).toISOString();
+      for (const change of changes) {
+        const key = documentSubjectKey(row.connection_id, change.file_id);
+        if (!followed.has(key)) continue;
+        if (change.removed || !change.file || change.file.trashed) {
+          await tx`delete from subject_state where subject_key = ${key}
+            and connection_id = ${row.connection_id}`;
+          continue;
+        }
+        const fields = documentFields(change.file);
+        const version = createHash('sha256').update(JSON.stringify(fields)).digest('hex');
+        await tx`insert into subject_state
+            (subject_key, space_id, connection_id, type, fields, version, origin, last_changed_at)
+          values (${key}, ${row.space_id}, ${row.connection_id}, 'document',
+            ${JSON.stringify(fields)}::jsonb, ${version}, 'external_content',
+            ${fields.modified_time ?? at}::timestamptz)
+          on conflict (subject_key) do update
+            set fields = excluded.fields, version = excluded.version,
+              last_changed_at = excluded.last_changed_at
+            where subject_state.connection_id = excluded.connection_id`;
+      }
+    });
+  }
+
   private async poll(
     row: CursorRow,
     source: SignalSource,
     context: ReadContext,
   ): Promise<{ cursor: object; delivered: number; note?: string | null }> {
+    if (source.stream === 'documents') {
+      const saved = (row.cursor as { value?: unknown } | null)?.value;
+      const read = await source.changes(typeof saved === 'string' ? saved : null, {
+        limit: DOCUMENT_READ_LIMIT,
+      });
+      const readAt = new Date(this.now()).toISOString();
+      const observations: Observation[] = [];
+      for (const change of read.changes) {
+        try {
+          observations.push(documentObservation(row.connection_id, change, readAt));
+        } catch {
+          process.stderr.write(`signals: item_skipped unreadable ${row.connection_id} documents\n`);
+        }
+      }
+      // Which files are followed is read before delivery, which may settle their deadlines.
+      const followed = await this.followedDocuments(row, read.changes);
+      await this.stillCurrent(row.connection_id, context);
+      const delivered = await this.deliverAll(
+        row.connection_id,
+        read.cursor,
+        observations,
+        context,
+      );
+      // What a deadline follows is kept only after what it led to was delivered.
+      await this.keepDocuments(row, read.changes, followed, context);
+      return { cursor: { value: read.cursor }, delivered };
+    }
     if (source.stream === 'mail') {
       const saved = (row.cursor as { value?: unknown } | null)?.value;
       const read = await source.changes(typeof saved === 'string' ? saved : null, {

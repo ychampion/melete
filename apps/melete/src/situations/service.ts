@@ -12,7 +12,9 @@
  *    cancelled, and looks for meetings that overlap (`meeting.conflict`).
  * 3. **Clocks.** `sweep` fires the clocks that are due. A clock reads its
  *    subject again first, from its source when it can and when it is still
- *    allowed to, and settles quietly when what it guards is already done.
+ *    allowed to, and settles quietly when what it guards is already done. A
+ *    deadline on a Drive file also settles as soon as a change to the file
+ *    that ends it is read.
  *
  * Properties it keeps:
  *
@@ -38,6 +40,7 @@
  *   only work every account it names serves.
  */
 import {
+  DOCUMENT_CHANGED,
   evaluateWatch,
   isTerminal,
   type JobConstraints,
@@ -67,12 +70,15 @@ import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { isQuiet } from '../push/policy.ts';
-import type { Occurrence, SignalSource } from '../signals/types.ts';
+import { documentSubjectKey } from '../signals/observations.ts';
+import type { Occurrence, SignalSource, SubjectReader } from '../signals/types.ts';
 import {
   type Awaited,
   answers,
   conflictReason,
   DATE_ONLY_DUE,
+  type DocumentToucher,
+  documentAtRisk,
   dueWords,
   type Finding,
   fingerprintOf,
@@ -145,10 +151,7 @@ export type ClockCheck = {
   awaited?: Awaited & { id: string; found_at: string };
 };
 
-/** A connector that can read one subject's fields now, for a clock's fresh check. */
-export type SubjectReader = {
-  read(subject: { key: string; ref: string | null }): Promise<Record<string, unknown> | 'gone'>;
-};
+export type { SubjectReader };
 
 type Readable =
   | { signals?: SignalSource; subjects?: SubjectReader; catalog?: Connector['catalog'] }
@@ -252,6 +255,11 @@ export class SituationService {
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
+  }
+
+  /** The time this service keeps deadlines by. */
+  currentTime(): number {
+    return this.now();
   }
 
   get detectors(): boolean {
@@ -568,6 +576,8 @@ export class SituationService {
     delivery: { connection_id: string; event_name: string; payload: Record<string, unknown> },
     seq: number,
   ): Promise<void> {
+    // A deadline someone kept on a file is theirs, not a detector's: it settles either way.
+    if (delivery.event_name === DOCUMENT_CHANGED) return this.documentChanged(tx, delivery);
     if (!this.detectors) return;
     const name = delivery.event_name;
     const calendar = name === 'calendar.event.changed' || name === 'calendar.event.cancelled';
@@ -623,6 +633,56 @@ export class SituationService {
           updated_at = now()
         where rule = ${SITUATION_KINDS.replyOverdue} and subject_key = ${subject}
           and principal_id = ${principalId} and state in ('armed', 'checking')`);
+    }
+  }
+
+  /**
+   * A Drive file changed. Each deadline kept on it that the change ends (the
+   * file was touched since, by whoever the deadline waits for) is met now,
+   * and what it already raised is resolved. A removed or binned file ends
+   * nothing here: the clock's own look finds it gone and clears.
+   */
+  private async documentChanged(
+    tx: Transaction,
+    delivery: { connection_id: string; payload: Record<string, unknown> },
+  ): Promise<void> {
+    const { payload } = delivery;
+    const key = (payload.about as { key?: unknown } | undefined)?.key;
+    if (typeof key !== 'string' || payload.removed === true || payload.trashed === true) return;
+    const kept = await tx
+      .select()
+      .from(clock)
+      .where(
+        and(
+          eq(clock.connectionId, delivery.connection_id),
+          eq(clock.subjectKey, key),
+          eq(clock.rule, SITUATION_KINDS.deadlineAtRisk),
+          inArray(clock.state, ['armed', 'checking']),
+        ),
+      )
+      .for('update');
+    for (const entry of kept) {
+      const check = entry.check as ClockCheck;
+      const atRisk = evaluateWatch(watchPredicate.parse(check.at_risk), payload, null, {
+        now: this.now(),
+        seen: () => false,
+      });
+      if (atRisk) continue;
+      await tx
+        .update(clock)
+        .set({
+          state: 'met',
+          note: 'It was changed in time.',
+          claimedUntil: null,
+          updatedAt: new Date(this.now()),
+        })
+        .where(eq(clock.id, entry.id));
+      await this.settle(
+        tx,
+        sql`kind = ${SITUATION_KINDS.deadlineAtRisk} and subject_key = ${key}
+          and space_id = ${entry.spaceId} and principal_id = ${entry.principalId}`,
+        'resolved',
+      );
     }
   }
 
@@ -824,6 +884,64 @@ export class SituationService {
     });
     this.timeNext(made.fireAt.getTime());
     return made;
+  }
+
+  /** The space an account is in, when the person uses that space; null otherwise. */
+  async usableSpaceOf(connectionId: string, principalId: string): Promise<string | null> {
+    const [found] = rows<{ space_id: string }>(
+      await this.db.execute(sql`select c.space_id from connection c
+        join space s on s.id = c.space_id and s.removed_at is null
+        where c.id = ${connectionId}
+          and ${belongs(sql`c.space_id`, sql`${principalId}`)}`),
+    );
+    return found?.space_id ?? null;
+  }
+
+  /**
+   * A deadline on a Google Drive file: by `due`, someone (or the person, or
+   * someone else) should have changed it since `since`, which is now unless
+   * said. It is looked at `leadSeconds` before it is due, against the file as
+   * Drive has it then, and raises `deadline.at_risk` only if it is still
+   * untouched. A change read before then settles it. Kept on the file's own
+   * subject key, so work linked to the file (`jobId`) hears about it.
+   */
+  async setDocumentDeadline(input: {
+    spaceId: string;
+    principalId: string;
+    connectionId: string;
+    fileId: string;
+    title: string;
+    dueAt: Date;
+    leadSeconds: number;
+    since?: Date;
+    by?: DocumentToucher;
+    personSet: boolean;
+    jobId?: string | null;
+  }): Promise<ClockRow> {
+    const [account] = rows<{ provider: string }>(
+      await this.db.execute(sql`select provider from connection where id = ${input.connectionId}`),
+    );
+    if (!account || !producesEvent(account.provider, DOCUMENT_CHANGED))
+      throw new ServiceError(
+        'invalid_deadline',
+        'That account has no files to keep a deadline on.',
+        400,
+      );
+    const since = (input.since ?? new Date(this.now())).toISOString();
+    return this.setDeadline({
+      spaceId: input.spaceId,
+      principalId: input.principalId,
+      subjectKey: documentSubjectKey(input.connectionId, input.fileId),
+      connectionId: input.connectionId,
+      subjectRef: input.fileId,
+      title: input.title,
+      dueAt: input.dueAt,
+      leadSeconds: input.leadSeconds,
+      atRisk: watchPredicate.parse(documentAtRisk(since, input.by ?? 'anyone')),
+      fresh: true,
+      personSet: input.personSet,
+      jobId: input.jobId ?? null,
+    });
   }
 
   /**
@@ -1740,10 +1858,29 @@ export class SituationService {
    * Retry-After with every other read of the account.
    */
   async demand(): Promise<
-    Array<{ connectionId: string; spaceId: string; stream: 'mail' | 'calendar'; seconds: number }>
+    Array<{
+      connectionId: string;
+      spaceId: string;
+      stream: 'mail' | 'calendar' | 'documents';
+      seconds: number;
+    }>
   > {
-    if (!this.detectors) return [];
     const now = this.now();
+    // A Drive is read while a deadline is kept on one of its files, detectors or not.
+    const drives = rows<{ id: string; space_id: string; soon: boolean }>(
+      await this.db.execute(sql`select c.id, c.space_id,
+          bool_or(k.fire_at <= ${new Date(now + HOUR).toISOString()}::timestamptz) as soon
+        from connection c join clock k on k.connection_id = c.id
+          and k.state in ('armed', 'checking')
+        where c.status = 'active' and c.provider = 'drive'
+        group by c.id, c.space_id`),
+    ).map((row) => ({
+      connectionId: row.id,
+      spaceId: row.space_id,
+      stream: 'documents' as const,
+      seconds: row.soon ? DETECTOR_NEAR_SECONDS : DETECTOR_DAY_SECONDS,
+    }));
+    if (!this.detectors) return drives;
     const accounts = rows<{
       id: string;
       space_id: string;
@@ -1779,9 +1916,9 @@ export class SituationService {
     const wanted: Array<{
       connectionId: string;
       spaceId: string;
-      stream: 'mail' | 'calendar';
+      stream: 'mail' | 'calendar' | 'documents';
       seconds: number;
-    }> = [];
+    }> = [...drives];
     for (const account of accounts) {
       if (
         (account.device || account.clocked) &&

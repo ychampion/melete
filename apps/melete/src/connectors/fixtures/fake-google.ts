@@ -1,6 +1,6 @@
 /**
- * A loopback stand-in for Google's sign-in, Gmail API and Calendar API, for
- * tests only. The token endpoint checks PKCE, the client, its secret and the
+ * A loopback stand-in for Google's sign-in, Gmail API, Calendar API and Drive
+ * API (metadata and the change feed), for tests only. The token endpoint checks PKCE, the client, its secret and the
  * redirect address; every API call needs a current access token carrying the
  * scope that call needs. Switches make it grant less, refuse a refresh, or give
  * a sent message a Message-ID of its own, so a test can see the client cope.
@@ -23,6 +23,18 @@ export type FakeGoogleOptions = {
 };
 
 type Stored = { id: string; raw: Buffer; labels: string[] };
+/** A Drive file as the fake keeps it, in Drive's own field names. */
+export type FakeDriveFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: string;
+  modifiedByMeTime?: string;
+  lastModifyingUser?: { displayName?: string; me?: boolean };
+  shared: boolean;
+  trashed: boolean;
+  version: string;
+};
 type Event = Record<string, unknown> & { id: string; etag: string; status?: string };
 
 export type FakeGoogle = {
@@ -37,8 +49,21 @@ export type FakeGoogle = {
   /** The `sendUpdates` each event create asked for (null: guests not told). */
   notified: (string | null)[];
   deliver(raw: string): string;
+  /** Drive's files, and every change in order; a page token is a place in the list. */
+  files: Map<string, FakeDriveFile>;
+  driveChanges: { fileId: string; removed: boolean }[];
+  /** Every Drive request's path and query, to see what was asked for. */
+  driveRequests: URL[];
+  /** Answer the next Drive calls with this status (and Retry-After, and reason) instead. */
+  driveFault: { status: number; retryAfter?: number; reason?: string; times: number } | null;
+  /** Add or change a file, as an edit in Drive would, and record the change. */
+  putFile(file: Partial<FakeDriveFile> & { id: string }): FakeDriveFile;
+  /** Remove a file for good, and record the change. */
+  removeFile(id: string): void;
   /** Make every access token handed out so far stale, so the next call must refresh. */
   expireAccess(): void;
+  /** An access token with what the person granted, as if they had signed in. */
+  accessToken(): string;
   stop(): Promise<void>;
 };
 
@@ -63,6 +88,10 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
     sent: [] as Stored[],
     events: new Map<string, Event>(),
     notified: [] as (string | null)[],
+    files: new Map<string, FakeDriveFile>(),
+    driveChanges: [] as { fileId: string; removed: boolean }[],
+    driveRequests: [] as URL[],
+    driveFault: null as FakeGoogle['driveFault'],
   };
   let serial = 0;
   const nextId = () => (0x18c000000000 + ++serial).toString(16);
@@ -222,6 +251,62 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         }
       }
 
+      const drive = '/drive/v3';
+      if (at.startsWith(drive)) {
+        state.driveRequests.push(url);
+        const refused = needs(GOOGLE_SCOPES.documents);
+        if (refused) return refused;
+        const fault = state.driveFault;
+        if (fault && fault.times > 0) {
+          fault.times -= 1;
+          return Response.json(
+            { error: { code: fault.status, errors: [{ reason: fault.reason ?? 'backendError' }] } },
+            {
+              status: fault.status,
+              headers: fault.retryAfter ? { 'retry-after': String(fault.retryAfter) } : {},
+            },
+          );
+        }
+        const rest = at.slice(drive.length);
+        if (rest === '/about') return Response.json({ user: { emailAddress: email } });
+        if (rest === '/changes/startPageToken')
+          return Response.json({ startPageToken: String(state.driveChanges.length) });
+        if (rest === '/changes') {
+          const from = Number(url.searchParams.get('pageToken'));
+          if (!Number.isInteger(from) || from < 0 || from > state.driveChanges.length)
+            return Response.json({ error: { code: 404 } }, { status: 404 });
+          const size = Number(url.searchParams.get('pageSize') ?? 100);
+          const slice = state.driveChanges.slice(from, from + size);
+          const end = from + slice.length;
+          // As Drive does, a file changed twice in a page is listed once, as it is now.
+          const latest = new Map<string, { fileId: string; removed: boolean }>();
+          for (const change of slice) {
+            latest.delete(change.fileId);
+            latest.set(change.fileId, change);
+          }
+          return Response.json({
+            changes: [...latest.values()].map((change) => {
+              const file = state.files.get(change.fileId);
+              return {
+                changeType: 'file',
+                fileId: change.fileId,
+                removed: change.removed || !file,
+                ...(file && !change.removed ? { file } : {}),
+              };
+            }),
+            ...(end >= state.driveChanges.length
+              ? { newStartPageToken: String(end) }
+              : { nextPageToken: String(end) }),
+          });
+        }
+        const one = /^\/files\/([^/]+)$/.exec(rest);
+        if (one) {
+          const file = state.files.get(one[1] ?? '');
+          if (!file) return Response.json({ error: { code: 404 } }, { status: 404 });
+          return Response.json(file);
+        }
+      }
+
       const calendar = '/calendar/v3/calendars/primary';
       if (at.startsWith(calendar)) {
         const refused = needs(GOOGLE_SCOPES.calendar);
@@ -279,9 +364,16 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
       revoke: `${origin}/revoke`,
       gmail: `${origin}/gmail/v1/users/me`,
       calendar: `${origin}/calendar/v3/calendars/primary`,
+      drive: `${origin}/drive/v3`,
     },
     client,
     ...state,
+    get driveFault() {
+      return state.driveFault;
+    },
+    set driveFault(value) {
+      state.driveFault = value;
+    },
     deliver(raw: string) {
       const stored = {
         id: nextId(),
@@ -291,8 +383,31 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
       inbox.push(stored);
       return stored.id;
     },
+    putFile(file) {
+      const before = state.files.get(file.id);
+      const next: FakeDriveFile = {
+        name: 'Untitled',
+        mimeType: 'application/vnd.google-apps.document',
+        shared: false,
+        trashed: false,
+        ...before,
+        modifiedTime: new Date().toISOString(),
+        ...file,
+        version: String(Number(before?.version ?? 0) + 1),
+      };
+      state.files.set(file.id, next);
+      state.driveChanges.push({ fileId: file.id, removed: false });
+      return next;
+    },
+    removeFile(id) {
+      state.files.delete(id);
+      state.driveChanges.push({ fileId: id, removed: true });
+    },
     expireAccess() {
       access.clear();
+    },
+    accessToken() {
+      return tokenAnswer(false).access_token;
     },
     stop: async () => {
       await server.stop(true);

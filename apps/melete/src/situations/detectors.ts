@@ -14,7 +14,7 @@
  * their meeting: it raises nothing.
  */
 import { createHash } from 'node:crypto';
-import { SITUATION_KINDS, type Urgency } from '@melete/contracts';
+import { type DOCUMENT_TOUCHERS, SITUATION_KINDS, type Urgency } from '@melete/contracts';
 import { registrableDomain } from '../companies/messages.ts';
 import { baseSubject, isPersonalDomain } from '../companies/waiting.ts';
 import { instantMs, zonedToUtc } from '../signals/occurrences.ts';
@@ -427,4 +427,32 @@ export function answers(awaited: Awaited, mail: ArrivedMail): boolean {
     from === domain &&
     baseSubject(text(mail.subject) ?? '') === baseSubject(awaited.subject)
   );
+}
+
+// --------------------------------------------------------------------------
+// documents
+// --------------------------------------------------------------------------
+
+/** Whose change ends a deadline on a file: anyone's, the person's own, or someone else's. */
+export type DocumentToucher = (typeof DOCUMENT_TOUCHERS)[number];
+
+/**
+ * When a deadline on a Drive file is still at risk, as a clock's predicate over
+ * the file's metadata: nobody changed it since `since` (`anyone`); the person
+ * has not changed it since (`me`); or nobody else has, which Drive can say only
+ * through who made the last change (`others`). A field Drive leaves out reads
+ * as no change, so a file it cannot say about stays at risk.
+ */
+export function documentAtRisk(since: string, by: DocumentToucher) {
+  const field = by === 'me' ? 'modified_by_me_time' : 'modified_time';
+  const untouched = [
+    { field, op: 'lt' as const, value: since },
+    { field, op: 'eq' as const, value: null },
+  ];
+  return {
+    any:
+      by === 'others'
+        ? [...untouched, { field: 'last_modifier_me', op: 'eq' as const, value: true }]
+        : untouched,
+  };
 }

@@ -1,6 +1,6 @@
 /**
  * Signing in once with an account provider (Google or Microsoft) to connect
- * that account's mail and calendar. The browser flow is the gateway's OAuth
+ * that account's mail and calendar, and with Google its Drive. The browser flow is the gateway's OAuth
  * one (PKCE with S256, a single-use state) with the operator's own client and
  * a redirect back to this service. What the person granted decides what is
  * connected: a provider may let a person untick a scope on its consent screen,
@@ -32,8 +32,8 @@ export interface AccountProvider {
    */
   account(tokens: OAuthTokens, clientId: string): Promise<string>;
   /** The grants each part may have, from the scopes the person granted. */
-  grants(granted: string): { mail?: string[]; calendar?: string[] };
-  labels(account: string): { mail: string; calendar: string };
+  grants(granted: string): { mail?: string[]; calendar?: string[]; documents?: string[] };
+  labels(account: string): { mail: string; calendar: string; documents?: string };
 }
 
 export class SignInFailure extends Error {
@@ -61,6 +61,8 @@ export type AccountGrant = {
   credential: SignedInCredential;
   mail?: { label: string; scopes: string[] };
   calendar?: { label: string; scopes: string[] };
+  /** A Drive, read for what changes in its files. */
+  documents?: { label: string; scopes: string[] };
 };
 
 export type AccountSignInHooks<Installed> = {
@@ -85,6 +87,8 @@ const PENDING_TTL_MS = 15 * 60_000;
 const FINISHED_TTL_MS = 10 * 60_000;
 
 export const MAIL_READ_GRANTS = ['email.search', 'email.read', 'email.draft', 'email.discard'];
+/** A Drive's one tool: a file's metadata as it is now. */
+export const DOCUMENT_GRANTS = ['documents.status'];
 export const CALENDAR_GRANTS = [
   'calendar.list',
   'calendar.freebusy',
@@ -226,8 +230,12 @@ export class AccountSignIns<Installed> {
               },
             }
           : {}),
+        ...(grants.documents && labels.documents
+          ? { documents: { label: labels.documents, scopes: grants.documents } }
+          : {}),
       };
-      if (!grant.mail && !grant.calendar) throw new SignInFailure('access_not_granted');
+      if (!grant.mail && !grant.calendar && !grant.documents)
+        throw new SignInFailure('access_not_granted');
       const installed = await this.hooks.install(actor, grant);
       await this.finish(entry.id, actor, {
         state: 'connected',

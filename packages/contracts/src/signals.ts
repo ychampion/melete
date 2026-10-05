@@ -21,7 +21,14 @@ export const CALENDAR_EVENTS = {
 } as const;
 export type CalendarEventName = (typeof CALENDAR_EVENTS)[keyof typeof CALENDAR_EVENTS];
 
+/**
+ * A file in a connected Drive changed: edited, renamed, shared, moved to the
+ * bin or removed. Read from the account's own change feed, metadata only.
+ */
+export const DOCUMENT_CHANGED = 'document.changed';
+
 export const MAIL_EVENT_NAMES = [MAIL_RECEIVED, MAIL_REPLY] as const;
+export const DOCUMENT_EVENT_NAMES = [DOCUMENT_CHANGED] as const;
 export const CALENDAR_EVENT_NAMES = [
   CALENDAR_EVENTS.created,
   CALENDAR_EVENTS.changed,
@@ -52,6 +59,8 @@ export function eventCatalog(provider: string): EventCatalog {
       return { names: MAIL_EVENT_NAMES, prefixes: [] };
     case 'caldav':
       return { names: CALENDAR_EVENT_NAMES, prefixes: [] };
+    case 'drive':
+      return { names: DOCUMENT_EVENT_NAMES, prefixes: [] };
     case 'test':
       return { names: [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES], prefixes: [] };
     case 'sandbox':

@@ -4,6 +4,7 @@ import {
   type ContextInvalidated,
   connectionGeneration,
   connectionLifecycle,
+  DOCUMENT_EVENT_NAMES,
   jobBudget,
   MAIL_EVENT_NAMES,
   policyGeneration,
@@ -31,8 +32,8 @@ import { type JobService, routineRest } from './service.ts';
 
 /** Account changes commit fences before signalling disposable inference processes. */
 
-/** The names of what a mailbox or calendar reports, as a SQL list. Fixed strings only. */
-const OBSERVATION_NAMES = [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES]
+/** The names of what a mailbox, calendar or Drive reports, as a SQL list. Fixed strings only. */
+const OBSERVATION_NAMES = [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES, ...DOCUMENT_EVENT_NAMES]
   .map((name) => `'${name}'`)
   .join(', ');
 
@@ -350,7 +351,7 @@ export class PolicyService {
         // And how they were sorted, and the labels kept for them.
         await tx.execute(sql`delete from triage_item where connection_id = ${id}`);
         await tx.execute(sql`delete from triage_verdict where connection_id = ${id}`);
-        // So do the mail and calendar observations read from it that no job
+        // So do the mail, calendar and Drive observations read from it that no job
         // took in: headers, titles and places from an account the connection
         // no longer stands for. A revocation takes everything it reported.
         await tx.execute(sql`delete from event

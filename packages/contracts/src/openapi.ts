@@ -287,7 +287,12 @@ import {
   sandboxControlRequest,
   sandboxControlResponse,
 } from './sandbox-computer.ts';
-import { situationList, situationResponse } from './situations.ts';
+import {
+  deadlineResponse,
+  documentDeadlineRequest,
+  situationList,
+  situationResponse,
+} from './situations.ts';
 import {
   deleteSpaceRequest,
   spaceRemoval,
@@ -1362,6 +1367,18 @@ export function buildOpenApiDocument() {
             tags: ['situations'],
             summary: 'What Melete noticed that may need this person, still live, newest first',
             responses: { '200': jsonResponse('Situations', situationList) },
+          },
+        },
+        '/situations/deadlines': {
+          post: {
+            tags: ['situations'],
+            summary:
+              'Keep a deadline on a Google Drive file: if it is still untouched shortly before it is due, Melete raises it',
+            requestBody: json(documentDeadlineRequest),
+            responses: {
+              '201': jsonResponse('Kept', deadlineResponse),
+              '400': problem('Not a file or an account this person can keep a deadline on'),
+            },
           },
         },
         '/situations/{id}/ack': {
