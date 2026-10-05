@@ -86,6 +86,16 @@ export type Occurrence = {
   melete_action?: string | null;
   /** The account's own answer to the event, when the source says. */
   response?: OwnResponse | null;
+  /** True when the event is marked important or high priority. */
+  important?: boolean;
+  /**
+   * The Melete action the event says made it, as the calendar reports it. It
+   * is only a claim: whether Melete made the event is decided from Melete's
+   * own records (`melete`), never from what the calendar says.
+   */
+  melete_uid?: string;
+  /** Set by the broker from its own records: Melete created this event. */
+  melete?: boolean;
 };
 
 export type CalendarWindow = { from: string; to: string };

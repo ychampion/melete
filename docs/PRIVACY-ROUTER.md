@@ -95,7 +95,7 @@ Checked by pattern, checksum and nearby words:
 | Phone numbers | International, North American and UK forms; bare digits with "phone", "call", "mobile" |
 | Email addresses | |
 | Dates of birth | A date with "born", "DOB", "date of birth" |
-| Passwords and keys | Private key blocks; common key formats; "password is …", "api_key = …"; bearer tokens; passwords in URLs |
+| Passwords and keys | Private key blocks; common key formats; "password is …", "api_key = …"; bearer tokens; passwords in URLs; one-time codes next to a sign-in, verification or two-factor word ("Your login code: 482913", "771234 is your verification code", "use 902114 to sign in"); the token in a sign-in or magic link |
 | Your own list | Names, accounts, addresses and anything else you add under **Always protect**, matched wherever they appear in the text |
 
 Numbers that only look like these are left alone: order, invoice, tracking and

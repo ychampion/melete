@@ -35,12 +35,24 @@ type Query = Sql | TransactionSql;
  */
 export async function pruneObservations(
   q: Query,
-  scope: { connectionId?: string; before?: Date; limit?: number },
+  scope: {
+    connectionId?: string;
+    before?: Date;
+    limit?: number;
+    /**
+     * Keep what a person's open "needs you" item still points at. True for the
+     * retention sweep; turning watching off removes those too, and the items
+     * go with them.
+     */
+    keepTriaged?: boolean;
+  },
 ): Promise<number> {
   const [found] = await q`select to_regclass('public.situation') is not null as situations,
-      to_regclass('public.clock') is not null as clocks`;
+      to_regclass('public.clock') is not null as clocks,
+      to_regclass('public.triage_item') is not null as triage`;
   const situations = Boolean(found?.situations);
   const clocks = Boolean(found?.clocks);
+  const triaged = Boolean(found?.triage) && scope.keepTriaged === true;
   const removed = await q`
     with cited as (
       select h from event j,
@@ -62,6 +74,12 @@ export async function pruneObservations(
             and t.spec->>'connection_id' = e.payload->>'connection_id'
             and t.spec->>'event_name' = e.payload->>'event_name'
             and t.cursor ~ '^[0-9]+$' and t.cursor::bigint < e.seq)
+        ${
+          triaged
+            ? q`and not exists (select 1 from triage_item ti
+                where ti.event_seq = e.seq and ti.state <> 'dismissed')`
+            : q``
+        }
         -- Mail an open wait on an answer may still be checked against: from
         -- when its message went out, while it is open.
         and not (e.payload->>'event_name' = ${MAIL_RECEIVED} and exists (
@@ -119,7 +137,7 @@ export async function expireObservations(
   const before = new Date(now - days * 86_400_000);
   let total = 0;
   for (;;) {
-    const removed = await pruneObservations(sql, { before });
+    const removed = await pruneObservations(sql, { before, keepTriaged: true });
     total += removed;
     if (removed < PRUNE_BATCH) return total;
   }

@@ -261,6 +261,80 @@ meeting's time moves, so long work standing on a calendar wakes for the changes
 it cares about and sleeps through the rest (`a standing run wakes on
 calendar.event.changed`).
 
+## Sorting what came in
+
+New mail and calendar changes from accounts that serve their owner are sorted
+for that one person into **needs you**, **for your information** or
+**ignore**, each with a short reason, and Home's **Needs you** list shows the
+ones that need them, most pressing first.
+
+1. **Rules first.** Mail sent by a machine is settled as nothing to do, with
+   no model call: a list, bulk or auto-submitted header; a no-reply sender in
+   any spelling; an account, security, verify or alerts address; or a subject
+   carrying a sign-in or verification code. Everything else is a maybe.
+2. **A small model for the maybes.** Maybes are read in groups of up to
+   twenty, one space and one person per call, with only what the observation
+   carries: headers for mail (never a body), the kept fields for a meeting. The
+   call asks for one JSON document and carries no tools. Each answer is read
+   into one of the three labels and an urgency of `normal` or `soon`; an
+   answer that is not one of those is not a label, and the item is asked about
+   again later (`an unknown id, verdict or shape is not a label`). A group the
+   privacy router keeps private is split and asked about in halves, so one
+   sensitive item stays private and the rest are sorted (`one sensitive item
+   stays private and the rest of its group is still sorted`).
+3. **Once per version.** A label is kept for seven days per person, space,
+   subject and a hash of the subject's words. The same message read again, or
+   a meeting back in a state it was labelled in, takes that label with no call
+   (`unchanged items are never sorted twice`).
+
+Sorting only labels. It cannot make anything urgent (a deadline the person set
+is the only way anything is), start work, send, notify or act: its code holds
+a database handle and a model call that returns text, and imports nothing that
+acts (`nothing in the sorting module imports what acts`); its urgency stops at
+`soon` in the code and in the database (`the three that need the person come
+first, with no action taken`).
+
+Each call goes through the model gateway like any other: the privacy router
+swaps details for placeholders, and a private space's items go to the
+person's local model or nowhere (`a private space never reaches a cloud
+model`). Each call is a background call on the `t1` step, charged to the
+person whose items it reads, so their background limits apply. At a limit
+nothing is sent and the items stay unsorted until it resets; nothing fails
+(`at the background limit nothing is sent, nothing fails, and items wait`). An
+installation without limits sorts without limits.
+
+An item that could not be sorted (kept private, a limit, the model out of
+reach or answering nonsense) stays unsorted: it is never filed as anything. It
+is tried again after an hour, twice as long after each try that failed, at most
+a day apart, and counted for its week on Home with the main reason
+(`an outage or a nonsense answer leaves items unsorted, counted and retried,
+never filed away`). Items and their copied headers are swept after a week, and
+labels when they expire.
+
+The model is `MELETE_MODEL_TRIAGE` when the operator names one (`off` turns
+sorting off); otherwise the owner's secondary model when they moved scheduled
+work to it; otherwise `MELETE_MODEL_FAST`; otherwise the model chosen in the
+app. A model on the owner's own machine keeps the calls on it. One instance
+sorts at a time, every `MELETE_TRIAGE_INTERVAL_SECONDS` (120 by default).
+
+`GET /needs-you` lists, for the signed-in person, the items that need them and
+what Melete noticed on its own, ranked urgent, then soon, then the rest; within
+each, a deadline they set first, then what they have not seen, then the newest.
+Each item has a plain sentence, the source it rests on (`because`, with the
+observation's `event:<seq>` handle) and its urgency. `POST /needs-you/{id}/ack`
+and `/dismiss` mark a sorted item seen or remove it. **Handle it** opens an
+ordinary chat whose message names only the source (`Help me with this item from
+my Home list (source event:<seq>).`). `POST /needs-you/{id}/source` writes the
+source's headers or fields into a text file the message carries, so they reach
+the agent fenced as untrusted data, never as the person's words (`an instruction
+in a subject is attached as data, never said as the person`). Anything that
+chat would do asks first.
+
+Evidence: `apps/melete/test/integration/triage.test.ts` (a seeded inbox and
+calendar of thirty-three changes, three of which need the person),
+`apps/melete/test/integration/needs-you-source.test.ts` and
+`apps/melete/src/triage/rules.test.ts`.
+
 ## Disconnecting
 
 Revoking a connection removes, in the same step, its cursors, the fields kept

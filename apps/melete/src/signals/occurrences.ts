@@ -143,6 +143,25 @@ function attendeesOf(component: ICAL.Component): number {
   return component.getAllProperties('attendee').length;
 }
 
+/**
+ * Whether the event says it matters: PRIORITY 1 to 4 is high, and a category
+ * named important or high priority marks it too.
+ */
+function marksOf(component: ICAL.Component): { important?: boolean } {
+  const priority = Number(component.getFirstPropertyValue('priority') ?? 0);
+  const categories = component
+    .getAllProperties('categories')
+    .flatMap((property) => property.getValues())
+    .map((value) => String(value).trim().toLowerCase());
+  const important =
+    (Number.isInteger(priority) && priority >= 1 && priority <= 4) ||
+    categories.some((value) => value === 'important' || value === 'high priority');
+  return important ? { important: true } : {};
+}
+
+/** Melete names every event it makes by the action that made it. */
+const MELETE_UID = /^act_[A-Za-z0-9_-]+$/;
+
 function textOf(component: ICAL.Component, name: string): string {
   const value = component.getFirstPropertyValue(name);
   return typeof value === 'string' ? value : value == null ? '' : String(value);
@@ -199,6 +218,8 @@ function occurrenceOf(
     transparent: textOf(component, 'transp').toUpperCase() === 'TRANSPARENT',
     declined: declinedBySelf(component, self),
     melete_action: textOf(component, 'x-melete-action-id') || null,
+    ...marksOf(component),
+    ...(MELETE_UID.test(uid) ? { melete_uid: uid } : {}),
   };
 }
 

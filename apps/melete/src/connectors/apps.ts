@@ -1042,6 +1042,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
       if (action.kind === 'apps.rollback') {
         const appId = String(payload.app_id);
         const versionId = String(payload.version_id);
+        const before: { version: string | null } = { version: null };
         try {
           await options.sql.begin(async (tx) => {
             if ((await appRoleFor(tx, appId, publisher)) !== 'manage')
@@ -1051,7 +1052,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
             if (!row) throw new AppUnavailable('no such app in this space');
             // Under the app's lock, which a change to its grants also takes.
             await holdRisks(tx, ctx, action, publisher);
-            await setCurrentVersion(tx, appId, versionId, action.id);
+            before.version = await setCurrentVersion(tx, appId, versionId, action.id);
           });
         } catch (error) {
           if (error instanceof AppUnavailable)
@@ -1059,7 +1060,12 @@ export function createAppsConnector(options: AppsOptions): Connector {
           if (error instanceof RiskRaised) return notDone(error.message);
           throw error;
         }
-        const detail = { app_id: appId, version_id: versionId, link: linkFor(appId) };
+        const detail = {
+          app_id: appId,
+          version_id: versionId,
+          link: linkFor(appId),
+          ...(before.version ? { previous_version_id: before.version } : {}),
+        };
         return { outcome: 'succeeded', receipt: receiptFor(action, detail, versionId) };
       }
       if (action.kind !== 'apps.publish') throw new Error('unknown apps tool');
@@ -1098,6 +1104,9 @@ export function createAppsConnector(options: AppsOptions): Connector {
         app_id: published.appId,
         version_id: published.versionId,
         created: published.created,
+        ...(published.previousVersionId
+          ? { previous_version_id: published.previousVersionId }
+          : {}),
         files: files.length,
         bytes: Number(payload.total_bytes ?? 0),
         link: linkFor(published.appId),

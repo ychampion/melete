@@ -77,6 +77,67 @@ describe('reviewTier', () => {
     ).toMatchObject({ tier: 'reviewable', actionClass: 'calendar' });
   });
 
+  test('an own-calendar event that touches nothing important and can be undone goes by the calendar rule', () => {
+    const create = tool('calendar.create', 'write_external', true);
+    const decide = (
+      calendar: { concern: string | null; reversible: boolean } | null,
+      payload: JsonObject = { summary: 'Focus' },
+    ) => reviewTier({ tool: create, provider: 'caldav', payload, doubts: [], calendar });
+    expect(decide({ concern: null, reversible: true })).toMatchObject({
+      tier: 'own_calendar',
+      actionClass: 'own_calendar',
+    });
+    // Anything important asks, with its reason.
+    expect(
+      decide({ concern: 'It overlaps “Board review”, a repeating meeting.', reversible: true }),
+    ).toEqual({
+      tier: 'person',
+      actionClass: null,
+      reason: 'It overlaps “Board review”, a repeating meeting.',
+    });
+    expect(decide(null)).toMatchObject({ tier: 'person' });
+    expect(decide({ concern: null, reversible: false })).toMatchObject({ tier: 'person' });
+    // A guest named in it is never the person's own calendar alone.
+    expect(
+      decide({ concern: null, reversible: true }, { summary: 'Sync', attendees: ['a@b.test'] }),
+    ).toMatchObject({ tier: 'person' });
+    // So is anything a doubted value steers.
+    expect(
+      reviewTier({
+        tool: create,
+        provider: 'caldav',
+        payload: { summary: 'Focus' },
+        doubts: [doubt],
+        calendar: { concern: null, reversible: true },
+      }),
+    ).toMatchObject({ tier: 'person' });
+  });
+
+  test('removing an event Melete made is a delete unless the calendar could be checked', () => {
+    const remove = tool('calendar.delete', 'write_external', true);
+    const payload = { uid: 'act_1', etag: '"1"' };
+    const decide = (
+      calendar: { concern: string | null; reversible: boolean } | null | undefined,
+      existingGuests: number | null = 0,
+    ) =>
+      reviewTier({
+        tool: remove,
+        provider: 'caldav',
+        payload,
+        doubts: [],
+        existingGuests,
+        calendar,
+      });
+    expect(decide(undefined)).toEqual({
+      tier: 'person',
+      actionClass: null,
+      reason: 'It deletes or removes something.',
+    });
+    expect(decide({ concern: null, reversible: true })).toMatchObject({ tier: 'own_calendar' });
+    expect(decide({ concern: null, reversible: true }, 1)).toMatchObject({ tier: 'person' });
+    expect(decide({ concern: null, reversible: false })).toMatchObject({ tier: 'person' });
+  });
+
   test('an update counts as the person’s own only when the calendar says the event has no guests', () => {
     const update = tool('calendar.update', 'write_external');
     const payload = { uid: 'act_1', etag: '"1"', summary: 'Focus', start: 'x', end: 'y' };

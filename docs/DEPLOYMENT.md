@@ -1375,6 +1375,11 @@ person instead, and so does one proposed while the space's other reviews are
 still running past the limit. Work inside an agent's own sandbox is decided by a
 fixed rule and never calls the model.
 
+A message Melete sends waits `MELETE_SEND_HOLD_SECONDS` (default `20`, from `0`
+to `120`) after it is cleared to go. Its receipt shows Undo for that time, and
+cancelling sends nothing. The wait is kept in the database, so a restart during
+it still sends the message once.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
@@ -1696,7 +1701,7 @@ with many people, such as a hosted one, can set the per-person limits.
 ## Model routing
 
 By default every call uses the model chosen in Settings › Models, else
-`MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL`. Three settings, each
+`MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL`. These settings, each
 written `provider/model` (the provider name before the first slash), let
 Melete pick a better model per call:
 
@@ -1705,6 +1710,7 @@ Melete pick a better model per call:
 | `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
+| `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
 
 For example:
 

@@ -150,6 +150,18 @@ export class ExperienceMock {
     { version: string; result: ReturnType<typeof C.permissionOutcome.parse> }
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
+  /** Messages waiting out their hold before sending, by receipt id. */
+  readonly held = new Map<
+    string,
+    {
+      chat: Chat;
+      draft: C.ExperienceDraft;
+      receipt: C.ExperienceReceipt;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  /** What an activity entry's Undo takes back, by entry id. */
+  readonly activityUndo = new Map<string, string>();
   readonly rules = new Map<string, C.StandingRule>();
   /** Conversations read public web pages unless this is turned off. */
   webReads = true;
@@ -287,6 +299,23 @@ export class ExperienceMock {
   }
   /** Reverse a receipt while its undo is valid. The reversal has its own receipt. */
   undo(id: string) {
+    // A message still in its hold is cancelled: nothing is sent.
+    const held = this.held.get(id);
+    if (held) {
+      clearTimeout(held.timer);
+      this.held.delete(id);
+      const cancelled = C.experienceReceipt.parse({
+        id,
+        what: 'Cancelled a message before it was sent',
+        where: held.receipt.where,
+        when: this.now(),
+      });
+      held.chat.receipts = held.chat.receipts.map((row) => (row.id === id ? cancelled : row));
+      held.draft.status = 'denied';
+      this.sentReceipts.delete(held.draft.id);
+      this.event(held.chat, { type: 'receipt', receipt: cancelled });
+      return { receipt: cancelled };
+    }
     const entry = this.undoable.get(id);
     const chat = entry ? this.chats.get(entry.chatId) : undefined;
     const receipt = chat?.receipts.find((row) => row.id === id);
@@ -300,6 +329,7 @@ export class ExperienceMock {
       what: `Removed again: ${receipt.what.replace(/^Added to your calendar: /, '')}`,
       where: receipt.where,
       when: this.now(),
+      reverses: id,
     });
     chat.receipts.push(reversal);
     this.event(chat, { type: 'receipt', receipt: reversal });
@@ -1287,6 +1317,38 @@ export class ExperienceMock {
       return null;
     }
     draft.status = 'sent';
+    // Undo send: with a hold set, the message waits first and Undo cancels it.
+    const hold = Number(process.env.MOCK_SEND_HOLD_SECONDS ?? 0);
+    if (hold > 0 && !chat.follow) {
+      const until = new Date(Date.now() + hold * 1000).toISOString();
+      const pending = C.experienceReceipt.parse({
+        id: newId('receipt'),
+        what: 'Sending a message',
+        where: 'Mail',
+        when: this.now(),
+        sending_until: until,
+        undo: { handle: newId('undo'), valid_until: until },
+      });
+      chat.receipts.push(pending);
+      this.sentReceipts.set(draft.id, pending);
+      this.event(chat, { type: 'receipt', receipt: pending });
+      const timer = setTimeout(() => {
+        this.held.delete(pending.id);
+        const sent = C.experienceReceipt.parse({
+          id: pending.id,
+          what: `Sent a message to ${draft.recipient}`,
+          where: 'Mail',
+          when: this.now(),
+        });
+        chat.receipts = chat.receipts.map((row) => (row.id === pending.id ? sent : row));
+        this.sentReceipts.set(draft.id, sent);
+        this.event(chat, { type: 'receipt', receipt: sent });
+      }, hold * 1000);
+      timer.unref?.();
+      this.held.set(pending.id, { chat, draft, receipt: pending, timer });
+      this.finish(chat, 'Your message is on its way.');
+      return pending;
+    }
     const receipt = C.experienceReceipt.parse({
       id: newId('receipt'),
       what: `Sent a message to ${draft.recipient}`,
@@ -1806,19 +1868,25 @@ export class ExperienceMock {
         for (const plan of this.plans.values())
           plan.conversation_ids = plan.conversation_ids.filter((entry) => entry !== id);
         // What the chat did outside Melete stays on record after it goes.
-        for (const receipt of chat.receipts)
-          this.activity.unshift(
-            C.activityEntry.parse({
-              id: newId('act'),
-              what: receipt.what,
-              where: receipt.where,
-              destination: null,
-              reference: null,
-              outcome: 'succeeded',
-              source: chat.view.title,
-              happened_at: receipt.when,
-            }),
-          );
+        for (const receipt of chat.receipts) {
+          const undoable = receipt.undo && this.undoable.has(receipt.id);
+          const entry = C.activityEntry.parse({
+            id: newId('act'),
+            what: receipt.what,
+            where: receipt.where,
+            destination: null,
+            reference: null,
+            outcome: 'succeeded',
+            source: chat.view.title,
+            happened_at: receipt.when,
+            // Undo stays on offer after the chat goes, for what can still be taken back.
+            ...(undoable && receipt.undo
+              ? { undo: { valid_until: receipt.undo.valid_until } }
+              : {}),
+          });
+          this.activity.unshift(entry);
+          if (undoable) this.activityUndo.set(entry.id, receipt.id);
+        }
         this.chats.delete(id);
         // The mock keeps no record of which saved details came from which chat.
         return { id, stopped, withdrawn, forgotten: 0 };
@@ -2157,6 +2225,21 @@ export class ExperienceMock {
         return { enabled: this.webReads, available: true };
       case 'GET /activity':
         return { activity: this.activity };
+      case 'POST /activity/{id}/undo': {
+        const index = this.activity.findIndex((entry) => entry.id === id);
+        const entry = this.activity[index];
+        if (!entry) throw new MockExperienceError(404, 'That item is not here.');
+        if (entry.undone_at) return { entry };
+        if (!entry.undo || !this.activityUndo.has(id))
+          return C.unavailable('This change has no saved reversal.');
+        if (Date.parse(entry.undo.valid_until) < Date.now())
+          return C.unavailable('The time to undo this change has passed.');
+        this.activityUndo.delete(id);
+        const { undo: _undo, ...rest } = entry;
+        const undone = C.activityEntry.parse({ ...rest, undone_at: this.now() });
+        this.activity[index] = undone;
+        return { entry: undone };
+      }
       case 'GET /space/members':
         return {
           space: {

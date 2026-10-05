@@ -1,5 +1,5 @@
 {
-  "id": "04806098-9c37-4629-8be6-03946cd70729",
+  "id": "1bf887c4-0bb2-4ebb-82f0-ffc4e8c4ef0a",
   "prevId": "4b9e75d1-f041-4ef3-836c-f513b0e91b7f",
   "version": "7",
   "dialect": "postgresql",
@@ -2145,12 +2145,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'owner'"
-        },
-        "watch_changes": {
-          "name": "watch_changes",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -17934,82 +17928,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.observation_tombstone": {
-      "name": "observation_tombstone",
-      "schema": "",
-      "columns": {
-        "dedup_key": {
-          "name": "dedup_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seen_at": {
-          "name": "seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "observation_tombstone_seen_idx": {
-          "name": "observation_tombstone_seen_idx",
-          "columns": [
-            {
-              "expression": "seen_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "observation_tombstone_connection_idx": {
-          "name": "observation_tombstone_connection_idx",
-          "columns": [
-            {
-              "expression": "connection_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "observation_tombstone_connection_id_connection_id_fk": {
-          "name": "observation_tombstone_connection_id_connection_id_fk",
-          "tableFrom": "observation_tombstone",
-          "tableTo": "connection",
-          "columnsFrom": [
-            "connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.source_cursor": {
       "name": "source_cursor",
       "schema": "",
@@ -18298,6 +18216,547 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.triage_item": {
+      "name": "triage_item",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_key": {
+          "name": "subject_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fields": {
+          "name": "fields",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "urgency": {
+          "name": "urgency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'normal'"
+        },
+        "sentence": {
+          "name": "sentence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unsorted": {
+          "name": "unsorted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tries": {
+          "name": "tries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "acked_at": {
+          "name": "acked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dismissed_at": {
+          "name": "dismissed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "triaged_at": {
+          "name": "triaged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "triage_item_event_idx": {
+          "name": "triage_item_event_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_seq",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_item_principal_idx": {
+          "name": "triage_item_principal_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_item_pending_idx": {
+          "name": "triage_item_pending_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"triage_item\".\"verdict\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_item_space_idx": {
+          "name": "triage_item_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_item_seq_idx": {
+          "name": "triage_item_seq_idx",
+          "columns": [
+            {
+              "expression": "event_seq",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "triage_item_space_id_space_id_fk": {
+          "name": "triage_item_space_id_space_id_fk",
+          "tableFrom": "triage_item",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_item_principal_id_principal_id_fk": {
+          "name": "triage_item_principal_id_principal_id_fk",
+          "tableFrom": "triage_item",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_item_connection_id_connection_id_fk": {
+          "name": "triage_item_connection_id_connection_id_fk",
+          "tableFrom": "triage_item",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_item_event_seq_event_seq_fk": {
+          "name": "triage_item_event_seq_event_seq_fk",
+          "tableFrom": "triage_item",
+          "tableTo": "event",
+          "columnsFrom": [
+            "event_seq"
+          ],
+          "columnsTo": [
+            "seq"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "triage_item_verdict_check": {
+          "name": "triage_item_verdict_check",
+          "value": "\"triage_item\".\"verdict\" is null or \"triage_item\".\"verdict\" in ('needs_you', 'fyi', 'ignore')"
+        },
+        "triage_item_urgency_check": {
+          "name": "triage_item_urgency_check",
+          "value": "\"triage_item\".\"urgency\" in ('normal', 'soon')"
+        },
+        "triage_item_state_check": {
+          "name": "triage_item_state_check",
+          "value": "\"triage_item\".\"state\" in ('open', 'acked', 'dismissed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.triage_verdict": {
+      "name": "triage_verdict",
+      "schema": "",
+      "columns": {
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject_key": {
+          "name": "subject_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "urgency": {
+          "name": "urgency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sentence": {
+          "name": "sentence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "triage_verdict_expires_idx": {
+          "name": "triage_verdict_expires_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_verdict_space_idx": {
+          "name": "triage_verdict_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_verdict_connection_idx": {
+          "name": "triage_verdict_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "triage_verdict_seq_idx": {
+          "name": "triage_verdict_seq_idx",
+          "columns": [
+            {
+              "expression": "event_seq",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "triage_verdict_principal_id_principal_id_fk": {
+          "name": "triage_verdict_principal_id_principal_id_fk",
+          "tableFrom": "triage_verdict",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_verdict_space_id_space_id_fk": {
+          "name": "triage_verdict_space_id_space_id_fk",
+          "tableFrom": "triage_verdict",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_verdict_event_seq_event_seq_fk": {
+          "name": "triage_verdict_event_seq_event_seq_fk",
+          "tableFrom": "triage_verdict",
+          "tableTo": "event",
+          "columnsFrom": [
+            "event_seq"
+          ],
+          "columnsTo": [
+            "seq"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "triage_verdict_connection_id_connection_id_fk": {
+          "name": "triage_verdict_connection_id_connection_id_fk",
+          "tableFrom": "triage_verdict",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "triage_verdict_principal_id_space_id_subject_key_content_hash_pk": {
+          "name": "triage_verdict_principal_id_space_id_subject_key_content_hash_pk",
+          "columns": [
+            "principal_id",
+            "space_id",
+            "subject_key",
+            "content_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "triage_verdict_verdict_check": {
+          "name": "triage_verdict_verdict_check",
+          "value": "\"triage_verdict\".\"verdict\" in ('needs_you', 'fyi', 'ignore')"
+        },
+        "triage_verdict_urgency_check": {
+          "name": "triage_verdict_urgency_check",
+          "value": "\"triage_verdict\".\"urgency\" in ('normal', 'soon')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.clock": {

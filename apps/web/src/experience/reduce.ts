@@ -150,6 +150,22 @@ export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnSt
   return { ...emptyTranscript(), turns: turns.map(fromTurn), composer, status };
 }
 
+type ReceiptBlock = Extract<TurnBlock, { type: 'receipt' }>;
+
+/** Every receipt in the transcript, through `change`. */
+function mapReceipts(
+  transcript: Transcript,
+  change: (block: ReceiptBlock) => ReceiptBlock,
+): Transcript {
+  return {
+    ...transcript,
+    turns: transcript.turns.map((turn) => ({
+      ...turn,
+      blocks: turn.blocks.map((block) => (block.type === 'receipt' ? change(block) : block)),
+    })),
+  };
+}
+
 function patchTurn(
   transcript: Transcript,
   turnId: string | null,
@@ -291,9 +307,14 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
       turn.messageSeq === null ? { ...turn, messageSeq: event.seq } : turn,
     );
   }
+  // A receipt comes again when what it shows moves on: a held message is sent
+  // or cancelled. The newer one takes the older one's place.
+  if (item.type === 'receipt' && hasBlock(base, item.receipt.id))
+    return mapReceipts(base, (block) =>
+      block.receipt.id === item.receipt.id ? { ...block, receipt: item.receipt } : block,
+    );
   if (
     (item.type === 'card' && hasBlock(base, item.card.id)) ||
-    (item.type === 'receipt' && hasBlock(base, item.receipt.id)) ||
     (item.type === 'permission' && hasBlock(base, item.permission.id)) ||
     (item.type === 'question' && hasBlock(base, item.question.id))
   )
@@ -461,6 +482,12 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         flow: [...turn.flow, { type: 'block', id: item.card.id }],
       }));
     case 'receipt': {
+      // An undo names the change it took back, wherever that is drawn.
+      const reverses = item.receipt.reverses;
+      if (reverses)
+        base = mapReceipts(base, (block) =>
+          block.receipt.id === reverses ? { ...block, reversed: true } : block,
+        );
       // A reversal names the change it undid; the original is drawn as reversed.
       const reversal = item.receipt.what.startsWith('Removed again');
       return patchTurn(base, event.turn_id, (turn) => ({

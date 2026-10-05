@@ -50,6 +50,11 @@ async function setup(mode: 'email' | 'calendar' | 'local' = 'email') {
   const calls: Action[] = [];
   const connector: Connector = {
     manifest,
+    // The calendar says the events it is asked about have no guests; an Undo
+    // that could reach guests waits for approval instead.
+    async existingGuests() {
+      return 0;
+    },
     async execute(action): Promise<DispatchResult> {
       calls.push(action);
       return {

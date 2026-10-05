@@ -477,4 +477,54 @@ withDb('watching connected accounts by default', () => {
     for (const row of due) expect(new Date(row.next_poll_at).getTime()).toBe(at + 900_000);
     clock += 3_600_000;
   }, 60_000);
+  /** A "needs you" item, and its sorting, on the observation with this subject. */
+  async function triaged(connectionId: string, subject: string, state: 'open' | 'dismissed') {
+    const { sql } = required(handle);
+    const [row] = await sql`select seq from event
+      where job_id is null and payload->>'connection_id' = ${connectionId}
+        and payload->'payload'->>'subject' = ${subject}`;
+    const seq = Number(row?.seq);
+    await sql`insert into triage_item (id, space_id, principal_id, connection_id, event_seq, kind,
+        subject_key, content_hash, fields, state)
+      values (${newId('task')}, ${spaceId}, ${ownerId}, ${connectionId}, ${seq}, 'mail.received',
+        ${`mail:${seq}`}, ${`hash-${seq}`}, '{}'::jsonb, ${state})`;
+    await sql`insert into triage_verdict (principal_id, space_id, event_seq, connection_id,
+        subject_key, content_hash, verdict, urgency, sentence, reason, model, expires_at)
+      values (${ownerId}, ${spaceId}, ${seq}, ${connectionId}, ${`mail:${seq}`}, ${`hash-${seq}`},
+        'needs_you', 'normal', 'Answer this.', 'It asks you something.', 'local',
+        now() + interval '30 days')`;
+    return seq;
+  }
+  const triageRows = async (connectionId: string) => {
+    const [row] = await required(handle).sql`select
+        (select count(*)::int from triage_item where connection_id = ${connectionId}) as items,
+        (select count(*)::int from triage_verdict where connection_id = ${connectionId}) as verdicts`;
+    return [row?.items, row?.verdicts];
+  };
+
+  test('retention keeps what an open needs-you item points at', async () => {
+    const { id, box } = await connectMailbox('Mail sorted for Home');
+    await poll();
+    box.messages.push(header(50, 'Please sign by Friday'), header(51, 'Newsletter'));
+    await poll();
+    await triaged(id, 'Please sign by Friday', 'open');
+    await triaged(id, 'Newsletter', 'dismissed');
+    const { sql } = required(handle);
+    await sql`update event set created_at = now() - interval '20 days'
+      where job_id is null and payload->>'connection_id' = ${id}`;
+    await expireObservations(sql, 14);
+    expect(await received(id)).toEqual(['Please sign by Friday']);
+    expect(await triageRows(id)).toEqual([1, 1]);
+  }, 60_000);
+
+  test('turning watching off removes a needs-you item\u2019s observation and its sorting too', async () => {
+    const { id, box } = await connectMailbox('Mail with a needs-you item');
+    await poll();
+    box.messages.push(header(60, 'Your lease renewal'));
+    await poll();
+    await triaged(id, 'Your lease renewal', 'open');
+    await setWatching(required(handle).sql, spaceId, id, false);
+    expect(await received(id)).toEqual([]);
+    expect(await triageRows(id)).toEqual([0, 0]);
+  }, 60_000);
 });

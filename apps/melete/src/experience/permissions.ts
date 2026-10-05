@@ -414,10 +414,10 @@ export class ExperiencePermissions {
     return {
       draft: result.draft,
       permission: approval ? await this.card(spaceId, String(approval.id)) : null,
-      receipt:
-        result.action.status === 'succeeded'
-          ? await this.effects.receipt(spaceId, result.action)
-          : null,
+      // A message held before sending has a receipt too, with Undo to cancel it.
+      receipt: ['succeeded', 'admitted'].includes(result.action.status)
+        ? await this.effects.receipt(spaceId, result.action)
+        : null,
     };
   }
 }

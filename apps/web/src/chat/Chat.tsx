@@ -600,7 +600,16 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
   const working = WORKING.includes(transcript.status);
-  const now = useNow(Boolean(last && WORKING.includes(last.status)));
+  // A message held before sending counts down on its receipt.
+  const holding = transcript.turns.some((turn) =>
+    turn.blocks.some(
+      (block) =>
+        block.type === 'receipt' &&
+        block.receipt.sending_until !== undefined &&
+        Date.parse(block.receipt.sending_until) > Date.now(),
+    ),
+  );
+  const now = useNow(Boolean(last && WORKING.includes(last.status)) || holding);
 
   useEffect(() => {
     setAgentId(conversation?.agent_id ?? fallback?.id ?? null);

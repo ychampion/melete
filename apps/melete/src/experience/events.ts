@@ -31,12 +31,14 @@ import { answerJoin } from '../jobs/answer-join.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
+import type { ExperienceEffects } from './effects.ts';
 import {
   object,
   plainText,
   projectActionGroup,
   projectArtifact,
   projectCards,
+  projectHeldReceipt,
   projectPermissionDecision,
   projectQuestionDecision,
   projectReceipt,
@@ -384,6 +386,8 @@ export class ExperienceEvents {
         spaceId: string,
         id: string,
       ) => Promise<Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined>;
+      /** A receipt's Undo, the change it took back, or the hold a message waits in. */
+      receiptState?: ExperienceEffects['receiptState'];
       /** What an action rested on, named on its receipt. */
       because?: (spaceId: string, actionId: string) => Promise<BecauseLink[]>;
       /** Real values for placeholders in what the model gave a tool. */
@@ -645,8 +649,11 @@ export class ExperienceEvents {
             if (shown) await emit(source, { type: 'reasoning', text: shown });
           } else if (
             source.type === 'action_status_changed' &&
-            payload.to === 'succeeded' &&
-            typeof payload.action_id === 'string'
+            typeof payload.action_id === 'string' &&
+            (payload.to === 'succeeded' ||
+              // A message held before sending, and one cancelled in its hold.
+              ((payload.to === 'admitted' || payload.to === 'failed') &&
+                this.projections?.receiptState !== undefined))
           ) {
             const [effect] = await tx
               .select({ action, connection })
@@ -659,7 +666,27 @@ export class ExperienceEvents {
                   eq(connection.spaceId, spaceId),
                 ),
               );
-            if (effect) {
+            const state =
+              effect &&
+              this.projections?.receiptState &&
+              (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
+                ? // A receipt whose Undo cannot be worked out is drawn without one.
+                  await this.projections
+                    .receiptState(spaceId, effect.action.id)
+                    .catch(() => ({}) as Awaited<ReturnType<ExperienceEffects['receiptState']>>)
+                : {};
+            if (effect && payload.to !== 'succeeded') {
+              if (state.held) {
+                const held = projectHeldReceipt(
+                  effect.action,
+                  effect.connection,
+                  'until' in state.held
+                    ? { until: state.held.until, ...(state.undo ? { undo: state.undo } : {}) }
+                    : state.held,
+                );
+                await emit(source, { type: 'receipt', receipt: held }, `held:${source.seq}`);
+              }
+            } else if (effect) {
               const [review] = await tx
                 .select()
                 .from(actionReview)
@@ -667,7 +694,7 @@ export class ExperienceEvents {
               const receipt = projectReceipt(
                 effect.action,
                 effect.connection,
-                undefined,
+                state.undo,
                 review
                   ? reviewView({
                       decided_by: review.decidedBy,
@@ -678,8 +705,13 @@ export class ExperienceEvents {
                     })
                   : null,
                 lookups.because.get(effect.action.id),
+                state.reverses,
               );
-              if (receipt) await emit(source, { type: 'receipt', receipt });
+              if (receipt)
+                await emit(source, {
+                  type: 'receipt',
+                  receipt: state.what ? { ...receipt, what: state.what } : receipt,
+                });
               // A card is projected once, when its draft is freshly prepared; its
               // later status reaches the person through the conversation's drafts.
               for (const card of projectCards(effect.action, effect.connection, 'draft'))

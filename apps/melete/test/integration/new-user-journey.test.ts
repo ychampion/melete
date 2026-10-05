@@ -122,6 +122,8 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         MELETE_CAPABILITY_KEY: 'new-user-journey-capability-key-32-chars',
         MELETE_APPROVAL_KEY: 'new-user-journey-approval-key-32-characters',
         MELETE_RUNTIME_ADAPTER: 'stub',
+        // The message goes as soon as it is allowed; undo send has its own tests.
+        MELETE_SEND_HOLD_SECONDS: '0',
         MELETE_SPACES_DIR: join(root, 'spaces'),
         MELETE_WORK_DIR: join(root, 'work'),
         MELETE_BROKER_BIND: `127.0.0.1:${port}`,

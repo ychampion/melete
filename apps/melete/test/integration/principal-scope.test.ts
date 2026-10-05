@@ -160,6 +160,11 @@ async function login(email: string) {
 function fixtureConnector(manifest: ConnectorManifest): Connector {
   return {
     manifest,
+    // Its calendar says the events it is asked about have no guests; an Undo
+    // that could reach guests waits for approval instead.
+    async existingGuests() {
+      return 0;
+    },
     async execute(action): Promise<DispatchResult> {
       calls.push(action);
       return {
