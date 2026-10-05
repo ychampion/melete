@@ -238,6 +238,10 @@ export class PrincipalService {
     await tx.execute(
       sql`delete from clock where space_id = ${spaceId} and principal_id = ${memberId}`,
     );
+    // What they asked Melete to see through here ends with their place in it.
+    await tx.execute(
+      sql`delete from intent where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
     const generation = policyGeneration + 1;
     // The copies of what memory handed the member's own actions, kept to say
     // why each was taken, go with the access.

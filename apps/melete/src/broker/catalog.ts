@@ -3,6 +3,8 @@ import {
   type CapabilityClaims,
   CONTEXT_LIMITS,
   type ConnectionHealth,
+  INTENT_CAPTURE_TOOL,
+  INTENT_TOOL_NAMES,
   type JsonObject,
   REACT_TOOL_NAME,
   RUN_TOOL_NAMES,
@@ -222,6 +224,7 @@ function pinOf(tool: ToolSpec, context: CoreSelectionContext): number {
   if (tool.connection_id !== null) return tool.name === OWN_TERMINAL_TOOL ? 1 : 0;
   if (
     RUN_TOOL_NAMES.includes(tool.name) ||
+    INTENT_TOOL_NAMES.includes(tool.name) ||
     (context.resumable === true && tool.name === RESUME_ACTION_TOOL.name) ||
     (context.followable === true && tool.name === CHASE_FOLLOW_UP_TOOL.name)
   )
@@ -596,6 +599,8 @@ export class ToolCatalog {
       if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
       // Long work's tools belong to the kinds of job its scopes were given to.
       if (RUN_TOOL_NAMES.includes(tool.name) && !claims.scopes.includes(tool.name)) continue;
+      // Keeping hold of what the person wants belongs to their conversations.
+      if (INTENT_TOOL_NAMES.includes(tool.name) && !claims.scopes.includes(tool.name)) continue;
       // Offered only while there is a skill this attempt may read.
       if (tool.name === SKILL_READ_TOOL.name && skills.length === 0) continue;
       // Offered only while the owner's approval is waiting to be carried out.
@@ -609,6 +614,7 @@ export class ToolCatalog {
             ASK_PERSON_TOOL,
             RESUME_ACTION_TOOL,
             CHASE_FOLLOW_UP_TOOL,
+            INTENT_CAPTURE_TOOL,
             ...RUN_TOOLS,
           ].some(
             (typed) =>

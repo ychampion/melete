@@ -867,6 +867,7 @@ const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   'run.delegate': ['tool', 'Handing part to a helper', 'Handed part to a helper'],
   'run.checkpoint': ['tool', 'Saving where it got to', 'Saved where it got to'],
   'run.finish': ['tool', 'Wrapping up', 'Wrapped up'],
+  'intent.capture': ['tool', 'Noting what you want done', 'Noted what you want done'],
   web_search: ['web', 'Searching the web', 'Searched the web'],
   web_extract: ['web', 'Reading a web page', 'Read a web page'],
   execute_code: ['sandbox', 'Running code', 'Ran code'],

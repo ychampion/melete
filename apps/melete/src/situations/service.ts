@@ -165,13 +165,37 @@ export type SituationDeps = {
   notify?: (principalId: string) => Promise<unknown>;
   /** The built-in detectors; off leaves only deadlines that work sets. */
   detectors?: boolean;
+  /** Other passes that run with each sweep, such as intents reaching their deadline. */
+  sweeps?: Array<() => Promise<unknown>>;
   now?: () => number;
+};
+
+/** A deadline to keep: its subject, when it is due, and how it is looked at. */
+export type DeadlineInput = {
+  spaceId: string;
+  principalId: string;
+  subjectKey: string;
+  connectionId?: string | null;
+  subjectRef?: string | null;
+  title: string;
+  dueAt?: Date;
+  anchor?: { field: string; offset_s: number } | null;
+  /** How long before it is due Melete looks, in seconds; the first look when `leads` has more. */
+  leadSeconds: number;
+  /** Later looks, in seconds before the due time. */
+  leads?: number[];
+  atRisk: WatchPredicate;
+  fresh?: boolean;
+  personSet: boolean;
+  jobId?: string | null;
+  ceiling?: Urgency;
+  dateOnly?: string | null;
 };
 
 type SituationRow = typeof situation.$inferSelect;
 type ClockRow = typeof clock.$inferSelect;
 
-type Raise = Finding & {
+export type Raise = Finding & {
   spaceId: string;
   principalId: string;
   connectionId: string | null;
@@ -186,7 +210,7 @@ type Raise = Finding & {
   pushBecause: string;
 };
 
-type Raised = { row: SituationRow; fresh: boolean; louder: boolean; urgent: boolean };
+export type Raised = { row: SituationRow; fresh: boolean; louder: boolean; urgent: boolean };
 
 type Read =
   | 'retry'
@@ -758,72 +782,85 @@ export class SituationService {
    * moves and is cleared when it is cancelled. The account named must be in
    * the person's space and serve them, or the work that sets it.
    */
-  async setDeadline(input: {
-    spaceId: string;
-    principalId: string;
-    subjectKey: string;
-    connectionId?: string | null;
-    subjectRef?: string | null;
-    title: string;
-    dueAt?: Date;
-    anchor?: { field: string; offset_s: number } | null;
-    /** How long before it is due Melete looks, in seconds; the first look when `leads` has more. */
-    leadSeconds: number;
-    /** Later looks, in seconds before the due time. */
-    leads?: number[];
-    atRisk: WatchPredicate;
-    fresh?: boolean;
-    personSet: boolean;
-    jobId?: string | null;
-    ceiling?: Urgency;
-    dateOnly?: string | null;
-  }): Promise<ClockRow> {
+  async setDeadline(input: DeadlineInput): Promise<ClockRow> {
+    const made = await this.deps.jobs.transaction((tx) => this.keepDeadline(tx, input));
+    this.timeNext(made.fireAt.getTime());
+    return made;
+  }
+
+  /**
+   * `setDeadline` inside a transaction the caller holds, so a deadline is kept
+   * with whatever it belongs to or not at all. The caller passes the clock to
+   * `wake` once that transaction commits.
+   */
+  async keepDeadline(tx: Transaction, input: DeadlineInput): Promise<ClockRow> {
     const atRisk = watchPredicate.parse(input.atRisk);
     const problem = watchPredicateProblem(atRisk, 'clock');
     if (problem) throw new ServiceError('invalid_predicate', problem, 400);
     const leads = [input.leadSeconds, ...(input.leads ?? [])];
     if (leads.some((lead) => !Number.isSafeInteger(lead) || lead < 0))
       throw new ServiceError('invalid_deadline', 'A lead is a whole number of seconds.', 400);
-    const made = await this.deps.jobs.transaction(async (tx) => {
-      await this.checkSubject(tx, input);
-      let due = input.dueAt?.getTime() ?? null;
-      if (input.anchor) {
-        const [kept] = rows<{ fields: KeptFields }>(
-          await tx.execute(sql`select fields from subject_state
-            where subject_key = ${input.subjectKey} and space_id = ${input.spaceId}`),
-        );
-        due = kept ? anchoredDue(kept.fields, input.anchor) : null;
-      }
-      if (due === null || Number.isNaN(due))
-        throw new ServiceError('invalid_deadline', 'The deadline has no time to keep.', 400);
-      return this.keepClock(tx, {
-        spaceId: input.spaceId,
-        principalId: input.principalId,
-        rule: SITUATION_KINDS.deadlineAtRisk,
-        subjectKey: input.subjectKey,
-        connectionId: input.connectionId ?? null,
-        subjectRef: input.subjectRef ?? null,
-        title: input.title,
-        due,
-        leads,
-        anchor: input.anchor ?? null,
-        check: {
-          at_risk: atRisk,
-          fresh: input.fresh ?? true,
-          ...(input.ceiling || input.dateOnly
-            ? {
-                ceiling:
-                  input.ceiling === 'normal' ? 'normal' : input.dateOnly ? 'soon' : input.ceiling,
-              }
-            : {}),
-          ...(input.dateOnly ? { date_only: input.dateOnly } : {}),
-        },
-        personSet: input.personSet,
-        jobId: input.jobId ?? null,
-      });
+    await this.checkSubject(tx, input);
+    let due = input.dueAt?.getTime() ?? null;
+    if (input.anchor) {
+      const [kept] = rows<{ fields: KeptFields }>(
+        await tx.execute(sql`select fields from subject_state
+          where subject_key = ${input.subjectKey} and space_id = ${input.spaceId}`),
+      );
+      due = kept ? anchoredDue(kept.fields, input.anchor) : null;
+    }
+    if (due === null || Number.isNaN(due))
+      throw new ServiceError('invalid_deadline', 'The deadline has no time to keep.', 400);
+    return this.keepClock(tx, {
+      spaceId: input.spaceId,
+      principalId: input.principalId,
+      rule: SITUATION_KINDS.deadlineAtRisk,
+      subjectKey: input.subjectKey,
+      connectionId: input.connectionId ?? null,
+      subjectRef: input.subjectRef ?? null,
+      title: input.title,
+      due,
+      leads,
+      anchor: input.anchor ?? null,
+      check: {
+        at_risk: atRisk,
+        fresh: input.fresh ?? true,
+        ...(input.ceiling || input.dateOnly
+          ? {
+              ceiling:
+                input.ceiling === 'normal' ? 'normal' : input.dateOnly ? 'soon' : input.ceiling,
+            }
+          : {}),
+        ...(input.dateOnly ? { date_only: input.dateOnly } : {}),
+      },
+      personSet: input.personSet,
+      jobId: input.jobId ?? null,
     });
+  }
+
+  /** Time the next sweep for a clock kept in a transaction that has now committed. */
+  wake(made: Pick<ClockRow, 'fireAt'>): void {
     this.timeNext(made.fireAt.getTime());
-    return made;
+  }
+
+  /**
+   * Let go of the live deadline clocks on a subject: what they guarded is no
+   * longer wanted. Situations they raised are resolved.
+   */
+  async clearSubject(tx: Transaction, spaceId: string, subjectKey: string, note: string) {
+    await tx.execute(sql`update clock set state = 'cleared', note = ${note}, claimed_until = null,
+        updated_at = ${new Date(this.now()).toISOString()}::timestamptz
+      where space_id = ${spaceId} and subject_key = ${subjectKey}
+        and state in ('armed', 'checking')`);
+    await this.settle(tx, sql`space_id = ${spaceId} and subject_key = ${subjectKey}`, 'resolved');
+  }
+
+  /**
+   * Raise a situation and hand it on, inside the caller's transaction: for
+   * what other parts of Melete notice on their own clocks.
+   */
+  async raiseIn(tx: Transaction, input: Raise): Promise<Raised | null> {
+    return this.raiseAndAttend(tx, input);
   }
 
   /**
@@ -1069,6 +1106,13 @@ export class SituationService {
   async sweep(): Promise<{ fired: number; met: number; missed: number; deferred: number }> {
     if (this.detectors) await this.armDetectorClocks();
     await this.expire();
+    for (const pass of this.deps.sweeps ?? []) {
+      try {
+        await pass();
+      } catch {
+        process.stderr.write('situations: sweep_pass_failed\n');
+      }
+    }
     const totals = { fired: 0, met: 0, missed: 0, deferred: 0 };
     for (;;) {
       const due = await this.claim();
@@ -1306,6 +1350,17 @@ export class SituationService {
   private async readSubject(entry: ClockRow, check: ClockCheck): Promise<Read> {
     const none = () => false;
     if (entry.rule === SITUATION_KINDS.replyOverdue) return this.readWait(entry, check);
+    if (entry.subjectKey.startsWith('intent:')) {
+      // Something the person wants done: still open unless its work ended.
+      const [item] = rows<{ state: string; run_state: string | null }>(
+        await this.db.execute(sql`select i.state, j.state as run_state from intent i
+          left join job j on j.id = i.run_id
+          where i.id = ${entry.subjectKey.slice('intent:'.length)}
+            and i.space_id = ${entry.spaceId} and i.principal_id = ${entry.principalId}`),
+      );
+      if (!item) return 'gone';
+      return { fields: { state: intentStateNow(item) }, seen: none, generation: null };
+    }
     if (entry.subjectKey.startsWith('ledger:')) {
       const [item] = rows<{ status: string; due_at: Date | null }>(
         await this.db.execute(sql`select status, due_at from ledger_item
@@ -1527,6 +1582,12 @@ export class SituationService {
           ? 'Because you asked Melete to keep this deadline.'
           : 'Because it has a due date.',
       });
+      // Something the person wants done that is not done near its deadline is at risk.
+      if (current.subjectKey.startsWith('intent:'))
+        await tx.execute(sql`update intent set state = 'at_risk',
+            updated_at = ${new Date(this.now()).toISOString()}::timestamptz
+          where id = ${current.subjectKey.slice('intent:'.length)}
+            and space_id = ${current.spaceId} and state in ('active', 'waiting')`);
       // The next look, when one is still ahead; otherwise done.
       const [nextLead, ...rest] = check.leads ?? [];
       const nextFire =
@@ -1943,6 +2004,18 @@ type KeptFields = Record<string, unknown> & {
   end?: unknown;
   status?: unknown;
 };
+
+/**
+ * Where an intent stands now: its own state, unless the work that carries it
+ * out has ended, which is the answer whatever the row says yet.
+ */
+export function intentStateNow(item: { state: string; run_state: string | null }): string {
+  if (!['active', 'waiting', 'at_risk'].includes(item.state)) return item.state;
+  if (item.run_state === 'completed') return 'done';
+  if (item.run_state === 'failed') return 'failed';
+  if (item.run_state === 'cancelled') return 'cancelled';
+  return item.state;
+}
 
 /** When a deadline that follows a subject's time is due: that time plus the offset. */
 export function anchoredDue(

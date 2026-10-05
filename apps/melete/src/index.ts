@@ -106,6 +106,8 @@ import {
   healthDetail,
   spendAlertsFromEnv,
 } from './health/monitor.ts';
+import { mountIntents } from './intents/routes.ts';
+import { IntentService } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -228,6 +230,8 @@ export type AppDeps = {
   jobs?: JobService;
   triggers?: TriggerService;
   situations?: SituationService;
+  /** What the person asked Melete to see through; built from `jobs` and `runs` when left out. */
+  intents?: IntentService;
   approvals?: ApprovalService;
   events?: EventStream;
   submissions?: SubmissionService;
@@ -434,6 +438,14 @@ export function createApp(deps: AppDeps) {
       ? new SituationService({ jobs: deps.jobs, triggers: deps.triggers })
       : undefined);
   if (noticing) mountSituations(app, noticing);
+  const longWork =
+    deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined);
+  const intents =
+    deps.intents ??
+    (deps.jobs && longWork
+      ? new IntentService({ jobs: deps.jobs, runs: longWork, situations: noticing })
+      : undefined);
+  if (intents) mountIntents(app, intents);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -490,7 +502,7 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       browser: Boolean(deps.browserSessions),
       privacy,
-      runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
+      runs: longWork,
       attachments: deps.attachments,
     });
   // Rooms: shared spaces where several people talk to one agent.
@@ -525,13 +537,23 @@ export function createApp(deps: AppDeps) {
       }),
       ...(noticing
         ? {
-            accepted: (owner, itemId, byPerson) =>
-              noticing.acceptCommitment({
+            accepted: async (owner, itemId, byPerson) => {
+              await noticing.acceptCommitment({
                 spaceId: owner.spaceId,
                 principalId: owner.principalId,
                 itemId,
                 byPerson,
-              }),
+              });
+              // Taken up by the person, it is something they asked Melete to see through.
+              if (byPerson) await intents?.adoptCommitment({ ...owner, itemId });
+            },
+          }
+        : {}),
+      ...(intents
+        ? {
+            chased: async (owner, awaitedId, byPerson) => {
+              if (byPerson) await intents.adoptChase({ ...owner, awaitedId });
+            },
           }
         : {}),
       ...deps.companies,
@@ -697,6 +719,7 @@ export async function bootstrap(
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
   let situations: SituationService | undefined;
+  let intents: IntentService | undefined;
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
@@ -987,6 +1010,7 @@ export async function bootstrap(
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
     runs = jobs ? new RunService(jobs) : undefined;
+    intents = jobs && runs ? new IntentService({ jobs, runs }) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
     // one. Both memory startups deliver through it.
     const activeJobs = jobs;
@@ -1135,6 +1159,7 @@ export async function bootstrap(
         effectBoundary = await startEffectBoundary(handle, env, {
           privacy,
           runs,
+          intents,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -1330,6 +1355,12 @@ export async function bootstrap(
       // observation as it is delivered, and clocks look again at deadlines.
       const noticing = new SituationService({ jobs, triggers, detectors: env.MELETE_DETECTORS });
       situations = noticing;
+      // An intent's deadline is kept on these clocks, and expires on their sweep.
+      if (intents) {
+        const keeping = intents;
+        keeping.deps.situations = noticing;
+        noticing.deps.sweeps = [() => keeping.sweep()];
+      }
       triggers.observers.push((tx, delivery, seq) => noticing.observe(tx, delivery, seq));
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -1373,6 +1404,7 @@ export async function bootstrap(
           privacy,
           modelSettings,
           runs,
+          intents,
           spending,
           blobs: blobs?.store,
         });
@@ -1593,6 +1625,7 @@ export async function bootstrap(
     jobs,
     triggers,
     situations,
+    intents,
     approvals,
     events,
     submissions,

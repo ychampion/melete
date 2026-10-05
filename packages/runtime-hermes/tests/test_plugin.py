@@ -404,6 +404,13 @@ def test_a_chase_follow_up_is_forwarded_to_the_broker_native_gate(client, broker
     assert broker.requests[0]["body"] == {"name": "chase.follow_up", "arguments": {}}
 
 
+def test_keeping_what_the_person_wants_is_forwarded_to_the_broker_native_gate(client, broker):
+    arguments = {"title": "Book a table for the family birthday", "kind": "booking"}
+    build_handler(client, {"name": "intent.capture", "connection_id": None})(arguments)
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "intent.capture", "arguments": arguments}
+
+
 def test_a_question_for_the_person_is_forwarded_to_the_broker_native_gate(client, broker):
     arguments = {"question": "Which day suits you?", "choices": ["Tuesday", "Thursday"]}
     build_handler(client, {"name": "ask_person", "connection_id": None})(arguments)
@@ -463,7 +470,7 @@ def test_a_parked_action_tells_the_model_to_stop(client, broker):
 
 
 @pytest.mark.parametrize("name", ["ask_person", "say", "react", "job.wait", "search_tools", "load_tool",
-                                  "run.start", "run.delegate", "run.try"])
+                                  "run.start", "run.delegate", "run.try", "intent.capture"])
 def test_a_helper_is_refused_the_parent_only_tools_and_the_parent_is_not(client, broker, monkeypatch, name):
     """A delegated helper reports what the person needs; the parent decides."""
     import melete_runtime_hooks

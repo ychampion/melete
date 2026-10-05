@@ -8,6 +8,7 @@ import {
   type ContextInvalidated,
   dedupKey,
   inputTokenCeiling,
+  intentScopes,
   isOutcomeEnvelope,
   isRunKind,
   isTerminal,
@@ -298,7 +299,7 @@ export class AttemptRunner {
             ...(this.options.scopes ??
               (await this.options.scopesForJob?.(tx, row)) ??
               (await connectionScopesForJob(tx, row))),
-            ...(this.runs ? runScopes(row.kind) : []),
+            ...(this.runs ? [...runScopes(row.kind), ...intentScopes(row.kind)] : []),
           ]),
         ],
         budget: {

@@ -20,6 +20,8 @@ export const SITUATION_KINDS = {
   deadlineAtRisk: 'deadline.at_risk',
   /** A message the person sent asking for something has had no answer. */
   replyOverdue: 'reply.overdue',
+  /** Something the person wanted done reached its deadline before it was done. */
+  intentExpired: 'intent.expired',
 } as const;
 export const SITUATION_KIND_NAMES = Object.values(SITUATION_KINDS);
 export const situationKind = z.enum(SITUATION_KIND_NAMES as [string, ...string[]]);

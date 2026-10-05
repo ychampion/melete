@@ -99,6 +99,7 @@ import {
   handoffResultDecision,
 } from './handoffs.ts';
 import { hookObservation } from './hooks.ts';
+import { intentCancelResponse, intentEdit, intentList, intentResponse } from './intents.ts';
 import {
   engineSkillApprovalRequest,
   engineSkillEditRequest,
@@ -1301,6 +1302,7 @@ export function buildOpenApiDocument() {
         { name: 'voice' },
         { name: 'push' },
         { name: 'situations' },
+        { name: 'intents' },
         { name: 'assistants' },
         { name: 'feedback' },
       ],
@@ -1383,6 +1385,42 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Dismissed', situationResponse),
               '404': problem('No such situation for this person'),
+            },
+          },
+        },
+        '/intents': {
+          get: {
+            tags: ['intents'],
+            summary:
+              'What this person asked Melete to see through: open ones, and those that ended in the last day',
+            description:
+              'Each carries the person’s own words, Melete’s one-line reading with every detail it chose marked as its guess, where it stands, what happens next and its deadline.',
+            responses: { '200': jsonResponse('Intents', intentList) },
+          },
+        },
+        '/intents/{id}': {
+          patch: {
+            tags: ['intents'],
+            summary: 'Correct a detail; what the person types becomes theirs',
+            requestParams: idParam('id', 'Intent id'),
+            requestBody: json(intentEdit),
+            responses: {
+              '200': jsonResponse('Corrected', intentResponse),
+              '400': problem('Not a detail Melete can keep, or a time already passed'),
+              '404': problem('No such intent for this person'),
+              '409': problem('It ended, or changed since it was read'),
+            },
+          },
+        },
+        '/intents/{id}/cancel': {
+          post: {
+            tags: ['intents'],
+            summary:
+              'Stop it: its work stops, and what it changed is taken back newest first where it can be',
+            requestParams: idParam('id', 'Intent id'),
+            responses: {
+              '200': jsonResponse('Cancelled', intentCancelResponse),
+              '404': problem('No such intent for this person'),
             },
           },
         },

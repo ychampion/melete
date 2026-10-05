@@ -15,6 +15,7 @@ import {
   executionIntent,
   findTool,
   hashOriginWarnings,
+  INTENT_CAPTURE_TOOL,
   intentKey,
   isTrustGatedEffect,
   type JsonObject,
@@ -188,6 +189,10 @@ export type BrokerOptions = {
     call(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
     /** `run.try`: the commands run through `sandbox`, the record is written from their output. */
     measure?(claims: CapabilityClaims, input: unknown, sandbox: TrySandbox): Promise<unknown>;
+  };
+  /** Keeping hold of what the person wants done, offered to their conversations. */
+  intents?: {
+    capture(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   };
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
@@ -451,6 +456,7 @@ export class BrokerService implements BrokerOperations {
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
         ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
         ...(options.runs ? RUN_TOOLS : []),
+        ...(options.intents ? [INTENT_CAPTURE_TOOL] : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
@@ -649,6 +655,27 @@ export class BrokerService implements BrokerOperations {
         );
       }
       return await this.options.runs.call(claims, name, input);
+    } catch (error) {
+      if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
+      if (error instanceof ServiceError)
+        throw new BrokerFault(
+          ['stale_epoch', 'scope_denied', 'revision_mismatch'].includes(error.code)
+            ? (error.code as 'stale_epoch' | 'scope_denied' | 'revision_mismatch')
+            : 'payload_invalid',
+          error.message,
+        );
+      throw error;
+    }
+  }
+
+  /**
+   * `intent.capture`. The service reads the person's words itself and marks
+   * every detail's origin; a refusal comes back as a fault the model can read.
+   */
+  async intentTool(claims: CapabilityClaims, input: unknown): Promise<unknown> {
+    if (!this.options.intents) throw new BrokerFault('unknown_tool');
+    try {
+      return await this.options.intents.capture(claims, input);
     } catch (error) {
       if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
       if (error instanceof ServiceError)
