@@ -163,6 +163,21 @@ export type SituationDeps = {
   load?: (connectionId: string) => Promise<Readable>;
   /** Called after an urgent situation commits, to push it now rather than at the next pass. */
   notify?: (principalId: string) => Promise<unknown>;
+  /**
+   * Called in the transaction that makes a situation urgent, with whether a
+   * push was queued for it: the reach-me ladder starts there.
+   */
+  escalate?: (
+    tx: Transaction,
+    situation: {
+      id: string;
+      principalId: string;
+      kind: string;
+      urgency: string;
+      personSet: boolean;
+    },
+    pushed: boolean,
+  ) => Promise<void>;
   /** The built-in detectors; off leaves only deadlines that work sets. */
   detectors?: boolean;
   now?: () => number;
@@ -415,6 +430,7 @@ export class SituationService {
       );
       told = made.length > 0;
     }
+    if (row.urgency === 'urgent' && row.personSet) await this.deps.escalate?.(tx, row, told);
     const routed = raised.fresh
       ? await this.route(tx, row, input.jobIds ?? [], input.connections ?? [])
       : [];

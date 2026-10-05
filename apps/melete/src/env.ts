@@ -299,6 +299,28 @@ const variables = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  /**
+   * Texts and calls to a person's own verified number when a deadline they set
+   * is about to be missed (docs/SITUATIONAL-AWARENESS.md, "Reaching your
+   * phone"): the Twilio account, its auth token and the number they come from.
+   * All three, with an https MELETE_PUBLIC_URL, or the ladder stops at push.
+   */
+  MELETE_TWILIO_ACCOUNT_SID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^AC[0-9a-fA-F]{32}$/, 'An account SID starts with AC')
+      .optional(),
+  ),
+  MELETE_TWILIO_AUTH_TOKEN: unsetWhenBlank(z.string().min(16).max(128).optional()),
+  MELETE_TWILIO_FROM_NUMBER: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^\+[1-9]\d{6,14}$/, 'Write the number with + and the country code')
+      .optional(),
+  ),
+  /** What one text and one started minute of a call cost, counted toward the person's spend. */
+  MELETE_REACH_TEXT_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.0083)),
+  MELETE_REACH_CALL_USD_PER_MINUTE: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.014)),
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')
