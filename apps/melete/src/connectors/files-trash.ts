@@ -362,6 +362,41 @@ export async function hasTrash(place: TrashPlace, id: string): Promise<boolean> 
   return (await readManifest(place, id).catch(() => null)) !== null;
 }
 
+/**
+ * The latest delete in this job's trash here, or the latest that took `path`
+ * (or something beneath it), with when it was made; null when there is none.
+ */
+export async function latestTrash(
+  place: TrashPlace,
+  path?: string,
+): Promise<{ id: string; made: number } | null> {
+  let held: HeldDirectory;
+  try {
+    held = await holdBeneath(place.base, place.trash);
+  } catch (error) {
+    if (codeOf(error) === 'ENOENT') return null;
+    throw error;
+  }
+  let ids: string[];
+  try {
+    ids = (await readdir(held.self)).filter((id) => TRASH_ID.test(id));
+  } finally {
+    await held.close();
+  }
+  const wanted = path === undefined ? null : segmentsFor(path).join('/');
+  for (const id of ids.sort((a, b) => madeAt(b) - madeAt(a))) {
+    const manifest = await readManifest(place, id).catch(() => null);
+    if (!manifest || Date.parse(manifest.expires_at) <= Date.now()) continue;
+    if (
+      wanted === null ||
+      manifest.items.some((item) => item.path === wanted || item.path.startsWith(`${wanted}/`)) ||
+      (manifest.folders ?? []).includes(wanted)
+    )
+      return { id, made: madeAt(id) };
+  }
+  return null;
+}
+
 export type Restored = {
   restored: string[];
   kept: { path: string; reason: string }[];

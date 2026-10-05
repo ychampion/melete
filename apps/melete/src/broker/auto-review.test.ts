@@ -410,3 +410,20 @@ describe('a change from the command line', () => {
     expect(tier(tool('egress.test_write', 'write_reversible'), 'exec').tier).toBe('person');
   });
 });
+
+test("deleting what Melete made is workspace work; deleting the person's file is theirs to decide", () => {
+  const remove = tool('files.delete', 'write_reversible');
+  const owned = (owner: string) =>
+    reviewTier({ tool: remove, provider: 'files', payload: { checked: { owner } }, doubts: [] });
+  expect(owned('agent')).toMatchObject({ tier: 'sandbox', actionClass: 'sandbox' });
+  expect(owned('person').tier).toBe('person');
+  // Only the files connector's own check counts: another provider's delete asks.
+  expect(
+    reviewTier({
+      tool: remove,
+      provider: 'app',
+      payload: { checked: { owner: 'agent' } },
+      doubts: [],
+    }).tier,
+  ).toBe('person');
+});
