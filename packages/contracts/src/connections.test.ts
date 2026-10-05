@@ -20,7 +20,7 @@ import {
   sandboxCredentialRefusal,
 } from './connections.ts';
 import { connectionView } from './entities.ts';
-import { mcpConnectionConfig, pullsFromPublicRegistry } from './mcp.ts';
+import { addressPointsAtHost, mayPullImage, mcpConnectionConfig } from './mcp.ts';
 
 const SPACE = 'sp_01J00000000000000000000000';
 
@@ -161,25 +161,22 @@ describe('connection installation requests', () => {
     expect(
       parse({ runner: 'image', source: `ghcr.io/example/server:1.0@sha256:${'a'.repeat(64)}` }),
     ).toBe(true);
-    // A tag alone can move, and a name without a registry host is resolved by whoever configured the engine.
+    // A tag alone can move to other content.
     expect(parse({ runner: 'image', source: 'ghcr.io/example/server:1.0' })).toBe(false);
-    expect(parse({ runner: 'image', source: `server@sha256:${'a'.repeat(64)}` })).toBe(false);
+    expect(parse({ runner: 'image', source: `server@sha256:${'a'.repeat(64)}` })).toBe(true);
     expect(
       parse({ runner: 'image', source: `registry.local:5000/server@sha256:${'a'.repeat(64)}` }),
     ).toBe(true);
-    // The engine pulls from the host, so a registry given as an address or as the host itself
-    // would point it at the host's own or private ports.
+    // The engine pulls from the host, so a registry given as the host itself would point it
+    // at the host's own ports.
     for (const registry of [
       'localhost:5000',
       'localhost',
       'registry.localhost:5000',
       '127.0.0.1:5000',
       '127.1.2.3',
-      '10.0.0.5:5000',
       '172.17.0.1:2375',
-      '192.168.1.20',
       '169.254.169.254',
-      '93.184.216.34',
     ])
       expect([
         registry,
@@ -222,23 +219,92 @@ describe('connection installation requests', () => {
     expect(resolve({ ...mcpStdio, scopes: ['mcp_files.read'] }).ok).toBe(false);
   });
 
-  test('an image is pulled only from a public registry, however another registry is named', () => {
-    const pinned = (registry: string) => `${registry}/server:1.0@sha256:${'a'.repeat(64)}`;
-    for (const registry of ['ghcr.io', 'docker.io', 'quay.io'])
-      expect([registry, pullsFromPublicRegistry(pinned(registry))]).toEqual([registry, true]);
-    // Each is a valid name that resolves, or can be made to resolve, inside the host's network.
-    for (const registry of [
-      '127.0.0.1.nip.io:2375',
-      '169.254.169.254.nip.io',
-      'metadata.google.internal',
-      'host.docker.internal',
-      'registry.local:5000',
-      'ghcr.io:5000',
-      'ghcr.io.example.net',
+  test('an image is pulled from any registry, except one that points back at the host', () => {
+    const pinned = (name: string) => `${name}@sha256:${'a'.repeat(64)}`;
+    const installs = (source: string) =>
+      createConnectionRequest.safeParse({
+        ...mcpStdio,
+        mcp_stdio: { ...mcpStdio.mcp_stdio, runner: 'image', source },
+      }).success;
+    // Public and private registries, and Docker Hub's short names.
+    for (const name of [
+      'registry.acme.com/tools/x:1',
+      '10.0.0.5:5000/x',
+      '192.168.1.20/team/server',
+      '[fd12::5]:5000/x',
+      'ghcr.io/example/server:1.0',
+      'alpine',
+      'org/image',
     ])
-      expect([registry, pullsFromPublicRegistry(pinned(registry))]).toEqual([registry, false]);
-    // Still a digest-pinned reference, from a public registry or not.
-    expect(pullsFromPublicRegistry('ghcr.io/example/server:1.0')).toBe(false);
+      expect([name, installs(pinned(name)), mayPullImage(pinned(name))]).toEqual([
+        name,
+        true,
+        true,
+      ]);
+    // Each reaches the host itself, its Docker engine or its cloud metadata service.
+    for (const name of [
+      '127.0.0.1.nip.io:2375/x',
+      '169.254.169.254.nip.io/x',
+      'metadata.google.internal/x',
+      'host.docker.internal/x',
+      'gateway.docker.internal/x',
+      'localhost:5000/x',
+      'registry.acme.com:2376/x',
+      '10.0.0.5:2375/x',
+      'metadata:80/x',
+      'instance-data:80/x',
+      '0.0.0.0/x',
+      '127.1/x',
+      '[::1]:5000/x',
+      '[fe80::1]/x',
+      '[::ffff:127.0.0.1]/x',
+      'app.127.0.0.1.nip.io/x',
+      'app-127-0-0-1.sslip.io/x',
+      '169-254-169-254.sslip.io/x',
+      '7f000001.nip.io/x',
+      '--1.sslip.io/x',
+      'fe80--1.sslip.io/x',
+      'a.0x7f000001/x',
+    ])
+      expect([name, installs(pinned(name)), mayPullImage(pinned(name))]).toEqual([
+        name,
+        false,
+        false,
+      ]);
+    // Still a digest-pinned reference.
+    expect(mayPullImage('registry.acme.com/tools/x:1')).toBe(false);
+  });
+
+  test('a resolved registry address is refused only when it is the host or its metadata service', () => {
+    for (const address of [
+      '127.0.0.1',
+      '127.8.9.10',
+      '0.0.0.0',
+      '169.254.169.254',
+      '100.100.100.200',
+      '::1',
+      '::',
+      '::ffff:127.0.0.1',
+      '::ffff:a9fe:a9fe',
+      '64:ff9b::7f00:1',
+      'fe80::1%eth0',
+      'febf::1',
+      'fd00:ec2::254',
+      'not-an-address',
+    ])
+      expect([address, addressPointsAtHost(address)]).toEqual([address, true]);
+    for (const address of [
+      '10.0.0.5',
+      '172.17.0.2',
+      '192.168.1.20',
+      '100.64.0.1',
+      '8.8.8.8',
+      'fd12::5',
+      '2606:4700::1111',
+      '::ffff:10.0.0.5',
+      'fec0::1',
+    ])
+      expect([address, addressPointsAtHost(address)]).toEqual([address, false]);
   });
 
   test('endpoints are validated per kind', () => {

@@ -290,7 +290,18 @@ configuration, and writes only the package volume. It never mounts the
 server's volume, and the server can only read the package, so an install
 script cannot read the token the server will be given, and nothing a server
 writes reaches the next preparation or changes what runs. An image runs only
-if the host holds the content its pinned digest names. The service reads back
+if the host holds the content its pinned digest names. The engine pulls from
+the host's network, so a registry may be any public or private one except one
+that points back at the host: loopback, `0.0.0.0`, link-local and cloud
+metadata addresses, Docker's host aliases, the engine's ports 2375 and 2376,
+and wildcard-DNS names that spell those addresses. The service and
+`melete-cells` both refuse such a pull, and the registry's name is resolved
+first and refused if it reaches one of those addresses (`pulls from any
+registry, except one that points back at the host`). The engine resolves the
+name again itself and follows a registry's redirects and sign-in address, so a
+registry that answers differently to the engine can still lead it elsewhere;
+the check narrows this, and a fixed set of registries needs the images placed
+on the host and the host's outbound traffic limited. The service reads back
 the engine's record of each container (user, root, capabilities, privilege,
 limits, network, mounts) and of each network it creates, and removes, unstarted,
 anything recorded with less isolation than asked. At most sixteen servers run at

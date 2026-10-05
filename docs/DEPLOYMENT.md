@@ -1859,7 +1859,7 @@ read-only, and `melete-cells` starts only these fixed profiles:
 | --- | --- | --- | --- |
 | An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
 | An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
-| A stdio MCP server | one pulled by digest from a public registry ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
+| A stdio MCP server | one pulled by digest from any registry that does not point back at the host ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
 
 Each runs as its profile's non-root user on a read-only root, with every
 capability dropped and no privilege escalation. `melete-cells` refuses any

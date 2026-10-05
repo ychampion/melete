@@ -253,9 +253,31 @@ const spec = (launch: Partial<McpStdioLaunch>, connectionId = CONNECTION): Stdio
   }),
   env: { NOTES_TOKEN: 'sealed-value' },
 });
+/** A launch as stored, so the launcher's own check is what is tested. */
+const stored = (source: string): StdioLaunchSpec => {
+  const base = spec({});
+  return { ...base, launch: { ...base.launch, source } };
+};
 const signal = () => AbortSignal.timeout(10_000);
+/** Registry names as a resolver would answer them; any other name does not resolve. */
+const TEST_HOSTS: Record<string, string[]> = {
+  'ghcr.io': ['198.51.100.2'],
+  'registry.acme.com': ['10.20.30.40'],
+  'rebound.example.net': ['203.0.113.7', '127.0.0.1'],
+};
+const resolve = async (host: string) => {
+  const addresses = TEST_HOSTS[host];
+  if (!addresses) throw new Error(`getaddrinfo ENOTFOUND ${host}`);
+  return addresses;
+};
 const launcherFor = (engine: FakeEngine, extra: Record<string, unknown> = {}) =>
-  new DockerStdioLauncher({ project: 'melete', socket: 'unused', docker: engine, ...extra });
+  new DockerStdioLauncher({
+    project: 'melete',
+    socket: 'unused',
+    docker: engine,
+    resolve,
+    ...extra,
+  });
 const inContainer = (engine: FakeEngine, proxy = new RecordingProxy()) =>
   launcherFor(engine, { selfId: 'service-container', egressPort: 0, proxy });
 
@@ -353,21 +375,35 @@ describe('the Docker stdio launcher', () => {
     expect(engine.created()).toHaveLength(0);
   });
 
-  test('an image from another registry is never pulled, and runs once it is on the host', async () => {
-    // A valid name the engine would resolve on the host, to the host itself.
-    const local = `127.0.0.1.nip.io:2375/notes@${DIGEST}`;
-    const engine = new FakeEngine();
-    await expect(launcherFor(engine).start(spec({ source: local }), signal())).rejects.toThrow(
-      'runs once it is on this host',
-    );
-    expect(engine.pulls).toEqual([]);
-    expect(engine.created()).toHaveLength(0);
-    // Put there by the operator, it runs without a pull.
-    engine.images.set(local, DIGEST);
-    const channel = await launcherFor(engine).start(spec({ source: local }), signal());
-    expect(engine.pulls).toEqual([]);
-    expect(engine.created()).toHaveLength(1);
-    await openLineMcpTransport(channel).close();
+  test('an image is pulled from any registry, except one that points back at the host', async () => {
+    for (const name of ['registry.acme.com/tools/notes:1', '10.0.0.5:5000/notes']) {
+      const engine = new FakeEngine();
+      const source = `${name}@${DIGEST}`;
+      const channel = await launcherFor(engine).start(stored(source), signal());
+      expect(engine.pulls).toEqual([source]);
+      await openLineMcpTransport(channel).close();
+    }
+    for (const name of [
+      // A name the engine would resolve on the host, to the host's own engine API.
+      '127.0.0.1.nip.io:2375/notes',
+      'host.docker.internal/notes',
+      'registry.acme.com:2376/notes',
+      // A name that resolves to the host, and one that does not resolve here.
+      'rebound.example.net/notes',
+      'unknown.example.net/notes',
+    ]) {
+      const engine = new FakeEngine();
+      const source = `${name}@${DIGEST}`;
+      await expect(launcherFor(engine).start(stored(source), signal())).rejects.toThrow(
+        'not pulled',
+      );
+      expect([name, engine.pulls, engine.created().length]).toEqual([name, [], 0]);
+      // Put there by the operator, it runs without a pull.
+      engine.images.set(source, DIGEST);
+      const channel = await launcherFor(engine).start(stored(source), signal());
+      expect([name, engine.pulls, engine.created().length]).toEqual([name, [], 1]);
+      await openLineMcpTransport(channel).close();
+    }
   });
 
   test('npx fetches into a package volume the server can only read, with no secret and no config', async () => {

@@ -81,50 +81,181 @@ const pythonPackage = z
     ),
   );
 /**
- * An image names its registry and pins its content: `ghcr.io/org/server:1.0@sha256:…`.
- * A tag alone can be moved to other content after the owner chose it.
+ * An image pins its content by digest: `ghcr.io/org/server:1.0@sha256:…`, or a
+ * Docker Hub name such as `node:22@sha256:…`. A tag alone can be moved to other
+ * content after the owner chose it.
  */
+const IMAGE_REFERENCE =
+  /^(?:(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/;
+
 const imageReference = z
   .string()
   .max(512)
-  .regex(
-    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/,
-  )
-  // The engine pulls from the host's network, so a registry named by address, or as the
-  // host itself, would have it knock on the host's own or private ports.
-  .refine((value) => registryIsNamed(value.slice(0, value.indexOf('/'))));
+  .regex(IMAGE_REFERENCE)
+  // The engine pulls from the host's network, so a registry that points back at the
+  // host would have it knock on the host's own ports or its cloud metadata service.
+  .refine((value) => !registryPointsAtHost(imageRegistry(value)));
 
-/** A registry host that is a DNS name, not an address and not the host itself. */
-function registryIsNamed(registry: string): boolean {
-  const host = registry.replace(/:\d+$/, '');
-  const last = host.split('.').at(-1) ?? '';
-  return /[a-z]/.test(last) && host !== 'localhost' && !host.endsWith('.localhost');
+/**
+ * Whether the engine may pull this image reference: pinned by digest, from any
+ * registry, public or private, except one that points back at the host. The
+ * service also resolves the registry's name before a pull (`imagePullAllowed`).
+ */
+export function mayPullImage(reference: string): boolean {
+  return imageReference.safeParse(reference).success;
 }
 
 /**
- * The public registries the engine pulls a server's image from. It pulls from
- * the host's own network and goes wherever a registry sends it (its sign-in
- * address, its redirects), and a name can resolve to any address, so a
- * registry anyone could choose would let them point the engine at the host's
- * own or private ports. An image from another registry runs once it is on the
- * host.
+ * The registry an image reference pulls from, with its port. As for the engine,
+ * the first part names a registry only when it has a dot or a port, or is
+ * `localhost`; otherwise the image is on Docker Hub (`alpine`, `org/image`).
  */
-export const MCP_IMAGE_REGISTRIES: readonly string[] = [
-  'docker.io',
-  'index.docker.io',
-  'registry-1.docker.io',
-  'ghcr.io',
-  'quay.io',
-  'gcr.io',
-  'mcr.microsoft.com',
-  'public.ecr.aws',
-  'registry.gitlab.com',
-];
+export function imageRegistry(reference: string): string {
+  const slash = reference.indexOf('/');
+  const first = slash < 0 ? '' : reference.slice(0, slash);
+  return /[.:[]/.test(first) || first === 'localhost' ? first : 'docker.io';
+}
 
-/** Whether the engine may pull this image reference: pinned by digest, from one of `MCP_IMAGE_REGISTRIES`, on its own port. */
-export function pullsFromPublicRegistry(reference: string): boolean {
-  if (!imageReference.safeParse(reference).success) return false;
-  return MCP_IMAGE_REGISTRIES.includes(reference.slice(0, reference.indexOf('/')));
+/** The host part of a registry, without its port or IPv6 brackets. */
+export function registryHost(registry: string): string {
+  const bracketed = /^\[([^\]]*)\](?::\d+)?$/.exec(registry);
+  return bracketed ? (bracketed[1] ?? '') : registry.replace(/:\d+$/, '');
+}
+
+/** The engine's own API ports, refused on any host. */
+const DOCKER_API_PORTS = new Set([2375, 2376]);
+/** Names that reach the host itself, its Docker gateway or a cloud metadata service. */
+const HOST_NAMES = new Set([
+  'localhost',
+  'metadata',
+  'metadata.google.internal',
+  'instance-data',
+  'instance-data.ec2.internal',
+  'host.docker.internal',
+  'gateway.docker.internal',
+]);
+
+/**
+ * Whether a registry points back at the host: the host itself (loopback,
+ * `0.0.0.0`, Docker's host aliases), a link-local or cloud metadata address,
+ * the engine's API ports on any host, or a wildcard-DNS name
+ * (`127.0.0.1.nip.io`, `169-254-169-254.sslip.io`) that spells one of those
+ * addresses. Any other registry, public or private, may be pulled from.
+ */
+export function registryPointsAtHost(registry: string): boolean {
+  const port = /^(?:\[[^\]]*\]|[^:]*):(\d+)$/.exec(registry)?.[1];
+  if (port !== undefined) {
+    const number = Number(port);
+    if (DOCKER_API_PORTS.has(number) || number < 1 || number > 65535) return true;
+  }
+  return hostPointsAtHost(registryHost(registry).toLowerCase());
+}
+
+/** Whether a host name or address literal points back at the host (see `registryPointsAtHost`). */
+export function hostPointsAtHost(host: string): boolean {
+  if (!host) return true;
+  if (host.includes(':')) return addressPointsAtHost(host);
+  if (HOST_NAMES.has(host) || host.endsWith('.localhost') || host.endsWith('.docker.internal'))
+    return true;
+  const labels = host.split('.');
+  const last = labels.at(-1) ?? '';
+  // A name's last label is never all digits or hex, so this is an address. Only the
+  // plain dotted form is taken, since resolvers read the short and hex forms differently.
+  if (/^\d+$/.test(last)) return !IPV4.test(host) || addressPointsAtHost(host);
+  if (/^0x/.test(last)) return true;
+  return embeddedAddresses(labels).some(addressPointsAtHost);
+}
+
+const OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const IPV4 = new RegExp(`^${OCTET}(?:\\.${OCTET}){3}$`);
+
+/** The addresses a wildcard-DNS name can spell: `1.2.3.4.x`, `a-1-2-3-4.x`, `7f000001.x`, `--1.x`. */
+function embeddedAddresses(labels: string[]): string[] {
+  const found: string[] = [];
+  const quads = (parts: string[]) => {
+    for (let index = 0; index + 4 <= parts.length; index++) {
+      const window = parts.slice(index, index + 4);
+      if (window.every((part) => /^\d{1,3}$/.test(part))) found.push(window.join('.'));
+    }
+  };
+  quads(labels);
+  for (const label of labels) {
+    const parts = label.split('-');
+    quads(parts);
+    for (const part of parts)
+      if (/^[0-9a-f]{8}$/.test(part))
+        found.push([0, 2, 4, 6].map((at) => Number.parseInt(part.slice(at, at + 2), 16)).join('.'));
+    // IPv6 is spelled with dashes for colons: `--1`, `fe80--1`, `app-fe80--1`.
+    if (label.includes('--')) {
+      const starts = [0, ...[...label.matchAll(/-/g)].map((match) => (match.index ?? 0) + 1)];
+      for (const start of starts) {
+        const candidate = label.slice(start).replaceAll('-', ':');
+        if (parseIpv6(candidate)) found.push(candidate);
+      }
+    }
+  }
+  return found.filter((address) => IPV4.test(address) || parseIpv6(address));
+}
+
+/**
+ * Whether an address is the host itself or reaches a cloud metadata service:
+ * loopback (`127.0.0.0/8`, `::1`), unspecified (`0.0.0.0/8`, `::`), link-local
+ * (`169.254.0.0/16`, `fe80::/10`) or a metadata address. Private ranges such as
+ * `10.0.0.0/8` are allowed. Text that is not an address counts as the host.
+ */
+export function addressPointsAtHost(address: string): boolean {
+  const plain = address
+    .replace(/^\[|\]$/g, '')
+    .replace(/%.*$/, '')
+    .toLowerCase();
+  if (IPV4.test(plain)) {
+    const [a, b, c, d] = plain.split('.').map(Number);
+    return (
+      a === 127 ||
+      a === 0 ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b === 100 && c === 100 && d === 200)
+    );
+  }
+  const words = parseIpv6(plain);
+  if (!words) return true;
+  const [first = 0, second = 0, , , , sixth = 0, high = 0, low = 0] = words;
+  const zero = (from: number, to: number) => words.slice(from, to).every((word) => word === 0);
+  const embedded = `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+  if (zero(0, 5)) {
+    if (zero(5, 7)) return low <= 1; // `::` and `::1`
+    if (sixth === 0 || sixth === 0xffff) return addressPointsAtHost(embedded); // IPv4-compatible or mapped
+  }
+  // NAT64 carries an IPv4 address in its last 32 bits.
+  if (first === 0x64 && second === 0xff9b && zero(2, 6)) return addressPointsAtHost(embedded);
+  if ((first & 0xffc0) === 0xfe80) return true;
+  // The IPv6 address of the AWS metadata service, fd00:ec2::254.
+  return first === 0xfd00 && second === 0xec2 && zero(2, 7) && low === 0x254;
+}
+
+/** The eight 16-bit words of an IPv6 address, or null. */
+function parseIpv6(text: string): number[] | null {
+  let body = text;
+  const tail: number[] = [];
+  const dotted = /^(.*:)([^:]*\.[^:]*)$/.exec(body);
+  if (dotted) {
+    const v4 = dotted[2] ?? '';
+    if (!IPV4.test(v4)) return null;
+    const [a = 0, b = 0, c = 0, d = 0] = v4.split('.').map(Number);
+    tail.push((a << 8) | b, (c << 8) | d);
+    body = dotted[1] ?? '';
+    if (!body.endsWith('::')) body = body.slice(0, -1);
+  }
+  const halves = body.split('::');
+  if (halves.length > 2) return null;
+  const split = (part = '') => (part === '' ? [] : part.split(':'));
+  const head = split(halves[0]);
+  const back = split(halves[1]);
+  if (![...head, ...back].every((part) => /^[0-9a-f]{1,4}$/.test(part))) return null;
+  const known = head.length + back.length + tail.length;
+  if (halves.length === 1 ? known !== 8 : known > 7) return null;
+  const gap = new Array<string>(8 - known).fill('0');
+  return [...head, ...gap, ...back].map((part) => Number.parseInt(part, 16)).concat(tail);
 }
 /** A destination the server may open: a DNS name with at least one dot, and an optional port. */
 export const mcpEgressHost = z
@@ -199,7 +330,7 @@ function checkLaunch(
       path: ['source'],
       message:
         launch.runner === 'image'
-          ? 'An image names its registry and digest, such as ghcr.io/example/server:1.0@sha256:…'
+          ? 'An image names its digest, such as ghcr.io/example/server:1.0@sha256:…, on a registry other than this host'
           : 'A package is a registry name with an optional version, never a URL or a path',
     });
   if (new Set(launch.egress).size !== launch.egress.length)
