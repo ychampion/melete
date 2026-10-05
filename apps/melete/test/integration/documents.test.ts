@@ -314,9 +314,11 @@ withDb('a Drive as a document source', () => {
     fake.putFile({ id: file, modifiedTime: at(clock - MINUTE) });
     expect((await keep(drive, file, 600 * MINUTE)).status).toBe(201);
     await poll();
-    fake.driveFault = { status: 403, reason: 'userRateLimitExceeded', retryAfter: 900, times: 1 };
+    // Every Drive this poll reads is told to wait, whichever is read first.
+    fake.driveFault = { status: 403, reason: 'userRateLimitExceeded', retryAfter: 900, times: 100 };
     fake.putFile({ id: file, modifiedTime: at(clock) });
     await poll();
+    fake.driveFault = null;
     const [cursor] = await required(handle).sql`select next_poll_at, last_error, failures
       from source_cursor where connection_id = ${drive}`;
     expect(new Date(cursor?.next_poll_at).getTime()).toBe(clock + 900_000);

@@ -10,6 +10,7 @@ import { EmailConnector } from '../../src/connectors/email.ts';
 import { startFakeGoogle } from '../../src/connectors/fixtures/fake-google.ts';
 import { GOOGLE_SIGN_IN_SCOPE } from '../../src/connectors/google.ts';
 import { GoogleCalendarConnector } from '../../src/connectors/google-calendar.ts';
+import { GoogleDriveConnector } from '../../src/connectors/google-drive.ts';
 import { mailAction, mailContext } from '../../src/connectors/mail-fixtures.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -96,7 +97,7 @@ const h = fixture ? await harness() : null;
 const withDb = fixture ? describe : describe.skip;
 
 withDb('signing in with Google', () => {
-  test('one sign-in connects Gmail and Google Calendar, with the tokens only sealed', async () => {
+  test('one sign-in connects Gmail, Google Calendar and Google Drive, with the tokens only sealed', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const availability = accountSignInAvailability.parse(
       await (await h.app.request('/google-sign-ins', h.as(h.cookie))).json(),
@@ -110,19 +111,23 @@ withDb('signing in with Google', () => {
     expect(landed.status).toBe(200);
     expect(page).toContain('connected');
     if (status.state !== 'connected') throw new Error(`Sign-in ended ${status.state}`);
-    expect(status.connection_ids).toHaveLength(2);
+    expect(status.connection_ids).toHaveLength(3);
 
     const listed = connectionListResponse
       .parse(await (await h.app.request('/connections', h.as(h.cookie))).json())
       .connections.filter((row) => status.connection_ids.includes(row.id));
     const mail = listed.find((row) => row.provider === 'imap');
     const calendar = listed.find((row) => row.provider === 'caldav');
+    const drive = listed.find((row) => row.provider === 'drive');
     expect(mail).toMatchObject({ status: 'active', label: 'Gmail (person@example.test)' });
     expect(mail?.scopes).toEqual(
       expect.arrayContaining(['email.search', 'email.read', 'email.send']),
     );
     expect(calendar).toMatchObject({ status: 'active' });
     expect(calendar?.scopes).toContain('calendar.create');
+    // Drive is read for what changes, by its metadata, with one read tool.
+    expect(drive).toMatchObject({ status: 'active', label: 'Google Drive (person@example.test)' });
+    expect(drive?.scopes).toEqual(['documents.status']);
 
     // The same tools and the same mailer path as a password mailbox.
     const mailer = h.factory.mailers.get(mail?.id ?? '');
@@ -130,6 +135,7 @@ withDb('signing in with Google', () => {
     const gmail = registry.get(mail?.id ?? '');
     expect(gmail).toBeInstanceOf(EmailConnector);
     expect(registry.get(calendar?.id ?? '')).toBeInstanceOf(GoogleCalendarConnector);
+    expect(registry.get(drive?.id ?? '')).toBeInstanceOf(GoogleDriveConnector);
     google.deliver(
       'From: friend@example.test\nTo: person@example.test\nSubject: Lunch\nMessage-ID: <lunch@example.test>\n\nThursday.\n',
     );
@@ -168,7 +174,7 @@ withDb('signing in with Google', () => {
     expect([...status.connection_ids].sort()).toEqual(before.map((row) => row.id));
     const after = await h.sql`select id, secret_ref, status from connection
       where configuration->>'account' = 'person@example.test' and status <> 'revoked' order by id`;
-    expect(after).toHaveLength(2);
+    expect(after).toHaveLength(3);
     for (const [index, row] of after.entries()) {
       expect(row.status).toBe('active');
       expect(row.secret_ref).not.toBe(before[index]?.secret_ref);
