@@ -220,3 +220,59 @@ describe('ElevenLabs for voice mode', () => {
     expect(session.url.startsWith('ws://127.0.0.1:9999/v1/speech-to-text/realtime?')).toBe(true);
   });
 });
+
+describe('why ElevenLabs refused, for the operator', () => {
+  test('a rejected key says so by status and known code, and quotes nothing else', async () => {
+    const { fetch } = stub(
+      () =>
+        new Response(
+          '{"detail":{"status":"invalid_api_key","message":"Invalid API key sk-secret-echo"}}',
+          { status: 401 },
+        ),
+    );
+    const failure = (await elevenLabsLiveVoice({ apiKey: 'el-secret-key', fetch })
+      .speak('hello')
+      .catch((error: unknown) => error)) as VoiceProviderError;
+    expect(failure.message).toBe('401 from ElevenLabs: key rejected (invalid_api_key)');
+    expect(failure.keyRefused).toBe(true);
+    expect(failure.message).not.toContain('secret');
+  });
+
+  test('a code the list does not know is dropped, and the status still explains', async () => {
+    const { fetch } = stub(
+      () => new Response('{"detail":{"status":"sk-secret-echo"}}', { status: 402 }),
+    );
+    const failure = (await elevenLabsSpeechAdapter({ apiKey: 'k', fetch })
+      .synthesize({ script: 'x', voice: 'alto' })
+      .catch((error: unknown) => error)) as VoiceProviderError;
+    expect(failure.code).toBeNull();
+    expect(failure.message).toBe('402 from ElevenLabs: the plan or credits do not cover this call');
+    expect(failure.keyRefused).toBe(false);
+  });
+
+  test('the key check asks the account record once, and reuses the answer', async () => {
+    const { fetch, seen } = stub(
+      () => new Response('{"detail":{"status":"invalid_api_key"}}', { status: 401 }),
+    );
+    const adapter = elevenLabsSpeechAdapter({ apiKey: 'k', fetch });
+    const first = await adapter.verify?.();
+    const second = await adapter.verify?.();
+    expect(first).toEqual({
+      ok: false,
+      keyRefused: true,
+      detail: '401 from ElevenLabs: key rejected (invalid_api_key)',
+    });
+    expect(second).toEqual(first);
+    expect(seen.map((call) => call.url.pathname)).toEqual(['/v1/user']);
+    expect(seen[0]?.init.method).toBe('GET');
+  });
+
+  test('a key scoped without the account read still counts as accepted', async () => {
+    const { fetch } = stub(
+      () => new Response('{"detail":{"status":"missing_permissions"}}', { status: 401 }),
+    );
+    expect(await elevenLabsTranscriptionAdapter({ apiKey: 'k', fetch }).verify?.()).toEqual({
+      ok: true,
+    });
+  });
+});

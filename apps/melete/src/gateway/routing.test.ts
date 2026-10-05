@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import { loadEnv } from '../env.ts';
-import { acceptsEffort, withEffort } from './effort.ts';
+import { acceptsEffort, turnEffort, withEffort } from './effort.ts';
 import { createModelGateway, type GatewayOptions, providersFromEnv } from './index.ts';
 import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
@@ -308,6 +308,21 @@ describe('reasoning effort per role', () => {
     const gateway = await start(undefined, ok, { reasoningEffort: 'medium' });
     await gateway.post('think about it');
     expect(gateway.sent[0]?.body.reasoning_effort).toBe('medium');
+  });
+
+  test("a brief turn's calls think one step less than the agent's effort", async () => {
+    const gateway = await start(undefined, ok, {
+      reasoningEffort: 'medium',
+      authenticate: async () => ({ ...principal(), briefTurn: true }),
+    });
+    await gateway.post('Got it, thanks');
+    expect(gateway.sent[0]?.body.reasoning_effort).toBe('low');
+    expect(
+      (['high', 'medium', 'low', 'none', 'off', undefined] as const).map((effort) =>
+        turnEffort(effort, true),
+      ),
+    ).toEqual(['medium', 'low', 'low', 'none', 'off', undefined]);
+    expect(turnEffort('medium', false)).toBe('medium');
   });
 
   test('a model that refuses the added effort is asked once more without it', async () => {

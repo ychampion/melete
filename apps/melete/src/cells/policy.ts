@@ -19,11 +19,11 @@
  * volume or exec act only on ones a profile owns, so the API can reach neither
  * the database's container nor this one.
  *
- * The judgement is pure apart from `lookup`, which reads the engine, so the
- * tests exercise it without Docker.
+ * The judgement is pure apart from `lookup`, which reads the engine, and the
+ * resolution of an image registry's name, so the tests exercise it without Docker.
  */
 
-import { pullsFromPublicRegistry } from '@melete/contracts';
+import { type HostResolver, imagePullAllowed } from '../connectors/image-registry.ts';
 
 export type Profile = 'runtime' | 'sandbox' | 'mcp';
 
@@ -40,6 +40,8 @@ export type CellsPolicyConfig = {
   mcpImages: readonly string[];
   /** The workspace volume attempt cells mount one job directory of. */
   workVolume: string;
+  /** Resolves an image registry's name before a pull; the system resolver when left out. */
+  resolve?: HostResolver;
 };
 
 type Labels = Record<string, string>;
@@ -417,12 +419,14 @@ const onlyKeys = (query: URLSearchParams, allowed: readonly string[]) =>
 
 /**
  * Image references a pull may name: the configured runners', or one pinned by
- * its digest on a public registry. The engine pulls from the host's network
- * and follows the registry wherever it sends it, so a registry chosen by name
- * alone could still point it at the host's own or private ports.
+ * its digest on any registry that does not point back at the host
+ * (`imagePullAllowed`). This service sits on an internal network and often
+ * cannot resolve outside names; such a name rests on the name rules here, and
+ * the Melete service resolves it before it asks for the pull.
  */
-function pullable(reference: string, config: CellsPolicyConfig): boolean {
-  return config.mcpImages.includes(reference) || pullsFromPublicRegistry(reference);
+async function pullable(reference: string, config: CellsPolicyConfig): Promise<boolean> {
+  if (config.mcpImages.includes(reference)) return true;
+  return imagePullAllowed(reference, { resolve: config.resolve, unresolved: 'names' });
 }
 
 /** Judge one request to the engine. */
@@ -633,9 +637,11 @@ export async function judge(
     if (method === 'GET' && action === 'json' && id) return allow;
     if (method === 'POST' && id === 'create' && action === undefined) {
       const reference = query.get('fromImage') ?? '';
-      return onlyKeys(query, ['fromImage']) && pullable(reference, config)
+      return onlyKeys(query, ['fromImage']) && (await pullable(reference, config))
         ? allow
-        : refuse('an image is pulled by digest, or it is one of the configured runner images');
+        : refuse(
+            'an image is pulled by digest from a registry that does not point back at the host, or it is one of the configured runner images',
+          );
     }
     return refuse(`${method} image is not part of any profile`);
   }

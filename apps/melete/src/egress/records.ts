@@ -202,6 +202,28 @@ export async function egressHostsFor(sql: Sql, actionId: string): Promise<Egress
   return summarize(hosts);
 }
 
+/**
+ * Which of these hosts no earlier connection from this session's space
+ * reached, as far as the kept records go: the first time its computer sent
+ * anything there. Records of this command itself, and any opened after it
+ * began, do not count as earlier.
+ */
+export async function newHostsFor(
+  sql: Sql,
+  input: { sessionId: string; actionId: string; hosts: readonly string[]; before: Date },
+): Promise<string[]> {
+  const hosts = [...new Set(input.hosts)].filter(Boolean).slice(0, 64);
+  if (!hosts.length) return [];
+  const seen = await sql<{ host: string }[]>`select distinct r.host from egress_record r
+    where r.space_id = (select space_id from sandbox_session where id = ${input.sessionId})
+      and r.host = any(${hosts}::text[])
+      and r.verdict in ('tunnel', 'credentialed', 'unattributed')
+      and r.action_id is distinct from ${input.actionId}
+      and r.opened_at < ${input.before.toISOString()}::timestamptz`;
+  const known = new Set(seen.map((row) => row.host));
+  return hosts.filter((host) => !known.has(host)).sort();
+}
+
 /** Removes records older than the retention period; answers how many went. */
 export async function expireEgressRecords(sql: Sql, days: number): Promise<number> {
   const removed = await sql`delete from egress_record

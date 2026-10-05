@@ -511,6 +511,69 @@ withDb('standing work', () => {
     expect((await request(`/runs/${started.run_id}/stop`, 'POST')).status).toBe(200);
   });
 
+  test('a routine that reads a calendar the person has not connected says so, and offers to connect', async () => {
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: spaceId, title: 'Daily brief', objective: 'Daily brief' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).input(chat.id, 'Every weekday at 8am summarize my day');
+    const turn = await claim(chat.id);
+    const brief = {
+      goal: 'Summarize what is on the person’s calendar today',
+      title: 'weekday-brief',
+      repeat: { cron: '0 8 * * 1-5' },
+    };
+    const lacking = (await tool(turn.claims, 'run.start', brief)) as Record<string, unknown>;
+    expect(lacking).toMatchObject({
+      status: 'scheduled',
+      missing_connections: [{ source: 'calendar', connect_at: '/settings/connections' }],
+    });
+    expect(String(lacking.instruction)).toContain('no calendar is connected');
+    expect(String(lacking.instruction)).toContain('offer to connect one');
+    const notes = await required(handle)
+      .db.select()
+      .from(runEntry)
+      .where(and(eq(runEntry.runJobId, String(lacking.run_id)), eq(runEntry.kind, 'note')));
+    expect(notes.map((entry) => entry.title)).toEqual(['No calendar is connected']);
+
+    // With a working calendar, nothing is said about it.
+    const calendarId = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({
+        id: calendarId,
+        spaceId,
+        provider: 'caldav',
+        label: 'Calendar',
+        scopes: ['calendar.list'],
+      });
+    const connected = (await tool(turn.claims, 'run.start', {
+      ...brief,
+      title: 'weekday-brief-2',
+    })) as Record<string, unknown>;
+    expect(connected.missing_connections).toBeUndefined();
+    expect(String(connected.instruction)).toContain('nothing to wait for');
+
+    // A calendar whose check failed gives nothing either.
+    await required(handle)
+      .db.update(connection)
+      .set({ health: 'failing' })
+      .where(eq(connection.id, calendarId));
+    const failing = (await tool(turn.claims, 'run.start', {
+      ...brief,
+      title: 'weekday-brief-3',
+    })) as Record<string, unknown>;
+    expect(failing.missing_connections).toEqual([
+      { source: 'calendar', connect_at: '/settings/connections' },
+    ]);
+    for (const started of [lacking, connected, failing])
+      expect((await request(`/runs/${String(started.run_id)}/stop`, 'POST')).status).toBe(200);
+    await required(handle).db.delete(connection).where(eq(connection.id, calendarId));
+  });
+
   test('a report from a shift its trigger woke always reaches the person', async () => {
     const run = await start({ goal: 'Tell me about price changes', repeat: { cron: '0 9 * * *' } });
     await quietShift(run.id);

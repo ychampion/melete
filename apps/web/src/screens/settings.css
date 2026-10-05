@@ -9,3 +9,11 @@
     padding-right: 28px;
   }
 }
+
+/* Why an installed connection is not working, under its name. */
+.connection-problem {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}

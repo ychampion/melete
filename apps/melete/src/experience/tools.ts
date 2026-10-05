@@ -781,6 +781,48 @@ export function actionCall(input: {
   });
 }
 
+/** The most first-time destinations one command adds to the conversation. */
+const SENT_ROWS = 5;
+
+/**
+ * Where a command's computer sent something for the first time, one quiet row
+ * each under the command: the host and the bytes that went up, as the egress
+ * guard counted them (the connection's own setup included). Shown, never asked.
+ */
+export function sentCalls(row: ActionRow, raw: string, at: Date): ToolCall[] {
+  if (!COMMAND_KINDS.has(row.kind) || actionToolStatus(raw) !== 'done') return [];
+  const detail = object(object(row.receipt).detail);
+  const first = new Set(array(detail.egress_new_hosts).filter((each) => typeof each === 'string'));
+  if (!first.size) return [];
+  return array(detail.egress_hosts)
+    .map(object)
+    .filter((each) => typeof each.host === 'string' && first.has(each.host))
+    .filter((each) => typeof each.bytes_up === 'number' && each.bytes_up > 0)
+    .slice(0, SENT_ROWS)
+    .flatMap((each) => {
+      const name = toolText(each.host, 80);
+      const size = byteSize(each.bytes_up);
+      if (!name || !size) return [];
+      return [
+        toolCall.parse({
+          id: toolId('sent', row.id, name),
+          kind: 'sandbox',
+          title: clip(`Sent ${size} to ${name} from its computer`, TOOL_TITLE_LIMIT),
+          status: 'done',
+          started_at: row.createdAt.toISOString(),
+          ended_at: at.toISOString(),
+          input_summary: null,
+          output_summary: summary('The first time its computer sent anything to this site.'),
+          detail: null,
+          parent: toolId('action', row.id),
+        }),
+      ];
+    });
+}
+
+/** Commands run on the agent's computer, whose receipts name where they reached. */
+const COMMAND_KINDS = new Set(['terminal.run', 'exec.run', 'exec.python']);
+
 /**
  * An action for the person's own computer is waiting for that computer to
  * connect. It says what it will do, and goes by itself when the computer is

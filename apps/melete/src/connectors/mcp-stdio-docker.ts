@@ -20,11 +20,7 @@
  * uses, so a server with no network is still reachable.
  */
 import { connect } from 'node:net';
-import {
-  MCP_IMAGE_REGISTRIES,
-  type McpStdioLaunch,
-  pullsFromPublicRegistry,
-} from '@melete/contracts';
+import type { McpStdioLaunch } from '@melete/contracts';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import {
   type DockerApi,
@@ -34,6 +30,7 @@ import {
   dockerFetch,
 } from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
+import { type HostResolver, imagePullAllowed } from './image-registry.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
 import { StdioCapacityError, type StdioLauncher, type StdioLaunchSpec } from './mcp-stdio.ts';
 import type { StdioChannel } from './mcp-transport.ts';
@@ -104,6 +101,8 @@ export type DockerStdioOptions = {
    * data stays one volume, whichever instance runs its server.
    */
   instance?: InstanceView;
+  /** Resolves an image registry's name before a pull; the system resolver when left out. */
+  resolve?: HostResolver;
 };
 
 export const DEFAULT_STDIO_IMAGES = {
@@ -639,9 +638,9 @@ export class DockerStdioLauncher implements StdioLauncher {
   /**
    * The image's id, pulled first when the host does not have it. A reference
    * that pins a digest runs only if the image on this host carries that
-   * digest, whatever its tag now points to. The engine pulls only the
-   * runners' images and images on a public registry (`MCP_IMAGE_REGISTRIES`):
-   * it pulls from the host's own network, wherever a registry sends it.
+   * digest, whatever its tag now points to. The engine pulls the runners'
+   * images, and an image from any registry that does not point back at the
+   * host (`imagePullAllowed`), its name resolved here first.
    */
   private async image(reference: string, signal: AbortSignal): Promise<string> {
     const path = `/images/${encodeURIComponent(reference)}/json`;
@@ -654,9 +653,15 @@ export class DockerStdioLauncher implements StdioLauncher {
     }
     if (!found) {
       const runner = reference === this.images.node || reference === this.images.python;
-      if (!runner && !pullsFromPublicRegistry(reference))
+      if (
+        !runner &&
+        !(await imagePullAllowed(reference, {
+          resolve: this.options.resolve,
+          unresolved: 'refuse',
+        }))
+      )
         throw new Error(
-          `Server images are pulled from ${MCP_IMAGE_REGISTRIES.join(', ')}. An image from another registry runs once it is on this host.`,
+          "This image's registry points back at this host, or its name does not resolve, so it is not pulled. An image already on this host still runs.",
         );
       await this.docker.pull(reference, signal);
       found = (await this.docker.request('GET', path)) as Found;

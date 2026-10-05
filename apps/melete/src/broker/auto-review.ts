@@ -20,7 +20,7 @@
  *   it; each is undone by going back to the version before. Any of those risks
  *   puts it in the person's tier, with the reason.
  * - `person`: anything that spends, sends or publishes beyond undo, deletes,
- *   carries credentials, or rests on a recipient, destination or amount the
+ *   carries credentials or goes looking for saved ones, or rests on a recipient, destination or amount the
  *   person never confirmed. It always asks. The reviewer is never consulted.
  *
  * The tier is a pure function of the tool, the payload and where its values
@@ -44,6 +44,7 @@ import { isPublicAddress } from '../connectors/web.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { CalendarCheck } from './calendar-check.ts';
+import { SEEKS_CREDENTIALS_REASON, seeksCredentials } from './credential-stores.ts';
 import { appendEvent, type Query, recordId } from './records.ts';
 import type { Reviewer, ReviewInput, ReviewVerdict } from './reviewer.ts';
 import { collectOriginFields, type TrustResolver } from './trust.ts';
@@ -235,6 +236,9 @@ export function reviewTier(input: {
     );
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
+  // Going looking for saved passwords, cards or keys is the person's to agree to,
+  // even inside the agent's own computer.
+  if (seeksCredentials(tool.name, payload)) return person(SEEKS_CREDENTIALS_REASON);
   // Deleting what Melete made in this conversation moves it to the trash,
   // where Undo puts it back: work in its own workspace, under the same switch.
   // The files connector binds `checked.owner` before anyone is asked and checks

@@ -34,6 +34,7 @@ import {
 } from '@melete/contracts';
 import { z } from 'zod';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import type { ProviderCheck } from './elevenlabs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import { atomicWrite, capabilityDirectory, digest, readBytes } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -57,6 +58,11 @@ export type TranscriptionRequest = {
 /** What an adapter has to do: bytes in, words out. Nothing about files or rows. */
 export type TranscriptionAdapter = {
   model: string;
+  /**
+   * Whether the provider accepts this installation's key, by a call that costs
+   * nothing. Left out, a configured adapter is taken to work until a call fails.
+   */
+  verify?(): Promise<ProviderCheck>;
   transcribe(request: TranscriptionRequest, signal?: AbortSignal): Promise<Transcript>;
 };
 
@@ -369,6 +375,14 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
       };
     },
     async health(): Promise<ConnectorHealth> {
+      const verified = await options.adapter?.verify?.();
+      if (verified && !verified.ok)
+        return {
+          status: 'failing',
+          detail: verified.detail,
+          checked_at: new Date().toISOString(),
+          ...(verified.keyRefused ? { reason: 'credential_refused' as const } : {}),
+        };
       return {
         status: options.adapter ? 'ok' : 'degraded',
         detail: options.adapter

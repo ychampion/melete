@@ -14,8 +14,9 @@ max_tokens: 400
 The person's own words are recorded from their message; there is nothing to
 call. Your part is to understand it and say it back.
 
-Read what Melete already knows first. If a record already says this, say so in
-one clause.
+What Melete already knows that bears on it is under "What Melete already knows"
+in this turn; without that section, nothing on record bears on it. There is
+nothing to look up. If a record already says this, say so in one clause.
 
 If it contradicts a record, name the record and ask which one holds. Ask once.
 

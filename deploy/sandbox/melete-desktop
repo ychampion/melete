@@ -31,6 +31,12 @@ DISPLAY = os.environ.get("DISPLAY", ":0")
 WIDTH, HEIGHT = 1024, 768
 BROWSER = shutil.which("chromium") or shutil.which("chromium-browser") or "chromium"
 PROFILE = os.path.join(os.environ.get("HOME", "/home/agent"), ".config", "melete-browser")
+# Where a browser profile keeps saved passwords, cards and addresses.
+STORES = tuple(
+    name + suffix
+    for name in ("Login Data", "Login Data For Account", "Web Data")
+    for suffix in ("", "-journal")
+)
 
 # The live view speaks DOM key names; xdotool speaks X keysyms.
 KEYSYMS = {
@@ -162,6 +168,13 @@ def open_url(url):
         for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             try:
                 os.unlink(os.path.join(PROFILE, name))
+            except FileNotFoundError:
+                pass
+        # The browser's policy keeps it from saving passwords, cards or
+        # addresses; anything an older image saved is removed before it starts.
+        for name in STORES:
+            try:
+                os.unlink(os.path.join(PROFILE, "Default", name))
             except FileNotFoundError:
                 pass
         flags = [

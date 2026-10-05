@@ -57,6 +57,11 @@ export interface GatewayPrincipal {
   /** Models the gateway may serve a call with instead of the one it names. */
   routes?: GatewayRoutes;
   /**
+   * The attempt answers a person's short message (`BRIEF_TURN_CHARS`), and
+   * its calls think one step less than the agent's effort.
+   */
+  briefTurn?: boolean;
+  /**
    * The person who caused this call, when the caller knows it: the one whose
    * message is being read, who asked aloud, or who started the scan. Spending
    * caps charge them. Left out, an agent call charges the person who spoke last

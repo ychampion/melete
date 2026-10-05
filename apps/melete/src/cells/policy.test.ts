@@ -17,6 +17,21 @@ const SANDBOX_ID = `sha256:${'b'.repeat(64)}`;
 const SERVER_ID = `sha256:${'c'.repeat(64)}`;
 const LOCAL_ID = `sha256:${'d'.repeat(64)}`;
 
+/** Registry names as a resolver would answer them; any other name does not resolve. */
+const TEST_HOSTS: Record<string, string[]> = {
+  'registry-1.docker.io': ['198.51.100.1'],
+  'ghcr.io': ['198.51.100.2'],
+  'registry.acme.com': ['10.20.30.40'],
+  'rebound.example.net': ['203.0.113.7', '127.0.0.1'],
+  'metadata.example.net': ['169.254.169.254'],
+  'mapped.example.net': ['::ffff:127.0.0.1'],
+};
+async function resolveTestHost(host: string): Promise<string[]> {
+  const addresses = TEST_HOSTS[host];
+  if (!addresses) throw new Error(`getaddrinfo ENOTFOUND ${host}`);
+  return addresses;
+}
+
 const config: CellsPolicyConfig = {
   project: PROJECT,
   sandboxProject: SANDBOX_PROJECT,
@@ -24,6 +39,7 @@ const config: CellsPolicyConfig = {
   sandboxImage: 'melete-sandbox:local',
   mcpImages: [DEFAULT_STDIO_IMAGES.node, DEFAULT_STDIO_IMAGES.python],
   workVolume: `${PROJECT}_work`,
+  resolve: resolveTestHost,
 };
 
 type Labels = Record<string, string>;
@@ -363,25 +379,38 @@ describe('melete-cells accepts the fixed profiles the service uses', () => {
       ).toBe(true);
   });
 
-  test('pulls only from a public registry, whatever address another registry name resolves to', async () => {
+  test('pulls from any registry, except one that points back at the host', async () => {
     const engine = new Engine();
-    // The engine resolves the name on the host and follows the registry's sign-in
-    // address and redirects, so each of these could reach the host's own ports.
-    for (const registry of [
-      '127.0.0.1.nip.io:2375',
-      '169.254.169.254.nip.io',
-      'metadata.google.internal',
-      'host.docker.internal:5432',
-      'registry.example.net',
-      'ghcr.io:8443',
-    ]) {
-      const reference = `${registry}/x@sha256:${'1'.repeat(64)}`;
-      expect([
-        registry,
-        (await engine.ask('POST', `/images/create?fromImage=${encodeURIComponent(reference)}`))
-          .allow,
-      ]).toEqual([registry, false]);
-    }
+    const pull = async (name: string) =>
+      (
+        await engine.ask(
+          'POST',
+          `/images/create?fromImage=${encodeURIComponent(`${name}@sha256:${'1'.repeat(64)}`)}`,
+        )
+      ).allow;
+    for (const name of [
+      'registry.acme.com/tools/x:1',
+      '10.0.0.5:5000/x',
+      'alpine',
+      'org/image',
+      // A name this service cannot resolve rests on the name rules.
+      'registry.corp.example/x',
+    ])
+      expect([name, await pull(name)]).toEqual([name, true]);
+    for (const name of [
+      '127.0.0.1.nip.io:2375/x',
+      '169.254.169.254.nip.io/x',
+      'metadata.google.internal/x',
+      'host.docker.internal/x',
+      'localhost:5000/x',
+      'registry.acme.com:2376/x',
+      '[::1]:5000/x',
+      // Names that resolve to the host or its metadata service.
+      'rebound.example.net/x',
+      'metadata.example.net/x',
+      'mapped.example.net/x',
+    ])
+      expect([name, await pull(name)]).toEqual([name, false]);
   });
 });
 
@@ -551,7 +580,7 @@ describe('melete-cells refuses a container outside its profiles', () => {
       ['POST', '/swarm/init'],
       ['GET', '/containers/json?all=1'],
       ['POST', '/images/create?fromImage=alpine:latest'],
-      ['POST', `/images/create?fromImage=10.0.0.1:5000/x@sha256:${'1'.repeat(64)}`],
+      ['POST', `/images/create?fromImage=127.0.0.1:5000/x@sha256:${'1'.repeat(64)}`],
       ['POST', '/images/create?fromSrc=http://example.com/root.tar'],
       ['POST', '/containers/..%2f..%2fversion/start'],
       ['DELETE', '/images/melete-runtime:local'],
