@@ -19,7 +19,13 @@ import {
   withAttachedFiles,
 } from './attachments.ts';
 import { applyPromptCaching, promptCacheScope } from './caching.ts';
-import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
+import {
+  effortRefused,
+  type ReasoningEffort,
+  refuseEffort,
+  turnEffort,
+  withEffort,
+} from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
@@ -452,7 +458,7 @@ export function createModelGateway(options: GatewayOptions): Server {
             protocol,
             provider: callProvider.name,
             model: callModel,
-            effort: options.reasoningEffort,
+            effort: turnEffort(options.reasoningEffort, principal.briefTurn === true),
           });
         const effortAdded = reasoningOf() !== before;
         const route: GatewaySettlement['route'] = !rerouted

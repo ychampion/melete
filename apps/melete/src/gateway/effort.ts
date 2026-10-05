@@ -1,7 +1,8 @@
 /**
  * How hard a reasoning model thinks before it answers, set per role.
  *
- * The agent's own turns default to `medium`; the service's side calls (memory
+ * The agent's own turns default to `medium`, one step less on a brief turn
+ * (`BRIEF_TURN_CHARS`); the service's side calls (memory
  * reads, voice asides, the auto-review classifier, the companies scan,
  * learning proposals) default to `low`. MELETE_REASONING_EFFORT_AGENT and
  * MELETE_REASONING_EFFORT_SIDE change them; `off` sends nothing, leaving the
@@ -26,6 +27,27 @@ import type { GatewayProtocol } from './types.ts';
 
 export const REASONING_EFFORTS = ['off', 'none', 'low', 'medium', 'high'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/**
+ * A person's message at most this long, a line or two, is answered thinking
+ * one step less than the agent's effort: `medium` becomes `low`. Measured on
+ * DeepSeek V4.1 Flash, `medium` spent 400 to 1,050 reasoning tokens (5 to 14
+ * seconds) on "note that I'm flying to Chicago next Friday" and `low` 350 to
+ * 400, choosing the same tools on short requests. A longer, detailed request
+ * keeps the full effort.
+ */
+export const BRIEF_TURN_CHARS = 280;
+
+/** The effort an agent call is made with: one step less on a brief turn. */
+export function turnEffort(
+  effort: ReasoningEffort | undefined,
+  brief: boolean,
+): ReasoningEffort | undefined {
+  if (!brief) return effort;
+  if (effort === 'high') return 'medium';
+  if (effort === 'medium') return 'low';
+  return effort;
+}
 
 /** Model families known to take a reasoning-effort parameter, by provider. */
 const REASONS: Record<string, RegExp> = {
