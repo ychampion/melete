@@ -168,7 +168,9 @@ export function RoomSettings({
           <fieldset className="settings-group" disabled={!owner}>
             <legend className="people-field-label">Who approves what the team accounts send</legend>
             <span className="people-hint">
-              The person who asked can approve too. Guests never approve.
+              {(policy.team_account_approvers ?? 'any_member') === 'any_member'
+                ? 'The person who asked can approve too. Guests never approve.'
+                : 'Guests never approve.'}
             </span>
             {TEAM_ACCOUNT_APPROVER_CHOICES.map((choice) => (
               <label key={choice.value} className="settings-choice">

@@ -74,6 +74,11 @@ export type ApprovalSubject = {
  * other follows the room's rule, where a guest's request goes to the owners
  * under "the person who asked". Rules for one account or one kind of action
  * would be chosen here, ahead of these.
+ *
+ * `roomDecisions` in `push/service.ts` makes the same choice in SQL, together
+ * with `isTeamAccount` and `eligibleApprovers`, to pick who is pushed about a
+ * permission. A change to the rule here changes it there too; the room
+ * approval tests check both agree on who is told.
  */
 export function approverRuleFor(
   policy: Pick<RoomPolicyValues, 'approvers' | 'team_account_approvers'>,

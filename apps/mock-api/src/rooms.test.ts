@@ -229,6 +229,27 @@ test("a send through an account the room uses is answered under the room's team-
   const now = await waiting();
   expect(now?.eligible_approvers?.map((p) => p.principal_id)).toEqual([me]);
   expect(now?.why[0]).toContain("Waiting for one of the room's owners");
+
+  // Kept for the owner, the account no longer serves the room: a new send follows the general rule.
+  const account = C.connectionResponse.parse(added.json).connection.id;
+  const kept = await call(mock, 'PUT', `/rooms/${id}/connections/${account}`, {
+    shared_use: 'owner',
+  });
+  expect(C.roomConnectionResponse.parse(kept.json).connection.shared_use).toBe('owner');
+  const again = C.roomMessageResponse.parse(
+    (
+      await call(mock, 'POST', `/rooms/${id}/threads`, {
+        text: 'Email the plan to the agency',
+        ask_agent: true,
+        submission_id: 'team-send-2',
+      })
+    ).json,
+  );
+  const general = C.roomThreadView.parse(
+    (await call(mock, 'GET', `/rooms/${id}/threads/${again.thread.id}`)).json,
+  ).requests[0]?.permissions?.[0];
+  expect(general?.eligible_approvers?.map((p) => p.principal_id)).toEqual([me]);
+  expect(general?.why[0]).toContain('who asked for it');
 });
 
 const answerPermission = (

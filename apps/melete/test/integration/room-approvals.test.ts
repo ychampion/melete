@@ -1641,6 +1641,44 @@ withDb('room approvals', () => {
       decision: 'approved',
       decided_by: world.bob.id,
     });
+
+    // Answering your own request is for the team accounts alone: under the
+    // owners' general rule, Bob's request through a room tool waits for Alice.
+    const { broker } = database();
+    await setPolicy(roomId, { approvers: 'owners' });
+    const tool = await askAndWait(world.bob, roomId, notes, ['lee@example.test']);
+    const { card: toolCard } = await card(world.bob, roomId, tool.threadId, tool.approvalId);
+    expect(toolCard.eligible_approvers?.map((person) => person.principal_id)).toEqual([
+      world.alice.id,
+    ]);
+    expect(
+      (await answer(world.bob, roomId, tool.approvalId, allowOf(toolCard, tool.hash))).status,
+    ).toBe(403);
+    expect(
+      await broker
+        .decide(
+          tool.actionId,
+          { decision: 'approved', payload_hash: tool.hash },
+          undefined,
+          world.bob.id,
+        )
+        .then(
+          () => 'decided',
+          (error: { code?: string }) => error.code,
+        ),
+    ).toBe('scope_denied');
+    // In the same room, his request through a team account is his to answer.
+    const own = await askAndWait(world.bob, roomId, team, ['lee@example.test']);
+    const { card: ownCard } = await card(world.bob, roomId, own.threadId, own.approvalId);
+    await ok(answer(world.bob, roomId, own.approvalId, allowOf(ownCard, own.hash)));
+    expect(await decision(tool.approvalId)).toEqual({ decision: null, decided_by: null });
+
+    // A room with no accounts of its own is not told about a rule for them.
+    const plain = await makeRoom('No accounts');
+    const opened = await startThread(world.bob, plain.roomId, '@Melete post the notes');
+    const { bundle } = await claim(opened.request_job_id ?? '');
+    expect(bundle.job.objective).toContain('Only they can answer the permissions it asks for.');
+    expect(bundle.job.objective).not.toContain("room's own accounts");
   }, 90_000);
 
   test('when approvers leave, a team-account permission is withdrawn and the request is told', async () => {

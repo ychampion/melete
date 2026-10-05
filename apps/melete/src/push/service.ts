@@ -129,8 +129,13 @@ export async function recordSettled(
 
 /**
  * A room's permissions that wait for this person: those of the room's work in
- * rooms they are in, that the room's rule for each lets them answer now
- * (see `rooms/approvals.ts`). Nobody else in the room is told.
+ * rooms they are in, that the room's rule for each lets them answer now.
+ * Nobody else in the room is told.
+ *
+ * This is the SQL form of `approverRuleFor`, `isTeamAccount` and
+ * `eligibleApprovers` in `rooms/approvals.ts`, which decide who may answer: a
+ * change to the rule there changes it here too. The room approval tests check
+ * that the people pushed are the people the card names.
  */
 function roomDecisions(principalId: string, since: Date) {
   // Several people may be told of one permission, so each one's key names them.

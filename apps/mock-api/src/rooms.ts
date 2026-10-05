@@ -215,6 +215,21 @@ export function mountRoomsMock(
   },
 ) {
   const now = () => deps.store.now().toISOString();
+  /**
+   * Whom each connection in a room's space serves. An account added to a room
+   * serves the room until an owner keeps it for themselves.
+   */
+  const sharedUse = new Map<string, 'owner' | 'room'>();
+  const useOf = (id: string) => sharedUse.get(id) ?? 'room';
+  /** The room's own accounts: added for the room, serving it, and not one of its tools. */
+  const teamAccountsOf = (room: Room) =>
+    [...deps.store.connections.values()].filter(
+      (entry) =>
+        entry.space_id === room.id &&
+        entry.status !== 'revoked' &&
+        !entry.builtin &&
+        useOf(entry.id) === 'room',
+    );
   const speed = deps.experienceSpeed ?? 1;
   const people = new Map<string, Person>();
   const rooms = new Map<string, Room>();
@@ -626,9 +641,7 @@ Thanks`,
         // An ask to send something waits on the person the room's rule names.
         if (SENDS.test(text)) {
           // Sent from an account the room uses, when its owners added one.
-          request.team_account = [...deps.store.connections.values()].some(
-            (entry) => entry.space_id === room.id && entry.status !== 'revoked' && !entry.builtin,
-          );
+          request.team_account = teamAccountsOf(room).length > 0;
           const permission = permissionFor(room, request, `Send the notes on ${thread.title}`);
           request.permissions.push(permission);
           pushEvent(thread, request, { type: 'permission', permission });
@@ -1122,22 +1135,50 @@ Thanks`,
     }),
   );
   // The accounts in the room's space. An account added to a room serves the room.
+  const connectionView = (entry: {
+    id: string;
+    label: string;
+    provider: string;
+    status: string;
+    builtin?: boolean;
+  }) =>
+    C.roomConnection.parse({
+      id: entry.id,
+      label: entry.label,
+      provider: entry.provider,
+      status: entry.status,
+      shared_use: useOf(entry.id),
+      builtin: entry.builtin === true,
+    });
   app.get(
     '/rooms/:id/connections',
     route((c) => {
       const room = roomFor(param(c, 'id'), me());
       return answer(C.roomConnectionList, {
         connections: [...deps.store.connections.values()]
-          .filter((entry) => entry.space_id === room.id && entry.status !== 'revoked')
-          .map((entry) => ({
-            id: entry.id,
-            label: entry.label,
-            provider: entry.provider,
-            status: entry.status,
-            shared_use: 'room' as const,
-            builtin: entry.builtin === true,
-          })),
+          .filter(
+            (entry) =>
+              entry.space_id === room.id &&
+              entry.status !== 'revoked' &&
+              // A connection kept for the owner is listed to owners alone.
+              (room.role === 'owner' || useOf(entry.id) === 'room'),
+          )
+          .map(connectionView),
       });
+    }),
+  );
+  // An owner lets a connection serve the room, or keeps it for themselves.
+  app.put(
+    '/rooms/:id/connections/:connectionId',
+    route(async (c) => {
+      const room = roomFor(param(c, 'id'), me());
+      ownerOnly(room);
+      const input = C.roomConnectionUpdate.parse(await body(c));
+      const entry = deps.store.connections.get(param(c, 'connectionId'));
+      if (!entry || entry.space_id !== room.id || entry.status === 'revoked')
+        throw new RoomError(404, 'not_found', 'That connection is not in this room.');
+      sharedUse.set(entry.id, input.shared_use);
+      return answer(C.roomConnectionResponse, { connection: connectionView(entry) });
     }),
   );
   app.post(

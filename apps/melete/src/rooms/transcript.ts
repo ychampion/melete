@@ -191,9 +191,13 @@ export async function roomTranscript(
     : [];
   const rule = (policy?.approvers ?? 'requester') as RoomApprovers;
   const team = policy?.teamAccountApprovers === 'owners' ? 'owners' : 'any_member';
-  const approvers = `${
+  // The team-account rule is said only where the room has accounts of its own
+  // still connected (counted as `isTeamAccount` in `approvals.ts` counts them).
+  const accounts = await tx.execute(sql`select 1 from connection where space_id = ${row.spaceId}
+    and shared_use = 'room' and status <> 'revoked' and not (configuration ? 'builtin') limit 1`);
+  const general =
     APPROVERS_LINE[rule === 'requester' && asker?.kind === 'guest' ? 'owners' : rule] ??
-    APPROVERS_LINE.requester
-  } ${TEAM_ACCOUNT_APPROVERS_LINE[team]}`;
+    APPROVERS_LINE.requester;
+  const approvers = accounts.length ? `${general} ${TEAM_ACCOUNT_APPROVERS_LINE[team]}` : general;
   return { thread, names, requester, approvers };
 }

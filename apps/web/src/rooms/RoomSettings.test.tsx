@@ -25,6 +25,7 @@ test('who approves what the team accounts send is a choice, anyone in the room b
   expect(html).toContain('Anyone in the room');
   expect(html).toContain('The room’s owners');
   expect(checkedTeamChoice(html)).toBe('any_member');
+  expect(html).toContain('The person who asked can approve too.');
   const owners = renderToStaticMarkup(
     <RoomSettings
       onClose={() => {}}
@@ -33,4 +34,7 @@ test('who approves what the team accounts send is a choice, anyone in the room b
     />,
   );
   expect(checkedTeamChoice(owners)).toBe('owners');
+  // Under the owners' rule, the person who asked approves only if they are an owner.
+  expect(owners).not.toContain('The person who asked can approve too.');
+  expect(owners).toContain('Guests never approve.');
 });
