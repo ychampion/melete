@@ -1527,6 +1527,8 @@ withDb('room approvals', () => {
   test('the person who asked approves their own team-account send under the any-member rule', async () => {
     const { broker } = database();
     const { roomId, team } = await teamRoom('Own team send');
+    // Even where the room's general rule leaves everything to its owners.
+    await setPolicy(roomId, { approvers: 'owners' });
     const asked = await askAndWait(world.bob, roomId, team);
     // Checked where the answer is recorded, whichever route it came by.
     await broker.decide(
