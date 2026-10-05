@@ -7,18 +7,6 @@
  * nothing was changed; 3 acted, but did not finish (the output says what next).
  */
 import { basename, resolve } from 'node:path';
-import { runBackup } from './commands/backup.ts';
-import { runCheck } from './commands/check.ts';
-import { runDeploy } from './commands/deploy.ts';
-import { runDoctor } from './commands/doctor.ts';
-import { runInit } from './commands/init.ts';
-import { runLogs } from './commands/logs.ts';
-import { runRemote } from './commands/remote.ts';
-import { runRestore } from './commands/restore.ts';
-import { runRollback } from './commands/rollback.ts';
-import { runSet } from './commands/set.ts';
-import { runStatus } from './commands/status.ts';
-import { runUpgrade } from './commands/upgrade.ts';
 import { type Context, DEFAULT_DEPLOY_DIR, realContext } from './context.ts';
 import { readHistory, renderHistory } from './history.ts';
 import { EXIT, type ExitCode } from './schema.ts';
@@ -47,6 +35,8 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
                              Copy deploy/.env, deploy/melete.deploy.json and deploy/config/ there
 
 --deploy-dir names the deployment directory of another checkout; the default is this checkout's deploy/.
+Without Bun on the host, check, doctor and status run in the service container:
+  docker compose -f deploy/docker-compose.yml exec melete bun run melete doctor --offline
 Exit codes: 0 done, 1 a check failed, 2 refused with nothing changed, 3 acted but did not finish.
 `;
 
@@ -101,36 +91,51 @@ export async function main(argv: readonly string[], make = realContext): Promise
     parsed.rest.length > 0
       ? refuse(`${parsed.command} takes no ${parsed.rest.join(' ')}. ${allowed}`)
       : null;
+  // Each command is loaded when it runs, so check, doctor and status need only the
+  // files the service image ships (deploy/Dockerfile.melete) and run inside it.
   switch (parsed.command) {
     case 'check':
-      return noExtra('Usage: bun run melete check [--json]') ?? runCheck(context, parsed.json);
+      return (
+        noExtra('Usage: bun run melete check [--json]') ??
+        (await import('./commands/check.ts')).runCheck(context, parsed.json)
+      );
     case 'doctor':
       return (
         noExtra('Usage: bun run melete doctor [--json] [--offline]') ??
-        (await runDoctor(context, parsed.json, parsed.offline))
+        (await (
+          await import('./commands/doctor.ts')
+        ).runDoctor(context, parsed.json, parsed.offline))
       );
     case 'status':
       return (
-        noExtra('Usage: bun run melete status [--json]') ?? (await runStatus(context, parsed.json))
+        noExtra('Usage: bun run melete status [--json]') ??
+        (await (await import('./commands/status.ts')).runStatus(context, parsed.json))
       );
     case 'set':
-      return await runSet(context, parsed.rest);
+      return (await import('./commands/set.ts')).runSet(context, parsed.rest);
     case 'logs':
-      return await runLogs(context, parsed.rest);
+      return (await import('./commands/logs.ts')).runLogs(context, parsed.rest);
     case 'init':
-      return await runInit(context, parsed.rest);
+      return (await import('./commands/init.ts')).runInit(context, parsed.rest);
     case 'deploy':
-      return await runDeploy(context, parsed.rest, parsed.json);
+      return (await import('./commands/deploy.ts')).runDeploy(context, parsed.rest, parsed.json);
     case 'rollback':
-      return await runRollback(context, parsed.rest, parsed.json);
+      return (await import('./commands/rollback.ts')).runRollback(
+        context,
+        parsed.rest,
+        parsed.json,
+      );
     case 'backup':
-      return await runBackup(context, parsed.rest, parsed.json);
+      return (await import('./commands/backup.ts')).runBackup(context, parsed.rest, parsed.json);
     case 'restore':
-      return await runRestore(context, parsed.rest, parsed.json);
+      return (await import('./commands/restore.ts')).runRestore(context, parsed.rest, parsed.json);
     case 'upgrade':
-      return await runUpgrade(context, parsed.rest);
+      return (await import('./commands/upgrade.ts')).runUpgrade(context, parsed.rest);
     case 'remote':
-      return await runRemote(context, parsed.rest, { json: parsed.json, offline: parsed.offline });
+      return (await import('./commands/remote.ts')).runRemote(context, parsed.rest, {
+        json: parsed.json,
+        offline: parsed.offline,
+      });
     case 'history': {
       const refused = noExtra('Usage: bun run melete history [--json]');
       if (refused !== null) return refused;

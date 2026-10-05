@@ -177,6 +177,19 @@ finish, with the next step printed. `init`, `set`, `deploy`, `rollback`,
 change the installation at once; a lock left by a process that has ended is
 taken over.
 
+On a host without Bun, such as one that only pulls the prebuilt images, the
+service image carries `check`, `doctor` and `status`. Run them in the `melete`
+container, from the directory that holds the checkout:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec melete bun run melete doctor --offline
+docker compose -f deploy/docker-compose.yml exec melete bun run melete status
+```
+
+There they judge what the container sees. The container holds no `deploy/.env`,
+no Compose files and no Docker socket, so the rules that read those report them
+as missing; run the command from a checkout with Bun for the whole report.
+
 ### The deploy file
 
 `deploy/melete.deploy.json` records what an installation is beyond what
