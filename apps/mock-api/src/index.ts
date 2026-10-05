@@ -36,6 +36,8 @@ export type MockOptions = {
   needsYou?: 'seeded' | 'none';
   /** Texts and calls to the person's own number; false shows an installation without a provider. */
   reach?: boolean;
+  /** Rooms, shared spaces, guests and hand-offs; off unless asked for, as on the service. */
+  multiplayer?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -58,6 +60,7 @@ export function createMock(options: MockOptions = {}) {
     space: options.space ?? 'personal',
     needsYou: options.needsYou !== 'none',
     reach: options.reach ?? true,
+    multiplayer: options.multiplayer ?? false,
   });
   if (options.connections === 'none') store.connections.clear();
   return { app, store, runner, scenarios, spaceId, connections };
@@ -70,6 +73,7 @@ if (import.meta.main) {
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
     reach: process.env.MELETE_MOCK_REACH !== 'off',
+    multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     connections: process.env.MELETE_MOCK_CONNECTIONS === 'none' ? 'none' : 'seeded',
     needsYou: process.env.MELETE_MOCK_NEEDS_YOU === 'none' ? 'none' : 'seeded',
