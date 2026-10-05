@@ -30,7 +30,7 @@ export function workspaceDirectories(root: string): string[] {
 }
 
 /** Join continuation lines and drop comments, leaving one instruction per entry. */
-function instructions(text: string): string[] {
+export function instructions(text: string): string[] {
   const result: string[] = [];
   let current = '';
   for (const raw of text.split(/\r?\n/)) {

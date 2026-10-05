@@ -55,6 +55,10 @@ COPY packages/ packages/
 # client's sources are for development and their own images.
 COPY apps/melete/ apps/melete/
 COPY deploy/scripts/memory-restore-proof.ts deploy/scripts/memory-restore-proof.ts
+# What bun run melete check, doctor and status read, so they run inside this image.
+COPY deploy/scripts/status.ts deploy/scripts/provider-settings.ts deploy/scripts/compose-check.ts \
+     deploy/scripts/dockerfile-check.ts deploy/scripts/plugin-pin-check.ts \
+     deploy/scripts/removal-digest-check.ts deploy/scripts/
 # Sent to an agent's computer whose image does not carry it.
 COPY deploy/sandbox/melete-proc deploy/sandbox/melete-proc
 COPY conformance/ conformance/
