@@ -1,7 +1,7 @@
 # Noticing what changes
 
-Melete keeps watch over the mail and calendar accounts a person connects. When
-new mail arrives or a meeting moves, the work that is waiting for it wakes, once,
+Melete keeps watch over the mail, calendar and Drive accounts a person connects. When
+new mail arrives, a meeting moves or a file changes, the work that is waiting for it wakes, once,
 with what changed in front of it. When a meeting moves close to its time, two
 meetings overlap, a deadline comes near and is still unmet, or a message the
 person sent has had no answer, Melete notices it on its own and tells the
@@ -27,8 +27,9 @@ account's own change feed:
 | Outlook calendar | each occurrence in the next 14 days (`calendarView`) |
 | CalDAV collection | the events the server finds in the next 14 days (a `time-range` query), expanded into occurrences |
 | Calendar feed, imported file | each occurrence in the next 14 days, expanded from the events' recurrence rules |
+| Google Drive | the files that changed since the last page token, from Drive's own change feed, as metadata only |
 
-Each account and stream (its mail, its calendar) has one cursor in
+Each account and stream (its mail, its calendar, its Drive) has one cursor in
 `source_cursor`: where the feed was last read, when to read it next, and how the
 last reads went. A first read starts the cursor at the account's present
 state; what was already there is where watching begins, not news.
@@ -38,7 +39,8 @@ often as the most frequent of those triggers asks (`poll_seconds`, 300 by
 default, never more often than once a minute). Melete's own detectors listen
 too (see [What the detectors read](#what-the-detectors-read)): a calendar a
 person connected for themselves while they have a device to reach or a deadline
-on it, and a mailbox while a message the person sent is waiting on an answer. Which accounts those are is decided from the database
+on it, a mailbox while a message the person sent is waiting on an answer, and a
+Drive while a deadline is kept on one of its files. Which accounts those are is decided from the database
 alone. When nobody listens to an account any more, its cursor and kept fields
 go.
 
@@ -97,8 +99,17 @@ A `mail.received` observation carries the message's `message_id`, `read_key`,
 words were written by whoever sent the message or the invitation, and the work
 that reads them is told so.
 
+A `document.changed` observation carries the file's `file_id`, `name`,
+`mime_type`, `modified_time`, `modified_by_me_time`, `last_modifier`,
+`last_modifier_me`, `shared`, `trashed` and `removed`. A file's name and its
+last editor's name are words people chose, so they are content, as a mail
+subject is: the observation is marked `external_content`, it reaches only the
+work the Drive serves, and it goes with the account. A file's contents are never
+read; the scope Melete holds for Drive cannot read them.
+
 Every observation carries a key made of what it is about and its state: a
-message's Message-ID or provider id; an occurrence and a hash of its fields. Ids
+message's Message-ID or provider id; an occurrence and a hash of its fields; a
+file and a hash of its metadata. Ids
 are hashed to a fixed length before they become keys, because an id is whatever
 a provider or a sender chose, and the ids themselves travel clipped in the
 observation. The trigger service keeps one event per key, so the same change
@@ -170,6 +181,26 @@ the end of the window (too many occurrences to list) takes nothing past where
 it stopped as removed (`a read that stopped early takes nothing past where it
 stopped as removed`).
 
+## Drive files
+
+A Google Drive is connected by signing in with Google (see
+[mail-calendar.md](mail-calendar.md#signing-in-with-google)). Its first read takes
+Drive's current page token and lists nothing: watching starts then. Each later
+read lists the files that changed since, up to 500 a read, a page at a time; a
+read that reaches that number resumes from where it stopped. Drive lists a file
+changed several times between two reads once, as it is now. A rate limit Drive
+reports as a 403 is read as a request to wait, like a 429, and its
+`Retry-After` is honoured (`a Drive asking for time is left alone that long`).
+A page token Drive no longer honours starts the feed again from that moment.
+
+The same change read twice is one event, and a later change to the same file is
+another (`the same change from two polls is one event`).
+
+For a file a deadline or a piece of work follows, `subject_state` keeps when it
+last changed, when the person last changed it, whether the last change was
+theirs, and whether it is shared or in the bin. It keeps no name and no editor.
+A removed or binned file's state goes.
+
 ## Each connection's catalog
 
 A trigger listens for one event name on one connection, and each kind of
@@ -179,6 +210,7 @@ connection lists the names it reports:
 | --- | --- |
 | A mailbox (IMAP, Gmail, Outlook) | `mail.received`, and `mail.new` for a reply to a chase |
 | A calendar (CalDAV, a feed, Google, Outlook) | `calendar.event.created`, `calendar.event.changed`, `calendar.event.cancelled` |
+| A Google Drive | `document.changed` |
 | An agent's computer | `process.exited`, `process.output`, `process.listening` |
 | A room | the hand-offs it settles |
 
@@ -291,7 +323,7 @@ situations and clocks that came from it with anything still waiting to be pushed
 about them, and turns off the triggers that listened to it (`revoking an account
 takes what was noticed in it and its clocks`) (`revoking a connection removes what
 was read from it, in the same step`). Switching it to another credential
-removes the cursors, the kept fields, its mail and calendar observations and
+removes the cursors, the kept fields, its mail, calendar and Drive observations and
 what was noticed in them the same way, and keeps the deadlines kept on it, which
 read the account afresh as it now is (`switching an account’s credential keeps
 the deadlines kept on it`). Removing a space removes all of these with the rest of the space. A
@@ -424,6 +456,41 @@ only inside the person’s day, and never urgent`, `a look at a date-only
 commitment that would fall outside the person’s day waits for the morning`).
 The same holds for a deadline work keeps with a date alone.
 
+#### A deadline on a document
+
+"The contract must be signed by 3 p.m." is a deadline on a Drive file.
+`POST /situations/deadlines` keeps one for the signed-in person:
+
+```json
+{
+  "connection_id": "conn_…",
+  "file": "https://docs.google.com/document/d/1AbC…/edit",
+  "title": "Get the contract signed",
+  "due_at": "2026-10-05T15:00:00-07:00",
+  "lead_seconds": 300
+}
+```
+
+`file` is the file id or a Docs, Sheets, Slides or Drive link to it. The file is
+at risk while it is untouched since `since` (the moment the deadline is set,
+unless given). `by` says whose change ends it: `anyone` (the default), `me` (the
+person's own), or `others`, which Drive can tell only from who made the last
+change. At `due_at` less `lead_seconds`, Melete reads the file as Drive has it
+then. Untouched, and `deadline.at_risk` is raised; set by the person and within
+fifteen minutes of its time, it is urgent and can reach them at once
+(`a document deadline whose file is untouched at T−lead raises at-risk, checked
+fresh at fire time`). A change Drive reports before then settles the deadline
+as soon as it is read, and nothing is raised (`a file edited before the deadline
+clears it`). A file removed or moved to the bin clears it. The account must be
+in a space the person uses, and the deadline is kept on the file's own subject
+key, so work handling the file hears about it: naming `job_id`, such as the work
+"Handle it" started, links that work to the file (`a deadline links the work
+handling the file, and only on an account the person uses`). Set through an
+outside assistant over MCP, it is shown and never urgent. While a deadline is
+kept on one of its files, the Drive is read every five minutes, and every minute
+in the hour before a look. Work can keep the same deadline with
+`SituationService.setDocumentDeadline`.
+
 Pressing "Handle it" again moves the deadline to the date the item has now; once
 the person has pressed it, it stays theirs whoever presses after (`pressing
 Handle it again moves the deadline to the date the item has now, and keeps it
@@ -514,6 +581,13 @@ that work sets are kept.
 - `apps/melete/test/integration/situations-commitments.test.ts`: "Handle it"
   by the person, and by an outside assistant, over the real route; date-only
   due dates; pressing again; rescans.
+- `apps/melete/test/integration/documents.test.ts`: a Drive read through the
+  Drive connector against a stand-in Drive: a deadline on an untouched file
+  raised after a fresh look, an edit before the deadline settling it, one event
+  per change, Retry-After, linking work, and revocation clearing what was read.
+- `apps/melete/src/connectors/google-drive.test.ts`: Drive's change feed, page
+  limits, rate limits, the fresh look, the status tool, observation keys, and
+  each kind of document deadline.
 - `apps/melete/src/situations/detectors.test.ts` and
   `apps/melete/src/push/policy.test.ts`: the detectors' rules and the urgency
   lanes as plain functions.
