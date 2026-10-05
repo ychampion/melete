@@ -204,11 +204,16 @@ export async function latestDigest(sql: MemorySql, scope: MemoryScope, now = new
   if (!row) return { digest: null, next_at };
   const digest = digestView(row as Record<string, unknown>);
   // A belief corrected or undone since the digest was written no longer offers
-  // correcting or undoing the value the digest names.
+  // correcting or undoing the value the digest names. One forgotten since is
+  // left out: forgetting erased its values from the digest (`value` null), and
+  // the digest only ever names what Melete learned, never a blank.
   const items = await sql.begin(async (tx) => {
     await lockSpace(tx, scope, false);
     const fresh: MemoryDigest['items'] = [];
-    for (const item of digest.items) {
+    for (const item of digest.items as (Omit<MemoryDigest['items'][number], 'value'> & {
+      value: string | null;
+    })[]) {
+      if (item.value === null) continue;
       const head = await getHead(tx, scope, item.belief_id);
       const current =
         head !== null &&
@@ -216,6 +221,7 @@ export async function latestDigest(sql: MemorySql, scope: MemoryScope, now = new
         head.current.content === item.value;
       fresh.push({
         ...item,
+        value: item.value,
         current,
         version: current && head ? currentVersion(head, head.head_revision) : null,
       });

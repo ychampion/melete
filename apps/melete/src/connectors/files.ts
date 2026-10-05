@@ -39,6 +39,7 @@ import {
   DEFAULT_TRASH_DAYS,
   filesTrash,
   hasTrash,
+  latestTrash,
   moveToTrash,
   restoreFromTrash,
   type TrashPlace,
@@ -631,10 +632,13 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.restore',
       description:
-        'Restore what one delete put in the trash, by the trash_id on its receipt: every file goes back to its own path, never over a file that took the path since.',
+        "Restore what a delete put in the trash: give the trash_id from its receipt, or a path to restore the latest delete that took it; with neither, this conversation's latest delete comes back. Files go back to their own paths, never over a file that took the path since.",
       input_schema: inputSchema(
-        { trash_id: { type: 'string', pattern: '^del_[0-9]{13}_[0-9a-f]{12}$' } },
-        ['trash_id'],
+        {
+          trash_id: { type: 'string', pattern: '^del_[0-9]{13}_[0-9a-f]{12}$' },
+          path: pathSchema,
+        },
+        [],
       ),
       effect_class: 'write_reversible',
       required_scopes: ['files.restore'],
@@ -1332,6 +1336,28 @@ export function createFilesConnector(options: FilesOptions): Connector {
         );
     },
     async prepare(payload, ctx, tx, kind) {
+      // A restore names the delete it brings back before it runs, so its
+      // receipt and any retry are about that one delete.
+      if (kind === 'files.restore' && typeof payload.trash_id !== 'string') {
+        const path = typeof payload.path === 'string' ? payload.path : undefined;
+        let found: { id: string; made: number } | null = null;
+        try {
+          for (const place of await restorePlaces(ctx)) {
+            const latest = await latestTrash(place, path);
+            if (latest && (!found || latest.made > found.made)) found = latest;
+          }
+        } catch (error) {
+          throw new BrokerFault('payload_invalid', (error as Error).message);
+        }
+        if (!found)
+          throw new BrokerFault(
+            'payload_invalid',
+            path
+              ? `nothing deleted in this conversation that took ${JSON.stringify(path)} is still in the trash`
+              : 'nothing deleted in this conversation is still in the trash',
+          );
+        return { trash_id: found.id, ...(path ? { path } : {}) };
+      }
       if (kind === 'files.delete') {
         try {
           return {
