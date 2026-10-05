@@ -507,7 +507,8 @@ export class SituationService {
         await tx.execute(sql`select count(*)::int as n from event
           where job_id = ${jobId} and type = 'notice'
             and payload->>'kind' = 'operation_event' and payload ? 'situation_id'
-            and created_at > ${new Date(this.now() - WAKE_SPACING_MS).toISOString()}::timestamptz`),
+            -- Both sides on the database's clock, which dated the event.
+            and created_at > now() - ${`${WAKE_SPACING_MS / 1000} seconds`}::interval`),
       );
       const [registration] = waitingOn
         ? await tx.select().from(trigger).where(eq(trigger.id, waitingOn))
@@ -1110,13 +1111,13 @@ export class SituationService {
           .returning()
       : await tx
           .insert(clock)
+          // Made on the service's clock, the one a wait's mailbox reads are dated by.
           .values({
             id: newId('clk'),
             rule: input.rule,
             subjectKey: input.subjectKey,
-            // By the service's own clock, which every later comparison with it uses.
-            createdAt: new Date(now),
             ...values,
+            createdAt: new Date(now),
           })
           .returning();
     if (!row) throw new Error('clock write lost');
