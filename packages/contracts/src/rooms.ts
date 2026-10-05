@@ -63,12 +63,23 @@ export const roomApprovers = z.enum(['requester', 'any_member', 'owners']);
 export type RoomApprovers = z.infer<typeof roomApprovers>;
 
 /**
+ * Who decides what the agent sends or changes through the room's own accounts
+ * (the accounts its owners added for the room): any member who is not a guest,
+ * the person who asked included, or the room's owners. For those actions it
+ * takes the place of `approvers`. Guests and the room's agent never decide.
+ */
+export const roomTeamAccountApprovers = z.enum(['any_member', 'owners']);
+export type RoomTeamAccountApprovers = z.infer<typeof roomTeamAccountApprovers>;
+
+/**
  * How the room works: who decides its permissions, when its agent answers,
  * whether guests may ask it, and how many asks the room, and each person in
  * it, may make in an hour.
  */
 export const roomPolicy = z.strictObject({
   approvers: roomApprovers,
+  /** Who decides actions through the room's own accounts; `any_member` when left out. */
+  team_account_approvers: roomTeamAccountApprovers.optional(),
   /** `asked`: the agent answers when asked. `every_message`: every message asks it, which uses more of the model. */
   agent_turns: z.enum(['asked', 'every_message']),
   guests_may_ask: z.boolean(),

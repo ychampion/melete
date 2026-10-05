@@ -4,7 +4,7 @@
  * anyone's personal space is here; a thread is all room material.
  */
 import { createHash } from 'node:crypto';
-import type { CanonicalMessage, RoomApprovers } from '@melete/contracts';
+import type { CanonicalMessage, RoomApprovers, RoomTeamAccountApprovers } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { experienceTurn, job, principal } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -94,6 +94,13 @@ export const APPROVERS_LINE: Record<RoomApprovers, string> = {
   owners: "Only the room's owners can answer the permissions it asks for.",
 };
 
+/** Who answers what goes through the room's own accounts, under each team-account rule. */
+export const TEAM_ACCOUNT_APPROVERS_LINE: Record<RoomTeamAccountApprovers, string> = {
+  any_member:
+    "What it does through the room's own accounts can be answered by anyone in the room who is not a guest.",
+  owners: "What it does through the room's own accounts is answered only by the room's owners.",
+};
+
 /**
  * The thread a room request was asked in, for its attempt. The request's own
  * messages are left out: they reach the attempt as its own input, named by the
@@ -169,7 +176,10 @@ export async function roomTranscript(
   ].sort((a, b) => a.at.localeCompare(b.at));
   const requester = names.get(row.requestedByPrincipalId ?? '') ?? 'Someone';
   const [policy] = await tx
-    .select({ approvers: roomPolicy.approvers })
+    .select({
+      approvers: roomPolicy.approvers,
+      teamAccountApprovers: roomPolicy.teamAccountApprovers,
+    })
     .from(roomPolicy)
     .where(eq(roomPolicy.spaceId, row.spaceId));
   // A guest never answers a permission: their request is answered by the owners.
@@ -180,8 +190,14 @@ export async function roomTranscript(
         .where(eq(principal.id, row.requestedByPrincipalId))
     : [];
   const rule = (policy?.approvers ?? 'requester') as RoomApprovers;
-  const approvers =
+  const team = policy?.teamAccountApprovers === 'owners' ? 'owners' : 'any_member';
+  // The team-account rule is said only where the room has accounts of its own
+  // still connected (counted as `isTeamAccount` in `approvals.ts` counts them).
+  const accounts = await tx.execute(sql`select 1 from connection where space_id = ${row.spaceId}
+    and shared_use = 'room' and status <> 'revoked' and not (configuration ? 'builtin') limit 1`);
+  const general =
     APPROVERS_LINE[rule === 'requester' && asker?.kind === 'guest' ? 'owners' : rule] ??
     APPROVERS_LINE.requester;
+  const approvers = accounts.length ? `${general} ${TEAM_ACCOUNT_APPROVERS_LINE[team]}` : general;
   return { thread, names, requester, approvers };
 }
