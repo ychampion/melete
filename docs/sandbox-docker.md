@@ -134,7 +134,10 @@ names that command. The guard accepts the token only from the computer it was
 made for, and only while the command runs. Every connection the computer opens,
 or tries to open, is recorded: the host and port, whether it was tunnelled or
 refused and why, the bytes each way, and the command it belonged to. Each
-command's result lists the hosts it reached.
+command's result lists the hosts it reached. When a command sends something to
+a site the computer had not reached before, the conversation shows a quiet row
+under the command, such as "Sent 2 KB to example.com from its computer". The
+count includes the connection's own setup. Nothing is held or asked for this.
 
 A connection that carries no live token, such as one from a background process
 a command left running, goes out under the same rules and is recorded as

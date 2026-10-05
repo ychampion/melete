@@ -10,7 +10,7 @@ import { testDatabase } from '../../test/helpers/database.ts';
 import { recordId } from '../broker/records.ts';
 import { SandboxEgressGuard } from '../sandbox/adapters/docker-egress.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
-import { egressHostsFor, egressRecorder, expireEgressRecords } from './records.ts';
+import { egressHostsFor, egressRecorder, expireEgressRecords, newHostsFor } from './records.ts';
 
 const handle = await testDatabase();
 const withDb = handle ? describe : describe.skip;
@@ -212,6 +212,30 @@ withDb('egress records', () => {
     expect(await egressHostsFor(sql, actionId)).toEqual([
       { host: 'blocked.example', tunnels: 0, refused: 40, bytes_up: 0, bytes_down: 0 },
     ]);
+  });
+
+  test('a host is new until an earlier connection from the space reached it', async () => {
+    const { sql, scope, sessionId, actionId } = await setup();
+    const before = new Date();
+    await sql`insert into egress_record (id, session_id, space_id, action_id, host, port, verdict, opened_at)
+      values
+        ('egr_earlier', ${sessionId}, ${scope.spaceId}, null, 'pypi.org', 443, 'unattributed',
+          now() - interval '1 day'),
+        ('egr_refused', ${sessionId}, ${scope.spaceId}, null, 'blocked.example', 443, 'refused',
+          now() - interval '1 day'),
+        ('egr_this', ${sessionId}, ${scope.spaceId}, ${actionId}, 'httpbin.org', 443, 'tunnel',
+          now() - interval '1 minute'),
+        ('egr_later', ${sessionId}, ${scope.spaceId}, null, 'example.com', 443, 'tunnel',
+          now() + interval '1 minute')`;
+    expect(
+      await newHostsFor(sql, {
+        sessionId,
+        actionId,
+        hosts: ['pypi.org', 'httpbin.org', 'example.com', 'blocked.example'],
+        before,
+      }),
+    ).toEqual(['blocked.example', 'example.com', 'httpbin.org']);
+    expect(await newHostsFor(sql, { sessionId, actionId, hosts: [], before })).toEqual([]);
   });
 
   test('records past the retention period are removed, and the rest are kept', async () => {

@@ -38,8 +38,8 @@ import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { seeksCredentials } from '../broker/credential-stores.ts';
 import { appendEvent } from '../broker/records.ts';
-import { egressHostsFor } from '../egress/records.ts';
-import { type EgressHostSummary, hasCommandEgress } from '../egress/tokens.ts';
+import { egressHostsFor, newHostsFor } from '../egress/records.ts';
+import { type EgressHostSummary, hasCommandEgress, OTHER_HOSTS } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
@@ -648,6 +648,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     session: SessionRow,
     stored: Uint8Array | null,
     hosts: EgressHostSummary[] | null,
+    newHosts: string[] | null = null,
   ): Promise<Record<string, JsonValue>> => {
     // The receipt is the only way the result travels back to the engine that
     // asked, so the preview the service kept goes on it, capped as it was.
@@ -679,6 +680,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       image_digest: session.imageDigest,
       egress: session.egressPolicy.kind,
       egress_hosts: hosts,
+      // Hosts its computer had not reached before, which the conversation shows.
+      ...(newHosts ? { egress_new_hosts: newHosts } : {}),
       persistence: session.persistence,
     };
     if (stored && record.outputPath) {
@@ -711,6 +714,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     session: SessionRow,
     result: CommandResult,
     hosts: EgressHostSummary[] | null,
+    newHosts: string[] | null = null,
   ) => {
     await sessions.settleCommand(action.id, {
       outcome: result.outcome === 'failed' && result.retryable ? NOT_STARTED : result.outcome,
@@ -721,7 +725,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       return { outcome: 'failed' as const, reason: result.reason, retryable: result.retryable };
     if (result.outcome === 'unknown') return { outcome: 'unknown' as const, reason: result.reason };
     const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-    const detail = await detailFor(payload, result.record, session, stored, hosts);
+    const detail = await detailFor(payload, result.record, session, stored, hosts, newHosts);
     return {
       outcome: 'succeeded' as const,
       receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
@@ -951,6 +955,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           : null;
       let result: CommandResult;
       let seen: EgressHostSummary[] | null = null;
+      const began = new Date();
       try {
         result = await runCommand({
           provider,
@@ -971,6 +976,18 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       } finally {
         seen = attributed?.settle() ?? null;
       }
+      // Only shown, never asked: where its computer sent something for the first time.
+      const sentTo = (seen ?? [])
+        .filter((each) => each.bytes_up > 0 && each.host !== OTHER_HOSTS)
+        .map((each) => each.host);
+      const newHosts = sentTo.length
+        ? await newHostsFor(sql, {
+            sessionId: session.id,
+            actionId: action.id,
+            hosts: sentTo,
+            before: began,
+          }).catch(() => null)
+        : null;
       const outcome = await finish(
         action,
         ctx,
@@ -978,6 +995,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         session,
         result,
         egressHosts(session, seen),
+        newHosts,
       );
       // A recorded outcome no longer needs its marker; an unknown one keeps it
       // as the only evidence a later check can read. A command that never
