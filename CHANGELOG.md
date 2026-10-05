@@ -31,10 +31,6 @@ What each version ships.
   time, and Undo or restore brings them back.
 - **Home shows what needs you.** New mail and calendar changes are sorted by a
   small model, and the ones that need the person rise to the top of Home.
-- **Rooms.** A room is a shared space with one agent, its own memory and approval
-  rules, guests and hand-offs, in the web app and from a chat platform. Room
-  owners add team accounts the room uses, and anyone in the room can approve what
-  those accounts send.
 - **Always-on watching of mail and calendar.** Connected mail and calendars are
   watched read-only by default, and changes arrive as signals the agent can act
   on.
@@ -56,6 +52,10 @@ What each version ships.
 - **Voice, connection status and speed.** Voice and connection status show what
   is really happening, speech connectors use the configured key, and short turns
   finish sooner.
+- **Clearer work on the agent's computer.** Each outside site the agent's
+  computer sends data to shows in the conversation, the agent's browser no longer
+  saves passwords or cards, and the agent is told plainly when nobody stopped a
+  command.
 - **Capability evaluations in CI.** A suite measures what Melete can do across
   models and runs in continuous integration.
 - **A separate service for Docker access, plus database roles.** The Docker
@@ -66,6 +66,13 @@ What each version ships.
   image-based MCP servers pull only from public registries, `melete doctor` runs
   on image-only installs, and a reply counts as an answer only when its sender is
   authenticated or it names the person's own message.
+
+### Preview (off by default)
+
+- **Rooms and shared work.** Shared rooms with one agent, their own memory and
+  approval rules, guests, hand-offs, team accounts and a chat-platform adapter.
+  These stay off unless an operator sets `MELETE_PREVIEW_MULTIPLAYER=true`, and
+  they may change before they ship.
 
 ### Upgrading from v0.2.0
 
