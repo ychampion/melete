@@ -37841,7 +37841,7 @@
                       ]
                     },
                     "detail": {
-                      "$ref": "#/components/schemas/__schema256"
+                      "$ref": "#/components/schemas/__schema285"
                     }
                   },
                   "required": [
