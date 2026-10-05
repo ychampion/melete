@@ -30,6 +30,7 @@ export default defineConfig({
     './src/triage/schema.ts',
     './src/situations/schema.ts',
     './src/intents/schema.ts',
+    './src/reach/schema.ts',
   ],
   out: './drizzle',
   strict: true,

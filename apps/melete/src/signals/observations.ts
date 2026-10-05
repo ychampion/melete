@@ -15,12 +15,20 @@ import { createHash } from 'node:crypto';
 import {
   CALENDAR_EVENTS,
   type CalendarEventName,
+  DOCUMENT_CHANGED,
   type JsonObject,
   MAIL_RECEIVED,
 } from '@melete/contracts';
 import { messageSender, messageSenderDomain } from '../companies/replies.ts';
 import { instantMs } from './occurrences.ts';
-import type { CalendarRead, Lookup, NewMail, Occurrence } from './types.ts';
+import type {
+  CalendarRead,
+  DocumentChange,
+  DocumentFile,
+  Lookup,
+  NewMail,
+  Occurrence,
+} from './types.ts';
 
 /** What an observation's words are: the account's own record, or text someone else wrote. */
 export type ObservationOrigin = 'verified_connector' | 'external_content';
@@ -90,6 +98,92 @@ export function mailObservation(
       to_count: message.to_addresses?.length ?? 0,
       in_reply_to: message.in_reply_to ?? null,
       automated: message.automated === true,
+    },
+  };
+}
+
+// --------------------------------------------------------------------------
+// documents
+// --------------------------------------------------------------------------
+
+/** What a deadline on a file is kept and checked by: one per connection and file. */
+export const documentSubjectKey = (connectionId: string, fileId: string) =>
+  `document:${connectionId}:${keyOf(fileId)}`;
+
+/**
+ * The state a deadline on a file reads: when it last changed, whether the
+ * account's own person changed it and when, whether it is shared or in the
+ * bin. No name and no editor: a file's words stay in its observation.
+ */
+export type DocumentFields = {
+  file_id: string;
+  modified_time: string | null;
+  modified_by_me_time: string | null;
+  last_modifier_me: boolean | null;
+  shared: boolean;
+  trashed: boolean;
+  version: string | null;
+};
+
+export function documentFields(file: DocumentFile): DocumentFields {
+  return {
+    file_id: clip(file.id, 200),
+    modified_time: file.modified_time,
+    modified_by_me_time: file.modified_by_me_time,
+    last_modifier_me: file.last_modifier_me,
+    shared: file.shared,
+    trashed: file.trashed,
+    version: file.version === null ? null : clip(file.version, 40),
+  };
+}
+
+/**
+ * A file that changed, as an observation. Its name and its last editor were
+ * written by people, so it is marked as outside content and carries only the
+ * metadata a watch can test; never the file's contents. The same change read
+ * twice (two polls, or a cursor read again) has the same key, so it is one
+ * event; a later change to the same file is a new one.
+ */
+export function documentObservation(
+  connectionId: string,
+  change: DocumentChange,
+  readAt: string,
+): Observation {
+  const file = change.file;
+  const gone = change.removed || file === null;
+  const state = gone
+    ? ['removed']
+    : [
+        file.version,
+        file.modified_time,
+        file.trashed,
+        file.shared,
+        file.name,
+        file.last_modifier,
+        file.last_modifier_me,
+      ];
+  return {
+    event_name: DOCUMENT_CHANGED,
+    dedup_key: `${DOCUMENT_CHANGED}:${keyOf(change.file_id)}:${keyOf(JSON.stringify(state))}`,
+    payload: {
+      kind: DOCUMENT_CHANGED,
+      about: { type: 'document', key: documentSubjectKey(connectionId, change.file_id) },
+      occurred_at: (!gone && file.modified_time) || readAt,
+      origin: 'external_content',
+      file_id: clip(change.file_id, 200),
+      removed: gone,
+      ...(gone
+        ? {}
+        : {
+            name: clip(file.name, 300),
+            mime_type: clip(file.mime_type, 200),
+            modified_time: file.modified_time,
+            modified_by_me_time: file.modified_by_me_time,
+            last_modifier_me: file.last_modifier_me,
+            last_modifier: file.last_modifier === null ? null : clip(file.last_modifier, 200),
+            shared: file.shared,
+            trashed: file.trashed,
+          }),
     },
   };
 }

@@ -20,6 +20,7 @@ import {
   connectionResponse,
   connectionView,
   createConnectionRequest,
+  DRIVE_CONSENT_WORDS,
   describePlugin,
   installPluginRequest,
   installPluginResponse,
@@ -88,11 +89,11 @@ export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegist
  * Kinds only this service installs. A sign-in earns their credential, so no
  * request to `POST /connections` can carry one. Mail keeps the `imap` provider
  * and a calendar the `caldav` one, so everything that finds a mailbox or a
- * calendar by provider finds these too.
+ * calendar by provider finds these too. A Google Drive is a `drive`.
  */
 const ACCOUNT_KINDS = {
-  google: { mail: 'gmail', calendar: 'google_calendar' },
-  microsoft: { mail: 'outlook_mail', calendar: 'outlook_calendar' },
+  google: { mail: 'gmail', calendar: 'google_calendar', documents: 'google_drive' },
+  microsoft: { mail: 'outlook_mail', calendar: 'outlook_calendar', documents: null },
 } as const;
 type AccountInstallation = {
   account: string;
@@ -101,6 +102,7 @@ type AccountInstallation = {
 } & (
   | { kind: 'gmail' | 'outlook_mail'; provider: 'imap' }
   | { kind: 'google_calendar' | 'outlook_calendar'; provider: 'caldav' }
+  | { kind: 'google_drive'; provider: 'drive' }
 );
 type Installation = ConnectionInstallation | AccountInstallation;
 const signedIn = (installation: Installation): installation is AccountInstallation =>
@@ -802,6 +804,16 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           scopes: grant.calendar.scopes,
         },
       });
+    if (grant.documents && kinds.documents)
+      parts.push({
+        label: grant.documents.label,
+        installation: {
+          ...base,
+          kind: kinds.documents,
+          provider: 'drive',
+          scopes: grant.documents.scopes,
+        },
+      });
     const installed: ConnectionResponse[] = [];
     for (const { label, installation } of parts) {
       const [existing] = await deps.db
@@ -886,7 +898,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         // Each scope with the plain words the catalog shows for it.
         const labels = new Map<string, string>(
           ACCOUNT_CATALOG.flatMap((entry) =>
-            entry.scopes.map((scope) => [scope.scope, scope.label] as const),
+            [...entry.scopes, ...('later_scopes' in entry ? entry.later_scopes : [])].map(
+              (scope) => [scope.scope, scope.label] as const,
+            ),
           ),
         );
         return c.json(
@@ -896,6 +910,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
               const label = labels.get(scope);
               return label ? { scope, label } : { scope };
             }),
+            ...(parsed.data.documents ? { reason: DRIVE_CONSENT_WORDS } : {}),
           }),
           201,
         );
@@ -1147,6 +1162,10 @@ function accountSignInFailures(
     account_unverified: {
       status: 502,
       message: `${title} did not confirm an address for this account.`,
+    },
+    documents_unavailable: {
+      status: 400,
+      message: `${title} has no Drive to connect.`,
     },
     access_not_granted: {
       status: 400,

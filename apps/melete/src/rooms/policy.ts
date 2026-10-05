@@ -1,5 +1,6 @@
 /**
- * How a room works: who decides its permissions, when its agent answers,
+ * How a room works: who decides its permissions (and those through its own
+ * accounts), when its agent answers,
  * whether guests may ask it, and how many asks an hour it takes. Everyone in
  * the room may read it; only its owners change it.
  */
@@ -24,6 +25,7 @@ export async function readRoomPolicy(
     row
       ? {
           approvers: row.approvers,
+          team_account_approvers: row.teamAccountApprovers,
           agent_turns: row.agentTurns,
           guests_may_ask: row.guestsMayAsk,
           requests_per_hour: row.requestsPerHour,
@@ -49,6 +51,7 @@ export async function writeRoomPolicy(
     );
   const values = {
     approvers: next.approvers,
+    teamAccountApprovers: next.team_account_approvers,
     agentTurns: next.agent_turns,
     guestsMayAsk: next.guests_may_ask,
     requestsPerHour: next.requests_per_hour,

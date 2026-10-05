@@ -11,13 +11,14 @@
  */
 import {
   CALENDAR_EVENT_NAMES,
+  DOCUMENT_EVENT_NAMES,
   MAIL_EVENT_NAMES,
   MAIL_RECEIVED,
   SITUATION_KINDS,
 } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 
-const OBSERVATION_NAMES = [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES];
+const OBSERVATION_NAMES = [...MAIL_EVENT_NAMES, ...CALENDAR_EVENT_NAMES, ...DOCUMENT_EVENT_NAMES];
 const REPLY_OVERDUE = SITUATION_KINDS.replyOverdue;
 /** How far back a wait on an answer looks for one, in days. */
 export const REPLY_WINDOW_DAYS = 30;

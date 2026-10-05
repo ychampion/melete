@@ -52,6 +52,7 @@ export * from './process-preview.ts';
 export * from './provenance.ts';
 export * from './provider-signin.ts';
 export * from './push.ts';
+export * from './reach.ts';
 export * from './reactions.ts';
 export * from './redact.ts';
 export * from './repair.ts';

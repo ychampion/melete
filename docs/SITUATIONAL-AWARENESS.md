@@ -1,7 +1,7 @@
 # Noticing what changes
 
-Melete keeps watch over the mail and calendar accounts a person connects. When
-new mail arrives or a meeting moves, the work that is waiting for it wakes, once,
+Melete keeps watch over the mail, calendar and Drive accounts a person connects. When
+new mail arrives, a meeting moves or a file changes, the work that is waiting for it wakes, once,
 with what changed in front of it. When a meeting moves close to its time, two
 meetings overlap, a deadline comes near and is still unmet, or a message the
 person sent has had no answer, Melete notices it on its own and tells the
@@ -27,8 +27,9 @@ account's own change feed:
 | Outlook calendar | each occurrence in the next 14 days (`calendarView`) |
 | CalDAV collection | the events the server finds in the next 14 days (a `time-range` query), expanded into occurrences |
 | Calendar feed, imported file | each occurrence in the next 14 days, expanded from the events' recurrence rules |
+| Google Drive | the files that changed since the last page token, from Drive's own change feed, as metadata only |
 
-Each account and stream (its mail, its calendar) has one cursor in
+Each account and stream (its mail, its calendar, its Drive) has one cursor in
 `source_cursor`: where the feed was last read, when to read it next, and how the
 last reads went. A first read starts the cursor at the account's present
 state; what was already there is where watching begins, not news.
@@ -81,8 +82,9 @@ in its owner's night`). A trigger that asks for more often
 gets it (`poll_seconds`, never more often than once a minute). Melete's own
 detectors listen too (see [What the detectors read](#what-the-detectors-read)):
 a calendar a person connected for themselves while they have a device to reach
-or a deadline on it, and a mailbox while a message the person sent is waiting
-on an answer. An account nobody watches, and that no trigger or detector
+or a deadline on it, a mailbox while a message the person sent is waiting
+on an answer. A Drive is read only for the files a deadline or a trigger
+follows (see [Drive files](#drive-files)). An account nobody watches, and that no trigger or detector
 listens to, is not read at all. Which accounts those are is decided from the
 database alone. When an account stops being watched, its cursor and kept
 fields go.
@@ -149,8 +151,18 @@ A `mail.received` observation carries the message's `message_id`, `read_key`,
 words were written by whoever sent the message or the invitation, and the work
 that reads them is told so.
 
+A `document.changed` observation carries the file's `file_id`, `name`,
+`mime_type`, `modified_time`, `modified_by_me_time`, `last_modifier`,
+`last_modifier_me`, `shared`, `trashed` and `removed`. A file's name and its
+last editor's name are words people chose, so they are content, as a mail
+subject is: the observation is marked `external_content`, it reaches only the
+work the Drive serves, it goes with the account, and it is made only for a file
+something follows. A file's contents are never
+read; the scope Melete holds for Drive cannot read them.
+
 Every observation carries a key made of what it is about and its state: a
-message's Message-ID or provider id; an occurrence and a hash of its fields. Ids
+message's Message-ID or provider id; an occurrence and a hash of its fields; a
+file and a hash of its metadata. Ids
 are hashed to a fixed length before they become keys, because an id is whatever
 a provider or a sender chose, and the ids themselves travel clipped in the
 observation. The trigger service keeps one event per key, so the same change
@@ -222,6 +234,41 @@ the end of the window (too many occurrences to list) takes nothing past where
 it stopped as removed (`a read that stopped early takes nothing past where it
 stopped as removed`).
 
+## Drive files
+
+A Google Drive is connected through Google sign-in, on a step of its own the
+first time a person keeps a deadline on a file (see
+[mail-calendar.md](mail-calendar.md#signing-in-with-google)). A Drive is not
+watched by default. It is read while a deadline is kept on one of its files, or
+while that deadline's alert is open, and while a trigger listens to it. A
+change to a file nothing follows is read past and dropped: no observation, no
+name and no state is kept for it (`a Drive is not watched by default, and a file
+nothing follows leaves no name or state`). A deadline follows its file, and a
+trigger follows the file its watch names in `about.key`. A Drive trigger that
+names no file is refused, whoever sets it, with "Name the document to watch"
+(`a Drive trigger must name its document, and one that does hears only that
+file`). Shared drives are read only while a deadline follows a file in one.
+
+Its first read takes
+Drive's current page token and lists nothing: watching starts then. Each later
+read lists the files that changed since, up to 500 a read, a page at a time; a
+read that reaches that number resumes from where it stopped, at the next tick
+rather than after a full interval (`a read that stops at its limit is read
+again at the next tick`). Drive lists a file
+changed several times between two reads once, as it is now. A rate limit Drive
+reports as a 403 is read as a request to wait, like a 429, and its
+`Retry-After` is honoured (`a Drive asking for time is left alone that long`).
+A page token Drive no longer honours starts the feed again from that moment.
+
+The same change read twice is one event, and a later change to the same file is
+another (`the same change from two polls is one event`).
+
+For a file a deadline follows, `subject_state` keeps when it last changed,
+when the person last changed it, whether the last change was theirs, and
+whether it is shared or in the bin. It keeps no name and no editor. A removed or
+binned file's state goes, and so does every file's once no deadline on it is in
+force.
+
 ## Each connection's catalog
 
 A trigger listens for one event name on one connection, and each kind of
@@ -231,6 +278,7 @@ connection lists the names it reports:
 | --- | --- |
 | A mailbox (IMAP, Gmail, Outlook) | `mail.received`, and `mail.new` for a reply to a chase |
 | A calendar (CalDAV, a feed, Google, Outlook) | `calendar.event.created`, `calendar.event.changed`, `calendar.event.cancelled` |
+| A Google Drive | `document.changed` |
 | An agent's computer | `process.exited`, `process.output`, `process.listening` |
 | A room | the hand-offs it settles |
 
@@ -343,7 +391,7 @@ situations and clocks that came from it with anything still waiting to be pushed
 about them, and turns off the triggers that listened to it (`revoking an account
 takes what was noticed in it and its clocks`) (`revoking a connection removes what
 was read from it, in the same step`). Switching it to another credential
-removes the cursors, the kept fields, its mail and calendar observations and
+removes the cursors, the kept fields, its mail, calendar and Drive observations and
 what was noticed in them the same way, and keeps the deadlines kept on it, which
 read the account afresh as it now is (`switching an account’s credential keeps
 the deadlines kept on it`). Removing a space removes all of these with the rest of the space. A
@@ -476,6 +524,65 @@ only inside the person’s day, and never urgent`, `a look at a date-only
 commitment that would fall outside the person’s day waits for the morning`).
 The same holds for a deadline work keeps with a date alone.
 
+#### A deadline on a document
+
+"The contract must be signed by 3 p.m." is a deadline on a Drive file.
+`POST /situations/deadlines` keeps one for the signed-in person, on the Drive
+of the space the session speaks for:
+
+```json
+{
+  "file": "https://docs.google.com/document/d/1AbC…/edit",
+  "title": "Get the contract signed",
+  "due_at": "2026-10-05T15:00:00-07:00",
+  "lead_seconds": 300,
+  "by": "others"
+}
+```
+
+`file` is the file id or a Docs, Sheets, Slides or Drive link to it, and the
+file is looked up once when the deadline is set. Drive's metadata cannot say a
+file was signed, so `by` names the change that ends the deadline:
+
+- `me`: the person changed the file at or after `since`. Drive keeps this per
+  person, so a collaborator's edit never counts.
+- `others`: the file changed at or after `since`, and Drive names the last
+  change as someone else's. A change by an editor Drive does not name, such as
+  an anonymous link or an app, is unknown and leaves the deadline at risk
+  (`a change by an editor Drive does not name stays at risk`).
+
+`since` is the moment the deadline is set unless given, and is never later than
+now (`a since later than now, or after the due time, is refused`).
+
+Only the look at `due_at` less `lead_seconds` settles a deadline: Melete reads
+the file as Drive has it then. Changed as asked, the deadline is met and nothing
+is raised. A change read earlier settles nothing by itself (`a file edited before
+the deadline is settled only by the look at its time`). Otherwise
+`deadline.at_risk` is raised; set by the person and within fifteen minutes of
+its time, it is urgent and can reach them at once (`a document deadline whose
+file is untouched at T−lead raises at-risk, checked fresh at fire time`). When
+the file changed since, but not in the way asked, the alert says so and asks
+whether it is done, at `soon` rather than urgent (`an edit of another kind than
+the one asked for never settles it, and makes the alert a question`). A file
+removed or moved to the bin before the look is raised too, saying so (`a file
+removed or moved to the bin before its look is raised, not let go`). An alert
+that went out is resolved as soon as the file then changes as asked, so no later
+reminder reaches the person about something done (`an alert that went out is
+resolved when the file then changes as asked`).
+
+With no Drive connected in the space, the answer is `409 documents_not_connected`
+with the words the person is shown: Melete needs to see the Drive files' names,
+change times and sharing, never their contents, and asks Google for that once
+more (`with no Drive connected, a deadline on a file says what Google will be
+asked for, and why`). The deadline is kept on the file's own subject key, so
+work handling the file hears about it: naming `job_id`, such as the work
+"Handle it" started, links that work to the file (`a deadline links the work
+handling the file, and only on an account the person uses`). Set through an
+outside assistant over MCP, it is shown and never urgent. While a deadline is
+kept on one of its files, the Drive is read every five minutes, and every minute
+in the hour before a look. Work can keep the same deadline with
+`SituationService.setDocumentDeadline`.
+
 Pressing "Handle it" again moves the deadline to the date the item has now; once
 the person has pressed it, it stays theirs whoever presses after (`pressing
 Handle it again moves the deadline to the date the item has now, and keeps it
@@ -507,6 +614,91 @@ now, even in quiet hours; one they didn’t set waits`). A push about a situatio
 carries where to say it was seen, and tapping it tells Melete so. A push about a
 situation that was resolved, dismissed or removed before it went out is not
 sent.
+
+### Reaching your phone
+
+When a deadline the person set is about to be missed, its push is the first
+step. If nobody opens it, Melete texts the person's own number three minutes
+later, and calls it five minutes after that (`an unacknowledged urgent
+deadline: push, text at +3 min, call at +8; acknowledging stops it`). Opening
+the push, replying to the text, or pressing 1 on the call marks the situation
+seen, and nothing more is sent about it. A text reply covers only the deadlines
+Melete has already texted or called about; one that so far had only its push
+keeps climbing (`a reply covers only the deadlines Melete texted or called
+about`). A call follows only a text that went out (`a call follows only a text
+that went out`). Only an urgent situation about a deadline the person set
+climbs past the push (`only a deadline the person set climbs`).
+
+The person turns this on once, in Settings, Notifications:
+
+1. They enter their number, and Melete texts it a six-digit code. A code lasts
+   ten minutes and takes five tries; a person, and a number, get at most five
+   codes a day, and a number someone else here has verified can't be claimed.
+   Codes go only to the calling codes the operator allows (`+1` by default:
+   the US and Canada, without the Caribbean area codes), and the installation
+   sends at most `MELETE_REACH_CODES_PER_HOUR` (30) an hour (`codes go only to
+   supported countries, and the installation sends a limited number an
+   hour`).
+2. They agree to texts, and choose whether a call may follow and whether
+   Melete may reach them outside their day hours. The words they agree to are
+   shown beside the button and kept with the agreement, with the time and the
+   number (`reach_consent`). Changing the choice records a new agreement; ending
+   it records when and how.
+
+Melete texts and calls only that verified number, and only while the agreement
+names it. A new number ends the agreement given for the old one until the
+person agrees again (`no contact to any number but the verified one without
+approval`). The only other text Melete sends is the code to a number the
+person is verifying, at their request.
+
+| Rule | |
+| --- | --- |
+| A day, at most | 6 texts and 3 calls, in the person's own day, however many sweeps run at once (`the daily caps hold when several sweeps run at once`) |
+| Outside the person's day hours | nothing, unless they agreed to that too; a person whose day hours aren't known, or start when they end, is treated as off all day (`a person with no day hours known is not texted or called at night`) |
+| From | the installation's own number, which is also the caller ID |
+| What it says | only that a deadline the person set is at risk, how to answer, and how to stop; the deadline's own words stay in Melete |
+| Stopping | any reply that asks it to stop, press 9 on a call, or turn it off in Settings |
+
+A text or call that would break a rule is not sent, and says why in Settings
+under "What Melete did" (`at most six texts and three calls a day`, `nothing
+is texted or called outside the person’s day unless they asked for nights`).
+
+**Stopping.** A reply that carries any sign of wanting it to stop ends the
+agreement at once, cancels anything still waiting, and is never read as having
+seen anything: the words stop, quit, end, revoke, opt out, cancel or unsubscribe
+anywhere in it, or asking not to be texted, called or messaged ("Please stop",
+"End texts", "don’t text me"), in any case. Nothing is texted or called until
+the person texts START and agrees again in Settings. The agreement's record is
+kept, with when and how it ended. A number the provider reports as
+unsubscribed is treated the same way (`STOP opts out`, `an opt-out in any words
+ends texts and calls at once, and is never read as seen`). Twilio answers its
+own keywords (STOP, START, HELP); any other opt-out gets one line back from
+Melete saying so and how to restart. Each incoming text is handled once, by
+the provider's id for it (`a reply the provider already delivered once does
+nothing again`).
+
+**Calls.** A call says who is calling and that a deadline the person set is at
+risk, offers 1 to say it was seen and 9 to stop texts and calls, then reads out
+the number to text Melete back on, or to reply STOP to. An answer that arrives
+while a text or call is already on its way to the provider doesn't recall that
+one; it stops everything after it.
+
+**Receipts and cost.** Each text and call carries a delivery receipt address;
+the provider's status is kept with it. Each one is counted toward the person's
+spend as a background cost in `model_usage` (purpose `reach`), at
+`MELETE_REACH_TEXT_USD` a text and `MELETE_REACH_CALL_USD_PER_MINUTE` a started
+minute of an answered call; an unanswered call costs nothing. A text or call
+whose answer was lost is never sent again.
+
+**Setting it up.** An operator sets `MELETE_TWILIO_ACCOUNT_SID`,
+`MELETE_TWILIO_AUTH_TOKEN`, `MELETE_TWILIO_FROM_NUMBER` and an https
+`MELETE_PUBLIC_URL`, and points the number's incoming messages at
+`MELETE_PUBLIC_URL/api/reach/twilio/sms`. Every request Twilio makes is
+believed only with its `X-Twilio-Signature` for that exact address. Without all
+of these, Settings says that Melete reaches the person by push only, and the
+ladder stops at the push (`without a provider, the ladder stops at push and
+says so`). In the US, carriers deliver texts from a local number only once it
+is registered for A2P 10DLC, or from a verified toll-free number.
 
 ### Reaching work
 
@@ -568,10 +760,28 @@ that work sets are kept.
 - `apps/melete/test/integration/situations-commitments.test.ts`: "Handle it"
   by the person, and by an outside assistant, over the real route; date-only
   due dates; pressing again; rescans.
+- `apps/melete/test/integration/documents.test.ts`: a Drive read through the
+  Drive connector against a stand-in Drive: the consent answer, deadlines
+  settled only by the look at their time, edits of another kind, unnamed
+  editors, removed files, alerts resolved after a change, nothing kept for files
+  nothing follows, capped reads, `since`, one event per change, Retry-After,
+  linking work, and revocation clearing what was read.
+- `apps/melete/test/integration/google-sign-in.test.ts`: the Drive step adds
+  Drive beside an account's mail and calendar, which keep their ids.
+- `apps/melete/src/connectors/google-drive.test.ts`: Drive's change feed, page
+  limits, shared drives only on request, rate limits, the Drive sign-in step,
+  the fresh look, the status tool, observation keys, and the `me` and `others`
+  rules.
 - `apps/melete/src/situations/detectors.test.ts` and
   `apps/melete/src/push/policy.test.ts`: the detectors' rules and the urgency
   lanes as plain functions.
 - `packages/contracts/src/watch.test.ts`: `before`, `after`, `older_than`,
   `any` and `absent`.
+- `apps/melete/test/integration/reach.test.ts`: the push, text and call
+  ladder and what stops it, the verified number only, the daily caps, nights,
+  STOP, receipts and cost, and an installation with no provider.
+- `apps/melete/src/reach/policy.test.ts` and
+  `apps/melete/src/reach/twilio.test.ts`: the ladder's rules and the reply words
+  as plain functions; Twilio's signature against its documented example.
 - Conformance 12, [`12-deadline-fresh-check.test.ts`](../conformance/scenarios/12-deadline-fresh-check.test.ts):
   a deadline is checked against fresh state at its time, once.

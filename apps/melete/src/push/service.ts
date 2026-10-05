@@ -129,8 +129,13 @@ export async function recordSettled(
 
 /**
  * A room's permissions that wait for this person: those of the room's work in
- * rooms they are in, that the room's rule lets them answer now (see
- * `rooms/approvals.ts`). Nobody else in the room is told.
+ * rooms they are in, that the room's rule for each lets them answer now.
+ * Nobody else in the room is told.
+ *
+ * This is the SQL form of `approverRuleFor`, `isTeamAccount` and
+ * `eligibleApprovers` in `rooms/approvals.ts`, which decide who may answer: a
+ * change to the rule there changes it here too. The room approval tests check
+ * that the people pushed are the people the card names.
  */
 function roomDecisions(principalId: string, since: Date) {
   // Several people may be told of one permission, so each one's key names them.
@@ -148,17 +153,22 @@ function roomDecisions(principalId: string, since: Date) {
       and m.revoked_at is null and m.role in ('owner', 'member')
     join principal p on p.id = m.principal_id and p.kind = 'person'
     left join room_policy rp on rp.space_id = r.space_id
+    -- One of the room's own accounts: its own rule decides what goes through it.
+    left join connection team on team.id = ac.connection_id and team.space_id = r.space_id
+      and team.shared_use = 'room' and not (team.configuration ? 'builtin')
     where a.decided_at is null
       and (a.expires_at is null or a.expires_at > now())
       and (parent.audience = 'room' or j.audience = 'room' or holder.kind = 'room')
-      and case coalesce(rp.approvers, 'requester')
+      and case when team.id is not null then
+        coalesce(rp.team_account_approvers, 'any_member') = 'any_member' or m.role = 'owner'
+      else case coalesce(rp.approvers, 'requester')
         when 'requester' then r.requested_by_principal_id = m.principal_id
           -- A guest never answers: the owners answer a guest's request.
           or (m.role = 'owner' and exists (select 1 from principal g
             where g.id = r.requested_by_principal_id and g.kind = 'guest'))
         when 'any_member' then true
         when 'owners' then m.role = 'owner'
-        else false end
+        else false end end
       and a.requested_at >= ${since.toISOString()}::timestamptz`;
 }
 

@@ -35,6 +35,8 @@ export const QUEUES = {
   pushDispatch: 'melete.push-dispatch',
   /** Looks at the clocks that are due: deadlines and waits on a reply. */
   clockSweep: 'melete.clock-sweep',
+  /** Texts and calls to a person's own number that are due: the reach-me ladder. */
+  reachSweep: 'melete.reach-sweep',
 } as const;
 
 export const ATTEMPT_QUEUES: Record<SchedulingClass, string> = {

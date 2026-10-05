@@ -8,6 +8,7 @@ import { jwtClaims, type OAuthIssuer } from '../gateway/oauth.ts';
 import {
   type AccountProvider,
   CALENDAR_GRANTS,
+  DOCUMENT_GRANTS,
   MAIL_READ_GRANTS,
   SignInFailure,
 } from './account-sign-in.ts';
@@ -21,6 +22,8 @@ export type GoogleEndpoints = {
   gmail: string;
   /** The signed-in person's primary calendar, `.../calendar/v3/calendars/primary`. */
   calendar: string;
+  /** The signed-in person's Drive, `.../drive/v3`. */
+  drive: string;
 };
 
 export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
@@ -29,18 +32,23 @@ export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
   revoke: 'https://oauth2.googleapis.com/revoke',
   gmail: 'https://gmail.googleapis.com/gmail/v1/users/me',
   calendar: 'https://www.googleapis.com/calendar/v3/calendars/primary',
+  drive: 'https://www.googleapis.com/drive/v3',
 };
 
 export const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 
 /**
- * Reading mail, sending it, and the calendar's events. Drafts stay in Melete,
- * where approval already covers them, so no Gmail draft scope is asked for.
+ * Reading mail, sending it, the calendar's events, and Drive's metadata.
+ * Drafts stay in Melete, where approval already covers them, so no Gmail draft
+ * scope is asked for. Drive is read as metadata only (names, times, who
+ * changed a file, whether it is shared), never a file's contents, and it is
+ * asked for on its own, the first time a person keeps a deadline on a file.
  */
 export const GOOGLE_SCOPES = {
   mailRead: 'https://www.googleapis.com/auth/gmail.readonly',
   mailSend: 'https://www.googleapis.com/auth/gmail.send',
   calendar: 'https://www.googleapis.com/auth/calendar.events',
+  documents: 'https://www.googleapis.com/auth/drive.metadata.readonly',
 } as const;
 
 export const GOOGLE_SIGN_IN_SCOPE = [
@@ -51,10 +59,14 @@ export const GOOGLE_SIGN_IN_SCOPE = [
   GOOGLE_SCOPES.calendar,
 ].join(' ');
 
+/** The later step that adds Drive, beside what the account already granted. */
+export const GOOGLE_DRIVE_SIGN_IN_SCOPE = ['openid', 'email', GOOGLE_SCOPES.documents].join(' ');
+
 export function googleIssuer(
   client: AccountClient,
   redirectUri: string,
   endpoints: GoogleEndpoints = GOOGLE_ENDPOINTS,
+  options: { documents?: boolean } = {},
 ): OAuthIssuer {
   return {
     provider: 'google',
@@ -63,11 +75,16 @@ export function googleIssuer(
     revokeUrl: endpoints.revoke,
     clientId: client.clientId,
     clientSecret: client.clientSecret,
-    scopes: GOOGLE_SIGN_IN_SCOPE,
+    scopes: options.documents ? GOOGLE_DRIVE_SIGN_IN_SCOPE : GOOGLE_SIGN_IN_SCOPE,
     redirectUri,
     // A refresh token is issued only for offline access, and again on every
     // sign-in only when consent is asked for, so signing in again renews it.
-    extraAuthorizeParams: { access_type: 'offline', prompt: 'consent' },
+    // The Drive step keeps what was granted before (incremental consent).
+    extraAuthorizeParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+      ...(options.documents ? { include_granted_scopes: 'true' } : {}),
+    },
     refreshEncoding: 'form',
   };
 }
@@ -78,7 +95,8 @@ export function googleProvider(
 ): AccountProvider {
   return {
     name: 'google',
-    issuer: (redirectUri) => googleIssuer(client, redirectUri, endpoints),
+    issuer: (redirectUri, options) => googleIssuer(client, redirectUri, endpoints, options),
+    asksForDocuments: true,
     /**
      * The id token came from Google's token endpoint over TLS: it must be for
      * this client, from Google, and for a verified address.
@@ -107,9 +125,14 @@ export function googleProvider(
             }
           : {}),
         ...(scopes.has(GOOGLE_SCOPES.calendar) ? { calendar: CALENDAR_GRANTS } : {}),
+        ...(scopes.has(GOOGLE_SCOPES.documents) ? { documents: DOCUMENT_GRANTS } : {}),
       };
     },
-    labels: (account) => ({ mail: `Gmail (${account})`, calendar: `Google Calendar (${account})` }),
+    labels: (account) => ({
+      mail: `Gmail (${account})`,
+      calendar: `Google Calendar (${account})`,
+      documents: `Google Drive (${account})`,
+    }),
   };
 }
 

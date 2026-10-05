@@ -597,10 +597,11 @@ await client.api.POST('/jobs/{jobId}/triggers', {
 The event name must be one the connection reports: a mailbox reports
 `mail.received` (and `mail.new` for a reply to a chase), a calendar reports
 `calendar.event.created`, `calendar.event.changed` and
-`calendar.event.cancelled`. A trigger on any other name is refused when it is
+`calendar.event.cancelled`, and a Google Drive reports `document.changed`. A
+trigger on any other name is refused when it is
 made, with the names the connection does report (`a watch on an event its
 connection never produces is refused`). How the service reads those events
-from Gmail, Outlook, IMAP and calendars, and what each observation carries, is
+from Gmail, Outlook, IMAP, calendars and Drive, and what each observation carries, is
 in [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md).
 
 The language is deliberately too small to hide a decision in: dotted field paths

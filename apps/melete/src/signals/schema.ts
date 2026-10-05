@@ -2,14 +2,16 @@
  * What the service keeps to notice change in a connected account.
  *
  * `source_cursor` is where each account's change feed was last read: one row
- * per connection and stream (its mail, its calendar), with when to read next
- * and how the last reads went. A change is read once however often it is
+ * per connection and stream (its mail, its calendar, its Drive), with when to
+ * read next and how the last reads went. A change is read once however often it is
  * announced, because the cursor moves past it.
  *
  * `subject_state` is the latest few fields known about each thing a source
  * reports on, one calendar occurrence per row: its start, end, place and
  * status. That is what lets the service say what changed rather than only
- * that something did. It never holds a message body or an event description.
+ * that something did. A Drive file a deadline follows keeps when it last
+ * changed and whether its own person changed it, without its name. It never
+ * holds a message body, an event description or a file's contents.
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -52,7 +54,7 @@ export const sourceCursor = pgTable(
     primaryKey({ columns: [table.connectionId, table.stream] }),
     index('source_cursor_due_idx').on(table.nextPollAt),
     index('source_cursor_space_idx').on(table.spaceId),
-    check('source_cursor_stream_check', sql`${table.stream} in ('mail', 'calendar')`),
+    check('source_cursor_stream_check', sql`${table.stream} in ('mail', 'calendar', 'documents')`),
     check('source_cursor_interval_check', sql`${table.intervalSeconds} > 0`),
   ],
 );

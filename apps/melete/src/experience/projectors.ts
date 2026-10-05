@@ -89,6 +89,7 @@ export function appName(row: ConnectionRow): string {
   const names: Record<string, string> = {
     caldav: 'Calendar',
     imap: 'Mail',
+    drive: 'Drive',
     files: 'Files',
     web: 'Web',
     test: 'Test connection',
@@ -111,6 +112,7 @@ const LABELS: Record<string, string> = {
   'email.send': 'Sent a message',
   'email.discard': 'Discarded a draft',
   'files.list': 'Checked your files',
+  'documents.status': 'Checked a document',
   'files.read': 'Read a file',
   'files.write': 'Saved a file',
   'files.move': 'Moved a file',
@@ -151,6 +153,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'email.send': ['Sending the email', 'Sent the email'],
   'email.discard': ['Discarding a draft', 'Discarded a draft'],
   'files.list': ['Looking through your files', 'Looked through your files'],
+  'documents.status': ['Checking a document', 'Checked a document'],
   'files.read': ['Reading a file', 'Read a file'],
   'files.write': ['Saving a file', 'Saved a file'],
   'files.move': ['Moving a file', 'Moved a file'],

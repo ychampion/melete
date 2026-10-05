@@ -2021,9 +2021,10 @@ export class BrokerService implements BrokerOperations {
       const action = await loadAction(tx, id, true);
       const decider = decidedBy ?? (await jobPrincipal(tx, job));
       // A room's request is the room's job, so its own principal names nobody
-      // who can answer: the room's rule does. Checked first, before any answer
+      // who can answer: the room's rule for this action does (its team-account
+      // rule when the action goes through one of the room's own accounts). Checked first, before any answer
       // is recorded (a Deny included), with the roster as it is now.
-      const room = await roomAuthorityOf(tx, job.id);
+      const room = await roomAuthorityOf(tx, job.id, { connectionId: action.connection_id });
       if (room && !(await mayDecide(tx, room, decider)))
         throw new BrokerFault('scope_denied', 'Only the people this room names can answer this.');
       const [approval] = await tx`select * from approval where action_id = ${id}

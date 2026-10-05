@@ -108,6 +108,12 @@ export const roomPolicy = pgTable(
       .references(() => space.id, { onDelete: 'cascade' }),
     /** Who decides a request's permissions: `requester`, `any_member` or `owners`. */
     approvers: text('approvers').notNull().default('requester'),
+    /**
+     * Who decides what the agent does through the room's own accounts (its
+     * connections marked for the room, other than the tools every room has):
+     * `any_member` or `owners`. It replaces `approvers` for those actions.
+     */
+    teamAccountApprovers: text('team_account_approvers').notNull().default('any_member'),
     /** `asked`: the agent answers when asked. `every_message`: every message asks it. */
     agentTurns: text('agent_turns').notNull().default('asked'),
     guestsMayAsk: boolean('guests_may_ask').notNull().default(true),
@@ -118,6 +124,10 @@ export const roomPolicy = pgTable(
   },
   (t) => [
     check('room_policy_approvers', sql`${t.approvers} in ('requester', 'any_member', 'owners')`),
+    check(
+      'room_policy_team_account_approvers',
+      sql`${t.teamAccountApprovers} in ('any_member', 'owners')`,
+    ),
     check('room_policy_agent_turns', sql`${t.agentTurns} in ('asked', 'every_message')`),
     check(
       'room_policy_limits',
