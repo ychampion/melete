@@ -1,5 +1,6 @@
 import { type CapabilityClaims, inputTokenAllowance, inputTokenCeiling } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { BRIEF_TURN_CHARS } from '../gateway/effort.ts';
 import type { PriceTable } from '../gateway/prices.ts';
 import { allowedWithRoutes } from '../gateway/routing.ts';
 import { settledCost } from '../gateway/spending.ts';
@@ -54,10 +55,16 @@ export class PostgresGatewayBudget implements GatewayBudget {
       const principal = await this.options.sql.begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
-        const [attempt] =
-          await tx`select provider, model, class from attempt where id = ${claims.attempt_id}`;
+        const [attempt] = await tx`select a.provider, a.model, a.class, t.text as turn_text
+          from attempt a left join experience_turn t on t.id = a.turn_id
+          where a.id = ${claims.attempt_id}`;
         if (!attempt) throw new BrokerFault('stale_epoch');
         const primary = { provider: String(attempt.provider), model: String(attempt.model) };
+        // A person's short message is answered thinking one step less.
+        const briefTurn =
+          typeof attempt.turn_text === 'string' &&
+          attempt.turn_text.trim().length > 0 &&
+          attempt.turn_text.length <= BRIEF_TURN_CHARS;
         const routes = await this.options.routes?.({
           ...primary,
           usageClass: attempt.class === 'background' ? 'background' : 'interactive',
@@ -78,6 +85,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           ),
           allowedModels,
           ...(routes ? { routes } : {}),
+          ...(briefTurn ? { briefTurn } : {}),
         };
       });
       this.claims.set(principal, claims);

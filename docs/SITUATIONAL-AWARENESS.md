@@ -147,7 +147,16 @@ any other connector event:
 
 A `mail.received` observation carries the message's `message_id`, `read_key`,
 `from`, `sender`, `sender_domain`, `subject`, `received_at`, `to_count`,
-`in_reply_to` and `automated`. Both kinds are marked `external_content`: their
+`in_reply_to`, `references`, `automated`, `sender_auth` and `in_inbox`.
+`sender_auth` is `pass`, `fail` or `none`: whether the receiving server
+authenticated the sender for the From domain, read from the topmost
+`Authentication-Results` header (a DMARC pass for that domain, or a DKIM or SPF
+pass aligned with it; a DMARC failure is `fail`). Only the topmost header
+counts, because the receiving server adds its own above everything the message
+carried; one a sender wrote further down is ignored. For Outlook mail from
+inside the same organisation, which carries no internet headers, Exchange's own
+record of the sender counts as `pass`. `in_inbox` is false when the provider
+filed or flagged the message as spam (Gmail's `SPAM` label, `X-Spam-Flag: YES`). Both kinds are marked `external_content`: their
 words were written by whoever sent the message or the invitation, and the work
 that reads them is told so.
 
@@ -454,7 +463,15 @@ Mail that answers a message the person is waiting on ends its `reply.overdue`
 at once, by the waiting-on rule: a reply in the thread, anything from the person
 asked, or a colleague of theirs on the same subject; an automatic reply answers
 nothing (`a wait on a reply is raised for Home, and settles when the answer
-arrives`). Before a wait is raised, Melete looks again through the mail it has
+arrives`). Anyone can write any From address, so mail matched by its sender
+answers only when `sender_auth` is `pass`. A reply whose `In-Reply-To` or
+`References` names the Message-ID of the person's own message answers without
+that, when it was delivered to the inbox rather than to spam. Mail that matches
+by its sender alone and cannot be verified leaves the wait open; the clock notes
+"A reply came that couldn't be verified as from them.", and a wait raised later
+says so in its reason (`a forged From leaves a wait open, noted as unverified;
+an authenticated reply ends it`, `a wait whose only answer could not be verified
+is raised, and says so`). Before a wait is raised, Melete looks again through the mail it has
 already read since the message was sent, and it raises a wait only when it was
 watching the mailbox from soon after the waiting-on list found it: silence from
 a mailbox nobody was reading proves nothing (`a wait answered before its clock

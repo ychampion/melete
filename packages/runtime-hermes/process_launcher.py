@@ -39,6 +39,31 @@ PREWARM = (
     'nemo_relay',
     'agent.outbound_webhooks',
 )
+# Libraries `gateway run` imports as it loads its messaging platforms, which a
+# spare otherwise imports only after its attempt has arrived: about a second of
+# every handed-over attempt's start. They are third-party packages that read
+# neither the engine's configuration nor an attempt's values as they import; a
+# read of an attempt value is still caught below like any other. Some keep the
+# working directory they were imported in (multiprocessing does), so only a
+# container engine, whose directory is its workspace's mount point before and
+# after its attempt, imports them ahead.
+PREWARM_PLATFORM_LIBRARIES = (
+    'discord',
+    'discord.ext.commands',
+    'slack_bolt',
+    'slack_bolt.async_app',
+    'slack_bolt.adapter.socket_mode.async_handler',
+    'slack_sdk',
+    'telegram',
+    'telegram.ext',
+    'tornado.web',
+    'nacl.secret',
+    'qrcode',
+    'PIL.Image',
+    'cryptography.hazmat.primitives.serialization',
+    'multiprocessing',
+    'unittest.mock',
+)
 # Modules known to ask for the working directory at import without keeping it
 # for anything an attempt does: Rich shortens paths in the tracebacks it draws,
 # tempfile lists it as a last-resort candidate after TEMP and TMP, and the
@@ -152,8 +177,9 @@ def watch_reads(names, working_directory=True):
 
 def prewarm(names, working_directory=True) -> set:
     """Import the engine ahead of its attempt; returns whatever of the attempt was read."""
+    modules = PREWARM if working_directory else PREWARM + PREWARM_PLATFORM_LIBRARIES
     with watch_reads(names, working_directory) as seen:
-        for module in PREWARM:
+        for module in modules:
             try:
                 importlib.import_module(module)
             except Exception:

@@ -9,7 +9,7 @@ import {
 import { loadSpace, openIndex } from '@melete/knowledge';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import type { SpaceResolver } from '../knowledge/spaces.ts';
-import { withMemoryRuntime } from '../memory/context.ts';
+import { type PrepareEngine, withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
 import { lockEventOrder } from '../memory/invalidate.ts';
 import { knowledgeTokens } from '../memory/recall.ts';
@@ -22,6 +22,8 @@ type ContextOptions = {
   /** Semantic recall, and whether a job's words may be read by a cloud embedder. */
   embedding?: EmbeddingProvider;
   embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
+  /** Gets the attempt's engine ready while its memory and knowledge are put together. */
+  prepareEngine?: PrepareEngine;
 };
 
 async function legacyKnowledge(
@@ -145,6 +147,7 @@ export function withDeploymentContext(
   const memory = withMemoryRuntime(legacy, options.sql, options.scopeForJob, {
     ...(options.embedding ? { embedding: options.embedding } : {}),
     ...(options.embedsQuery ? { embedsQuery: options.embedsQuery } : {}),
+    ...(options.prepareEngine ? { prepareEngine: options.prepareEngine } : {}),
   });
   return {
     ...memory,

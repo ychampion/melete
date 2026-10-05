@@ -87,6 +87,7 @@ import {
   requestPrincipal,
   spaceAuthority,
 } from '../principals/authority.ts';
+import { missingSources, sourceWords } from './needs.ts';
 import {
   bestExperiment,
   clip,
@@ -332,6 +333,29 @@ export class RunService {
       agentId: turn?.agentId ?? row.agentId,
       principalId: row.principalId,
     });
+    // What the work reads that this space has no working connection for. The
+    // person is told in this reply, and the work's own record says it, so each
+    // shift says so too rather than reporting on nothing.
+    const missing = await missingSources(tx, row.spaceId, `${input.title ?? ''}\n${input.goal}`);
+    const lacking = missing.length ? sourceWords(missing) : null;
+    if (lacking)
+      await this.write(tx, {
+        run: created.id,
+        kind: 'note',
+        title: `No ${lacking} is connected`,
+        body: `This work reads the person's ${lacking}, and none was connected when it was set up. Until one is, say plainly in each result that it could not be read, rather than reporting as if nothing were there.`,
+      });
+    const missingFields = lacking
+      ? {
+          missing_connections: missing.map((source) => ({
+            source,
+            connect_at: '/settings/connections',
+          })),
+        }
+      : {};
+    const warning = lacking
+      ? `It reads the person's ${lacking}, and no ${lacking} is connected, so until one is it cannot see that. Say this plainly first, and offer to connect one in Settings, under Connections. `
+      : '';
     // A schedule the conversation set rather than the person: they are told.
     if (input.repeat) {
       const registration = await standingTrigger(tx, created.id);
@@ -347,15 +371,19 @@ export class RunService {
         title: created.title,
         schedule: standing?.description ?? null,
         next_run_at: standing?.next_wake_at ?? null,
-        instruction:
-          'The routine is set up and runs by itself on its schedule; there is nothing to wait for. Tell the person in one short sentence when it runs, and end this reply now: do not wait, sleep or check on it. run.list finds it later; run.pause or run.stop turns it off.',
+        ...missingFields,
+        instruction: lacking
+          ? `The routine is set up and runs by itself on its schedule. ${warning}Then tell the person in one short sentence when it runs, and end this reply now: do not wait, sleep or check on it. run.list finds it later; run.pause or run.stop turns it off.`
+          : 'The routine is set up and runs by itself on its schedule; there is nothing to wait for. Tell the person in one short sentence when it runs, and end this reply now: do not wait, sleep or check on it. run.list finds it later; run.pause or run.stop turns it off.',
       };
     }
     return {
       status: 'started',
       run_id: created.id,
-      instruction:
-        'It is working in the background now and reports back by itself as it goes. Tell the person in one short sentence and end this reply: do not do the work here, and do not wait, sleep or check on it.',
+      ...missingFields,
+      instruction: lacking
+        ? `It is working in the background now and reports back by itself as it goes. ${warning}Then tell the person in one short sentence that it has started, and end this reply: do not do the work here, and do not wait, sleep or check on it.`
+        : 'It is working in the background now and reports back by itself as it goes. Tell the person in one short sentence and end this reply: do not do the work here, and do not wait, sleep or check on it.',
     };
   }
 

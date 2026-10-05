@@ -399,34 +399,64 @@ export type ArrivedMail = {
   sender_domain?: unknown;
   subject?: unknown;
   in_reply_to?: unknown;
+  references?: unknown;
   received_at?: unknown;
   automated?: unknown;
+  /** `pass`, `fail` or `none`: the receiving server's word on the From domain. */
+  sender_auth?: unknown;
+  /** False when the provider filed it as spam. */
+  in_inbox?: unknown;
 };
 
 /**
- * Whether new mail answers a message the person is waiting on, by the
- * waiting-on rule: a reply in the thread, anything from the person asked, or,
- * for a company, a colleague of theirs writing on the same subject. An
- * automatic reply answers nothing, and neither does mail from before the
- * message was sent.
+ * What new mail means for a message the person is waiting on:
+ *
+ * - `answers`: it ends the wait;
+ * - `unverified`: it looks like an answer by its From address, but nothing
+ *   proves the sender wrote it, so the wait stays open;
+ * - null: it has nothing to do with the wait.
+ *
+ * The waiting-on rule finds the candidates: a reply in the thread, anything
+ * from the person asked, or, for a company, a colleague of theirs writing on
+ * the same subject. An automatic reply answers nothing, and neither does mail
+ * from before the message was sent.
+ *
+ * Anyone can write any From address, so a candidate found by its sender
+ * answers only when the receiving server authenticated the sender for the
+ * From domain. A reply that names the person's own Message-ID in In-Reply-To
+ * or References answers without that, when the provider delivered it to the
+ * inbox rather than to spam: only someone who received the message knows its
+ * Message-ID.
  */
-export function answers(awaited: Awaited, mail: ArrivedMail): boolean {
-  if (mail.automated === true) return false;
+export function replyVerdict(awaited: Awaited, mail: ArrivedMail): 'answers' | 'unverified' | null {
+  if (mail.automated === true) return null;
   const received = text(mail.received_at);
-  if (received && Date.parse(received) < Date.parse(awaited.sentAt)) return false;
+  if (received && Date.parse(received) < Date.parse(awaited.sentAt)) return null;
+  const asked = awaited.messageId.trim();
   const inReplyTo = text(mail.in_reply_to)?.trim();
-  if (inReplyTo && inReplyTo === awaited.messageId.trim()) return true;
+  const references = Array.isArray(mail.references)
+    ? mail.references.filter((id): id is string => typeof id === 'string').map((id) => id.trim())
+    : [];
+  const threaded = Boolean(asked) && (inReplyTo === asked || references.includes(asked));
+  // Stored before the provider's filing was kept, an observation came from the inbox.
+  if (threaded && mail.in_inbox !== false) return 'answers';
   const sender = text(mail.sender)?.toLowerCase() ?? null;
   const to = awaited.toAddress.toLowerCase();
-  if (sender && sender === to) return true;
   const domain = registrableDomain(to);
   const from = text(mail.sender_domain)?.toLowerCase() ?? null;
-  return (
-    domain !== null &&
-    !isPersonalDomain(domain) &&
-    from === domain &&
-    baseSubject(text(mail.subject) ?? '') === baseSubject(awaited.subject)
-  );
+  const candidate =
+    (sender !== null && sender === to) ||
+    (domain !== null &&
+      !isPersonalDomain(domain) &&
+      from === domain &&
+      baseSubject(text(mail.subject) ?? '') === baseSubject(awaited.subject));
+  if (!candidate) return null;
+  return mail.sender_auth === 'pass' ? 'answers' : 'unverified';
+}
+
+/** Whether new mail ends a wait on a reply; see {@link replyVerdict}. */
+export function answers(awaited: Awaited, mail: ArrivedMail): boolean {
+  return replyVerdict(awaited, mail) === 'answers';
 }
 
 // --------------------------------------------------------------------------

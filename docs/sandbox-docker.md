@@ -134,7 +134,10 @@ names that command. The guard accepts the token only from the computer it was
 made for, and only while the command runs. Every connection the computer opens,
 or tries to open, is recorded: the host and port, whether it was tunnelled or
 refused and why, the bytes each way, and the command it belonged to. Each
-command's result lists the hosts it reached.
+command's result lists the hosts it reached. When a command sends something to
+a site the computer had not reached before, the conversation shows a quiet row
+under the command, such as "Sent 2 KB to example.com from its computer". The
+count includes the connection's own setup. Nothing is held or asked for this.
 
 A connection that carries no live token, such as one from a background process
 a command left running, goes out under the same rules and is recorded as
@@ -152,7 +155,15 @@ with their space.
 
 The sandbox browser starts with a clean profile and none of your sessions. If
 you take over and sign in to a site there, the agent can use that session after
-you hand the computer back; sign in only where you would let it act.
+you hand the computer back; sign in only where you would let it act. The
+browser saves no passwords, payment cards or addresses, and signs in to no
+browser account.
+
+A command that looks for or reads the places programs keep saved passwords,
+cards, sign-in cookies or keys (browser profiles, key and token files) asks you
+first, with that reason, whatever your settings let the agent do in its own
+computer. This is judged from the command's text, so it is a signal rather
+than a wall; the computer holds none of your own browser profiles or keys.
 
 ## Idle stop and resume
 

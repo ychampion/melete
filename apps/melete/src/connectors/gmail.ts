@@ -120,19 +120,26 @@ export class GmailApiTransport implements MailTransport {
   /** One message's headers, without its body; null when it is gone. */
   private async headers(id: string): Promise<MailMessage | null> {
     if (!GMAIL_MESSAGE_ID.test(id)) return null;
-    let found: { payload?: { headers?: { name?: unknown; value?: unknown }[] } } | null;
+    let found: {
+      labelIds?: unknown;
+      payload?: { headers?: { name?: unknown; value?: unknown }[] };
+    } | null;
     try {
       found = (await this.get(`/messages/${id}?format=metadata`, MAX_HEADER_BYTES)) as typeof found;
     } catch (error) {
       if (error instanceof ResponseTooLarge) return null;
       throw error;
     }
-    const headers = (found?.payload?.headers ?? []).flatMap((header) =>
+    if (!found) return null;
+    const headers = (found.payload?.headers ?? []).flatMap((header) =>
       typeof header.name === 'string' && typeof header.value === 'string'
         ? [{ name: header.name, value: header.value }]
         : [],
     );
-    return found ? headerMessage(id, headerBlock(headers)) : null;
+    const message = await headerMessage(id, headerBlock(headers));
+    // Gmail's labels say whether it filed the message as spam.
+    const labels = Array.isArray(found.labelIds) ? found.labelIds : [];
+    return { ...message, spam: message.spam === true || labels.includes('SPAM') };
   }
 
   private async historyId(): Promise<string> {

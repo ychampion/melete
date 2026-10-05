@@ -282,7 +282,10 @@ describe('mail observations', () => {
         received_at: '2026-10-05T11:59:00.000Z',
         to_count: 1,
         in_reply_to: null,
+        references: [],
         automated: true,
+        sender_auth: 'none',
+        in_inbox: true,
       },
     });
     expect(JSON.stringify(observed)).not.toContain('Secret body text');

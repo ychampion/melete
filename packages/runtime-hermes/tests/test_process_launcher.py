@@ -96,6 +96,20 @@ def test_prewarm_reports_nothing_for_modules_that_read_nothing_of_the_attempt(mo
     assert prewarm(ATTEMPT_KEYS) == set()
 
 
+def test_platform_libraries_are_imported_ahead_only_where_the_directory_stays(monkeypatch):
+    imported = []
+    monkeypatch.setattr(process_launcher, 'PREWARM', ('json',))
+    monkeypatch.setattr(process_launcher, 'PREWARM_PLATFORM_LIBRARIES', ('a_platform_library',))
+    monkeypatch.setattr(process_launcher.importlib, 'import_module', imported.append)
+    # An engine process takes its attempt's directory at the handoff.
+    assert prewarm(ATTEMPT_KEYS) == set()
+    assert imported == ['json']
+    imported.clear()
+    # A container engine's directory is its workspace's mount point throughout.
+    assert prewarm(ATTEMPT_KEYS, False) == set()
+    assert imported == ['json', 'a_platform_library']
+
+
 def hooks_module(monkeypatch):
     module = types.ModuleType('melete_runtime_hooks')
     module.arrived = 0

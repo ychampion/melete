@@ -85,7 +85,18 @@ POLL_SECONDS = 0.2
 UNKNOWN_STATUS = 125
 REFUSED_STATUS = 126
 TIMED_OUT_STATUS = 124
-INTERRUPTED_STATUS = 130
+
+#: What a command whose wait this process gave up returns. The run ending is
+#: not the command ending: the engine's interrupt comes from Melete restarting
+#: or ending the run (to load a tool, at a limit, or because the person stopped
+#: the conversation), and the command goes on in the sandbox either way.
+#: Shell's 130 would read as Ctrl-C, a stop nobody gave the command.
+INTERRUPTED_OUTPUT = (
+    "[Melete stopped waiting for this command because this run ended; nobody stopped the "
+    "command itself. It was already sent to the sandbox and may still be running, or may have "
+    "finished. Its outcome is unknown here, so do not say that it was stopped or that the person "
+    "stopped it.] "
+)
 
 #: Said beside every result that carries no command output, so the model reports
 #: the absence instead of output it never received.
@@ -262,13 +273,7 @@ class SandboxTerminal:
             self._heartbeat()
             if self._interrupted():
                 # The broker keeps the command; this process only stops waiting.
-                return {
-                    "result": _result(
-                        "[Command interrupted] The command was already sent to the sandbox and "
-                        "its outcome is unknown here. " + OWN_COMPUTER_INSTRUCTION,
-                        INTERRUPTED_STATUS,
-                    )
-                }
+                return {"result": _result(INTERRUPTED_OUTPUT + OWN_COMPUTER_INSTRUCTION, UNKNOWN_STATUS)}
         error = box.get("error")
         if isinstance(error, BrokerError):
             if error.code == "unreachable" or (error.status or 0) >= 500:
