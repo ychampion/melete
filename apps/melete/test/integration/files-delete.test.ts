@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { JsonObject } from '@melete/contracts';
 import { saveApprovalSettings } from '../../src/broker/auto-review.ts';
-import { loadAction } from '../../src/broker/records.ts';
+import { loadAction, recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -235,4 +235,80 @@ databaseTest(
     }
   },
   SLOW * 2,
+);
+
+databaseTest(
+  'in a chat whose agent asks before acting, a file the agent wrote is deleted unasked, Undo restores it, and so does files.restore',
+  async () => {
+    const ctx = await setup();
+    // A chat, with an agent left at its default of asking before it acts, and
+    // auto-review at its defaults: the hosted install's setting.
+    const agent = recordId('agent');
+    await ctx.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values (${agent}, ${ctx.claims.space_id}, 'Agent', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+    await ctx.sql`update job set kind = 'chat', agent_id = ${agent} where id = ${ctx.claims.job_id}`;
+    const broker = new BrokerService({
+      sql: ctx.sql,
+      connectors: ctx.registry,
+      autoReview: { reviewer: null },
+    });
+    const propose = (kind: string, payload: JsonObject) =>
+      broker.propose(ctx.claims, { kind, connection_id: ctx.connectionId, payload });
+    // Turn one: the agent writes a file. Workspace work goes through.
+    expect((await propose('files.write', { path: 'live-n.txt', content: 'hi' })).status).toBe(
+      'succeeded',
+    );
+    // Turn two: it deletes it. Its own file, restorable: no question.
+    const deleted = await propose('files.delete', { path: 'live-n.txt' });
+    expect(deleted.canonical_payload).toMatchObject({ checked: { owner: 'agent' } });
+    expect(deleted.status).toBe('succeeded');
+    expect(existsSync(ctx.work('live-n.txt'))).toBe(false);
+    // The space's policy has moved on since the chat began, as it does on a
+    // hosted install; an Undo started now still runs.
+    await ctx.sql`update space set policy_generation = policy_generation + 3 where id = ${ctx.claims.space_id}`;
+    // The chat's next turn is a new attempt under the new policy, as the runner makes it.
+    await ctx.sql`update attempt set policy_generation = (select policy_generation from space
+      where id = ${ctx.claims.space_id}) where id = ${ctx.claims.attempt_id}`;
+    // The receipt offers Undo, and Undo puts it back.
+    const effects = new ExperienceEffects(ctx.sql, broker, ctx.registry);
+    const receipt = await effects.receipt(
+      ctx.claims.space_id,
+      await loadAction(ctx.sql, deleted.action_id),
+    );
+    expect(receipt?.undo?.handle).toBeTruthy();
+    const undone = await effects.undo(ctx.claims.space_id, receipt?.undo?.handle ?? '');
+    if ('reason' in undone) throw new Error(undone.reason);
+    expect(await readFile(ctx.work('live-n.txt'), 'utf8')).toBe('hi');
+    // Another of its files, deleted: the agent restores it itself with the receipt's trash id.
+    await propose('files.write', { path: 'second.txt', content: 'two' });
+    const again = await propose('files.delete', { path: 'second.txt' });
+    expect(again.status).toBe('succeeded');
+    const [row] = await ctx.sql`select receipt from action where id = ${again.action_id}`;
+    const restored = await propose('files.restore', {
+      trash_id: String(row?.receipt?.detail?.trash_id),
+    });
+    expect(restored.status).toBe('succeeded');
+    expect(await readFile(ctx.work('second.txt'), 'utf8')).toBe('two');
+    // "Restore what you deleted", with no id at hand: by its path, or the latest delete.
+    await propose('files.write', { path: 'third.txt', content: 'three' });
+    expect((await propose('files.delete', { path: 'third.txt' })).status).toBe('succeeded');
+    const byPath = await propose('files.restore', { path: 'third.txt' });
+    expect(byPath.status).toBe('succeeded');
+    expect(await readFile(ctx.work('third.txt'), 'utf8')).toBe('three');
+    await propose('files.write', { path: 'fourth.txt', content: 'four' });
+    expect((await propose('files.delete', { path: 'fourth.txt' })).status).toBe('succeeded');
+    const latest = await propose('files.restore', {});
+    expect(latest.status).toBe('succeeded');
+    expect(await readFile(ctx.work('fourth.txt'), 'utf8')).toBe('four');
+    // Nothing left to restore says so plainly.
+    expect(String((await rejectionOf(propose('files.restore', {}))) as Error)).toContain(
+      'nothing deleted in this conversation is still in the trash',
+    );
+    // The person's own file still asks.
+    await writeFile(ctx.files('theirs.pdf'), 'theirs');
+    expect((await propose('files.delete', { path: 'theirs.pdf', area: 'artifacts' })).status).toBe(
+      'needs_approval',
+    );
+  },
+  SLOW,
 );
