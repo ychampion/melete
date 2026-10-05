@@ -63,7 +63,8 @@ What each version ships.
   under a database role that cannot read the secret table. Read the upgrade notes
   below before updating.
 - **Tighter edges.** The cells service re-serializes the bodies it forwards,
-  image-based MCP servers pull only from public registries, `melete doctor` runs
+  image-based MCP servers never pull from addresses that point back at the host,
+  `melete doctor` runs
   on image-only installs, and a reply counts as an answer only when its sender is
   authenticated or it names the person's own message.
 
@@ -90,8 +91,8 @@ What each version ships.
 3. The Gmail and Drive scopes are Google "restricted" scopes. Self-hosted
    installations use their own OAuth client, and the Drive scope is requested
    only on first use.
-4. Image-based MCP servers pull only from public registries. Pull a private image
-   onto the host first.
+4. Image-based MCP servers can pull from any registry except addresses that
+   point back at the host.
 5. Database migrations through `0110` apply automatically at start.
 6. New optional settings: background spending caps
    (`MELETE_SPEND_PERSON_BACKGROUND_*`), `MELETE_OBSERVATION_RETENTION_DAYS`
