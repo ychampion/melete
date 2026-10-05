@@ -4,11 +4,12 @@ import {
   accountSignInStart,
   accountSignInStatus,
   connectionListResponse,
+  DRIVE_CONSENT_WORDS,
 } from '@melete/contracts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import { startFakeGoogle } from '../../src/connectors/fixtures/fake-google.ts';
-import { GOOGLE_SIGN_IN_SCOPE } from '../../src/connectors/google.ts';
+import { GOOGLE_DRIVE_SIGN_IN_SCOPE, GOOGLE_SIGN_IN_SCOPE } from '../../src/connectors/google.ts';
 import { GoogleCalendarConnector } from '../../src/connectors/google-calendar.ts';
 import { GoogleDriveConnector } from '../../src/connectors/google-drive.ts';
 import { mailAction, mailContext } from '../../src/connectors/mail-fixtures.ts';
@@ -71,13 +72,20 @@ async function harness() {
   if (!space) throw new Error('Missing personal space');
 
   /** Start, approve at the fake consent screen, and return through the callback. */
-  const signIn = async () => {
-    const started = await app.request('/google-sign-ins', as(cookie, {}));
+  const signIn = async (documents = false) => {
+    const started = await app.request(
+      '/google-sign-ins',
+      as(cookie, documents ? { documents: true } : {}),
+    );
     expect(started.status).toBe(201);
     const start = accountSignInStart.parse(await started.json());
     // Where the person will sign in, and everything asked for, before the browser goes there.
     expect(start.issuer).toBe(new URL(start.authorize_url).origin);
-    expect(start.scopes.map((item) => item.scope)).toEqual(GOOGLE_SIGN_IN_SCOPE.split(' '));
+    expect(start.scopes.map((item) => item.scope)).toEqual(
+      (documents ? GOOGLE_DRIVE_SIGN_IN_SCOPE : GOOGLE_SIGN_IN_SCOPE).split(' '),
+    );
+    // The Drive step says why it asks, in plain words.
+    expect(start.reason).toBe(documents ? DRIVE_CONSENT_WORDS : undefined);
     expect(start.scopes.every((item) => Boolean(item.label))).toBe(true);
     const approved = await fetch(start.authorize_url, { redirect: 'manual' });
     const back = new URL(approved.headers.get('location') ?? '');
@@ -88,7 +96,7 @@ async function harness() {
     const status = accountSignInStatus.parse(
       await (await app.request(`/google-sign-ins/${start.sign_in_id}`, as(cookie))).json(),
     );
-    return { landed, page, status, back };
+    return { landed, page, status, back, start };
   };
   return { app, as, cookie, factory, spaceId: space.id as string, sql: fixture.sql, signIn };
 }
@@ -97,7 +105,7 @@ const h = fixture ? await harness() : null;
 const withDb = fixture ? describe : describe.skip;
 
 withDb('signing in with Google', () => {
-  test('one sign-in connects Gmail, Google Calendar and Google Drive, with the tokens only sealed', async () => {
+  test('one sign-in connects Gmail and Google Calendar, with the tokens only sealed', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const availability = accountSignInAvailability.parse(
       await (await h.app.request('/google-sign-ins', h.as(h.cookie))).json(),
@@ -111,23 +119,19 @@ withDb('signing in with Google', () => {
     expect(landed.status).toBe(200);
     expect(page).toContain('connected');
     if (status.state !== 'connected') throw new Error(`Sign-in ended ${status.state}`);
-    expect(status.connection_ids).toHaveLength(3);
+    expect(status.connection_ids).toHaveLength(2);
 
     const listed = connectionListResponse
       .parse(await (await h.app.request('/connections', h.as(h.cookie))).json())
       .connections.filter((row) => status.connection_ids.includes(row.id));
     const mail = listed.find((row) => row.provider === 'imap');
     const calendar = listed.find((row) => row.provider === 'caldav');
-    const drive = listed.find((row) => row.provider === 'drive');
     expect(mail).toMatchObject({ status: 'active', label: 'Gmail (person@example.test)' });
     expect(mail?.scopes).toEqual(
       expect.arrayContaining(['email.search', 'email.read', 'email.send']),
     );
     expect(calendar).toMatchObject({ status: 'active' });
     expect(calendar?.scopes).toContain('calendar.create');
-    // Drive is read for what changes, by its metadata, with one read tool.
-    expect(drive).toMatchObject({ status: 'active', label: 'Google Drive (person@example.test)' });
-    expect(drive?.scopes).toEqual(['documents.status']);
 
     // The same tools and the same mailer path as a password mailbox.
     const mailer = h.factory.mailers.get(mail?.id ?? '');
@@ -135,7 +139,6 @@ withDb('signing in with Google', () => {
     const gmail = registry.get(mail?.id ?? '');
     expect(gmail).toBeInstanceOf(EmailConnector);
     expect(registry.get(calendar?.id ?? '')).toBeInstanceOf(GoogleCalendarConnector);
-    expect(registry.get(drive?.id ?? '')).toBeInstanceOf(GoogleDriveConnector);
     google.deliver(
       'From: friend@example.test\nTo: person@example.test\nSubject: Lunch\nMessage-ID: <lunch@example.test>\n\nThursday.\n',
     );
@@ -174,11 +177,35 @@ withDb('signing in with Google', () => {
     expect([...status.connection_ids].sort()).toEqual(before.map((row) => row.id));
     const after = await h.sql`select id, secret_ref, status from connection
       where configuration->>'account' = 'person@example.test' and status <> 'revoked' order by id`;
-    expect(after).toHaveLength(3);
+    expect(after).toHaveLength(2);
     for (const [index, row] of after.entries()) {
       expect(row.status).toBe('active');
       expect(row.secret_ref).not.toBe(before[index]?.secret_ref);
     }
+  }, 60_000);
+
+  test('the Drive step adds Drive beside an account’s mail and calendar, which keep their ids', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const before = await h.sql`select id, provider from connection
+      where configuration->>'account' = 'person@example.test' and status <> 'revoked' order by id`;
+    expect(before.map((row) => row.provider).sort()).toEqual(['caldav', 'imap']);
+    const { status, start } = await h.signIn(true);
+    if (status.state !== 'connected') throw new Error(`Sign-in ended ${status.state}`);
+    // Google is asked to keep what it granted before, and only Drive is new.
+    expect(new URL(start.authorize_url).searchParams.get('include_granted_scopes')).toBe('true');
+    const after = await h.sql`select id, provider, scopes from connection
+      where configuration->>'account' = 'person@example.test' and status <> 'revoked' order by id`;
+    expect(after.filter((row) => row.provider !== 'drive').map((row) => row.id)).toEqual(
+      before.map((row) => row.id),
+    );
+    const drive = after.find((row) => row.provider === 'drive');
+    expect(drive?.scopes).toEqual(['documents.status']);
+    expect(status.connection_ids).toEqual([drive?.id]);
+    expect(registry.get(String(drive?.id))).toBeInstanceOf(GoogleDriveConnector);
+    // Asked again, the same Drive is renewed rather than a second one made.
+    const again = await h.signIn(true);
+    if (again.status.state !== 'connected') throw new Error('Drive step failed');
+    expect(again.status.connection_ids).toEqual([drive?.id]);
   }, 60_000);
 
   test('someone who may not install in a space is refused', async () => {

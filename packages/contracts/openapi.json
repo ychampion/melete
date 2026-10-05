@@ -27669,10 +27669,10 @@
           }
         },
         "required": [
-          "connection_id",
           "file",
           "title",
-          "due_at"
+          "due_at",
+          "by"
         ],
         "additionalProperties": false
       },
@@ -27960,10 +27960,8 @@
         "$ref": "#/components/schemas/__schema3"
       },
       "__schema6": {
-        "default": "anyone",
         "type": "string",
         "enum": [
-          "anyone",
           "me",
           "others"
         ]
@@ -29373,6 +29371,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "documents": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -40541,6 +40542,9 @@
             "items": {
               "$ref": "#/components/schemas/__schema530"
             }
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
@@ -40828,6 +40832,7 @@
           "enum": [
             "mail",
             "calendar",
+            "documents",
             "tools",
             "execution"
           ]

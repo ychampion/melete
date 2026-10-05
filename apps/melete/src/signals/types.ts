@@ -190,6 +190,8 @@ export type DocumentFile = {
   trashed: boolean;
   /** The Drive's own version number, which grows with every change to the file. */
   version: string | null;
+  /** The shared drive the file is in; null for a file in the person's own Drive. */
+  drive_id: string | null;
 };
 
 /** One entry in a Drive's change feed: a file as it is now, or that it was removed. */
@@ -210,7 +212,11 @@ export type DocumentRead = {
 
 /** A Drive that can say what changed since a cursor. A null cursor starts from now. */
 export interface DocumentChanges {
-  changes(cursor: string | null, options: { limit: number }): Promise<DocumentRead>;
+  /** `allDrives` also lists changes in the shared drives the account belongs to. */
+  changes(
+    cursor: string | null,
+    options: { limit: number; allDrives?: boolean },
+  ): Promise<DocumentRead>;
 }
 
 /** A connector that can read one subject's fields now, for a clock's fresh check. */

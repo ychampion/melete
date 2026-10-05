@@ -20,6 +20,7 @@ import {
   connectionResponse,
   connectionView,
   createConnectionRequest,
+  DRIVE_CONSENT_WORDS,
   describePlugin,
   installPluginRequest,
   installPluginResponse,
@@ -897,7 +898,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         // Each scope with the plain words the catalog shows for it.
         const labels = new Map<string, string>(
           ACCOUNT_CATALOG.flatMap((entry) =>
-            entry.scopes.map((scope) => [scope.scope, scope.label] as const),
+            [...entry.scopes, ...('later_scopes' in entry ? entry.later_scopes : [])].map(
+              (scope) => [scope.scope, scope.label] as const,
+            ),
           ),
         );
         return c.json(
@@ -907,6 +910,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
               const label = labels.get(scope);
               return label ? { scope, label } : { scope };
             }),
+            ...(parsed.data.documents ? { reason: DRIVE_CONSENT_WORDS } : {}),
           }),
           201,
         );
@@ -1158,6 +1162,10 @@ function accountSignInFailures(
     account_unverified: {
       status: 502,
       message: `${title} did not confirm an address for this account.`,
+    },
+    documents_unavailable: {
+      status: 400,
+      message: `${title} has no Drive to connect.`,
     },
     access_not_granted: {
       status: 400,

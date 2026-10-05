@@ -1,4 +1,4 @@
-import { deadlineResponse, documentDeadlineRequest } from '@melete/contracts';
+import { DRIVE_CONSENT_WORDS, deadlineResponse, documentDeadlineRequest } from '@melete/contracts';
 import type { Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import { driveFileId } from '../connectors/google-drive.ts';
@@ -11,17 +11,18 @@ export function mountSituations(app: Hono, service: SituationService) {
     c.json({ situations: await service.list(c.get('owner').id) }),
   );
   /**
-   * A deadline on a Drive file, for the signed-in person, in the space of the
-   * account it names, which must be a space they use. Set by the person, it
-   * may reach them at any hour near its time; set by an assistant they
-   * connected, it is shown and never urgent.
+   * A deadline on a Drive file, for the signed-in person, in the space the
+   * session speaks for and on that space's Drive. Set by the person, it may
+   * reach them at any hour near its time; set by an assistant they connected,
+   * it is shown and never urgent. With no Drive connected yet, the answer says
+   * what Google will be asked for and why, so the person can add it then.
    */
   app.post('/situations/deadlines', async (c) => {
     const parsed = documentDeadlineRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success)
       throw new ServiceError(
         'invalid_request',
-        'A deadline needs an account, a file, a title and a time.',
+        'A deadline needs a file, a title, a time, and whose change ends it.',
         400,
       );
     const request = parsed.data;
@@ -29,20 +30,23 @@ export function mountSituations(app: Hono, service: SituationService) {
     if (!fileId)
       throw new ServiceError('invalid_request', 'That is not a Google Drive file id or link.', 400);
     const principalId = c.get('owner').id;
-    const spaceId = await service.usableSpaceOf(request.connection_id, principalId);
-    if (!spaceId)
-      throw new ServiceError(
-        'invalid_deadline',
-        'That is not something this person can keep a deadline on.',
-        400,
-      );
+    const spaceId = c.get('sessionSpace')?.spaceId;
+    const connectionId = spaceId ? await service.driveIn(spaceId, request.connection_id) : null;
+    if (!spaceId || !connectionId)
+      throw request.connection_id
+        ? new ServiceError(
+            'invalid_deadline',
+            'That is not a Drive in this space to keep a deadline on.',
+            400,
+          )
+        : new ServiceError('documents_not_connected', DRIVE_CONSENT_WORDS, 409);
     const dueAt = new Date(request.due_at);
     if (dueAt.getTime() <= service.currentTime())
       throw new ServiceError('invalid_deadline', 'The deadline has already passed.', 400);
     const kept = await service.setDocumentDeadline({
       spaceId,
       principalId,
-      connectionId: request.connection_id,
+      connectionId,
       fileId,
       title: request.title,
       dueAt,

@@ -652,6 +652,11 @@ export const accountSignInRequest = z
     space_id: prefixedId(ID_PREFIXES.space).optional(),
     mail_label: z.string().min(1).max(120).optional(),
     calendar_label: z.string().min(1).max(120).optional(),
+    /**
+     * Ask Google only for Drive, beside what the account already granted: the
+     * step a person takes when they first keep a deadline on a Drive file.
+     */
+    documents: z.boolean().optional(),
   })
   .strict();
 export type AccountSignInRequest = z.infer<typeof accountSignInRequest>;
@@ -673,6 +678,8 @@ export const accountSignInStart = z.object({
   issuer: z.url(),
   /** Everything the sign-in asks the provider for. */
   scopes: z.array(requestedScope),
+  /** Why this sign-in asks for more than the person granted before, in plain words. */
+  reason: z.string().optional(),
 });
 
 export const accountSignInStatus = z.discriminatedUnion('state', [
@@ -767,7 +774,7 @@ export const connectionCatalogEntry = z
     title: z.string(),
     description: z.string(),
     /** What a connection made from this entry can do. */
-    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution'])),
+    covers: z.array(z.enum(['mail', 'calendar', 'documents', 'tools', 'execution'])),
     connect: z.discriminatedUnion('method', [
       z.object({
         method: z.literal('sign_in'),
@@ -824,8 +831,8 @@ export const ACCOUNT_CATALOG = [
     id: 'google',
     title: 'Google',
     description:
-      'Sign in with Google to connect Gmail, Google Calendar and Google Drive. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it. Drive is watched for changes to your files by name and time, never their contents.',
-    covers: ['mail', 'calendar'],
+      'Sign in with Google to connect Gmail and Google Calendar. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it. Google Drive is added the first time you keep a deadline on one of its files.',
+    covers: ['mail', 'calendar', 'documents'],
     provider: 'google',
     issuer: 'https://accounts.google.com',
     scopes: [
@@ -843,6 +850,9 @@ export const ACCOUNT_CATALOG = [
         scope: 'https://www.googleapis.com/auth/calendar.events',
         label: 'See and change events in your Google calendars, each change after you approve it',
       },
+    ],
+    /** Asked for later, once, when a person first keeps a deadline on a Drive file. */
+    later_scopes: [
       {
         scope: 'https://www.googleapis.com/auth/drive.metadata.readonly',
         label: 'See the names, times and sharing of your Google Drive files, never their contents',
@@ -874,6 +884,13 @@ export const ACCOUNT_CATALOG = [
     ],
   },
 ] as const;
+
+/**
+ * What a person is told when they first keep a deadline on a Drive file and
+ * no Drive is connected yet, and again on the consent step that adds it.
+ */
+export const DRIVE_CONSENT_WORDS =
+  'To keep a deadline on a Drive file, Melete needs to see your Google Drive files’ names, change times and sharing, never their contents. Sign in with Google once more to allow it.';
 
 /**
  * Remote MCP servers known to sign in with OAuth. Their tools are still named

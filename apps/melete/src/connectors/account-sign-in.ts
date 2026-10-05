@@ -25,7 +25,10 @@ export type AccountProviderName = 'google' | 'microsoft';
 /** What differs between providers; everything else about a sign-in is shared. */
 export interface AccountProvider {
   readonly name: AccountProviderName;
-  issuer(redirectUri: string): OAuthIssuer;
+  /** `documents` asks only for Drive, beside what the account already granted. */
+  issuer(redirectUri: string, options?: { documents?: boolean }): OAuthIssuer;
+  /** Whether this provider has a Drive to ask for. */
+  readonly asksForDocuments?: boolean;
   /**
    * The address the tokens belong to, confirmed by the provider for this
    * client. Throws `SignInFailure('account_unverified')` otherwise.
@@ -43,6 +46,8 @@ export class SignInFailure extends Error {
 }
 
 export type AccountSignInRequest = {
+  /** Ask only for Drive, beside what the account already granted. */
+  documents?: boolean;
   space_id?: string;
   mail_label?: string;
   calendar_label?: string;
@@ -141,12 +146,17 @@ export class AccountSignIns<Installed> {
     return Boolean(this.hooks.provider && this.redirectUri());
   }
 
-  private issuer() {
+  private issuer(request: AccountSignInRequest = {}) {
     const provider = this.hooks.provider;
     const redirectUri = this.redirectUri();
     if (!provider) throw new SignInFailure('provider_not_configured');
     if (!redirectUri) throw new SignInFailure('callback_unavailable');
-    return { provider, issuer: provider.issuer(redirectUri) };
+    if (request.documents && !provider.asksForDocuments)
+      throw new SignInFailure('documents_unavailable');
+    return {
+      provider,
+      issuer: provider.issuer(redirectUri, request.documents ? { documents: true } : {}),
+    };
   }
 
   async start(
@@ -163,7 +173,7 @@ export class AccountSignIns<Installed> {
     scopes: string[];
   }> {
     const spaceId = await this.hooks.authorize(actor, request.space_id);
-    const { issuer } = this.issuer();
+    const { issuer } = this.issuer(request);
     const { verifier, challenge } = pkcePair();
     const state = randomState();
     const id = `asi_${randomState().slice(0, 24)}`;
@@ -195,7 +205,7 @@ export class AccountSignIns<Installed> {
       if (query.get('error')) throw new SignInFailure('sign_in_declined');
       const code = query.get('code');
       if (!code) throw new SignInFailure('callback_invalid');
-      const { provider, issuer } = this.issuer();
+      const { provider, issuer } = this.issuer(entry.request);
       let tokens: OAuthTokens;
       try {
         tokens = await exchangeCode(
@@ -212,7 +222,15 @@ export class AccountSignIns<Installed> {
         );
       }
       const account = await provider.account(tokens, issuer.clientId);
-      const grants = provider.grants(tokens.scope ?? issuer.scopes);
+      // The Drive step adds Drive alone; any other sign-in never adds Drive.
+      const granted = provider.grants(tokens.scope ?? issuer.scopes);
+      const grants: { mail?: string[]; calendar?: string[]; documents?: string[] } = entry.request
+        .documents
+        ? { ...(granted.documents ? { documents: granted.documents } : {}) }
+        : {
+            ...(granted.mail ? { mail: granted.mail } : {}),
+            ...(granted.calendar ? { calendar: granted.calendar } : {}),
+          };
       const labels = provider.labels(account);
       const grant: AccountGrant = {
         provider: provider.name,

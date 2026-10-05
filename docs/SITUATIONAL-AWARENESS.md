@@ -36,15 +36,14 @@ state; what was already there is where watching begins, not news.
 
 ### Which accounts are watched
 
-Every mailbox, calendar and Drive a person connects in their own space is watched,
-with nothing to set up: its new mail, the changes to its meetings and the changes to its files arrive as
+Every mailbox and calendar a person connects in their own space is watched,
+with nothing to set up: its new mail and the changes to its meetings arrive as
 observations whether or not any work is waiting for them yet (`a newly connected
 mailbox produces mail.received with no trigger`). Each one has a switch in
 Settings, under Connections: **Watch this account for changes**. On, a mailbox
 says "Melete reads new mail's sender and subject to notice what needs you", and
 a calendar "Melete reads each event's title, time and place to notice changes
-and clashes", and a Drive "Melete reads each file's name, last change and
-sharing, never its contents, to notice what is still untouched". Off, it says "Off. Melete still reads this account for things you
+and clashes". Off, it says "Off. Melete still reads this account for things you
 asked it to watch": work that set its own trigger on the account still hears
 it.
 
@@ -84,7 +83,8 @@ gets it (`poll_seconds`, never more often than once a minute). Melete's own
 detectors listen too (see [What the detectors read](#what-the-detectors-read)):
 a calendar a person connected for themselves while they have a device to reach
 or a deadline on it, a mailbox while a message the person sent is waiting
-on an answer, and a Drive while a deadline is kept on one of its files. An account nobody watches, and that no trigger or detector
+on an answer. A Drive is read only for the files a deadline or a trigger
+follows (see [Drive files](#drive-files)). An account nobody watches, and that no trigger or detector
 listens to, is not read at all. Which accounts those are is decided from the
 database alone. When an account stops being watched, its cursor and kept
 fields go.
@@ -156,7 +156,8 @@ A `document.changed` observation carries the file's `file_id`, `name`,
 `last_modifier_me`, `shared`, `trashed` and `removed`. A file's name and its
 last editor's name are words people chose, so they are content, as a mail
 subject is: the observation is marked `external_content`, it reaches only the
-work the Drive serves, and it goes with the account. A file's contents are never
+work the Drive serves, it goes with the account, and it is made only for a file
+something follows. A file's contents are never
 read; the scope Melete holds for Drive cannot read them.
 
 Every observation carries a key made of what it is about and its state: a
@@ -235,11 +236,23 @@ stopped as removed`).
 
 ## Drive files
 
-A Google Drive is connected by signing in with Google (see
-[mail-calendar.md](mail-calendar.md#signing-in-with-google)). Its first read takes
+A Google Drive is connected through Google sign-in, on a step of its own the
+first time a person keeps a deadline on a file (see
+[mail-calendar.md](mail-calendar.md#signing-in-with-google)). A Drive is not
+watched by default. It is read while a deadline is kept on one of its files, or
+while that deadline's alert is open, and while a trigger listens to it. A
+change to a file nothing follows is read past and dropped: no observation, no
+name and no state is kept for it (`a Drive is not watched by default, and a file
+nothing follows leaves no name or state`). A deadline follows its file; a
+trigger follows the file its watch names in `about.key`, or every file when it
+names none. Shared drives are read only while a deadline follows a file in one.
+
+Its first read takes
 Drive's current page token and lists nothing: watching starts then. Each later
 read lists the files that changed since, up to 500 a read, a page at a time; a
-read that reaches that number resumes from where it stopped. Drive lists a file
+read that reaches that number resumes from where it stopped, at the next tick
+rather than after a full interval (`a read that stops at its limit is read
+again at the next tick`). Drive lists a file
 changed several times between two reads once, as it is now. A rate limit Drive
 reports as a 403 is read as a request to wait, like a 429, and its
 `Retry-After` is honoured (`a Drive asking for time is left alone that long`).
@@ -248,10 +261,11 @@ A page token Drive no longer honours starts the feed again from that moment.
 The same change read twice is one event, and a later change to the same file is
 another (`the same change from two polls is one event`).
 
-For a file a deadline or a piece of work follows, `subject_state` keeps when it
-last changed, when the person last changed it, whether the last change was
-theirs, and whether it is shared or in the bin. It keeps no name and no editor.
-A removed or binned file's state goes.
+For a file a deadline follows, `subject_state` keeps when it last changed,
+when the person last changed it, whether the last change was theirs, and
+whether it is shared or in the bin. It keeps no name and no editor. A removed or
+binned file's state goes, and so does every file's once no deadline on it is in
+force.
 
 ## Each connection's catalog
 
@@ -511,31 +525,55 @@ The same holds for a deadline work keeps with a date alone.
 #### A deadline on a document
 
 "The contract must be signed by 3 p.m." is a deadline on a Drive file.
-`POST /situations/deadlines` keeps one for the signed-in person:
+`POST /situations/deadlines` keeps one for the signed-in person, on the Drive
+of the space the session speaks for:
 
 ```json
 {
-  "connection_id": "conn_…",
   "file": "https://docs.google.com/document/d/1AbC…/edit",
   "title": "Get the contract signed",
   "due_at": "2026-10-05T15:00:00-07:00",
-  "lead_seconds": 300
+  "lead_seconds": 300,
+  "by": "others"
 }
 ```
 
-`file` is the file id or a Docs, Sheets, Slides or Drive link to it. The file is
-at risk while it is untouched since `since` (the moment the deadline is set,
-unless given). `by` says whose change ends it: `anyone` (the default), `me` (the
-person's own), or `others`, which Drive can tell only from who made the last
-change. At `due_at` less `lead_seconds`, Melete reads the file as Drive has it
-then. Untouched, and `deadline.at_risk` is raised; set by the person and within
-fifteen minutes of its time, it is urgent and can reach them at once
-(`a document deadline whose file is untouched at T−lead raises at-risk, checked
-fresh at fire time`). A change Drive reports before then settles the deadline
-as soon as it is read, and nothing is raised (`a file edited before the deadline
-clears it`). A file removed or moved to the bin clears it. The account must be
-in a space the person uses, and the deadline is kept on the file's own subject
-key, so work handling the file hears about it: naming `job_id`, such as the work
+`file` is the file id or a Docs, Sheets, Slides or Drive link to it, and the
+file is looked up once when the deadline is set. Drive's metadata cannot say a
+file was signed, so `by` names the change that ends the deadline:
+
+- `me`: the person changed the file at or after `since`. Drive keeps this per
+  person, so a collaborator's edit never counts.
+- `others`: the file changed at or after `since`, and Drive names the last
+  change as someone else's. A change by an editor Drive does not name, such as
+  an anonymous link or an app, is unknown and leaves the deadline at risk
+  (`a change by an editor Drive does not name stays at risk`).
+
+`since` is the moment the deadline is set unless given, and is never later than
+now (`a since later than now, or after the due time, is refused`).
+
+Only the look at `due_at` less `lead_seconds` settles a deadline: Melete reads
+the file as Drive has it then. Changed as asked, the deadline is met and nothing
+is raised. A change read earlier settles nothing by itself (`a file edited before
+the deadline is settled only by the look at its time`). Otherwise
+`deadline.at_risk` is raised; set by the person and within fifteen minutes of
+its time, it is urgent and can reach them at once (`a document deadline whose
+file is untouched at T−lead raises at-risk, checked fresh at fire time`). When
+the file changed since, but not in the way asked, the alert says so and asks
+whether it is done, at `soon` rather than urgent (`an edit of another kind than
+the one asked for never settles it, and makes the alert a question`). A file
+removed or moved to the bin before the look is raised too, saying so (`a file
+removed or moved to the bin before its look is raised, not let go`). An alert
+that went out is resolved as soon as the file then changes as asked, so no later
+reminder reaches the person about something done (`an alert that went out is
+resolved when the file then changes as asked`).
+
+With no Drive connected in the space, the answer is `409 documents_not_connected`
+with the words the person is shown: Melete needs to see the Drive files' names,
+change times and sharing, never their contents, and asks Google for that once
+more (`with no Drive connected, a deadline on a file says what Google will be
+asked for, and why`). The deadline is kept on the file's own subject key, so
+work handling the file hears about it: naming `job_id`, such as the work
 "Handle it" started, links that work to the file (`a deadline links the work
 handling the file, and only on an account the person uses`). Set through an
 outside assistant over MCP, it is shown and never urgent. While a deadline is
@@ -636,12 +674,17 @@ that work sets are kept.
   by the person, and by an outside assistant, over the real route; date-only
   due dates; pressing again; rescans.
 - `apps/melete/test/integration/documents.test.ts`: a Drive read through the
-  Drive connector against a stand-in Drive: a deadline on an untouched file
-  raised after a fresh look, an edit before the deadline settling it, one event
-  per change, Retry-After, linking work, and revocation clearing what was read.
+  Drive connector against a stand-in Drive: the consent answer, deadlines
+  settled only by the look at their time, edits of another kind, unnamed
+  editors, removed files, alerts resolved after a change, nothing kept for files
+  nothing follows, capped reads, `since`, one event per change, Retry-After,
+  linking work, and revocation clearing what was read.
+- `apps/melete/test/integration/google-sign-in.test.ts`: the Drive step adds
+  Drive beside an account's mail and calendar, which keep their ids.
 - `apps/melete/src/connectors/google-drive.test.ts`: Drive's change feed, page
-  limits, rate limits, the fresh look, the status tool, observation keys, and
-  each kind of document deadline.
+  limits, shared drives only on request, rate limits, the Drive sign-in step,
+  the fresh look, the status tool, observation keys, and the `me` and `others`
+  rules.
 - `apps/melete/src/situations/detectors.test.ts` and
   `apps/melete/src/push/policy.test.ts`: the detectors' rules and the urgency
   lanes as plain functions.

@@ -10,7 +10,11 @@ import { GOOGLE_SCOPES, GOOGLE_SIGN_IN_SCOPE, type GoogleEndpoints } from '../go
 
 export type FakeGoogleOptions = {
   email?: string;
-  /** The scopes the person leaves ticked; every one asked for by default. */
+  /**
+   * The scopes the person leaves ticked of those asked for; every one asked
+   * for by default. A sign-in that sets `include_granted_scopes` also keeps
+   * what the person granted before.
+   */
   grant?: string[];
   /** Answer the authorization request with `error=access_denied`. */
   decline?: boolean;
@@ -76,10 +80,13 @@ const headerOf = (raw: Buffer, name: string): string | undefined => {
 export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<FakeGoogle> {
   const email = options.email ?? 'person@example.test';
   const client = { clientId: 'fake-client.apps.example', clientSecret: 'fake-client-secret' };
-  const granted = (options.grant ?? GOOGLE_SIGN_IN_SCOPE.split(' ')).join(' ');
-  const codes = new Map<string, { challenge: string; redirectUri: string }>();
+  const allowed = new Set(
+    options.grant ?? [...GOOGLE_SIGN_IN_SCOPE.split(' '), GOOGLE_SCOPES.documents],
+  );
+  let everGranted = new Set<string>();
+  const codes = new Map<string, { challenge: string; redirectUri: string; scope: string }>();
   const access = new Map<string, string>();
-  const refresh = new Set<string>();
+  const refresh = new Map<string, string>();
   const inbox: Stored[] = [];
   const state = {
     authorizeRequests: [] as URLSearchParams[],
@@ -109,11 +116,11 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
       email_verified: true,
     })}.`;
   };
-  const tokenAnswer = (withRefresh: boolean) => {
+  const tokenAnswer = (withRefresh: boolean, granted: string) => {
     const accessToken = token('ya29');
     access.set(accessToken, granted);
     const refreshToken = withRefresh ? token('1//refresh') : undefined;
-    if (refreshToken) refresh.add(refreshToken);
+    if (refreshToken) refresh.set(refreshToken, granted);
     return {
       access_token: accessToken,
       token_type: 'Bearer',
@@ -137,12 +144,21 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         if (options.decline) back.searchParams.set('error', 'access_denied');
         else {
           const code = `4/${randomBytes(12).toString('hex')}`;
+          // A test that names no scope is granted everything the person allows.
+          const named = url.searchParams.get('scope');
+          const asked = named === null ? [...allowed] : named.split(' ').filter(Boolean);
+          const granting = new Set(asked.filter((scope) => allowed.has(scope)));
+          if (url.searchParams.get('include_granted_scopes') === 'true')
+            for (const scope of everGranted) granting.add(scope);
+          everGranted = new Set([...everGranted, ...granting]);
+          const scope = [...granting].join(' ');
           codes.set(code, {
             challenge: url.searchParams.get('code_challenge') ?? '',
             redirectUri: url.searchParams.get('redirect_uri') ?? '',
+            scope,
           });
           back.searchParams.set('code', code);
-          back.searchParams.set('scope', granted);
+          back.searchParams.set('scope', scope);
         }
         return new Response(null, { status: 302, headers: { location: back.href } });
       }
@@ -163,7 +179,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
               .update(fields.get('code_verifier') ?? '')
               .digest('base64url') === grant.challenge;
           if (!verified) return Response.json({ error: 'invalid_grant' }, { status: 400 });
-          return Response.json(tokenAnswer(true));
+          return Response.json(tokenAnswer(true, grant.scope));
         }
         if (fields.get('grant_type') === 'refresh_token') {
           if (
@@ -172,7 +188,9 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
             !refresh.has(fields.get('refresh_token') ?? '')
           )
             return Response.json({ error: 'invalid_grant' }, { status: 400 });
-          return Response.json(tokenAnswer(false));
+          return Response.json(
+            tokenAnswer(false, refresh.get(fields.get('refresh_token') ?? '') ?? ''),
+          );
         }
         return Response.json({ error: 'unsupported_grant_type' }, { status: 400 });
       }
@@ -407,7 +425,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
       access.clear();
     },
     accessToken() {
-      return tokenAnswer(false).access_token;
+      return tokenAnswer(false, [...allowed].join(' ')).access_token;
     },
     stop: async () => {
       await server.stop(true);

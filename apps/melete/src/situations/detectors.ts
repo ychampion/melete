@@ -433,26 +433,42 @@ export function answers(awaited: Awaited, mail: ArrivedMail): boolean {
 // documents
 // --------------------------------------------------------------------------
 
-/** Whose change ends a deadline on a file: anyone's, the person's own, or someone else's. */
+/** Whose change ends a deadline on a file: the person's own, or someone else's. */
 export type DocumentToucher = (typeof DOCUMENT_TOUCHERS)[number];
 
 /**
  * When a deadline on a Drive file is still at risk, as a clock's predicate over
- * the file's metadata: nobody changed it since `since` (`anyone`); the person
- * has not changed it since (`me`); or nobody else has, which Drive can say only
- * through who made the last change (`others`). A field Drive leaves out reads
- * as no change, so a file it cannot say about stays at risk.
+ * the file's metadata. Drive cannot say a file was signed, so only the kind of
+ * change the deadline names ends it:
+ *
+ * - `me`: the person changed it at or after `since` (`modified_by_me_time`,
+ *   which Drive keeps per person, so a collaborator's edit never counts);
+ * - `others`: it changed at or after `since` and Drive says the last change was
+ *   not the person's (`last_modifier_me` explicitly false). An editor Drive
+ *   does not name (an anonymous link, an app) is unknown, and stays at risk.
+ *
+ * A field Drive leaves out reads as no such change.
  */
 export function documentAtRisk(since: string, by: DocumentToucher) {
-  const field = by === 'me' ? 'modified_by_me_time' : 'modified_time';
-  const untouched = [
-    { field, op: 'lt' as const, value: since },
-    { field, op: 'eq' as const, value: null },
-  ];
+  if (by === 'me')
+    return {
+      any: [
+        { field: 'modified_by_me_time', op: 'lt' as const, value: since },
+        { field: 'modified_by_me_time', op: 'eq' as const, value: null },
+      ],
+    };
   return {
-    any:
-      by === 'others'
-        ? [...untouched, { field: 'last_modifier_me', op: 'eq' as const, value: true }]
-        : untouched,
+    any: [
+      { field: 'modified_time', op: 'lt' as const, value: since },
+      { field: 'modified_time', op: 'eq' as const, value: null },
+      { field: 'last_modifier_me', op: 'eq' as const, value: true },
+      { field: 'last_modifier_me', op: 'eq' as const, value: null },
+    ],
   };
+}
+
+/** Whether anyone changed the file at or after `since`: a change, but maybe not the one asked for. */
+export function changedSince(fields: Record<string, unknown>, since: string): boolean {
+  const at = typeof fields.modified_time === 'string' ? Date.parse(fields.modified_time) : NaN;
+  return !Number.isNaN(at) && at >= Date.parse(since);
 }

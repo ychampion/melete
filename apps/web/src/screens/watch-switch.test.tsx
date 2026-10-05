@@ -27,16 +27,6 @@ test('the switch says what a watched mailbox and calendar are read for', () => {
   );
 });
 
-test('a watched Drive says it reads file names, changes and sharing, never contents', () => {
-  const drive = renderToStaticMarkup(
-    <WatchSwitch connection={account('Drive', true)} onChanged={() => {}} />,
-  );
-  expect(drive).toContain(
-    'Melete reads each file’s name, last change and sharing, never its contents, to notice what is still untouched.',
-  );
-  expect(drive).not.toContain('mail');
-});
-
 test('off, it says the account is still read for what the person asked to watch', () => {
   for (const app of ['Mail', 'Calendar']) {
     const off = renderToStaticMarkup(

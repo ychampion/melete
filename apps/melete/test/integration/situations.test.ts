@@ -89,7 +89,9 @@ const poller =
 
 /** Read every account that is due now, then let the next reads come due. */
 async function poll() {
-  await required(handle).sql`update source_cursor set next_poll_at = now() - interval '1 second'`;
+  // Due by the test's clock, not the database's: the two part ways as real time passes.
+  await required(handle)
+    .sql`update source_cursor set next_poll_at = ${new Date(clock - 1000).toISOString()}::timestamptz`;
   return required(poller).runOnce();
 }
 

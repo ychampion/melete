@@ -70,19 +70,25 @@ export type SituationView = z.infer<typeof situationView>;
 export const situationResponse = z.strictObject({ situation: situationView });
 export const situationList = z.strictObject({ situations: z.array(situationView) });
 
-/** Whose change ends a deadline on a file: anyone's, the person's own, or someone else's. */
-export const DOCUMENT_TOUCHERS = ['anyone', 'me', 'others'] as const;
+/**
+ * Whose change ends a deadline on a file: the person's own (`me`), or someone
+ * else's (`others`). Drive's metadata cannot say a file was signed, so the
+ * deadline names whose edit counts.
+ */
+export const DOCUMENT_TOUCHERS = ['me', 'others'] as const;
 
 /**
- * Keep a deadline on a Google Drive file: by `due_at`, the file should have
- * been changed since `since` (now, unless said). Melete looks at the file as
- * Drive has it `lead_seconds` before it is due and raises `deadline.at_risk`
- * only if it is still untouched. Naming `job_id` links the work handling it,
- * so that work hears about it too.
+ * Keep a deadline on a Google Drive file: by `due_at`, the person (`by: me`)
+ * or someone else (`by: others`) should have changed it since `since` (now,
+ * unless said; never later than now). Melete looks at the file as Drive has it
+ * `lead_seconds` before it is due and raises `deadline.at_risk` unless that
+ * look shows such a change. Naming `job_id` links the work handling it, so
+ * that work hears about it too.
  */
 export const documentDeadlineRequest = z
   .strictObject({
-    connection_id: z.string().min(1).max(200),
+    /** The Drive account; left out, the session space's own Drive. */
+    connection_id: z.string().min(1).max(200).optional(),
     /** The file id, or a docs.google.com or drive.google.com link to it. */
     file: z.string().min(1).max(2048),
     title: z.string().trim().min(1).max(120),
@@ -94,7 +100,7 @@ export const documentDeadlineRequest = z
       .max(7 * 86_400)
       .default(300),
     since: timestamp.optional(),
-    by: z.enum(DOCUMENT_TOUCHERS).default('anyone'),
+    by: z.enum(DOCUMENT_TOUCHERS),
     job_id: z.string().min(1).max(200).optional(),
   })
   .meta({ id: 'DocumentDeadlineRequest' });

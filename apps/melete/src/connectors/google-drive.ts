@@ -42,7 +42,7 @@ const RATE_LIMITED = ['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceed
 
 /** The metadata asked for: nothing that holds a file's words but its name. */
 const FILE_FIELDS =
-  'id,name,mimeType,modifiedTime,modifiedByMeTime,lastModifyingUser(displayName,me),shared,trashed,version';
+  'id,name,mimeType,modifiedTime,modifiedByMeTime,lastModifyingUser(displayName,me),shared,trashed,version,driveId';
 
 /** A Drive file id: letters, digits, `-` and `_`. */
 const FILE_ID = /^[A-Za-z0-9_-]{10,256}$/;
@@ -121,6 +121,7 @@ type DriveFile = {
   shared?: boolean;
   trashed?: boolean;
   version?: string | number;
+  driveId?: string;
 };
 
 const instant = (value: unknown): string | null => {
@@ -150,6 +151,7 @@ export function driveFile(file: DriveFile | null | undefined): DocumentFile | nu
       typeof file.version === 'string' || typeof file.version === 'number'
         ? String(file.version)
         : null,
+    drive_id: typeof file.driveId === 'string' && file.driveId ? file.driveId : null,
   };
 }
 
@@ -230,7 +232,8 @@ export class GoogleDriveConnector implements Connector {
           pageSize: String(Math.min(PAGE_SIZE, options.limit - changes.length)),
           includeRemoved: 'true',
           supportsAllDrives: 'true',
-          includeItemsFromAllDrives: 'true',
+          // Shared drives only when a followed file is in one.
+          ...(options.allDrives ? { includeItemsFromAllDrives: 'true' } : {}),
           fields: `nextPageToken,newStartPageToken,changes(changeType,removed,fileId,file(${FILE_FIELDS}))`,
         });
         const response = await this.request(`/changes?${query}`);

@@ -1,7 +1,7 @@
 /**
  * The per-account switch "Watch this account for changes".
  *
- * A mailbox, calendar or Drive a person connects in their own space is watched with
+ * A mailbox or calendar a person connects in their own space is watched with
  * nothing set up; one in a room is watched only once the room's owners turn
  * it on. Turning it off stops the reads that watching made and removes, in the
  * same step, what they left: where the account's feed was read to, what was
@@ -14,7 +14,7 @@ import { ServiceError } from '../api/errors.ts';
 import { WATCHED_PROVIDERS } from './poller.ts';
 import { pruneObservations } from './retention.ts';
 
-/** Whether a connection is a mailbox, a calendar or a Drive, the kinds that can be watched. */
+/** Whether a connection is a mailbox or a calendar, the kinds that can be watched. */
 export const watchable = (provider: string) => provider in WATCHED_PROVIDERS;
 
 export async function setWatching(
@@ -33,7 +33,7 @@ export async function setWatching(
     if (!watchable(String(row.provider)))
       throw new ServiceError(
         'not_watchable',
-        'Only a mailbox, a calendar or a Drive can be watched for changes.',
+        'Only a mailbox or a calendar can be watched for changes.',
         400,
       );
     await tx`update connection set watch_changes = ${on} where id = ${connectionId}`;

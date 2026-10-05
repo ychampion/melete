@@ -123,8 +123,14 @@ describe('signing in with Google', () => {
     expect(asked.get('access_type')).toBe('offline');
     expect(asked.get('prompt')).toBe('consent');
     expect(asked.get('scope')?.split(' ')).toEqual(
-      expect.arrayContaining(Object.values(GOOGLE_SCOPES)),
+      expect.arrayContaining([
+        GOOGLE_SCOPES.mailRead,
+        GOOGLE_SCOPES.mailSend,
+        GOOGLE_SCOPES.calendar,
+      ]),
     );
+    // Drive is asked for later, on its own step.
+    expect(asked.get('scope')).not.toContain(GOOGLE_SCOPES.documents);
     // Drafts stay in Melete, so no Gmail draft or full-mailbox scope is asked for.
     expect(asked.get('scope')).not.toContain('gmail.compose');
     expect(asked.get('scope')).not.toContain('https://mail.google.com/');

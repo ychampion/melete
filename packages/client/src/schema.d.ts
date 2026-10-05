@@ -21452,11 +21452,8 @@ export interface components {
         /** @default 300 */
         __schema4: number;
         __schema5: components["schemas"]["__schema3"];
-        /**
-         * @default anyone
-         * @enum {string}
-         */
-        __schema6: "anyone" | "me" | "others";
+        /** @enum {string} */
+        __schema6: "me" | "others";
         __schema7: string;
         __schema8: string;
         __schema9: {
@@ -21787,6 +21784,7 @@ export interface components {
         __schema131: string;
         __schema132: {
             calendar_label?: string;
+            documents?: boolean;
             mail_label?: string;
             space_id?: string;
         };
@@ -23833,6 +23831,7 @@ export interface components {
             expires_at: components["schemas"]["__schema195"];
             /** Format: uri */
             issuer: string;
+            reason?: string;
             /** Format: uri */
             redirect_uri: string;
             scopes: components["schemas"]["__schema530"][];
@@ -23897,7 +23896,7 @@ export interface components {
         __schema556: string;
         __schema557: string;
         __schema558: string;
-        __schema559: ("mail" | "calendar" | "tools" | "execution")[];
+        __schema559: ("mail" | "calendar" | "documents" | "tools" | "execution")[];
         __schema560: {
             /** Format: uri */
             issuer: string;
@@ -24640,8 +24639,8 @@ export interface components {
             tool: components["schemas"]["__schema688"];
         };
         DocumentDeadlineRequest: {
-            by?: components["schemas"]["__schema6"];
-            connection_id: components["schemas"]["__schema0"];
+            by: components["schemas"]["__schema6"];
+            connection_id?: components["schemas"]["__schema0"];
             due_at: components["schemas"]["__schema3"];
             file: components["schemas"]["__schema1"];
             job_id?: components["schemas"]["__schema7"];

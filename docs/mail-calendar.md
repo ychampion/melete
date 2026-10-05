@@ -12,36 +12,39 @@ mail and calendar by signing in with Microsoft, both described next. See
 
 ## Signing in with Google
 
-One sign-in connects a Google account's Gmail, its primary Google Calendar and
-its Google Drive. Mail and calendar each become an ordinary connection with the same tools, effect classes,
+One sign-in connects a Google account's Gmail and its primary Google Calendar.
+Each becomes an ordinary connection with the same tools, effect classes,
 approvals and receipts as a mailbox or calendar connected with a password, so
 everything that uses mail, such as publishing by email and the company map,
 uses it the same way.
 
-The Drive becomes a connection of its own, read for what changes in its files
-(see [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md#drive-files)), with one
-read tool, `documents.status`: a file's name, type, last change and sharing,
-from its id or link.
-
-The consent screen asks for four Google scopes:
+The consent screen asks for three Google scopes:
 
 | Scope | What it is for |
 | --- | --- |
 | `gmail.readonly` | `email.search` and `email.read` |
 | `gmail.send` | `email.send`, once each send is approved |
 | `calendar.events` | `calendar.list`, `calendar.freebusy`, `calendar.create`, `calendar.update`, `calendar.delete` |
-| `drive.metadata.readonly` | what changes in Drive, deadlines on files, and `documents.status`; file names, times and sharing, never contents |
 
 Drafts stay in Melete's action record, as they do for any mailbox, so no Gmail
 draft scope is asked for. Google lets a person untick a scope on its consent
 screen, and Melete connects exactly what was granted: a mailbox without
 `gmail.send` has no `email.send` grant, and a sign-in without `calendar.events`
-connects no calendar, and one without `drive.metadata.readonly` connects no
-Drive.
+connects no calendar.
 
-An account signed in before Drive was offered has no Drive connection. Signing
-in with Google again asks for the new scope; the mail and calendar connections
-keep their ids and take the new sign-in, and the Drive is added beside them.
+### Adding Google Drive
+
+Drive is asked for on a step of its own, the first time a person keeps a
+deadline on a Drive file. `POST /google-sign-ins` with `{ "documents": true }`
+asks Google only for `drive.metadata.readonly`, with `include_granted_scopes`,
+so what the account granted before is kept, and its answer carries a `reason`
+in plain words. The step connects the Drive alone, as a connection of its own
+(see [SITUATIONAL-AWARENESS.md](SITUATIONAL-AWARENESS.md#drive-files)) with one
+read tool, `documents.status`: a file's name, type, last change and sharing,
+from its id or link, never its contents. The account's mail and calendar
+connections keep their ids, and taking the step again renews the same Drive
+(`the Drive step adds Drive beside an account’s mail and calendar, which keep
+their ids`). An ordinary sign-in never asks for Drive.
 
 To start, `POST /google-sign-ins` answers with an `authorize_url` to open in
 the browser. Google returns the browser to
@@ -67,7 +70,8 @@ Signing in with Google needs an OAuth client in your own Google Cloud project:
 
 1. Create a project in the Google Cloud console and enable the **Gmail API**,
    the **Google Calendar API** and the **Google Drive API**.
-2. Configure the OAuth consent screen and add the four scopes above.
+2. Configure the OAuth consent screen and add the three scopes above, and
+   `drive.metadata.readonly` if Drive deadlines are wanted.
 3. Create an OAuth client of type **Web application**, with the authorized
    redirect URI `<MELETE_PUBLIC_URL>/api/oauth/google/callback`.
    `GET /google-sign-ins` shows the exact address. `MELETE_PUBLIC_URL` must be

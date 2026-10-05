@@ -114,11 +114,9 @@ export function ConnectionCard({
   );
 }
 
-/** What the watch switch says it does, for a mailbox, a calendar or a Drive, on or off. */
+/** What the watch switch says it does, for a mailbox or a calendar, on or off. */
 export function watchWords(app: string, on: boolean): string {
   if (!on) return 'Off. Melete still reads this account for things you asked it to watch.';
-  if (/drive/i.test(app))
-    return 'Melete reads each file’s name, last change and sharing, never its contents, to notice what is still untouched.';
   return /calendar/i.test(app)
     ? 'Melete reads each event’s title, time and place to notice changes and clashes.'
     : 'Melete reads new mail’s sender and subject to notice what needs you.';

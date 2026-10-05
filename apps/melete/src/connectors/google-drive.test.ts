@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { evaluateWatch, watchPredicate } from '@melete/contracts';
+import { ACCOUNT_CATALOG, evaluateWatch, watchPredicate } from '@melete/contracts';
 import { documentFields, documentObservation } from '../signals/observations.ts';
 import { type DocumentRead, SourceError } from '../signals/types.ts';
 import { documentAtRisk } from '../situations/detectors.ts';
+import { type AccountGrant, AccountSignIns } from './account-sign-in.ts';
 import { type FakeGoogle, startFakeGoogle } from './fixtures/fake-google.ts';
 import { GOOGLE_SCOPES, googleProvider } from './google.ts';
 import { driveFileId, GoogleDriveConnector } from './google-drive.ts';
@@ -66,6 +67,27 @@ describe('reading a Drive for what changed', () => {
     // Only metadata is asked for.
     const fields = google.driveRequests.map((url) => url.searchParams.get('fields') ?? '').join();
     expect(fields).not.toMatch(/webContentLink|exportLinks|content|description/);
+  });
+
+  test('shared drives are read only when asked for', async () => {
+    const { google, connector, read } = await drive();
+    const start = await read(null);
+    const lastChanges = () =>
+      google.driveRequests.filter((url) => url.pathname.endsWith('/changes')).at(-1);
+    await read(start.cursor);
+    expect(lastChanges()?.searchParams.has('includeItemsFromAllDrives')).toBe(false);
+    await (
+      connector.signals as {
+        changes(c: string | null, o: { limit: number; allDrives?: boolean }): Promise<DocumentRead>;
+      }
+    ).changes(start.cursor, { limit: 10, allDrives: true });
+    expect(lastChanges()?.searchParams.get('includeItemsFromAllDrives')).toBe('true');
+  });
+
+  test('the Google catalog entry says it covers documents', () => {
+    const google = ACCOUNT_CATALOG.find((entry) => entry.id === 'google');
+    expect(google?.covers).toContain('documents');
+    expect(google?.scopes.map((scope) => scope.scope)).not.toContain(GOOGLE_SCOPES.documents);
   });
 
   test('a read stopped by its limit resumes where it stopped', async () => {
@@ -157,6 +179,39 @@ describe("a deadline's fresh look and the status tool", () => {
     });
   });
 
+  test('Drive is asked for on its own step, beside what the account already granted', async () => {
+    const google = await startFakeGoogle();
+    fakes.push(google);
+    const grants: AccountGrant[] = [];
+    const service = new AccountSignIns<string>('google', {
+      publicUrl: 'http://localhost:3000',
+      provider: googleProvider(google.client, google.endpoints),
+      authorize: async () => 'spc_test',
+      install: async (_actor, grant) => {
+        grants.push(grant);
+        return ['conn'];
+      },
+      connectionId: (id) => id,
+    });
+    const approve = async (url: string) =>
+      new URL((await fetch(url, { redirect: 'manual' })).headers.get('location') ?? '')
+        .searchParams;
+    // An ordinary sign-in never asks for Drive, and connects none.
+    const first = await service.start('prn_owner', {});
+    expect(new URL(first.authorize_url).searchParams.get('scope')).not.toContain('drive');
+    await service.complete('prn_owner', await approve(first.authorize_url));
+    expect(grants[0]?.documents).toBeUndefined();
+    expect(grants[0]?.mail).toBeDefined();
+    // The Drive step asks for Drive alone, keeps what was granted, and connects only Drive.
+    const step = await service.start('prn_owner', { documents: true });
+    const asked = new URL(step.authorize_url).searchParams;
+    expect(asked.get('scope')?.split(' ')).toEqual(['openid', 'email', GOOGLE_SCOPES.documents]);
+    expect(asked.get('include_granted_scopes')).toBe('true');
+    await service.complete('prn_owner', await approve(step.authorize_url));
+    expect(grants[1]?.documents?.scopes).toEqual(['documents.status']);
+    expect([grants[1]?.mail, grants[1]?.calendar]).toEqual([undefined, undefined]);
+  });
+
   test('a Google sign-in that grants Drive connects it with its one read tool', () => {
     const provider = googleProvider({ clientId: 'c', clientSecret: 's' });
     expect(provider.grants(`openid ${GOOGLE_SCOPES.documents}`).documents).toEqual([
@@ -179,6 +234,7 @@ describe('a file change as an observation and as deadline state', () => {
     shared: true,
     trashed: false,
     version: '4',
+    drive_id: null,
   };
 
   test('the same change read twice has one key; a later change has another', () => {
@@ -201,20 +257,26 @@ describe('a file change as an observation and as deadline state', () => {
     expect(JSON.stringify(documentFields(file))).not.toMatch(/Contract|Sam/);
   });
 
-  test('a file deadline is at risk while nobody, the person, or someone else has touched it since', () => {
+  test('a file deadline ends only on the change it names: the person’s own, or a named other’s', () => {
     const since = '2026-10-05T13:00:00.000Z';
-    const atRisk = (by: 'anyone' | 'me' | 'others', fields: Record<string, unknown>) =>
+    const atRisk = (by: 'me' | 'others', fields: Record<string, unknown>) =>
       evaluateWatch(watchPredicate.parse(documentAtRisk(since, by)), fields, null, {
         now: Date.parse('2026-10-05T14:55:00.000Z'),
       });
+    const later = '2026-10-05T14:00:00.000Z';
     const before = { modified_time: '2026-10-05T12:00:00.000Z', last_modifier_me: false };
-    const after = { modified_time: '2026-10-05T14:00:00.000Z', last_modifier_me: false };
-    expect(atRisk('anyone', before)).toBe(true);
-    expect(atRisk('anyone', after)).toBe(false);
-    expect(atRisk('anyone', {})).toBe(true);
-    expect(atRisk('others', { ...after, last_modifier_me: true })).toBe(true);
-    expect(atRisk('others', after)).toBe(false);
-    expect(atRisk('me', { ...after, modified_by_me_time: null })).toBe(true);
-    expect(atRisk('me', { ...after, modified_by_me_time: '2026-10-05T14:00:00.000Z' })).toBe(false);
+    // A collaborator's edit after `since`.
+    const theirs = { modified_time: later, last_modifier_me: false, modified_by_me_time: null };
+    // The person's own edit after `since`.
+    const mine = { modified_time: later, last_modifier_me: true, modified_by_me_time: later };
+    expect(atRisk('me', theirs)).toBe(true);
+    expect(atRisk('me', mine)).toBe(false);
+    expect(atRisk('me', {})).toBe(true);
+    expect(atRisk('others', before)).toBe(true);
+    expect(atRisk('others', mine)).toBe(true);
+    expect(atRisk('others', theirs)).toBe(false);
+    // Drive did not name who changed it (an anonymous editor, an app): unknown stays at risk.
+    expect(atRisk('others', { modified_time: later })).toBe(true);
+    expect(atRisk('others', { modified_time: later, last_modifier_me: null })).toBe(true);
   });
 });
