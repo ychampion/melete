@@ -34,23 +34,74 @@ Each account and stream (its mail, its calendar, its Drive) has one cursor in
 last reads went. A first read starts the cursor at the account's present
 state; what was already there is where watching begins, not news.
 
-An account is read while some live trigger listens for one of its kinds, as
-often as the most frequent of those triggers asks (`poll_seconds`, 300 by
-default, never more often than once a minute). Melete's own detectors listen
-too (see [What the detectors read](#what-the-detectors-read)): a calendar a
-person connected for themselves while they have a device to reach or a deadline
-on it, a mailbox while a message the person sent is waiting on an answer, and a
-Drive while a deadline is kept on one of its files. Which accounts those are is decided from the database
-alone. When nobody listens to an account any more, its cursor and kept fields
-go.
+### Which accounts are watched
+
+Every mailbox, calendar and Drive a person connects in their own space is watched,
+with nothing to set up: its new mail, the changes to its meetings and the changes to its files arrive as
+observations whether or not any work is waiting for them yet (`a newly connected
+mailbox produces mail.received with no trigger`). Each one has a switch in
+Settings, under Connections: **Watch this account for changes**. On, a mailbox
+says "Melete reads new mail's sender and subject to notice what needs you", and
+a calendar "Melete reads each event's title, time and place to notice changes
+and clashes", and a Drive "Melete reads each file's name, last change and
+sharing, never its contents, to notice what is still untouched". Off, it says "Off. Melete still reads this account for things you
+asked it to watch": work that set its own trigger on the account still hears
+it.
+
+Turning it off stops those reads at once and removes, in the same step, what
+they left: where the account was read to, what was kept about its calendar,
+and every observation from it that nothing used (`switching it off stops reads
+and clears its cursor`, `turning watching off removes what it read, and keeps
+what work took in`). What a job woke on, or a situation cites, stays. A read
+already under way when it is turned off keeps nothing it found (`a read in
+flight when watching is turned off keeps nothing it found`). Turning it on again
+starts watching afresh from then.
+
+An observation that no job, situation or listening trigger holds is removed
+after `MELETE_OBSERVATION_RETENTION_DAYS` days (14 by default), by one instance
+at a time under the `observation-retention` lease (`observations nothing used go
+after the retention period, on the leading instance only`). Mail an open wait on
+an answer may still be checked against stays while the wait is open (`mail an
+open wait on an answer may still need is kept while the wait is open`).
+
+When an observation goes, its delivery key stays, with no word of what it said,
+for `MELETE_OBSERVATION_TOMBSTONE_DAYS` days (180 by default), so a mailbox that
+hands the same message back later is recognised (`a message read again after
+its observation expired is not delivered twice`). Every read that starts again
+after a provider lost its place (an Outlook delta link Graph no longer honours,
+a Gmail history id it no longer keeps, an IMAP mailbox renumbered) goes back two
+days at most (`a Graph delta it no longer honours is read again from two days
+back, not from when watching began`).
+
+A room's own accounts, such as a team mailbox, are watched only once the room's
+owners turn the switch on (`a room account is not observed by default`). What
+they report still reaches only the work the sharing rule gives them to.
+
+A watched account is read every 5 minutes in its owner's day and every 30 at
+night, by the day hours in their profile (`a watched account is read less often
+in its owner's night`). A trigger that asks for more often
+gets it (`poll_seconds`, never more often than once a minute). Melete's own
+detectors listen too (see [What the detectors read](#what-the-detectors-read)):
+a calendar a person connected for themselves while they have a device to reach
+or a deadline on it, a mailbox while a message the person sent is waiting
+on an answer, and a Drive while a deadline is kept on one of its files. An account nobody watches, and that no trigger or detector
+listens to, is not read at all. Which accounts those are is decided from the
+database alone. When an account stops being watched, its cursor and kept
+fields go.
 
 One service instance reads at a time, under the `signal-poller` lease, and opens
 the connector of an account installed through another instance when that
 account is first due. It reads a few accounts at once, claimed with `SKIP LOCKED`,
 and each read has two minutes. An account that fails to answer is tried again
 later: after the time it asked for when it sends `Retry-After`, otherwise less
-often the longer it keeps failing. Its cursor stays where it was, so nothing it
-holds is skipped, and `source_cursor.last_error` says in plain words why the
+often the longer it keeps failing. A request to slow down is about one account
+and pauses that account alone (`a request to slow down from one account pauses
+that account alone`). A timeout or a server error at three different accounts
+of one provider in a row says the provider itself is in trouble: every account
+read from it pauses, for five minutes and then longer if it keeps happening,
+while accounts at other providers go on being read (`a provider in trouble
+pauses its own accounts, and the others keep being read`). Its cursor stays where it was, so nothing it holds is skipped, and
+`source_cursor.last_error` says in plain words why the
 last read failed (`a provider asking for time is left alone that long; a stuck
 or oversized read is skipped with a reason`, `a second instance without the
 connector neither forgets the account nor misses its changes`). An account's
@@ -63,7 +114,8 @@ hygiene the mail tools apply holds here too, and a stricter rule on the subject
 line is added: a subject that names a code, a PIN, a passcode, a verification,
 a sign-in or two-factor step, or that puts a 4 to 8 digit number beside such a
 word, makes no observation (`a sign-in code message is never an observation`,
-`every code-shaped subject is withheld, and ordinary mail is not`). The rule
+`every code-shaped subject is withheld, and ordinary mail is not`, `a code mail
+is still dropped`). The rule
 leans to withholding: a code mail missed costs little.
 
 A read that changes hands mid-way is dropped. It remembers the connection's
@@ -564,8 +616,10 @@ that work sets are kept.
 
 - `apps/melete/test/integration/signals.test.ts`: reading, de-duplication, the
   catalog, the sharing rule, standing work woken by a calendar change, and
-  nothing read for an account nobody listens to (`nobody listening means nothing
-  is read and nothing is kept`).
+  nothing read for an account nobody listens to with watching off (`with
+  watching off, nobody listening means nothing is read and nothing is kept`).
+- `apps/melete/test/integration/default-observation.test.ts`: accounts watched
+  by default, the switch, rooms, and code mail withheld on that path too.
 - `apps/melete/src/signals/occurrences.test.ts`: recurrence expansion with
   EXDATE, RDATE, moved and cancelled instances, and time zones.
 - `apps/melete/src/signals/observations.test.ts`: how a read becomes created,

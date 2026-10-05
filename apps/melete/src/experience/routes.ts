@@ -1,5 +1,6 @@
 import {
   COMPUTER_PROCESS_LIMIT,
+  connectionWatching,
   type ExperienceDraft,
   experienceOperations,
   experienceResult,
@@ -34,6 +35,7 @@ import { ownsSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { HandoffService } from '../rooms/handoffs.ts';
 import type { RunService } from '../runs/service.ts';
+import { setWatching } from '../signals/watching.ts';
 import { listActivity } from './activity.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, type ComputerProcessRow, projectComputer } from './computer.ts';
@@ -90,6 +92,7 @@ const SPACE_OWNER_SURFACES = new Set([
   'PATCH /tasks/{id}',
   'DELETE /tasks/{id}',
   'GET /experience/connections',
+  'PUT /experience/connections/{id}/watching',
   'GET /rules',
   'DELETE /rules/{id}',
   'GET /web/settings',
@@ -262,6 +265,16 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
     },
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
+    'PUT /experience/connections/{id}/watching': async (spaceId, c, input) => {
+      if (!deps.sql) return unavailable('Watching accounts is not connected yet.');
+      await setWatching(
+        deps.sql,
+        spaceId,
+        c.req.param('id') ?? '',
+        connectionWatching.parse(input).on,
+      );
+      return home.connections(spaceId);
+    },
     'GET /activity': (spaceId, c) =>
       deps.sql
         ? listActivity(deps.sql, spaceId, c.get('owner').id)

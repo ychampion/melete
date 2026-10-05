@@ -54,6 +54,7 @@ import {
   jobConnectionAudience,
 } from '../jobs/scopes.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { isQuiet } from '../push/policy.ts';
 import {
   type CalendarCursor,
   diffCalendar,
@@ -68,6 +69,7 @@ import {
   vanished,
 } from './observations.ts';
 import { CalendarTooLarge } from './occurrences.ts';
+import { delivered as wasDelivered } from './retention.ts';
 import type { DocumentChange, Lookup, SignalSource } from './types.ts';
 
 export type Stream = SignalSource['stream'];
@@ -95,23 +97,38 @@ export const READ_TIMEOUT_MS = 120_000;
 export const READ_CONCURRENCY = 4;
 /** Most occurrences a read looks up again because it no longer lists them. */
 export const MAX_CONFIRMS = 20;
+/**
+ * How often an account watched by default, with no trigger asking for more,
+ * is read: every five minutes in its owner's day, every thirty at night (the
+ * day hours of their profile), as the detectors read calendars. A trigger or a
+ * detector that asks for a shorter interval gets it.
+ */
+export const DEFAULT_WATCH_SECONDS = 300;
+export const DEFAULT_WATCH_NIGHT_SECONDS = 1800;
+
+/**
+ * The stream a watched account is read on, by provider: a mailbox's mail, a
+ * calendar's occurrences, a Drive's changes.
+ */
+export const WATCHED_PROVIDERS: Record<string, Stream> = {
+  imap: 'mail',
+  caldav: 'calendar',
+  drive: 'documents',
+};
+
+/**
+ * Whether an account is watched when no trigger asks: as the space's owners
+ * set it, and otherwise on in a person's own space and off in a room's.
+ */
+export function watchedByDefault(spaceKind: string, watchChanges: boolean | null): boolean {
+  return watchChanges ?? spaceKind === 'personal';
+}
 
 /** Which stream a trigger's event name is read from. */
 export function streamOf(eventName: string): Stream | null {
   if (eventName === MAIL_RECEIVED) return 'mail';
   if ((CALENDAR_EVENT_NAMES as readonly string[]).includes(eventName)) return 'calendar';
   if (eventName === DOCUMENT_CHANGED) return 'documents';
-  return null;
-}
-
-/**
- * The stream an account of this provider is read as, for reading it without
- * a trigger (watching by default): its mail, its calendar, or its Drive.
- */
-export function providerStream(provider: string): Stream | null {
-  if (provider === 'imap') return 'mail';
-  if (provider === 'caldav') return 'calendar';
-  if (provider === 'drive') return 'documents';
   return null;
 }
 
@@ -150,7 +167,40 @@ type CursorRow = {
   cursor: unknown;
   interval_s: number;
   failures: number;
+  /** Which provider, and which of its servers, the account is read from. */
+  provider_key: string;
 };
+
+/** Failures in a row at one provider before its reads pause. */
+export const BREAKER_THRESHOLD = 3;
+/** The first pause, doubled each time it opens again without a read working in between. */
+export const BREAKER_PAUSE_SECONDS = 300;
+
+/**
+ * Whether a failure says the provider itself is in trouble (it timed out, asked
+ * to be left alone, or answered with a server error), not this one account.
+ */
+function providerTrouble(error: unknown): boolean {
+  if (error instanceof ReadTimeout) return true;
+  const status = (error as { status?: unknown } | null)?.status;
+  // A request to slow down (429, or a Retry-After) is about one account and
+  // pauses that account alone.
+  return typeof status === 'number' && status >= 500;
+}
+
+/** The provider an account is read from: its kind of connection, and the server where it names one. */
+function providerKey(provider: string, configuration: Record<string, unknown> | null): string {
+  const kind = typeof configuration?.kind === 'string' ? configuration.kind : '';
+  const server = (() => {
+    const mail = (configuration?.mail as { imap?: { host?: unknown } } | undefined)?.imap?.host;
+    if (typeof mail === 'string') return mail.toLowerCase();
+    const calendar = (configuration?.caldav as { calendar_url?: unknown } | undefined)
+      ?.calendar_url;
+    if (typeof calendar === 'string' && URL.canParse(calendar)) return new URL(calendar).host;
+    return '';
+  })();
+  return `${provider}:${kind}:${server}`;
+}
 
 /** What one read is allowed to do while it runs. */
 type ReadContext = { generation: number; abandoned: boolean };
@@ -194,6 +244,49 @@ const shortCursor = (cursor: string) =>
 
 export class SignalPoller {
   private started = false;
+  /**
+   * Per provider: failures in a row, and until when its reads are paused.
+   * An outage or a rate limit at one provider pauses that provider's accounts
+   * rather than holding the shared read slots on timeouts; the others go on.
+   */
+  private readonly breakers = new Map<
+    string,
+    { failing: Set<string>; openUntil: number; pause: number }
+  >();
+
+  /** Until when a provider's reads are paused, or null when they are not. */
+  pausedUntil(providerKey: string): number | null {
+    const breaker = this.breakers.get(providerKey);
+    return breaker && breaker.openUntil > this.now() ? breaker.openUntil : null;
+  }
+
+  /**
+   * A timeout or a server error, at as many different accounts in a row as
+   * the threshold, says the provider itself is in trouble: its reads pause.
+   */
+  private providerFailed(providerKey: string, connectionId: string, error: unknown) {
+    if (!providerTrouble(error)) return;
+    const breaker = this.breakers.get(providerKey) ?? {
+      failing: new Set<string>(),
+      openUntil: 0,
+      pause: 0,
+    };
+    breaker.failing.add(connectionId);
+    if (breaker.failing.size >= BREAKER_THRESHOLD) {
+      breaker.pause = Math.min(
+        MAX_POLL_SECONDS,
+        breaker.pause ? breaker.pause * 2 : BREAKER_PAUSE_SECONDS,
+      );
+      breaker.openUntil = this.now() + breaker.pause * 1000;
+      breaker.failing.clear();
+      process.stderr.write(`signals: provider_paused ${breaker.pause}s\n`);
+    }
+    this.breakers.set(providerKey, breaker);
+  }
+
+  private providerWorked(providerKey: string) {
+    this.breakers.delete(providerKey);
+  }
 
   constructor(readonly deps: SignalPollerDeps) {}
 
@@ -232,6 +325,38 @@ export class SignalPoller {
       if (!audience || !connectionServesJob(audience, String(row.shared_use))) continue;
       const key = `${String(row.connection_id)} ${stream}`;
       const seconds = clampInterval(spec.data.poll_seconds);
+      const before = wanted.get(key);
+      wanted.set(key, {
+        spaceId: String(row.space_id),
+        stream,
+        seconds: Math.min(before?.seconds ?? seconds, seconds),
+      });
+    }
+    // Every connected mailbox and calendar a person keeps in their own space
+    // is watched, with nothing set up; a room's, only when its owners say so.
+    // What it reports still reaches only the work the connection serves.
+    const watched = await this.deps.sql`
+      select c.id, c.space_id, c.provider, c.watch_changes, s.kind,
+        pr.day_start, pr.day_end, pr.time_zone
+      from connection c join space s on s.id = c.space_id
+        left join lateral (select p.day_start, p.day_end, p.time_zone from experience_profile p
+          join space ps on ps.id = p.space_id
+          where ps.owner_principal_id = coalesce(s.owner_principal_id, (select id from owner limit 1))
+            and ps.kind = 'personal' limit 1) pr on true
+      where c.status = 'active' and s.removed_at is null
+        and c.provider in ${this.deps.sql(Object.keys(WATCHED_PROVIDERS))}`;
+    for (const row of watched) {
+      const watchChanges = row.watch_changes === null ? null : Boolean(row.watch_changes);
+      if (!watchedByDefault(String(row.kind), watchChanges)) continue;
+      const stream = WATCHED_PROVIDERS[String(row.provider)];
+      if (!stream) continue;
+      const night = isQuiet(new Date(this.now()), {
+        start: row.day_start ? String(row.day_start) : '08:00',
+        end: row.day_end ? String(row.day_end) : '22:00',
+        timeZone: row.time_zone ? String(row.time_zone) : 'UTC',
+      });
+      const seconds = night ? DEFAULT_WATCH_NIGHT_SECONDS : DEFAULT_WATCH_SECONDS;
+      const key = `${String(row.id)} ${stream}`;
       const before = wanted.get(key);
       wanted.set(key, {
         spaceId: String(row.space_id),
@@ -301,8 +426,16 @@ export class SignalPoller {
         for update skip locked
       ) due
       where s.connection_id = due.connection_id and s.stream = due.stream
-      returning s.connection_id, s.stream, s.space_id, s.cursor, s.interval_s, s.failures`;
-    return rows as unknown as CursorRow[];
+      returning s.connection_id, s.stream, s.space_id, s.cursor, s.interval_s, s.failures,
+        (select provider from connection c where c.id = s.connection_id) as provider,
+        (select configuration from connection c where c.id = s.connection_id) as configuration`;
+    return rows.map((row) => ({
+      ...(row as unknown as CursorRow),
+      provider_key: providerKey(
+        String(row.provider ?? ''),
+        (row.configuration as Record<string, unknown> | null) ?? null,
+      ),
+    }));
   }
 
   /** The scheduled work: one tick, when this instance leads. */
@@ -345,6 +478,15 @@ export class SignalPoller {
   }
 
   private async readAccount(row: CursorRow): Promise<{ delivered: number; failed: boolean }> {
+    // Its provider is in trouble: left until the pause ends, with no failure counted.
+    const paused = this.pausedUntil(row.provider_key);
+    if (paused !== null) {
+      await this.deps.sql`update source_cursor
+        set next_poll_at = ${new Date(paused).toISOString()}::timestamptz,
+          last_error = ${'The provider of this account is not answering for now; it is read again when it recovers.'}
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
+      return { delivered: 0, failed: false };
+    }
     let source: SignalSource | undefined;
     try {
       source = (
@@ -384,6 +526,7 @@ export class SignalPoller {
           last_ok_at = ${new Date(this.now()).toISOString()}::timestamptz,
           next_poll_at = ${new Date(this.now() + row.interval_s * 1000).toISOString()}::timestamptz
         where connection_id = ${row.connection_id} and stream = ${row.stream}`;
+      this.providerWorked(row.provider_key);
       return { delivered: read.delivered, failed: false };
     } catch (error) {
       context.abandoned = true;
@@ -409,6 +552,7 @@ export class SignalPoller {
           : asked !== null
             ? Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(asked, row.interval_s))
             : backoff;
+      this.providerFailed(row.provider_key, row.connection_id, error);
       await this.deps.sql`update source_cursor
         set failures = failures + 1, last_error = ${failureWords(error)},
           next_poll_at = ${new Date(this.now() + wait * 1000).toISOString()}::timestamptz
@@ -423,11 +567,17 @@ export class SignalPoller {
   }
 
   /** Stops a read whose connection changed, or that timed out, before it writes anything. */
-  private async stillCurrent(connectionId: string, context: ReadContext) {
+  private async stillCurrent(row: CursorRow, context: ReadContext) {
     if (context.abandoned) throw new ReadAbandoned('read abandoned');
-    const [current] = await this.deps.sql`select generation, status from connection
-      where id = ${connectionId}`;
-    if (current?.status !== 'active' || Number(current.generation) !== context.generation) {
+    const [current] = await this.deps.sql`select c.generation, c.status,
+        exists (select 1 from source_cursor s
+          where s.connection_id = c.id and s.stream = ${row.stream}) as wanted
+      from connection c where c.id = ${row.connection_id}`;
+    if (
+      current?.status !== 'active' ||
+      Number(current.generation) !== context.generation ||
+      !current.wanted
+    ) {
       context.abandoned = true;
       throw new ReadAbandoned('connection changed');
     }
@@ -511,12 +661,17 @@ export class SignalPoller {
   ) {
     if (!followed.size) return;
     await this.deps.sql.begin(async (tx) => {
+      // As for a calendar: a revocation, a switch of credential or watching
+      // turned off since this read began means nothing it found is kept.
       const [current] = await tx`select generation, status from connection
         where id = ${row.connection_id} for share`;
+      const [wanted] = await tx`select 1 as present from source_cursor
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
       if (
         context.abandoned ||
         current?.status !== 'active' ||
-        Number(current.generation) !== context.generation
+        Number(current.generation) !== context.generation ||
+        !wanted
       )
         throw new ReadAbandoned('connection changed');
       const at = new Date(this.now()).toISOString();
@@ -564,7 +719,7 @@ export class SignalPoller {
       }
       // Which files are followed is read before delivery, which may settle their deadlines.
       const followed = await this.followedDocuments(row, read.changes);
-      await this.stillCurrent(row.connection_id, context);
+      await this.stillCurrent(row, context);
       const delivered = await this.deliverAll(
         row.connection_id,
         read.cursor,
@@ -580,11 +735,8 @@ export class SignalPoller {
       const read = await source.changes(typeof saved === 'string' ? saved : null, {
         limit: MAIL_READ_LIMIT,
         now: this.now(),
-        seen: async (key) => {
-          const [found] = await this.deps.sql`select 1 from event
-            where dedup_key = ${`connector:${row.connection_id}:${mailDedupKey(key)}`}`;
-          return Boolean(found);
-        },
+        seen: (key) =>
+          wasDelivered(this.deps.sql, `connector:${row.connection_id}:${mailDedupKey(key)}`),
       });
       const readAt = new Date(this.now()).toISOString();
       const observations: Observation[] = [];
@@ -595,7 +747,7 @@ export class SignalPoller {
           process.stderr.write(`signals: item_skipped unreadable ${row.connection_id} mail\n`);
         }
       }
-      await this.stillCurrent(row.connection_id, context);
+      await this.stillCurrent(row, context);
       return {
         cursor: { value: read.cursor },
         delivered: await this.deliverAll(row.connection_id, read.cursor, observations, context),
@@ -639,7 +791,7 @@ export class SignalPoller {
       }
     }
     const diff = diffCalendar({ ...input, confirmed });
-    await this.stillCurrent(row.connection_id, context);
+    await this.stillCurrent(row, context);
     const delivered = await this.deliverAll(
       row.connection_id,
       diff.window_end,
@@ -650,12 +802,18 @@ export class SignalPoller {
     // stop in between reads the same differences next time, with the same
     // keys, so nothing is delivered twice and nothing is lost.
     await this.deps.sql.begin(async (tx) => {
+      // Shared with other reads, exclusive of a revocation, a switch of
+      // credential, or watching being turned off: if one of those committed
+      // since this read began, nothing it found is kept.
       const [current] = await tx`select generation, status from connection
         where id = ${row.connection_id} for share`;
+      const [wanted] = await tx`select 1 as present from source_cursor
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
       if (
         context.abandoned ||
         current?.status !== 'active' ||
-        Number(current.generation) !== context.generation
+        Number(current.generation) !== context.generation ||
+        !wanted
       )
         throw new ReadAbandoned('connection changed');
       const at = new Date(now).toISOString();

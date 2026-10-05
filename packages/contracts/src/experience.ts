@@ -1129,10 +1129,17 @@ export const experienceConnection = z.strictObject({
   access: z.enum(['read_only', 'draft_only', 'asks_before_acting']),
   /** True for a connection the service keeps in every space; a client offers no removal for it. */
   builtin: z.boolean().optional(),
+  /**
+   * Present for a mailbox or a calendar: whether Melete watches it for
+   * changes (new mail, meetings that move) without being asked.
+   */
+  watching: z.boolean().optional(),
 });
 export const experienceConnectionList = z.strictObject({
   connections: z.array(experienceConnection),
 });
+/** Turns watching an account for changes on or off. */
+export const connectionWatching = z.strictObject({ on: z.boolean() });
 export const browserSession = z.strictObject({
   id,
   status: z.enum(['working', 'needs_you', 'done', 'stopped']),
@@ -1389,6 +1396,10 @@ export const experienceOperations = {
   'POST /runs/{id}/stop': { response: runResponse },
   'PUT /runs/{id}/limit': { request: runLimitRequest, response: runResponse },
   'GET /experience/connections': { response: experienceConnectionList },
+  'PUT /experience/connections/{id}/watching': {
+    request: connectionWatching,
+    response: experienceConnectionList,
+  },
   /**
    * What was done in the person's name by chats and plans they have since
    * deleted, newest first.

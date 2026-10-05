@@ -23,6 +23,7 @@ import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { documentSubjectKey } from '../../src/signals/observations.ts';
 import { SignalPoller } from '../../src/signals/poller.ts';
+import { setWatching } from '../../src/signals/watching.ts';
 import { SituationService } from '../../src/situations/service.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -320,6 +321,30 @@ withDb('a Drive as a document source', () => {
       from source_cursor where connection_id = ${drive}`;
     expect(new Date(cursor?.next_poll_at).getTime()).toBe(clock + 900_000);
     expect(cursor?.last_error).toContain('slow down');
+    expect(await events(drive)).toHaveLength(0);
+  }, 60_000);
+
+  test('a Drive in the person’s own space is watched by default, and its switch turns that off', async () => {
+    const drive = await connectDrive();
+    const fake = required(google);
+    const file = fileId('watchedfile');
+    await poll();
+    fake.putFile({ id: file, name: 'Quarterly plan', modifiedTime: at(clock) });
+    await poll();
+    expect(await events(drive)).toHaveLength(1);
+    const { sql } = required(handle);
+    await setWatching(sql, spaceId, drive, false);
+    const [left] = await sql`select
+        (select count(*)::int from source_cursor where connection_id = ${drive}) as cursors,
+        (select count(*)::int from event where job_id is null
+          and payload->>'connection_id' = ${drive}) as observations`;
+    expect([left?.cursors, left?.observations]).toEqual([0, 0]);
+    fake.putFile({ id: file, modifiedTime: at(clock + MINUTE) });
+    await poll();
+    // Nothing asks for it any more: it is not read, and nothing new arrives.
+    const [after] = await sql`select count(*)::int as n from source_cursor
+      where connection_id = ${drive}`;
+    expect(after?.n).toBe(0);
     expect(await events(drive)).toHaveLength(0);
   }, 60_000);
 

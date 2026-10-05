@@ -165,6 +165,8 @@ export class ExperienceMock {
   readonly rules = new Map<string, C.StandingRule>();
   /** Conversations read public web pages unless this is turned off. */
   webReads = true;
+  /** Mailboxes and calendars the person turned watching off for; the rest are watched. */
+  readonly unwatched = new Set<string>();
   /** Settings → Approvals, as the person last saved them. */
   approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
@@ -1653,6 +1655,9 @@ export class ExperienceMock {
           access: row.scopes.some((scope) => /send|create|write/.test(scope))
             ? 'asks_before_acting'
             : 'read_only',
+          ...(row.provider === 'imap' || row.provider === 'caldav'
+            ? { watching: !this.unwatched.has(row.id) }
+            : {}),
         }),
       );
   }
@@ -2201,6 +2206,18 @@ export class ExperienceMock {
         return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };
+      case 'PUT /experience/connections/{id}/watching': {
+        const row = this.connections().find((entry) => entry.id === id);
+        if (!row) throw new MockExperienceError(404, 'Connection not found.');
+        if (row.watching === undefined)
+          throw new MockExperienceError(
+            400,
+            'Only a mailbox or a calendar can be watched for changes.',
+          );
+        if (C.connectionWatching.parse(input).on) this.unwatched.delete(id);
+        else this.unwatched.add(id);
+        return { connections: this.connections() };
+      }
       case 'GET /web/settings':
         return { enabled: this.webReads, available: true };
       case 'PUT /web/settings':

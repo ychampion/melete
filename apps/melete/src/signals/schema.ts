@@ -59,6 +59,27 @@ export const sourceCursor = pgTable(
   ],
 );
 
+/**
+ * What was delivered once, kept after the observation itself is gone: the
+ * delivery key alone (a hash of a provider's id and state, never a word of
+ * what it said) and when it was seen. A mailbox that hands an old message back
+ * after its observation expired is recognised, and nothing is delivered twice.
+ */
+export const observationTombstone = pgTable(
+  'observation_tombstone',
+  {
+    dedupKey: text('dedup_key').primaryKey(),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    seenAt: timestamp('seen_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index('observation_tombstone_seen_idx').on(table.seenAt),
+    index('observation_tombstone_connection_idx').on(table.connectionId),
+  ],
+);
+
 export const subjectState = pgTable(
   'subject_state',
   {

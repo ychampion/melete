@@ -1111,6 +1111,9 @@ withDb('situations', () => {
     const vic = await person('vic', { start: '08:00', end: '10:00' });
     const calendarId = await account(vic, 'caldav', 'Work');
     calendarSource(calendarId);
+    // Watching by default is turned off here, so only the detectors ask for reads.
+    await required(handle)
+      .sql`update connection set watch_changes = false where id = ${calendarId}`;
     const cursorOf = async () => {
       const [row] = await required(handle).sql`select interval_s from source_cursor
         where connection_id = ${calendarId} and stream = 'calendar'`;

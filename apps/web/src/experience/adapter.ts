@@ -618,6 +618,11 @@ export const adapter = {
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
       api.GET('/experience/connections'),
     ),
+  /** Turns watching a mailbox or calendar for changes on or off; answers with the list. */
+  watchConnection: (id: string, on: boolean) =>
+    guard<{ connections: import('./types.ts').Connection[] }>(() =>
+      api.PUT('/experience/connections/{id}/watching', { ...path(id), body: { on } }),
+    ),
   /** Whether conversations in this space read public web pages; on unless turned off. */
   webReads: () => guard<{ enabled: boolean; available: boolean }>(() => api.GET('/web/settings')),
   saveWebReads: (enabled: boolean) =>

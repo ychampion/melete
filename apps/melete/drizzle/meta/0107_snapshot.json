@@ -1,6 +1,6 @@
 {
-  "id": "e7770a52-1680-452c-b6d1-03e103651c67",
-  "prevId": "a2840323-ab06-4cff-9b19-d2c4c27348e9",
+  "id": "6612204f-5cc7-4acf-a919-0bc848cd16d8",
+  "prevId": "e7770a52-1680-452c-b6d1-03e103651c67",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18183,7 +18183,7 @@
       "checkConstraints": {
         "source_cursor_stream_check": {
           "name": "source_cursor_stream_check",
-          "value": "\"source_cursor\".\"stream\" in ('mail', 'calendar')"
+          "value": "\"source_cursor\".\"stream\" in ('mail', 'calendar', 'documents')"
         },
         "source_cursor_interval_check": {
           "name": "source_cursor_interval_check",

@@ -636,6 +636,11 @@ export class TriggerService {
         .from(event)
         .where(eq(event.dedupKey, dedupKey));
       if (existing) return { seq: existing.seq, duplicate: true };
+      // Delivered once before, and its observation since expired: still the same thing.
+      const [expired] = await tx.execute(
+        sql`select 1 from observation_tombstone where dedup_key = ${dedupKey}`,
+      );
+      if (expired) return { seq: 0, duplicate: true };
       const [parent] = await tx.select().from(space).where(eq(space.id, source.spaceId));
       const received = await appendEvent(tx, {
         type: 'notice',

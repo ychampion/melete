@@ -43,11 +43,14 @@ export function ConnectionCard({
   connection,
   compact = false,
   actions,
+  footer,
 }: {
   connection: Connection;
   compact?: boolean;
   /** What may be done to this connection here; absent where a card only reports. */
   actions?: ReactNode;
+  /** A setting for this connection, on its own line under the rest. */
+  footer?: ReactNode;
 }) {
   const logo = logoFor(connection.app);
   const tail =
@@ -106,6 +109,72 @@ export function ConnectionCard({
       </div>
       {tail}
       {actions}
+      {footer ? <div style={{ flexBasis: '100%', minWidth: 0 }}>{footer}</div> : null}
+    </div>
+  );
+}
+
+/** What the watch switch says it does, for a mailbox, a calendar or a Drive, on or off. */
+export function watchWords(app: string, on: boolean): string {
+  if (!on) return 'Off. Melete still reads this account for things you asked it to watch.';
+  if (/drive/i.test(app))
+    return 'Melete reads each file’s name, last change and sharing, never its contents, to notice what is still untouched.';
+  return /calendar/i.test(app)
+    ? 'Melete reads each event’s title, time and place to notice changes and clashes.'
+    : 'Melete reads new mail’s sender and subject to notice what needs you.';
+}
+
+/**
+ * The switch on a mailbox or calendar: whether Melete watches it for changes
+ * without being asked. It reads only what changed (who wrote and the subject
+ * line, or when and where a meeting is), so work that is waiting hears of it.
+ */
+export function WatchSwitch({
+  connection,
+  onChanged,
+}: {
+  connection: Connection;
+  onChanged: (connections: Connection[]) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const on = connection.watching === true;
+  const title = 'Watch this account for changes';
+  const reads = watchWords(connection.app, on);
+  return (
+    <div
+      className="row"
+      style={{
+        gap: 12,
+        paddingTop: 10,
+        borderTop: '1px solid var(--line)',
+        alignItems: 'center',
+      }}
+    >
+      <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{reads}</span>
+      </span>
+      {/* Kept enabled while saving, so the switch keeps its focus for the keyboard. */}
+      <Toggle
+        on={on}
+        label={`${title}: ${connection.label}`}
+        onChange={(next) => {
+          if (saving) return;
+          setSaving(true);
+          void adapter.watchConnection(connection.id, next).then((r) => {
+            setSaving(false);
+            if (r.data === null) {
+              toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save' });
+              return;
+            }
+            onChanged(r.data.connections);
+            toast({
+              kind: 'ok',
+              title: next ? `Watching ${connection.label}` : `Stopped watching ${connection.label}`,
+            });
+          });
+        }}
+      />
     </div>
   );
 }
@@ -406,6 +475,14 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                       removable={connection.builtin !== true}
                       onChanged={connections.reload}
                     />
+                  }
+                  footer={
+                    connection.watching === undefined ? undefined : (
+                      <WatchSwitch
+                        connection={connection}
+                        onChanged={(next) => connections.set({ connections: next })}
+                      />
+                    )
                   }
                 />
               ))}
