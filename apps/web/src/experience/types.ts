@@ -212,6 +212,8 @@ export type Capabilities = {
   google_sign_in: boolean;
   apple_sign_in: boolean;
   magic_link: boolean;
+  /** Rooms, shared spaces, guests and hand-offs, as the server's switch has them. */
+  multiplayer: boolean;
 };
 
 export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';

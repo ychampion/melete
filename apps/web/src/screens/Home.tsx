@@ -927,7 +927,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, profile, refreshConversations } = useApp();
+  const { agents, profile, refreshConversations, capabilities } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -1084,7 +1084,9 @@ export function HomeScreen() {
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />
           <WhatImOnSection />
-          <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
+          {capabilities.multiplayer ? (
+            <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
+          ) : null}
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InProgress now={now} />
