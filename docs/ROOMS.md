@@ -128,6 +128,32 @@ When someone leaves, the permissions waiting in the room are withdrawn, and
 each request is told it was refused. A request whose asker has left ends with
 them. A decision push goes to the people who may answer it, and to nobody else.
 
+### What the room's own accounts send
+
+The accounts a room's owners add for the room, such as a shared mailbox or a
+team calendar, are its team accounts: connections in the room's space marked
+for the room, other than the tools every room has. What the agent sends or
+changes through one of them follows the room's team-account rule
+(`team_account_approvers`), whatever the room's general rule says:
+
+- `any_member` (the default): anyone in the room who is not a guest, the
+  person who asked included;
+- `owners`: the room's owners.
+
+Everything else a request asks permission for follows the general rule above.
+Guests never answer under either rule, auto-review never answers, and the card,
+the decision push and the agent all name the people the rule for that action
+names. A room created before this setting existed keeps `owners` for its team
+accounts when its general rule was already `owners`. Covered by
+`a member approves another member's send through a team account, whatever the
+room's general rule`, `the person who asked approves their own team-account
+send under the any-member rule`, `a guest never approves a team-account send,
+under either team-account rule, even their own`, `under the owners'
+team-account rule only owners approve a team-account send, and only they are
+told`, `an action outside the team accounts still follows the room's general
+rule` and `when approvers leave, a team-account permission is withdrawn and the
+request is told`.
+
 ### Values someone else typed
 
 A value the person who asked typed in their own request (a recipient, an
@@ -144,6 +170,8 @@ An owner sets how the room works (`PUT /rooms/{id}/policy`); everyone in the
 room reads it (`GET /rooms/{id}/policy`, and in `GET /rooms/{id}`):
 
 - `approvers`: who answers permissions, as above;
+- `team_account_approvers`: who answers what the room's team accounts send,
+  `any_member` (the default) or `owners`;
 - `agent_turns`: `asked` (the default) or `every_message`, where every message
   asks the agent, which uses more of the model;
 - `guests_may_ask`: whether a guest's message can ask the agent;
