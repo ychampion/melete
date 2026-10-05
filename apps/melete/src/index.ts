@@ -1248,6 +1248,14 @@ export async function bootstrap(
       const boundaryForCatalog = effectBoundary;
       // How the model an attempt runs on is reached, for the privacy checks before it starts.
       const engineOf = attemptEngine(env, modelSettings);
+      // A container engine is got ready while the attempt's memory is recalled.
+      const engines = supervisedRuntime;
+      const prepareEngine = engines
+        ? {
+            prepareEngine: (bundle: AttemptBundle, signal: AbortSignal) =>
+              engines.prepare(bundle, signal),
+          }
+        : {};
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1255,10 +1263,12 @@ export async function bootstrap(
               spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
               scopeForJob: deploymentMemory.scopeForJob,
               ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
+              ...prepareEngine,
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
+                ...prepareEngine,
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 // Judged by the model the attempt runs on, which may not be the server's default.
                 recallsPrivateMemory: async (jobId, attemptId, model) =>
