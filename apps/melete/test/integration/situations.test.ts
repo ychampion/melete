@@ -40,7 +40,19 @@ function required<T>(value: T | null | undefined): T {
 }
 
 const MINUTE = 60_000;
-let clock = Date.parse('2026-10-05T12:00:00.000Z');
+/**
+ * The suite's own clock. Nothing here reads the wall clock: accounts come due,
+ * clocks are made and pushes are paced on this time, and each person's day is
+ * placed around it, so a run at any hour, before or after it, behaves the same.
+ * `SITUATIONS_TEST_CLOCK` moves it, to prove that.
+ */
+let clock = Date.parse(process.env.SITUATIONS_TEST_CLOCK ?? '2026-10-05T12:00:00.000Z');
+const hourOf = (at: number, offset: number) =>
+  `${String((((new Date(at).getUTCHours() + offset) % 24) + 24) % 24).padStart(2, '0')}:00`;
+/** A day, in UTC, that the test clock falls well inside, as it stands when a person is made. */
+const inDay = () => ({ start: hourOf(clock, -6), end: hourOf(clock, 10) });
+/** A day, in UTC, that the test clock falls outside of: their quiet hours, now. */
+const quietNow = () => ({ start: hourOf(clock, 3), end: hourOf(clock, 5) });
 const sources = new Map<string, { signals?: SignalSource; subjects?: SubjectReader }>();
 
 // --------------------------------------------------------------------------
@@ -89,7 +101,9 @@ const poller =
 
 /** Read every account that is due now, then let the next reads come due. */
 async function poll() {
-  await required(handle).sql`update source_cursor set next_poll_at = now() - interval '1 second'`;
+  // Due on the test's clock, which is the clock the poller claims by.
+  await required(handle).sql`update source_cursor
+    set next_poll_at = ${new Date(clock - 1000).toISOString()}::timestamptz`;
   return required(poller).runOnce();
 }
 
@@ -226,7 +240,7 @@ withDb('situations', () => {
   }, 30_000);
 
   test('a deadline is checked against fresh state at its time, once', async () => {
-    const ana = await person('ana', { start: '08:00', end: '22:00' });
+    const ana = await person('ana', inDay());
     await withPhone(ana);
     const docs = await account(ana, 'test', 'Documents');
     const doc = documentSource(docs, { signed: false });
@@ -256,7 +270,9 @@ withDb('situations', () => {
     const raised = await live(ana.id, 'deadline.at_risk');
     expect(raised).toHaveLength(1);
     expect(raised[0]?.urgency).toBe('urgent');
-    expect(raised[0]?.reason).toBe('Due Mon 12:30 PM, and it is not done yet.');
+    expect(raised[0]?.reason).toBe(
+      `Due ${spokenTime(new Date(due).toISOString(), 'UTC')}, and it is not done yet.`,
+    );
     expect(raised[0]?.because).toEqual([expect.stringMatching(/^clock:clk_/)]);
     const told = delivered.slice(before).filter((entry) => entry.principal === ana.id);
     expect(told).toHaveLength(1);
@@ -267,7 +283,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a deadline met before its time says nothing', async () => {
-    const ben = await person('ben', { start: '08:00', end: '22:00' });
+    const ben = await person('ben', inDay());
     await withPhone(ben);
     const docs = await account(ben, 'test', 'Documents');
     const doc = documentSource(docs, { signed: false });
@@ -296,7 +312,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a source that cannot be read is tried again, and is never raised on stale state', async () => {
-    const cy = await person('cy', { start: '08:00', end: '22:00' });
+    const cy = await person('cy', inDay());
     const docs = await account(cy, 'test', 'Documents');
     const doc = documentSource(docs, { signed: false });
     doc.fail = true;
@@ -334,8 +350,8 @@ withDb('situations', () => {
   }, 60_000);
 
   test('an urgent deadline the person set pushes now, even in quiet hours; one they didn’t set waits', async () => {
-    // Their day is 08:00–10:00 UTC; the test's noon is quiet.
-    const dee = await person('dee', { start: '08:00', end: '10:00' });
+    // Their day is placed after the test's clock: now is their quiet hours.
+    const dee = await person('dee', quietNow());
     await withPhone(dee);
     const docs = await account(dee, 'test', 'Documents');
     documentSource(docs, { signed: false });
@@ -397,7 +413,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a meeting moved twice has one live clock, at its new time', async () => {
-    const eve = await person('eve', { start: '08:00', end: '22:00' });
+    const eve = await person('eve', inDay());
     await withPhone(eve);
     const calendarId = await account(eve, 'caldav', 'Work calendar');
     const calendar = calendarSource(calendarId);
@@ -434,7 +450,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a cancelled meeting’s clocks are cleared', async () => {
-    const fay = await person('fay', { start: '08:00', end: '22:00' });
+    const fay = await person('fay', inDay());
     await withPhone(fay);
     const calendarId = await account(fay, 'caldav', 'Work calendar');
     const calendar = calendarSource(calendarId);
@@ -463,7 +479,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a conflict between two meetings is one situation, not two, and ends when they part', async () => {
-    const gus = await person('gus', { start: '08:00', end: '22:00' });
+    const gus = await person('gus', inDay());
     await withPhone(gus);
     const work = await account(gus, 'caldav', 'Work');
     const home = await account(gus, 'caldav', 'Home');
@@ -514,7 +530,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a meeting that moves within a day wakes the work watching it, once', async () => {
-    const hal = await person('hal', { start: '08:00', end: '22:00' });
+    const hal = await person('hal', inDay());
     await withPhone(hal);
     const calendarId = await account(hal, 'caldav', 'Work');
     const calendar = calendarSource(calendarId);
@@ -572,7 +588,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a hundred observations matching nothing make no situation and no model call', async () => {
-    const ida = await person('ida', { start: '08:00', end: '22:00' });
+    const ida = await person('ida', inDay());
     const mailbox = await account(ida, 'imap', 'Inbox');
     const box = { messages: [] as NewMail[] };
     sources.set(mailbox, {
@@ -616,7 +632,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a wait on a reply is raised for Home, and settles when the answer arrives', async () => {
-    const jo = await person('jo', { start: '08:00', end: '22:00' });
+    const jo = await person('jo', inDay());
     const mailbox = await account(jo, 'imap', 'Inbox');
     const box = { messages: [] as NewMail[] };
     sources.set(mailbox, {
@@ -667,7 +683,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('revoking an account takes what was noticed in it and its clocks', async () => {
-    const kit = await person('kit', { start: '08:00', end: '22:00' });
+    const kit = await person('kit', inDay());
     await withPhone(kit);
     const calendarId = await account(kit, 'caldav', 'Work');
     const calendar = calendarSource(calendarId);
@@ -756,8 +772,8 @@ withDb('situations', () => {
   }, 120_000);
 
   test('a fresh read is refused when the account is being revoked, is elsewhere, or serves someone else', async () => {
-    const nan = await person('nan', { start: '08:00', end: '22:00' });
-    const ola = await person('ola', { start: '08:00', end: '22:00' });
+    const nan = await person('nan', inDay());
+    const ola = await person('ola', inDay());
     const docs = await account(nan, 'test', 'Documents');
     const doc = documentSource(docs, { signed: false });
     const due = clock + 30 * MINUTE;
@@ -805,8 +821,8 @@ withDb('situations', () => {
   test('two people keeping a deadline on the same subject each keep their own', async () => {
     // One shared space: Sam owns it and keeps a deadline through his own account;
     // Tia asks the room, whose work reads the room's account, about the same document.
-    const sam = await person('sam', { start: '08:00', end: '22:00' });
-    const tia = await person('tia', { start: '08:00', end: '22:00' });
+    const sam = await person('sam', inDay());
+    const tia = await person('tia', inDay());
     const { sql } = required(handle);
     const shared = newId('sp');
     await sql`insert into space (id, name, git_path, kind, owner_principal_id)
@@ -848,7 +864,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a meeting that moves while its deadline is being checked leaves one clock, at the new time', async () => {
-    const pia = await person('pia', { start: '08:00', end: '22:00' });
+    const pia = await person('pia', inDay());
     await withPhone(pia);
     const calendarId = await account(pia, 'caldav', 'Work');
     const calendar = calendarSource(calendarId);
@@ -910,7 +926,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('switching an account’s credential keeps the deadlines kept on it', async () => {
-    const quin = await person('quin', { start: '08:00', end: '22:00' });
+    const quin = await person('quin', inDay());
     const docs = await account(quin, 'test', 'Documents');
     documentSource(docs, { signed: false });
     await required(situations).setDeadline({
@@ -937,7 +953,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a detector that fails undoes only itself: the observation is delivered and work still wakes', async () => {
-    const ray = await person('ray', { start: '08:00', end: '22:00' });
+    const ray = await person('ray', inDay());
     const mailbox = await account(ray, 'imap', 'Inbox');
     const box = { messages: [] as NewMail[] };
     sources.set(mailbox, {
@@ -989,7 +1005,7 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a wait answered before its clock was set, or found before Melete watched the mailbox, is not raised', async () => {
-    const sue = await person('sue', { start: '08:00', end: '22:00' });
+    const sue = await person('sue', inDay());
     const mailbox = await account(sue, 'imap', 'Inbox');
     const box = { messages: [] as NewMail[] };
     sources.set(mailbox, {
@@ -1053,7 +1069,7 @@ withDb('situations', () => {
 
   test('a conflict reaches linked work only when that work may read both calendars', async () => {
     const { sql } = required(handle);
-    const uma = await person('uma', { start: '08:00', end: '22:00' });
+    const uma = await person('uma', inDay());
     await withPhone(uma);
     // A shared space Uma owns; work asked of the room may not use her own calendars.
     const shared = newId('sp');
@@ -1107,8 +1123,8 @@ withDb('situations', () => {
   }, 60_000);
 
   test('a calendar is read for the detectors only while there is someone to tell, and less at night', async () => {
-    // Their day is 08:00–10:00 UTC; the test's afternoon is their night.
-    const vic = await person('vic', { start: '08:00', end: '10:00' });
+    // Their day is placed after the test's clock: now is their night.
+    const vic = await person('vic', quietNow());
     const calendarId = await account(vic, 'caldav', 'Work');
     calendarSource(calendarId);
     // Watching by default is turned off here, so only the detectors ask for reads.
@@ -1189,7 +1205,7 @@ withDb('situations', () => {
 
   test('switching an account’s credential keeps what is still to be pushed about its deadlines', async () => {
     // Quiet now, so a deadline that is not urgent waits to be pushed.
-    const sid = await person('sid', { start: '08:00', end: '10:00' });
+    const sid = await person('sid', quietNow());
     await withPhone(sid);
     const docs = await account(sid, 'test', 'Documents');
     documentSource(docs, { signed: false });
