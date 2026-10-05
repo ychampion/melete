@@ -657,17 +657,25 @@ export class ReachService {
       return { outcome: 'forbidden' };
     const sid = params.get('MessageSid') ?? params.get('SmsSid') ?? '';
     if (!sid) return { outcome: 'ignored' };
-    const fresh = rows<{ message_sid: string }>(
-      await this.db.execute(sql`insert into reach_reply (message_sid) values (${sid})
-        on conflict (message_sid) do nothing returning message_sid`),
-    );
-    if (!fresh.length) return { outcome: 'ignored' };
+    // Seen already: done. A message is marked seen only once its work has
+    // committed, so the provider's retry of one that failed is still handled.
+    const seen = (tx: Transaction | Database) =>
+      tx.execute(sql`select 1 from reach_reply where message_sid = ${sid}`);
+    const markSeen = async (tx: Transaction | Database) =>
+      rows<{ message_sid: string }>(
+        await tx.execute(sql`insert into reach_reply (message_sid) values (${sid})
+          on conflict (message_sid) do nothing returning message_sid`),
+      ).length > 0;
+    if (rows(await seen(this.db)).length) return { outcome: 'ignored' };
     const from = params.get('From') ?? '';
     const [owner] = rows<{ principal_id: string; opted_out_at: Date | null }>(
       await this.db.execute(sql`select principal_id, opted_out_at from reach_number
         where number = ${from}`),
     );
-    if (!owner) return { outcome: 'ignored' };
+    if (!owner) {
+      await markSeen(this.db);
+      return { outcome: 'ignored' };
+    }
     const body = params.get('Body') ?? '';
     // With Advanced Opt-Out on, the provider names the kind itself.
     const named = (params.get('OptOutType') ?? '').toLowerCase();
@@ -675,35 +683,56 @@ export class ReachService {
     // "Yes" from someone who never stopped is an answer.
     if (kind === 'start' && !owner.opted_out_at) kind = 'answer';
     if (kind === 'stop') {
-      await this.db.transaction((tx) => this.optOut(tx, owner.principal_id, 'stop'));
-      if (named || providerAnswers(body)) return { outcome: 'stop' };
-      await this.confirmOptOut(owner.principal_id, from);
-      return { outcome: 'stop', reply: OPT_OUT_CONFIRMATION };
+      // The opt-out, the message marked seen and any confirmation commit
+      // together. Only the first opt-out is confirmed: a number already opted
+      // out gets no reply, so an auto-responder can't start a loop.
+      const confirm = await this.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`reach:${owner.principal_id}`}))`,
+        );
+        if (!(await markSeen(tx))) return null;
+        const [before] = rows<{ opted_out_at: Date | null }>(
+          await tx.execute(sql`select opted_out_at from reach_number
+            where principal_id = ${owner.principal_id} for update`),
+        );
+        await this.optOut(tx, owner.principal_id, 'stop');
+        const first = !before?.opted_out_at;
+        if (!first || named || providerAnswers(body)) return false;
+        await this.confirmOptOut(tx, owner.principal_id, from);
+        return true;
+      });
+      if (confirm === null) return { outcome: 'ignored' };
+      return confirm ? { outcome: 'stop', reply: OPT_OUT_CONFIRMATION } : { outcome: 'stop' };
     }
     if (kind === 'start') {
-      await this.db.execute(sql`update reach_number set opted_out_at = null, updated_at = now()
-        where principal_id = ${owner.principal_id}`);
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`update reach_number set opted_out_at = null, updated_at = now()
+          where principal_id = ${owner.principal_id}`);
+        await markSeen(tx);
+      });
       return { outcome: 'start' };
     }
-    if (kind === 'help') return { outcome: 'help' };
+    if (kind === 'help') {
+      await markSeen(this.db);
+      return { outcome: 'help' };
+    }
     await this.acknowledgeClimbing(owner.principal_id);
+    await markSeen(this.db);
     return { outcome: 'acknowledged' };
   }
 
   /** The one confirmation an opt-out gets, recorded and counted like any other text. */
-  private async confirmOptOut(principalId: string, number: string) {
+  private async confirmOptOut(tx: Transaction, principalId: string, number: string) {
     const id = newId('rch');
     const cost = this.deps.config.prices.textUsd;
-    await this.db.transaction(async (tx) => {
-      await tx.execute(sql`insert into reach_contact (id, principal_id, purpose, channel, due_at,
-          state, reason, number, sent_at, cost_usd)
-        values (${id}, ${principalId}, 'notice', 'text', now(), 'sent',
-          'You asked Melete to stop, so it said it had.', ${number}, now(), ${cost})`);
-      const [contact] = rows<ContactRow>(
-        await tx.execute(sql`select * from reach_contact where id = ${id}`),
-      );
-      if (contact) await this.meter(tx, contact, cost);
-    });
+    await tx.execute(sql`insert into reach_contact (id, principal_id, purpose, channel, due_at,
+        state, reason, number, sent_at, cost_usd)
+      values (${id}, ${principalId}, 'notice', 'text', now(), 'sent',
+        'You asked Melete to stop, so it said it had.', ${number}, now(), ${cost})`);
+    const [contact] = rows<ContactRow>(
+      await tx.execute(sql`select * from reach_contact where id = ${id}`),
+    );
+    if (contact) await this.meter(tx, contact, cost);
   }
 
   /**

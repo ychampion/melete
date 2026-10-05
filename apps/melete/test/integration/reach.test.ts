@@ -792,6 +792,55 @@ withDb('the reach-me ladder', () => {
     expect((await rungs(id)).text?.reason).toContain('outside your day');
   }, 60_000);
 
+  test('only the first opt-out is confirmed, however many follow', async () => {
+    const tia = await optedIn('tia');
+    const replies: Array<string | undefined> = [];
+    for (const words of ['Please stop', 'stop texting me', 'leave me alone', 'Please STOP now']) {
+      const request = signed('/reach/twilio/sms', { From: tia.number, To: FROM, Body: words });
+      const answer = await required(reach).inbound(request.url, request.params, request.signature);
+      expect([words, answer.outcome]).toEqual([words, 'stop']);
+      replies.push(answer.reply);
+    }
+    expect(replies.filter(Boolean)).toEqual([OPT_OUT_CONFIRMATION]);
+    const [notices] = await required(handle).sql`select count(*)::int as n from reach_contact
+      where principal_id = ${tia.id} and purpose = 'notice'`;
+    expect(notices?.n).toBe(1);
+  }, 60_000);
+
+  test('the provider’s retry of an opt-out that failed is still handled', async () => {
+    const uma = await optedIn('uma');
+    const { sql } = required(handle);
+    // The first change to anyone's number fails once, as a dropped connection would.
+    await sql.unsafe(`create sequence reach_fail_once;
+      create function reach_fail_once() returns trigger language plpgsql as $f$
+      begin
+        if nextval('reach_fail_once') = 1 then raise exception 'injected failure'; end if;
+        return new;
+      end $f$;
+      create trigger reach_fail_once before update on reach_number
+        for each row execute function reach_fail_once();`);
+    try {
+      const stop = signed('/reach/twilio/sms', { From: uma.number, To: FROM, Body: 'Please stop' });
+      expect(
+        await refusal(required(reach).inbound(stop.url, stop.params, stop.signature)),
+      ).toContain('update reach_number set opted_out_at');
+      expect((await required(reach).state(uma.id)).consent).not.toBeNull();
+      // The provider sends the same message again.
+      expect(await required(reach).inbound(stop.url, stop.params, stop.signature)).toEqual({
+        outcome: 'stop',
+        reply: OPT_OUT_CONFIRMATION,
+      });
+      expect((await required(reach).state(uma.id)).consent).toBeNull();
+      // And a third time, once it was handled, does nothing.
+      expect((await required(reach).inbound(stop.url, stop.params, stop.signature)).outcome).toBe(
+        'ignored',
+      );
+    } finally {
+      await sql.unsafe(`drop trigger if exists reach_fail_once on reach_number;
+        drop function if exists reach_fail_once(); drop sequence if exists reach_fail_once;`);
+    }
+  }, 60_000);
+
   test('without a provider, the ladder stops at push and says so', async () => {
     const gus = await person('gus');
     const bare = new ReachService({
