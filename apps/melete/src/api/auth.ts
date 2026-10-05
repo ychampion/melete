@@ -32,6 +32,7 @@ import {
   selectedSpace,
 } from '../principals/session-space.ts';
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
+import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
@@ -275,6 +276,8 @@ export function mountAuth(
 ): void {
   const { db, env, registry } = deps;
   const handle = deps.sql;
+  const multiplayer = multiplayerEnabled(env);
+  const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
   const sessionBody = (c: Context, next: () => Promise<void>) =>
     c.req.method === 'POST' && c.req.path === '/attachments'
@@ -406,6 +409,12 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     if (active.owner.kind === 'guest') {
+      // With rooms switched off, a guest's sign-in reaches nothing at all.
+      if (!multiplayer)
+        return c.json(
+          { error: { code: 'unauthorized', message: MULTIPLAYER_UNAVAILABLE.message } },
+          401,
+        );
       // A guest has no space of their own and no work outside their rooms.
       if (!guestMayUse(c.req.method, c.req.path))
         return c.json(
@@ -497,7 +506,7 @@ export function mountAuth(
       );
     }
     const [installed] = await db.select({ id: owner.id }).from(owner).limit(1);
-    return c.json({ needed: !installed });
+    return c.json({ needed: !installed, multiplayer });
   });
 
   app.post('/setup', async (c) => {
@@ -603,12 +612,13 @@ export function mountAuth(
       ? deviceThrottle.admit(known.nonce)
       : accountThrottle.admit(account));
     if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
-    // An account that cannot sign in (a room's own principal) is looked up as if
+    // An account that cannot sign in (a room's own principal, or a guest while
+    // rooms are switched off) is looked up as if
     // the email were unknown, before any password is checked, so it costs the same.
     const [found] = await db
       .select()
       .from(principal)
-      .where(and(eq(principal.email, input.email), inArray(principal.kind, SIGN_IN_KINDS)))
+      .where(and(eq(principal.email, input.email), inArray(principal.kind, signInKinds)))
       .limit(1);
     const verified = await Bun.password.verify(
       input.password,

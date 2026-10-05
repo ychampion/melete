@@ -711,6 +711,23 @@ which browsers honour over HTTPS and on localhost, so reach a remote
 installation through the SSH tunnel or a TLS proxy rather than over plain HTTP
 to its address.
 
+### Rooms
+
+Rooms, shared spaces, guests and hand-offs are a preview behind
+`MELETE_PREVIEW_MULTIPLAYER`, off by default. To turn them on, set it in
+`deploy/.env` and recreate the service:
+
+```dotenv
+MELETE_PREVIEW_MULTIPLAYER=true
+```
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
+```
+
+Turning it off again keeps every room and message; their routes answer 404
+until it is back on. [Rooms](ROOMS.md#turning-rooms-on) lists what it covers.
+
 ## Tailscale
 
 Reach your installation from your own devices over your tailnet, with no
@@ -1861,7 +1878,7 @@ read-only, and `melete-cells` starts only these fixed profiles:
 | --- | --- | --- | --- |
 | An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
 | An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
-| A stdio MCP server | one pulled by digest from a public registry ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
+| A stdio MCP server | one pulled by digest from any registry that does not point back at the host ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
 
 Each runs as its profile's non-root user on a read-only root, with every
 capability dropped and no privilege escalation. `melete-cells` refuses any

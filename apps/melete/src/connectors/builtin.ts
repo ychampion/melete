@@ -36,6 +36,7 @@ import {
 import type { Sql } from 'postgres';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { newId } from '../ids.ts';
+import { multiplayerEnabled } from '../rooms/preview.ts';
 import { type DockerSandboxEnv, defaultSandboxConfig } from '../sandbox/docker-default.ts';
 import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
@@ -57,6 +58,8 @@ export type BuiltinEnvironment = {
   transcriptionConfigured: boolean;
   /** The sandbox every space is given, or null when the deployment asked for none. */
   sandbox?: SandboxConnectionConfig | null;
+  /** True when rooms are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, no space gets the room tools. */
+  multiplayer?: boolean;
 };
 
 type Builtin = {
@@ -126,6 +129,7 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     label: 'Rooms',
     scopes: [...ROOM_TOOL_SCOPES.personal],
     spaceKind: 'personal',
+    when: (environment) => environment.multiplayer === true,
   },
   {
     key: 'room_handoff',
@@ -133,6 +137,7 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     label: 'Hand to a person',
     scopes: [...ROOM_TOOL_SCOPES.room],
     spaceKind: 'shared',
+    when: (environment) => environment.multiplayer === true,
   },
   // The agent's own notes stay in the person's own space, where they read and
   // delete them in Memory; a shared space keeps none.
@@ -163,6 +168,7 @@ export function builtinEnvironment(
     OPENAI_API_KEY?: string;
     OPENAI_COMPAT_BASE_URL?: string;
     MELETE_ENABLE_FAKE_PROVIDER?: boolean;
+    MELETE_PREVIEW_MULTIPLAYER?: boolean | string;
   } & Partial<Omit<DockerSandboxEnv, 'MELETE_RUNTIME_ADAPTER'>>,
 ): BuiltinEnvironment {
   const capabilities = capabilitiesFromEnv({
@@ -181,6 +187,7 @@ export function builtinEnvironment(
       (env.MELETE_RUNTIME_ADAPTER === 'hermes' && env.MELETE_RUNTIME_SUPERVISOR === 'docker'),
     speechConfigured: capabilities.speech !== null,
     transcriptionConfigured: capabilities.transcription !== null,
+    multiplayer: multiplayerEnabled(env),
   };
 }
 

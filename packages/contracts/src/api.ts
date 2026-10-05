@@ -105,7 +105,11 @@ export const signedInOwner = z.object({
 });
 export const ownerResponse = z.object({ owner: signedInOwner });
 /** Whether this installation still needs its first account: true until an owner exists. */
-export const setupStatusResponse = z.strictObject({ needed: z.boolean() });
+export const setupStatusResponse = z.strictObject({
+  needed: z.boolean(),
+  /** Whether rooms, shared spaces, guests and hand-offs are switched on here. */
+  multiplayer: z.boolean(),
+});
 
 // --------------------------------------------------------------------------
 // triggers

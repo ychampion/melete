@@ -21,7 +21,7 @@ import {
   TabsUnderline,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useLoad } from '../experience/hooks.ts';
+import { useApp, useLoad } from '../experience/hooks.ts';
 import type {
   Belief,
   BeliefCategory,
@@ -155,6 +155,8 @@ function BeliefRow({
 }) {
   const [mode, setMode] = useState<'view' | 'edit' | 'forget'>('view');
   const [sharing, setSharing] = useState(false);
+  // Sharing to a room is offered only where the server has rooms switched on.
+  const multiplayer = useApp().capabilities.multiplayer;
   const [history, setHistory] = useState<BeliefHistory | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const row = useRef<HTMLDivElement>(null);
@@ -287,14 +289,16 @@ function BeliefRow({
             aria-expanded={historyOpen}
           />
         ) : null}
-        <IconButton
-          name="users"
-          label={`Share ${belief.label} to a room`}
-          size={30}
-          iconSize={14}
-          onClick={() => setSharing(true)}
-          on={sharing}
-        />
+        {multiplayer ? (
+          <IconButton
+            name="users"
+            label={`Share ${belief.label} to a room`}
+            size={30}
+            iconSize={14}
+            onClick={() => setSharing(true)}
+            on={sharing}
+          />
+        ) : null}
         <IconButton
           name="trash"
           label={`Forget ${belief.label}`}
@@ -304,7 +308,7 @@ function BeliefRow({
           on={mode === 'forget'}
         />
       </div>
-      {sharing ? (
+      {sharing && multiplayer ? (
         <ShareToRoom claimId={belief.id} label={belief.label} onClose={() => setSharing(false)} />
       ) : null}
     </div>

@@ -140,7 +140,18 @@ export function App() {
     google_sign_in: false,
     apple_sign_in: false,
     magic_link: true,
+    multiplayer: false,
   });
+  // Whether the server has rooms switched on, read once whoever is signed in.
+  // A room or invite link waits for the answer rather than leaving early.
+  const [multiplayerKnown, setMultiplayerKnown] = useState(false);
+  useEffect(() => {
+    void adapter.setupStatus().then((status) => {
+      const multiplayer = status.data?.multiplayer === true;
+      setCapabilities((c) => ({ ...c, multiplayer }));
+      setMultiplayerKnown(true);
+    });
+  }, []);
 
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
@@ -335,6 +346,7 @@ export function App() {
   }
 
   const [head, second] = route.parts;
+  if ((head === 'rooms' || head === 'invite') && !multiplayerKnown) return <BootFrame />;
 
   // A guest gets the rooms they were invited to, and nothing personal: no Home,
   // no chats, no setup. Their sign-in would be refused everywhere else.
@@ -348,7 +360,7 @@ export function App() {
     return <AppContext.Provider value={value}>{room}</AppContext.Provider>;
   }
   // An invite link opens for anyone; it says what to do when the wrong account is signed in.
-  if (head === 'invite' && (signedOut || profile.data))
+  if (head === 'invite' && capabilities.multiplayer && (signedOut || profile.data))
     return (
       <AppContext.Provider value={value}>
         <InviteScreen signedIn={signedIn ? 'person' : null} onJoined={refreshProfile} />
@@ -375,7 +387,7 @@ export function App() {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {
     screen = <PlansScreen selected={second ?? null} />;
-  } else if (head === 'rooms') {
+  } else if (head === 'rooms' && capabilities.multiplayer) {
     screen = <RoomsRoute parts={route.parts} />;
   } else if (head === 'companies') {
     screen = <CompaniesScreen />;

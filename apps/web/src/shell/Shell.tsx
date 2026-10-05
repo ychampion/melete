@@ -242,9 +242,16 @@ function Sidebar({
   onPalette: () => void;
 }) {
   const route = useRoute();
-  const { conversations, conversationsError, agents, profile, refreshConversations, guest } =
-    useApp();
-  const nav = sidebarNav(guest === true);
+  const {
+    conversations,
+    conversationsError,
+    agents,
+    profile,
+    refreshConversations,
+    guest,
+    capabilities,
+  } = useApp();
+  const nav = sidebarNav(guest === true, capabilities.multiplayer);
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));

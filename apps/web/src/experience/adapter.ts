@@ -200,7 +200,7 @@ export const adapter = {
   saveProfile: (profile: ProfileInput) =>
     guard<{ profile: Profile }>(() => api.PATCH('/profile', { body: profile })),
   /** Whether this installation still needs its first account. Public. */
-  setupStatus: () => guard<{ needed: boolean }>(() => api.GET('/setup')),
+  setupStatus: () => guard<{ needed: boolean; multiplayer?: boolean }>(() => api.GET('/setup')),
   /** Creates the first account and signs this browser in. */
   createAccount: (email: string, password: string) =>
     guard<{ owner: SignedInOwner }>(() => api.POST('/setup', { body: { email, password } })),

@@ -28,8 +28,6 @@ within the limits you set.
   sends, and each action leaves a receipt you can undo while it still works.
 - **Remembers what you tell it, in the open.** You can see, correct or forget
   anything it knows, and a correction can teach it a better way to do the job.
-- **Shares a space.** Your household or small team can work in one space, and
-  each person's jobs and messages stay private to them.
 
 ## How it compares
 

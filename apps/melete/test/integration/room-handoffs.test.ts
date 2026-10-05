@@ -77,6 +77,7 @@ const app =
   handle && jobs && runner && broker && triggers
     ? createApp({
         env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: spacesRoot,
           MELETE_WORK_DIR: workRoot,

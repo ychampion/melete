@@ -28,6 +28,13 @@ own words.
 
 ## Other capabilities with named evidence
 
+The rows for rooms, guests, hand-offs and chat platforms describe a preview
+that is off unless `MELETE_PREVIEW_MULTIPLAYER=true`; their suites run with it
+on. [multiplayer-switch.test.ts](../apps/melete/test/integration/multiplayer-switch.test.ts)
+holds the default: the room routes answer 404 `not_available`, no room tool is
+offered, a new space gets none, stored rooms stay as they were, and a personal
+chat runs as before. See [ROOMS](ROOMS.md#turning-rooms-on).
+
 | Capability | Status | Evidence and limit |
 |---|---|---|
 | Rooms: several people, one agent | implemented-and-tested | [rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) runs through the service routes on real Postgres: `a member reads and posts in a room thread, and a non-member reads nothing and posts nothing`, `each message records its author, and the provider request names each speaker` (the rendered request carries each speaker's name), `only a message that asks the agent starts a request, and a thread runs one request at a time`, `a follow-up from the requester reaches their request, and another member's message never does`, `another member's message does not withdraw a pending approval`, `removing a member fences the running request and closes their stream`, `a room principal cannot sign in, and is never listed`, `room jobs appear on no personal surface, the room owner's included`, `nobody reads as someone else: each speaker carries the handle the room gives them, and a name is one line`, `the room's computer can be watched by its members and taken over only by its owners`, `a live thread resumes after the last frame it saw, in order`, `a request is stopped by the person who asked it or an owner, and by nobody else`, `adding someone fences the running request, which starts again with the new roster`, `an ask from someone who has left is dropped, and the next ask in the thread starts`, a request's file read by the room's people only, and a shared space made before rooms becoming a room, its built-in tools included. See [ROOMS](ROOMS.md). |

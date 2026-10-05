@@ -34,7 +34,11 @@ const memory =
 const app =
   handle && memory
     ? createApp({
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: restrictions }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: restrictions,
+        }),
         db: handle.db,
         memory: memory.routes,
         checkDatabase: async () => 'ok',

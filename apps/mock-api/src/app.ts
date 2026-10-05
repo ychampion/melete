@@ -124,7 +124,23 @@ export type AppDeps = {
   reach?: boolean;
   /** Seeded "Needs you" items with the demonstration's seed; off shows the empty list. */
   needsYou?: boolean;
+  /**
+   * Rooms, shared spaces, guests and hand-offs, as `MELETE_PREVIEW_MULTIPLAYER`
+   * switches them on the service. Off unless `MELETE_MOCK_MULTIPLAYER=on` or a test says so.
+   */
+  multiplayer?: boolean;
 };
+
+/** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
+export function multiplayerPath(method: string, path: string): boolean {
+  if (path === '/rooms' || path.startsWith('/rooms/')) return true;
+  if (path === '/handoffs' || path.startsWith('/handoffs/')) return true;
+  if (path === '/invites/view' || path === '/invites/accept') return true;
+  if (path === '/me/linked-accounts' || path.startsWith('/me/linked-accounts/')) return true;
+  if (method === 'POST' && path === '/spaces/shared') return true;
+  if (method === 'POST' && /^\/spaces\/[^/]+\/memberships$/.test(path)) return true;
+  return false;
+}
 
 type ErrorBody = z.infer<typeof errorResponse>;
 
@@ -160,6 +176,17 @@ export function createMockApp(deps: AppDeps) {
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
+
+  // Switched off, the multiplayer routes answer as the service's do.
+  const multiplayer = deps.multiplayer ?? false;
+  if (!multiplayer)
+    app.use('*', async (c, next) => {
+      if (c.req.method === 'OPTIONS' || !multiplayerPath(c.req.method, c.req.path)) return next();
+      return c.json(
+        fail('not_available', 'Rooms and shared spaces are not available on this server.'),
+        404,
+      );
+    });
 
   /**
    * A guest's sign-in reaches only the rooms routes, its own account and a
@@ -306,7 +333,7 @@ export function createMockApp(deps: AppDeps) {
     owner: { id: row.id, email: row.email, created_at: row.created_at },
   });
 
-  app.get('/setup', () => send(setupStatusResponse, { needed: account === null }));
+  app.get('/setup', () => send(setupStatusResponse, { needed: account === null, multiplayer }));
 
   app.post('/setup', async (c) => {
     if (account) return c.json(fail('already_setup', 'The owner is already set up.'), 409);
@@ -335,7 +362,9 @@ export function createMockApp(deps: AppDeps) {
       body.value.password !== account.password
     ) {
       // A guest signs in with the password they chose when they accepted an invite.
-      const guest = roomsMock.signInGuest(body.value.email, body.value.password);
+      const guest = multiplayer
+        ? roomsMock.signInGuest(body.value.email, body.value.password)
+        : null;
       if (!guest) return c.json(fail('invalid_credentials', 'Email or password is wrong.'), 401);
       return send(ownerResponse, {
         owner: { id: guest.id, email: guest.email, created_at: guest.created_at },
@@ -357,10 +386,10 @@ export function createMockApp(deps: AppDeps) {
       return view ? { label: view.label, value: view.value } : null;
     },
   });
-  experience.handoffsWaiting = roomsMock.handoffsWaiting;
+  if (multiplayer) experience.handoffsWaiting = roomsMock.handoffsWaiting;
   guests.active = () => roomsMock.guest() !== null;
   guests.signOut = roomsMock.signOutGuest;
-  if (deps.seedExperience) roomsMock.seed();
+  if (deps.seedExperience && multiplayer) roomsMock.seed();
 
   // ------------------------------------------------------------------
   // health, spaces

@@ -37,7 +37,12 @@ export const NAV: {
 /**
  * The sections a sign-in reaches. A guest reaches only the rooms they were
  * invited to: Home, chats, Companies, Work, Agents, Memory, Automations, Apps
- * and Settings are a person's own and stay out of their sidebar.
+ * and Settings are a person's own and stay out of their sidebar. Rooms are
+ * listed only where the server has them switched on.
  */
-export const sidebarNav = (guest: boolean): typeof NAV =>
-  guest ? NAV.filter((item) => item.path === '/rooms') : NAV;
+export const sidebarNav = (guest: boolean, multiplayer = true): typeof NAV =>
+  guest
+    ? NAV.filter((item) => item.path === '/rooms')
+    : multiplayer
+      ? NAV
+      : NAV.filter((item) => item.path !== '/rooms');

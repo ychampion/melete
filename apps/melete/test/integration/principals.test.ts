@@ -131,7 +131,7 @@ withDb('principal and shared-space authority', () => {
       await upgrade.sql`insert into session (token_hash, owner_id, expires_at) values (${createHash('sha256').update(token).digest('hex')}, ${ownerId}, now() + interval '1 minute')`;
       await migrateDatabase(upgrade);
       const api = createApp({
-        env: loadEnv({ NODE_ENV: 'test' }),
+        env: loadEnv({ MELETE_PREVIEW_MULTIPLAYER: 'true', NODE_ENV: 'test' }),
         db: upgrade.db,
         checkDatabase: async () => 'ok',
       });
@@ -221,7 +221,11 @@ withDb('principal and shared-space authority', () => {
   test('member bundles select at most three shared skills; revocation fences work, replay, knowledge and old capabilities', async () => {
     if (!handle || !jobs || !runner || !stream) throw new Error('Postgres unavailable');
     const api = createApp({
-      env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
+      env: loadEnv({
+        MELETE_PREVIEW_MULTIPLAYER: 'true',
+        NODE_ENV: 'test',
+        MELETE_SPACES_DIR: root,
+      }),
       db: handle.db,
       jobs,
       events: stream,

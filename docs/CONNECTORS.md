@@ -946,15 +946,22 @@ privileged, its process and memory limits, its network and each mount) and
 removes it unstarted if any of these is less than asked. A network the engine
 did not record as internal is removed before anything joins it.
 
-An image names its registry and pins its digest (`ghcr.io/org/server:1.0@sha256:…`),
-and it runs only if the image on the host carries that digest. The registry is
-named by its DNS name: an address, `localhost` or a `.localhost` name is
-refused. The engine pulls from the host's own network and goes wherever a
-registry sends it, so it pulls a server's image only from a public registry:
-`docker.io`, `ghcr.io`, `quay.io`, `gcr.io`, `mcr.microsoft.com`,
-`public.ecr.aws` or `registry.gitlab.com`, on its usual port. An image from
-another registry runs once the operator has put it on the host. The runners'
-own images are pinned the same way.
+An image pins its digest (`ghcr.io/org/server:1.0@sha256:…`, or a Docker Hub
+name such as `node:22@sha256:…`), and it runs only if the image on the host
+carries that digest. It can come from any registry, public or private, such as
+`ghcr.io` or a company's own `registry.example.com` or `10.0.0.5:5000`, except
+one that points back at the host: `localhost` and loopback addresses
+(`127.0.0.0/8`, `::1`), `0.0.0.0`, link-local and cloud metadata addresses
+(`169.254.0.0/16`, `fe80::/10`, `metadata.google.internal`), Docker's
+`host.docker.internal` and `gateway.docker.internal`, the engine's own ports
+2375 and 2376 on any host, and wildcard-DNS names such as `127.0.0.1.nip.io`
+that spell one of those addresses. Before a pull the service resolves the
+registry's name and refuses it if any address is one of those. The engine
+resolves the name again itself and follows a registry's redirects and sign-in
+address, so these checks narrow where it connects rather than bound it; an
+operator who needs a fixed set of registries puts the images on the host and
+limits the host's outbound traffic. An image already on the host runs without
+a pull. The runners' own images are pinned the same way.
 
 A package runner is prepared in a separate container that holds no secret and
 may reach only its registry (`registry.npmjs.org`, or `pypi.org` and

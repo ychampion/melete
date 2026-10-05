@@ -34,7 +34,12 @@ const app =
     ? createApp({
         db: handle.db,
         sql: handle.sql,
-        env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root, MELETE_PUBLIC_URL: PUBLIC }),
+        env: loadEnv({
+          MELETE_PREVIEW_MULTIPLAYER: 'true',
+          NODE_ENV: 'test',
+          MELETE_SPACES_DIR: root,
+          MELETE_PUBLIC_URL: PUBLIC,
+        }),
         jobs,
         memory: { sql: handle.sql, journal: { read: async () => [], append: async () => {} } },
         checkDatabase: async () => 'ok',

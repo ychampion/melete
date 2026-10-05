@@ -30,8 +30,12 @@ const DOCUMENTED_ELSEWHERE = [
 function servedRoutes(): string[] {
   const stub = new Proxy({}, { get: () => () => undefined }) as never;
   const deps: AppDeps = {
-    // A public address, so the MCP endpoint and its OAuth routes are served too.
-    env: loadEnv({ MELETE_PUBLIC_URL: 'https://melete.example' }),
+    // A public address, so the MCP endpoint and its OAuth routes are served
+    // too, and rooms switched on, so theirs are.
+    env: loadEnv({
+      MELETE_PUBLIC_URL: 'https://melete.example',
+      MELETE_PREVIEW_MULTIPLAYER: 'true',
+    }),
     checkDatabase: async () => 'ok',
     db: stub,
     sql: stub,

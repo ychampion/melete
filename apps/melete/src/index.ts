@@ -175,6 +175,7 @@ import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
+import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -330,6 +331,10 @@ export function createApp(deps: AppDeps) {
   app.use(`${VIEW_PREFIX}*`, isolated);
   // The same for a preview of a server in an agent's computer.
   app.use(`${PREVIEW_PREFIX}*`, isolated);
+  // Rooms, shared spaces, guests and hand-offs answer 404 while switched off,
+  // before sign-in, so an invite link and a guest's session meet the same answer.
+  const multiplayer = multiplayerEnabled(deps.env);
+  mountMultiplayerGate(app, multiplayer);
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -528,8 +533,9 @@ export function createApp(deps: AppDeps) {
       attachments: deps.attachments,
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
     });
-  // Rooms: shared spaces where several people talk to one agent.
-  if (deps.db && deps.jobs && submissions)
+  // Rooms: shared spaces where several people talk to one agent. Switched
+  // off, no room request is started, by a route or by a chat platform.
+  if (multiplayer && deps.db && deps.jobs && submissions)
     mountRooms(app, {
       db: deps.db,
       jobs: deps.jobs,

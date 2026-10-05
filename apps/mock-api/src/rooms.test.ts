@@ -39,7 +39,7 @@ async function room(mock: Mock) {
 }
 
 test('a room is made, a person is added, and everyone in it is shown by name and handle', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const { id } = await room(mock);
   const detail = C.roomDetail.parse((await call(mock, 'GET', `/rooms/${id}`)).json);
   expect(detail.room.my_role).toBe('owner');
@@ -50,7 +50,7 @@ test('a room is made, a person is added, and everyone in it is shown by name and
 });
 
 test('a message that does not ask starts nothing, and an ask is answered with a card and a receipt', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const { id } = await room(mock);
   const started = C.roomMessageResponse.parse(
     (
@@ -107,7 +107,7 @@ test('a message that does not ask starts nothing, and an ask is answered with a 
 });
 
 test('a thread works on one ask at a time, and stopping one lets the next start', async () => {
-  const mock = createMock({ speed: 1 });
+  const mock = createMock({ multiplayer: true, speed: 1 });
   const { id } = await room(mock);
   const first = C.roomMessageResponse.parse(
     (
@@ -143,12 +143,12 @@ test('a thread works on one ask at a time, and stopping one lets the next start'
 });
 
 test('a member who leaves finds no room, and the owner cannot leave', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const own = await room(mock);
   const me = C.ownerResponse.parse((await call(mock, 'GET', '/me')).json).owner.id;
   expect((await call(mock, 'DELETE', `/rooms/${own.id}/members/${me}`)).status).toBe(409);
 
-  const seeded = createMock({ speed: 0, experience: { seed: true } });
+  const seeded = createMock({ multiplayer: true, speed: 0, experience: { seed: true } });
   const rooms = C.roomList.parse((await call(seeded, 'GET', '/rooms')).json).rooms;
   const joined = rooms.find((r) => r.my_role === 'member');
   if (!joined) throw new Error('The demonstration has a room the account was added to');
@@ -160,7 +160,7 @@ test('a member who leaves finds no room, and the owner cannot leave', async () =
 });
 
 test('a name another person goes by is refused', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const taken = await call(mock, 'PATCH', '/me', { display_name: 'Priya Shah' });
   expect(taken.status).toBe(409);
   const renamed = await call(mock, 'PATCH', '/me', { display_name: 'Jamie' });
@@ -169,7 +169,7 @@ test('a name another person goes by is refused', async () => {
 });
 
 test('an ask to send something waits on a permission only the asker may answer', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const { id } = await room(mock);
   const detail = C.roomDetail.parse((await call(mock, 'GET', `/rooms/${id}`)).json);
   expect(detail.policy.requests_per_hour).toBe(30);
@@ -193,7 +193,7 @@ test('an ask to send something waits on a permission only the asker may answer',
 });
 
 test("a send through an account the room uses is answered under the room's team-account rule", async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const { id, priya } = await room(mock);
   const detail = C.roomDetail.parse((await call(mock, 'GET', `/rooms/${id}`)).json);
   expect(detail.policy.team_account_approvers).toBe('any_member');
@@ -265,7 +265,7 @@ const answerPermission = (
   });
 
 test("a permission is answered by the people the room's rule names, once, and owners change the rule", async () => {
-  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const mock = createMock({ multiplayer: true, speed: 0, experience: { seed: true } });
   const rooms = C.roomList.parse((await call(mock, 'GET', '/rooms')).json).rooms;
   const launch = rooms.find((r) => r.my_role === 'owner');
   if (!launch) throw new Error('The demonstration has a room the account owns');
@@ -305,7 +305,7 @@ test("a permission is answered by the people the room's rule names, once, and ow
 });
 
 test('an invite makes a guest who reaches only rooms, reads no email, and never answers', async () => {
-  const mock = createMock({ speed: 0 });
+  const mock = createMock({ multiplayer: true, speed: 0 });
   const { id } = await room(mock);
   const made = C.roomInviteCreated.parse(
     (
@@ -375,7 +375,7 @@ test('an invite makes a guest who reaches only rooms, reads no email, and never 
 });
 
 test('a handoff waits on Home, runs the task the person read, and reaches the room only when shared', async () => {
-  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const mock = createMock({ multiplayer: true, speed: 0, experience: { seed: true } });
   const home = (await call(mock, 'GET', '/home')).json as { handoffs: unknown[] };
   const [waiting] = home.handoffs.map((entry) => C.roomHandoff.parse(entry));
   if (!waiting) throw new Error('The demonstration hands the account a task');
@@ -426,7 +426,7 @@ test('a handoff waits on Home, runs the task the person read, and reaches the ro
 });
 
 test('a person deletes their own message, forgets what the room remembers, and shares a detail of their own', async () => {
-  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const mock = createMock({ multiplayer: true, speed: 0, experience: { seed: true } });
   const rooms = C.roomList.parse((await call(mock, 'GET', '/rooms')).json).rooms;
   const launch = rooms.find((r) => r.my_role === 'owner');
   if (!launch) throw new Error('The demonstration has a room the account owns');
@@ -480,4 +480,27 @@ test('a person deletes their own message, forgets what the room remembers, and s
   expect(made.content).toBe(mine.value);
   const withdrawn = await call(mock, 'DELETE', `/rooms/${launch.id}/shares/${made.id}`);
   expect(C.roomShareWithdrawn.parse(withdrawn.json).withdrawn).toBe(made.id);
+});
+
+test('switched off, as by default, the multiplayer routes answer 404 and nothing waits on a hand-off', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  expect(C.setupStatusResponse.parse((await call(mock, 'GET', '/setup')).json)).toMatchObject({
+    multiplayer: false,
+  });
+  for (const [method, path, body] of [
+    ['GET', '/rooms'],
+    ['POST', '/rooms', { name: 'Design' }],
+    ['POST', '/invites/accept', { token: 'x', password: 'a long password' }],
+    ['GET', '/handoffs'],
+    ['GET', '/me/linked-accounts'],
+    ['POST', '/spaces/shared', { name: 'Team' }],
+  ] as const) {
+    const answer = await call(mock, method, path, body);
+    expect(answer.status).toBe(404);
+    expect(C.errorResponse.parse(answer.json).error.code).toBe('not_available');
+  }
+  const home = (await call(mock, 'GET', '/home')).json as { handoffs: unknown[] };
+  expect(home.handoffs).toEqual([]);
+  // A personal chat is untouched.
+  expect((await call(mock, 'GET', '/conversations')).status).toBe(200);
 });

@@ -165,6 +165,7 @@ describe('default connections', () => {
       speechConfigured: false,
       transcriptionConfigured: false,
       sandbox: null,
+      multiplayer: false,
     });
     expect(builtinEnvironment({ ...base, MELETE_RUNTIME_SUPERVISOR: 'docker' }).cellIsolated).toBe(
       true,
@@ -190,7 +191,15 @@ describe('default connections', () => {
       BUILTIN_CONNECTIONS.filter((builtin) => builtin.when?.(environment) ?? true).map(
         (builtin) => builtin.key,
       );
+    // Rooms switched off, as by default: no space is given the room tools.
     expect(wanted(builtinEnvironment(base))).toEqual([
+      'files',
+      'web',
+      'artifacts',
+      'apps',
+      'notes',
+    ]);
+    expect(wanted(builtinEnvironment({ ...base, MELETE_PREVIEW_MULTIPLAYER: 'true' }))).toEqual([
       'files',
       'web',
       'artifacts',
@@ -200,7 +209,12 @@ describe('default connections', () => {
       'notes',
     ]);
     expect(
-      wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
+      wanted({
+        cellIsolated: true,
+        speechConfigured: true,
+        transcriptionConfigured: true,
+        multiplayer: true,
+      }),
     ).toEqual([
       'files',
       'web',
