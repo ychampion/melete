@@ -89,7 +89,7 @@ import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
 import { mountVoiceMock } from './voice.ts';
 
-export const MOCK_VERSION = '0.1.0-pre';
+export const MOCK_VERSION = '0.2.1';
 
 /** A budget a scripted job can never exceed, so nothing fails for the wrong reason. */
 export const DEFAULT_BUDGET: JobBudget = {

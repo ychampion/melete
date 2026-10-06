@@ -14,7 +14,7 @@
     },
     "apps/melete": {
       "name": "@melete/service",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "@melete/knowledge": "workspace:*",
@@ -53,7 +53,7 @@
     },
     "apps/mock-api": {
       "name": "@melete/mock-api",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "hono": "4.13.7",
@@ -63,14 +63,14 @@
     },
     "apps/tryit": {
       "name": "@melete/tryit",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "devDependencies": {
         "wrangler": "4.53.0",
       },
     },
     "apps/web": {
       "name": "@melete/web",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@fontsource-variable/dm-sans": "5.3.0",
         "@fontsource-variable/newsreader": "5.3.0",
@@ -89,7 +89,7 @@
     },
     "conformance": {
       "name": "@melete/conformance",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "@melete/skills": "workspace:*",
@@ -111,7 +111,7 @@
     },
     "packages/cli": {
       "name": "@melete/cli",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "yaml": "2.8.1",
         "zod": "4.6.2",
@@ -119,7 +119,7 @@
     },
     "packages/client": {
       "name": "@melete/client",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "openapi-fetch": "0.17.0",
       },
@@ -130,7 +130,7 @@
     },
     "packages/contracts": {
       "name": "@melete/contracts",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "re2js": "2.8.6",
         "zod": "4.6.2",
@@ -139,14 +139,14 @@
     },
     "packages/device": {
       "name": "melete-device",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "bin": {
         "melete-device": "./src/cli.ts",
       },
     },
     "packages/knowledge": {
       "name": "@melete/knowledge",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "gray-matter": "4.0.3",
@@ -155,7 +155,7 @@
     },
     "packages/runtime-hermes": {
       "name": "@melete/runtime-hermes",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "@melete/skills": "workspace:*",
@@ -164,7 +164,7 @@
     },
     "packages/skills": {
       "name": "@melete/skills",
-      "version": "0.1.0-pre",
+      "version": "0.2.1",
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "gray-matter": "4.0.3",

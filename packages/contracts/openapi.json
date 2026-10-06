@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Melete",
-    "version": "0.1.0-pre",
+    "version": "0.2.1",
     "summary": "An open-source, self-hosted, model-agnostic personal assistant.",
     "description": "Give Melete a responsibility, close the tab, come back to progress, a result, or one precise question. This document describes the v0.1 HTTP surface. Nothing here is stable yet: the release is pre-release and endpoints may change until v0.1.0 is tagged.",
     "license": {

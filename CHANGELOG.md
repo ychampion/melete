@@ -2,6 +2,109 @@
 
 What each version ships.
 
+## v0.2.1 — 2026-10-05
+
+### Ships
+
+- **Web search with sources, built in.** Every agent can search the web from the
+  first conversation, and each answer carries the passages and pages it came
+  from. Results favour recent pages, and pages built by scripts are read through
+  Tavily's extractor.
+- **Attachments in chat.** People can send PDFs, Word documents, spreadsheets and
+  pictures in a conversation or on Home, and the agent reads them as part of the
+  request.
+- **Per-person spending caps and model routing.** An operator sets daily and
+  monthly caps for each person, routes each call to the model that suits it, and
+  is alerted when a cap comes close. A person can also link a secondary model
+  for side tasks and scheduled jobs.
+- **A bigger context with prompt caching.** Long-context models get room to use
+  their full window, loaded tools stay loaded for the whole run, and requests are
+  laid out so the provider's prompt cache can serve them.
+- **Semantic memory and the agent's own notes.** Memory is recalled by meaning,
+  and the agent keeps notes for itself as it works.
+- **Computer use that sees each step.** On the agent's computer, each action is
+  taken with a fresh look at the screen, and who holds the computer is kept in
+  the database so a take-over survives a restart.
+- **Routines from the conversation.** The agent can list, pause, resume and stop
+  a person's routines when asked.
+- **Workspace trash with Undo.** Files the agent deletes go to a trash for a set
+  time, and Undo or restore brings them back.
+- **Home shows what needs you.** New mail and calendar changes are sorted by a
+  small model, and the ones that need the person rise to the top of Home.
+- **Always-on watching of mail and calendar.** Connected mail and calendars are
+  watched read-only by default, and changes arrive as signals the agent can act
+  on.
+- **Situations and calendar awareness.** Melete notices meetings that move or
+  overlap, deadlines at risk and mail left unanswered, and reaches the person by
+  urgency. It reads when the person is free, declines bookings over taken time,
+  and asks before inviting anyone from outside.
+- **Reach me by text and call.** When a deadline the person set goes unanswered,
+  Melete sends a push, then a text, then calls the person's own verified number.
+- **Drive documents.** Changes in a connected Google Drive are read, and deadlines
+  on its files are kept.
+- **Intents.** What a person asks for is kept until it is done, with every guess
+  marked as a guess.
+- **Undo and undo-send.** Every change says how it is undone, and messages are
+  held for a short window before they send.
+- **Background usage on its own meter.** Background model calls are counted
+  apart, can be capped on their own, and work that keeps waking for nothing is
+  paused.
+- **Voice, connection status and speed.** Voice and connection status show what
+  is really happening, speech connectors use the configured key, and short turns
+  finish sooner.
+- **Clearer work on the agent's computer.** Each outside site the agent's
+  computer sends data to shows in the conversation, the agent's browser no longer
+  saves passwords or cards, and the agent is told plainly when nobody stopped a
+  command.
+- **Capability evaluations in CI.** A suite measures what Melete can do across
+  models and runs in continuous integration.
+- **A separate service for Docker access, plus database roles.** The Docker
+  socket is held by its own `melete-cells` service, and the main service runs
+  under a database role that cannot read the secret table. Read the upgrade notes
+  below before updating.
+- **Tighter edges.** The cells service re-serializes the bodies it forwards,
+  image-based MCP servers never pull from addresses that point back at the host,
+  `melete doctor` runs
+  on image-only installs, and a reply counts as an answer only when its sender is
+  authenticated or it names the person's own message.
+
+### Preview (off by default)
+
+- **Rooms and shared work.** Shared rooms with one agent, their own memory and
+  approval rules, guests, hand-offs, team accounts and approvals, and a link to
+  a chat platform.
+  These stay off unless an operator sets `MELETE_PREVIEW_MULTIPLAYER=true`, and
+  they may change before they ship.
+
+### Upgrading from v0.2.0
+
+1. The stack adds `database-roles`, a one-shot step that runs at every start,
+   and `melete-cells`, the only service that holds the Docker socket. The
+   `melete` service now reads `DATABASE_URL_FILE` and has no socket. Bring the
+   whole stack up, not with `--no-deps`. There are no new required `.env` keys
+   (`DOCKER_GID` was already required). A managed database that cannot create
+   roles sets the three role URLs instead, and `melete check` explains how. See
+   [Database roles](docs/DEPLOYMENT.md#database-roles) and
+   [Isolation and image provenance](docs/DEPLOYMENT.md#isolation-and-image-provenance).
+2. Reach-me by text and call uses the `MELETE_TWILIO_*` settings; without them
+   it stops at push notifications. Texting US numbers needs A2P 10DLC
+   registration.
+3. The Gmail and Drive scopes are Google "restricted" scopes. Self-hosted
+   installations use their own OAuth client, and the Drive scope is requested
+   only on first use.
+4. Image-based MCP servers can pull from any registry except addresses that
+   point back at the host.
+5. Database migrations through `0110` apply automatically at start.
+6. New optional settings: background spending caps
+   (`MELETE_SPEND_PERSON_BACKGROUND_*`), `MELETE_OBSERVATION_RETENTION_DAYS`
+   (14), `MELETE_OBSERVATION_TOMBSTONE_DAYS` (180), `MELETE_SEND_HOLD_SECONDS`
+   (20), `MELETE_TRASH_DAYS` (7) and `MELETE_TRASH_MAX_MB`, upload limits
+   (`MELETE_ATTACHMENT_*`, off by default), and `MELETE_MODEL_TRIAGE`. See
+   `deploy/.env.example` for every name.
+7. Rooms, team accounts and approvals, guests, hand-offs and the chat-platform
+   link are off by default. Set `MELETE_PREVIEW_MULTIPLAYER=true` to turn them
+   on. Existing rooms data is kept either way.
+
 ## v0.2.0 — 2026-09-18
 
 ### Ships
