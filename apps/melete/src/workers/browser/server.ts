@@ -9,6 +9,9 @@ const leaseRequest = z.strictObject({
     public_compartment: z.boolean(),
     allowed_domains: z.array(z.string()).max(100),
   }),
+  region: z
+    .strictObject({ locale: z.string().max(64), timezone_id: z.string().max(64) })
+    .optional(),
 });
 const sessionRequest = z.strictObject({ session_id: z.string().min(1) });
 const forgetRequest = z.strictObject({ domain: z.string().min(1).max(255) });
@@ -40,7 +43,9 @@ export async function startBrowserServer(options: {
       const body: unknown = await request.json();
       if (path === '/lease') {
         const input = leaseRequest.parse(body);
-        return Response.json(await options.sessions.lease(input.job_id, input.policy));
+        return Response.json(
+          await options.sessions.lease(input.job_id, input.policy, input.region),
+        );
       }
       if (path === '/takeover')
         return Response.json(

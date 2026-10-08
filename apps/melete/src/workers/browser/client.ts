@@ -3,7 +3,12 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { LiveDown, LiveInput, LiveOpen } from './live-protocol.ts';
-import { BrowserFault, type BrowserPolicy, type BrowserSession } from './sessions.ts';
+import {
+  BrowserFault,
+  type BrowserPolicy,
+  type BrowserRegion,
+  type BrowserSession,
+} from './sessions.ts';
 
 export class BrowserWorkerClient {
   constructor(
@@ -37,8 +42,8 @@ export class BrowserWorkerClient {
       );
     return value as T;
   }
-  lease(jobId: string, policy: BrowserPolicy): Promise<BrowserSession> {
-    return this.request('/lease', { job_id: jobId, policy });
+  lease(jobId: string, policy: BrowserPolicy, region?: BrowserRegion): Promise<BrowserSession> {
+    return this.request('/lease', { job_id: jobId, policy, ...(region ? { region } : {}) });
   }
   takeover(sessionId: string): Promise<BrowserSession> {
     return this.request('/takeover', { session_id: sessionId });

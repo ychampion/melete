@@ -59,6 +59,10 @@ function startFixture() {
             <a href="/one">Two places</a><a href="/two">Two places</a>
             <a href="http://127.0.0.1:${privatePort}/inside">Private page</a>
             <a href="mailto:someone@example.com">Write to us</a>`);
+        case '/where':
+          return page(
+            `<p id="where"></p><script>document.getElementById('where').textContent = 'Seen as ' + navigator.language + ' in ' + Intl.DateTimeFormat().resolvedOptions().timeZone;</script>`,
+          );
         case '/target':
           return page('<h1>Target page</h1>');
         case '/dropdown':
@@ -194,4 +198,29 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     const third = await call({ kind: 'select', value: 'Option 3' });
     expect(third.observation?.tree).toContain('option "Option 3" [selected]');
   }, 20_000);
+
+  test("a page sees the person's language and time zone, and a neutral place without them", async () => {
+    const seenAs = async (spaceId: string, region?: { locale: string; timezone_id: string }) => {
+      const own = await pool.get(spaceId);
+      const lease = await own.lease(
+        `job_${spaceId}`,
+        { public_compartment: true, allowed_domains: [] },
+        region,
+      );
+      const look = (operation: unknown) =>
+        own.request<BrowserCommandResult>('/command', {
+          session_id: lease.id,
+          job_id: `job_${spaceId}`,
+          control_epoch: lease.control_epoch,
+          operation,
+        });
+      await look({ kind: 'observe' });
+      const opened = await look({ kind: 'open', url: `${fixture.url}/where` });
+      return /Seen as [^\n"]+/.exec(opened.observation?.tree ?? '')?.[0];
+    };
+    expect(
+      await seenAs('sp_region_person', { locale: 'en-GB', timezone_id: 'America/Los_Angeles' }),
+    ).toBe('Seen as en-GB in America/Los_Angeles');
+    expect(await seenAs('sp_region_default')).toBe('Seen as en-US in UTC');
+  }, 30_000);
 });

@@ -7,7 +7,12 @@ import type { ConnectorContext } from '../../connectors/types.ts';
 import { lockEventOrderIn } from '../../db/transaction.ts';
 import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
-import { BrowserFault, type BrowserSession } from './sessions.ts';
+import {
+  BrowserFault,
+  type BrowserRegion,
+  type BrowserSession,
+  browserRegion,
+} from './sessions.ts';
 import { BrowserSiteService } from './sites.ts';
 
 export type BrowserWorkers = {
@@ -56,15 +61,30 @@ export class BrowserSessionService {
   async lease(ctx: ConnectorContext, sessionId?: string) {
     if (sessionId) await this.authorize(sessionId, ctx);
     const worker = await this.workers.get(ctx.space_id);
-    const session = await worker.lease(ctx.job_id, {
-      public_compartment: ctx.constraints.public_compartment,
-      allowed_domains: [...ctx.constraints.allowed_domains],
-    });
+    const session = await worker.lease(
+      ctx.job_id,
+      {
+        public_compartment: ctx.constraints.public_compartment,
+        allowed_domains: [...ctx.constraints.allowed_domains],
+      },
+      await this.region(ctx.space_id),
+    );
     if (sessionId && session.id !== sessionId) throw new BrowserFault('session_not_found');
     // A session with no binding yet was started by this lease, for this job.
     const [known] = await this.sql`select 1 from browser_session_binding where id = ${session.id}`;
     await this.record(session, ctx);
     return { session, worker, opened: !known };
+  }
+
+  /**
+   * The person's place for their browser: the time zone from their profile. The profile keeps
+   * no language or region, so pages are asked for US English; a site that prices by the
+   * network address it sees can still pick another currency.
+   */
+  async region(spaceId: string): Promise<BrowserRegion> {
+    const [profile] = await this.sql<{ time_zone: string }[]>`select time_zone
+      from experience_profile where space_id = ${spaceId}`;
+    return browserRegion({ timezone_id: profile?.time_zone });
   }
 
   async authorize(
