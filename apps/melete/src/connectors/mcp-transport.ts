@@ -15,7 +15,38 @@ export const MCP_STATELESS_VERSION = '2026-07-28';
 export const MCP_HANDSHAKE_VERSIONS: readonly string[] = ['2025-11-25', '2025-06-18', '2025-03-26'];
 export const MCP_CLIENT_INFO = { name: 'melete', version: '0.1.0' } as const;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
+/** One server-sent event, as the web reader caps one page. */
+const MAX_EVENT_BYTES = 1024 * 1024;
+/** How deep a JSON message may nest; real tool schemas stay far shallower. */
+export const MAX_JSON_DEPTH = 64;
+/** How long a response body may go without a byte once it has begun. */
+const IDLE_MS = 5_000;
+/** Requests one HTTP connection may have open at once. */
+const MAX_OPEN_PER_CONNECTION = 8;
+/** Requests one space's connections may have open at once, together. */
+const MAX_OPEN_PER_SPACE = 32;
+const openBySpace = new Map<string, number>();
 const TEMP_PREFIX = 'melete-mcp-';
+
+/**
+ * Whether a JSON text nests no deeper than `limit`, checked before it is
+ * parsed, so a hostile answer cannot exhaust the parser's stack.
+ */
+export function jsonDepthWithin(text: string, limit = MAX_JSON_DEPTH): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (inString) {
+      if (code === 92) index++; // backslash: the next character is escaped
+      else if (code === 34) inString = false;
+    } else if (code === 34) inString = true;
+    else if (code === 123 || code === 91) {
+      if (++depth > limit) return false;
+    } else if (code === 125 || code === 93) depth--;
+  }
+  return true;
+}
 
 export type McpEndpoint =
   | { transport: 'stdio'; command: string; args: string[] }
@@ -62,6 +93,13 @@ const STATELESS_ERRORS = new Set([-32020, -32021, UNSUPPORTED_VERSION]);
 export type McpTransportOptions = {
   timeoutMs?: number;
   maxMessageBytes?: number;
+  /** How long a response may go silent once it has begun; 5 seconds unless set. */
+  idleMs?: number;
+  /**
+   * Whose requests these are, for the limit on open requests across one
+   * space's connections. Left out, only this connection's own limit applies.
+   */
+  space?: string;
   /** Only the trusted credential store supplies this value. */
   accessToken?: () => Promise<string | undefined>;
   /**
@@ -82,6 +120,7 @@ const disconnected = () =>
 type RpcMessage = JsonObject & { jsonrpc: '2.0' };
 
 function parseMessage(text: string): RpcMessage {
+  if (!jsonDepthWithin(text)) throw new Error('MCP message is nested too deeply');
   const value = jsonObject.parse(JSON.parse(text));
   if (value.jsonrpc !== '2.0') throw new Error('Invalid MCP JSON-RPC version');
   return value as RpcMessage;
@@ -352,6 +391,8 @@ export function openHttpMcpTransport(
   let session: string | undefined;
   let counter = 0;
   let closed = false;
+  /** Requests open on this connection now. */
+  let open = 0;
   /** The revision every request names: the handshake's until a server proves it is stateless. */
   let version = MCP_PROTOCOL_VERSION;
   let stateless = false;
@@ -407,12 +448,38 @@ export function openHttpMcpTransport(
     extra: { headers?: Record<string, string>; at?: string } = {},
   ): Promise<unknown> {
     if (closed) throw disconnected();
+    // A request is refused before it is sent when too many are open, so the
+    // refusal is certain: nothing reached the server.
+    const counted = typeof message.method === 'string';
+    if (counted) {
+      const space = options.space;
+      if (
+        open >= MAX_OPEN_PER_CONNECTION ||
+        (space !== undefined && (openBySpace.get(space) ?? 0) >= MAX_OPEN_PER_SPACE)
+      )
+        throw new ConnectorFaultError({
+          kind: 'transient_before_dispatch',
+          detail: 'Too many MCP requests are open at once; nothing was sent',
+        });
+      open++;
+      if (space !== undefined) openBySpace.set(space, (openBySpace.get(space) ?? 0) + 1);
+    }
     const controller = new AbortController();
     controllers.add(controller);
+    /** Why this request was stopped, in words, when the transport stopped it. */
+    let stopped: string | undefined;
     const abort = () => controller.abort();
+    const stop = (reason: string) => () => {
+      stopped ??= reason;
+      controller.abort();
+    };
     if (signal?.aborted) controller.abort();
     signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, options.timeoutMs ?? 10_000);
+    const timer = setTimeout(
+      stop('MCP server did not answer in time'),
+      options.timeoutMs ?? 10_000,
+    );
+    let idle: ReturnType<typeof setTimeout> | undefined;
     let reader: { cancel(): Promise<void> } | undefined;
     const at = extra.at ?? version;
     const modern = extra.at !== undefined || stateless;
@@ -491,12 +558,18 @@ export function openHttpMcpTransport(
         throw new Error('Unsupported MCP response content type');
       }
       if (!response.body) throw new Error('Empty MCP response');
+      const declared = Number(response.headers.get('content-length') ?? 0);
+      if (declared > maxBytes) throw new Error('MCP response limit exceeded');
       const bodyReader = response.body.getReader();
       reader = bodyReader;
       const decoder = new TextDecoder();
+      const quiet = stop('MCP server stopped sending before it answered');
+      const idleMs = options.idleMs ?? IDLE_MS;
       let buffer = '';
       let bytes = 0;
       for (;;) {
+        clearTimeout(idle);
+        idle = setTimeout(quiet, idleMs);
         const chunk = await bodyReader.read();
         bytes += chunk.value?.byteLength ?? 0;
         if (bytes > maxBytes) throw new Error('MCP response limit exceeded');
@@ -518,6 +591,8 @@ export function openHttpMcpTransport(
               .map((line) => line.slice(5).replace(/^ /, ''))
               .join('\n');
             if (!data) continue;
+            if (Buffer.byteLength(data) > MAX_EVENT_BYTES)
+              throw new Error('MCP event limit exceeded');
             const reply = parseMessage(data);
             if (typeof reply.method === 'string') {
               // A stateless server sends no requests of its own; one that does is refused.
@@ -528,9 +603,14 @@ export function openHttpMcpTransport(
             else throw new Error('MCP response id mismatch');
           }
         }
+        // An event still arriving may not grow past one event's limit.
+        if (contentType === 'text/event-stream' && Buffer.byteLength(buffer) > MAX_EVENT_BYTES)
+          throw new Error('MCP event limit exceeded');
         if (chunk.done) throw new Error('MCP stream ended without an acknowledgement');
       }
     } catch (error) {
+      // The transport's own limits say why; the call's outcome stays unknown.
+      if (stopped) throw new Error(stopped);
       // These network codes prove no destination connection existed. Resets and
       // timeouts do not prove that, so they retain the unknown outcome.
       if (
@@ -544,8 +624,18 @@ export function openHttpMcpTransport(
     } finally {
       await reader?.cancel().catch(() => {});
       clearTimeout(timer);
+      clearTimeout(idle);
       signal?.removeEventListener('abort', abort);
       controllers.delete(controller);
+      if (counted) {
+        open--;
+        const space = options.space;
+        if (space !== undefined) {
+          const left = (openBySpace.get(space) ?? 1) - 1;
+          if (left > 0) openBySpace.set(space, left);
+          else openBySpace.delete(space);
+        }
+      }
     }
   }
 

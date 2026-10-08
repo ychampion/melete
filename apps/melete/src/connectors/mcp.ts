@@ -71,8 +71,12 @@ const serverTool = z.object({
   // rather than asked about, which never widens what a tool may do.
   annotations: z.object({ readOnlyHint: z.boolean().optional() }).optional(),
 });
+/** A tool whose definition is larger than this is never offered: no schema that size fits a turn. */
+export const MAX_TOOL_DEFINITION_BYTES = 64 * 1024;
+/** All of a server's tool list, every page together. */
+const MAX_TOOL_LIST_BYTES = 4 * 1024 * 1024;
 const toolPage = z.object({
-  tools: z.array(serverTool).max(256),
+  tools: z.array(z.unknown()).max(256),
   nextCursor: z.string().min(1).max(2048).optional(),
 });
 
@@ -271,10 +275,16 @@ async function introduce(transport: McpTransport) {
   const discovered = new Map<string, McpToolDefinition>();
   const cursors = new Set<string>();
   let cursor: string | undefined;
+  let listBytes = 0;
   for (let pageNumber = 0; ; pageNumber++) {
     if (pageNumber >= 16) throw new Error('MCP catalog page limit exceeded');
     const page = toolPage.parse(await transport.request('tools/list', cursor ? { cursor } : {}));
-    for (const tool of page.tools) {
+    for (const raw of page.tools) {
+      const size = Buffer.byteLength(JSON.stringify(raw) ?? '');
+      listBytes += size;
+      if (listBytes > MAX_TOOL_LIST_BYTES) throw new Error('MCP tool list is too large');
+      if (size > MAX_TOOL_DEFINITION_BYTES) continue;
+      const tool = serverTool.parse(raw);
       if (discovered.has(tool.name)) throw new Error('Duplicate MCP server tool');
       discovered.set(tool.name, tool);
     }

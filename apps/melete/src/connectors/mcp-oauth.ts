@@ -20,7 +20,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { MCP_PROTOCOL_VERSION, MCP_STATELESS_VERSION } from './mcp-transport.ts';
+import { jsonDepthWithin, MCP_PROTOCOL_VERSION, MCP_STATELESS_VERSION } from './mcp-transport.ts';
 
 /** A fetch that has already decided which addresses it may reach. */
 export type OAuthFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -98,7 +98,8 @@ async function readJson(response: Response): Promise<unknown> {
     await reader?.cancel().catch(() => {});
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const text = Buffer.concat(chunks).toString('utf8');
+    return jsonDepthWithin(text) ? JSON.parse(text) : null;
   } catch {
     return null;
   }

@@ -140,6 +140,8 @@ export async function openConfiguredMcpConnector(
   const worker = await openMcpWorker(config, binding, {
     ...credentials,
     ...(pinned ? { fetch: pinned } : {}),
+    // Open requests are limited per connection and across the space's connections.
+    space: binding.spaceId,
   });
   return mcpConnector(worker, binding, sql, credentials);
 }
