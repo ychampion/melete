@@ -10,7 +10,7 @@
  * as high as the computer's. Nothing is taken away: the desktop stays on offer
  * for what the browser tools cannot do.
  */
-import type { CatalogEntry } from '@melete/contracts';
+import type { CatalogEntry } from './catalog.ts';
 
 /** Said by the computer's entry points for the web, when the browser tools are on offer. */
 export const COMPUTER_WEB_NOTE =

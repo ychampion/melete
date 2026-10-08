@@ -84,9 +84,9 @@ const amount = { type: 'integer', minimum: -50, maximum: 50 };
 const SCREEN = `The screen is ${DOCKER_DESKTOP.width}x${DOCKER_DESKTOP.height}, origin top left.`;
 /** What every look at the screen gives back. */
 const LOOK =
-  'The result carries screen_text: each element on the screen with its role, name, value and box in screen pixels (from the page’s accessibility tree, or OCR when no page is in front), so read it rather than guessing from pixels.';
+  'It carries screen_text: each element on screen with role, name, value and box in screen pixels (from the page’s accessibility tree, else OCR); read it rather than guess from pixels.';
 /** Said of every action that ends with a screenshot. */
-const AFTER = ` A screenshot taken after it comes with the result. ${LOOK}`;
+const AFTER = ' A screenshot taken after it, with screen_text, comes with the result.';
 
 /** The most steps one `computer.batch` carries. */
 export const MAX_BATCH_ACTIONS = 5;
@@ -96,7 +96,7 @@ const BATCH_ACTIONS = ['open', 'click', 'type', 'key', 'scroll'] as const;
 export const COMPUTER_TOOLS: ToolManifest[] = [
   tool(
     'computer.screenshot',
-    `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it and the window in front. ${LOOK} Every other computer step already ends with this, so look again only after waiting for something to change. ${SCREEN}`,
+    `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it and the window in front. ${LOOK} Every step already ends with one. ${SCREEN}`,
     schema({}),
     'read',
   ),
