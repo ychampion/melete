@@ -190,7 +190,9 @@ describe('the revision a server settles on', () => {
         const message = (await request.json()) as { id?: number; method: string };
         methods.push(message.method);
         if (message.method === 'server/discover')
-          return new Response('<html>Not here</html>', { headers: { 'content-type': 'text/html' } });
+          return new Response('<html>Not here</html>', {
+            headers: { 'content-type': 'text/html' },
+          });
         if (message.id === undefined) return new Response(null, { status: 202 });
         const result =
           message.method === 'initialize'

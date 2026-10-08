@@ -38,7 +38,8 @@ export function jsonDepthWithin(text: string, limit = MAX_JSON_DEPTH): boolean {
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index);
     if (inString) {
-      if (code === 92) index++; // backslash: the next character is escaped
+      // A backslash escapes the character after it.
+      if (code === 92) index++;
       else if (code === 34) inString = false;
     } else if (code === 34) inString = true;
     else if (code === 123 || code === 91) {
