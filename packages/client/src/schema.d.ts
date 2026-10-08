@@ -23714,14 +23714,9 @@ export interface components {
                 access: "read_only" | "draft_only" | "asks_before_acting";
                 app: components["schemas"]["__schema288"];
                 builtin?: boolean;
-<<<<<<< HEAD
                 catalog_id?: string;
-                id: components["schemas"]["__schema284"];
-                label: components["schemas"]["__schema285"];
-=======
                 id: components["schemas"]["__schema287"];
                 label: components["schemas"]["__schema288"];
->>>>>>> origin/main
                 problem?: {
                     detail: components["schemas"]["__schema288"];
                     /** @enum {string} */
