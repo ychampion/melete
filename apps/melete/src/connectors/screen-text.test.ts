@@ -246,3 +246,59 @@ test('a person who takes the computer while its text is read is not shown it', a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('the screen text is redacted as the browser tools redact page text', () => {
+  const view = screenText(
+    encode({
+      source: 'accessibility',
+      url: 'https://accounts.example/oauth/callback?code=4/0AbCdEf123&state=xyz#access_token=ya29.secret',
+      elements: [
+        {
+          ref: 'n1',
+          role: 'link',
+          name: 'Continue here',
+          value: 'https://accounts.example/reset?token=abc123def456ghi789',
+          box: [1, 2, 3, 4],
+        },
+        {
+          ref: 'n2',
+          role: 'textbox',
+          name: 'Card number',
+          value: '4242 4242 4242 4242',
+          box: [1, 2, 3, 4],
+        },
+        { ref: 'n3', role: 'textbox', name: 'Card PIN', value: '1234', box: [1, 2, 3, 4] },
+        { ref: 'n4', role: 'textbox', name: 'From', value: 'Union Square', box: [1, 2, 3, 4] },
+      ],
+    }),
+  );
+  const all = JSON.stringify(view);
+  // The address keeps its host and path, never its query or fragment.
+  expect(view.url).toBe('https://accounts.example/oauth/callback');
+  expect(all).not.toContain('code=');
+  expect(all).not.toContain('ya29');
+  // A link's address loses its token.
+  expect(all).not.toContain('abc123def456ghi789');
+  expect(String(view.lines)).toContain(
+    'n1 link "Continue here" value="https://accounts.example/reset"',
+  );
+  // A card number's digits go, and a field labelled as a PIN keeps no value at all.
+  expect(all).not.toContain('4242 4242');
+  expect(String(view.lines)).toContain('n3 textbox "Card PIN" box=1,2,3,4');
+  expect(String(view.lines)).toContain('value="Union Square"');
+});
+
+test('a one-time code in OCR text is redacted', () => {
+  const view = screenText(
+    encode({
+      source: 'ocr',
+      elements: [
+        { ref: 't1', role: 'text', name: 'Your verification code is 482913', box: [1, 2, 3, 4] },
+        { ref: 't2', role: 'text', name: 'Recovery: ABCD-EFGH-IJKL-MNOP', box: [1, 2, 3, 4] },
+      ],
+    }),
+  );
+  expect(String(view.lines)).not.toContain('482913');
+  expect(String(view.lines)).not.toContain('ABCD-EFGH');
+  expect(String(view.lines)).toContain('[redacted]');
+});

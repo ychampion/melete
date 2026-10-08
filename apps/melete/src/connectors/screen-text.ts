@@ -12,10 +12,16 @@
  * no more than a few thousand characters.
  *
  * Every word in it was written by the page or app on the screen, never by the
- * person, so it is marked as such the way a fetched web page is.
+ * person, so it is marked as such the way a fetched web page is. It is also
+ * redacted as the browser tools redact page text: addresses lose their query,
+ * fragment and token-shaped path segments, names and values lose secret
+ * shapes, and a field labelled as a secret (a PIN, a security code) keeps no
+ * value at all.
  */
 import type { JsonValue } from '@melete/contracts';
 import { z } from 'zod';
+import { handbackUrl, redactSecretText } from '../workers/browser/redact.ts';
+import { isSensitiveControl } from '../workers/browser/visible.ts';
 
 /** The most characters of element lines one result carries. */
 export const MAX_SCREEN_TEXT_CHARS = 6_000;
@@ -64,15 +70,33 @@ function oneLine(text: string, max = 300): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/**
+ * A value as the browser tools show page text: an address without its query,
+ * fragment or token-shaped path segments, anything else without secret shapes.
+ */
+function shownValue(role: string, value: string): string {
+  if (role === 'link' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return handbackUrl(value);
+  return redactSecretText(value);
+}
+
 /** One element as a line: `n12 textbox "From" value="Union Square" [focused] box=85,180,177,21`. */
 function line(item: z.infer<typeof element>): string {
   const parts: string[] = [item.ref, item.role];
-  if (item.name) parts.push(JSON.stringify(oneLine(item.name)));
-  // A secret field (a password, a one-time code) is said without its value.
+  const name = item.name ? redactSecretText(oneLine(item.name)) : '';
+  if (name) parts.push(JSON.stringify(name));
+  // A secret field (a password, a one-time code, one labelled as a PIN or a
+  // security code) is said without its value.
   const secret =
     item.states?.some((state) => state === 'protected') ||
-    /^(passwordfield|securetextfield)$/i.test(item.role);
-  if (item.value && !secret) parts.push(`value=${JSON.stringify(oneLine(item.value))}`);
+    /^(passwordfield|securetextfield)$/i.test(item.role) ||
+    isSensitiveControl({
+      label: item.name ?? '',
+      role: item.role,
+      required: false,
+      sensitive: false,
+    });
+  const value = item.value && !secret ? shownValue(item.role, oneLine(item.value)) : '';
+  if (value) parts.push(`value=${JSON.stringify(value)}`);
   if (item.states?.length)
     parts.push(`[${item.states.map((state) => oneLine(state, 64)).join(' ')}]`);
   parts.push(`box=${item.box.join(',')}`);
@@ -111,8 +135,10 @@ export function screenText(bytes: Uint8Array): Record<string, JsonValue> {
     about_this_text: SCREEN_TEXT_NOTICE,
     source: parsed.source,
   };
-  if (parsed.url) out.url = oneLine(parsed.url, 2_048);
-  if (parsed.title) out.title = oneLine(parsed.title);
+  // The address as the browser tools give it: no query, fragment or token in the path.
+  const url = parsed.url ? handbackUrl(oneLine(parsed.url, 2_048)) : '';
+  if (url) out.url = url;
+  if (parsed.title) out.title = redactSecretText(oneLine(parsed.title));
   out.key = parsed.source === 'accessibility' ? ACCESSIBILITY_KEY : OCR_KEY;
   out.lines = lines.join('\n');
   const notes: string[] = [];
