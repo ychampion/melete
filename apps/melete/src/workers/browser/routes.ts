@@ -263,7 +263,7 @@ export class BrowserSessionService {
     const steps = await this.sql`select kind, canonical_payload from action
       where job_id = ${scope.job_id} and status = 'succeeded'
         and kind in ('browser.open', 'browser.fill', 'browser.select', 'browser.click', 'browser.submit')
-        and canonical_payload->>'session_id' = ${sessionId}
+        and coalesce(canonical_payload->>'session_id', receipt->>'external_ref') = ${sessionId}
       order by created_at desc, id desc limit 12`;
     const done = [...steps].reverse().flatMap((step) => {
       const words = stepWords(String(step.kind), step.canonical_payload as Record<string, unknown>);

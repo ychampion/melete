@@ -1,5 +1,5 @@
 /**
- * The conformance suite. Twelve scenarios that prove the properties this release
+ * The conformance suite. Thirteen scenarios that prove the properties this release
  * claims, run against a compose stack with the `test` connector and a scripted
  * model, so the suite is deterministic and costs nothing.
  *
@@ -207,6 +207,22 @@ export const SCENARIOS: readonly Scenario[] = [
       'an unmet deadline is raised exactly once, with its reason, however many sweeps run at its time',
       'a deadline moved before its time is read and raised at the new time only',
       'no clock is read before its time, and no model is called',
+    ],
+  },
+  {
+    id: 17,
+    slug: 'once-across-paths',
+    title: 'An effect is done once across paths, or handed to the person with its reason',
+    text:
+      "One booking can go through a scripted app or the agent's browser. The app takes it and its " +
+      'answer is lost past the dispatch timeout, then the browser is tried. Separately, a browser ' +
+      'submit lands on a page that says nothing, and the person is handed the browser and hands it back.',
+    assertions: [
+      'a timeout after dispatch on the API path never leads to a browser retry until reconciled',
+      'reconciled by reading the destination, the booking exists exactly once, and the browser is not a second way to it',
+      'a browser submit whose page does not confirm rests unknown and is handed to the person with what is done and what is left',
+      'nothing more is submitted at that site while it is unconfirmed, on any path',
+      'handing the browser back reads the page before the work goes on',
     ],
   },
 ];

@@ -3653,6 +3653,12 @@ export class BrokerService implements BrokerOperations {
    * Anything else handed over simply goes on. Nothing is sent again here.
    */
   async handedBack(jobId: string, sessionId: string): Promise<'resumed' | 'asked' | 'none'> {
+    // Every submit from this browser still in doubt is read back, whether or
+    // not the work is still waiting on the person.
+    const doubts = await this.sql`select id from action where job_id = ${jobId}
+      and kind = 'browser.submit' and status in ('unknown', 'unresolved')
+      and canonical_payload->>'session_id' = ${sessionId} order by created_at, id`;
+    for (const row of doubts) await this.verify(String(row.id)).catch(() => null);
     const [held] = await this.sql`select wait from job where id = ${jobId}`;
     const card = (
       held?.wait as {
@@ -3661,7 +3667,6 @@ export class BrokerService implements BrokerOperations {
     )?.handoff;
     if (card?.take_over?.session_id !== sessionId) return 'none';
     const doubted = typeof card.action_id === 'string' ? card.action_id : null;
-    if (doubted) await this.verify(doubted).catch(() => null);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);
       const [now] = await tx`select wait from job where id = ${jobId}`;

@@ -36,7 +36,7 @@ const PAYMENT =
   /\b(card number|credit card|debit card|cvv|cvc|security code on (?:the|your) card|expiry date|expiration date|billing address|pay now|place (?:your )?order and pay)\b/i;
 
 const CONFIRMED =
-  /\b(thank you|thanks for|confirmed|confirmation (?:number|code|#)|you(?:'|’)re (?:all set|booked|confirmed)|successfully|(?:is|are|has been|have been) (?:sent|submitted|received|booked|scheduled|placed|confirmed|saved|reserved|complete)|was (?:sent|submitted|received|booked|scheduled|placed|saved)|we(?:'|’)ve (?:received|got)|we have received|booking (?:reference|confirmed|number)|reservation (?:is )?confirmed|order (?:number|#|placed|confirmed)|request (?:received|submitted)|message sent)\b/i;
+  /\b(thank you|thanks for|confirmed|confirmation (?:number|code|#)|you(?:'|’)re (?:all set|booked|confirmed)|successfully|(?:is|are|has been|have been) (?:sent|submitted|received|booked|scheduled|placed|confirmed|saved|reserved|complete)|(?:was|were) (?:sent|submitted|received|booked|scheduled|placed|saved)|we(?:'|’)ve (?:received|got)|we have received|booking (?:reference|confirmed|number)|reservation (?:is )?confirmed|order (?:number|#|placed|confirmed)|request (?:received|submitted)|message sent)\b/i;
 const FAILED =
   /\b(error|invalid|failed|try again|could ?n(?:o|')t|unable to|(?:is|are) required|please (?:enter|correct|fix|check)|went wrong|no longer available|not available|declined|rejected|denied)\b/i;
 

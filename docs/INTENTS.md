@@ -104,6 +104,49 @@ on the intent what stays as it is, in Undo's words
 A cancel that stops partway says so on the intent and is finished on the next
 pass (`a cancel that stops partway is finished later, and says so meanwhile`).
 
+## Which way Melete goes
+
+When a site or app can be reached two ways, through an account the person
+connected or through the agent's browser, the service picks the way, never the
+model.
+
+- **The connected app first.** A form sent from the browser to a site a
+  connected app also reaches is refused, with the app's tool named instead
+  (`the policy picks the API when one exists`). The browser stands in only
+  when the app has no way to do it, its interface changed, or it is down, and
+  then it still asks first, whatever standing permissions say (`an app that
+  cannot do it lets the browser stand in, and it still asks`).
+- **The person's answer holds on every path.** While a request through the app
+  waits for the person, or after they said no to it, the browser does not do
+  it instead (`the browser path can't be used to get around an approval the API
+  path needs`).
+- **One effect, once.** When a request may have gone through and nobody knows
+  yet, for example its answer was lost after it was sent, nothing more is tried
+  at that site on any path until it is checked, by reading the site or by the
+  person (`a timeout after dispatch on the API path never leads to a browser
+  retry until reconciled`).
+- **A sent form is read back.** After the browser sends a form, Melete reads
+  the page it lands on and records on the action whether it went through, did
+  not, or is unclear, with what on the page decided it. An unclear page is read
+  once more; if it is still unclear, the outcome stays open, the person is
+  handed the browser, and the form is never sent again unasked (`a browser
+  submit whose page doesn't confirm is recorded unclear and is never
+  resubmitted unasked`).
+- **Over to you.** A check that a person is there, a code sent to the person,
+  a payment page, or a field only the person types hands the work to them: a
+  card says what is done, what is left, and links to the agent's computer to
+  take over. When they hand the browser back, Melete reads the page and carries
+  on (`a captcha or 2FA hands to the person with a take-over link, and work
+  resumes after hand-back`; `a code asked for after a submit is handed over, and
+  checked on hand-back`). A page the person handed back shows Melete only its
+  controls, so a submit still in doubt is usually put to them to mark.
+- **What works where.** Melete keeps a count per site, kind of work and way:
+  tries, how they ended, and hand-overs. After three browser tries in a row at a
+  site that did not get through in the last week, the next goes to the person
+  (`a site where the browser keeps failing goes to the person`).
+
+Conformance scenario 17 runs the same properties end to end.
+
 ## For developers
 
 - `intent.capture` is offered to conversations. It takes a title, a kind
@@ -127,6 +170,8 @@ pass (`a cancel that stops partway is finished later, and says so meanwhile`).
 ## Evidence
 
 `apps/melete/test/integration/intents.test.ts` covers each behaviour above by
-the test names quoted. `apps/melete/src/intents/origins.test.ts` covers how a
+the test names quoted, and `apps/melete/test/integration/path-ladder.test.ts`
+those under **Which way Melete goes**; `apps/melete/src/paths/` holds the unit
+tests for the policy and for reading a page back. `apps/melete/src/intents/origins.test.ts` covers how a
 detail is marked as the person's or Melete's guess, and when a deadline is
 looked at.

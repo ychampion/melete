@@ -1,8 +1,8 @@
 /**
- * `bun run conformance` lists the twelve scenarios and what each one will
+ * `bun run conformance` lists the scenarios and what each one will
  * assert, then runs the suite.
  *
- * Scenarios 1 through 5, 9, 11 and 12 use disposable databases and scripted runtimes;
+ * Scenarios 1 through 5, 9, 11, 12 and 17 use disposable databases and scripted runtimes;
  * scenarios 6 through 8 exercise the deployed services with explicit opt-in,
  * and scenario 10 a Docker engine with its own opt-in.
  */
@@ -35,7 +35,7 @@ out(
 );
 out();
 out(
-  'Scenarios 1–5, 9, 11 and 12 use isolated databases, scripted runtimes and the test destination.',
+  'Scenarios 1–5, 9, 11, 12 and 17 use isolated databases, scripted runtimes and the test destination.',
 );
 out('With MELETE_CONFORMANCE_COMPOSE=1, they use the Compose Postgres host,');
 out('and scenarios 6–8 use the deployed web, API, broker and Hermes cells.');
