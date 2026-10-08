@@ -242,7 +242,7 @@ test('a screenshot is kept in the job workspace and the receipt says where, how 
     path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_SHOT1.png'),
   );
   expect(kept.byteLength).toBe(64);
-  expect(seen.map((command) => command.kind)).toEqual(['screenshot', 'info']);
+  expect(seen.map((command) => command.kind)).toEqual(['screenshot', 'info', 'text']);
 });
 
 test('a screenshot that is not an image is an error, not a receipt', async () => {
@@ -324,7 +324,7 @@ test('every step ends with a screenshot kept in the job workspace, so the agent 
     height: 768,
   });
   expect(detail.sha256).toMatch(/^[a-f0-9]{64}$/);
-  expect(seen.map((command) => command.kind)).toEqual(['click', 'screenshot']);
+  expect(seen.map((command) => command.kind)).toEqual(['click', 'screenshot', 'text']);
   const kept = await readFile(
     path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CLICK1.png'),
   );
@@ -370,7 +370,7 @@ test('a batch runs its steps in order and looks once, after the last', async () 
     signal: AbortSignal.timeout(5_000),
     settleMs: 0,
   });
-  expect(seen.map((command) => command.kind)).toEqual(['click', 'type', 'key', 'screenshot']);
+  expect(seen.map((command) => command.kind)).toEqual(['click', 'type', 'key', 'screenshot', 'text']);
   expect(detail).toMatchObject({
     computer: 'batch',
     completed: 3,
@@ -414,7 +414,7 @@ test('a batch stops at the first step that fails and says which, still showing t
     { action: 'type', text: 'x' },
     { action: 'key', keys: ['Return'] },
   ]);
-  expect(seen).toEqual(['click', 'type', 'screenshot']);
+  expect(seen).toEqual(['click', 'type', 'screenshot', 'text']);
   expect(detail).toMatchObject({ completed: 1, requested: 3 });
   expect(detail.stopped).toContain('step 2 (type) failed: xdotool exited 1');
   expect(detail.path).toBe('.melete/computer/act_COMPUTER1.png');

@@ -4,6 +4,7 @@
     melete-desktop screenshot            PNG of the whole screen on stdout
     melete-desktop stream --fps N        length-prefixed JPEG frames on stdout until the pipe closes
     melete-desktop info                  JSON: the screen, the window in front, whether a browser runs
+    melete-desktop text                  JSON: what the screen says, from the page's accessibility tree or OCR
     melete-desktop open URL              open an address in the browser, starting it if needed
     melete-desktop click X Y BUTTON N    click N times with button 1, 2 or 3
     melete-desktop type TEXT             type into whatever has focus
@@ -11,21 +12,27 @@
     melete-desktop scroll X Y STEPS      positive scrolls down, negative up
     melete-desktop input JSON            a person's live-view events, in order
 
-Everything runs as the sandbox user against display :0. Nothing here opens a
-socket or reads a credential; the browser reaches the internet only through
-the proxy the sandbox was given, when it was given one.
+Everything runs as the sandbox user against display :0. Nothing here reads a
+credential, and the only socket it opens is to the browser's DevTools endpoint
+on the loopback address inside this container; the browser reaches the
+internet only through the proxy the sandbox was given, when it was given one.
 """
 
+import base64
 import hashlib
+import http.client
 import io
 import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.parse
 
 DISPLAY = os.environ.get("DISPLAY", ":0")
 WIDTH, HEIGHT = 1024, 768
@@ -125,6 +132,379 @@ def info():
     }))
 
 
+# ---- what the screen says ------------------------------------------------
+#
+# A model that reads no pictures still has to know what is on the screen. The
+# browser starts with its DevTools endpoint on the loopback address inside this
+# container (the port it chose is written to DevToolsActivePort in its
+# profile), and `text` reads the accessibility tree of the page in front from
+# it: each element's role, name, value, state and box on the screen, with a
+# reference that stays the same while the element does. Anything else in front,
+# or a browser started without the endpoint, is read with OCR instead.
+#
+# What is printed is raw material: the service formats it, bounds it and marks
+# it as the page's words, never the person's.
+
+DEVTOOLS_PORT_FILE = os.path.join(PROFILE, "DevToolsActivePort")
+#: Elements looked at, in page order, before their boxes are asked for.
+MAX_CANDIDATES = 3000
+#: Elements printed, of those on screen.
+MAX_ELEMENTS = 600
+#: Characters kept of a name or a value.
+MAX_FIELD = 300
+#: Roles that say nothing on their own; their text is kept by the nodes inside.
+QUIET_ROLES = {
+    "none", "generic", "presentation", "InlineTextBox", "LineBreak", "RootWebArea", "WebArea",
+    "paragraph", "group", "Section", "div", "LayoutTable", "LayoutTableRow", "LayoutTableCell",
+    "ListMarker", "sectionheader", "sectionfooter",
+}
+#: Roles a person acts on, kept even when they have no name.
+CONTROL_ROLES = {
+    "button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "slider",
+    "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "listbox",
+    "treeitem", "gridcell", "ComboBoxSelect", "ComboBoxMenuButton", "PopUpButton", "DisclosureTriangle",
+}
+#: Element states worth saying, as the accessibility tree names them.
+STATES = ("focused", "checked", "pressed", "selected", "expanded", "disabled", "required", "invalid")
+
+
+class DevToolsSocket:
+    """Just enough of a WebSocket client for the DevTools protocol on the loopback address."""
+
+    def __init__(self, url, timeout=5.0):
+        parsed = urllib.parse.urlparse(url)
+        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise OSError("the DevTools endpoint is not on this computer")
+        self.sock = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        self.sock.sendall(
+            (
+                f"GET {target} HTTP/1.1\r\nHost: {parsed.hostname}:{parsed.port}\r\n"
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        self.buffer = bytearray()
+        while b"\r\n\r\n" not in self.buffer:
+            self._fill()
+        end = self.buffer.index(b"\r\n\r\n") + 4
+        status = bytes(self.buffer[:end]).split(b"\r\n", 1)[0]
+        del self.buffer[:end]
+        if b" 101 " not in status + b" ":
+            raise OSError("the DevTools endpoint refused the connection")
+        self.last = 0
+
+    def _fill(self):
+        chunk = self.sock.recv(1 << 16)
+        if not chunk:
+            raise OSError("the DevTools endpoint closed the connection")
+        self.buffer += chunk
+
+    def _take(self, size):
+        while len(self.buffer) < size:
+            self._fill()
+        out = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return out
+
+    def _frame(self, opcode, data):
+        header = bytearray([0x80 | opcode])
+        size = len(data)
+        if size < 126:
+            header.append(0x80 | size)
+        elif size < 1 << 16:
+            header.append(0x80 | 126)
+            header += struct.pack(">H", size)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack(">Q", size)
+        mask = os.urandom(4)
+        header += mask
+        self.sock.sendall(bytes(header) + bytes(byte ^ mask[index % 4] for index, byte in enumerate(data)))
+
+    def send(self, method, params=None):
+        self.last += 1
+        self._frame(0x1, json.dumps({"id": self.last, "method": method, "params": params or {}}).encode("utf-8"))
+        return self.last
+
+    def receive(self):
+        message = bytearray()
+        while True:
+            first, second = self._take(2)
+            opcode, size = first & 0x0F, second & 0x7F
+            if size == 126:
+                size = struct.unpack(">H", self._take(2))[0]
+            elif size == 127:
+                size = struct.unpack(">Q", self._take(8))[0]
+            mask = self._take(4) if second & 0x80 else None
+            data = self._take(size)
+            if mask:
+                data = bytes(byte ^ mask[index % 4] for index, byte in enumerate(data))
+            if opcode == 0x8:
+                raise OSError("the DevTools endpoint closed the connection")
+            if opcode == 0x9:
+                self._frame(0xA, data)
+                continue
+            if opcode == 0xA:
+                continue
+            message += data
+            if first & 0x80:
+                return json.loads(message.decode("utf-8"))
+
+    def answers(self, ids):
+        """The results for these message ids, by id; an error answers None."""
+        waiting, found = set(ids), {}
+        while waiting:
+            reply = self.receive()
+            if reply.get("id") in waiting:
+                waiting.discard(reply["id"])
+                found[reply["id"]] = None if "error" in reply else reply.get("result", {})
+        return found
+
+    def call(self, method, params=None):
+        sent = self.send(method, params)
+        result = self.answers([sent])[sent]
+        if result is None:
+            raise OSError(f"DevTools could not {method}")
+        return result
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def devtools_port(path=DEVTOOLS_PORT_FILE):
+    try:
+        with open(path, encoding="ascii") as handle:
+            port = int(handle.readline().strip())
+    except (OSError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def page_target(port, window_title):
+    """The page in the window in front: the one whose title the window shows, else the most recent."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        connection.request("GET", "/json/list")
+        listed = json.loads(connection.getresponse().read())
+    finally:
+        connection.close()
+    targets = [entry for entry in listed if isinstance(entry, dict) and entry.get("type") == "page"]
+    if not targets:
+        return None
+    for target in targets:
+        title = target.get("title") or ""
+        if title and window_title.startswith(title):
+            return target
+    return targets[0]
+
+
+def clean(value):
+    """One line of at most MAX_FIELD characters: a page cannot make one element look like two."""
+    text = " ".join(str(value).split())
+    return text if len(text) <= MAX_FIELD else text[: MAX_FIELD - 1] + "…"
+
+
+def ax_value(node, key):
+    entry = node.get(key)
+    return entry.get("value") if isinstance(entry, dict) else None
+
+
+def candidates(nodes):
+    """The tree's elements worth saying, in page order: named, valued, or acted on."""
+    by_id = {node.get("nodeId"): node for node in nodes}
+    roots = [node for node in nodes if node.get("parentId") not in by_id]
+    order, stack, seen = [], [root.get("nodeId") for root in reversed(roots)], set()
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen or node_id not in by_id:
+            continue
+        seen.add(node_id)
+        order.append(by_id[node_id])
+        stack.extend(reversed(by_id[node_id].get("childIds") or []))
+    picked = []
+    for node in order:
+        if node.get("ignored") or not isinstance(node.get("backendDOMNodeId"), int):
+            continue
+        role = str(ax_value(node, "role") or "")
+        name = clean(ax_value(node, "name") or "")
+        value = ax_value(node, "value")
+        value = clean(value) if value not in (None, "") else ""
+        if role in QUIET_ROLES and not value:
+            continue
+        if role == "StaticText":
+            # Text a link, a button or a field already says by its name or
+            # value is said once, there.
+            said, above = False, by_id.get(node.get("parentId"))
+            for _ in range(3):
+                if not above:
+                    break
+                if any(name in clean(ax_value(above, key) or "") for key in ("name", "value")):
+                    said = True
+                    break
+                above = by_id.get(above.get("parentId"))
+            if not name or said:
+                continue
+            role = "text"
+        elif not name and not value and role not in CONTROL_ROLES:
+            continue
+        states = []
+        for prop in node.get("properties") or []:
+            key = prop.get("name")
+            got = (prop.get("value") or {}).get("value")
+            if key in STATES and got not in (None, False, "false"):
+                states.append(key if got in (True, "true") else f"{key}={clean(got)}")
+        picked.append(
+            {"ref": f"n{node['backendDOMNodeId']}", "role": role, "name": name, "value": value,
+             "states": states, "backend": node["backendDOMNodeId"]}
+        )
+        if len(picked) >= MAX_CANDIDATES:
+            break
+    return picked
+
+
+def union(quads):
+    xs = [quad[index] for quad in quads for index in range(0, len(quad) - 1, 2)]
+    ys = [quad[index] for quad in quads for index in range(1, len(quad), 2)]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def accessibility_view(port, window_title):
+    """The page in front, element by element, with boxes in screen pixels; None when there is none."""
+    target = page_target(port, window_title)
+    if not target or not target.get("webSocketDebuggerUrl"):
+        return None
+    tools = DevToolsSocket(target["webSocketDebuggerUrl"])
+    try:
+        # A page still loading may have no document to ask yet: asked again, once.
+        for attempt in range(2):
+            frame = tools.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "JSON.stringify([screenX, screenY, outerWidth, outerHeight, innerWidth,"
+                    " innerHeight, location.href, document.title, scrollY,"
+                    " document.documentElement.scrollHeight])",
+                    "returnByValue": True,
+                },
+            )
+            said = (frame.get("result") or {}).get("value")
+            if isinstance(said, str) or attempt:
+                break
+            time.sleep(0.5)
+        sx, sy, outer_w, outer_h, inner_w, inner_h, url, title, scroll_y, page_h = json.loads(said)
+        tools.call("Accessibility.enable")
+        found = candidates(tools.call("Accessibility.getFullAXTree").get("nodes") or [])
+        sent = {tools.send("DOM.getContentQuads", {"backendNodeId": item["backend"]}): item for item in found}
+        answers = tools.answers(list(sent))
+    finally:
+        tools.close()
+    # Page pixels to screen pixels: the window's place, then the browser's own
+    # bars above the page and any border at the sides.
+    side = max(0, (outer_w - inner_w) // 2)
+    left, top = sx + side, sy + max(0, outer_h - inner_h - side)
+    elements, offscreen = [], 0
+    for sent_id, item in sent.items():
+        quads = (answers.get(sent_id) or {}).get("quads") or []
+        if not quads:
+            continue
+        x1, y1, x2, y2 = union(quads)
+        x1, y1, x2, y2 = max(0, x1), max(0, y1), min(inner_w, x2), min(inner_h, y2)
+        if x2 - x1 < 1 or y2 - y1 < 1:
+            offscreen += 1
+            continue
+        if len(elements) >= MAX_ELEMENTS:
+            continue
+        element = {key: item[key] for key in ("ref", "role", "name") if item[key]}
+        if item["value"]:
+            element["value"] = item["value"]
+        if item["states"]:
+            element["states"] = item["states"]
+        element["box"] = [round(left + x1), round(top + y1), round(x2 - x1), round(y2 - y1)]
+        elements.append(element)
+    return {
+        "source": "accessibility",
+        "url": str(url)[:2048],
+        "title": clean(title),
+        "scroll": {"top": round(scroll_y), "page_height": round(page_h), "view_height": round(inner_h)},
+        "elements": elements,
+        "offscreen": offscreen,
+    }
+
+
+def ocr_lines(tsv):
+    """Tesseract's TSV as lines of text, each with its box."""
+    lines, order = {}, []
+    for row in tsv.splitlines()[1:]:
+        cells = row.split("\t")
+        if len(cells) < 12 or cells[0] != "5":
+            continue
+        word = cells[11].strip()
+        try:
+            confidence = float(cells[10])
+            x, y, w, h = (int(cells[index]) for index in range(6, 10))
+        except ValueError:
+            continue
+        if not word or confidence < 0:
+            continue
+        key = (cells[1], cells[2], cells[3], cells[4])
+        if key not in lines:
+            lines[key] = {"words": [], "x1": x, "y1": y, "x2": x + w, "y2": y + h}
+            order.append(key)
+        line = lines[key]
+        line["words"].append(word)
+        line["x1"], line["y1"] = min(line["x1"], x), min(line["y1"], y)
+        line["x2"], line["y2"] = max(line["x2"], x + w), max(line["y2"], y + h)
+    elements = []
+    for index, key in enumerate(order[:MAX_ELEMENTS]):
+        line = lines[key]
+        elements.append({
+            "ref": f"t{index + 1}",
+            "role": "text",
+            "name": clean(" ".join(line["words"])),
+            "box": [line["x1"], line["y1"], line["x2"] - line["x1"], line["y2"] - line["y1"]],
+        })
+    return elements
+
+
+def ocr_view(reason):
+    if not shutil.which("tesseract"):
+        return {"source": "none", "reason": f"{reason}, and no OCR is installed"}
+    with tempfile.NamedTemporaryFile(suffix=".png", dir="/tmp") as shot:
+        grab().save(shot.name, format="PNG")
+        result = subprocess.run(
+            ["tesseract", shot.name, "stdout", "--psm", "3", "tsv"],
+            capture_output=True, text=True, timeout=45,
+        )
+    if result.returncode != 0:
+        return {"source": "none", "reason": f"{reason}, and OCR failed: {result.stderr.strip()[:200]}"}
+    return {"source": "ocr", "reason": reason, "elements": ocr_lines(result.stdout)}
+
+
+def text():
+    window = active_window()
+    view = None
+    port = devtools_port() if browser_running() else None
+    if port is None:
+        reason = "no browser with an accessibility tree is open"
+    elif not window.endswith("Chromium"):
+        reason = "the window in front is not the browser"
+    else:
+        try:
+            view = accessibility_view(port, window[: -len("Chromium")].rstrip(" -–"))
+            reason = "the browser showed no page"
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as error:
+            reason = f"the browser's accessibility tree could not be read ({type(error).__name__})"
+    if view is None:
+        view = ocr_view(reason)
+    view["window"] = window
+    view["width"], view["height"] = WIDTH, HEIGHT
+    print(json.dumps(view, ensure_ascii=False))
+
+
 def browser_windows():
     found = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "[Cc]hromium"],
                            capture_output=True, text=True)
@@ -189,6 +569,10 @@ def open_url(url):
             "--disable-gpu",
             "--disable-features=Translate,MediaRouter,OptimizationHints",
             "--password-store=basic",
+            # The page's accessibility tree, for `text`: on the loopback
+            # address inside this container, at a port written to the profile.
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=0",
             "--window-position=0,0",
             f"--window-size={WIDTH},{HEIGHT}",
             "--start-maximized",
@@ -325,6 +709,8 @@ def main(argv):
         return stream(fps)
     if command == "info" and not rest:
         return info()
+    if command == "text" and not rest:
+        return text()
     if command == "open" and len(rest) == 1:
         return open_url(rest[0])
     if command == "click" and len(rest) == 4:
