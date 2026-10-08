@@ -417,3 +417,69 @@ describe('a structured extraction full of filler', () => {
     expect(proposals).toHaveLength(1);
   });
 });
+
+describe('one-time tasks and requests are not facts about the person', () => {
+  const said = (quote: string, content: string, kind = 'user_statement', extra = {}) => ({
+    ...add,
+    domain_key: 'person.request',
+    content,
+    kind,
+    ...extra,
+    sources: [{ ...span, end: quote.length, quote }],
+  });
+  const kept = (entry: unknown) =>
+    readExtractionReply(JSON.stringify({ proposals: [entry] })).proposals.map(
+      (proposal) => proposal.op,
+    );
+
+  const requests: [string, string][] = [
+    ['book me a table for 7 tonight', 'Wants a table for 7 tonight'],
+    ['Can you book a table for 7 tonight at Nopa?', 'Booking a table at Nopa tonight'],
+    ['please send Maya the deck', 'Wants the deck sent to Maya'],
+    ['Find flights to Denver for next weekend', 'Looking for flights to Denver'],
+    ['write a short poem about rain', 'Asked for a poem about rain'],
+    ['install pandas and run the notebook', 'Needs pandas installed'],
+    ['remind me at 5 to call the bank', 'Call the bank at 5'],
+    ['ok, order the blue one', 'Ordering the blue one'],
+  ];
+  for (const [quote, content] of requests)
+    test(`dropped: ${quote}`, () => {
+      expect(kept(said(quote, content))).toEqual(['no-op']);
+    });
+
+  const lasting: [string, string, string?][] = [
+    ['I am allergic to cashews', 'Allergic to cashews'],
+    ['always book aisle seats for me', 'Prefers aisle seats', 'preference'],
+    ['from now on, write to me in Spanish', 'Wants replies in Spanish', 'preference'],
+    ['never schedule calls before 10', 'No calls before 10', 'preference'],
+    ["book somewhere vegetarian, I don't eat meat", "Doesn't eat meat"],
+    ['remember that my sister Priyanka lives in Denver', 'Priyanka lives in Denver'],
+    ['call me Sam', 'Goes by Sam', 'preference'],
+    ['My landlord is Mr. Okafor', 'Landlord is Mr. Okafor'],
+    ['Book club meets every Thursday at 7', 'Book club on Thursdays at 7'],
+  ];
+  for (const [quote, content, kind] of lasting)
+    test(`kept: ${quote}`, () => {
+      expect(kept(said(quote, content, kind))).toEqual(['add']);
+    });
+
+  test('the model saying a proposal is not lasting drops it, except a temporary exception', () => {
+    expect(
+      kept(said('the 7pm slot works', 'Prefers 7pm', 'preference', { lasting: false })),
+    ).toEqual(['no-op']);
+    expect(
+      kept(said("I'm away until Friday", 'Away until Friday', 'exception', { lasting: false })),
+    ).toEqual(['add']);
+    expect(
+      kept(said('the 7pm slot works', 'Prefers 7pm', 'preference', { lasting: true })),
+    ).toEqual(['add']);
+  });
+
+  test('a forwarded document is not judged as a request', () => {
+    expect(
+      kept(
+        said('Order #4411 ships to 12 Oak St', 'Order 4411 ships to Oak St', 'document_assertion'),
+      ),
+    ).toEqual(['add']);
+  });
+});

@@ -276,18 +276,33 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
       receipt: { external_ref: 'msg-4411' },
       resolvedAt: new Date('2026-10-01T09:00:00Z'),
     });
-    // A file the chat made stays in the space.
+    // A file the chat saved to the person's Files stays in the space; one in
+    // its own workspace goes to the trash with the workspace.
     const fileId = newId('art');
-    await db.insert(artifact).values({
-      id: fileId,
-      spaceId,
-      jobId: chat.id,
-      sourceJobId: chat.id,
-      path: 'menu.md',
-      contentHash: 'd'.repeat(64),
-      mime: 'text/markdown',
-      size: 10,
-    });
+    const workFileId = newId('art');
+    await db.insert(artifact).values([
+      {
+        id: fileId,
+        spaceId,
+        jobId: chat.id,
+        sourceJobId: chat.id,
+        area: 'artifacts',
+        path: 'menu.md',
+        contentHash: 'd'.repeat(64),
+        mime: 'text/markdown',
+        size: 10,
+      },
+      {
+        id: workFileId,
+        spaceId,
+        jobId: chat.id,
+        sourceJobId: chat.id,
+        path: 'scratch.md',
+        contentHash: 'e'.repeat(64),
+        mime: 'text/markdown',
+        size: 10,
+      },
+    ]);
     const claimId = await learnedFrom(chat.id, 'I like window seats.', 'pref.seat.window');
     const decided: string[] = [];
     const before = required(jobs).onCancelled;
@@ -329,6 +344,7 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     expect((await call(`/conversations/${chat.id}`)).status).toBe(404);
     const [file] = await db.select().from(artifact).where(eq(artifact.id, fileId));
     expect(file?.jobId).toBeNull();
+    expect(await db.select().from(artifact).where(eq(artifact.id, workFileId))).toEqual([]);
     // Memory is the person's: deleting the chat did not take what it taught.
     expect(await visible(claimId)).toBe(true);
     expect(journalled.some((record) => record.operation === 'delete')).toBe(false);

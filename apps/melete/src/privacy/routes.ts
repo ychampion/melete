@@ -18,6 +18,7 @@ import {
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
+import { UNREACHABLE } from '../connectors/public-fetch.ts';
 import { ownsSessionSpace } from '../principals/session-space.ts';
 import { assertLocalEndpoint, checkLocalModel, isLocalUrl, PrivacyError } from './local.ts';
 import type { PrivacyRouter } from './router.ts';
@@ -43,6 +44,13 @@ function ownerOnly(c: Context): string {
 }
 
 const hint = (value: string) => `•••${value.trim().slice(-2)}`;
+
+/**
+ * Why someone other than the installation's owner cannot name a local model.
+ * The address would be one inside the server's own network, so it is the
+ * operator's to configure (MELETE_LOCAL_MODEL_URL), never a free-form setting.
+ */
+const OPERATORS_LOCAL_MODEL = `${UNREACHABLE} A local model is set up by whoever runs this installation.`;
 
 export async function settingsView(
   router: PrivacyRouter,
@@ -122,6 +130,8 @@ export async function updateSettings(
     plain.local_model = null;
     delete sealed.local_api_key;
   } else if (input.local_model) {
+    if (stored.installation === false)
+      throw new PrivacyError('address_not_reachable', OPERATORS_LOCAL_MODEL, 403);
     await assertLocalEndpoint(input.local_model.base_url, router.options.resolve);
     plain.local_model = { base_url: input.local_model.base_url, model: input.local_model.model };
     if (input.local_model.api_key === null) delete sealed.local_api_key;
@@ -170,7 +180,11 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
       await updateSettings(router, spaceId, input, options.providerUrl);
     } catch (error) {
       if (error instanceof PrivacyError)
-        throw new ServiceError(error.code, error.message, error.status === 409 ? 409 : 400);
+        throw new ServiceError(
+          error.code,
+          error.message,
+          error.status === 409 || error.status === 403 ? error.status : 400,
+        );
       throw error;
     }
     return c.json(await settingsView(router, spaceId, options.providerUrl));
@@ -187,6 +201,10 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
     const spaceId = ownerOnly(c);
     const input = localModelCheckRequest.parse(await c.req.json().catch(() => ({})));
     const router = options.router();
+    // Only the installation's owner may try an address of their own; anyone
+    // else checks the local model the operator configured.
+    if (input.base_url && (await router.store.settings(spaceId)).installation === false)
+      throw new ServiceError('address_not_reachable', OPERATORS_LOCAL_MODEL, 403);
     const saved = (await router.settingsFor(spaceId)).local;
     const baseUrl = input.base_url ?? saved?.baseUrl;
     const model = input.model ?? saved?.model;
@@ -197,6 +215,7 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
       await checkLocalModel(
         { baseUrl, model, ...(apiKey ? { apiKey } : {}) },
         router.options.fetch,
+        router.options.resolve,
       ),
     );
   });

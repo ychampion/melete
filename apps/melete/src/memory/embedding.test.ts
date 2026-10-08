@@ -102,7 +102,27 @@ describe('what a cloud embedder may read', () => {
     const error = await provider.embed(['x'], AbortSignal.timeout(1000)).catch((e) => e);
     expect(error).toBeInstanceOf(MemoryError);
     expect((error as MemoryError).code).toBe('embedding_paused');
-    expect(calls).toBe(BREAKER_FAILURES);
+    // Each failed call asked twice: a busy answer is retried once.
+    expect(calls).toBe(BREAKER_FAILURES * 2);
+  });
+
+  test('a provider that answers busy once is asked again, and the call succeeds', async () => {
+    const { fetch } = endpoint();
+    let calls = 0;
+    const provider = createEmbeddingProvider({
+      baseUrl: 'https://api.fireworks.ai/inference/v1/',
+      apiKey: 'k',
+      provider: 'fireworks',
+      model: { model: 'nomic-ai/nomic-embed-text-v1.5', dimensions: 3 },
+      local: false,
+      fetch: async (input, init) => {
+        calls++;
+        return calls === 1 ? new Response('busy', { status: 503 }) : fetch(input, init);
+      },
+    });
+    expect(await provider.embed(['nut allergy'], AbortSignal.timeout(2000))).toHaveLength(1);
+    expect(calls).toBe(2);
+    expect(provider.status?.()).toMatchObject({ consecutive_failures: 0, last_error: null });
   });
 });
 

@@ -139,6 +139,13 @@ is refused when saved and again before each use. It can be set under **Settings
 → Privacy** or with `MELETE_LOCAL_MODEL_URL`, `MELETE_LOCAL_MODEL` and
 `MELETE_LOCAL_MODEL_KEY`.
 
+Only the installation's owner can set an address under **Settings → Privacy**,
+since it names a machine on the server's own network. Everyone else's private
+conversations use the model in `MELETE_LOCAL_MODEL_URL`, or none, and an
+address saved in their space any other way is never used. A cloud metadata
+address (`169.254.169.254` and the like) is never a local model, unless the
+operator sets `MELETE_ALLOW_CLOUD_METADATA=true`.
+
 With no local model, nothing is sent. Melete asks first, with a quick answer:
 **Send a redacted version** or **Keep it private**. Agreeing lets that
 conversation go to the cloud model redacted, and the request you made carries

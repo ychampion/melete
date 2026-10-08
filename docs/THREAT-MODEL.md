@@ -388,6 +388,17 @@ The setup owner can provision further accounts. Such an account is a full
 person with a password, not a guest of the owner, and must not reach the
 owner's rows or act through the owner's connections.
 
+Nor may it reach the server's own network through an address it names. A local
+model in Settings → Privacy is the installation owner's to set; everyone else's
+private conversations use the operator's `MELETE_LOCAL_MODEL_URL`. Every other
+address another account names (an MCP server and its token endpoint, a CalDAV
+service, IMAP and SMTP servers) must be public: it is resolved on each
+connection, every answer must be globally routable, and the connection goes to
+the address that was checked, so a name cannot be re-pointed inside between the
+check and the connection. No redirect is followed. Cloud metadata is refused to
+every address set in the app, the owner's included, unless the operator sets
+`MELETE_ALLOW_CLOUD_METADATA=true`, which opens it to the owner's settings only.
+
 A session's space is derived from its authenticated principal on every request:
 that principal's own personal space, or a stored selection it is still a member
 of under the membership generation the selection was stored with. No path falls

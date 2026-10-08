@@ -188,6 +188,8 @@ describe('one-time codes and sign-in links', () => {
     ['Your Slack confirmation code is ABC-123', 'ABC-123'],
     ['Your verification code is X7K2PQ', 'X7K2PQ'],
     ['Your security code is 5531', '5531'],
+    ['Your code is 482913', '482913'],
+    ['Your Acme verification code is 7f3a9c', '7f3a9c'],
     ['Sign in: https://app.example.com/login?token=abcDEF123456xyz', 'abcDEF123456xyz'],
     ['https://acme.example/magic-link/9f8e7d6c5b4a3f2e1d0c', '9f8e7d6c5b4a3f2e1d0c'],
   ];
@@ -210,11 +212,51 @@ describe('one-time codes and sign-in links', () => {
     'Your order 123456 is your best deal',
     'The code is in the repo',
     'Your code review is ready',
+    // Hashes, commit ids, UUIDs and checksums are not secrets.
+    'The code is 4fe2a91 on main',
+    'Check the code in 3f2a9c1',
+    'sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+    '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  release.tar.gz',
+    'commit 3f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39',
+    'id 123e4567-e89b-12d3-a456-426614174000',
+    'checksum: d41d8cd98f00b204e9800998ecf8427e',
   ];
   for (const text of ordinary)
     test(`not a code: ${text}`, () => {
       expect(found(text)).toEqual([]);
     });
+});
+
+describe('secrets stay detected beside the hashes that pass', () => {
+  const hex = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+  const secrets: [string, string][] = [
+    [`api_key=${hex}`, hex],
+    [`secret: ${hex}`, hex],
+    [`My API key is ${hex}`, hex],
+    [`password: ${hex.toUpperCase()}`, hex.toUpperCase()],
+    [`token = ${hex.slice(0, 40)}`, hex.slice(0, 40)],
+    [`Authorization: Bearer ${hex}`, hex],
+    ['use sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs now', 'sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs'],
+    ['ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8', 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'],
+    ['xoxb-1234567890-abcdefghij', 'xoxb-1234567890-abcdefghij'],
+    ['AKIAIOSFODNN7EXAMPLE', 'AKIAIOSFODNN7EXAMPLE'],
+    [
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw',
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw',
+    ],
+    ['Your verification code is 7f3a9c', '7f3a9c'],
+    ['Your code is 482913', '482913'],
+  ];
+  for (const [text, value] of secrets)
+    test(`detected: ${text.slice(0, 40)}`, () => {
+      expect(found(text)).toEqual([['credential', value]]);
+    });
+
+  test('a private key block is detected whole', () => {
+    const block =
+      '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----';
+    expect(found(`key:\n${block}`)).toContainEqual(['credential', block]);
+  });
 });
 
 describe('randomized look-alikes stay untouched', () => {

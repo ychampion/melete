@@ -9,6 +9,8 @@
  */
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { metadataAllowed, UNREACHABLE } from '../connectors/public-fetch.ts';
+import { isMetadataAddress } from '../connectors/web.ts';
 import type { Detection } from './detect.ts';
 
 export class PrivacyError extends Error {
@@ -76,23 +78,55 @@ export function localHostLiteral(hostname: string): boolean | null {
 type Lookup = (hostname: string) => Promise<{ address: string }[]>;
 const systemLookup: Lookup = (hostname) => lookup(hostname, { all: true });
 
-/** Whether every address this URL can reach is on the person's machine or network. */
-export async function isLocalUrl(value: string, resolve: Lookup = systemLookup): Promise<boolean> {
+export type LocalAddressOptions = {
+  /** Defaults to what the operator set (MELETE_ALLOW_CLOUD_METADATA). */
+  allowMetadata?: boolean;
+};
+
+/**
+ * Where a URL leads: `local` when every address it can reach is on the
+ * person's machine or network, `metadata` when any is a cloud metadata
+ * service, which is never a model unless the operator says so, and
+ * `not_local` otherwise.
+ */
+export async function localVerdict(
+  value: string,
+  resolve: Lookup = systemLookup,
+  options: LocalAddressOptions = {},
+): Promise<'local' | 'metadata' | 'not_local'> {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return false;
+    return 'not_local';
   }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return false;
-  const literal = localHostLiteral(url.hostname);
-  if (literal !== null) return literal;
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+    return 'not_local';
+  const allowMetadata = options.allowMetadata ?? metadataAllowed();
+  const host = url.hostname.replace(/\.$/, '');
+  const literal = localHostLiteral(host);
+  if (literal !== null)
+    return !allowMetadata && isMetadataAddress(host) ? 'metadata' : literal ? 'local' : 'not_local';
+  let addresses: { address: string }[];
   try {
-    const addresses = await resolve(url.hostname);
-    return addresses.length > 0 && addresses.every((entry) => isPrivateAddress(entry.address));
+    addresses = await resolve(host);
   } catch {
-    return false;
+    return 'not_local';
   }
+  if (!allowMetadata && addresses.some((entry) => isMetadataAddress(entry.address)))
+    return 'metadata';
+  return addresses.length > 0 && addresses.every((entry) => isPrivateAddress(entry.address))
+    ? 'local'
+    : 'not_local';
+}
+
+/** Whether every address this URL can reach is on the person's machine or network. */
+export async function isLocalUrl(
+  value: string,
+  resolve: Lookup = systemLookup,
+  options: LocalAddressOptions = {},
+): Promise<boolean> {
+  return (await localVerdict(value, resolve, options)) === 'local';
 }
 
 /**
@@ -106,6 +140,7 @@ export async function isLocalUrl(value: string, resolve: Lookup = systemLookup):
 export async function pinLocalModel(
   model: LocalModel,
   resolve: Lookup = systemLookup,
+  options: LocalAddressOptions = {},
 ): Promise<LocalModel | null> {
   let url: URL;
   try {
@@ -113,26 +148,32 @@ export async function pinLocalModel(
   } catch {
     return null;
   }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-  const literal = localHostLiteral(url.hostname);
-  if (literal !== null) return literal ? model : null;
-  let addresses: { address: string }[];
-  try {
-    addresses = await resolve(url.hostname);
-  } catch {
-    return null;
-  }
-  if (!addresses.length || !addresses.every((entry) => isPrivateAddress(entry.address)))
-    return null;
-  if (url.protocol === 'https:') return model;
+  // The verdict and the pin read the same answers: nothing is resolved between them.
+  let addresses: { address: string }[] = [];
+  const once: Lookup = async (name) => {
+    addresses = await resolve(name);
+    return addresses;
+  };
+  if ((await localVerdict(model.baseUrl, once, options)) !== 'local') return null;
+  if (!addresses.length || url.protocol === 'https:') return model;
   const host = url.host;
   const address = addresses[0]?.address ?? '';
   url.hostname = isIP(address) === 6 ? `[${address}]` : address;
   return { ...model, baseUrl: url.href, host };
 }
 
-export async function assertLocalEndpoint(value: string, resolve?: Lookup): Promise<void> {
-  if (!(await isLocalUrl(value, resolve)))
+export async function assertLocalEndpoint(
+  value: string,
+  resolve?: Lookup,
+  options: LocalAddressOptions = {},
+): Promise<void> {
+  const verdict = await localVerdict(value, resolve, options);
+  if (verdict === 'metadata')
+    throw new PrivacyError(
+      'address_not_reachable',
+      `${UNREACHABLE} A local model can’t be at a cloud metadata address.`,
+    );
+  if (verdict !== 'local')
     throw new PrivacyError(
       'local_model_not_local',
       'A local model has to run on this machine or your own network: use a loopback or private address.',
@@ -151,11 +192,16 @@ type Fetch = (request: Request) => Promise<Response>;
 export async function checkLocalModel(
   model: LocalModel,
   fetcher: Fetch = (request) => fetch(request),
+  resolve?: Lookup,
 ): Promise<{ ok: boolean; message: string; models: string[] }> {
-  if (!(await isLocalUrl(model.baseUrl)))
+  const verdict = await localVerdict(model.baseUrl, resolve);
+  if (verdict !== 'local')
     return {
       ok: false,
-      message: 'That address is not on this machine or your network.',
+      message:
+        verdict === 'metadata'
+          ? UNREACHABLE
+          : 'That address is not on this machine or your network.',
       models: [],
     };
   try {

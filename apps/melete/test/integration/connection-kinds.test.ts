@@ -17,6 +17,7 @@ import {
   useConnectorFactory,
 } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
 import { loadEnv } from '../../src/env.ts';
 import { selfSignedPair } from '../../src/gateway/fixtures/self-signed.ts';
 import { newId } from '../../src/ids.ts';
@@ -1337,6 +1338,121 @@ withDb('installing each kind of connection through the API', () => {
     expect(hits).toBe(0);
     expect(checked.status).toBe(200);
     expect(((await checked.json()) as { check: { status: string } }).check.status).toBe('failing');
+  }, 120_000);
+
+  test('a calendar service or mailbox at a private address is the setup owner’s alone', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    let hits = 0;
+    const dav = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch() {
+        hits += 1;
+        return new Response('<multistatus xmlns="DAV:"/>', { status: 207 });
+      },
+    });
+    closers.push(() => dav.stop(true));
+    let connections = 0;
+    const mailbox = createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => mailbox.listen(0, '127.0.0.1', resolve));
+    closers.push(() => new Promise<void>((resolve) => mailbox.close(() => resolve())));
+    const mailPort = (mailbox.address() as AddressInfo).port;
+
+    const made = await h.app.request(
+      '/principals',
+      h.as(h.cookie, { email: 'kinds-reach@example.test', password: 'kinds-reach-password' }),
+    );
+    expect(made.status).toBe(201);
+    const login = await h.app.request(
+      '/login',
+      h.as('', { email: 'kinds-reach@example.test', password: 'kinds-reach-password' }),
+    );
+    const member = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const calendar = (caldav: Record<string, string>) => ({
+      provider: 'caldav',
+      label: 'Inside calendar',
+      credentials: { password: DAV_PASSWORD },
+      caldav: { username: 'owner', ...caldav },
+    });
+    const mail = (host: string) => ({
+      provider: 'imap',
+      label: 'Inside mail',
+      credentials: { password: MAIL_PASSWORD },
+      mail: {
+        username: 'member@example.test',
+        from: 'member@example.test',
+        imap: { host, port: mailPort, secure: false },
+        smtp: { host, port: mailPort, secure: false },
+      },
+    });
+
+    // Someone else's account is refused a server on this machine, by address or by name.
+    for (const body of [
+      calendar({ server_url: dav.url.toString() }),
+      calendar({ server_url: `http://localhost:${dav.port}/` }),
+      calendar({ calendar_url: `${dav.url}c/` }),
+      mail('127.0.0.1'),
+      mail('localhost'),
+    ]) {
+      const refused = await h.install(body, member);
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.text)).toMatchObject({
+        error: {
+          code: 'address_not_reachable',
+          message: expect.stringContaining('This address isn’t reachable from Melete’s servers'),
+        },
+      });
+      expectNoSecret(refused.text);
+    }
+    expect([hits, connections]).toEqual([0, 0]);
+
+    // A row that comes to point inside, however it got there, is refused at every connection.
+    const planted = async (body: Record<string, unknown>, inside: string) => {
+      const installed = await h.install(body, member);
+      expect(installed.status).toBe(201);
+      const id = connectionResponse.parse(installed.json).connection.id;
+      await fixture.sql.unsafe(
+        `update connection set configuration = ${inside}, status = 'error' where id = $1`,
+        [id],
+      );
+      const checked = await h.app.request(`/connections/${id}/health`, h.as(member, {}));
+      expect(checked.status).toBe(200);
+      expect(((await checked.json()) as { check: { status: string } }).check.status).toBe(
+        'failing',
+      );
+    };
+    await planted(
+      calendar({ calendar_url: 'https://dav.unresolvable.invalid/c/' }),
+      `jsonb_set(configuration, '{caldav,calendar_url}', '"${dav.url}c/"')`,
+    );
+    // A mailbox row is planted whole, with a real sealed password for the member's space.
+    const [memberSpace] = await fixture.sql`select s.id from space s
+      join principal p on p.id = s.owner_principal_id
+      where p.email = 'kinds-reach@example.test' and s.kind = 'personal'`;
+    const spaceId = String(memberSpace?.id);
+    const secretRef = await new SealedSecretStore(
+      new PostgresSecretRepository(fixture.sql),
+      () => MASTER_KEY,
+    ).put(spaceId, MAIL_PASSWORD);
+    const plantedMail = newId('conn');
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, configuration, status, setup_state, secret_ref)
+      values (${plantedMail}, ${spaceId}, 'imap', 'Planted mail', '["email.search"]'::jsonb,
+        ${JSON.stringify({ kind: 'mail', mail: mail('127.0.0.1').mail })}::jsonb, 'error', 'error', ${secretRef})`;
+    const mailCheck = await h.app.request(`/connections/${plantedMail}/health`, h.as(member, {}));
+    expect(mailCheck.status).toBe(200);
+    expect(((await mailCheck.json()) as { check: { status: string } }).check.status).toBe(
+      'failing',
+    );
+    expect([hits, connections]).toEqual([0, 0]);
+
+    // The setup owner's own account still reaches a calendar service on their network.
+    const own = await h.install(calendar({ calendar_url: `${dav.url}calendars/owner/` }));
+    expect(own.status).toBe(201);
+    expect(hits).toBeGreaterThan(0);
+    expect((await h.revoke(connectionResponse.parse(own.json).connection.id)).status).toBe(200);
   }, 120_000);
 
   test('a service without a master key installs nothing that needs sealing, and says why', async () => {

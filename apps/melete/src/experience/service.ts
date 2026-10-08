@@ -46,6 +46,7 @@ import { answerStream } from './answer-filter.ts';
 import type { ExperienceEvents } from './events.ts';
 import type { ExperiencePermissions } from './permissions.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
+import type { WorkspaceTrash } from './workspace-trash.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
 const UNDER_WAY = ['queued', 'working', 'streaming', 'needs_you', 'paused'];
@@ -107,6 +108,8 @@ export class ExperienceService {
   permissions?: ExperiencePermissions;
   /** Where the files people send are kept, when the blob store is mounted beside this service. */
   attachments?: AttachmentService;
+  /** Where conversations' workspaces are, so a deleted one's goes to its trash. */
+  workspaces?: WorkspaceTrash;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
