@@ -37,6 +37,7 @@ export * from './job-state.ts';
 export * from './knowledge.ts';
 export * from './learning.ts';
 export * from './mcp.ts';
+export * from './mcp-catalog.ts';
 export * from './mcp-server.ts';
 export * from './memory.ts';
 export * from './mention.ts';

@@ -34,6 +34,16 @@ describe('only a phrase about the person makes a conversation sensitive', () => 
     expect(classify(text, all)).toBe(topic);
   });
 
+  // Allergies and dietary needs are remembered like any other detail.
+  test.each([
+    "I'm allergic to shellfish",
+    'I have a shellfish allergy, you just told me oysters are the safer bet?! Also Lena moved to Seattle',
+    'My son has a peanut allergy and I am vegetarian; book somewhere for dinner',
+    'I have allergies to cats and pollen, and I need gluten-free food',
+  ])('an allergy or a diet is not a health conversation: %s', (text) => {
+    expect(classify(text, all)).toBeNull();
+  });
+
   test.each([
     'Book a table for two',
     'Please research residential heat pump adoption in Europe',

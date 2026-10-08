@@ -23,12 +23,10 @@ import {
   attemptListResponse,
   attemptResponse,
   CONNECTION_CHECK_DETAIL,
-  CONNECTION_KIND_DESCRIPTORS,
   cancelJobRequest,
   connectionCheckResponse,
   connectionGeneration,
   connectionInstallation,
-  connectionKindListResponse,
   connectionLifecycle,
   connectionListResponse,
   connectionResponse,
@@ -86,6 +84,7 @@ import { mountReachMock } from './reach.ts';
 import { mountRoomsMock } from './rooms.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
+import { mountMockSignIns } from './sign-ins.ts';
 import { MockConflict, newId, type Store } from './store.ts';
 import { mountVoiceMock } from './voice.ts';
 
@@ -931,9 +930,8 @@ export function createMockApp(deps: AppDeps) {
     checked_at: store.now().toISOString(),
   });
 
-  app.get('/connection-kinds', () =>
-    send(connectionKindListResponse, { kinds: CONNECTION_KIND_DESCRIPTORS }),
-  );
+  // The catalog, and signing in to what it offers.
+  mountMockSignIns(app, store, deps.spaceId);
 
   app.post('/connections', async (c) => {
     const parsed = await parseBody(c.req.raw, createConnectionRequest);

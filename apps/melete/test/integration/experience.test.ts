@@ -38,10 +38,12 @@ import {
 } from '../../src/db/schema.ts';
 import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { EMPTY_SUMMARY, summaryPayload } from '../../src/jobs/history-summary.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -523,6 +525,44 @@ withDb('experience rows and authenticated scope', () => {
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
     expect(after.turns[0]?.answer).toBe('Hey!');
+  });
+  test('earlier messages summarised for the agent reach the stream as the same bare marker', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'and so on' }, 'sum-one');
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    // What the summary extension stores before the engine starts.
+    await required(jobs).transaction((tx) =>
+      appendEvent(tx, {
+        jobId: chat.id,
+        attemptId: claimed.claims.attempt_id,
+        type: 'notice',
+        payload: summaryPayload({
+          through: new Date(Date.now() - 60_000).toISOString(),
+          summary: { ...EMPTY_SUMMARY, facts: ['SECRET-CONTAINER-7741'] },
+          messages: 12,
+          generations: { policy_generation: 0, connection_generations: {} },
+        }),
+        dedupKey: `${chat.id}:history-summary:test`,
+      }),
+    );
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Still here.',
+      evidence: [],
+    });
+    const items = (
+      await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id)
+    ).events.map((event) => event.item);
+    expect(items.filter((item) => item.type === 'compacted')).toEqual([{ type: 'compacted' }]);
+    expect(JSON.stringify(items)).not.toContain('SECRET-CONTAINER-7741');
   });
   test('a compaction reaches the stream as a bare marker, with none of the summary', async () => {
     const chat = await createConversation();

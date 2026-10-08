@@ -1,6 +1,7 @@
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { ConnectorFaultError } from './faults.ts';
+import { jsonDepthWithin } from './mcp-transport.ts';
 import type { SealedSecretStore } from './secrets.ts';
 
 /** Credentials only travel over TLS, except an explicit loopback fixture endpoint. */
@@ -157,7 +158,11 @@ export function mcpCredentialAccess(
             expires_in: z.number().int().positive().max(31_536_000).optional(),
             refresh_token: mcpCredentials.shape.refresh_token,
           })
-          .parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          .parse(
+            ((text) => (jsonDepthWithin(text) ? JSON.parse(text) : null))(
+              Buffer.concat(chunks).toString('utf8'),
+            ),
+          );
         const next: Credential = {
           ...credential,
           access_token: token.access_token,

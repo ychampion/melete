@@ -28,6 +28,7 @@ import {
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { answerJoin } from '../jobs/answer-join.ts';
+import { HISTORY_SUMMARY_KIND } from '../jobs/history-summary.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
@@ -828,6 +829,14 @@ export class ExperienceEvents {
           ) {
             // The engine summarised the conversation so far to make room. The
             // page marks where; the summary's words never leave the engine.
+            await emit(source, { type: 'compacted' });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            payload.kind === HISTORY_SUMMARY_KIND
+          ) {
+            // Messages too old to hand the agent whole were summarised for it.
+            // The page marks where, as for the engine's own; the words stay out.
             await emit(source, { type: 'compacted' });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {

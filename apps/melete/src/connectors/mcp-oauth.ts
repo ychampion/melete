@@ -20,7 +20,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { MCP_PROTOCOL_VERSION } from './mcp-transport.ts';
+import { jsonDepthWithin, MCP_PROTOCOL_VERSION, MCP_STATELESS_VERSION } from './mcp-transport.ts';
 
 /** A fetch that has already decided which addresses it may reach. */
 export type OAuthFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -98,7 +98,8 @@ async function readJson(response: Response): Promise<unknown> {
     await reader?.cancel().catch(() => {});
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const text = Buffer.concat(chunks).toString('utf8');
+    return jsonDepthWithin(text) ? JSON.parse(text) : null;
   } catch {
     return null;
   }
@@ -163,32 +164,52 @@ export async function discoverProtectedResource(
   fetcher: OAuthFetch,
 ): Promise<ProtectedResource | null> {
   if (!secureEndpoint(serverUrl)) fail('server_address_refused');
-  let response: Response;
-  try {
-    response = await fetcher(serverUrl, {
-      method: 'POST',
-      redirect: 'error',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: 'Melete', version: '0.1' },
+  const probe = async (stateless: boolean): Promise<Response> => {
+    const version = stateless ? MCP_STATELESS_VERSION : MCP_PROTOCOL_VERSION;
+    const clientInfo = { name: 'Melete', version: '0.1' };
+    try {
+      const response = await fetcher(serverUrl, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-protocol-version': version,
+          ...(stateless ? { 'mcp-method': 'server/discover' } : {}),
         },
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-  } catch {
-    return fail('server_unreachable');
-  }
-  await response.body?.cancel().catch(() => {});
+        body: JSON.stringify(
+          stateless
+            ? {
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'server/discover',
+                params: {
+                  _meta: {
+                    'io.modelcontextprotocol/protocolVersion': version,
+                    'io.modelcontextprotocol/clientInfo': clientInfo,
+                    'io.modelcontextprotocol/clientCapabilities': {},
+                  },
+                },
+              }
+            : {
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'initialize',
+                params: { protocolVersion: version, capabilities: {}, clientInfo },
+              },
+        ),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      await response.body?.cancel().catch(() => {});
+      return response;
+    } catch {
+      return fail('server_unreachable');
+    }
+  };
+  let response = await probe(false);
+  // A server that speaks only the stateless revision refuses the handshake
+  // itself; asked the stateless way, it answers or asks for a sign-in.
+  if ([400, 404, 405].includes(response.status)) response = await probe(true);
   if (response.ok) return null;
   if (response.status !== 401) return fail('server_refused');
   const challenge = bearerChallenge(response.headers.get('www-authenticate'));

@@ -356,8 +356,17 @@ export function attemptRecallQuery(bundle: {
   inputs: { new_user_messages: { content: string }[] };
 }): string {
   const said = bundle.inputs.new_user_messages.map((message) => message.content).reverse();
+  // A greeting or a thank-you asks nothing of memory: recalling by the chat's
+  // title for it handed the agent old details to act on, and a "hi" took half
+  // a minute. The profile and the safety details still come.
+  if (said.length && said.every(isTrivialTurn)) return '';
   return [...said, bundle.job.objective].join('\n').slice(0, 2000);
 }
+/** A message that only greets, thanks or acknowledges. */
+const TRIVIAL =
+  /^(?:(?:hi|hello|hey|hiya|yo|howdy|good (?:morning|afternoon|evening|night)|thanks|thank you|thx|ty|ok(?:ay)?|k|cool|great|nice|perfect|awesome|got it|sounds good|bye|goodbye|see you|cheers|sure|yes|yep|no|nope)(?:[\s,!.]+(?:there|melete|so much|a lot|again|then|thanks|thank you))*[\s,!.?]*){1,3}[\p{Extended_Pictographic}\s!.]*$/iu;
+export const isTrivialTurn = (text: string): boolean =>
+  text.trim().length <= 60 && TRIVIAL.test(text.trim());
 export const PROFILE_SIZE = 8;
 /** The most parts of one request embedded on their own, beside the whole of it. */
 export const QUERY_PARTS = 4;
@@ -388,6 +397,63 @@ export const DENSE_CANDIDATES = 100;
  * for was never below 0.86 of the closest, and most unrelated ones were.
  */
 export const DENSE_RELATIVE_FLOOR = 0.85;
+/** The safety details every current recall carries first, at most. */
+export const SAFETY_SIZE = 4;
+/** Places for the profile kept among the first `limit` items, whatever else matches. */
+export const PROFILE_RESERVED = 3;
+/** Words that make a saved detail one about what the person must not eat or must eat. */
+const SAFETY_WORDS =
+  '(allerg|anaphyla|epipen|intoleran|celiac|coeliac|gluten|lactose|dairy.free|nut.free|vegan|vegetarian|pescatarian|halal|kosher|diet)';
+/**
+ * Allergies and dietary needs, newest first: what must never be missed when
+ * the person asks about food, a restaurant or a trip, however they word it.
+ */
+export async function safetyCandidates(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  audiences: readonly string[],
+): Promise<Candidate[]> {
+  if (!audiences.length) return [];
+  const rows = await tx`select c.id as claim_id, r.revision from memory_claims c
+    join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
+    join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
+    where c.space_id = ${scope.spaceId} and not c.hidden and c.audience = any(${[...audiences]})
+      and r.status in ('active','disputed') and r.kind <> 'historical'
+      and r.valid_from <= clock_timestamp() and (r.valid_until is null or r.valid_until > clock_timestamp())
+      and (c.domain_key ~* ${SAFETY_WORDS} or b.content ~* ${SAFETY_WORDS})
+    order by r.data_revision desc, c.id limit ${SAFETY_SIZE}`;
+  return rows.map((row) => ({ claim_id: row.claim_id, revision: row.revision, score: 1 }));
+}
+/**
+ * The order a recall reads its candidates in: the safety details, then what
+ * matches this request best, with a few places among the first `limit` kept
+ * for the profile, then the rest. The profile used to come first whatever
+ * was asked, so every chat was handed the same newest preferences and the
+ * answer to the question was pushed past the limit.
+ */
+export function recallOrder(
+  relevant: readonly Candidate[],
+  profile: readonly Candidate[],
+  safety: readonly Candidate[],
+  limit: number,
+): Candidate[] {
+  const order: Candidate[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: Candidate) => {
+    const key = `${candidate.claim_id}:${candidate.revision}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    order.push(candidate);
+  };
+  safety.forEach(add);
+  const reserved = Math.min(PROFILE_RESERVED, profile.length);
+  const head = Math.max(0, limit - order.length - reserved);
+  relevant.slice(0, head).forEach(add);
+  profile.slice(0, reserved).forEach(add);
+  relevant.slice(head).forEach(add);
+  profile.slice(reserved).forEach(add);
+  return order;
+}
 /** How long a recall waits for its query's embedding before recalling lexically. */
 export const QUERY_EMBED_MS = 2000;
 /**
@@ -762,20 +828,27 @@ export async function recall(
           const prior = merged.get(key);
           merged.set(key, { ...candidate, score: (prior?.score ?? 0) + 1 / (60 + rank) });
         });
-      if (options.includeProfile && request.mode === 'current')
-        for (const item of await profileCandidates(tx, scope, audience.audiences))
-          merged.set(`${item.claim_id}:${item.revision}`, { ...item, score: 1 });
+      const current = options.includeProfile && request.mode === 'current';
+      const profile = current ? await profileCandidates(tx, scope, audience.audiences) : [];
+      const safety = current ? await safetyCandidates(tx, scope, audience.audiences) : [];
+      const relevant = [...merged.values()].sort(
+        (a, b) => b.score - a.score || a.claim_id.localeCompare(b.claim_id),
+      );
       const items: RecallItem[] = [];
       let used = 0;
       let truncated = supplement.length > (request.path === 'investigative' ? 200 : 100);
-      for (const candidate of [...merged.values()].sort(
-        (a, b) => b.score - a.score || a.claim_id.localeCompare(b.claim_id),
-      )) {
+      for (const candidate of recallOrder(relevant, profile, safety, request.limit)) {
+        // A full answer reads no further: with a large memory, checking every
+        // remaining candidate was most of the time a turn spent here.
+        if (items.length >= request.limit) {
+          truncated = true;
+          break;
+        }
         if (Date.now() - started > deadlineMs) throw new MemoryError('recall_timeout');
         const item = await itemAt(tx, scope, candidate, request, disputed);
         if (!item || kept?.has(`${item.claim_id}:${item.revision}`)) continue;
         const tokens = itemTokens(item);
-        if (used + tokens > request.max_tokens || items.length >= request.limit) {
+        if (used + tokens > request.max_tokens) {
           truncated = true;
           continue;
         }

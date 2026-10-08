@@ -12,6 +12,7 @@ import {
   runResponse,
   runView,
 } from '@melete/contracts';
+import { renderInput } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { signCapability } from '../../src/broker/capability.ts';
@@ -198,6 +199,11 @@ withDb('standing work', () => {
     expect(woke.bundle.job.objective).toContain(
       'Why this shift started: it is the scheduled time (every weekday at 9:00)',
     );
+    // The shift is the occurrence itself, not the setting up of it.
+    expect(woke.bundle.job.objective).toContain(
+      'This shift is that occurrence: do the work for it now.',
+    );
+    expect(renderInput(woke.bundle)).toContain('## The scheduled time has come');
     await required(runner).commitOutcome(woke.claims, done());
     await resting(run.id);
 

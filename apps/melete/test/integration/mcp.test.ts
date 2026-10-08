@@ -261,12 +261,19 @@ databaseTest(
       hostname: '127.0.0.1',
       port: 0,
       async fetch(request) {
-        headers.push(request.headers);
         if (request.method === 'DELETE') {
+          headers.push(request.headers);
           closed++;
           return new Response(null, { status: 204 });
         }
         const message = (await request.json()) as { id?: number; method: string };
+        // A session-based server refuses the stateless probe, as such servers do.
+        if (message.method === 'server/discover')
+          return Response.json(
+            { jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'No session' } },
+            { status: 400 },
+          );
+        headers.push(request.headers);
         if (message.id === undefined) return new Response(null, { status: 202 });
         let result: unknown = {};
         if (message.method === 'initialize') {

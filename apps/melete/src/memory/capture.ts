@@ -35,7 +35,7 @@ import { memoryKeyLabel } from '../experience/evidence.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory, mayForgetRoomClaim } from './forget.ts';
-import { lexicalTerms, tsqueryTerm } from './recall.ts';
+import { lexicalTerms, stemTerm, tsqueryTerm } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
 import { appendMemoryNotices, memoryNotice, memoryReply } from './trace.ts';
 import { MEMORY_EXTRACT_QUEUE } from './work.ts';
@@ -289,6 +289,36 @@ async function captureOne(
 /** The subject a saved detail about the person themselves is filed under. */
 const OWN_SUBJECTS = ['me', 'my', 'self', 'mine', 'owner'];
 /**
+ * Words in a request to forget that say how, not what: "forget my shellfish
+ * allergy entirely" names the allergy. Left in, they had to appear in the
+ * detail too, and a request that plainly named one matched nothing.
+ */
+const FORGET_FILLER = new Set([
+  'entirely',
+  'completely',
+  'totally',
+  'fully',
+  'permanently',
+  'forever',
+  'everything',
+  'anything',
+  'all',
+  'now',
+  'saved',
+  'stored',
+  'remembered',
+  'info',
+  'information',
+  'stuff',
+  'thing',
+  'things',
+  'fact',
+  'facts',
+  'record',
+  'records',
+  'memory',
+]);
+/**
  * The saved details a "forget …" names. A named subject ("Maya's number") means
  * that subject only; "my …" means the person's own details only, which is
  * everything saved except what is about another person (a contact other than
@@ -298,13 +328,13 @@ const OWN_SUBJECTS = ['me', 'my', 'self', 'mine', 'owner'];
  * that names neither a subject nor "my" names nothing, and null says so.
  */
 async function namedDetails(sql: MemorySql, scope: MemoryScope, target: string) {
-  const terms = lexicalTerms(target);
+  const terms = lexicalTerms(target).filter((term) => !FORGET_FILLER.has(term));
   const subject = terms.filter((term) => !(term in FIELD_WORDS));
   const own = /\b(?:my|mine|me)\b/i.test(target);
   if (!subject.length && !own) return null;
   const fields = terms.filter((term) => term in FIELD_WORDS && FIELD_WORDS[term]?.length);
   const query = [
-    ...subject.map(tsqueryTerm),
+    ...subject.map(stemTerm),
     ...fields.map((term) => `(${(FIELD_WORDS[term] ?? []).map(tsqueryTerm).join(' | ')})`),
   ].join(' & ');
   return sql`select c.id, c.key from memory_claims c

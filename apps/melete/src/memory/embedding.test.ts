@@ -124,6 +124,37 @@ describe('what a cloud embedder may read', () => {
     expect(calls).toBe(2);
     expect(provider.status?.()).toMatchObject({ consecutive_failures: 0, last_error: null });
   });
+
+  test('a request asked again is answered from the last embedding, and a failure says what the provider answered', async () => {
+    const { fetch, requests } = endpoint();
+    let down = false;
+    const errors: string[] = [];
+    const provider = createEmbeddingProvider({
+      baseUrl: 'https://api.fireworks.ai/inference/v1/',
+      apiKey: 'k',
+      provider: 'fireworks',
+      model: { model: 'nomic-ai/nomic-embed-text-v1.5', dimensions: 3 },
+      local: false,
+      onError: (code) => errors.push(code),
+      fetch: async (input, init) =>
+        down ? new Response('no', { status: 400 }) : fetch(input, init),
+    });
+    const first = await provider.embed(['seafood dinner'], AbortSignal.timeout(2000), {
+      purpose: 'query',
+    });
+    down = true;
+    // The provider is down, and the same question still has its meaning.
+    expect(
+      await provider.embed(['seafood dinner'], AbortSignal.timeout(2000), { purpose: 'query' }),
+    ).toEqual(first);
+    expect(requests).toHaveLength(1);
+    await expect(
+      provider.embed(['a new question'], AbortSignal.timeout(2000), { purpose: 'query' }),
+    ).rejects.toThrow('embedding_provider_failed');
+    expect(errors).toEqual(['embedding_provider_failed:400']);
+    // A document is never answered from the cache.
+    await expect(provider.embed(['seafood dinner'], AbortSignal.timeout(2000))).rejects.toThrow();
+  });
 });
 
 describe('embedding calls', () => {

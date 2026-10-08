@@ -1324,9 +1324,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
       : {};
   };
 
-  return {
+  const connector: Connector = {
     manifest: filesManifest,
     staysInSpace: newInPersonFiles,
+    // Every step is a file in the agent's workspace or the person's Files: an
+    // outcome left open is the agent's to look at, never a question.
+    ownComputer: true,
+    staysInside: true,
     /** A delete asks unless its check found it Melete's own. */
     asksFirst: (action) => action.kind === 'files.delete' && checkedOf(action).owner !== 'agent',
     async validateBinding(action, ctx, tx) {
@@ -1811,6 +1815,47 @@ export function createFilesConnector(options: FilesOptions): Connector {
           detail: 'a configured file root is missing',
           checked_at: new Date().toISOString(),
         };
+      }
+    },
+  };
+  return settledFromDisk(connector);
+}
+
+/** The file steps whose result `verify` reads straight from what is on disk. */
+const SETTLED_FROM_DISK = new Set(['files.write', 'files.move', 'files.save_attachment']);
+
+/**
+ * A file step that threw after it began may still have done everything it was
+ * asked: a check that runs once the bytes are written can fail on its own.
+ * Nothing here left Melete and nothing is still on its way, so what is on disk
+ * is the whole answer. When the file is there with exactly the bytes asked for,
+ * the step succeeded and is settled so now, instead of resting at unknown.
+ * Anything else is thrown on as it came, to be settled as before.
+ */
+export function settledFromDisk(connector: Connector): Connector {
+  const execute = connector.execute.bind(connector);
+  return {
+    ...connector,
+    async execute(action, ctx) {
+      try {
+        return await execute(action, ctx);
+      } catch (error) {
+        // A declared file is recorded with its checks from the receipt the
+        // write makes; the disk alone cannot stand in for that.
+        if (
+          !SETTLED_FROM_DISK.has(action.kind) ||
+          action.canonical_payload.expect !== undefined ||
+          error instanceof ConnectorFaultError ||
+          error instanceof BrokerFault
+        )
+          throw error;
+        const verdict = await connector.verify(action, ctx).catch(() => null);
+        if (verdict?.decision !== 'succeeded' || !verdict.receipt) throw error;
+        process.stderr.write(
+          `files: ${action.kind} settled from disk after ${codeOf(error) ?? (error instanceof Error ? error.name : 'an error')}
+`,
+        );
+        return { outcome: 'succeeded', receipt: verdict.receipt };
       }
     },
   };

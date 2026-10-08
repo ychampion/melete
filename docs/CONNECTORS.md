@@ -129,16 +129,19 @@ more than once: an entry for a provider whose servers are known carries them in
 
 The same response carries `catalog`: everything a person can connect here, in
 the order a connector screen shows it. Account sign-ins come first (Google, and
-Microsoft), then remote MCP servers known to sign in with OAuth (Notion, Linear,
-Atlassian, Sentry and Stripe), then one entry for each form in `kinds`. Each
-entry says what it covers (`mail`, `calendar`, `tools` or `execution`) and how it
-connects:
+Microsoft), then apps whose makers run a remote MCP server (Notion, Linear,
+Atlassian, Sentry, Stripe and GitHub), then one entry for each form in `kinds`.
+Each entry says what it covers (`mail`, `calendar`, `tools` or `execution`) and
+how it connects:
 
 - `sign_in` names the provider, the route to `POST` to start
   (`/google-sign-ins`, `/microsoft-sign-ins`), the `issuer` the person signs in
   at, and every scope the sign-in asks for, each with a plain-words `label`;
 - `mcp_sign_in` gives the server's address and a suggested `mcp.id` for
-  `POST /mcp-sign-ins`, whose `mcp` block still names the tools to grant;
+  `POST /mcp-sign-ins`. For an app in the catalog it also lists `tools`: what
+  each lets Melete do, in plain words, its effect class, and whether every use
+  asks first. Such an app connects with `{ "catalog_id": "<id>" }` alone (see
+  [Connecting an app from the catalog](#connecting-an-app-from-the-catalog));
 - `form` names the entry in `kinds` whose form connects it.
 
 Starting a sign-in answers with the same two things before the browser leaves:
@@ -749,6 +752,26 @@ An HTTP server is installed with `POST /connections` and its `mcp` block, as
 described under [Installing a connection](#installing-a-connection); the row then
 stores the policy.
 
+### Protocol revisions
+
+Over HTTP the client speaks every revision of the MCP transport in use. It first
+sends `server/discover` the stateless way (revision `2026-07-28`): with the
+revision, the client's name and its (empty) capabilities in the request's
+`_meta`, and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. A
+server that answers is spoken to that way from then on: no `initialize`, no
+session, a header for each tool parameter whose schema marks it with
+`x-mcp-header` (a tool whose marks break the rules is not offered), and
+`server/discover` as the health check. A server that answers with any error
+that is not one of the stateless revision's own gets the `initialize` handshake,
+and may settle on `2025-11-25`, `2025-06-18` or `2025-03-26`; every later request
+names the revision it chose. A server that settles on anything else is refused.
+
+A stateless server that answers a call with `resultType: "input_required"` has
+not acted, and Melete gives servers nothing beyond the call itself, so the call
+fails without a retry. A call whose answer never came stays unknown and is never
+sent again, whatever the revision. Evidence:
+[mcp-protocol.test.ts](../apps/melete/src/connectors/mcp-protocol.test.ts).
+
 ### Signing in to an MCP server
 
 A server that asks for OAuth can be connected by signing in from the browser
@@ -831,8 +854,46 @@ connection and space. Owner-only tools disappear from public compartments, and
 the audience and persisted scopes are checked again before dispatch. Server
 schemas default to JSON Schema 2020-12; draft-07 schemas can declare their
 dialect explicitly. Unsupported dialects or unresolved references fail validation.
-Shutdown disposes HTTP sessions. This implementation does not configure server
-authentication or resume disconnected sessions; it sends no service secrets.
+Shutdown disposes HTTP sessions (a stateless server has none). This
+implementation does not configure server authentication or resume disconnected
+sessions; it sends no service secrets.
+
+### Connecting an app from the catalog
+
+`MCP_CATALOG` in `packages/contracts/src/mcp-catalog.ts` lists apps whose makers
+run their own remote MCP server, each with the tools Melete uses there and what
+each may do:
+
+- `read`: looks only, and runs without asking;
+- `write_reversible`: a change that can be put back where it was made, such as
+  editing a page or moving an issue to another state; it goes through
+  auto-review like any other reversible change;
+- `write_external`: posts or sends something as the person that others see or
+  are told about (a comment, a new issue, a pull request), merges, or deletes;
+  it always asks first;
+- `spend`: moves or commits money (Stripe's refunds, invoices, payment links and
+  subscription changes); it always asks first.
+
+`POST /mcp-sign-ins` with `{ "catalog_id": "notion" }` signs in to that app's
+server exactly as above. When the browser returns, the server is asked for its
+tools with the new credential, and the connection is installed with the catalog's
+tools that the server has, each with its own grant (`mcp_<id>.<alias>`). A tool
+the server lists that the catalog does not name is never offered; one the
+catalog names that the server lacks is left out. An app that offers none of them
+is not installed (`catalog_tools_unavailable`). The connection is shown as the
+app (`catalog_id` on `GET /experience/connections`), and disconnecting it is the
+ordinary revoke. Evidence: `connecting an app from the catalog` in
+[mcp-sign-in.test.ts](../apps/melete/test/integration/mcp-sign-in.test.ts) and
+[mcp-catalog.test.ts](../apps/melete/src/connectors/mcp-catalog.test.ts).
+
+#### Connecting GitHub
+
+GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) accepts only an OAuth
+app registered with GitHub ahead of time. Register one at
+github.com/settings/applications/new (free, with no review), with
+`<MELETE_PUBLIC_URL>/api/oauth/callback` as its callback URL, then set
+`GITHUB_MCP_CLIENT_ID` and `GITHUB_MCP_CLIENT_SECRET` and restart. Until both are
+set, GitHub is listed as not set up, and its operator is told what to set.
 
 A stdio MCP server never runs under the service's own identity. The stdio
 fixture above is launched only by tests; a server a person installs runs in a

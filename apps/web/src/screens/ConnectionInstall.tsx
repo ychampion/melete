@@ -5,7 +5,9 @@
  * here without a change to this file.
  */
 import { useEffect, useState } from 'react';
+import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
+import { Logo } from '../design/logos.tsx';
 import { Badge, Button, Checkbox, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import {
@@ -33,6 +35,7 @@ const SETUP_DOC = 'https://github.com/ychampion/melete/blob/main/docs/mail-calen
 export const SETUP_DOCS: Record<string, string> = {
   google: `${SETUP_DOC}#signing-in-with-google`,
   microsoft: `${SETUP_DOC}#signing-in-with-microsoft`,
+  github: 'https://github.com/ychampion/melete/blob/main/docs/CONNECTORS.md#connecting-github',
 };
 /** Said wherever an option needs the server set up first. */
 export const NOT_SET_UP = 'Available when your server is set up for it.';
@@ -511,26 +514,268 @@ export function AccountSignIn({
   );
 }
 
+/** An app from the catalog: one sign-in, and Melete knows its tools. */
+export type AppEntry = CatalogEntry & { connect: { method: 'mcp_sign_in' } };
+const isApp = (entry: CatalogEntry): entry is AppEntry =>
+  entry.connect.method === 'mcp_sign_in' && entry.connect.tools !== undefined;
+
+/** An app's mark: its logo when there is one, otherwise a tile with its icon. */
+function AppMark({ title, size = 36 }: { title: string; size?: number }) {
+  const logo = logoFor(title);
+  if (logo) return <Logo name={logo} size={size} />;
+  return (
+    <span className="app-mark" style={{ width: size, height: size }} aria-hidden="true">
+      <Icon name="apps" size={Math.round(size / 2)} />
+    </span>
+  );
+}
+
+/** Lists this long or shorter are shown open. */
+const SHORT_LIST = 6;
+
+/**
+ * What an app's tools let Melete do, once per label: two tools that read the
+ * same way to a person are one line, and one that asks first keeps that.
+ */
+function accessOf<T extends { label: string; effect_class: string; asks_first: boolean }>(
+  tools: readonly T[],
+): T[] {
+  const byLabel = new Map<string, T>();
+  for (const tool of tools) {
+    const seen = byLabel.get(tool.label);
+    if (!seen || (tool.asks_first && !seen.asks_first)) byLabel.set(tool.label, tool);
+  }
+  return [...byLabel.values()];
+}
+
+/** Why a catalog sign-in did not finish, by the code the service gave. */
+const SIGN_IN_ENDED: Record<string, string> = {
+  catalog_tools_unavailable: 'You signed in, but the app offers none of the tools Melete uses.',
+  catalog_tools_unreadable: 'You signed in, but the app did not say what it can do. Try again.',
+  sign_in_declined: 'The sign-in was not approved.',
+};
+
+/**
+ * Connecting an app from the catalog. Before the browser leaves, the person
+ * sees where they will sign in and what Melete can do there, with what asks
+ * first; the sign-in itself is started on opening, so the click opens the page.
+ */
+export function AppConnect({
+  entry,
+  onDone,
+  onInstalled,
+  spaceId,
+}: {
+  entry: AppEntry;
+  onDone: () => void;
+  onInstalled: () => void;
+  /** The space it is added to; left out, the person's own. */
+  spaceId?: string;
+}) {
+  const [started, setStarted] = useState<McpSignInStart | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState(false);
+  const [loading, setLoading] = useState(entry.available);
+
+  useEffect(() => {
+    if (!entry.available) return;
+    let live = true;
+    void adapter.startCatalogSignIn(entry.id, spaceId).then((r) => {
+      if (!live) return;
+      setLoading(false);
+      if (r.data) setStarted(r.data);
+      else setError(r.error ?? r.unavailable ?? 'Couldn’t start connecting');
+    });
+    return () => {
+      live = false;
+    };
+  }, [entry.available, entry.id, spaceId]);
+
+  // Once the app's page is open, wait for the sign-in to finish there.
+  useEffect(() => {
+    if (!opened || !started) return;
+    const until = new Date(started.expires_at).getTime();
+    const timer = window.setInterval(() => {
+      if (Date.now() > until) {
+        window.clearInterval(timer);
+        setError('The sign-in expired. Start again.');
+        return;
+      }
+      void adapter.mcpSignInStatus(started.sign_in_id).then((r) => {
+        if (!r.data || r.data.state === 'pending') return;
+        window.clearInterval(timer);
+        if (r.data.state === 'connected') {
+          toast({ kind: 'ok', title: `${entry.title} connected` });
+          onInstalled();
+          onDone();
+        } else setError(SIGN_IN_ENDED[r.data.error] ?? 'The connection didn’t finish. Try again.');
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [opened, started, entry.title, onInstalled, onDone]);
+
+  const tools = accessOf(entry.connect.tools ?? []);
+  const reads = tools.filter((tool) => tool.effect_class === 'read');
+  const acts = tools.filter((tool) => tool.effect_class !== 'read');
+  const host = started && URL.canParse(started.issuer) ? new URL(started.issuer).host : null;
+  return (
+    <section className="col card-12 app-connect" aria-label={`Connect ${entry.title}`}>
+      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+        <AppMark title={entry.title} size={40} />
+        <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
+          <span className="app-connect-title">Connect {entry.title}</span>
+          <span className="app-connect-note">{entry.description}</span>
+        </div>
+      </div>
+      {tools.length ? (
+        <div className="app-access">
+          {acts.length ? (
+            <div className="col" style={{ gap: 6 }}>
+              <span className="connect-group">Makes changes</span>
+              <ul>
+                {acts.map((tool) => (
+                  <li key={tool.label}>
+                    {tool.label}
+                    {tool.asks_first ? <Badge tone="outline">Asks you first</Badge> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {reads.length ? (
+            // A long list of lookups folds away; what changes things stays in view.
+            <details className="app-reads" open={reads.length <= SHORT_LIST}>
+              <summary className="connect-group">Looks things up ({reads.length})</summary>
+              <ul>
+                {reads.map((tool) => (
+                  <li key={tool.label}>{tool.label}</li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+      {entry.warning ? (
+        <div className="col connect-easier" role="note">
+          <span>{entry.warning}</span>
+        </div>
+      ) : null}
+      {!entry.available ? (
+        <span className="app-connect-note">
+          {NOT_SET_UP}{' '}
+          {SETUP_DOCS[entry.id] ? (
+            <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
+              How to set this up
+            </a>
+          ) : null}
+        </span>
+      ) : host ? (
+        <span className="app-connect-note">
+          You sign in at <strong>{host}</strong>, and can disconnect here at any time.
+        </span>
+      ) : null}
+      {error ? (
+        <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+          {error}
+        </span>
+      ) : null}
+      {opened && !error ? (
+        <span className="app-connect-note" role="status">
+          Finish signing in on the {entry.title} page. This updates when you are done.
+        </span>
+      ) : null}
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        {entry.available ? (
+          <Button
+            icon="arrowUpRight"
+            loading={loading}
+            disabled={!started || opened}
+            onClick={() => {
+              if (!started) return;
+              window.open(started.authorize_url, '_blank', 'noopener,noreferrer');
+              setOpened(true);
+            }}
+          >
+            Continue to {entry.title}
+          </Button>
+        ) : null}
+        <Button variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** One app in the grid: what it is, and connect, connected, or why it waits. */
+function AppCard({
+  title,
+  description,
+  available,
+  connected,
+  onOpen,
+}: {
+  title: string;
+  description: string;
+  available: boolean;
+  connected: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="app-card" data-unavailable={available ? undefined : 'true'}>
+      <AppMark title={title} />
+      <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+        <span className="app-card-name">{title}</span>
+        <span className="app-card-note">{description}</span>
+      </div>
+      {connected ? (
+        <Badge tone="success" dot>
+          Connected
+        </Badge>
+      ) : (
+        <Button
+          size="sm"
+          variant={available ? 'outline' : 'ghost'}
+          onClick={onOpen}
+          aria-label={available ? `Connect ${title}` : `How to set up ${title}`}
+        >
+          {available ? 'Connect' : 'Set up'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** The one line an account's card says about it; the full words are on its sign-in. */
+const ACCOUNT_NOTE: Record<string, string> = {
+  google: 'Gmail, Google Calendar and Drive. Each message and change waits for you.',
+  microsoft: 'Outlook mail and calendar. Each message and change waits for you.',
+};
+
 export function AddConnection({
   onInstalled,
   spaceId,
-  title = 'Add a connection',
+  title = 'Connect an app',
+  connected,
 }: {
   onInstalled: () => void;
   /** The space it is added to; left out, the person's own. */
   spaceId?: string;
   title?: string;
+  /** Catalog apps already connected here, by catalog id. */
+  connected?: ReadonlySet<string>;
 }) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState<string | null>(null);
   const list = kinds.data?.kinds ?? [];
   const kind = list.find((item) => item.id === chosen);
-  const accounts = (kinds.data?.catalog ?? []).filter(isSignIn);
+  const catalog = kinds.data?.catalog ?? [];
+  const accounts = catalog.filter(isSignIn);
+  const apps = catalog.filter(isApp);
   const account = accounts.find((item) => item.id === signingIn);
-  // Sign-ins this server offers come first; the ones it is not set up for say so, with no button.
-  const ready = accounts.filter((item) => item.available);
-  const later = accounts.filter((item) => !item.available);
+  const app = apps.find((item) => item.id === connecting);
   const everyday = list.filter((item) => EVERYDAY.has(item.kind));
   const builders = list.filter((item) => !EVERYDAY.has(item.kind));
   const easier = (kindId: string) => accounts.find((item) => item.id === SIGN_IN_FOR[kindId]);
@@ -546,6 +791,14 @@ export function AddConnection({
           key={account.id}
           entry={account}
           onDone={() => setSigningIn(null)}
+          onInstalled={onInstalled}
+          {...(spaceId ? { spaceId } : {})}
+        />
+      ) : app ? (
+        <AppConnect
+          key={app.id}
+          entry={app}
+          onDone={() => setConnecting(null)}
           onInstalled={onInstalled}
           {...(spaceId ? { spaceId } : {})}
         />
@@ -568,67 +821,82 @@ export function AddConnection({
         />
       ) : (
         <div className="col" style={{ gap: 14 }}>
-          {ready.length || everyday.length ? (
-            <div className="col" style={{ gap: 8 }}>
-              <span className="connect-group">Mail and calendars</span>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                {ready.map((item) => (
-                  <Button
-                    key={item.id}
-                    variant="outline"
-                    icon="plus"
-                    title={item.description}
-                    onClick={() => setSigningIn(item.id)}
-                  >
-                    Sign in with {item.title}
-                  </Button>
-                ))}
-                {everyday.map((item) => (
-                  <Button
-                    key={item.id}
-                    variant="outline"
-                    icon="plus"
-                    title={item.description}
-                    onClick={() => setChosen(item.id)}
-                  >
-                    {item.title}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {later.length ? (
-            <div className="col" style={{ gap: 6 }}>
-              {later.map((item) => (
-                <div key={item.id} className="row connect-later">
-                  <span className="connect-later-name">Sign in with {item.title}</span>
-                  <span className="grow">{NOT_SET_UP}</span>
-                  {SETUP_DOCS[item.connect.provider] ? (
-                    <a href={SETUP_DOCS[item.connect.provider]} target="_blank" rel="noreferrer">
-                      How to set this up
-                    </a>
-                  ) : null}
-                </div>
+          {accounts.length || apps.length ? (
+            <div className="app-grid">
+              {accounts.map((item) => (
+                <AppCard
+                  key={item.id}
+                  title={item.title}
+                  description={ACCOUNT_NOTE[item.id] ?? item.description}
+                  available={item.available}
+                  connected={false}
+                  onOpen={() => setSigningIn(item.id)}
+                />
+              ))}
+              {apps.map((item) => (
+                <AppCard
+                  key={item.id}
+                  title={item.title}
+                  description={item.description}
+                  available={item.available}
+                  connected={connected?.has(item.id) === true}
+                  onOpen={() => setConnecting(item.id)}
+                />
               ))}
             </div>
           ) : null}
-          {builders.length ? (
-            <div className="col" style={{ gap: 8 }}>
-              <span className="connect-group">For developers</span>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                {builders.map((item) => (
-                  <Button
-                    key={item.id}
-                    variant="outline"
-                    icon="plus"
-                    title={item.description}
-                    onClick={() => setChosen(item.id)}
-                  >
-                    {item.title}
-                  </Button>
-                ))}
+          {everyday.length || builders.length ? (
+            <details className="connect-advanced">
+              <summary>
+                <span className="connect-advanced-title">Advanced</span>
+                <span className="connect-advanced-note">
+                  Mail with an app password, calendar feeds, any MCP server by its address, and your
+                  own OAuth apps
+                </span>
+              </summary>
+              <div className="col" style={{ gap: 14, paddingTop: 12 }}>
+                {everyday.length ? (
+                  <div className="col" style={{ gap: 8 }}>
+                    <span className="connect-group">Mail and calendars</span>
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      {everyday.map((item) => (
+                        <Button
+                          key={item.id}
+                          variant="outline"
+                          icon="plus"
+                          title={item.description}
+                          onClick={() => setChosen(item.id)}
+                        >
+                          {item.title}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {builders.length ? (
+                  <div className="col" style={{ gap: 8 }}>
+                    <span className="connect-group">For developers</span>
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      {builders.map((item) => (
+                        <Button
+                          key={item.id}
+                          variant="outline"
+                          icon="plus"
+                          title={item.description}
+                          onClick={() => setChosen(item.id)}
+                        >
+                          {item.title}
+                        </Button>
+                      ))}
+                    </div>
+                    <span className="app-connect-note">
+                      A server that asks you to sign in offers it after you add it, with your own
+                      OAuth app if it takes no other.
+                    </span>
+                  </div>
+                ) : null}
               </div>
-            </div>
+            </details>
           ) : null}
         </div>
       )}
@@ -640,36 +908,74 @@ export function AddConnection({
  * Signing in to a remote MCP server that asked for it. The sign-in is started
  * first, so the person sees where they will sign in before the browser leaves;
  * the page is then opened from the click itself, which pop-up blockers allow.
- * A service that cannot take sign-ins says why (it needs its public address).
+ * A server that registers no clients by itself takes the person's own OAuth
+ * app instead. A service that cannot take sign-ins says why (it needs its
+ * public address).
  */
 export function McpSignIn({ connectionId, label }: { connectionId: string; label: string }) {
   const [started, setStarted] = useState<McpSignInStart | null>(null);
   const [starting, setStarting] = useState(false);
   const [opened, setOpened] = useState(false);
+  const [own, setOwn] = useState(false);
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
   if (!started)
     return (
-      <Button
-        size="sm"
-        loading={starting}
-        disabled={starting}
-        onClick={() => {
-          setStarting(true);
-          void adapter
-            .startMcpSignIn(connectionId)
-            .then((result) => {
-              if (result.data) setStarted(result.data);
-              else
-                toast({
-                  kind: 'err',
-                  title: `Couldn’t start signing in to ${label}`,
-                  sub: result.error ?? result.unavailable ?? undefined,
-                });
-            })
-            .finally(() => setStarting(false));
-        }}
-      >
-        Sign in
-      </Button>
+      <span className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        {own ? (
+          <>
+            <Field label="Client ID">
+              <Input
+                value={clientId}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(event) => setClientId(event.target.value)}
+              />
+            </Field>
+            <Field label="Client secret (optional)">
+              <Input
+                type="password"
+                value={clientSecret}
+                autoComplete="new-password"
+                onChange={(event) => setClientSecret(event.target.value)}
+              />
+            </Field>
+          </>
+        ) : null}
+        <Button
+          size="sm"
+          loading={starting}
+          disabled={starting || (own && !clientId.trim())}
+          onClick={() => {
+            setStarting(true);
+            void adapter
+              .startMcpSignIn(
+                connectionId,
+                own
+                  ? {
+                      client_id: clientId.trim(),
+                      ...(clientSecret ? { client_secret: clientSecret } : {}),
+                    }
+                  : undefined,
+              )
+              .then((result) => {
+                if (result.data) setStarted(result.data);
+                else
+                  toast({
+                    kind: 'err',
+                    title: `Couldn’t start signing in to ${label}`,
+                    sub: result.error ?? result.unavailable ?? undefined,
+                  });
+              })
+              .finally(() => setStarting(false));
+          }}
+        >
+          Sign in
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOwn((value) => !value)}>
+          {own ? 'Sign in without your own app' : 'Use your own OAuth app'}
+        </Button>
+      </span>
     );
   const host = URL.canParse(started.issuer) ? new URL(started.issuer).host : started.issuer;
   return (
@@ -734,11 +1040,11 @@ export function ConnectionActions({
         if (result.data === null) {
           toast({
             kind: 'err',
-            title: result.error ?? result.unavailable ?? 'Couldn’t remove that',
+            title: result.error ?? result.unavailable ?? 'Couldn’t disconnect that',
           });
           return;
         }
-        toast({ kind: 'ok', title: `${label} was removed` });
+        toast({ kind: 'ok', title: `${label} was disconnected` });
         onChanged();
       })
       .finally(() => {
@@ -767,7 +1073,7 @@ export function ConnectionActions({
             disabled={busy !== null}
             onClick={remove}
           >
-            Remove {label}
+            Disconnect {label}
           </Button>
           <Button
             size="sm"
@@ -785,7 +1091,7 @@ export function ConnectionActions({
           disabled={busy !== null}
           onClick={() => setConfirming(true)}
         >
-          Remove
+          Disconnect
         </Button>
       )}
     </div>

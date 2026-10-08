@@ -75,6 +75,10 @@ const LOGO_BY_APP: Record<string, LogoName> = {
   x: 'x',
   youtube: 'youtube',
   tripadvisor: 'tripadvisor',
+  atlassian: 'atlassian',
+  sentry: 'sentry',
+  stripe: 'stripe',
+  microsoft: 'microsoft',
 };
 export const logoFor = (app: string): LogoName | null => LOGO_BY_APP[app.toLowerCase()] ?? null;
 
