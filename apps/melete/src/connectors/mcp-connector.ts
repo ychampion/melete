@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import { connectionServesJob } from '../jobs/scopes.ts';
 import { type McpServerConfig, type McpWorker, openMcpWorker } from './mcp.ts';
 import { mcpCredentialAccess, mcpCredentialUrl } from './mcp-credentials.ts';
-import { publicOnlyFetch } from './public-fetch.ts';
+import { reachFetch, spaceReach } from './public-fetch.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
@@ -130,33 +130,19 @@ export async function openConfiguredMcpConnector(
   const [row] = await sql`select secret_ref from connection where id = ${binding.connectionId}`;
   if (row?.secret_ref && !secrets) throw new Error('MCP credential store is unavailable');
   if (row?.secret_ref) mcpCredentialUrl.parse(config.endpoint.url);
-  // Only the setup owner's own space may reach a private address. Everyone else's
-  // server and token endpoint are resolved, checked and pinned on every request,
-  // so a name that later answers with an internal address reaches nothing.
-  const pinned = (await setupOwnersSpace(sql, binding.spaceId)) ? undefined : publicOnlyFetch();
+  // Only the setup owner's own space may reach a private address, and no space
+  // reaches cloud metadata. Every server and token endpoint is resolved, checked
+  // and pinned on every request, so a name that later answers with an address
+  // out of reach reaches nothing.
+  const pinned = reachFetch({ reach: await spaceReach(sql, binding.spaceId) });
   const credentials = secrets
     ? mcpCredentialAccess(sql, secrets, binding, config.endpoint.url, pinned)
     : undefined;
   const worker = await openMcpWorker(config, binding, {
     ...credentials,
-    ...(pinned ? { fetch: pinned } : {}),
+    fetch: pinned,
     // Open requests are limited per connection and across the space's connections.
     space: binding.spaceId,
   });
   return mcpConnector(worker, binding, sql, credentials);
-}
-
-/**
- * Whether a space is the setup owner's own, who runs the installation and may
- * point a server at an address inside it. A space that names no owner predates
- * accounts and is the setup owner's, and before setup there is nobody else. A
- * room the setup owner made is not their own: its requests come from everyone
- * in it, so its servers are held to public addresses like anyone else's.
- */
-export async function setupOwnersSpace(sql: Sql, spaceId: string): Promise<boolean> {
-  const [row] = await sql`select s.kind = 'personal'
-      and (o.id is null or coalesce(s.owner_principal_id, o.id) = o.id) as setup
-    from space s left join lateral (select id from owner order by created_at limit 1) o on true
-    where s.id = ${spaceId}`;
-  return row?.setup === true;
 }

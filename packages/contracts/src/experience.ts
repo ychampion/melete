@@ -22,7 +22,7 @@ import { PROCESS_STATES } from './execution.ts';
 import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
-import { messageId } from './reactions.ts';
+import { MESSAGE_SPAN_LIMIT, messageId, messageSpan } from './reactions.ts';
 import {
   runCreateRequest,
   runExportResponse,
@@ -619,6 +619,8 @@ export const conversationMessage = z
     corrects: messageId.optional(),
     /** Files uploaded with `POST /attachments` and not yet sent, in the order shown. */
     attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message_ceiling).optional(),
+    /** Stretches of `text` the person pasted rather than typed, when the composer can tell. */
+    pasted: z.array(messageSpan).max(MESSAGE_SPAN_LIMIT).optional(),
   })
   .refine((value) => value.text.trim().length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',

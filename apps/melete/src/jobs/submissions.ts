@@ -327,6 +327,7 @@ export class SubmissionService {
                 postMessageRequest.parse(parsed.data).text,
                 postMessageRequest.parse(parsed.data).corrects,
                 postMessageRequest.parse(parsed.data).attachments,
+                postMessageRequest.parse(parsed.data).pasted,
               ),
         );
       } catch (error) {

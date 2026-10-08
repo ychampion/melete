@@ -52,6 +52,7 @@ import type { RunService } from '../runs/service.ts';
 import type { SituationService } from '../situations/service.ts';
 import { intentStateNow } from '../situations/service.ts';
 import { dueOf, GUESS, intentLeadSeconds, markOrigins, readBack } from './origins.ts';
+import type { Span } from './said.ts';
 import { intent, intentEffect } from './schema.ts';
 
 const HOUR = 3_600_000;
@@ -84,6 +85,16 @@ export type IntentDeps = {
 const rows = <T>(value: unknown) => value as T[];
 const iso = (at: Date | null | undefined) => (at ? at.toISOString() : null);
 const missing = () => new ServiceError('not_found', 'That was not found.', 404);
+
+/** The stretches a message records as pasted, as far as they read as stretches at all. */
+function pastedSpans(raw: unknown): Span[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((span) => {
+    const start = (span as { start?: unknown } | null)?.start;
+    const end = (span as { end?: unknown } | null)?.end;
+    return typeof start === 'number' && typeof end === 'number' ? [{ start, end }] : [];
+  });
+}
 
 /** What the run is asked to do, from the intent: the person's words, and every guess marked. */
 function goalOf(row: {
@@ -167,9 +178,10 @@ export class IntentService {
         created_at: Date;
         text: string | null;
         speaker: string | null;
+        pasted: unknown;
       }>(
         await tx.execute(sql`select seq, created_at, payload->>'text' as text,
-            payload->>'principal_id' as speaker
+            payload->>'principal_id' as speaker, payload->'pasted' as pasted
           from event where job_id = ${chat.id} and type = 'notice'
             and payload->>'kind' = 'user_message' and payload->'chosen' is null
             ${input.message_id ? sql`and seq = ${Number(input.message_id)}` : sql``}
@@ -207,8 +219,10 @@ export class IntentService {
           'That deadline has already passed. Ask the person when it has to be done by.',
           400,
         );
+      // Origins read the message as sent, so the composer's pasted stretches line up with it.
       const origins = markOrigins(constraints, deadline, {
-        words,
+        words: message.text ?? '',
+        pasted: pastedSpans(message.pasted),
         eventAt: new Date(message.created_at).toISOString(),
         timeZone: zone,
       });

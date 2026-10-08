@@ -12,6 +12,7 @@ import {
   type JsonObject,
   jobBudget,
   jobConstraints,
+  type MessageSpan,
   REQUEST_FRAMING_TOKENS,
   responsibilityJob,
   schedulingClass,
@@ -435,8 +436,8 @@ export class JobService {
     return updated;
   }
 
-  async input(id: string, text: string): Promise<JobRow> {
-    return this.transaction((tx) => this.inputInTransaction(tx, id, text));
+  async input(id: string, text: string, pasted?: readonly MessageSpan[]): Promise<JobRow> {
+    return this.transaction((tx) => this.inputInTransaction(tx, id, text, undefined, [], pasted));
   }
 
   async inputInTransaction(
@@ -447,6 +448,8 @@ export class JobService {
     corrects?: string,
     /** Files the person uploaded for this message; each must be theirs and unsent. */
     attachments: readonly string[] = [],
+    /** Stretches of `text` the person pasted rather than typed, as their composer saw them. */
+    pasted: readonly MessageSpan[] = [],
   ): Promise<JobRow> {
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
@@ -518,6 +521,7 @@ export class JobService {
         principal_id: speaker ?? row.principalId ?? null,
         ...(corrects ? { corrects } : {}),
         ...(files.length ? { attachments: files } : {}),
+        ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
       },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });

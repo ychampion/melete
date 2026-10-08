@@ -9,7 +9,8 @@
  * Hidden:
  * - keys, tokens and passwords (`Bearer …`, `sk-…`, `password: …`, signed
  *   capability tokens, private key blocks, a password inside a link);
- * - approval hashes (64 hex characters) and the service's own record ids;
+ * - an approval's payload hash, when it is named as one, and the service's
+ *   own record ids (a plain checksum, digest or commit id is shown);
  * - a whole internal record, such as a tool call written out as JSON outside a
  *   code block, which is removed rather than replaced.
  *
@@ -54,8 +55,12 @@ const SECRET_PATTERNS: RegExp[] = [
   /(?<=\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/@:]{1,128}:)[^\s/@]+(?=@)/gi,
   // The body of a private key block; the lines naming it stay.
   /(?<=-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----)[\s\S]*?(?=-----END [A-Z ]{0,40}PRIVATE KEY-----|$)/g,
-  // An approval hash: a sha256 in lowercase hex.
-  /(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])/g,
+  // An approval's payload hash, named as one. A bare sha256 is a checksum, a
+  // download's digest or a commit, and is shown as written.
+  /(?<=\b(?:payload|approv(?:al|ed))(?:[ _-]?hash)?\b[^\n]{0,24})(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])/gi,
+  // A long hex value said to be a secret in any wording ("my API key is …",
+  // "token …", "secret …"), not only after a colon or an equals sign.
+  /(?<=\b(?:password|passwd|passphrase|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|client[ _-]?secret|credential|bearer|auth(?:orization)?|key)s?\b[^\n]{0,24})(?<![0-9A-Za-z])[0-9a-f]{32,}(?![0-9A-Za-z])/gi,
   // The service's own record ids: a known prefix and a 26-character time-ordered id.
   // One that names a file (`act_….png`, `…/act_…`) is a file name, not a record.
   /(?<![A-Za-z0-9_/\\])(?:job|att|act|apr|sec|turn)_[0-9A-HJKMNP-TV-Z]{26}(?![A-Za-z0-9_]|\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9_-]))/g,

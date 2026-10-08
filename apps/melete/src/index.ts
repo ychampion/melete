@@ -90,6 +90,7 @@ import { EventStream } from './events/stream.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
+import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
@@ -531,6 +532,7 @@ export function createApp(deps: AppDeps) {
       privacy,
       runs: longWork,
       attachments: deps.attachments,
+      workspaces: { workRoot: deps.env.MELETE_WORK_DIR, days: deps.env.MELETE_TRASH_DAYS },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
     });
   // Rooms: shared spaces where several people talk to one agent. Switched
@@ -1502,9 +1504,18 @@ export async function bootstrap(
         // Threads that deleted routines left behind before deleting a routine
         // took its thread go now, in the background.
         if (handle && jobs) {
-          const removing = { jobs, sql: handle.sql, runner };
+          const workspaces = { workRoot: env.MELETE_WORK_DIR, days: env.MELETE_TRASH_DAYS };
+          const removing = { jobs, sql: handle.sql, runner, workspaces };
           void removeDeletedRoutineThreads(removing).catch(() => {
             process.stderr.write('removing the threads of deleted routines failed\n');
+          });
+          // Workspaces that chats deleted before a deleted chat took its
+          // workspace with it go to the trash now, in the background.
+          void trashOrphanedWorkspaces(handle.sql, {
+            ...workspaces,
+            spacesRoot: env.MELETE_SPACES_DIR,
+          }).catch(() => {
+            process.stderr.write('moving the workspaces of deleted chats to the trash failed\n');
           });
         }
         if (handle && processFactory)

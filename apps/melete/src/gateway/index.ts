@@ -10,6 +10,7 @@ import {
   modelContextWindow,
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
+import { type Resolve, reachTransport } from '../connectors/public-fetch.ts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import type { PreparedRequest } from '../privacy/router.ts';
 import {
@@ -78,6 +79,12 @@ export interface GatewayOptions {
   defaultProvider?: string;
   /** Test injection or a service-owned transport; never selected by a request. */
   fetch?: (request: Request) => Promise<Response>;
+  /**
+   * Name resolution for the address check on a provider with a `reach`. With
+   * an injected `fetch` and no resolver, a test speaks for the network and the
+   * check is left out; the gateway's own transport is always checked.
+   */
+  resolve?: Resolve;
   fake?: ReturnType<typeof createScriptedProvider>;
   /** How long a provider may go without sending anything before the call ends. */
   timeoutMs?: number;
@@ -236,6 +243,15 @@ export function createModelGateway(options: GatewayOptions): Server {
   }
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
+  // An endpoint the owner chose in the app is checked and pinned on every call.
+  const reaching =
+    options.fetch && !options.resolve
+      ? transport
+      : reachTransport({
+          reach: 'installation',
+          ...(options.resolve ? { resolve: options.resolve } : {}),
+          ...(options.fetch ? { transport: options.fetch } : {}),
+        });
   // One price table for spending and for charged input: the spending guard's.
   const guardPrices = (options.spending as { prices?: unknown } | undefined)?.prices;
   const prices =
@@ -610,7 +626,7 @@ export function createModelGateway(options: GatewayOptions): Server {
           answer =
             callProvider.fake && !local
               ? await fake(JSON.parse(encoded), principal.attemptId, protocol)
-              : await transport(
+              : await (callProvider.reach && !local ? reaching : transport)(
                   new Request(
                     (local ? localEndpoint(local, 'chat/completions') : target.upstream).href,
                     {

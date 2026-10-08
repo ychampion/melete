@@ -16,7 +16,9 @@ afterEach(async () => {
 });
 
 /** A loopback server that answers every request with `answer`. */
-function hostile(answer: (message: { id?: number; method: string }) => Response | Promise<Response>) {
+function hostile(
+  answer: (message: { id?: number; method: string }) => Response | Promise<Response>,
+) {
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -63,9 +65,9 @@ describe('a hostile MCP server', () => {
     const declared = hostile((message) =>
       Response.json({ jsonrpc: '2.0', id: message.id, result: { pad: huge } }),
     );
-    expect(await failure(openHttpMcpTransport({ transport: 'http', url: declared }).request('ping'))).toBe(
-      'MCP response limit exceeded',
-    );
+    expect(
+      await failure(openHttpMcpTransport({ transport: 'http', url: declared }).request('ping')),
+    ).toBe('MCP response limit exceeded');
     const streamed = hostile(
       () =>
         new Response(drip('x'.repeat(64 * 1024), 1, '{"jsonrpc":"2.0","id":1,"result":{"pad":"'), {
@@ -73,9 +75,9 @@ describe('a hostile MCP server', () => {
         }),
     );
     const started = Date.now();
-    expect(await failure(openHttpMcpTransport({ transport: 'http', url: streamed }).request('ping'))).toBe(
-      'MCP response limit exceeded',
-    );
+    expect(
+      await failure(openHttpMcpTransport({ transport: 'http', url: streamed }).request('ping')),
+    ).toBe('MCP response limit exceeded');
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
@@ -142,7 +144,12 @@ describe('a hostile MCP server', () => {
         allowed_scopes: ['mcp_big.small'],
         audience: 'owner',
         tools: [
-          { name: 'small', alias: 'small', required_scopes: ['mcp_big.small'], effect_class: 'read' },
+          {
+            name: 'small',
+            alias: 'small',
+            required_scopes: ['mcp_big.small'],
+            effect_class: 'read',
+          },
         ],
       });
     const handshake = (message: { id?: number; method: string }, tools: () => unknown) => {
@@ -167,7 +174,10 @@ describe('a hostile MCP server', () => {
         ],
       })),
     );
-    const worker = await openMcpWorker(config(oneGiant), { connectionId: 'conn_x', spaceId: 'sp_x' });
+    const worker = await openMcpWorker(config(oneGiant), {
+      connectionId: 'conn_x',
+      spaceId: 'sp_x',
+    });
     expect(worker.definitions.map((tool) => tool.name)).toEqual(['small']);
     await worker.close();
 

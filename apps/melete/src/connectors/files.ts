@@ -1239,8 +1239,17 @@ export function createFilesConnector(options: FilesOptions): Connector {
     const segments = segmentsFor(relative);
     if (segments.length === 0)
       throw new Error(`a whole area cannot be deleted; name a file or folder in ${area}`);
-    if (area === 'artifacts' && segments[0] === FROM_CHATS)
+    if (area === 'artifacts' && segments[0] === FROM_CHATS) {
+      // A file whose chat is gone is in the person's Files, and is deleted there.
+      const entry = RECORD_ID.test(segments[1] ?? '')
+        ? (await savedElsewhere(ctx)).find((candidate) => candidate.id === segments[1])
+        : undefined;
+      if (entry && entry.jobId === null && entry.area === 'artifacts')
+        throw new Error(
+          `this file is in the person's Files: delete it with area artifacts and path ${JSON.stringify(entry.path)}`,
+        );
       throw new Error('a file saved in another conversation is deleted from that conversation');
+    }
     if (area === 'work' && segments[0] === '.melete')
       throw new Error(
         "Melete's own records (stored command output and screenshots) are not deleted this way",

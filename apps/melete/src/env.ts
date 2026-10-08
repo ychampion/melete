@@ -428,11 +428,22 @@ const variables = z.object({
   /**
    * A model server on this machine or network (OpenAI-compatible, for example
    * Ollama at http://127.0.0.1:11434/v1) that private conversations use until
-   * the owner sets one in Settings → Privacy.
+   * the installation's owner sets one in Settings → Privacy. It is the only
+   * local model anyone else's private conversations use.
    */
   MELETE_LOCAL_MODEL_URL: unsetWhenBlank(z.string().url().optional()),
   MELETE_LOCAL_MODEL: unsetWhenBlank(z.string().max(200).optional()),
   MELETE_LOCAL_MODEL_KEY: unsetWhenBlank(z.string().max(500).optional()),
+  /**
+   * An address set in the app never reaches a cloud metadata service
+   * (169.254.169.254 and the like), the owner's included. `true` opens those
+   * addresses to the installation owner's own settings, for a model that really
+   * runs there; everyone else stays held to public addresses.
+   */
+  MELETE_ALLOW_CLOUD_METADATA: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   /**
    * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
    * public client, the only one OpenAI has registered for this sign-in.

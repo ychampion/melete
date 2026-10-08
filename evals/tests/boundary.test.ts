@@ -304,11 +304,12 @@ describe('typed memory-key lexical lookup', () => {
     expect(lexicalQuery('  pref.mail.signature  ')).toBe("'pref' | 'mail' | 'signature'");
   });
   test('matches any meaningful word, keeping addresses, links and numbers whole', () => {
-    expect(lexicalQuery('When did Alex reply?')).toBe("'did' | 'alex' | 'reply'");
-    expect(lexicalQuery("Email Ana's agenda")).toBe("'email' | 'ana' | 'agenda'");
+    // A word of five letters or more matches its other forms by its stem.
+    expect(lexicalQuery('When did Alex reply?')).toBe("'did' | 'alex' | 'repl':*");
+    expect(lexicalQuery("Email Ana's agenda")).toBe("'email':* | 'ana' | 'agenda':*");
     expect(lexicalQuery('alex@example.test')).toBe("'alex@example.test'");
     expect(lexicalQuery('https://example.test/a.b')).toBe("'https://example.test/a.b'");
-    expect(lexicalQuery('Budget: 2.5')).toBe("'budget' | '2.5'");
+    expect(lexicalQuery('Budget: 2.5')).toBe("'budget':* | '2.5'");
     expect(lexicalQuery('the and of')).toBeNull();
   });
 });

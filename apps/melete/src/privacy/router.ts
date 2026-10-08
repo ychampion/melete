@@ -173,6 +173,7 @@ export class PrivacyRouter {
       stored.sealed,
       stored.version,
       this.options.fallbackLocal ?? null,
+      stored.installation !== false,
     );
     this.settingsCache.set(key, { value, at: Date.now() });
     return value;

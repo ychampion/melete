@@ -263,10 +263,10 @@ export class ExperiencePlanning {
       .where(
         and(eq(job.planId, id), eq(job.spaceId, spaceId), eq(job.kind, 'milestone'), ownJob()),
       );
-    await removeJobs({ jobs, sql: raw, runner: this.service.runner }, [
-      id,
-      ...steps.map((step) => step.id),
-    ]);
+    await removeJobs(
+      { jobs, sql: raw, runner: this.service.runner, workspaces: this.service.workspaces },
+      [id, ...steps.map((step) => step.id)],
+    );
     await this.triggers?.syncSchedules();
     return { status: 'ok' as const };
   }
@@ -634,7 +634,10 @@ export class ExperiencePlanning {
       return unavailable('Scheduled routines are not connected yet.');
     // One transaction disables the schedule, cancels the run and fences it, so
     // no occurrence can start a run behind it; then the rows go.
-    await removeJobs({ jobs, sql: raw, runner: this.service.runner }, [row.job.id]);
+    await removeJobs(
+      { jobs, sql: raw, runner: this.service.runner, workspaces: this.service.workspaces },
+      [row.job.id],
+    );
     await this.triggers.syncSchedules();
     return { status: 'ok' as const };
   }

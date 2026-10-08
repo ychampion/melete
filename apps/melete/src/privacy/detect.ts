@@ -204,9 +204,14 @@ const DATE_VALUE = `(?:\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|(
 const CODE_WORDS = [
   '(?:verification|verify|confirmation|security|login|log[- ]?in|sign[- ]?in|access|one[- ]?time|single[- ]?use|auth(?:entication|orization)?|2fa|mfa|2-step|two[- ](?:factor|step)|backup|recovery|reset|device|pairing|activation)[^\\S\\n]+(?:code|pin|passcode|password|key|token)',
   'otp|totp|passcode',
-  '(?:your|the|this)[^\\S\\n]+(?:code|pin)',
   '2fa|mfa',
 ].join('|');
+/**
+ * "Your code" or "the code" names a one-time code only before digits alone:
+ * before letters and digits it is as often source code and a short commit id
+ * ("the code is 4fe2a91").
+ */
+const PLAIN_CODE_WORDS = '(?:your|the|this)[^\\S\\n]+(?:code|pin)';
 /** A code: four to eight digits, in one group or two. */
 const CODE_DIGITS = '\\d{4,8}|\\d{3,4}[- ]\\d{3,4}';
 /** A code with letters as well: two groups, or six to eight characters, always with a digit. */
@@ -252,6 +257,14 @@ const RULES: Rule[] = [
     digits: true,
     pattern: new RegExp(
       `\\b(?:${CODE_WORDS})\\b[^\\S\\n]{0,3}(?:is|was|:|=|-|#)?[^\\S\\n]{0,3}(?<v>${CODE_VALUE})(?![A-Za-z0-9-])`,
+      'gi',
+    ),
+  },
+  {
+    category: 'credential',
+    digits: true,
+    pattern: new RegExp(
+      `\\b${PLAIN_CODE_WORDS}\\b[^\\S\\n]{0,3}(?:is|was|:|=|-|#)?[^\\S\\n]{0,3}(?<v>${CODE_DIGITS})(?![A-Za-z0-9-])`,
       'gi',
     ),
   },

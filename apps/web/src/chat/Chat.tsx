@@ -79,6 +79,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
@@ -562,6 +563,21 @@ export function ChatScreen({ id }: { id: string | null }) {
   const flight = useInFlight();
   // A message that failed to send keeps its request, so Retry resends that message once.
   const outbox = useRef<Outbox | null>(null);
+  /**
+   * Where the draft holds text the person pasted. Every change to the draft
+   * goes through `changeDraft`, so the marks follow it; the next change after
+   * a paste is the pasted text going in.
+   */
+  const pasteMarks = useRef<PastedSpan[]>([]);
+  const pasting = useRef(false);
+  const draft = useRef(text);
+  const changeDraft = useCallback((next: string | ((current: string) => string)) => {
+    const value = typeof next === 'function' ? next(draft.current) : next;
+    pasteMarks.current = followDraft(pasteMarks.current, draft.current, value, pasting.current);
+    pasting.current = false;
+    draft.current = value;
+    setText(value);
+  }, []);
   // Files in the message box, uploaded as they are added and sent with the words.
   const files = useAttachments();
   const { clear: clearFiles, restore: restoreFiles } = files;
@@ -703,11 +719,18 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const send = useCallback(
     /** Resolves true once the service has the message (or will, when back online). */
-    async (body: string, attached: readonly AttachmentView[] = []): Promise<boolean> => {
+    async (
+      body: string,
+      attached: readonly AttachmentView[] = [],
+      /** Where `body` holds pasted text, when `body` is the draft. */
+      marks: readonly PastedSpan[] = [],
+    ): Promise<boolean> => {
       const clean = body.trim();
       if (!clean && !attached.length) return false;
       const fileIds = attached.map((file) => file.id);
-      setText('');
+      const pasted = sentSpans(marks, body);
+      changeDraft('');
+      pasteMarks.current = [];
       if (attached.length) clearFiles();
       // With no agent chosen the service hands the chat to Melete.
       const agent = agentId ?? fallback?.id;
@@ -722,7 +745,9 @@ export function ChatScreen({ id }: { id: string | null }) {
             title: 'Couldn’t start the chat',
             sub: created.error ?? created.unavailable ?? '',
           });
-          setText(clean);
+          changeDraft(clean);
+          // Put back as a whole, a draft that had a paste in it is marked whole.
+          pasteMarks.current = wholeDraft(pasted, clean);
           restoreFiles(attached);
           return false;
         }
@@ -731,6 +756,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           clean,
           messageKey(),
           fileIds,
+          pasted,
         );
         if (accepted.data === null)
           toast({
@@ -758,7 +784,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (!box) return false;
       const post = async (): Promise<boolean> => {
         state.settle(localId, 'sending');
-        const accepted = await adapter.send(conversationId, clean, key, fileIds);
+        const accepted = await adapter.send(conversationId, clean, key, fileIds, pasted);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
           toast({
@@ -794,6 +820,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       welcome,
       clearFiles,
       restoreFiles,
+      changeDraft,
     ],
   );
 
@@ -1075,7 +1102,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <span className="overline">Today</span>
                 </div>
               ) : null}
-              {welcome ? <WelcomeThread welcome={welcome} onTry={setText} /> : null}
+              {welcome ? <WelcomeThread welcome={welcome} onTry={changeDraft} /> : null}
               {transcript.turns.length === 0 && !state.loading && !welcome ? (
                 <div
                   className="col"
@@ -1174,7 +1201,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onMinimise={setVoiceMin}
                   onSend={send}
                   onDraft={(words) =>
-                    setText((current) =>
+                    changeDraft((current) =>
                       current.trim()
                         ? `${current.trimEnd()}
 ${words}`
@@ -1268,9 +1295,12 @@ ${words}`
               ) : (
                 <Composer
                   value={text}
-                  onChange={setText}
-                  onSend={() => void send(text, files.ready)}
+                  onChange={changeDraft}
+                  onSend={() => void send(text, files.ready, pasteMarks.current)}
                   attachments={files}
+                  onPasteText={() => {
+                    pasting.current = true;
+                  }}
                   agentName={
                     // A turn handed to another agent with @Name is that agent's while it works.
                     (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??

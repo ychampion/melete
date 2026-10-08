@@ -29,6 +29,19 @@ import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 export const messageId = z.string().regex(/^[1-9][0-9]{0,17}$/, 'must be an event seq');
 export type MessageId = z.infer<typeof messageId>;
 
+/**
+ * A stretch of a message's text the person pasted rather than typed, by UTF-16
+ * offsets into the text as sent (`end` exclusive). A composer that can tell
+ * sends them; what the person pasted is read as someone else's words.
+ */
+export const messageSpan = z.strictObject({
+  start: z.number().int().min(0),
+  end: z.number().int().min(0),
+});
+export type MessageSpan = z.infer<typeof messageSpan>;
+/** At most this many pasted stretches are kept for one message. */
+export const MESSAGE_SPAN_LIMIT = 50;
+
 /** Who reacted. Both directions are first class; neither is a special case. */
 export const reactionBy = z.enum(['person', 'assistant']);
 export type ReactionBy = z.infer<typeof reactionBy>;

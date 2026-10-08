@@ -351,4 +351,58 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
     await live.store.updateConversation(CONVERSATION, SPACE, { consent: 'allowed' });
     expect(await outcome(memoryCall(CONVERSATION))).toBe('cloud');
   });
+
+  test('only the installation owner’s spaces name a local model; anyone else’s uses the operator’s', async () => {
+    const SETUP = 'own_01JPRIVACYSETUP0000000000';
+    const OTHER = 'own_01JPRIVACYOTHER0000000000';
+    const OTHER_SPACE = 'sp_01JPRIVACYOTHER00000000000';
+    const SHARED = 'sp_01JPRIVACYSHARED0000000000';
+    const store = new PostgresPrivacyStore(sql, () => KEY);
+    // Before setup there is nobody else.
+    expect((await store.settings(SPACE)).installation).toBe(true);
+    await sql`insert into principal (id, email) values
+      (${SETUP}, 'setup@example.test'), (${OTHER}, 'other@example.test')`;
+    await sql`insert into owner (id, email) values (${SETUP}, 'setup@example.test')`;
+    // A space that names no owner predates accounts and is the setup owner's.
+    expect((await store.settings(SPACE)).installation).toBe(true);
+    await sql`update space set owner_principal_id = ${SETUP} where id = ${SPACE}`;
+    await sql`insert into space (id, name, git_path, owner_principal_id) values
+      (${OTHER_SPACE}, 'Personal', ${`/tmp/${OTHER_SPACE}`}, ${OTHER}),
+      (${SHARED}, 'Household', ${`/tmp/${SHARED}`}, ${OTHER})`;
+    expect((await store.settings(SPACE)).installation).toBe(true);
+    expect((await store.settings(OTHER_SPACE)).installation).toBe(false);
+    expect((await store.settings(SHARED)).installation).toBe(false);
+    expect((await store.settings('sp_01JNOSUCHSPACE0000000000000')).installation).toBe(false);
+
+    const operator = { baseUrl: 'http://127.0.0.1:11500/v1', model: 'operator-llama' };
+    const live = new PrivacyRouter({
+      store,
+      fallbackLocal: operator,
+      cacheMs: 0,
+      resolve: async () => [{ address: '10.0.0.7' }],
+    });
+    // Someone else cannot save one, at any address.
+    for (const base_url of ['http://169.254.169.254/v1', 'http://10.0.0.5/v1'])
+      expect(
+        await updateSettings(live, OTHER_SPACE, { local_model: { base_url, model: 'm' } }).then(
+          () => null,
+          (error: { code?: string; status?: number }) => [error.code, error.status],
+        ),
+      ).toEqual(['address_not_reachable', 403]);
+    // A row that got there anyway is never used: the operator's model is.
+    await store.saveSettings(
+      OTHER_SPACE,
+      { local_model: { base_url: 'http://169.254.169.254/v1', model: 'planted' } },
+      { known: [], local_api_key: 'planted-key' },
+    );
+    expect((await live.settingsFor(OTHER_SPACE)).local).toEqual(operator);
+    // The installation owner keeps their own, on their own network.
+    await updateSettings(live, SPACE, {
+      local_model: { base_url: 'http://models.home.test/v1', model: 'llama' },
+    });
+    expect((await live.settingsFor(SPACE)).local).toMatchObject({
+      baseUrl: 'http://models.home.test/v1',
+      model: 'llama',
+    });
+  });
 });

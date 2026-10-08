@@ -47,9 +47,11 @@ const withDb = db ? describe : describe.skip;
 /** Words of one meaning share one dimension: a scripted stand-in for an embedding model. */
 const CONCEPTS = [
   ['colour', 'color', 'teal', 'shade'],
-  ['allergic', 'allergy', 'peanuts', 'nuts'],
+  ['allergic', 'allergy', 'peanuts', 'nut', 'cashew'],
   ['birthday', 'born'],
   ['plumber', 'pipes', 'leak'],
+  ['sibling', 'sister'],
+  ['gym', 'work out'],
 ];
 function conceptEmbedder(
   overrides: Partial<EmbeddingProvider> = {},
@@ -266,6 +268,44 @@ withDb('semantic recall', () => {
     expect(result.status).not.toBe('unavailable');
     expect(result.recipe).toBe('simple-lexical-v1');
     expect(result.items[0]?.content).toBe('teal');
+  });
+
+  test('a message that asks several things recalls the answer to each, not only the closest', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    for (const said of [
+      fact(
+        'family.sister.home',
+        'My sister Priyanka lives in Denver and goes to the gym with me.',
+        'Priyanka lives in Denver and goes to the gym with me',
+      ),
+      fact('health.allergy', "I'm allergic to cashews.", 'allergic to cashews'),
+    ])
+      await record(db, scope, said, said.claims);
+    const embedding = conceptEmbedder();
+    await buildViews(db.sql, scope, embedding);
+    // As one vector, the request is closest to the sister, who matches two of
+    // its three questions; the allergy, the answer to the third, is well below
+    // the floor that closest match sets. No word of it is in the request.
+    const asked =
+      'Which sibling is out in Colorado… which nut to stay away from… which mornings do I work out?';
+    const result = await recall(db.sql, scope, { query: asked }, { embedding });
+    expect(result.recipe).toContain('scripted/concepts');
+    expect(result.items.map((item) => item.content)).toEqual(
+      expect.arrayContaining(['allergic to cashews', expect.stringContaining('Priyanka')]),
+    );
+  });
+
+  test('with words alone, another form of a word still finds the memory', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const said = fact('health.allergy', "I'm allergic to cashews.", 'allergic to cashews');
+    await record(db, scope, said, said.claims);
+    await buildViews(db.sql, scope);
+    for (const query of ['do I have allergies?', 'any allergy?', 'cashew'])
+      expect((await recall(db.sql, scope, { query })).items.map((item) => item.content)).toEqual([
+        'allergic to cashews',
+      ]);
   });
 
   test('a space marked private sends nothing to a cloud embedder', async () => {
@@ -684,6 +724,12 @@ const PARAPHRASES: { key: string; said: string; quote: string; asked: string }[]
     said: 'I am learning Japanese on Duolingo.',
     quote: 'Japanese',
     asked: 'which foreign tongue am I studying',
+  },
+  {
+    key: 'health.allergy.cashews',
+    said: "I'm allergic to cashews.",
+    quote: 'allergic to cashews',
+    asked: 'which nut should I stay away from',
   },
 ];
 

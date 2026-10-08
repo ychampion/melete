@@ -55,7 +55,15 @@ import {
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { ConnectorFaultError } from '../connectors/faults.ts';
+import {
+  metadataAllowed,
+  type Resolve,
+  reachTransport,
+  UNREACHABLE,
+} from '../connectors/public-fetch.ts';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
+import { isMetadataAddress } from '../connectors/web.ts';
 import type { Database } from '../db/client.ts';
 import {
   modelDefault,
@@ -163,6 +171,12 @@ export interface ModelSettingsOptions {
   masterKey?: () => string | undefined;
   /** The transport a connection test uses; tests pass a mock. */
   fetch?: (request: Request) => Promise<Response>;
+  /**
+   * Name resolution for the address check on an endpoint chosen in the app.
+   * With a mock transport and no resolver, a test speaks for the network and
+   * the check is left out; the service's own transport is always checked.
+   */
+  resolve?: Resolve;
   timeoutMs?: number;
 }
 
@@ -894,6 +908,8 @@ export class ModelSettingsService {
       result.push({
         ...openAiCompatibleProvider(compatible.baseUrl),
         signedIn: this.storedCredential(compatible),
+        // Chosen in the app, so each call is checked and pinned (see `transportFor`).
+        reach: 'installation',
       });
     return result;
   }
@@ -946,8 +962,13 @@ export class ModelSettingsService {
         provider === OPENAI_COMPATIBLE && input.base_url
           ? checkedBaseUrl(input.base_url)
           : (configuredBase ?? '');
-    } catch {
-      return failed('invalid_address', INVALID_ADDRESS);
+    } catch (error) {
+      return failed(
+        'invalid_address',
+        error instanceof ServiceError && error.code === 'address_not_reachable'
+          ? UNREACHABLE
+          : INVALID_ADDRESS,
+      );
     }
     if (!base) return failed('invalid_address', INVALID_ADDRESS);
 
@@ -988,6 +1009,30 @@ export class ModelSettingsService {
       : BUILT_IN.get(provider)?.baseUrl;
   }
 
+  /**
+   * How a request to this provider's address goes out. An OpenAI-compatible
+   * address the owner chose in the app may be on their own network, but it is
+   * resolved, checked and pinned for each request, and never reaches cloud
+   * metadata. The operator's address and the built-in providers go as they are.
+   */
+  private transportFor(
+    provider: ModelProvider,
+    base: string,
+  ): (request: Request) => Promise<Response> {
+    const own = this.options.fetch;
+    if (
+      provider !== OPENAI_COMPATIBLE ||
+      base === this.operatorBaseUrl() ||
+      (own && !this.options.resolve)
+    )
+      return own ?? ((request: Request) => fetch(request));
+    return reachTransport({
+      reach: 'installation',
+      ...(this.options.resolve ? { resolve: this.options.resolve } : {}),
+      ...(own ? { transport: own } : {}),
+    });
+  }
+
   /** Fetches the provider's model list, or says in plain words why it could not. */
   private async list(
     provider: ModelProvider,
@@ -1008,7 +1053,7 @@ export class ModelSettingsService {
       headers.set('x-api-key', key);
       headers.set('anthropic-version', '2023-06-01');
     } else headers.set('authorization', `Bearer ${key}`);
-    const transport = this.options.fetch ?? ((request: Request) => fetch(request));
+    const transport = this.transportFor(provider, base);
     const timeoutMs = this.options.timeoutMs ?? MODEL_TEST_TIMEOUT_MS;
     const started = performance.now();
     const abort = new AbortController();
@@ -1039,6 +1084,7 @@ export class ModelSettingsService {
       ]);
       if (response.ok) body = await Promise.race([response.json().catch(() => null), expired]);
     } catch (error) {
+      if (error instanceof ConnectorFaultError) return failed('invalid_address', UNREACHABLE);
       const name = error instanceof Error ? error.name : '';
       if (name === 'TimeoutError' || name === 'AbortError')
         return failed(
@@ -1203,6 +1249,9 @@ export function checkedBaseUrl(address: string): string {
   } catch {
     throw new ServiceError('invalid_address', INVALID_ADDRESS, 400);
   }
+  // A name is checked when each request is made; an address written out is refused now.
+  if (isMetadataAddress(parsed.hostname) && !metadataAllowed())
+    throw new ServiceError('address_not_reachable', UNREACHABLE, 400);
   return base;
 }
 

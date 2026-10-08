@@ -65,8 +65,48 @@ function ipv6Number(address: string): bigint | undefined {
   return parts.reduce((sum, part) => (sum << 16n) | BigInt(`0x${part}`), 0n);
 }
 
-/** Only globally routable unicast is usable, including for literal and mapped IPs. */
+const NAT64_PREFIX = (ipv6Number('64:ff9b::') ?? 0n) >> 32n;
+const AWS_V6_PREFIX = (ipv6Number('fd00:ec2::') ?? 0n) >> 96n;
+const GOOGLE_V6_METADATA = ipv6Number('fd20:ce::254');
+
+/**
+ * Cloud instance metadata and host agents, which hand out the machine's own
+ * credentials: the link-local blocks AWS, Google, Azure, Oracle and
+ * DigitalOcean answer on (169.254.169.0/24, and 169.254.170.0/24 for container
+ * credentials), Alibaba's 100.100.100.200, Azure's host endpoint
+ * 168.63.129.16, Oracle's 192.0.0.192, and the IPv6 forms (fd00:ec2::/32,
+ * fd20:ce::254). Mapped, compatible and NAT64 spellings of the IPv4 ones count.
+ */
+export function isMetadataAddress(address: string): boolean {
+  const value = address.replace(/^\[|\]$/g, '').toLowerCase();
+  const family = isIP(value);
+  if (family === 4) {
+    const [a, b, c, d] = value.split('.').map(Number) as [number, number, number, number];
+    return (
+      (a === 169 && b === 254 && (c === 169 || c === 170)) ||
+      (a === 100 && b === 100 && c === 100 && d === 200) ||
+      (a === 168 && b === 63 && c === 129 && d === 16) ||
+      (a === 192 && b === 0 && c === 0 && d === 192)
+    );
+  }
+  if (family !== 6) return false;
+  const number = ipv6Number(value.split('%')[0] ?? '');
+  if (number === undefined) return false;
+  const high = number >> 32n;
+  // ::ffff:a.b.c.d, ::a.b.c.d and 64:ff9b::a.b.c.d all carry an IPv4 address.
+  if (high === 0xffffn || high === 0n || high === NAT64_PREFIX) {
+    const v4 = Number(number & 0xffffffffn);
+    return isMetadataAddress(`${v4 >>> 24}.${(v4 >>> 16) & 255}.${(v4 >>> 8) & 255}.${v4 & 255}`);
+  }
+  return number >> 96n === AWS_V6_PREFIX || number === GOOGLE_V6_METADATA;
+}
+
+/**
+ * Only globally routable unicast is usable, including for literal and mapped
+ * IPs. A metadata service on an otherwise routable address is not public either.
+ */
 export function isPublicAddress(address: string): boolean {
+  if (isMetadataAddress(address)) return false;
   const family = isIP(address);
   if (family === 4) {
     const octets = address.split('.').map(Number);

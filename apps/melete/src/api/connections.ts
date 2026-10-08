@@ -54,16 +54,23 @@ import {
   connectorFactoryFor,
   connectorOptionsFromEnv,
 } from '../connectors/configured.ts';
-import { asConnectorFault } from '../connectors/faults.ts';
+import { asConnectorFault, ConnectorFaultError } from '../connectors/faults.ts';
 import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { listMcpServerTools, mcpServerConfig } from '../connectors/mcp.ts';
-import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
 import { McpSignIns } from '../connectors/mcp-sign-in.ts';
 import { microsoftProvider } from '../connectors/microsoft.ts';
-import { isPublicEndpoint, publicOnlyFetch } from '../connectors/public-fetch.ts';
+import {
+  asFetch,
+  isPublicEndpoint,
+  outOfReach,
+  type Reach,
+  reachFetch,
+  spaceReach,
+  UNREACHABLE,
+} from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { PostgresSecretRepository } from '../connectors/secrets.ts';
 import type { SignedInCredential } from '../connectors/signed-in.ts';
@@ -537,20 +544,39 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await installer(deps.db, spaceId, actor, installation.kind);
-    // An MCP server outside the setup owner's own space must be a public
-    // address; the connector holds it to that again on every request.
-    if (installation.kind === 'mcp' && !(await setupOwnersSpace(deps.sql, spaceId))) {
+    // An address outside the setup owner's own space must be public; the
+    // connector holds it to that again on every connection it makes.
+    const reach = await spaceReach(deps.sql, spaceId);
+    if (installation.kind === 'mcp' && reach === 'public') {
       const tokenUrl = installation.credentials?.token_url;
       for (const address of [installation.config.url, ...(tokenUrl ? [tokenUrl] : [])])
         if (!(await isPublicEndpoint(address)))
           throw new ServiceError(
-            'invalid_request',
-            'An MCP server and its token endpoint must be at public addresses.',
+            'address_not_reachable',
+            `${UNREACHABLE} An MCP server and its token endpoint must be at public addresses.`,
             400,
           );
     }
+    // A mail server or calendar service is checked again, and pinned, on every
+    // connection; a name that does not resolve yet is left to the first test,
+    // as a feed's is.
+    const hosts =
+      installation.kind === 'mail'
+        ? [installation.config.imap.host, installation.config.smtp.host]
+        : installation.kind === 'caldav'
+          ? [installation.config.calendar_url, installation.config.server_url]
+              .filter((address): address is string => !!address)
+              .map((address) => new URL(address).hostname)
+          : [];
+    for (const host of hosts)
+      if (await outOfReach(host, reach))
+        throw new ServiceError(
+          'address_not_reachable',
+          reach === 'public' ? `${UNREACHABLE} It must be at a public address.` : UNREACHABLE,
+          400,
+        );
     const id = newId('conn');
-    const stored = await storedShape(installation, id, spaceId, factory);
+    const stored = await storedShape(installation, id, spaceId, factory, reach);
     // Sealed before the event order lock, as renew and reconnect do: the secret
     // store writes on its own pool connection, which the lock holder must not
     // wait for.
@@ -704,9 +730,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
    * pinned on every request.
    */
   const reachFor = async (spaceId: string) =>
-    (await setupOwnersSpace(deps.sql, spaceId))
-      ? (url: string, init: RequestInit) => fetch(url, init)
-      : publicOnlyFetch();
+    reachFetch({ reach: await spaceReach(deps.sql, spaceId) });
   const signIns = new McpSignIns({
     store: pendingSignIns,
     publicUrl: deps.env.MELETE_PUBLIC_URL,
@@ -1377,6 +1401,7 @@ async function storedShape(
   id: string,
   spaceId: string,
   factory: ConnectorFactory,
+  reach: Reach,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
   if (signedIn(installation))
     return {
@@ -1384,7 +1409,7 @@ async function storedShape(
       secret: JSON.stringify(installation.credential),
       configuration: { kind: installation.kind, account: installation.account },
     };
-  return requestedShape(installation, id, spaceId, factory);
+  return requestedShape(installation, id, spaceId, factory, reach);
 }
 
 async function requestedShape(
@@ -1392,6 +1417,7 @@ async function requestedShape(
   id: string,
   spaceId: string,
   factory: ConnectorFactory,
+  reach: Reach,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
   if (installation.kind === 'mcp') {
     const { url, ...policy } = installation.config;
@@ -1427,9 +1453,13 @@ async function requestedShape(
         username: rest.username,
         password: installation.credentials.password,
         allowInsecureLocalForTests: factory.options.insecureLocalFixtures === true,
+        // Each step is checked and pinned as the calendar connector's own requests are.
+        fetcher: asFetch(reachFetch({ reach })),
       });
       installation.config = { username: rest.username, calendar_url: found.calendar_url };
     } catch (error) {
+      if (error instanceof ConnectorFaultError)
+        throw new ServiceError('address_not_reachable', UNREACHABLE, 400);
       throw new ServiceError(
         'invalid_request',
         error instanceof CalendarDiscoveryError
