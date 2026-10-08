@@ -35,7 +35,11 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb openbox dbus-x11 at-spi2-core
-          ls -l "$(readlink -f "$(command -v google-chrome)")"
+          # Chromium's renderer sandbox needs user namespaces, which this image restricts.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # The image ships Chrome's launcher world-writable; Cua Driver refuses such a browser.
+          sudo chmod 755 /opt/google/chrome/google-chrome
+          ls -l /opt/google/chrome/google-chrome /opt/google/chrome/chrome
       - name: Cua Driver, pinned by checksum
         run: |
           mkdir -p "$RUNNER_TEMP/cua"
