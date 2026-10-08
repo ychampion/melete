@@ -16,7 +16,7 @@ import type { IntentConstraints, IntentKind, ReadBackPart, ValueOrigin } from '@
 import * as chrono from 'chrono-node';
 import { tier0Values, zoneOffsetMinutes } from '../memory/tier0.ts';
 import { DATE_ONLY_DUE, localDate, localInstant } from '../situations/detectors.ts';
-import { ownWords, saysNumber, saysWanted } from './said.ts';
+import { ownWords, type Span, saysNumber, saysWanted } from './said.ts';
 import { type Leaf, leaves } from './values.ts';
 
 export { leaves };
@@ -77,7 +77,8 @@ const NUMBER_WORDS = [
   'twenty',
 ];
 
-export type Said = { words: string; eventAt: string; timeZone: string };
+/** The person's message: its text, when it was said, where, and any stretches the composer saw pasted. */
+export type Said = { words: string; eventAt: string; timeZone: string; pasted?: readonly Span[] };
 
 /** "the 6th": a day of the month alone, which the date parser leaves unread. */
 const ORDINAL_DAY = /\bthe\s+(\d{1,2})(?:st|nd|rd|th)\b/gi;
@@ -166,8 +167,8 @@ export function markOrigins(
   deadline: string | null | undefined,
   words: Said,
 ): Record<string, ValueOrigin> {
-  // Only the person's own lines: a quote, a forward or pasted headers say nothing for them.
-  const own: Said = { ...words, words: ownWords(words.words) };
+  // Only the person's own lines: a quote, a forward or a paste says nothing for them.
+  const own: Said = { ...words, words: ownWords(words.words, words.pasted) };
   let cached: { at: number; minute: boolean }[] | null = null;
   const moments = () => {
     cached ??= own.words ? spokenMoments(own) : [];

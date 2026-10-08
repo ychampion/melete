@@ -16,7 +16,7 @@ import {
   proposedWrite,
 } from './knowledge.ts';
 import { jobLearningScope } from './learning.ts';
-import { messageId } from './reactions.ts';
+import { MESSAGE_SPAN_LIMIT, messageId, messageSpan } from './reactions.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -175,6 +175,8 @@ export const postMessageRequest = z
       .array(z.string().min(1).max(240))
       .max(ATTACHMENT_LIMITS.per_message_ceiling)
       .optional(),
+    /** Stretches of `text` the person pasted rather than typed, when their composer can tell. */
+    pasted: z.array(messageSpan).max(MESSAGE_SPAN_LIMIT).optional(),
   })
   .refine((value) => value.text.length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',
