@@ -209,6 +209,12 @@ export interface GatewayProvider {
    * OPENAI_COMPAT_BASE_URL, which may be a model server on their own network.
    */
   allowHttp?: boolean;
+  /**
+   * Set for the OpenAI-compatible endpoint the owner chose in the app: each
+   * call resolves the address, checks every answer against this reach (their
+   * own network is fine, cloud metadata never) and connects to what it checked.
+   */
+  reach?: 'installation';
 }
 
 /**

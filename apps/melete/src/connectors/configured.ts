@@ -68,6 +68,7 @@ import { type MicrosoftEndpoints, microsoftEndpoints, microsoftIssuer } from './
 import { createNotesConnector } from './notes.ts';
 import { OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
+import { asFetch, reachFetch, spaceReach } from './public-fetch.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { createRoomConnector } from './room.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
@@ -697,6 +698,8 @@ export class ConnectorFactory {
             spaceId: row.spaceId,
             secretRef: row.secretRef,
             allowInsecureLocalForTests: options.insecureLocalFixtures,
+            // Added in the app, so its servers are held to the space's reach.
+            reach: await spaceReach(options.sql, row.spaceId),
           },
           this.secrets,
         ),
@@ -719,6 +722,8 @@ export class ConnectorFactory {
             allowInsecureLocalForTests: options.insecureLocalFixtures,
           },
           this.secrets,
+          // Added in the app: every request is checked and pinned to the space's reach.
+          asFetch(reachFetch({ reach: await spaceReach(options.sql, row.spaceId) })),
         ),
       );
     if (row.provider === 'caldav' && stored?.kind === 'ics' && row.secretRef)

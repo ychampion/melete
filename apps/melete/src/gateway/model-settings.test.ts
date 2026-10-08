@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
+import { UNREACHABLE } from '../connectors/public-fetch.ts';
 import type { Database } from '../db/client.ts';
 import { loadEnv } from '../env.ts';
 import { defaultPrivacyRouter } from '../privacy/index.ts';
@@ -231,5 +232,139 @@ describe('the gateway reads its providers per call', () => {
     const text = await after.text();
     expect(text).not.toContain('sk-connected-in-app');
     expect(seen).toEqual(['Bearer sk-connected-in-app-9999']);
+  });
+});
+
+describe('an endpoint the owner connects in the app', () => {
+  const NAMES: Record<string, { address: string; family: 4 | 6 }[]> = {
+    'models.inside.test': [{ address: '10.0.0.7', family: 4 }],
+    'metadata.inside.test': [{ address: '169.254.169.254', family: 4 }],
+    'mapped.inside.test': [{ address: '::ffff:a9fe:a9fe', family: 6 }],
+    'models.example.test': [{ address: '93.184.216.34', family: 4 }],
+  };
+  const resolve = async (host: string) => {
+    const found = NAMES[host];
+    if (!found) throw new Error(`ENOTFOUND ${host}`);
+    return found;
+  };
+  const METADATA = [
+    'http://169.254.169.254/v1',
+    'http://2852039166/v1',
+    'http://0251.0376.0251.0376/v1',
+    'http://[::ffff:a9fe:a9fe]/v1',
+    'http://[fd00:ec2::254]/v1',
+    'http://metadata.inside.test/v1',
+    'http://mapped.inside.test/v1',
+  ];
+
+  test('may sit on the owner’s own network or be public, but never at cloud metadata', async () => {
+    const seen: string[] = [];
+    const settings = new ModelSettingsService({
+      db: emptyDb,
+      env: loadEnv({ NODE_ENV: 'test' }),
+      resolve,
+      fetch: async (request) => {
+        seen.push(request.url);
+        return Response.json({ data: [{ id: 'llama' }] });
+      },
+    });
+    const attempt = (base_url: string) =>
+      settings.test({ provider: 'openai-compatible', api_key: 'k-12345678', base_url });
+    for (const base of ['http://models.inside.test/v1', 'https://models.example.test/v1'])
+      expect(await attempt(base)).toMatchObject({ ok: true });
+    for (const base of METADATA)
+      expect([base, await attempt(base)]).toEqual([
+        base,
+        { ok: false, code: 'invalid_address', message: UNREACHABLE, status: null },
+      ]);
+    expect(seen).toEqual([
+      'http://models.inside.test/v1/models',
+      'https://models.example.test/v1/models',
+    ]);
+    // An address written out is refused before it is saved.
+    expect(() => checkedBaseUrl('http://169.254.169.254/v1')).toThrow(UNREACHABLE);
+    expect(() => checkedBaseUrl('http://[fd00:ec2::254]/v1')).toThrow(UNREACHABLE);
+  });
+
+  test('the operator’s own address is the operator’s configuration, and is not checked', async () => {
+    const seen: string[] = [];
+    const settings = new ModelSettingsService({
+      db: emptyDb,
+      env: loadEnv({
+        NODE_ENV: 'test',
+        OPENAI_COMPAT_BASE_URL: 'http://metadata.inside.test/v1',
+        OPENAI_COMPAT_API_KEY: 'operator-secret-key',
+      }),
+      resolve,
+      fetch: async (request) => {
+        seen.push(request.url);
+        return Response.json({ data: [] });
+      },
+    });
+    expect(await settings.test({ provider: 'openai-compatible' })).toMatchObject({ ok: true });
+    expect(seen).toEqual(['http://metadata.inside.test/v1/models']);
+  });
+
+  test('every model call to it is checked again, so a name that turns to metadata reaches nothing', async () => {
+    let address = 'http://models.inside.test/v1';
+    const seen: string[] = [];
+    const server = createModelGateway({
+      authenticate: async () => ({
+        jobId: 'job',
+        attemptId: 'att',
+        privacy: { kind: 'job' as const },
+        epoch: 1,
+        revision: 1,
+        maxRequests: 20,
+        maxTokens: 50_000,
+        allowedModels: [{ provider: 'openai-compatible', model: 'llama' }],
+      }),
+      budget: { reserve: async () => ({ id: 'r' }), settle: async () => {} },
+      privacy: defaultPrivacyRouter(),
+      providers: [],
+      currentProviders: async (): Promise<GatewayProvider[]> => [
+        {
+          name: 'openai-compatible',
+          baseUrl: `${address}/`,
+          apiKey: 'owner-key-1234',
+          protocols: ['chat/completions'],
+          allowHttp: true,
+          reach: 'installation',
+        },
+      ],
+      resolve,
+      fetch: async (request) => {
+        seen.push(request.url);
+        return Response.json({
+          model: 'llama',
+          choices: [{ message: { role: 'assistant', content: 'hi' } }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        });
+      },
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const call = () =>
+        fetch(`http://127.0.0.1:${port}/providers/openai-compatible/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer melete-surrogate-test',
+            'x-melete-capability': 'cap',
+          },
+          body: JSON.stringify({ model: 'llama', max_tokens: 10, messages: [] }),
+        });
+      expect((await call()).status).toBe(200);
+      for (const base of METADATA) {
+        address = base;
+        const refused = await call();
+        expect([base, refused.ok]).toEqual([base, false]);
+        await refused.body?.cancel();
+      }
+      expect(seen).toEqual(['http://models.inside.test/v1/chat/completions']);
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
   });
 });

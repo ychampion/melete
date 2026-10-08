@@ -1,6 +1,8 @@
+import { isIP } from 'node:net';
 import { ImapFlow } from 'imapflow';
 import { type AddressObject, type EmailAddress, type ParsedMail, simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
+import { notPublic, type Reach, type Resolve, reachAddresses } from './public-fetch.ts';
 
 export type EmailConnection = {
   id: string;
@@ -14,6 +16,12 @@ export type EmailConnection = {
   sent?: string;
   /** Disabled by default; only explicitly configured loopback test servers may use plaintext. */
   allowInsecureLocalForTests?: boolean;
+  /**
+   * Set for a mailbox added in the app: each connection resolves the server,
+   * checks every answer against this reach and connects to a checked address.
+   * Unset for one from the operator's settings file.
+   */
+  reach?: Reach;
 };
 
 export type MailMessage = {
@@ -354,13 +362,33 @@ export class ImapSmtpTransport implements MailTransport {
   constructor(
     private readonly config: EmailConnection,
     private readonly password: string,
+    private readonly resolve?: Resolve,
   ) {
     validateMailConnection(config);
   }
 
-  private client(): ImapFlow {
+  /**
+   * Where to connect for one endpoint. Held to a reach, the name is resolved
+   * now and the connection goes to the checked address, with the name kept for
+   * TLS, so it cannot be re-pointed between the check and the connection.
+   */
+  private async endpoint(endpoint: { host: string; port: number; secure: boolean }) {
+    const reach = this.config.reach;
+    if (!reach) return endpoint;
+    const addresses = await reachAddresses(endpoint.host, reach, {
+      ...(this.resolve ? { resolve: this.resolve } : {}),
+    });
+    const address = addresses?.[0]?.address;
+    if (!address) throw notPublic();
+    const name = endpoint.host.replace(/\.$/, '').toLowerCase();
+    return isIP(name)
+      ? { ...endpoint, host: address }
+      : { ...endpoint, host: address, servername: name };
+  }
+
+  private async client(): Promise<ImapFlow> {
     return new ImapFlow({
-      ...this.config.imap,
+      ...(await this.endpoint(this.config.imap)),
       doSTARTTLS: this.config.allowInsecureLocalForTests ? false : !this.config.imap.secure,
       auth: { user: this.config.username, pass: this.password },
       logger: false,
@@ -376,7 +404,7 @@ export class ImapSmtpTransport implements MailTransport {
     mailbox: string | null,
     work: (client: ImapFlow) => Promise<T>,
   ): Promise<T> {
-    const client = this.client();
+    const client = await this.client();
     // Socket errors are surfaced by commands; never log errors with credentials.
     client.on('error', () => {});
     try {
@@ -439,9 +467,9 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
-  private smtp() {
+  private async smtp() {
     return nodemailer.createTransport({
-      ...this.config.smtp,
+      ...(await this.endpoint(this.config.smtp)),
       auth: { user: this.config.username, pass: this.password },
       requireTLS: !this.config.allowInsecureLocalForTests,
       ignoreTLS: this.config.allowInsecureLocalForTests ?? false,
@@ -463,7 +491,7 @@ export class ImapSmtpTransport implements MailTransport {
     message: OutgoingMail,
   ): Promise<{ messageId: string; sentCopy: boolean; accepted: string[]; rejected: string[] }> {
     const raw = await composeMail(this.config.from, message);
-    const smtp = this.smtp();
+    const smtp = await this.smtp();
     let accepted: string[];
     let rejected: string[];
     try {
@@ -534,7 +562,7 @@ export class ImapSmtpTransport implements MailTransport {
    */
   async health(): Promise<void> {
     await this.imap(this.config.inbox ?? 'INBOX', async () => {});
-    const smtp = this.smtp();
+    const smtp = await this.smtp();
     try {
       await smtp.verify();
     } finally {
