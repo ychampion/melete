@@ -8,7 +8,7 @@
  * so every computer action the agent planned is refused from then on (see
  * `connectors/sandbox-computer.ts`); input from the live view is accepted only
  * while the person holds control. Handing back moves the epoch on again; the
- * job stays parked until the person answers it.
+ * work the takeover paused goes on by itself, from a fresh screenshot.
  *
  * The live channel uses the browser live view's wire shapes: `LiveOpen`, a
  * Server-Sent Events stream of `LiveDown` frames, and `LiveUp` input. Its id is
@@ -151,6 +151,8 @@ type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
+  /** Called once the person hands the computer back: the work the takeover parked goes on. */
+  onHandedBack?: (jobId: string) => Promise<unknown>;
   private readonly byId = new Map<string, Channel>();
   private readonly bySandbox = new Map<string, Channel>();
   private readonly now: () => number;
@@ -299,7 +301,7 @@ export class SandboxComputerService {
     );
     if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
-    else
+    else {
       await this.sql.begin(async (tx) => {
         await lockEventOrderIn(tx);
         await appendEvent(tx, binding.jobId, null, 'notice', {
@@ -308,6 +310,13 @@ export class SandboxComputerService {
           control_epoch: next.epoch,
         });
       });
+      // The work the takeover paused goes on, from a fresh screenshot. The
+      // hand-back has happened whatever that finds; a job left waiting still
+      // goes on when the person answers it.
+      await this.onHandedBack?.(binding.jobId).catch(() => {
+        process.stderr.write('computer hand-back could not resume its job\n');
+      });
+    }
     return { session_id: binding.sessionId, control: next.control, control_epoch: next.epoch };
   }
 
@@ -335,7 +344,7 @@ export class SandboxComputerService {
           : {
               kind: 'user_input',
               question:
-                'Computer control: a person has taken over the computer. Continue when they hand it back and answer, starting from a fresh screenshot.',
+                'Computer control: a person has taken over the computer. Continue when they hand it back, starting from a fresh screenshot.',
             };
       await tx`update job set state = ${state}, wait = ${JSON.stringify(wait)}::jsonb,
         lease_epoch = lease_epoch + 1, state_version = state_version + 1,

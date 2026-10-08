@@ -3351,7 +3351,7 @@ export function buildOpenApiDocument() {
             tags: ['sandbox'],
             summary: 'Give the computer back to the agent',
             description:
-              'Increments the control epoch again. The job stays parked until the person answers it. ' +
+              'Increments the control epoch again, and the work the takeover paused goes on. ' +
               'With `control_epoch`, control changes only from that epoch; otherwise 409.',
             requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
             requestBody: {

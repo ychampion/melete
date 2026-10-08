@@ -603,7 +603,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   /** The phone's agent sheet, opened from the name under the title. */
   const [agentSheet, setAgentSheet] = useState(false);
   /** The agent's computer is opened by the person and stays as they left it. */
-  const [computerOpen, setComputerOpen] = useState(false);
+  // A link handing the person the agent's browser (`?computer=1`) opens with the computer showing.
+  const [computerOpen, setComputerOpen] = useState(() => route.query.get('computer') === '1');
 
   const last = latestTurn(transcript);
   // A long chat opens on its newest turns; the older ones are a tap away.

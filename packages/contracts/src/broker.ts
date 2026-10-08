@@ -267,6 +267,12 @@ export const BROKER_ERROR_CODES = [
   // A recipient, destination, amount or resource field did not resolve to an
   // origin Melete can vouch for, and no approval bound to that doubt exists.
   'untrusted_recipient_origin',
+  // The service chose another path for this effect: a connected app's own
+  // tools, or the person.
+  'path_refused',
+  // An earlier effect on the same service may have landed and is not settled
+  // yet. Nothing more is tried there, on any path, until it is.
+  'outcome_unconfirmed',
 ] as const;
 export const brokerErrorCode = z.enum(BROKER_ERROR_CODES);
 export type BrokerErrorCode = z.infer<typeof brokerErrorCode>;
@@ -312,10 +318,16 @@ export type Receipt = z.infer<typeof receipt>;
 
 export const dispatchResult = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('succeeded'), receipt }),
-  z.object({ outcome: z.literal('failed'), reason: z.string(), retryable: z.boolean() }),
+  z.object({
+    outcome: z.literal('failed'),
+    reason: z.string(),
+    retryable: z.boolean(),
+    /** What the connector saw that decided it, kept on the action's record. */
+    evidence: jsonObject.optional(),
+  }),
   // The dispatch left the process and the answer never came back. Nothing is
   // resent; the job goes to needs_reconciliation until verify or a person decides.
-  z.object({ outcome: z.literal('unknown'), reason: z.string() }),
+  z.object({ outcome: z.literal('unknown'), reason: z.string(), evidence: jsonObject.optional() }),
 ]);
 export type DispatchResult = z.infer<typeof dispatchResult>;
 

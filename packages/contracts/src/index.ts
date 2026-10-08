@@ -46,6 +46,7 @@ export * from './model-search.ts';
 export * from './model-settings.ts';
 export * from './model-vision.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
+export * from './paths.ts';
 export * from './plugins.ts';
 export * from './principals.ts';
 export * from './privacy.ts';

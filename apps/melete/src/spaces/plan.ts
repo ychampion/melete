@@ -222,6 +222,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'clock',
   // What people asked Melete to see through here; what their work changed goes with each.
   'intent',
+  // What Melete learned works at each service here, by path.
+  'service_path',
   // Incoming messages and calendar changes as they were sorted, and the labels
   // kept for them. They name connections and the space's owner.
   'triage_item',
