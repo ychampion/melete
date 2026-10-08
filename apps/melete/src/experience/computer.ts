@@ -28,8 +28,9 @@ export type ComputerProcessRow = {
   id: string;
   name: string;
   state: ProcessState;
-  started_at: Date | null;
-  created_at: Date;
+  /** A timestamp; the database driver may hand it over as a Date or as its text. */
+  started_at: Date | string | null;
+  created_at: Date | string;
   port: number | null;
   last_line: string | null;
   /** False for a process started by another person or in a sensitive conversation. */
@@ -152,7 +153,12 @@ const LIVE = new Set<ProcessState>(['starting', 'running']);
 
 /** The live processes first, newest first, then the latest ended ones. */
 function processes(rows: readonly ComputerProcessRow[]): ComputerProcess[] {
-  return [...rows]
+  return rows
+    .map((row) => ({
+      ...row,
+      created_at: new Date(row.created_at),
+      started_at: row.started_at === null ? null : new Date(row.started_at),
+    }))
     .sort(
       (a, b) =>
         Number(LIVE.has(b.state)) - Number(LIVE.has(a.state)) ||

@@ -212,6 +212,28 @@ test("the agent's processes show the running ones first, with a scrubbed last li
   expect(view.processes[1]?.last_line).toBe('[hidden]');
 });
 
+test('process times the database hands over as text are read as times', () => {
+  const process = (id: string, minute: number) => ({
+    id,
+    name: `task ${id}`,
+    state: 'exited' as const,
+    started_at: at(minute).toISOString(),
+    created_at: at(minute).toISOString(),
+    port: null,
+    last_line: null,
+  });
+  const view = projectComputer({
+    rows: [],
+    bindings: [],
+    processes: [process('prc_first', 1), process('prc_second', 2)],
+    available,
+  });
+  expect(view.processes.map((each) => [each.id, each.started_at])).toEqual([
+    ['prc_second', at(2).toISOString()],
+    ['prc_first', at(1).toISOString()],
+  ]);
+});
+
 test('a process started by another person or in a sensitive conversation shows no name and no output', () => {
   const view = projectComputer({
     rows: [],
