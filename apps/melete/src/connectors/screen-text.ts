@@ -20,7 +20,7 @@
  */
 import type { JsonValue } from '@melete/contracts';
 import { z } from 'zod';
-import { handbackUrl, redactSecretText } from '../workers/browser/redact.ts';
+import { handbackUrl, REDACTED, redactSecretText } from '../workers/browser/redact.ts';
 import { isSensitiveControl } from '../workers/browser/visible.ts';
 
 /** The most characters of element lines one result carries. */
@@ -71,30 +71,100 @@ function oneLine(text: string, max = 300): string {
 }
 
 /**
+ * An address written in the page's words or read off the screen (a link that
+ * shows its own address, the address bar under OCR, which leaves out the
+ * scheme), as the browser tools give one: no query, fragment or token in the
+ * path. Text with no address in it is unchanged.
+ */
+const ADDRESS =
+  /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{1,5})?[/?#][^\s"'<>]*)/gi;
+function withoutAddressTokens(text: string): string {
+  return text.replace(ADDRESS, (found) => {
+    const schemed = /^[a-z][a-z0-9+.-]*:\/\//i.test(found);
+    const whole = schemed ? found : `https://${found}`;
+    const kept = handbackUrl(whole);
+    if (!kept) return REDACTED;
+    // An address with nothing taken out stays as the page wrote it.
+    const bare = (text: string) => text.toLowerCase().replace(/\/$/, '');
+    if (bare(kept) === bare(whole)) return found;
+    return schemed ? kept : kept.slice('https://'.length);
+  });
+}
+
+/** Page text as the browser tools redact it: secret shapes, and addresses' tokens. */
+const shownText = (text: string) => redactSecretText(withoutAddressTokens(text));
+
+/**
  * A value as the browser tools show page text: an address without its query,
  * fragment or token-shaped path segments, anything else without secret shapes.
  */
 function shownValue(role: string, value: string): string {
   if (role === 'link' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return handbackUrl(value);
-  return redactSecretText(value);
+  return shownText(value);
+}
+
+/** Roles a person acts on: their name is their own label, never another's value. */
+const CONTROL_ROLES = new Set([
+  'button',
+  'link',
+  'textbox',
+  'searchbox',
+  'combobox',
+  'checkbox',
+  'radio',
+  'switch',
+  'slider',
+  'spinbutton',
+  'tab',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'listbox',
+  'treeitem',
+]);
+
+/** Whether an element names a secret (a PIN, a security code), by the browser tools' own check. */
+const namesSecret = (item: z.infer<typeof element>) =>
+  isSensitiveControl({
+    label: item.name ?? '',
+    role: item.role,
+    required: false,
+    sensitive: false,
+  });
+
+/**
+ * A label for a secret that is said on its own, with the secret in the element
+ * after it: `PIN` then `ab12`, a term and its definition, two cells of a row,
+ * two lines OCR read. The label carries no value and no colon-led value of its
+ * own (`Your PIN: ab12` is redacted where it stands).
+ */
+function bareSecretLabel(item: z.infer<typeof element>): boolean {
+  if (CONTROL_ROLES.has(item.role) || item.value || !item.name) return false;
+  const name = oneLine(item.name);
+  return name.length <= 60 && namesSecret(item) && redactSecretText(name) === name;
 }
 
 /** One element as a line: `n12 textbox "From" value="Union Square" [focused] box=85,180,177,21`. */
-function line(item: z.infer<typeof element>): string {
+function line(item: z.infer<typeof element>, afterSecretLabel = false): string {
   const parts: string[] = [item.ref, item.role];
-  const name = item.name ? redactSecretText(oneLine(item.name)) : '';
+  // Text right after a secret's label is the secret: it is said as redacted.
+  // A control keeps its own name, and an unnamed one its place, without a value.
+  const control = CONTROL_ROLES.has(item.role);
+  const name = item.name
+    ? afterSecretLabel && !control
+      ? REDACTED
+      : shownText(oneLine(item.name))
+    : '';
   if (name) parts.push(JSON.stringify(name));
   // A secret field (a password, a one-time code, one labelled as a PIN or a
-  // security code) is said without its value.
+  // security code, or an unnamed one right after such a label) is said
+  // without its value.
   const secret =
     item.states?.some((state) => state === 'protected') ||
     /^(passwordfield|securetextfield)$/i.test(item.role) ||
-    isSensitiveControl({
-      label: item.name ?? '',
-      role: item.role,
-      required: false,
-      sensitive: false,
-    });
+    namesSecret(item) ||
+    (afterSecretLabel && (!control || !item.name));
   const value = item.value && !secret ? shownValue(item.role, oneLine(item.value)) : '';
   if (value) parts.push(`value=${JSON.stringify(value)}`);
   if (item.states?.length)
@@ -120,10 +190,12 @@ export function screenText(bytes: Uint8Array): Record<string, JsonValue> {
   const lines: string[] = [];
   let used = 0;
   let left = 0;
+  let afterSecretLabel = false;
   for (const raw of parsed.elements ?? []) {
     const checked = element.safeParse(raw);
     if (!checked.success) continue;
-    const text = line(checked.data);
+    const text = line(checked.data, afterSecretLabel);
+    afterSecretLabel = bareSecretLabel(checked.data);
     if (used + text.length + 1 > MAX_SCREEN_TEXT_CHARS) {
       left += 1;
       continue;
@@ -138,7 +210,7 @@ export function screenText(bytes: Uint8Array): Record<string, JsonValue> {
   // The address as the browser tools give it: no query, fragment or token in the path.
   const url = parsed.url ? handbackUrl(oneLine(parsed.url, 2_048)) : '';
   if (url) out.url = url;
-  if (parsed.title) out.title = redactSecretText(oneLine(parsed.title));
+  if (parsed.title) out.title = shownText(oneLine(parsed.title));
   out.key = parsed.source === 'accessibility' ? ACCESSIBILITY_KEY : OCR_KEY;
   out.lines = lines.join('\n');
   const notes: string[] = [];

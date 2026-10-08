@@ -302,3 +302,160 @@ test('a one-time code in OCR text is redacted', () => {
   expect(String(view.lines)).not.toContain('ABCD-EFGH');
   expect(String(view.lines)).toContain('[redacted]');
 });
+
+test('an address written in the page’s words, or read by OCR, loses its query and fragment', () => {
+  const view = screenText(
+    encode({
+      source: 'accessibility',
+      title: 'Reset at https://ex.example/reset?token=Zq81TitleTok',
+      elements: [
+        // A link that shows its own address has it as its name.
+        {
+          ref: 'n1',
+          role: 'link',
+          name: 'https://ex.example/reset?token=abc123XYZ',
+          box: [1, 2, 3, 4],
+        },
+        {
+          ref: 'n2',
+          role: 'text',
+          name: 'Open https://ex.example/r?code=ZZTOPQ#frag to continue',
+          box: [1, 2, 3, 4],
+        },
+        {
+          ref: 'n3',
+          role: 'text',
+          name: 'See https://ex.example/docs/getting-started',
+          box: [1, 2, 3, 4],
+        },
+        {
+          ref: 'n4',
+          role: 'text',
+          name: 'Built with Node.js/Deno and U.S./Canada',
+          box: [1, 2, 3, 4],
+        },
+      ],
+    }),
+  );
+  const all = JSON.stringify(view);
+  for (const secret of ['abc123XYZ', 'ZZTOPQ', 'frag', 'Zq81TitleTok', 'token=', 'code='])
+    expect(all).not.toContain(secret);
+  const lines = String(view.lines).split('\n');
+  expect(lines[0]).toBe('n1 link "https://ex.example/reset" box=1,2,3,4');
+  expect(lines[1]).toBe('n2 text "Open https://ex.example/r to continue" box=1,2,3,4');
+  // Text with nothing to take out is as the page wrote it.
+  expect(lines[2]).toBe('n3 text "See https://ex.example/docs/getting-started" box=1,2,3,4');
+  expect(lines[3]).toBe('n4 text "Built with Node.js/Deno and U.S./Canada" box=1,2,3,4');
+  // The address bar under OCR, which leaves the scheme out.
+  const ocr = screenText(
+    encode({
+      source: 'ocr',
+      elements: [
+        {
+          ref: 't1',
+          role: 'text',
+          name: 'bank.example/login/callback?code=4%2F0AbCd',
+          box: [1, 2, 3, 4],
+        },
+      ],
+    }),
+  );
+  expect(String(ocr.lines)).toBe('t1 text "bank.example/login/callback" box=1,2,3,4');
+});
+
+test('a secret said apart from its label is redacted, whatever its shape', () => {
+  const view = screenText(
+    encode({
+      source: 'accessibility',
+      elements: [
+        // A term and its definition.
+        { ref: 'n1', role: 'term', name: 'PIN', box: [1, 2, 3, 4] },
+        { ref: 'n2', role: 'text', name: 'wxyzq', box: [1, 2, 3, 4] },
+        // A label in plain text, the secret in bold beside it.
+        { ref: 'n3', role: 'text', name: 'Card PIN', box: [1, 2, 3, 4] },
+        { ref: 'n4', role: 'text', name: 'abqzm', box: [1, 2, 3, 4] },
+        // Two cells of a row.
+        { ref: 'n5', role: 'cell', name: 'Security code', box: [1, 2, 3, 4] },
+        { ref: 'n6', role: 'cell', name: 'kite-lamp', box: [1, 2, 3, 4] },
+        // A field with no name of its own, after the label.
+        { ref: 'n7', role: 'text', name: 'Passcode', box: [1, 2, 3, 4] },
+        { ref: 'n8', role: 'textbox', value: 'opensesame', box: [1, 2, 3, 4] },
+        // A control right after a label keeps its own name; text after it is the page's again.
+        { ref: 'n9', role: 'text', name: 'PIN', box: [1, 2, 3, 4] },
+        { ref: 'n10', role: 'button', name: 'Show', box: [1, 2, 3, 4] },
+        { ref: 'n11', role: 'text', name: 'Union Square', box: [1, 2, 3, 4] },
+      ],
+    }),
+  );
+  const all = JSON.stringify(view);
+  for (const secret of ['wxyzq', 'abqzm', 'kite-lamp', 'opensesame'])
+    expect(all).not.toContain(secret);
+  const lines = String(view.lines).split('\n');
+  expect(lines).toContain('n2 text "[redacted]" box=1,2,3,4');
+  expect(lines).toContain('n6 cell "[redacted]" box=1,2,3,4');
+  expect(lines).toContain('n8 textbox box=1,2,3,4');
+  expect(lines).toContain('n10 button "Show" box=1,2,3,4');
+  expect(lines).toContain('n11 text "Union Square" box=1,2,3,4');
+  // The same in OCR's lines.
+  const ocr = screenText(
+    encode({
+      source: 'ocr',
+      elements: [
+        { ref: 't1', role: 'text', name: 'Backup code', box: [1, 2, 3, 4] },
+        { ref: 't2', role: 'text', name: 'plum river', box: [1, 2, 3, 4] },
+      ],
+    }),
+  );
+  expect(String(ocr.lines)).not.toContain('plum river');
+});
+
+test('a person who takes the computer while a step’s screen text is read is not shown it', async () => {
+  const controls = new MemoryComputerControls();
+  const sandbox = `melete-sbx-step-${Math.random().toString(36).slice(2)}`;
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      if (command.kind === 'screenshot') return png(1024, 768);
+      if (command.kind === 'text') {
+        // The click landed and the picture was taken; the person takes over
+        // while the text is read, and types.
+        await controls.change(sandbox, 'human');
+        return encode({
+          source: 'accessibility',
+          elements: [
+            {
+              ref: 'n1',
+              role: 'textbox',
+              name: 'Note',
+              value: 'typed by the person',
+              box: [1, 2, 3, 4],
+            },
+          ],
+        });
+      }
+      return encode({ window: 'Notes - Chromium' });
+    },
+  } as unknown as DockerSandboxProvider;
+  const root = await mkdtemp(path.join(tmpdir(), 'melete-screen-text-'));
+  try {
+    const detail = await runComputerAction({
+      action: {
+        id: 'act_TEXT4',
+        kind: 'computer.click',
+        canonical_payload: { step: 1, x: 5, y: 6 },
+      } as unknown as Action,
+      jobId: 'job_TEXT',
+      workRoot: root,
+      session: { id: 'sbx_T4', providerSandboxId: sandbox } as unknown as SessionRow,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+      settleMs: 0,
+    });
+    expect(JSON.stringify(detail)).not.toContain('typed by the person');
+    expect(detail.screen_text).toBeUndefined();
+    expect(detail.control_changed).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
