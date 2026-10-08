@@ -47,6 +47,13 @@ function Mark({ span }: { span: Inline }) {
   if (span.kind === 'strong') return <strong>{span.text}</strong>;
   if (span.kind === 'em') return <em>{span.text}</em>;
   if (span.kind === 'code') return <code className="answer-code">{span.text}</code>;
+  // A place in Melete opens here, as its own navigation would.
+  if (span.kind === 'link' && span.internal)
+    return (
+      <a className="answer-link" href={span.href}>
+        {span.text}
+      </a>
+    );
   if (span.kind === 'link')
     return (
       <a

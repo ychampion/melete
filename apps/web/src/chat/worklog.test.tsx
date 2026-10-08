@@ -402,7 +402,17 @@ test('the pages a search found are one quiet row of links, not a card each', () 
   if (sources.type !== 'sources') throw new Error('not sources');
   const opened = renderToStaticMarkup(<SourcesLine cards={sources.cards} initiallyOpen />);
   expect(opened).toContain('href="https://www.bun.com/blog/bun-v1.4"');
+  expect(opened).toContain('rel="noopener noreferrer"');
   expect(opened).toContain('Releases');
+  // A source's address comes from a page; only a web address is ever a link.
+  const odd = renderToStaticMarkup(
+    <SourcesLine
+      cards={[page(5, 'javascript:alert(1)', 'Odd'), page(6, 'data:text/html,x', 'Data')]}
+      initiallyOpen
+    />,
+  );
+  expect(odd).toContain('Odd');
+  expect(odd).not.toMatch(/href="(?:javascript|data):/i);
 });
 
 test('the pages a search found are named once, not again by the grouped work after them', () => {

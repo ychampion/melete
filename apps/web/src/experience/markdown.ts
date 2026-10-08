@@ -272,7 +272,8 @@ function parseLines(lines: string[]): Block[] {
 
 /* ---------- inline ---------- */
 
-export type Inline = Span | { kind: 'link'; text: string; href: string };
+/** A link; `internal` is a place in Melete itself, opened in place rather than in a new tab. */
+export type Inline = Span | { kind: 'link'; text: string; href: string; internal?: boolean };
 
 const SAFE_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
@@ -296,9 +297,45 @@ export function safeHref(raw: string): string | null {
   }
 }
 
-// [text](url "title"), <https://…>, or a bare https:// address.
-const LINK =
-  /\[([^\]\n]+)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|<((?:https?:\/\/|mailto:)[^>\s]+)>|\bhttps?:\/\/[^\s<>()]+[^\s<>().,;:!?'"]/g;
+/** A web address (http or https) a source or page link may open, or null. */
+export function webHref(raw: string): string | null {
+  const href = safeHref(raw);
+  return href && /^https?:/i.test(href) ? href : null;
+}
+
+/**
+ * A place in Melete itself, as the agent names one: `#/apps/app_01…`. Only a
+ * hash route of plain path characters passes, so it can only move this page
+ * to one of its own views.
+ */
+export function appHref(raw: string): string | null {
+  const cleaned = raw.trim();
+  return /^#\/[A-Za-z0-9_-][A-Za-z0-9._~/?=&%-]{0,300}$/.test(cleaned) && !cleaned.includes('..')
+    ? cleaned
+    : null;
+}
+
+/**
+ * The endings a bare address is known by when it is written without
+ * `https://` ("amazon.com/dp/B0F3PQHWTZ"). Only common site endings, so a file
+ * name such as `index.html`, `notes.md` or `fw9.pdf` stays text.
+ */
+const SITE_ENDINGS =
+  'com|org|net|edu|gov|io|co|ai|app|dev|me|us|uk|ca|de|fr|in|info|xyz|tv|gg|eu|au|jp|nl|ch|es|it|so|ly|fm|news|blog|shop|store|site|tech|cloud|page|online';
+
+// [text](url "title"), <https://…>, a bare https:// address, an address
+// written without its scheme (example.com/path), or a place in Melete
+// (#/apps/app_01…).
+const LINK = new RegExp(
+  [
+    String.raw`\[([^\]\n]+)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)`,
+    String.raw`<((?:https?:\/\/|mailto:)[^>\s]+)>`,
+    String.raw`\bhttps?:\/\/[^\s<>()]+[^\s<>().,;:!?'"]`,
+    String.raw`(?<![\w@./:#-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:${SITE_ENDINGS})(?![\w-])(?:\/[^\s<>()]*[^\s<>().,;:!?'"])?)`,
+    String.raw`(?<![\w/])(#\/[A-Za-z0-9_-][A-Za-z0-9._~/?=&%-]*[A-Za-z0-9_/-])`,
+  ].join('|'),
+  'g',
+);
 
 /** One line cut into plain, bold, italic, code and link spans. */
 export function inlineMarks(line: string): Inline[] {
@@ -316,10 +353,22 @@ export function inlineMarks(line: string): Inline[] {
   for (const match of line.matchAll(LINK)) {
     const at = match.index ?? 0;
     if (inCode(at) || at < last) continue;
-    const [whole, label, target, angled] = match;
-    const href = safeHref(target ?? angled ?? whole);
+    const [whole, label, target, angled, bare, place] = match;
+    // A shortened address ("site.com/p/…/A-1") leads nowhere real: it stays text.
+    const written = !label && !angled && !place;
+    if (written && /^[^\s]*…/.test(line.slice(at))) continue;
+    const internal = appHref(target ?? place ?? '');
+    const href =
+      internal ??
+      (bare ? safeHref(`https://${bare}`) : place ? null : safeHref(target ?? angled ?? whole));
     pushText(line.slice(last, at));
-    if (href) out.push({ kind: 'link', text: label ?? angled ?? whole, href });
+    if (href)
+      out.push({
+        kind: 'link',
+        text: label ?? angled ?? whole,
+        href,
+        ...(internal ? { internal: true } : {}),
+      });
     else out.push({ kind: 'text', text: label ?? whole });
     last = at + whole.length;
   }
