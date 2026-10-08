@@ -62,6 +62,17 @@ export interface GatewayPrincipal {
    */
   briefTurn?: boolean;
   /**
+   * The person asked for depth (`asksForDepth`), and the attempt's calls think
+   * one step more than the agent's effort.
+   */
+  deepTurn?: boolean;
+  /**
+   * Whose requests share a provider's prompt cache: the conversation's space
+   * and the person it belongs to, so every conversation of theirs reuses the
+   * same cached identity, instructions and tools. Left out, the job alone.
+   */
+  cacheScope?: string;
+  /**
    * The person who caused this call, when the caller knows it: the one whose
    * message is being read, who asked aloud, or who started the scan. Spending
    * caps charge them. Left out, an agent call charges the person who spoke last

@@ -197,5 +197,26 @@ databaseTest(
       await turn("I'm flying to Chicago next Friday for a work dinner. Just note that for now."),
     ).toBe(true);
     expect(await turn('x'.repeat(281))).toBeUndefined();
+    // Asking for depth is read from the same message.
+    await turn('Think it through: should I refinance this year?');
+    const deep = await budget.authenticate(signCapability(s.claims, key));
+    expect([deep.briefTurn, deep.deepTurn]).toEqual([true, true]);
+  },
+);
+
+databaseTest(
+  "an attempt's calls share a cache scope with the person's other conversations",
+  async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const one = await seedJob(fixture.sql);
+    const budget = new PostgresGatewayBudget({ sql: fixture.sql, capabilityKey: key });
+    const first = await budget.authenticate(signCapability(one.claims, key));
+    const [job] =
+      await fixture.sql`select space_id, principal_id from job where id = ${one.claims.job_id}`;
+    expect(first.cacheScope).toBe([job?.space_id, job?.principal_id ?? ''].join('\u0000'));
+    // Another space's conversation never shares it.
+    const other = await seedJob(fixture.sql);
+    const second = await budget.authenticate(signCapability(other.claims, key));
+    expect(second.cacheScope).not.toBe(first.cacheScope);
   },
 );

@@ -24,6 +24,7 @@ import {
   effortRefused,
   type ReasoningEffort,
   refuseEffort,
+  toolLoop,
   turnEffort,
   withEffort,
 } from './effort.ts';
@@ -503,7 +504,12 @@ export function createModelGateway(options: GatewayOptions): Server {
             protocol,
             provider: callProvider.name,
             model: callModel,
-            effort: turnEffort(options.reasoningEffort, principal.briefTurn === true),
+            effort: turnEffort(options.reasoningEffort, {
+              brief: principal.briefTurn === true,
+              deep: principal.deepTurn === true,
+              // A conversation's own tool loop; a service call has none.
+              ...(principal.privacy.kind === 'job' ? toolLoop(callBody, protocol) : {}),
+            }),
           });
         const effortAdded = reasoningOf() !== before;
         const route: GatewaySettlement['route'] = !rerouted

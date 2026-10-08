@@ -14,12 +14,15 @@
  *
  * Order matters for prompt caching. A provider reuses the longest prefix a
  * request shares with the one before it, so what stays the same from one turn
- * of a conversation to the next comes first: the identity, the tool definitions
- * (the engine sends them ahead of the messages), and the instructions, which are
- * the persona, the skills and the task notes and do not change between turns.
+ * of a conversation to the next comes first: the identity, the instructions,
+ * which are the persona and the task notes and do not change between turns, and
+ * the tool definitions, which a chat template renders after the system prompt.
  * The input then starts with the job and the prior conversation, which only
- * grows at its end, and everything chosen per turn comes after it: knowledge
- * recalled for the latest message, what changed, decisions and the new message.
+ * grows at its end, and everything chosen per turn comes after it: the skills
+ * chosen for the latest message, knowledge recalled for it, what changed,
+ * decisions and the new message. A skill chosen in the system prompt would end
+ * the cached prefix before the tool definitions on every turn that chose
+ * differently.
  */
 import {
   APPROVAL_OUTDATED_NOTE,
@@ -53,9 +56,10 @@ export type RunPlacement = {
 };
 
 /**
- * A run's `instructions`: persona, then procedure, then the task notes. Nothing
- * here is chosen per turn, so the system prompt stays a cached prefix from one
- * turn of a conversation to the next.
+ * A run's `instructions`: the persona, then the task notes. Nothing here is
+ * chosen per turn, so the system prompt, and the tool definitions after it,
+ * stay a cached prefix from one turn to the next and across a person's
+ * conversations. The skills chosen for a turn go in its input (`renderSkills`).
  */
 export function renderInstructions(bundle: AttemptBundle, placement: RunPlacement = {}): string {
   const parts: string[] = [];
@@ -68,27 +72,11 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     );
   }
 
-  if (bundle.skills.length > 0) {
-    // The service has already applied the at-most-three rule; this only renders.
-    parts.push(
-      `# How to do this kind of work\n\n${bundle.skills
-        .map((skill) => `## ${skill.name}\n\n${skill.body}`)
-        .join('\n\n')}`,
-    );
-  }
-
-  const index = bundle.skill_index ?? [];
-  if (index.length > 0) {
-    // Names and one line each; the bodies stay with the broker until asked for.
-    parts.push(
-      `# Other skills you can read\n\nBefore doing work one of these describes, read it with ${SKILL_READ_TOOL_NAME} and follow it.\n\n${index.map(indexLine).join('\n')}`,
-    );
-  }
-
   const accounts = bundle.connected_accounts ?? [];
   if (accounts.length > 0) {
     // An account the computer's command line reaches has no tool to find, so
-    // without this the model says nothing is connected.
+    // without this the model says nothing is connected. It changes only when
+    // the person connects or removes one, so it stays in the cached prefix.
     parts.push(
       `# Connected accounts\n\nThe person connected these. Use them when the work needs them; never say one is not connected, and never ask for a password or token for one.\n\n${accounts.map((line) => `- ${line}`).join('\n')}`,
     );
@@ -96,6 +84,38 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
 
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
+}
+
+/**
+ * The skills chosen for this turn, in full, and the index of the others. Both
+ * are ranked by the latest message, so they change from turn to turn and are
+ * rendered in the input, after the prior conversation.
+ */
+export function renderSkills(bundle: AttemptBundle): string[] {
+  const lines: string[] = [];
+  if (bundle.skills.length > 0) {
+    // The service has already applied the at-most-N rule; this only renders.
+    lines.push(
+      '',
+      '## How to do this kind of work',
+      '',
+      'These skills are given here in full: follow them without reading them again.',
+      ...bundle.skills.flatMap((skill) => ['', `### ${skill.name}`, '', skill.body]),
+    );
+  }
+  const index = bundle.skill_index ?? [];
+  if (index.length > 0) {
+    // Names and one line each; the bodies stay with the broker until asked for.
+    lines.push(
+      '',
+      '## Other skills you can read',
+      '',
+      `Before doing work one of these describes, read it with ${SKILL_READ_TOOL_NAME} and follow it.`,
+      '',
+      ...index.map(indexLine),
+    );
+  }
+  return lines;
 }
 
 /**
@@ -159,6 +179,24 @@ export const ASKING: readonly string[] = [
 ];
 
 /**
+ * When to reach for a tool. A search costs the person several model calls and
+ * page reads, and a command on the computer several seconds; a concept, an
+ * explanation, a piece of writing or a sum does not change with the news, so it
+ * is answered from what the model knows. The web is for what does change or what
+ * the person asked to have sourced, and the computer for what is too long to
+ * work out reliably. This replaces the engine's coding-agent rule to use a tool
+ * for every calculation, date and claim (`execution_guidance: false`).
+ */
+export const LOOKING_UP: readonly string[] = [
+  'Answer from what you know when the question is how something works, what a word or',
+  'idea means, advice, or writing. Look it up when the answer depends on facts that change',
+  '(prices, rates, dates, schedules, news, recent rules) or the person asks for a source,',
+  'and when a search comes back thin, try another before you answer. Work out simple',
+  'arithmetic yourself; use your computer for longer calculations (powers, many steps or',
+  'many numbers) and for the time now.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -180,6 +218,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     ...DONE_WORDS,
     ...OUTSIDE_WORDS,
     ...ASKING,
+    ...LOOKING_UP,
     ...PLAIN_WORDS,
     ...PROGRESS_NOTES,
     'Reusable corrections from the person go through learning.propose when it is in the catalog.',
@@ -239,8 +278,8 @@ export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[]
 
 /**
  * The volatile half: the job, the prior conversation, and then what this turn
- * brings: recalled knowledge, what changed since the last attempt, and the new
- * message last.
+ * brings: the skills chosen for it, recalled knowledge, what changed since the
+ * last attempt, and the new message last.
  */
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
@@ -272,6 +311,7 @@ export function renderInput(bundle: AttemptBundle): string {
   if (bundle.job.progress_summary) {
     lines.push('', '## Where this got to', '', bundle.job.progress_summary);
   }
+  lines.push(...renderSkills(bundle));
   lines.push(...renderKnowledge(bundle.knowledge));
   if (bundle.job.unresolved_questions.length > 0) {
     lines.push(

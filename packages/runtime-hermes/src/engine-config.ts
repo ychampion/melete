@@ -344,6 +344,14 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       // The prompt seam in patches/observer_bridge.py: leaves out the engine's
       // product pointer, its profile line and its host runtime block.
       host_prompt: false,
+      // Read under `agent:` (agent/agent_init.py, agent/system_prompt.py). For
+      // DeepSeek, Qwen, GLM, Kimi and GPT models the engine otherwise adds a
+      // coding-agent brief that says to run a tool for every calculation, date
+      // and claim and to keep calling tools until the result is verified. On a
+      // personal assistant that sent a sum to the computer (about 10 s a
+      // command) and a concept question to the web. Melete's own task notes say
+      // when to reach for a tool (LOOKING_UP in instructions.ts).
+      execution_guidance: false,
       // What a person attaches arrives as text. Deciding how to pass images
       // otherwise probes the model endpoint, here the broker, for a local model
       // server. Screenshots the agent takes are decided by model.supports_vision.

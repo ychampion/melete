@@ -169,6 +169,36 @@ describe('prompt-caching controls', () => {
     expect(promptCacheKey(scope)).not.toBe(promptCacheKey(scope, SECRET));
   });
 
+  test("a person's conversations share one key, so a new one starts where their prefix is cached", () => {
+    // Fireworks shares no cache between replicas: a key per conversation sent
+    // every new conversation's identity, instructions and tools to a cold one.
+    const person = (jobId: string, space: string, who: string) =>
+      promptCacheKey(
+        promptCacheScope({ ...job(jobId), cacheScope: [space, who].join('\u0000') }),
+        SECRET,
+      );
+    expect(person('job_one', 'sp_a', 'own_a')).toBe(person('job_two', 'sp_a', 'own_a'));
+    const keys = [
+      person('job_one', 'sp_a', 'own_a'),
+      // Another person in the same space, and the same person in another space.
+      person('job_one', 'sp_a', 'own_b'),
+      person('job_one', 'sp_b', 'own_a'),
+      // A conversation whose person is not known keeps its own key.
+      promptCacheKey(promptCacheScope(job('job_one')), SECRET),
+      // A service call is never in a person's scope.
+      promptCacheKey(
+        promptCacheScope({
+          jobId: 'memory:sp_a',
+          attemptId: 'memory:work',
+          privacy: { kind: 'service', purpose: 'memory', spaceId: 'sp_a', sourceJobId: 'job_one' },
+          cacheScope: ['sp_a', 'own_a'].join('\u0000'),
+        }),
+        SECRET,
+      ),
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   test("a provider's built-in tool is never marked; the last of the request's own tools is", () => {
     const body = {
       tools: [
