@@ -42,10 +42,18 @@ const FAILED =
 
 /** Lines of the snapshot that speak about the page's outcome rather than its furniture. */
 const SPEAKING = /^\s*-\s*(alert|status|heading|alertdialog|dialog|paragraph|text)\b/i;
+/** Of those, the ones a site uses to announce an outcome, rather than body text. */
+const ANNOUNCING = /^\s*-\s*(alert|status|heading|alertdialog|dialog)\b/i;
+/**
+ * The line a site using a bot check must show somewhere, often in its footer
+ * ("This site is protected by reCAPTCHA and the Google Privacy Policy..."). It
+ * names the check without asking anyone to pass it.
+ */
+const BOT_CHECK_NOTICE = /\bprotected by (?:re|h)?captcha\b/i;
 
-function speaking(page: PageSeen): string {
-  const lines = page.tree.split('\n').filter((line) => SPEAKING.test(line));
-  return [page.title ?? '', ...lines].join('\n');
+function speaking(page: Pick<PageSeen, 'title' | 'tree'>, lines: RegExp = SPEAKING): string {
+  const said = page.tree.split('\n').filter((line) => lines.test(line));
+  return [page.title ?? '', ...said].join('\n');
 }
 
 /**
@@ -55,8 +63,12 @@ function speaking(page: PageSeen): string {
  */
 export function blockerOf(page: Pick<PageSeen, 'title' | 'tree' | 'schema'>): PageBlocker | null {
   const labels = page.schema.map((control) => control.label).join('\n');
-  if (CAPTCHA.test(`${page.title ?? ''}\n${page.tree}\n${labels}`)) return 'captcha';
-  const asked = `${speaking({ ...page, url: '', forms: [] })}\n${labels}`;
+  const tree = page.tree
+    .split('\n')
+    .filter((line) => !BOT_CHECK_NOTICE.test(line))
+    .join('\n');
+  if (CAPTCHA.test(`${page.title ?? ''}\n${tree}\n${labels}`)) return 'captcha';
+  const asked = `${speaking({ title: page.title, tree })}\n${labels}`;
   if (TWO_FACTOR.test(asked)) return 'two_factor';
   if (PAYMENT.test(labels)) return 'payment';
   return null;
@@ -76,6 +88,13 @@ export function readBack(sent: SentForm, page: PageSeen | null, looks: 1 | 2 = 1
     blocker: PageBlocker | null = null,
   ): ReadBack => ({ verdict, blocker, evidence, looks, url: page?.url ?? null });
   if (!page) return result('unclear', 'The page after the submit could not be read.');
+  // A server error says nothing about whether the form was taken: a gateway in
+  // front of a site that saved it answers 502 or 504 all the same.
+  if (typeof page.status === 'number' && page.status >= 500)
+    return result(
+      'unclear',
+      `The site answered ${page.status} to the form, which does not say whether it went through.`,
+    );
   if (typeof page.status === 'number' && page.status >= 400)
     return result('not_done', `The site answered ${page.status} to the form.`);
   const blocker = blockerOf(page);
@@ -91,18 +110,23 @@ export function readBack(sent: SentForm, page: PageSeen | null, looks: 1 | 2 = 1
     );
   const said = speaking(page);
   const confirmed = CONFIRMED.test(said);
-  const failed = FAILED.test(said);
   const formBack = page.forms.some(
     (form) =>
       form.form_hash === sent.form_hash || (form.url === sent.url && form.name === sent.name),
   );
-  if (confirmed && failed)
+  // Failure words decide only where a site announces an outcome, or beside the
+  // same form sent back. In body text alone they are too often about something
+  // else ("Unable to make it? Cancel below"), and a submit taken for not done
+  // when it was done is sent again.
+  const refusal = formBack ? said : speaking(page, ANNOUNCING);
+  const failed = FAILED.test(refusal);
+  if (confirmed && FAILED.test(said))
     return result(
       'unclear',
       `The page says both "${first(CONFIRMED, said)}" and "${first(FAILED, said)}".`,
     );
   if (confirmed) return result('done', `The page says "${first(CONFIRMED, said)}".`);
-  if (failed) return result('not_done', `The page says "${first(FAILED, said)}".`);
+  if (failed) return result('not_done', `The page says "${first(FAILED, refusal)}".`);
   if (formBack) return result('unclear', 'The same form is back with nothing said about it.');
   return result('unclear', 'The page says nothing about whether it went through.');
 }

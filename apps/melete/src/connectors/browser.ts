@@ -571,8 +571,23 @@ export function createBrowserConnector(options: {
       const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       if (action.kind !== 'browser.submit' || !sessionId) return unsupported;
       const again = await lookAgain(ctx, sessionId);
-      if (again.sessionId !== sessionId) return unsupported;
-      const seen = readBack(sentForm(payload), again.page, 2);
+      if (again.sessionId !== sessionId || !again.page) return unsupported;
+      // The browser may have moved on since: only a page of the site the form
+      // went to, or of the one the submit landed on, speaks about this form.
+      const sent = sentForm(payload);
+      const landed = (
+        (action.reconciliation?.evidence as { read_back?: { url?: unknown } } | undefined)
+          ?.read_back as { url?: unknown } | undefined
+      )?.url;
+      const sites = new Set(
+        [sent.url, typeof landed === 'string' ? landed : null].flatMap((url) => {
+          const site = url ? serviceOfUrl(url) : null;
+          return site ? [site] : [];
+        }),
+      );
+      const here = serviceOfUrl(again.page.url);
+      if (!here || !sites.has(here)) return unsupported;
+      const seen = readBack(sent, again.page, 2);
       const evidence = { read_back: seen } as unknown as JsonObject;
       if (seen.verdict === 'done')
         return {

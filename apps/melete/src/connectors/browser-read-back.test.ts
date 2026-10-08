@@ -155,3 +155,17 @@ test('verify reads the page back: a confirmed page settles an unknown submit', a
     'unsupported',
   );
 });
+
+test('verify settles a submit only from a page of the site it was sent to', async () => {
+  // The browser has moved on to another site since: what that page says is not about this form.
+  for (const tree of ['- heading "Booking confirmed"', '- alert: Payment failed']) {
+    const elsewhere = worker({
+      submit: {},
+      looks: [{ url: 'https://news.example.org/story', tree }],
+    });
+    const action = submit();
+    expect((await elsewhere.connector.verify(action, connectorContext(action))).decision).toBe(
+      'unsupported',
+    );
+  }
+});

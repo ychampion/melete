@@ -30,6 +30,54 @@ describe('reading a page back after a submit', () => {
     ).toMatchObject({ verdict: 'not_done', evidence: 'The site answered 422 to the form.' });
   });
 
+  test('a server error after the form left may have landed, so it is unclear, never not done', () => {
+    // A gateway timing out in front of a site that took the booking answers 502 or 504.
+    for (const status of [500, 502, 503, 504])
+      expect(
+        readBack(sent, page({ status, tree: '- heading "Something went wrong"' })).verdict,
+      ).toBe('unclear');
+  });
+
+  test('words in the body text alone do not say a submit failed', () => {
+    // A booked page with no stock phrase for it, and a line about cancelling.
+    expect(
+      readBack(
+        sent,
+        page({
+          tree: '- heading "Your table for 2, Saturday 7:00 pm"\n- paragraph: Unable to make it? Cancel below.',
+        }),
+      ).verdict,
+    ).toBe('unclear');
+    expect(
+      readBack(
+        sent,
+        page({
+          tree: '- heading "Reservation details"\n- paragraph: Fields marked * are required',
+        }),
+      ).verdict,
+    ).toBe('unclear');
+    // The same body text with the form sent back is the site refusing it.
+    expect(
+      readBack(
+        sent,
+        page({ forms: [{ ...sent }], tree: '- paragraph: Please enter a valid phone number' }),
+      ).verdict,
+    ).toBe('not_done');
+    expect(readBack(sent, page({ tree: '- heading "Something went wrong"' })).verdict).toBe(
+      'not_done',
+    );
+  });
+
+  test('a notice that a site uses a bot check is not a check', () => {
+    const notice =
+      '- paragraph: This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.';
+    expect(blockerOf(page({ tree: `- heading "Contact us"\n${notice}` }))).toBeNull();
+    expect(
+      readBack(sent, page({ tree: `- heading "Thanks for your message"\n${notice}` })),
+    ).toMatchObject({ verdict: 'done', blocker: null });
+    expect(blockerOf(page({ tree: `${notice}\n- iframe "reCAPTCHA"` }))).toBe('captcha');
+  });
+
   test('a page that says nothing, or says both, is unclear', () => {
     expect(readBack(sent, page({ tree: '- heading "Book a table"' })).verdict).toBe('unclear');
     expect(
