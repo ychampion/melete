@@ -26,7 +26,7 @@ export type FakeGoogleOptions = {
   idTokenAudience?: string;
 };
 
-type Stored = { id: string; raw: Buffer; labels: string[] };
+type Stored = { id: string; raw: Buffer; labels: string[]; history?: number };
 /** A Drive file as the fake keeps it, in Drive's own field names. */
 export type FakeDriveFile = {
   id: string;
@@ -76,6 +76,9 @@ const headerOf = (raw: Buffer, name: string): string | undefined => {
   const match = new RegExp(`^${name}:\\s*(.+)$`, 'im').exec(head);
   return match?.[1]?.trim();
 };
+
+/** Gmail history ids start here, so an id below it is one Gmail no longer keeps. */
+const HISTORY_BASE = 1000;
 
 export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<FakeGoogle> {
   const email = options.email ?? 'person@example.test';
@@ -227,7 +230,29 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         }
         const refused = needs(GOOGLE_SCOPES.mailRead);
         if (refused) return refused;
-        if (rest === '/profile') return Response.json({ emailAddress: email });
+        if (rest === '/profile')
+          return Response.json({
+            emailAddress: email,
+            historyId: String(HISTORY_BASE + inbox.length),
+          });
+        // Each message delivered is one history record, numbered in order.
+        if (rest === '/history') {
+          const start = Number(url.searchParams.get('startHistoryId'));
+          if (!Number.isInteger(start) || start < HISTORY_BASE)
+            return Response.json({ error: { code: 404 } }, { status: 404 });
+          const added = inbox.filter((m) => (m.history ?? 0) > start);
+          return Response.json({
+            ...(added.length
+              ? {
+                  history: added.map((m) => ({
+                    id: String(m.history),
+                    messagesAdded: [{ message: { id: m.id, labelIds: m.labels } }],
+                  })),
+                }
+              : {}),
+            historyId: String(HISTORY_BASE + inbox.length),
+          });
+        }
         if (rest === '/messages') {
           const q = url.searchParams.get('q') ?? '';
           const byId = /^in:sent rfc822msgid:(\S+)$/.exec(q);
@@ -400,6 +425,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         id: nextId(),
         raw: Buffer.from(raw.replace(/\r?\n/g, '\r\n')),
         labels: ['INBOX'],
+        history: HISTORY_BASE + inbox.length + 1,
       };
       inbox.push(stored);
       return stored.id;

@@ -74,7 +74,10 @@ export async function startFakeComposio(
     decline: false,
   };
   const error = (status: number, slug: string) =>
-    Response.json({ error: { message: 'refused', code: status, slug, status } }, { status });
+    Response.json(
+      { error: { message: 'composio says no', code: status, slug, status } },
+      { status },
+    );
 
   const server = Bun.serve({
     hostname: '127.0.0.1',
