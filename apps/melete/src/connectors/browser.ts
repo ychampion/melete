@@ -1,14 +1,23 @@
-import type { ConnectorManifest, JsonObject, JsonValue } from '@melete/contracts';
+import type {
+  Action,
+  ConnectorManifest,
+  HandOffReason,
+  JsonObject,
+  JsonValue,
+  ReadBack,
+} from '@melete/contracts';
 import { jsonObject, jsonValue } from '@melete/contracts';
 import { z } from 'zod';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
+import { blockerOf, type PageSeen, readBack, type SentForm } from '../paths/read-back.ts';
+import { serviceOfUrl } from '../paths/services.ts';
 import type { BrowserArtifactSink } from '../workers/browser/artifacts.ts';
 import { planBrowserRecipe, recipePlanDetail } from '../workers/browser/planning.ts';
 import type { BrowserRecipeStore } from '../workers/browser/recipes.ts';
 import { type BrowserSessionService, browserInputReasons } from '../workers/browser/routes.ts';
 import { BrowserFault } from '../workers/browser/sessions.ts';
-import type { Connector } from './types.ts';
+import type { Connector, ConnectorContext } from './types.ts';
 
 const text = { type: 'string', minLength: 1, maxLength: 8000 };
 /**
@@ -125,7 +134,7 @@ const definitions: Array<{
   {
     name: 'submit',
     description:
-      'Submit exactly one intent from the latest observation, copied whole, including its destination and complete field values. Approval is required.',
+      "Submit exactly one intent from the latest observation, copied whole, including its destination and complete field values. Approval is required. Where a connected app reaches the same site, use the app's own tool instead: the browser is used there only when the app cannot do it. The page is read back afterwards, and a submit it does not confirm stops until it is checked.",
     effect: 'write_external',
     properties: { intent: intentSchema },
     required: ['intent'],
@@ -152,7 +161,8 @@ export const browserManifest: ConnectorManifest = {
     effect_class: tool.effect,
     required_scopes: [`browser.${tool.name}`],
     requires_approval: tool.effect === 'write_external',
-    verify: false,
+    // A submit is checked by reading its page back; nothing else changes anything outside.
+    verify: tool.name === 'submit',
   })),
 };
 
@@ -175,6 +185,69 @@ const output = z.strictObject({
 const LEAVE_OUT =
   "Leave session_id and control_epoch out to use this job's current browser session.";
 
+type Observed = z.infer<typeof output>;
+
+/** What the browser saw, in the shape the read-back reads. */
+function pageOf(observed: Observed | null): PageSeen | null {
+  const seen = observed?.observation;
+  if (!seen) return null;
+  const forms = Array.isArray(observed.result?.submit_intents)
+    ? (observed.result.submit_intents as JsonValue[]).flatMap((entry) => {
+        const form = entry as Record<string, unknown> | null;
+        return form && typeof form.form_hash === 'string'
+          ? [
+              {
+                url: String(form.url ?? ''),
+                name: String(form.name ?? ''),
+                form_hash: form.form_hash,
+              },
+            ]
+          : [];
+      })
+    : [];
+  const status = observed.result?.commit_status;
+  return {
+    url: seen.url,
+    title: seen.title ?? '',
+    tree: seen.tree,
+    schema: Array.isArray(seen.schema)
+      ? (seen.schema as JsonValue[]).flatMap((entry) => {
+          const control = entry as Record<string, unknown> | null;
+          return control && typeof control.label === 'string'
+            ? [
+                {
+                  label: control.label,
+                  role: String(control.role ?? ''),
+                  sensitive: control.sensitive === true,
+                },
+              ]
+            : [];
+        })
+      : [],
+    forms,
+    status: typeof status === 'number' ? status : null,
+  };
+}
+
+const sentForm = (payload: JsonObject): SentForm => {
+  const intent = (payload.intent ?? {}) as Record<string, unknown>;
+  return {
+    url: String(intent.url ?? ''),
+    name: String(intent.name ?? ''),
+    form_hash: String(intent.form_hash ?? ''),
+  };
+};
+
+/** The page a sign-in, code or card field is on could not be read: only the person may go on. */
+const SENSITIVE_PAGE: Omit<ReadBack, 'looks' | 'url'> = {
+  verdict: 'unclear',
+  blocker: null,
+  evidence: 'The page asks for something only the person types.',
+};
+
+/** How long a page is given to settle before it is read a second time. */
+export const SECOND_LOOK_MS = 1_500;
+
 /** The sessions this job has held, newest first. Scoped to the job and its space, never wider. */
 async function jobSessions(
   tx: Query,
@@ -189,11 +262,119 @@ async function jobSessions(
 }
 
 export function createBrowserConnector(options: {
-  sessions: Pick<BrowserSessionService, 'lease' | 'park'>;
+  sessions: Pick<BrowserSessionService, 'lease' | 'park'> &
+    Partial<Pick<BrowserSessionService, 'handOff'>>;
   artifacts: BrowserArtifactSink;
   recipes?: BrowserRecipeStore;
   spaceId?: string;
+  /** How long a page that said nothing is given before it is read again. */
+  secondLookMs?: number;
 }): Connector {
+  /**
+   * Hand the work to the person with a card, or, where nothing can make a
+   * card, park it for them as before.
+   */
+  const handOff = async (
+    ctx: ConnectorContext,
+    sessionId: string,
+    reason: HandOffReason,
+    url: string,
+    action: Action,
+  ) => {
+    const service = serviceOfUrl(url) ?? 'this site';
+    if (options.sessions.handOff)
+      await options.sessions.handOff(
+        ctx,
+        sessionId,
+        { reason, service, action_id: action.kind === 'browser.submit' ? action.id : null },
+        action.attempt_id,
+      );
+    else await options.sessions.park(ctx, sessionId, reason, action.attempt_id);
+  };
+
+  /** Read the page again once it has had time to settle. Null when it cannot be read. */
+  const lookAgain = async (
+    ctx: ConnectorContext,
+    sessionId?: string,
+  ): Promise<{ page: PageSeen | null; sensitive: boolean; sessionId?: string }> => {
+    try {
+      const { session, worker } = await options.sessions.lease(ctx, sessionId);
+      const looked = output.parse(
+        await worker.request('/command', {
+          session_id: session.id,
+          job_id: ctx.job_id,
+          control_epoch: session.control_epoch,
+          operation: { kind: 'observe' },
+        }),
+      );
+      if (looked.session_id !== session.id) return { page: null, sensitive: false };
+      return { page: pageOf(looked), sensitive: false, sessionId: session.id };
+    } catch (error) {
+      return {
+        page: null,
+        sensitive:
+          error instanceof BrowserFault && error.reason === 'sensitive_input_require_takeover',
+      };
+    }
+  };
+
+  /**
+   * What a submit came to, from the page it ended on: done, not done, or
+   * unclear after a second look, which hands the work to the person and
+   * leaves the outcome unknown until it is checked.
+   */
+  const settleSubmit = async (
+    action: Action,
+    ctx: ConnectorContext,
+    sessionId: string,
+    first: PageSeen | null,
+    detail: JsonObject,
+  ) => {
+    const sent = sentForm(action.canonical_payload);
+    let seen = readBack(sent, first, 1);
+    if (seen.verdict === 'unclear' && !seen.blocker) {
+      await Bun.sleep(options.secondLookMs ?? SECOND_LOOK_MS);
+      const again = await lookAgain(ctx, sessionId);
+      seen = again.sensitive
+        ? { ...SENSITIVE_PAGE, looks: 2, url: seen.url }
+        : again.page || !first
+          ? readBack(sent, again.page, 2)
+          : { ...seen, looks: 2 };
+    }
+    const evidence = { read_back: seen } as unknown as JsonObject;
+    if (seen.verdict === 'done')
+      return {
+        outcome: 'succeeded' as const,
+        receipt: {
+          action_id: action.id,
+          connection_id: action.connection_id,
+          external_ref: sessionId,
+          received_at: new Date().toISOString(),
+          late: false,
+          detail: { ...detail, ...evidence },
+        },
+      };
+    if (seen.verdict === 'not_done')
+      return {
+        outcome: 'failed' as const,
+        reason: `The site did not take it: ${seen.evidence}`,
+        retryable: false,
+        evidence,
+      };
+    await handOff(
+      ctx,
+      sessionId,
+      seen.blocker ?? (seen.evidence === SENSITIVE_PAGE.evidence ? 'sign_in' : 'unclear'),
+      seen.url ?? sent.url,
+      action,
+    ).catch(() => {});
+    return {
+      outcome: 'unknown' as const,
+      reason: `The page after the submit does not say whether it went through: ${seen.evidence} It was handed to the person to check.`,
+      evidence: { ...evidence, handed_to: 'person' } as JsonObject,
+    };
+  };
+
   return {
     manifest: browserManifest,
     /**
@@ -285,9 +466,18 @@ export function createBrowserConnector(options: {
           control_epoch: result.control_epoch,
           ...(result.result ? { result: result.result } : {}),
         };
+        const page = pageOf(result);
         // Durable receipts contain handles and schema, never screenshot bytes or full page captures.
         if (result.observation)
           detail.observation = await options.artifacts(ctx, result.observation);
+        // A form sent is not an effect done: the page it ended on says whether it took.
+        if (kind === 'submit') return await settleSubmit(action, ctx, session.id, page, detail);
+        // A check only the person can pass ends the agent's turn here, with a card for them.
+        const blocker = page ? blockerOf(page) : null;
+        if (blocker) {
+          await handOff(ctx, session.id, blocker, page?.url ?? '', action);
+          detail.handed_to = 'person';
+        }
         if (
           kind === 'observe' &&
           (payload.recipe_id !== undefined || payload.recipe_version !== undefined)
@@ -326,7 +516,17 @@ export function createBrowserConnector(options: {
           let reason = error.reason;
           if (activeSessionId && browserInputReasons.has(error.reason)) {
             try {
-              await options.sessions.park(ctx, activeSessionId, error.reason, action.attempt_id);
+              // A sign-in, code or card field is the person's to fill: they are handed it.
+              if (error.reason === 'sensitive_input_require_takeover' && options.sessions.handOff)
+                await handOff(
+                  ctx,
+                  activeSessionId,
+                  'sign_in',
+                  String((payload.url as string | undefined) ?? ''),
+                  action,
+                );
+              else
+                await options.sessions.park(ctx, activeSessionId, error.reason, action.attempt_id);
             } catch {
               // The durable failure records both outcomes without exposing a database error's contents.
               reason += '; browser_park_failed';
@@ -337,12 +537,18 @@ export function createBrowserConnector(options: {
             reason = `session_not_found: browser session ${sessionId} is no longer open. ${LEAVE_OUT}`;
           return { outcome: 'failed', reason, retryable: false };
         }
-        // A transport loss after an approved commit has an unknown effect and must never be retried.
-        if (kind === 'submit')
-          return {
-            outcome: 'unknown',
-            reason: 'Browser commit ended without a confirmed receipt.',
-          };
+        // A transport loss after an approved commit has an unknown effect and must never be
+        // retried. The page is read once more to settle it; what it cannot settle goes to the person.
+        if (kind === 'submit') {
+          if (!activeSessionId)
+            return {
+              outcome: 'unknown',
+              reason: 'Browser commit ended without a confirmed receipt.',
+            };
+          return await settleSubmit(action, ctx, activeSessionId, null, {
+            session_id: activeSessionId,
+          });
+        }
         return {
           outcome: 'failed',
           reason: 'Browser operation could not be completed.',
@@ -350,11 +556,39 @@ export function createBrowserConnector(options: {
         };
       }
     },
-    async verify() {
-      return {
-        decision: 'unsupported',
+    /**
+     * Whether a submit took, read from the page the browser is on now. A page
+     * that confirms it settles it, one that refuses it settles it the other
+     * way, and anything else is the person's to check. A page handed back by
+     * the person shows only its controls, so it rarely decides.
+     */
+    async verify(action, ctx) {
+      const unsupported = {
+        decision: 'unsupported' as const,
         reason: 'A site receipt must be checked by the person after an uncertain browser commit.',
       };
+      const payload = action.canonical_payload;
+      const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
+      if (action.kind !== 'browser.submit' || !sessionId) return unsupported;
+      const again = await lookAgain(ctx, sessionId);
+      if (again.sessionId !== sessionId) return unsupported;
+      const seen = readBack(sentForm(payload), again.page, 2);
+      const evidence = { read_back: seen } as unknown as JsonObject;
+      if (seen.verdict === 'done')
+        return {
+          decision: 'succeeded',
+          evidence,
+          receipt: {
+            action_id: action.id,
+            connection_id: action.connection_id,
+            external_ref: sessionId,
+            received_at: new Date().toISOString(),
+            late: false,
+            detail: { session_id: sessionId, ...evidence },
+          },
+        };
+      if (seen.verdict === 'not_done') return { decision: 'failed', evidence };
+      return unsupported;
     },
     async health() {
       return {

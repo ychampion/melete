@@ -1394,10 +1394,16 @@ export async function bootstrap(
       // nobody waiting on it is settled before the attempt commits.
       runner.settleAbandoned = async (attemptId) =>
         effectBoundary?.broker.settleAbandoned(attemptId);
-      if (browser)
-        browser.sessions.onPark = (jobId, attemptIds) => {
+      if (browser) {
+        const sessions = browser.sessions;
+        sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
+        // Work handed to the person in the browser goes on when they hand it back.
+        sessions.onHandedBack = async (scope, sessionId) => {
+          await effectBoundary?.broker.handedBack(scope.job_id, sessionId);
+        };
+      }
       if (sandboxComputers)
         sandboxComputers.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
@@ -1476,6 +1482,12 @@ export async function bootstrap(
           spending,
           blobs: blobs?.store,
         });
+      // The path policy can hand a site over to the person in the agent's browser.
+      if (effectBoundary && browser) {
+        const sessions = browser.sessions;
+        effectBoundary.broker.onHandToPerson = (scope, sessionId, input) =>
+          sessions.handOff(scope, sessionId, input);
+      }
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;

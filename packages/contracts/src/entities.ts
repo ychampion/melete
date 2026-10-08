@@ -9,6 +9,7 @@ import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { originWarnings, sha256Hex } from './effects.ts';
 import { jobState } from './job-state.ts';
 import { knowledgeRecordStatus } from './knowledge.ts';
+import { handOff } from './paths.ts';
 import { repairCounters, repairDisposition, repairTrace } from './repair.ts';
 import { watchPredicate } from './watch.ts';
 
@@ -177,7 +178,12 @@ export type JobBudget = z.infer<typeof jobBudget>;
 
 export const waitSpec = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }),
-  z.object({ kind: z.literal('user_input'), question: z.string() }),
+  z.object({
+    kind: z.literal('user_input'),
+    question: z.string(),
+    /** Present when the work was handed to the person to finish a step. */
+    handoff: handOff.optional(),
+  }),
   z.object({ kind: z.literal('approval'), action_ids: z.array(prefixedId(ID_PREFIXES.action)) }),
   z.object({ kind: z.literal('timer'), wake_at: timestamp }),
   z.object({

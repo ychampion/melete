@@ -1,10 +1,11 @@
-import { browserControlResponse } from '@melete/contracts';
+import { browserControlResponse, type HandOff, type HandOffReason } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../../api/errors.ts';
 import { appendEvent } from '../../broker/records.ts';
 import type { ConnectorContext } from '../../connectors/types.ts';
 import { lockEventOrderIn } from '../../db/transaction.ts';
+import { recordPathOutcome, taskKindOf } from '../../paths/registry.ts';
 import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import {
@@ -32,6 +33,11 @@ export const browserInputReasons = new Set([
 /** The database maps a worker session to service-owned authority; tool arguments cannot rebind it. */
 export class BrowserSessionService {
   onPark?: (jobId: string, attemptIds: string[]) => void;
+  /**
+   * Called once a person hands back a browser they were handed: the work it
+   * was handed over from settles what it can by reading the page, then goes on.
+   */
+  onHandedBack?: (scope: { space_id: string; job_id: string }, sessionId: string) => Promise<void>;
   /** The live views of these sessions, in memory for as long as the process runs. */
   readonly live: BrowserLiveService;
   /** The sites these sessions have signed in to, recorded over the space's one profile. */
@@ -130,6 +136,13 @@ export class BrowserSessionService {
       }
       if (job.state === 'waiting_for_input' && job.wait?.question?.startsWith('Browser control:'))
         return [];
+      // Work handed to the person keeps its card while they take the browser:
+      // it says what is left, and handing back is what carries the work on.
+      if (
+        job.state === 'waiting_for_input' &&
+        job.wait?.handoff?.take_over?.session_id === sessionId
+      )
+        return [];
       const state =
         job.state === 'needs_reconciliation' ? 'needs_reconciliation' : 'waiting_for_input';
       const wait =
@@ -165,6 +178,114 @@ export class BrowserSessionService {
     });
     // Signal only attempts fenced by this transaction; a newly resumed attempt is a different lease.
     if (fenced.length) this.onPark?.(scope.job_id, fenced);
+  }
+
+  /**
+   * Hand the work to the person: the job waits for them with a card saying
+   * what is done, what is left and where to take over the browser, and its
+   * attempt is fenced as a park fences it. Handing the browser back carries
+   * the work on (`onHandedBack`). Returns the card, or null when the job has
+   * ended or moved to another attempt meanwhile.
+   */
+  async handOff(
+    scope: { space_id: string; job_id: string },
+    sessionId: string,
+    input: { reason: HandOffReason; service: string; action_id?: string | null },
+    expectedAttemptId?: string,
+  ): Promise<HandOff | null> {
+    await this.authorize(sessionId, scope);
+    const card = await this.card(scope, sessionId, input);
+    const fenced = await this.sql.begin(async (tx) => {
+      // Before the job lock, as every event writer does: event order is commit order.
+      await lockEventOrderIn(tx);
+      const [job] =
+        await tx`select id, space_id, state, lease_epoch from job where id = ${scope.job_id} for update`;
+      if (
+        !job ||
+        job.space_id !== scope.space_id ||
+        ['completed', 'cancelled', 'failed'].includes(job.state)
+      )
+        return null;
+      if (expectedAttemptId) {
+        const [execution] =
+          await tx`select epoch, ended_at from attempt where id = ${expectedAttemptId} and job_id = ${scope.job_id}`;
+        if (!execution || execution.epoch !== job.lease_epoch || execution.ended_at) return null;
+      }
+      const wait = { kind: 'user_input', question: handOffWords(card), handoff: card };
+      await tx`update job set state = 'waiting_for_input', wait = ${JSON.stringify(wait)}::jsonb,
+        lease_epoch = lease_epoch + 1, state_version = state_version + 1,
+        next_wake_at = null, updated_at = now() where id = ${scope.job_id}`;
+      const detail = { kind: 'handed_to_person', session_id: sessionId, reason: card.reason };
+      const attempts = await tx`update attempt set outcome = 'fenced',
+        outcome_detail = ${JSON.stringify(detail)}::jsonb,
+        ended_at = now(), lease_expires_at = null, lease_status = 'ended'
+        where job_id = ${scope.job_id} and ended_at is null returning id`;
+      for (const attempt of attempts)
+        await appendEvent(
+          tx,
+          scope.job_id,
+          attempt.id,
+          'attempt_ended',
+          detail,
+          `${attempt.id}:ended`,
+        );
+      await appendEvent(tx, scope.job_id, null, 'job_state_changed', {
+        from: job.state,
+        to: 'waiting_for_input',
+        reason: 'handed_to_person',
+        session_id: sessionId,
+      });
+      await appendEvent(tx, scope.job_id, null, 'notice', { kind: 'handed_to_person', ...card });
+      // An unclear submit was counted when it landed unknown; a blocker met on
+      // the way, or the policy's own choice of the person, is counted here.
+      await recordPathOutcome(tx, {
+        spaceId: scope.space_id,
+        service: card.service,
+        taskKind: await taskKindOf(tx, scope.job_id),
+        path: card.reason === 'path' ? 'person' : 'browser',
+        outcome: 'handed',
+        attempt: card.reason !== 'unclear',
+        fault: card.reason,
+      });
+      return attempts.map((attempt) => String(attempt.id));
+    });
+    if (fenced === null) return null;
+    if (fenced.length) this.onPark?.(scope.job_id, fenced);
+    return card;
+  }
+
+  /** What the person is handed: the steps done in this browser, what is left, and where to take over. */
+  private async card(
+    scope: { space_id: string; job_id: string },
+    sessionId: string,
+    input: { reason: HandOffReason; service: string; action_id?: string | null },
+  ): Promise<HandOff> {
+    const steps = await this.sql`select kind, canonical_payload from action
+      where job_id = ${scope.job_id} and status = 'succeeded'
+        and kind in ('browser.open', 'browser.fill', 'browser.select', 'browser.click', 'browser.submit')
+        and canonical_payload->>'session_id' = ${sessionId}
+      order by created_at desc, id desc limit 12`;
+    const done = [...steps].reverse().flatMap((step) => {
+      const words = stepWords(String(step.kind), step.canonical_payload as Record<string, unknown>);
+      return words ? [words] : [];
+    });
+    const [root] = await this.sql`select r.id, r.kind from job j
+      join job r on r.id = coalesce(
+        (select parent_run_id from run_state where job_id = j.id), j.experience_parent_id, j.id)
+      where j.id = ${scope.job_id}`;
+    const rootId = String(root?.id ?? scope.job_id);
+    return {
+      reason: input.reason,
+      service: input.service,
+      done,
+      left: LEFT[input.reason],
+      take_over: {
+        surface: 'browser',
+        session_id: sessionId,
+        link: root?.kind === 'chat' ? `/chat/${rootId}?computer=1` : `/runs/${rootId}`,
+      },
+      action_id: input.action_id ?? null,
+    };
   }
 
   /**
@@ -241,6 +362,8 @@ export class BrowserSessionService {
       });
       // The takeover ended on a site whose cookies the profile now holds: the space is signed in.
       if (session.site) await this.sites.record(binding.space_id, session.site);
+      // Work handed over carries on. The hand-back has happened whatever that finds.
+      await this.onHandedBack?.(scope, sessionId).catch(() => {});
     }
     return {
       session_id: session.id,
@@ -272,4 +395,45 @@ export function mountBrowserSessions(app: Hono, sessions: BrowserSessionService)
       }
     });
   }
+}
+
+/** What is left for the person, by why the work came to them. */
+const LEFT: Record<HandOffReason, string> = {
+  captcha:
+    'The page wants to check a person is there. Take over, pass the check, then hand the browser back.',
+  two_factor:
+    'The page asks for a code sent to you. Take over, enter it yourself, then hand the browser back.',
+  payment:
+    'The page asks for payment details. Take over and pay yourself if you want to go ahead, then hand the browser back.',
+  sign_in:
+    'The page asks for something only you type: a password, a code or card details. Take over, enter it yourself, then hand the browser back.',
+  unclear:
+    'Melete sent the form, and the page does not say whether it went through. Take over, check, finish it if it did not, then hand the browser back.',
+  path: 'Melete has not got through on this site lately. Take over and finish it yourself, then hand the browser back.',
+};
+
+/** The card in one paragraph, for anywhere that shows the question alone. */
+export function handOffWords(card: HandOff): string {
+  const done = card.done.length ? ` Done so far: ${card.done.join('; ')}.` : '';
+  return `Over to you at ${card.service}. ${card.left}${done}`.slice(0, 3900);
+}
+
+const quoted = (value: unknown) =>
+  typeof value === 'string' && value.trim() ? `"${value.trim().slice(0, 80)}"` : null;
+
+/** One step the agent took in the browser, in plain words, never with what it typed. */
+function stepWords(kind: string, payload: Record<string, unknown>): string | null {
+  if (kind === 'browser.open') {
+    try {
+      return `Opened ${new URL(String(payload.url)).host}`;
+    } catch {
+      return 'Opened a page';
+    }
+  }
+  if (kind === 'browser.fill') return quoted(payload.label) && `Filled ${quoted(payload.label)}`;
+  if (kind === 'browser.select')
+    return quoted(payload.label) && `Chose an option for ${quoted(payload.label)}`;
+  if (kind === 'browser.click') return quoted(payload.name) && `Pressed ${quoted(payload.name)}`;
+  const intent = (payload.intent ?? {}) as Record<string, unknown>;
+  return quoted(intent.name) ? `Sent the form with ${quoted(intent.name)}` : 'Sent a form';
 }

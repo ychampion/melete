@@ -48,6 +48,13 @@ export type ConnectorContext = {
 export interface Connector {
   manifest: ConnectorManifest;
   /**
+   * The outside service this connector's tools reach (`google:mail`,
+   * `opentable.com`), when it is fixed where the connector is built. Left out,
+   * it is read from the connection's stored configuration (`paths/services.ts`).
+   * The path policy compares it with where a browser submit goes.
+   */
+  service?: string | null;
+  /**
    * Resolve trusted resource identities before hashing an approval payload.
    * `kind` is the tool asked for, for tools whose payloads look alike.
    */

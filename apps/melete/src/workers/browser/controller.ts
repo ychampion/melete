@@ -580,6 +580,8 @@ export class BrowserController {
   async command(input: unknown): Promise<BrowserCommandResult> {
     const command = browserCommand.parse(input);
     let commitStarted = false;
+    // The HTTP status the form's POST got, which the read-back after a submit weighs.
+    let commitStatus: number | undefined;
     return this.sessions
       .exclusive(async () => {
         // Hosts an earlier step could not reach belong to that step, not to this one.
@@ -781,7 +783,8 @@ export class BrowserController {
                     (response) => response.request().method() === 'POST',
                     { timeout: 5000 },
                   );
-                  await Promise.all([click(), response, navigation]);
+                  const [, answered] = await Promise.all([click(), response, navigation]);
+                  commitStatus = answered.status();
                   await page.waitForLoadState('domcontentloaded');
                 },
                 action.intent,
@@ -798,8 +801,13 @@ export class BrowserController {
         if (handedBackIn !== undefined && (await this.documentOf(cdp)) !== handedBackIn)
           this.handback = false;
         const after = await this.transition(page, cdp);
-        if (before !== after || action.kind === 'open' || action.kind === 'submit')
-          return this.observe(command);
+        if (action.kind === 'submit') {
+          const observed = await this.observe(command);
+          return commitStatus === undefined
+            ? observed
+            : { ...observed, result: { ...observed.result, commit_status: commitStatus } };
+        }
+        if (before !== after || action.kind === 'open') return this.observe(command);
         // A step that stayed on the same page still shows what it did, submit
         // intents with the values now in the form included, so the next step
         // needs no separate look.
