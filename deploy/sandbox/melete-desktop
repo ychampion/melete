@@ -358,13 +358,72 @@ def candidates(nodes):
             got = (prop.get("value") or {}).get("value")
             if key in STATES and got not in (None, False, "false"):
                 states.append(key if got in (True, "true") else f"{key}={clean(got)}")
+        # The elements around it, nearest first, for the clip of any that scrolls.
+        around, above = [], by_id.get(node.get("parentId"))
+        while above is not None and len(around) < 64:
+            if isinstance(above.get("backendDOMNodeId"), int):
+                around.append(above["backendDOMNodeId"])
+            above = by_id.get(above.get("parentId"))
         picked.append(
             {"ref": f"n{node['backendDOMNodeId']}", "role": role, "name": name, "value": value,
-             "states": states, "backend": node["backendDOMNodeId"]}
+             "states": states, "backend": node["backendDOMNodeId"], "around": around}
         )
         if len(picked) >= MAX_CANDIDATES:
             break
     return picked
+
+
+#: The elements that clip what is inside them: scrolling panes, pickers and
+#: anything else whose overflow is not visible, up to a bound.
+CLIPPERS = """(() => {
+  const found = [];
+  for (const element of document.querySelectorAll('body *')) {
+    const style = getComputedStyle(element);
+    if (/auto|scroll|hidden|clip/.test(style.overflowX + ' ' + style.overflowY)) found.push(element);
+    if (found.length >= 400) break;
+  }
+  return found;
+})()"""
+CLIP_RECTS = """function () {
+  return this.map((element) => {
+    const box = element.getBoundingClientRect();
+    return [box.left + element.clientLeft, box.top + element.clientTop,
+            box.left + element.clientLeft + element.clientWidth, box.top + element.clientTop + element.clientHeight];
+  });
+}"""
+
+
+def clip_boxes(tools):
+    """Each clipping element's visible inside, in page pixels, by its DOM node id."""
+    group = "melete-text"
+    try:
+        listed = tools.call("Runtime.evaluate", {"expression": CLIPPERS, "objectGroup": group})
+        array = (listed.get("result") or {}).get("objectId")
+        if not array:
+            return {}
+        rects = tools.call(
+            "Runtime.callFunctionOn",
+            {"objectId": array, "functionDeclaration": CLIP_RECTS, "returnByValue": True},
+        )["result"]["value"]
+        props = tools.call("Runtime.getProperties", {"objectId": array, "ownProperties": True})
+        elements = {}
+        for prop in props.get("result") or []:
+            name, value = prop.get("name", ""), prop.get("value") or {}
+            if name.isdigit() and value.get("objectId"):
+                elements[int(name)] = value["objectId"]
+        sent = {tools.send("DOM.describeNode", {"objectId": oid}): index for index, oid in elements.items()}
+        described = tools.answers(list(sent))
+    finally:
+        try:
+            tools.call("Runtime.releaseObjectGroup", {"objectGroup": group})
+        except OSError:
+            pass
+    clips = {}
+    for sent_id, index in sent.items():
+        node = (described.get(sent_id) or {}).get("node") or {}
+        if isinstance(node.get("backendNodeId"), int) and index < len(rects):
+            clips[node["backendNodeId"]] = tuple(rects[index])
+    return clips
 
 
 def union(quads):
@@ -398,6 +457,10 @@ def accessibility_view(port, window_title):
         sx, sy, outer_w, outer_h, inner_w, inner_h, url, title, scroll_y, page_h = json.loads(said)
         tools.call("Accessibility.enable")
         found = candidates(tools.call("Accessibility.getFullAXTree").get("nodes") or [])
+        try:
+            clips = clip_boxes(tools)
+        except (OSError, KeyError, TypeError, ValueError):
+            clips = {}
         sent = {tools.send("DOM.getContentQuads", {"backendNodeId": item["backend"]}): item for item in found}
         answers = tools.answers(list(sent))
     finally:
@@ -413,6 +476,9 @@ def accessibility_view(port, window_title):
             continue
         x1, y1, x2, y2 = union(quads)
         x1, y1, x2, y2 = max(0, x1), max(0, y1), min(inner_w, x2), min(inner_h, y2)
+        # What a scrolling pane or a clipping box around it hides is not on the screen.
+        for clip in (clips[node] for node in item["around"] if node in clips):
+            x1, y1, x2, y2 = max(x1, clip[0]), max(y1, clip[1]), min(x2, clip[2]), min(y2, clip[3])
         if x2 - x1 < 1 or y2 - y1 < 1:
             offscreen += 1
             continue

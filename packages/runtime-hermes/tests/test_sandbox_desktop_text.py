@@ -1,0 +1,163 @@
+"""The sandbox desktop's `text` command: a page's accessibility tree as elements on the screen.
+
+The helper (`deploy/sandbox/melete-desktop`) runs inside the agent's computer,
+where it reads the browser over the DevTools protocol. Here the protocol is a
+scripted stand-in, so what is checked is what the helper makes of the answers:
+which elements it keeps, where it says they are, and what a scrolling pane hides.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import pathlib
+import types
+
+import pytest
+
+HELPER = pathlib.Path(__file__).resolve().parents[3] / "deploy" / "sandbox" / "melete-desktop"
+
+
+@pytest.fixture(scope="module")
+def desktop():
+    loader = importlib.machinery.SourceFileLoader("melete_desktop", str(HELPER))
+    module = types.ModuleType(loader.name)
+    loader.exec_module(module)
+    return module
+
+
+def node(node_id, role, name="", parent=None, children=(), backend=None, value=None, props=(), ignored=False):
+    entry = {
+        "nodeId": node_id,
+        "ignored": ignored,
+        "role": {"value": role},
+        "name": {"value": name},
+        "childIds": list(children),
+        "backendDOMNodeId": backend if backend is not None else int(node_id),
+    }
+    if parent is not None:
+        entry["parentId"] = parent
+    if value is not None:
+        entry["value"] = {"value": value}
+    entry["properties"] = [{"name": key, "value": {"value": got}} for key, got in props]
+    return entry
+
+
+#: A trip form with a time picker that scrolls: two options are scrolled out of it.
+TREE = [
+    node("1", "RootWebArea", "Trip planner", children=["2", "3", "4", "5", "6", "9"]),
+    node("2", "textbox", "From", parent="1", children=["20"], value="Union Square"),
+    node("20", "StaticText", "Union Square", parent="2"),
+    node("3", "button", "Search", parent="1", children=["30"]),
+    node("30", "StaticText", "Search", parent="3"),
+    node("4", "checkbox", "Transit only", parent="1", props=[("checked", "true"), ("focusable", True)]),
+    node("5", "generic", "", parent="1", ignored=True),
+    node("6", "StaticText", "36 min, $11.65", parent="1"),
+    node("9", "listbox", "", parent="1", children=["10", "11", "12"]),
+    node("10", "option", "7:30 AM", parent="9"),
+    node("11", "option", "8:00 AM", parent="9"),
+    node("12", "option", "8:30 AM", parent="9"),
+]
+
+#: Page-pixel boxes, as getContentQuads gives them (unclipped).
+BOXES = {
+    2: (40, 100, 240, 120),
+    3: (300, 100, 360, 120),
+    4: (380, 104, 392, 116),
+    6: (40, 140, 160, 160),
+    9: (40, 200, 200, 260),
+    10: (40, 170, 200, 200),  # scrolled above the picker
+    11: (40, 200, 200, 230),
+    12: (40, 230, 200, 260),
+}
+
+
+class FakeDevTools:
+    """Answers the calls the helper makes, for one page."""
+
+    def __init__(self, url):
+        self.sent = {}
+        self.last = 0
+
+    def call(self, method, params=None):
+        if method == "Runtime.evaluate" and params.get("returnByValue"):
+            # screenX, screenY, outer and inner sizes: 80 pixels of browser above the page.
+            return {"result": {"value": '[0, 0, 1024, 768, 1024, 688, "https://trips.example/", "Trip planner", 0, 2000]'}}
+        if method == "Runtime.evaluate":
+            return {"result": {"objectId": "clippers"}}
+        if method == "Runtime.callFunctionOn":
+            return {"result": {"value": [[40, 200, 200, 260]]}}
+        if method == "Runtime.getProperties":
+            return {"result": [{"name": "0", "value": {"objectId": "picker"}}, {"name": "length", "value": {}}]}
+        if method == "Accessibility.getFullAXTree":
+            return {"nodes": TREE}
+        return {}
+
+    def send(self, method, params=None):
+        self.last += 1
+        self.sent[self.last] = (method, params)
+        return self.last
+
+    def answers(self, ids):
+        out = {}
+        for sent_id in ids:
+            method, params = self.sent[sent_id]
+            if method == "DOM.describeNode":
+                out[sent_id] = {"node": {"backendNodeId": 9}}
+            elif method == "DOM.getContentQuads":
+                box = BOXES.get(params["backendNodeId"])
+                if box is None:
+                    out[sent_id] = None
+                else:
+                    x1, y1, x2, y2 = box
+                    out[sent_id] = {"quads": [[x1, y1, x2, y1, x2, y2, x1, y2]]}
+        return out
+
+    def close(self):
+        pass
+
+
+@pytest.fixture()
+def view(desktop, monkeypatch):
+    monkeypatch.setattr(desktop, "DevToolsSocket", FakeDevTools)
+    monkeypatch.setattr(desktop, "page_target", lambda port, title: {"webSocketDebuggerUrl": "ws://127.0.0.1:9/page"})
+    return desktop.accessibility_view(9222, "Trip planner")
+
+
+def test_each_element_is_kept_once_with_its_role_name_value_state_and_screen_box(view):
+    elements = {element["ref"]: element for element in view["elements"]}
+    assert view["source"] == "accessibility"
+    assert view["url"] == "https://trips.example/"
+    # Page pixels move down by the browser's 80 pixels of bars.
+    assert elements["n2"] == {
+        "ref": "n2", "role": "textbox", "name": "From", "value": "Union Square", "box": [40, 180, 200, 20],
+    }
+    assert elements["n4"]["states"] == ["checked"]
+    assert elements["n6"] == {"ref": "n6", "role": "text", "name": "36 min, $11.65", "box": [40, 220, 120, 20]}
+    # Text a control already says by name or value is not said twice; an
+    # ignored node and an unnamed pane say nothing of their own.
+    assert "n20" not in elements and "n30" not in elements and "n5" not in elements
+
+
+def test_what_a_scrolling_picker_hides_is_not_on_the_screen(view):
+    names = [element.get("name") for element in view["elements"] if element["role"] == "option"]
+    assert names == ["8:00 AM", "8:30 AM"]
+    assert view["offscreen"] == 1
+
+
+def test_ocr_words_become_lines_with_boxes(desktop):
+    tsv = "\n".join([
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+        "5\t1\t1\t1\t1\t1\t40\t100\t60\t20\t96\tLeave",
+        "5\t1\t1\t1\t1\t2\t104\t101\t40\t19\t95\tnow",
+        "5\t1\t1\t1\t2\t1\t40\t140\t80\t20\t91\t$11.65",
+        "5\t1\t1\t1\t2\t2\t130\t140\t10\t20\t-1\t ",
+    ])
+    assert desktop.ocr_lines(tsv) == [
+        {"ref": "t1", "role": "text", "name": "Leave now", "box": [40, 100, 104, 20]},
+        {"ref": "t2", "role": "text", "name": "$11.65", "box": [40, 140, 80, 20]},
+    ]
+
+
+def test_a_name_is_one_bounded_line(desktop):
+    assert desktop.clean("Pay\nnow\t please") == "Pay now please"
+    assert len(desktop.clean("x" * 1000)) == desktop.MAX_FIELD
