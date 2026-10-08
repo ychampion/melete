@@ -897,6 +897,14 @@ ordinary revoke. Evidence: `connecting an app from the catalog` in
 [mcp-sign-in.test.ts](../apps/melete/test/integration/mcp-sign-in.test.ts) and
 [mcp-catalog.test.ts](../apps/melete/src/connectors/mcp-catalog.test.ts).
 
+Composio's meta tools (`COMPOSIO_MULTI_EXECUTE_TOOL`, `COMPOSIO_SEARCH_TOOLS`,
+`COMPOSIO_MANAGE_CONNECTIONS` and every other `COMPOSIO_*` name) are dropped
+from any server's tool list before anything else reads it, so they are never
+offered: one such call could run whichever action it is told to under a single
+name. Gmail, Google Calendar and Google Drive signed in through Composio keep
+Melete's own `email.*`, `calendar.*` and `documents.*` tools; see
+[Signing in with Google through Composio](mail-calendar.md#signing-in-with-google-through-composio).
+
 #### Connecting GitHub
 
 GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) accepts only an OAuth
