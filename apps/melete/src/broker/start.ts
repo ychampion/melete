@@ -110,7 +110,8 @@ export async function startEffectBoundary(
       privacyOrigin: (jobId, text) => dependencies.privacy.captureOrigin(jobId, text),
       webSearch: webSearchFromEnv(env, { native: search?.backend }),
       spending,
-      searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),
+      searchPrivacy: ({ jobId, query, tx }) =>
+        dependencies.privacy.outsideSearchRefusal(jobId, query, tx),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;

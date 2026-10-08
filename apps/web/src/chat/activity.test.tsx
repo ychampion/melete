@@ -246,7 +246,7 @@ test('an opened row shows its output as plain monospace text', () => {
     <WorkLine work={{ type: 'tool', tool: only(rows[1]) }} live={false} initiallyOpen />,
   );
   expect(page).toContain('href="https://idealista.pt/rent"');
-  expect(page).toContain('rel="noreferrer"');
+  expect(page).toContain('rel="noopener noreferrer"');
   const file = renderToStaticMarkup(
     <WorkLine work={{ type: 'tool', tool: only(rows[4]) }} live={false} initiallyOpen />,
   );

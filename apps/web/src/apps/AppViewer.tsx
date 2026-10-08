@@ -324,6 +324,16 @@ export function AppViewer({ id }: { id: string }) {
         if (!result.ok && ![400, 413, 429].includes(result.status ?? 0)) recheck();
         return result;
       },
+      save: async (collection: string, record: Record<string, unknown>) => {
+        const result = await base.save(collection, record);
+        if (!result.ok && ![400, 413, 429].includes(result.status ?? 0)) recheck();
+        return result;
+      },
+      load: async (collection: string) => {
+        const result = await base.load(collection);
+        if (!result.ok && result.status !== 400) recheck();
+        return result;
+      },
     }),
     [base, recheck],
   );

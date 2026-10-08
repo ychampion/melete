@@ -21,7 +21,7 @@ import './processes.css';
 
 /** A preview has no Melete data: the bridge refuses whatever the page asks for. */
 const NO_DATA = async () => ({ ok: false as const, error: 'A preview has no Melete data.' });
-const PREVIEW_CALLS: FrameCalls = { data: NO_DATA, submit: NO_DATA };
+const PREVIEW_CALLS: FrameCalls = { data: NO_DATA, submit: NO_DATA, save: NO_DATA, load: NO_DATA };
 
 type Preview = {
   processId: string;

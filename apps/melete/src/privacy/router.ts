@@ -199,17 +199,22 @@ export class PrivacyRouter {
    * a private space or agent or a sensitive conversation, nothing about a
    * sensitive topic, and nothing carrying a detail the privacy settings detect.
    */
-  async outsideSearchRefusal(jobId: string, query: string): Promise<string | null> {
-    const scope = await this.store.scope(jobId, '');
+  async outsideSearchRefusal(
+    jobId: string,
+    query: string,
+    /** The transaction the caller holds; every read goes through it (see `settings`). */
+    tx?: Parameters<PrivacyStore['settings']>[1],
+  ): Promise<string | null> {
+    const scope = await this.store.scope(jobId, '', tx);
     if (!scope.spaceId) return SEARCH_KEPT_PRIVATE;
-    const settings = await this.settingsFor(scope.spaceId);
+    const settings = await this.settingsFor(scope.spaceId, tx);
     if (
       settings.privateSpace ||
       (scope.agentId !== null && settings.privateAgents.has(scope.agentId))
     )
       return SEARCH_KEPT_PRIVATE;
     const conversation = scope.conversationId
-      ? await this.store.conversation(scope.conversationId)
+      ? await this.store.conversation(scope.conversationId, tx)
       : null;
     if (conversation?.sensitive) return SEARCH_KEPT_PRIVATE;
     // The person said this conversation is not sensitive; the query is not read for a topic.
@@ -221,8 +226,13 @@ export class PrivacyRouter {
     // values, what memory learned in private conversations, and the detectors.
     // Anything it would swap means the query carries what no cloud model sees.
     if (/[⟦⟧]/.test(query)) return SEARCH_KEPT_DETAILS;
-    const remembered = await this.store.privateMemory(scope.spaceId);
-    const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
+    const remembered = await this.store.privateMemory(scope.spaceId, tx);
+    const state = await this.state(
+      scope,
+      settings,
+      `${settings.version}:${digest(remembered)}`,
+      tx,
+    );
     const redactor = new Redactor(state.vault, {
       enabled: settings.enabled,
       known: [...settings.known, ...memoryValues(remembered)],
@@ -320,6 +330,7 @@ export class PrivacyRouter {
     scope: Scope,
     settings: ResolvedSettings,
     key = String(settings.version),
+    tx?: Parameters<PrivacyStore['settings']>[1],
   ): Promise<ConversationState> {
     const fresh = (vault: Vault | null): ConversationState => ({
       vault: vault ?? new Vault(),
@@ -334,7 +345,7 @@ export class PrivacyRouter {
     let pending = this.states.get(id);
     if (!pending) {
       pending = this.store
-        .loadVault(id)
+        .loadVault(id, tx)
         .catch((error) => {
           this.report(error);
           return null;

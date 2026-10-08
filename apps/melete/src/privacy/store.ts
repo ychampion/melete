@@ -188,7 +188,8 @@ export type RequestLog = {
 
 export interface PrivacyStore {
   readonly sealing: boolean;
-  scope(jobId: string, attemptId: string): Promise<Scope>;
+  /** `query`, as for `settings`: the transaction a caller holds. */
+  scope(jobId: string, attemptId: string, query?: Sql | TransactionSql): Promise<Scope>;
   /**
    * `query` is the transaction a caller holds, read through instead of a
    * connection of the store's own: a caller holding the event order lock must
@@ -200,9 +201,9 @@ export interface PrivacyStore {
     plain: PlainSettings,
     sealed: SealedSettings | null,
   ): Promise<number>;
-  loadVault(conversationId: string): Promise<Vault | null>;
+  loadVault(conversationId: string, query?: Sql | TransactionSql): Promise<Vault | null>;
   saveVault(conversationId: string, spaceId: string, vault: Vault): Promise<void>;
-  conversation(conversationId: string): Promise<ConversationState>;
+  conversation(conversationId: string, query?: Sql | TransactionSql): Promise<ConversationState>;
   /**
    * Change only the named fields. `sensitive` is never cleared here once set:
    * a write that carries none, or races another, leaves it as it was. Only the
@@ -235,7 +236,7 @@ export interface PrivacyStore {
    * The current wording of what memory learned from conversations that were
    * private when they were captured, so a cloud request can leave it out.
    */
-  privateMemory(spaceId: string): Promise<string[]>;
+  privateMemory(spaceId: string, query?: Sql | TransactionSql): Promise<string[]>;
   /**
    * The source of the screenshot `actionId` names, when it is a screenshot
    * action of this job that succeeded; null for anything else, so a picture
@@ -315,9 +316,9 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return !!this.masterKey();
   }
 
-  async scope(jobId: string, attemptId: string): Promise<Scope> {
-    const [row] = await this
-      .sql`select j.space_id, coalesce(j.experience_parent_id, j.id) as conversation_id,
+  async scope(jobId: string, attemptId: string, query?: Sql | TransactionSql): Promise<Scope> {
+    const [row] = await (query ??
+      this.sql)`select j.space_id, coalesce(j.experience_parent_id, j.id) as conversation_id,
         coalesce(j.agent_id, p.agent_id) as agent_id, a.turn_id
       from job j
       left join job p on p.id = j.experience_parent_id
@@ -378,10 +379,10 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return Number(row?.version ?? 1);
   }
 
-  async loadVault(conversationId: string): Promise<Vault | null> {
+  async loadVault(conversationId: string, query?: Sql | TransactionSql): Promise<Vault | null> {
     if (!this.sealing) return null;
-    const [row] = await this
-      .sql`select sealed from privacy_vault where conversation_id = ${conversationId}`;
+    const [row] = await (query ??
+      this.sql)`select sealed from privacy_vault where conversation_id = ${conversationId}`;
     if (!row) return null;
     try {
       return new Vault(
@@ -401,8 +402,11 @@ export class PostgresPrivacyStore implements PrivacyStore {
         entries = excluded.entries, updated_at = now()`;
   }
 
-  async conversation(conversationId: string): Promise<ConversationState> {
-    const [row] = await this.sql`select sensitive, cleared_at, consent, consent_turn_id,
+  async conversation(
+    conversationId: string,
+    query?: Sql | TransactionSql,
+  ): Promise<ConversationState> {
+    const [row] = await (query ?? this.sql)`select sensitive, cleared_at, consent, consent_turn_id,
         asked_attempt_id
       from privacy_conversation where conversation_id = ${conversationId}`;
     if (!row) return { ...EMPTY_CONVERSATION };
@@ -470,8 +474,8 @@ export class PostgresPrivacyStore implements PrivacyStore {
             and coalesce(j.agent_id, p.agent_id) = any(${agentIds ?? []}::text[])))`;
   }
 
-  async privateMemory(spaceId: string): Promise<string[]> {
-    const rows = await this.sql`select distinct b.content from memory_claims c
+  async privateMemory(spaceId: string, query?: Sql | TransactionSql): Promise<string[]> {
+    const rows = await (query ?? this.sql)`select distinct b.content from memory_claims c
       join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
       where c.space_id = ${spaceId} and not c.hidden and exists (
         select 1 from memory_references ref join memory_sources s on s.id = ref.source_id

@@ -25,6 +25,7 @@ import {
   appSubmissionAccepted,
   appSubmissionDeleted,
   appSubmissionList,
+  appSubmissionMine,
   appSubmissionRequest,
   appSubmissionsDeleted,
 } from '@melete/contracts';
@@ -56,6 +57,7 @@ import {
   deleteSubmission,
   deleteSubmissionsFrom,
   listSubmissions,
+  mySubmission,
   SubmissionRefused,
   submit,
 } from './submissions.ts';
@@ -497,6 +499,7 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
         principalId,
         collection: parsed.data.collection,
         record: parsed.data.record,
+        ...(parsed.data.replace ? { replace: true } : {}),
       });
       return c.json(appSubmissionAccepted.parse(stored));
     } catch (error) {
@@ -508,6 +511,26 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
         429: 'rate_limited',
       }[error.status];
       throw new ServiceError(code, error.message, error.status);
+    }
+  });
+
+  // What the app kept for this viewer, read back when it opens.
+  app.get('/apps/:id/submissions/mine', async (c) => {
+    const { appId, principalId } = await requireRole(c, 'view');
+    const collection = c.req.query('collection');
+    if (collection === undefined || !appBindingName.safeParse(collection).success)
+      throw new ServiceError('invalid_request', 'No collection by that name.', 400);
+    try {
+      return c.json(
+        appSubmissionMine.parse(await mySubmission(sql, { appId, principalId, collection })),
+      );
+    } catch (error) {
+      if (!(error instanceof SubmissionRefused)) throw error;
+      throw new ServiceError(
+        error.status === 404 ? 'not_found' : 'invalid_request',
+        error.message,
+        error.status,
+      );
     }
   });
 

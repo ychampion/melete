@@ -36,10 +36,22 @@ export class SubmissionRefused extends Error {
 export const recordBytes = (record: JsonObject): number =>
   Buffer.byteLength(JSON.stringify(record), 'utf8');
 
-/** Store one response from `principalId`, or refuse it. */
+/**
+ * Store one response from `principalId`, or refuse it. With `replace`, it
+ * takes the place of their earlier ones in the collection: what an app keeps
+ * for its viewer (a tracker's ticks) is one record, the newest, and the
+ * earlier ones are deleted as a manager's delete would, in the same
+ * transaction, so a refusal leaves them as they were.
+ */
 export async function submit(
   sql: Sql,
-  input: { appId: string; principalId: string; collection: string; record: JsonObject },
+  input: {
+    appId: string;
+    principalId: string;
+    collection: string;
+    record: JsonObject;
+    replace?: boolean;
+  },
 ): Promise<{ id: string; created_at: string }> {
   const size = recordBytes(input.record);
   return sql.begin(async (tx) => {
@@ -60,6 +72,11 @@ export async function submit(
     const limit = Math.min(declared.max_bytes, APP_LIMITS.max_collection_record_bytes);
     if (size > limit)
       throw new SubmissionRefused(`A response here is at most ${limit} bytes.`, 413);
+    if (input.replace)
+      await tx`update app_submission
+        set data = '{}'::jsonb, size = 0, deleted_at = now(), deleted_by = ${input.principalId}
+        where app_id = ${input.appId} and principal_id = ${input.principalId}
+          and collection = ${input.collection} and deleted_at is null`;
     const [recent] = await tx<{ count: number }[]>`select count(*)::int as count
       from app_submission where app_id = ${input.appId} and principal_id = ${input.principalId}
         and created_at > now() - interval '1 minute'`;
@@ -88,6 +105,31 @@ export async function submit(
       returning created_at`;
     return { id, created_at: new Date(row?.created_at ?? Date.now()).toISOString() };
   });
+}
+
+/**
+ * The newest record `principalId` sent in one collection of an app they can
+ * open, or null. Only their own: what one viewer kept is never another's.
+ */
+export async function mySubmission(
+  sql: Sql,
+  input: { appId: string; principalId: string; collection: string },
+): Promise<{ record: JsonObject | null; created_at: string | null }> {
+  if (!(await appRoleFor(sql, input.appId, input.principalId)))
+    throw new SubmissionRefused('No such app.', 404);
+  const [current] = await sql<{ manifest: AppManifest }[]>`select v.manifest
+    from app a join app_version v on v.id = a.current_version_id where a.id = ${input.appId}`;
+  if (!current) throw new SubmissionRefused('No such app.', 404);
+  if (!Object.hasOwn(current.manifest.collections, input.collection))
+    throw new SubmissionRefused('This app does not collect responses under that name.', 400);
+  const [row] = await sql<{ data: JsonObject; created_at: Date }[]>`select data, created_at
+    from app_submission
+    where app_id = ${input.appId} and principal_id = ${input.principalId}
+      and collection = ${input.collection} and deleted_at is null
+    order by id desc limit 1`;
+  return row
+    ? { record: row.data, created_at: new Date(row.created_at).toISOString() }
+    : { record: null, created_at: null };
 }
 
 type SubmissionRow = {

@@ -6,7 +6,7 @@
  * sends nothing anywhere. A default web connection from an earlier release
  * gains the tool.
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
 import { agentResponse, type CapabilityClaims, type JsonObject } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
@@ -135,7 +135,7 @@ const broker =
           createWebConnector({
             publicReads: databasePublicReads({ sql: handle.sql, connectionId: webConnection }),
             search: { backends: [], search: (request) => active.search(request) },
-            searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
+            searchPrivacy: ({ jobId, query, tx }) => privacy.outsideSearchRefusal(jobId, query, tx),
           }),
         ),
       })
@@ -238,7 +238,15 @@ const CLAUDE = { provider: 'anthropic', model: 'claude-sonnet-4-5' };
 const NO_SEARCH = { provider: 'fireworks', model: 'accounts/fireworks/models/deepseek-v4p1-flash' };
 
 withDb('web search', () => {
+  // A search's privacy check runs inside the admission that holds the event
+  // order lock; any statement it sent to the pool instead fails the suite.
+  const guard = process.env.MELETE_EVENT_LOCK_GUARD;
+  beforeAll(() => {
+    process.env.MELETE_EVENT_LOCK_GUARD = 'throw';
+  });
   afterAll(async () => {
+    if (guard === undefined) delete process.env.MELETE_EVENT_LOCK_GUARD;
+    else process.env.MELETE_EVENT_LOCK_GUARD = guard;
     await gateway?.close();
     await handle?.close();
   }, 30_000);

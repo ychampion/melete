@@ -12,6 +12,7 @@ import { type ReactNode, useEffect, useId, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Dialog } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { webHref } from '../experience/markdown.ts';
 import type { TranscriptTurn, TurnBlock } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type { ResultCard } from '../experience/types.ts';
@@ -210,9 +211,10 @@ function Summary({ summary }: { summary: NonNullable<ToolEntry['input_summary']>
 function DetailLink({ tool }: { tool: ToolEntry }) {
   const detail = tool.detail;
   if (!detail) return null;
-  if (detail.type === 'page' && detail.url)
+  const page = detail.type === 'page' && detail.url ? webHref(detail.url) : null;
+  if (page)
     return (
-      <a className="log-link" href={detail.url} target="_blank" rel="noreferrer">
+      <a className="log-link" href={page} target="_blank" rel="noopener noreferrer">
         <Icon name="arrowUpRight" size={12} /> Open the page
       </a>
     );
@@ -480,11 +482,15 @@ export function SourcesLine({
       <Reveal id={id} open={open} className="log-detail">
         <ul className="log-sources">
           {cards.map((card) => {
-            const url = card.primary_action?.kind === 'open' ? card.primary_action.url : undefined;
+            // A source opens only at a web address; anything else is shown and not linked.
+            const url =
+              card.primary_action?.kind === 'open'
+                ? (webHref(card.primary_action.url ?? '') ?? undefined)
+                : undefined;
             const site = siteOf(card);
             return (
               <li key={card.id}>
-                <a className="log-source" href={url} target="_blank" rel="noreferrer">
+                <a className="log-source" href={url} target="_blank" rel="noopener noreferrer">
                   <span className="log-source-title">{card.title}</span>
                   {site && site !== card.title ? (
                     <span className="log-source-site">{site}</span>

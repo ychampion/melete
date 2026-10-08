@@ -1208,13 +1208,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
    * The trash a restore reaches: this job's own, and, for an undo the person
    * asked for from a receipt, the conversation the receipt came from.
    */
-  const restorePlaces = async (ctx: ConnectorContext): Promise<TrashPlace[]> => {
+  const restorePlaces = async (ctx: ConnectorContext, tx?: Query): Promise<TrashPlace[]> => {
     // Job ids to look in, not a path: each place comes from `trashPlace`.
     const jobs: string[] = [];
     jobs.push(ctx.job_id);
-    if (options.sql) {
-      const [row] =
-        await options.sql`select experience_parent_id from job where id = ${ctx.job_id}`;
+    // At admission, through the transaction that holds the event order lock.
+    const query = tx ?? options.sql;
+    if (query) {
+      const [row] = await query`select experience_parent_id from job where id = ${ctx.job_id}`;
       if (row?.experience_parent_id) jobs.push(String(row.experience_parent_id));
     }
     const places: TrashPlace[] = [];
@@ -1355,7 +1356,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const path = typeof payload.path === 'string' ? payload.path : undefined;
         let found: { id: string; made: number } | null = null;
         try {
-          for (const place of await restorePlaces(ctx)) {
+          for (const place of await restorePlaces(ctx, tx)) {
             const latest = await latestTrash(place, path);
             if (latest && (!found || latest.made > found.made)) found = latest;
           }

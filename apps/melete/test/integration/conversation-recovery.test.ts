@@ -18,6 +18,7 @@ import {
 import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { openDatabase } from '../../src/db/client.ts';
+import { holdingEventOrder } from '../../src/db/lock-guard.ts';
 import { action, connection, job, owner, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -446,6 +447,68 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
       ]);
       expect(outcome).toBe('projected');
       await waiter;
+    } finally {
+      await small.close();
+    }
+  }, 30000);
+
+  test("a receipt's Undo is worked out before the event order lock, never under it", async () => {
+    const chat = await createConversation();
+    const connectionId = newId('conn');
+    const attemptId = newId('att');
+    const actionId = newId('act');
+    const db = required(handle).db;
+    await db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    await required(handle)
+      .sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attemptId}, ${chat.id}, 900, 'fake', 'fake', 'scripted')`;
+    await db.insert(action).values({
+      id: actionId,
+      jobId: chat.id,
+      attemptId,
+      connectionId,
+      kind: 'email.send',
+      effectClass: 'write_external',
+      canonicalPayload: {},
+      payloadHash: 'b'.repeat(64),
+      idempotencyKey: actionId,
+      status: 'succeeded',
+    });
+    const small = openDatabase(required(handle).url, 2);
+    try {
+      await serviceTransaction(small.db, (tx) =>
+        appendEvent(tx, {
+          jobId: chat.id,
+          attemptId,
+          type: 'action_status_changed',
+          payload: { action_id: actionId, from: 'dispatched', to: 'succeeded' },
+          dedupKey: `receipt-probe:${actionId}`,
+        }),
+      );
+      const asked: boolean[] = [];
+      const events = new ExperienceEvents(small.db, {
+        permission: async () => undefined,
+        question: async () => undefined,
+        // The effects service reads and writes on its own connections, as the real one does.
+        receiptState: async () => {
+          asked.push(holdingEventOrder());
+          await small.sql`select 1`;
+          return {
+            undo: {
+              handle: 'undo_probe',
+              valid_until: new Date(Date.now() + 60_000).toISOString(),
+            },
+          };
+        },
+      });
+      await events.sync(spaceId, chat.id);
+      // Asked once, with no lock held: under it, every connection may be queued on the lock.
+      expect(asked).toEqual([false]);
+      const projected = await required(handle).sql`select count(*)::int as count from event
+        where job_id = ${chat.id} and payload->>'kind' = 'experience'`;
+      expect(projected[0]?.count).toBeGreaterThan(0);
     } finally {
       await small.close();
     }

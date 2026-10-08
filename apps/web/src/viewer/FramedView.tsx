@@ -15,7 +15,7 @@ import { Button, Dialog } from '../design/primitives.tsx';
 /** What the framed page may do. Never same-origin, popups, or top navigation. */
 export const FRAME_SANDBOX = 'allow-scripts allow-forms allow-downloads';
 
-export type FrameCalls = Pick<BridgeHost, 'data' | 'submit'>;
+export type FrameCalls = Pick<BridgeHost, 'data' | 'submit' | 'save' | 'load'>;
 
 export function FramedView({
   src,

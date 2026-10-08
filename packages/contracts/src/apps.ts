@@ -276,6 +276,12 @@ export const appDataReleaseRequest = z.strictObject({
 export const appSubmissionRequest = z.strictObject({
   collection: appBindingName,
   record: jsonObject,
+  /**
+   * What an app keeps for its viewer, such as a tracker's ticks: this record
+   * replaces the viewer's earlier ones in the collection, so only the newest
+   * is kept and read back (`GET /apps/{id}/submissions/mine`).
+   */
+  replace: z.boolean().optional(),
 });
 export type AppSubmissionRequest = z.infer<typeof appSubmissionRequest>;
 
@@ -303,6 +309,13 @@ export const appSubmissionList = z.strictObject({
 export type AppSubmissionList = z.infer<typeof appSubmissionList>;
 
 export const appSubmissionDeleted = z.strictObject({ id: z.string(), deleted: z.literal(true) });
+
+/** The newest record the viewer sent in one collection, or null when they sent none. */
+export const appSubmissionMine = z.strictObject({
+  record: jsonObject.nullable(),
+  created_at: timestamp.nullable(),
+});
+export type AppSubmissionMine = z.infer<typeof appSubmissionMine>;
 
 /** Every response one person sent an app, deleted at once. */
 export const appSubmissionsDeleted = z.strictObject({

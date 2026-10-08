@@ -22,6 +22,7 @@ import { filesManifest } from './files.ts';
 import { notesManifest } from './notes.ts';
 import { roomManifest } from './room.ts';
 import { sandboxExecManifest } from './sandbox-exec.ts';
+import { skillsManifest } from './skills.ts';
 import { webManifest } from './web.ts';
 
 const toolNames = (manifest: ConnectorManifest) => manifest.tools.map((tool) => tool.name).sort();
@@ -36,6 +37,7 @@ describe('default connections', () => {
       exec: execManifest,
       sandbox: sandboxExecManifest,
       notes: notesManifest,
+      skills: skillsManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
       'apps',
@@ -51,6 +53,8 @@ describe('default connections', () => {
       'room',
       'room',
       'sandbox',
+      // The person's own skills, in a person's own space.
+      'skills',
       'web',
     ]);
     for (const builtin of BUILTIN_CONNECTIONS) {
@@ -198,6 +202,7 @@ describe('default connections', () => {
       'artifacts',
       'apps',
       'notes',
+      'skills',
     ]);
     expect(wanted(builtinEnvironment({ ...base, MELETE_PREVIEW_MULTIPLAYER: 'true' }))).toEqual([
       'files',
@@ -207,6 +212,7 @@ describe('default connections', () => {
       'rooms',
       'room_handoff',
       'notes',
+      'skills',
     ]);
     expect(
       wanted({
@@ -226,6 +232,7 @@ describe('default connections', () => {
       'rooms',
       'room_handoff',
       'notes',
+      'skills',
     ]);
   });
 });

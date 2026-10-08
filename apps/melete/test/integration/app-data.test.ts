@@ -410,6 +410,47 @@ databaseTest(
 );
 
 databaseTest(
+  'what an app saves for its viewer is kept across a reload, for that viewer only',
+  async () => {
+    const ctx = await setup();
+    const appId = await ctx.publish({ collections: { state: { max_bytes: 2000 } } });
+    const save = (who: string, record: JsonObject) =>
+      ctx.api(who)(`/apps/${appId}/submissions`, {
+        method: 'POST',
+        body: { collection: 'state', record, replace: true },
+      });
+    const load = async (who: string, collection = 'state') =>
+      ctx.api(who)(`/apps/${appId}/submissions/mine?collection=${collection}`);
+
+    // Nothing saved yet reads as null, not as an error.
+    expect(await json(await load(ctx.bo))).toEqual({ record: null, created_at: null });
+    expect((await save(ctx.bo, { water: [true] })).status).toBe(200);
+    expect((await save(ctx.bo, { water: [true, true], walk: [false, true] })).status).toBe(200);
+    // A reload reads back the newest, whole.
+    const back = await json(await load(ctx.bo));
+    expect(back.record).toEqual({ water: [true, true], walk: [false, true] });
+    expect(back.created_at).toEqual(expect.any(String));
+    // Each save replaces the one before it, so a viewer's ticks never fill their share.
+    const kept = await ctx.sql`select count(*)::int as count from app_submission
+      where app_id = ${appId} and principal_id = ${ctx.bo} and deleted_at is null`;
+    expect(kept[0]?.count).toBe(1);
+    // Another viewer reads only their own; someone the app is not shared with reads nothing.
+    expect(await json(await load(ctx.alice))).toEqual({ record: null, created_at: null });
+    expect((await load(ctx.cy)).status).toBe(404);
+    // A collection the app does not declare, or a malformed name, is refused.
+    expect((await load(ctx.bo, 'orders')).status).toBe(400);
+    expect((await load(ctx.bo, '..%2Fstate')).status).toBe(400);
+    // A save over the size it declares is refused, and what was saved stays.
+    expect((await save(ctx.bo, { note: 'x'.repeat(3000) })).status).toBe(413);
+    expect((await json(await load(ctx.bo))).record).toEqual({
+      water: [true, true],
+      walk: [false, true],
+    });
+  },
+  SLOW,
+);
+
+databaseTest(
   'submissions beyond the rate or size are refused',
   async () => {
     const ctx = await setup();

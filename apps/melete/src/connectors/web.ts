@@ -497,8 +497,14 @@ export const WEB_SEARCH_NOTICE =
  * Why a search may not leave for an outside service, or null when it may: the
  * space or agent is private, the conversation is about a sensitive topic, or
  * the query carries details the privacy settings keep from outside services.
+ * `tx` is the transaction an admission holds, with the event order lock: every
+ * read goes through it rather than waiting on the pool for a connection.
  */
-export type SearchPrivacy = (scope: { jobId: string; query: string }) => Promise<string | null>;
+export type SearchPrivacy = (scope: {
+  jobId: string;
+  query: string;
+  tx?: Query;
+}) => Promise<string | null>;
 
 export const SEARCH_PRIVATE =
   'This conversation is private, so nothing is searched on the web. Answer from what you already have.';
@@ -816,7 +822,9 @@ export function createWebConnector(
       if (policy !== null) return policy;
     }
     // A check that cannot answer keeps the query in.
-    return searchPrivacy({ jobId: ctx.job_id, query }).catch(() => SEARCH_PRIVATE);
+    return searchPrivacy({ jobId: ctx.job_id, query, ...(tx ? { tx } : {}) }).catch(
+      () => SEARCH_PRIVATE,
+    );
   };
   /**
    * The page through the hosted reader, a sentence saying why it was not

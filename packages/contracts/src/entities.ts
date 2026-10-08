@@ -86,6 +86,8 @@ export const CONNECTION_PROVIDERS = [
   'room',
   /** The agent's own working notes, kept in the person's space and shown in Memory. */
   'notes',
+  /** The person's own skills, saved in their space when they ask for one. */
+  'skills',
   /** A signed-in Google Drive: what changes in its files, read as metadata only. */
   'drive',
 ] as const;

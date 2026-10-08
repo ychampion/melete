@@ -177,3 +177,60 @@ test('plain answers read as before: paragraphs and line breaks', () => {
     { type: 'paragraph', lines: ['2 * 3 * 4 = 24'] },
   ]);
 });
+
+test('an address written without https:// is a web link; a shortened one or a file name is text', () => {
+  expect(inlineMarks('Amazon: amazon.com/dp/B0F3PQHWTZ.')).toEqual([
+    { kind: 'text', text: 'Amazon: ' },
+    {
+      kind: 'link',
+      text: 'amazon.com/dp/B0F3PQHWTZ',
+      href: 'https://amazon.com/dp/B0F3PQHWTZ',
+    },
+    { kind: 'text', text: '.' },
+  ]);
+  expect(inlineMarks('see www.zunicafe.com')).toEqual([
+    { kind: 'text', text: 'see ' },
+    { kind: 'link', text: 'www.zunicafe.com', href: 'https://www.zunicafe.com/' },
+  ]);
+  // Shortened with an ellipsis, it leads nowhere real.
+  expect(inlineMarks('target.com/p/…/-/A-1006081089')).toEqual([
+    { kind: 'text', text: 'target.com/p/…/-/A-1006081089' },
+  ]);
+  for (const plain of [
+    'saved as fw9.pdf',
+    'open index.html',
+    'see README.md',
+    'mail sam@example.com',
+    'version 1.2.3',
+    'e.g. this',
+    'https://example.com/a…b',
+  ])
+    expect(inlineMarks(plain).some((span) => span.kind === 'link')).toBe(false);
+  const out = html('Best Buy: bestbuy.com/site/6620467');
+  expect(out).toContain('href="https://bestbuy.com/site/6620467"');
+  expect(out).toContain('target="_blank"');
+  expect(out).toContain('rel="noopener noreferrer nofollow"');
+});
+
+test('a place in Melete opens in place, and only a plain hash route counts', () => {
+  expect(inlineMarks('Open it: #/apps/app_01M4E0QMEVNVNYDVX4RV5NN4N3')).toEqual([
+    { kind: 'text', text: 'Open it: ' },
+    {
+      kind: 'link',
+      text: '#/apps/app_01M4E0QMEVNVNYDVX4RV5NN4N3',
+      href: '#/apps/app_01M4E0QMEVNVNYDVX4RV5NN4N3',
+      internal: true,
+    },
+  ]);
+  expect(inlineMarks('[Habit tracker](#/apps/app_01ABC)')).toEqual([
+    { kind: 'link', text: 'Habit tracker', href: '#/apps/app_01ABC', internal: true },
+  ]);
+  const out = html('[Habit tracker](#/apps/app_01ABC)');
+  expect(out).toContain('href="#/apps/app_01ABC"');
+  expect(out).not.toContain('target="_blank"');
+  for (const odd of ['#/"><b>x', '#/../x', 'go to #heading', '[x](#javascript:alert(1))'])
+    expect(inlineMarks(odd).some((span) => span.kind === 'link' && span.href.includes('"'))).toBe(
+      false,
+    );
+  expect(inlineMarks('[x](#javascript:alert(1))')[0]).toEqual({ kind: 'text', text: 'x' });
+});

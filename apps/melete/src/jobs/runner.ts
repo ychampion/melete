@@ -125,7 +125,9 @@ export type RunnerOptions = {
     tx: Transaction,
     claims: CapabilityClaims,
     bundle: ResponsibilityAttemptBundle,
-  ) => Promise<Pick<ResponsibilityAttemptBundle, 'tools' | 'skills' | 'skill_index'>>;
+  ) => Promise<
+    Pick<ResponsibilityAttemptBundle, 'tools' | 'skills' | 'skill_index' | 'connected_accounts'>
+  >;
   /**
    * How long a finished attempt waits for an action it dispatched to report
    * back before its outcome is committed. Past it the turn rests with its

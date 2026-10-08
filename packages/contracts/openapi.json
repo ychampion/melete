@@ -18235,6 +18235,7 @@
                       "apps",
                       "room",
                       "notes",
+                      "skills",
                       "drive"
                     ]
                   },
@@ -27499,6 +27500,9 @@
                   },
                   "record": {
                     "$ref": "#/components/schemas/__schema67"
+                  },
+                  "replace": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -27765,6 +27769,96 @@
           },
           "403": {
             "description": "Not a manager of this app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema210"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app, or this person cannot open it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema210"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{id}/submissions/mine": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "The newest record the viewer sent in one collection",
+        "description": "What an app kept for this viewer, such as a tracker's ticks, read back when it opens. Only the viewer's own records; null when they sent none in that collection.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "App id"
+            },
+            "required": true,
+            "description": "App id"
+          },
+          {
+            "in": "query",
+            "name": "collection",
+            "schema": {
+              "type": "string",
+              "description": "A collection the app declares"
+            },
+            "required": true,
+            "description": "A collection the app declares"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The record, or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/__schema457"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/__schema208"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No collection, or one the app does not declare",
             "content": {
               "application/json": {
                 "schema": {
@@ -41604,6 +41698,7 @@
           "apps",
           "room",
           "notes",
+          "skills",
           "drive"
         ]
       },

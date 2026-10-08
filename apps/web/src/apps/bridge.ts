@@ -8,6 +8,10 @@
  *
  * - `{type:'melete.data', id, name}`: a data binding the publish approval listed;
  * - `{type:'melete.submit', id, collection, record}`: a response for a declared collection;
+ * - `{type:'melete.save', id, collection, record}`: what the app keeps for this
+ *   viewer (a tracker's ticks), in a declared collection; it replaces what was
+ *   saved there before, and survives a reload, unlike the frame's own storage;
+ * - `{type:'melete.load', id, collection}`: what this viewer last saved there, or null;
  * - `{type:'melete.link', url}`: open an https link, after the person confirms it;
  * - `{type:'melete.size', height}`: how tall the app would like its frame.
  *
@@ -36,6 +40,8 @@ type Id = string | number;
 export type BridgeRequest =
   | { type: 'melete.data'; id: Id; name: string }
   | { type: 'melete.submit'; id: Id; collection: string; record: Record<string, unknown> }
+  | { type: 'melete.save'; id: Id; collection: string; record: Record<string, unknown> }
+  | { type: 'melete.load'; id: Id; collection: string }
   | { type: 'melete.link'; url: string }
   | { type: 'melete.size'; height: number };
 
@@ -70,6 +76,13 @@ export function parseRequest(data: unknown): BridgeRequest | null {
       return validId(data.id) && typeof data.name === 'string' && BINDING_NAME.test(data.name)
         ? { type: data.type, id: data.id, name: data.name }
         : null;
+    case 'melete.load':
+      return validId(data.id) &&
+        typeof data.collection === 'string' &&
+        BINDING_NAME.test(data.collection)
+        ? { type: data.type, id: data.id, collection: data.collection }
+        : null;
+    case 'melete.save':
     case 'melete.submit': {
       if (
         !validId(data.id) ||
@@ -110,6 +123,15 @@ export type BridgeHost = {
   submit: (
     collection: string,
     record: Record<string, unknown>,
+  ) => Promise<{ ok: true; value: unknown } | { ok: false; error: string }>;
+  /** Keep `record` as this viewer's one record in the collection. */
+  save: (
+    collection: string,
+    record: Record<string, unknown>,
+  ) => Promise<{ ok: true; value: unknown } | { ok: false; error: string }>;
+  /** What this viewer last saved in the collection, or null. */
+  load: (
+    collection: string,
   ) => Promise<{ ok: true; value: unknown } | { ok: false; error: string }>;
   /** Ask the person; resolves true only when they choose to open it. */
   confirmLink: (url: string) => Promise<boolean>;
@@ -166,6 +188,12 @@ export function connectBridge(
         return;
       case 'melete.submit':
         answer(request.id, () => host.submit(request.collection, request.record));
+        return;
+      case 'melete.save':
+        answer(request.id, () => host.save(request.collection, request.record));
+        return;
+      case 'melete.load':
+        answer(request.id, () => host.load(request.collection));
         return;
       case 'melete.size':
         host.resize(request.height);
