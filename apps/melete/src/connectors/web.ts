@@ -580,7 +580,8 @@ const SIGN_IN_PAGE =
 const BOT_WALL_COOKIE =
   /^(?:__cf_bm|cf_clearance|__cflb|__cfruid|_cfuvid|cf_chl\w*|datadome|incap_ses_\w*|visid_incap_\w*|nlbi_\w*|_px\w*|__ddg\w*|sucuri\w*|ak_bmsc|bm_\w+|_abck)$/i;
 /** A cookie name that reads like a session or a sign-in. */
-const SESSION_COOKIE = /sess|sid|auth|token|login|logged|user|jwt|remember|csrf|xsrf|identity|account/i;
+const SESSION_COOKIE =
+  /sess|sid|auth|token|login|logged|user|jwt|remember|csrf|xsrf|identity|account/i;
 
 /**
  * Whether a response opened or asked for a session: a sign-in challenge

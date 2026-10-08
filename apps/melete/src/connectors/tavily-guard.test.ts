@@ -260,9 +260,13 @@ test('a captcha, an Akamai server, a sign-in page or a session keeps a private p
 
   // A session opened on the way, before a redirect, counts too.
   let hop = 0;
-  const redirected: WebTransport = async () =>
+  const redirected: WebTransport = async (): Promise<WebResponse> =>
     hop++ === 0
-      ? { status: 302, headers: { location: '/app', 'set-cookie': 'connect.sid=s%3Aabc' }, body: '' }
+      ? {
+          status: 302,
+          headers: { location: '/app', 'set-cookie': 'connect.sid=s%3Aabc' },
+          body: '',
+        }
       : { status: 200, headers: { 'content-type': 'text/html' }, body: SHELL };
   expect(await sent(PRIVATE, allow, redirected)).toEqual([]);
 
