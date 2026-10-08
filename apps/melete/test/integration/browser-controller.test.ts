@@ -186,7 +186,7 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     await call({ kind: 'submit', intent });
     expect(intent.fields.person_name).toBe('First line\r\nSecond line');
     expect(fixture.effects.filter((effect) => effect.run === 'multiline')).toEqual([
-      { run: 'multiline', fields: intent.fields },
+      { run: 'multiline', fields: intent.fields as Record<string, string> },
     ]);
   }, 15_000);
 });

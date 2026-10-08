@@ -435,7 +435,13 @@ function stepFacts(kind: string, payload: Record<string, unknown>) {
   const fields =
     intent.fields && typeof intent.fields === 'object'
       ? Object.entries(intent.fields as Record<string, unknown>).flatMap(([name, value]) =>
-          fact(name, value),
+          // A checkbox group sends each chosen value under one name.
+          fact(
+            name,
+            Array.isArray(value)
+              ? value.filter((item) => typeof item === 'string').join(', ')
+              : value,
+          ),
         )
       : [];
   return [

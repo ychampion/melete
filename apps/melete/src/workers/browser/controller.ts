@@ -7,6 +7,7 @@ import {
   type BrowserNetworkOptions,
   BrowserRedirect,
   createBrowserEgress,
+  SITE_FAILURES,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
 import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
@@ -32,6 +33,12 @@ type BrowserElement = {
   validity: { valid: boolean };
   form: BrowserForm | null;
   options: Array<{ label: string; value: string; disabled: boolean }>;
+  href: string;
+  textContent: string | null;
+  labels: ArrayLike<BrowserElement> | null;
+  previousElementSibling: BrowserElement | null;
+  parentElement: BrowserElement | null;
+  ownerDocument: { getElementById(id: string): BrowserElement | null };
   getAttribute(name: string): string | null;
   hasAttribute(name: string): boolean;
   getClientRects(): { length: number };
@@ -72,7 +79,8 @@ export const browserSubmitIntent = z.strictObject({
   name: z.string().min(1),
   form_hash: z.string().regex(/^[a-f0-9]{64}$/),
   body_sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  fields: z.record(z.string(), z.string()),
+  /** One value per name; a name the form sends more than once (a checkbox group) has a list. */
+  fields: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
 });
 export type BrowserSubmitIntent = z.infer<typeof browserSubmitIntent>;
 const operation = z.discriminatedUnion('kind', [
@@ -90,7 +98,8 @@ const operation = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     kind: z.literal('select'),
-    label: z.string().min(1).max(240),
+    /** Its label, accessible name, placeholder or nearby text; left out, the option names it. */
+    label: z.string().min(1).max(240).optional(),
     value: z.string().max(2000),
   }),
   z.strictObject({
@@ -237,13 +246,19 @@ export class BrowserController {
           'navigate',
           () =>
             this.input(command, () =>
-              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10_000 }),
+              // Longer than the network guard gives one request, so a resource whose host never
+              // answers is cut off and the page still finishes loading without it.
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 }),
             ),
           undefined,
           () => this.sessions.checkInput(command.session_id, command.control_epoch),
         );
         return;
       } catch (error) {
+        if (error instanceof Error && error.name === 'TimeoutError')
+          throw new BrowserFault(
+            `page_timeout: ${new URL(url).host} did not finish loading the page within 15 seconds.`,
+          );
         if (!(error instanceof BrowserRedirect) || error.after_commit) throw error;
         url = error.target_url;
         await this.replacePage(command);
@@ -348,12 +363,17 @@ export class BrowserController {
     if (!data) throw new BrowserFault('unsupported_or_incomplete_form');
     // Construct both approval fields and exact wire bytes in the worker realm. A page
     // can replace its own URLSearchParams, and hidden fields can choose a recipient.
-    const fields: Record<string, string> = Object.create(null);
+    const fields: Record<string, string | string[]> = Object.create(null);
     for (const [key, value] of data.pairs) {
       // JSON schema parsers discard this key, so it cannot cross approval intact.
-      if (key === '__proto__' || Object.hasOwn(fields, key))
-        throw new BrowserFault('unsupported_or_incomplete_form');
-      fields[key] = value;
+      if (key === '__proto__') throw new BrowserFault('unsupported_or_incomplete_form');
+      // A checkbox group or a multiple choice sends one pair per chosen value under one name;
+      // the approval shows them all, and body_sha256 binds their exact order on the wire.
+      const previous = fields[key];
+      fields[key] =
+        previous === undefined
+          ? value
+          : [...(Array.isArray(previous) ? previous : [previous]), value];
     }
     const body = new URLSearchParams(data.pairs).toString();
     if (Buffer.byteLength(body) > 64 * 1024)
@@ -406,6 +426,8 @@ export class BrowserController {
     }
     this.sessions.observed(session.id, epoch);
     this.metrics.observations++;
+    // A page still loads when a third-party host it uses is down; the look says which ones.
+    const unreachable = this.network?.takeUnreachable() ?? [];
     return {
       session_id: session.id,
       control_epoch: epoch,
@@ -419,8 +441,116 @@ export class BrowserController {
         tree,
         screenshot,
       },
-      result: { submit_intents: intents },
+      result: {
+        submit_intents: intents,
+        ...(unreachable.length
+          ? {
+              unreachable_hosts: unreachable,
+              note: `The page loaded without some of its resources: ${unreachable.join(', ')} could not be reached.`,
+            }
+          : {}),
+      },
     };
+  }
+
+  /**
+   * Where a link goes, for a click on role `link`. Several visible links of that name are one
+   * target when they all lead to the same address. Undefined for a control that is no anchor.
+   */
+  private async linkAddress(page: Page, name: string): Promise<string | undefined> {
+    const links = this.role(page, 'link', name).filter({ visible: true });
+    const addresses = await links.evaluateAll((elements) =>
+      (elements as unknown as BrowserElement[]).map((element) =>
+        ['A', 'AREA'].includes(element.tagName) && element.getAttribute('href') !== null
+          ? element.href
+          : null,
+      ),
+    );
+    if (!addresses.length || addresses.every((address) => address === null)) return undefined;
+    const distinct = new Set(addresses);
+    if (distinct.size !== 1)
+      throw new BrowserFault(
+        `ambiguous_control: ${addresses.length} links are named "${name}" and lead to different places. Open the one you want by its address with browser.open.`,
+      );
+    const [address] = distinct;
+    if (!address || !/^https?:/i.test(address))
+      throw new BrowserFault(
+        `url_not_allowed: the link "${name}" does not lead to a web page address.`,
+      );
+    return address;
+  }
+
+  /**
+   * The one dropdown a select step means. A label names it by its label or accessible name,
+   * its placeholder, or the text just before it; without one, the option it is asked for has
+   * to be offered by exactly one dropdown. Anything else is refused, saying why.
+   */
+  private async dropdown(page: Page, label: string | undefined, value: string) {
+    if (label) {
+      const labelled = page.getByLabel(label, { exact: true }).filter({ visible: true });
+      if ((await labelled.count()) === 1) return this.unique(labelled);
+    }
+    const selects = page.locator('select').filter({ visible: true });
+    const matches = await selects.evaluateAll(
+      (elements, wanted) => {
+        const tidy = (text: string | null | undefined) =>
+          (text ?? '').replace(/\s+/g, ' ').trim().replace(/:$/, '').toLowerCase();
+        const nearby = (element: BrowserElement): string => {
+          // The closest text before the dropdown: a heading or a caption beside it.
+          let node: BrowserElement | null = element;
+          for (let depth = 0; node && depth < 3; depth++, node = node.parentElement) {
+            for (
+              let sibling = node.previousElementSibling;
+              sibling;
+              sibling = sibling.previousElementSibling
+            ) {
+              const text = tidy(sibling.textContent);
+              if (text) return text.length <= 200 ? text : '';
+            }
+          }
+          return '';
+        };
+        return (elements as unknown as BrowserElement[]).flatMap((element, index) => {
+          const first = element.options[0];
+          const names = [
+            ...Array.from(element.labels ?? []).map((item) => item.textContent),
+            element.getAttribute('aria-label'),
+            ...(element.getAttribute('aria-labelledby') ?? '')
+              .split(/\s+/)
+              .map((id) => (id ? element.ownerDocument.getElementById(id)?.textContent : '')),
+            element.getAttribute('title'),
+            element.getAttribute('placeholder'),
+            first && (first.disabled || first.value === '') ? first.label : '',
+            element.getAttribute('name'),
+            nearby(element),
+          ]
+            .map(tidy)
+            .filter(Boolean);
+          const offers = Array.from(element.options).some(
+            (option) => tidy(option.label) === tidy(wanted.value) || option.value === wanted.value,
+          );
+          const named = wanted.label === undefined || names.includes(tidy(wanted.label));
+          return named && (wanted.label !== undefined || offers)
+            ? [{ index, name: names[0] ?? '' }]
+            : [];
+        });
+      },
+      { label, value },
+    );
+    if (matches.length === 1 && matches[0]) {
+      const handle = await selects.nth(matches[0].index).elementHandle();
+      if (!handle) throw new BrowserFault('control_not_found');
+      return handle as unknown as ElementHandle<BrowserElement>;
+    }
+    const target = label === undefined ? `offer "${value}"` : `match "${label}"`;
+    if (!matches.length)
+      throw new BrowserFault(
+        `control_not_found: no visible dropdown on this page ${label === undefined ? 'offers' : 'matches'} "${label ?? value}".`,
+      );
+    const names = matches.map((match) => (match.name ? `"${match.name}"` : 'one with no name'));
+    throw new BrowserFault(
+      `ambiguous_control: ${matches.length} dropdowns ${target} (${names.join(', ')}). Pass the label, placeholder or nearby text of the one you mean.`,
+    );
   }
 
   /** The top-level document: a new page, or a navigation that loads a new document, changes it. */
@@ -460,6 +590,8 @@ export class BrowserController {
     let commitStarted = false;
     return this.sessions
       .exclusive(async () => {
+        // Hosts an earlier step could not reach belong to that step, not to this one.
+        this.network?.takeUnreachable();
         const session = this.sessions.requireSession(command.session_id, command.job_id);
         if (command.operation.kind === 'observe') return this.observe(command);
         let { page, cdp } = await this.attach();
@@ -486,8 +618,15 @@ export class BrowserController {
         const before = await this.transition(page, cdp);
         const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
+        // An ordinary link is followed by opening its address, under every check `open` makes.
+        const link =
+          action.kind === 'click' && action.role === 'link'
+            ? await this.linkAddress(page, action.name)
+            : undefined;
         if (action.kind === 'open') {
           await this.navigate(command, action.url);
+        } else if (link !== undefined) {
+          await this.navigate(command, link);
         } else if (action.kind === 'fill') {
           const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
           const safe = await handle.evaluate(
@@ -536,33 +675,47 @@ export class BrowserController {
             }
           });
         } else if (action.kind === 'select') {
-          const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
+          const handle = await this.dropdown(page, action.label, action.value);
           if (
             isSensitiveControl({
-              label: action.label,
+              label: action.label ?? '',
               role: 'combobox',
               sensitive: false,
               required: false,
             })
           )
             throw new BrowserFault('sensitive_input_require_takeover');
-          await this.network.run('reversible', () =>
+          const chosen = await this.network.run('reversible', () =>
             this.input(command, () =>
               handle.evaluate((element, value) => {
-                if (element.tagName !== 'SELECT' || element.disabled)
-                  throw new Error('not_selectable');
-                const options = Array.from(element.options).filter(
+                if (element.tagName !== 'SELECT' || element.disabled) return 'not_selectable';
+                const tidy = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+                const exact = Array.from(element.options).filter(
                   (option) => option.label === value || option.value === value,
                 );
+                const options = exact.length
+                  ? exact
+                  : Array.from(element.options).filter(
+                      (option) => tidy(option.label) === tidy(value),
+                    );
                 const option = options[0];
                 if (options.length !== 1 || !option || option.disabled)
-                  throw new Error('ambiguous_option');
+                  return options.length ? 'ambiguous_option' : 'option_not_found';
                 element.value = option.value;
                 element.dispatchEvent(new Event('input', { bubbles: true }));
                 element.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'selected';
               }, action.value),
             ),
           );
+          if (chosen !== 'selected')
+            throw new BrowserFault(
+              chosen === 'not_selectable'
+                ? 'not_selectable: that control is not a dropdown that can be changed.'
+                : chosen === 'option_not_found'
+                  ? `option_not_found: the dropdown has no option "${action.value}".`
+                  : `ambiguous_option: the dropdown has several options "${action.value}", or that option is disabled.`,
+            );
         } else {
           const target = action.kind === 'submit' ? action.intent : action;
           const handle = await this.unique(this.role(page, target.role, target.name));
@@ -647,7 +800,10 @@ export class BrowserController {
       .catch((error) => {
         if (commitStarted && this.network?.commitDispatched)
           throw new Error('browser_commit_unknown');
-        if (error instanceof BrowserNetworkError) throw new BrowserFault(error.code);
+        if (error instanceof BrowserNetworkError)
+          throw new BrowserFault(
+            SITE_FAILURES.has(error.code) ? `${error.code}: ${error.message}` : error.code,
+          );
         throw error;
       });
   }
