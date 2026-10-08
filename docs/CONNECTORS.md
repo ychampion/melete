@@ -725,6 +725,17 @@ is read through `POST /tools/call` after loading; their frontmatter tool list
 cannot grant access. Space skills are withheld in the public compartment.
 The existing deterministic initial skill selection remains available.
 
+A person's own skills are made on request through the built-in Skills
+connection, which every personal space has. `skills.create` writes one as
+`skills/<name>/SKILL.md` in the person's space, in the format the built-ins use;
+it stays in their space and replaces nothing, so it asks no one, and the loader
+reads it at the start of the next attempt. A name already in use, a built-in's
+name, a name a `skills.` tool already takes (`create`, `update`, `list`, `read`)
+and anything credential-shaped are refused at admission. `skills.update`
+changes one of the person's own skills and keeps the words it replaces beside
+it as `PREVIOUS.md`, which the loader does not read; `skills.list` names them.
+Shared spaces keep no one's skills this way.
+
 Hermes v2026.9.7 snapshots tools when an HTTP run starts. The plugin registers
 the newly loaded schema, and the adapter verifies the broker's catalog change,
 ends that run, then starts a continuation with the same attempt authority and

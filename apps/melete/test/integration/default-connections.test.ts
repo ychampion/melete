@@ -9,6 +9,7 @@ import {
   type JsonObject,
   suggestedConnections,
 } from '@melete/contracts';
+import { renderInstructions } from '@melete/runtime-hermes';
 import { BrokerService } from '../../src/broker/service.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -115,6 +116,7 @@ const journey = late ? await database() : null;
         'files',
         'notes',
         'room',
+        'skills',
         'web',
       ]);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
@@ -137,6 +139,7 @@ const journey = late ? await database() : null;
         ['Notes', true],
         ['Rooms', true],
         ['Saved results', true],
+        ['Skills', true],
         ['Web', true],
       ]);
       // Each runs here, so each is shown connected, with nothing wrong.
@@ -306,6 +309,7 @@ const journey = late ? await database() : null;
         'generation',
         'notes',
         'room',
+        'skills',
         'web',
       ];
       expect(await providers(personal)).toEqual(expected);
@@ -392,8 +396,8 @@ const journey = late ? await database() : null;
       const ownerConnections = (
         await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
       ).map((row) => row.id);
-      // Files, the web, saved results, apps, the agent's own notes and the person's own room tools.
-      expect(ownerConnections).toHaveLength(6);
+      // Files, the web, saved results, apps, the agent's own notes, the person's own skills and room tools.
+      expect(ownerConnections).toHaveLength(7);
 
       const login = await running.app.request('/login', {
         method: 'POST',
@@ -413,6 +417,7 @@ const journey = late ? await database() : null;
         ['Notes', true],
         ['Rooms', true],
         ['Saved results', true],
+        ['Skills', true],
         ['Web', true],
       ]);
       // Settings reads the space the session speaks for, never another account's.
@@ -510,6 +515,7 @@ const journey = late ? await database() : null;
         'files',
         'notes',
         'room',
+        'skills',
         'web',
       ]);
       // A person's own space gets Apps, the agent's own notes and their own room tools, and no hand-off.
@@ -519,6 +525,7 @@ const journey = late ? await database() : null;
         'files',
         'notes',
         ['rooms', ['room.list', 'room.post', 'room.add_file']],
+        'skills',
         'web',
       ]);
       expect(await providers(bare)).toEqual([]);
@@ -737,6 +744,54 @@ const demo = late ? await database() : null;
         expect.arrayContaining([...DEFAULT_TOOLS, 'job.wait', 'test.send', 'test.read']),
       );
       expect(claimed.bundle.skills.map((skill) => skill.name)).toContain('research-with-sources');
+    } finally {
+      await running.close();
+    }
+  },
+  120_000,
+);
+
+const accounts = journey ? await database() : null;
+
+(accounts ? test : test.skip)(
+  "a GitHub account the computer's command line reaches is named to the agent and found by search",
+  async () => {
+    const fixture = accounts;
+    if (!fixture) throw new Error('Postgres unavailable');
+    const running = await service(fixture.url);
+    try {
+      const setup = await running.app.request('/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'github@example.test', password: 'github-install-password' }),
+      });
+      expect(setup.status).toBe(201);
+      const [space] = await fixture.sql`select id from space where kind = 'personal'`;
+      if (!space) throw new Error('Missing personal space');
+      // As connecting GitHub for the agent's computer makes it: no tool, only the relay's grants.
+      await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status,
+          health, setup_state, configuration)
+        values (${newId('conn')}, ${space.id}, 'command_line', 'GitHub',
+          '["egress.github_read","egress.github_write"]'::jsonb, 'active', 'ok', 'connected',
+          '{"kind":"command_line","adapter":"github"}'::jsonb)`;
+
+      const claimed = await claimIn(running, space.id, 'List the open issues in my repository');
+      const named = claimed.bundle.connected_accounts ?? [];
+      expect(named).toHaveLength(1);
+      // This installation runs no computer, so the agent is told where the account is reached.
+      expect(named[0]).toStartWith("GitHub: reached only from your computer's terminal");
+      // The defaults every space has are not listed again.
+      expect(named.join(' ')).not.toContain('Files');
+      expect(renderInstructions(claimed.bundle)).toContain(
+        `# Connected accounts\n\nThe person connected these.`,
+      );
+
+      if (!running.registry) throw new Error('Missing registry');
+      const broker = new BrokerService({ sql: fixture.sql, connectors: running.registry });
+      const found = await broker.discovery.find(claimed.claims, 'github issues');
+      expect(found.hint).toContain('GitHub (run git or gh with terminal.run');
+      const unrelated = await broker.discovery.find(claimed.claims, 'weather forecast');
+      expect(unrelated.hint ?? '').not.toContain('GitHub');
     } finally {
       await running.close();
     }

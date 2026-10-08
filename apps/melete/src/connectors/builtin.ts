@@ -43,6 +43,7 @@ import { artifactsManifest } from './artifacts.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
 import { notesManifest } from './notes.ts';
+import { skillsManifest } from './skills.ts';
 import { webManifest } from './web.ts';
 
 /** Procedure evaluation runs each arm in a throwaway space that must stay without tools. */
@@ -146,6 +147,15 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     provider: 'notes',
     label: 'Notes',
     scopes: grants(notesManifest),
+    spaceKind: 'personal',
+  },
+  // The person's own skills stay in their own space: a new one asks no one,
+  // and a change keeps the words it replaces.
+  {
+    key: 'skills',
+    provider: 'skills',
+    label: 'Skills',
+    scopes: grants(skillsManifest),
     spaceKind: 'personal',
   },
 ];

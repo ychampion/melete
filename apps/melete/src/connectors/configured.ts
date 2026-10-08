@@ -74,6 +74,7 @@ import { createRoomConnector } from './room.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
+import { createSkillsConnector } from './skills.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
@@ -428,6 +429,8 @@ export class ConnectorFactory {
             workRoot: options.workRoot,
             spacesRoot: options.spacesRoot,
           });
+    if (row.provider === 'skills')
+      return createSkillsConnector({ sql: options.sql, spacesRoot: options.spacesRoot });
     if (row.provider === 'notes')
       return createNotesConnector({
         sql: options.sql,
