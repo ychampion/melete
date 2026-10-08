@@ -28,7 +28,7 @@ import {
   withEffort,
 } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
-import { countImages, isInlineImage, withoutMarks } from './images.ts';
+import { countImages, isInlineImage, withoutImages, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import { PriceTable } from './prices.ts';
@@ -134,6 +134,12 @@ export interface GatewayOptions {
   prices?: PriceTable;
   /** The files people sent in chat, swapped into a job's requests as files where allowed. */
   attachments?: GatewayAttachments;
+  /**
+   * Whether a model reads pictures, as the model settings say. A request for
+   * one that reads none has its pictures taken out, with or without a file
+   * store; left out, the attachments' own setting is asked.
+   */
+  vision?: (provider: string, model: string) => Promise<boolean>;
 }
 
 /** A provider's own web search tool: `web_search` (Responses) or `web_search_YYYYMMDD` (Messages). */
@@ -352,7 +358,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       if (!/^melete-surrogate-[A-Za-z0-9_-]+$/.test(surrogate)) {
         throw new GatewayError(401, 'surrogate_required');
       }
-      const body = await readBody(request, maxRequestBytes);
+      let body = await readBody(request, maxRequestBytes);
       const model = body.model;
       if (typeof model !== 'string' || !model || model.length > 300) {
         throw new GatewayError(400, 'model_required');
@@ -430,6 +436,29 @@ export function createModelGateway(options: GatewayOptions): Server {
       }[] = primaryLocal
         ? [{ provider: provider.name, model }]
         : routeCandidates(principal, provider.name, model, carriesPictures);
+      // A picture never reaches a model that reads none. One the vision route
+      // serves goes there; otherwise, when the model this call names reads no
+      // pictures, each picture the request carries becomes a sentence saying so.
+      // A model on the person's own machine is held to it too: it is not
+      // rerouted, but it is never sent a picture it cannot read.
+      if (countImages(body) > 0) {
+        const vision = principal.routes?.vision;
+        const toVision =
+          vision !== undefined &&
+          candidates.some(
+            (choice) => choice.provider === vision.provider && choice.model === vision.model,
+          );
+        if (!toVision) {
+          // A vision route is set only for a model that reads no pictures.
+          const readsPictures = options.vision ?? options.attachments?.vision;
+          const reads = vision
+            ? false
+            : readsPictures
+              ? await readsPictures(provider.name, model)
+              : true;
+          if (!reads) body = withoutImages(body, PICTURE_NOT_READ);
+        }
+      }
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;
       for (const [index, candidate] of candidates.entries()) {
@@ -956,6 +985,10 @@ async function forwardToBroker(
   outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
   outgoing.end(Buffer.from(await response.arrayBuffer()));
 }
+
+/** What stands where a picture was, for a model that reads none. */
+export const PICTURE_NOT_READ =
+  '[A screenshot was here. This model reads no pictures, so it was left out; use the screen_text that came with it.]';
 
 /**
  * The models one call may be served by, in the order they are tried. A request

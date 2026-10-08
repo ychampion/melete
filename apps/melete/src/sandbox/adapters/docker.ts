@@ -334,6 +334,7 @@ type Listed = { Id: string; Names?: string[]; Labels?: Record<string, string>; S
 export type DesktopCommand =
   | { kind: 'screenshot' }
   | { kind: 'info' }
+  | { kind: 'text' }
   | { kind: 'open'; url: string }
   | { kind: 'click'; x: number; y: number; button: 1 | 2 | 3; count: 1 | 2 | 3 }
   | { kind: 'type'; text: string }
@@ -372,6 +373,8 @@ function argvFor(command: DesktopCommand): string[] {
       return ['screenshot'];
     case 'info':
       return ['info'];
+    case 'text':
+      return ['text'];
     case 'open': {
       let url: URL;
       try {
@@ -1274,7 +1277,9 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     const name = DockerSandboxHost.checkName(handle);
     const argv = ['melete-desktop', ...argvFor(command)];
     await this.ensureRunning(name);
-    const max = command.kind === 'screenshot' ? 8 * MiB : 64 * 1024;
+    // A page's elements can take more room than any other answer but a picture.
+    const max =
+      command.kind === 'screenshot' ? 8 * MiB : command.kind === 'text' ? 1 * MiB : 64 * 1024;
     let result: Awaited<ReturnType<DockerSandboxHost['execute']>>;
     try {
       result = await this.execute(name, argv, {

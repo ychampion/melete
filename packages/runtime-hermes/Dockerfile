@@ -26,7 +26,7 @@ ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
 # build. `bun run compose:check` recomputes it from the tracked files and names
 # the value to paste here, so a plugin change without a new pin fails before an
 # image is built.
-ARG MELETE_PLUGIN_SHA=9f1e245d51ef01f45b8cf06eaef060555a8b512fb3f22930e4abe2f60e3c8af8
+ARG MELETE_PLUGIN_SHA=9c40178f06df1b1ea745120f356cb7a4ec9a8ec6e8249fa5276e4a3cd04fdc93
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

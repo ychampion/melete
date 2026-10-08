@@ -456,7 +456,12 @@ if (!live) {
 <input id="i" style="position:fixed;top:0;left:0;width:100%;height:40%;font-size:40px"
   oninput="document.title='typed:'+this.value">
 <button style="position:fixed;top:50%;left:0;width:100%;height:50%;font-size:40px"
-  onclick="document.title='clicked'">press</button>`;
+  onclick="document.title='clicked'">press</button>
+<div style="position:fixed;top:41%;left:0;height:8%">
+<label>Card number <input autocomplete="cc-number" value="4111111111111111"></label>
+<span id="host"></span></div>
+<script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML =
+  '<label>Enter code <input autocomplete="one-time-code" value="SHDWQ"></label>';</script>`;
 
     test('the agent opens a page, clicks, types and presses keys, and sees each land', async () => {
       const handle = await open();
@@ -501,6 +506,26 @@ if (!live) {
       await host.computer(handle, { kind: 'input', events: [{ k: 'text', text: '!' }] }, signal());
       const title = await window('typed:hell!');
       process.stdout.write(`docker live, window: ${title}\n`);
+      // The screen as text, from the page's accessibility tree over the
+      // browser's loopback DevTools endpoint: what was typed is there, a card
+      // number and a one-time code (inside a shadow root) are not.
+      const said = JSON.parse(text(await host.computer(handle, { kind: 'text' }, signal()))) as {
+        source: string;
+        url?: string;
+        elements?: { role: string; name?: string; value?: string; states?: string[] }[];
+      };
+      expect(said.source).toBe('accessibility');
+      expect(said.url).toBe('http://127.0.0.1:8765/');
+      const seen = said.elements ?? [];
+      expect(seen.some((each) => each.role === 'button' && each.name === 'press')).toBe(true);
+      expect(seen.some((each) => each.role === 'textbox' && each.value === 'hell!')).toBe(true);
+      const written = JSON.stringify(said);
+      expect(written).not.toContain('4111111111111111');
+      expect(written).not.toContain('SHDWQ');
+      for (const name of ['Card number', 'Enter code'])
+        expect(
+          seen.find((each) => each.role === 'textbox' && each.name === name)?.states,
+        ).toContain('protected');
       const shot = await host.computer(handle, { kind: 'screenshot' }, signal());
       expect([...shot.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       const size = new DataView(shot.buffer, shot.byteOffset, shot.byteLength);

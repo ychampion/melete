@@ -86,10 +86,20 @@ describe('checked browser recipes', () => {
   test('an unknown required field stops before returning any inputs', () => {
     const result = matchRecipe(recipe(), [
       ...schema,
-      { label: 'Account number', role: 'textbox', required: true, sensitive: false },
+      { label: 'Membership number', role: 'textbox', required: true, sensitive: false },
     ]);
     expect(result.disposition).toBe('stop');
     expect(result.reason).toBe('unknown_required_field');
+    expect(result.steps).toEqual([]);
+  });
+
+  test('a field labelled as a bank account number stops as a secret before any input', () => {
+    const result = matchRecipe(recipe(), [
+      ...schema,
+      { label: 'Account number', role: 'textbox', required: true, sensitive: false },
+    ]);
+    expect(result.disposition).toBe('stop');
+    expect(result.reason).toBe('sensitive_control');
     expect(result.steps).toEqual([]);
   });
 

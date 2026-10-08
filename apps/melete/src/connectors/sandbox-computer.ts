@@ -10,10 +10,12 @@
  * computer every one of them is refused, whatever the agent planned before.
  *
  * A screenshot is kept in the job workspace as a PNG, and the receipt carries
- * where, how big, its digest and the title of the window in front. Every other
- * action ends with one too, so the agent sees what its step did without asking
- * again; `computer.batch` runs a few steps in order and captures the screen
- * once, after the last.
+ * where, how big, its digest and the title of the window in front, and the
+ * screen as text (`screen-text.ts`): the page's accessibility tree, or OCR, so
+ * a model that reads no pictures still knows what is there. Every other action
+ * ends with one too, so the agent sees what its step did without asking again;
+ * `computer.batch` runs a few steps in order and captures the screen once,
+ * after the last.
  */
 import { createHash } from 'node:crypto';
 import type { Action, ConnectorManifest, JsonValue } from '@melete/contracts';
@@ -29,6 +31,7 @@ import {
 import type { ComputerControls } from '../sandbox/computer-control.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import { sessionHandle } from '../sandbox/sessions.ts';
+import { screenText } from './screen-text.ts';
 
 /**
  * Every computer action names its step. The broker treats a proposal with the
@@ -79,8 +82,11 @@ const keys = {
 const amount = { type: 'integer', minimum: -50, maximum: 50 };
 
 const SCREEN = `The screen is ${DOCKER_DESKTOP.width}x${DOCKER_DESKTOP.height}, origin top left.`;
+/** What every look at the screen gives back. */
+const LOOK =
+  'It carries screen_text: each element on screen with role, name, value and box in screen pixels (from the page’s accessibility tree, else OCR); read it rather than guess from pixels.';
 /** Said of every action that ends with a screenshot. */
-const AFTER = ' A screenshot taken after it comes with the result.';
+const AFTER = ' A screenshot taken after it, with screen_text, comes with the result.';
 
 /** The most steps one `computer.batch` carries. */
 export const MAX_BATCH_ACTIONS = 5;
@@ -90,7 +96,7 @@ const BATCH_ACTIONS = ['open', 'click', 'type', 'key', 'scroll'] as const;
 export const COMPUTER_TOOLS: ToolManifest[] = [
   tool(
     'computer.screenshot',
-    `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it and the window in front. ${SCREEN}`,
+    `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it and the window in front. ${LOOK} Every step already ends with one. ${SCREEN}`,
     schema({}),
     'read',
   ),
@@ -332,6 +338,19 @@ async function capture(
 
 const said = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** The screen as text, or why it could not be read; never a failure of the step. */
+async function readScreen(
+  provider: DockerSandboxProvider,
+  handle: ReturnType<typeof sessionHandle>,
+  signal: AbortSignal,
+): Promise<JsonValue> {
+  try {
+    return screenText(await provider.computer(handle, { kind: 'text' }, signal));
+  } catch (error) {
+    return { unavailable: `the screen's text could not be read: ${said(error)}` };
+  }
+}
+
 /**
  * Carry out one admitted computer action in the session's container and say
  * what happened, in the words a receipt keeps. Every action but a screenshot
@@ -374,11 +393,20 @@ export async function runComputerAction(options: {
     const info = infoOf(
       await provider.computer(handle, { kind: 'info' }, signal).catch(() => new Uint8Array()),
     );
+    let screen = await readScreen(provider, handle, signal);
+    // Read after the picture: what a person who took the computer meanwhile
+    // has on the screen, what they type included, is never returned.
+    const after = await controls.state(session.providerSandboxId);
+    if (after.control === 'human' || after.epoch !== held.epoch) {
+      base.control_changed = true;
+      screen = { unavailable: 'not read: a person took control of this computer' };
+    }
     return {
       ...base,
       ...picture,
       ...(typeof info.window === 'string' ? { window: info.window } : {}),
       ...(typeof info.browser === 'boolean' ? { browser: info.browser } : {}),
+      screen_text: screen,
     };
   }
   const steps: Record<string, JsonValue>[] = [];
@@ -433,7 +461,11 @@ export async function runComputerAction(options: {
   if (await takenOver()) return notTaken;
   try {
     const picture = await capture(options, provider, handle, signal, takenOver);
-    return picture ? { ...done, ...picture } : notTaken;
+    if (!picture) return notTaken;
+    const screen = await readScreen(provider, handle, signal);
+    // Read after the picture: a person who took the computer meanwhile is not shown either.
+    if (await takenOver()) return notTaken;
+    return { ...done, ...picture, screen_text: screen };
   } catch (error) {
     return { ...done, screenshot: `not taken: ${said(error)}` };
   }

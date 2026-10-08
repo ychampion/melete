@@ -13,11 +13,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY deploy/sandbox/requirements.txt /tmp/requirements.txt
 
 # Screenshots and the live view read the display through Pillow's XCB support,
-# which the last line checks the wheel has.
+# which the last line checks the wheel has. Tesseract reads the screen's words
+# for a model that reads no pictures when no page's accessibility tree is in front.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash ca-certificates coreutils curl file findutils git jq less procps unzip xz-utils \
-        xvfb openbox xdotool chromium fonts-dejavu-core fonts-liberation \
+        xvfb openbox xdotool chromium fonts-dejavu-core fonts-liberation tesseract-ocr \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt \
@@ -28,7 +29,8 @@ RUN apt-get update \
     # The display server writes its compiled keymap here; the root is read-only at run time.
     && rm -rf /var/lib/xkb \
     && ln -s /tmp /var/lib/xkb \
-    && python3 -c "from PIL import features; import sys; sys.exit(0 if features.check('xcb') else 1)"
+    && python3 -c "from PIL import features; import sys; sys.exit(0 if features.check('xcb') else 1)" \
+    && tesseract --list-langs | grep -qx eng
 
 # GitHub's command line, pinned by version and checksum. It never holds a
 # token: a connected account reaches it as a placeholder, and the service's

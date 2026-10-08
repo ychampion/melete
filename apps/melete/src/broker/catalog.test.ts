@@ -12,6 +12,7 @@ import {
   toolTokens,
 } from './catalog.ts';
 import { relevance, terms } from './lexical.ts';
+import { BROWSER_FIRST_NOTE, COMPUTER_WEB_NOTE, steerWebTools } from './web-steer.ts';
 
 function item(name: string, options: Partial<CatalogItem> = {}): CatalogItem {
   const tool: ToolSpec = {
@@ -321,4 +322,52 @@ test('web search and web fetch are always in the core, never pushed out by the b
   const failing = web('web.search');
   failing.entry.health = 'failing';
   expect(selectCore([failing], budget).map((tool) => tool.name)).not.toContain('web.search');
+});
+
+test('a web task is steered to the browser tools ahead of the desktop, by description and by order', () => {
+  const connected = (name: string, description: string): CatalogItem => {
+    const tool: ToolSpec = {
+      name,
+      description,
+      input_schema: { type: 'object' },
+      effect_class:
+        name.endsWith('.observe') || name.endsWith('screenshot') ? 'read' : 'write_reversible',
+      connection_id: name.startsWith('browser.') ? 'con_browser' : 'con_computer',
+    };
+    return { tool, entry: manifestEntry(tool, [name]), core: false, uses: 0 };
+  };
+  const desktop = () => [
+    connected('computer.open', 'Open an address in the sandbox browser on the desktop.'),
+    connected('computer.click', 'Click at a point on the sandbox desktop.'),
+    connected('computer.screenshot', 'Capture the sandbox desktop.'),
+  ];
+  const items = steerWebTools([
+    ...desktop(),
+    connected('browser.open', 'Open an allowed URL in this job’s browser.'),
+    connected('browser.observe', 'Look at the current page in this job’s browser.'),
+    connected('browser.click', 'Click one control by role and name.'),
+  ]);
+  const described = new Map(items.map((each) => [each.tool.name, each.tool.description]));
+  expect(described.get('computer.open')).toEndWith(COMPUTER_WEB_NOTE);
+  expect(described.get('computer.click')).toEndWith(COMPUTER_WEB_NOTE);
+  expect(described.get('browser.open')).toEndWith(BROWSER_FIRST_NOTE);
+  expect(described.get('computer.screenshot')).toBe('Capture the sandbox desktop.');
+  // Search reads the entry's words, so it is told the same.
+  expect(items.find((each) => each.tool.name === 'computer.open')?.entry.description).toEndWith(
+    COMPUTER_WEB_NOTE,
+  );
+  // Steering twice says it once.
+  expect(steerWebTools(items).map((each) => each.tool.description)).toEqual(
+    items.map((each) => each.tool.description),
+  );
+  // The task's words point at the desktop; the browser still comes first.
+  const order = names(
+    selectCore(items, 100_000, { text: 'Open the sandbox desktop browser and click the time' }, 0),
+  ).filter((name) => name.startsWith('browser.') || name.startsWith('computer.'));
+  expect(order.indexOf('browser.open')).toBeLessThan(order.indexOf('computer.open'));
+  expect(order.indexOf('browser.click')).toBeLessThan(order.indexOf('computer.click'));
+  expect(order.slice(0, 3).every((name) => name.startsWith('browser.'))).toBe(true);
+  // Without the browser, the desktop is offered as it was.
+  const alone = steerWebTools(desktop());
+  expect(alone.map((each) => each.tool.description).join(' ')).not.toContain('browser tools');
 });

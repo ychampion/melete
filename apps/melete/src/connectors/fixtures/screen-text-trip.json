@@ -1,0 +1,104 @@
+{
+  "source": "accessibility",
+  "url": "https://trips.example/plan",
+  "title": "Trip planner",
+  "scroll": {
+    "top": 0,
+    "page_height": 2614,
+    "view_height": 672
+  },
+  "elements": [
+    {
+      "ref": "n10",
+      "role": "heading",
+      "name": "Plan a trip",
+      "box": [43, 121, 943, 37]
+    },
+    {
+      "ref": "n45",
+      "role": "text",
+      "name": "From",
+      "box": [43, 181, 37, 17]
+    },
+    {
+      "ref": "n12",
+      "role": "textbox",
+      "name": "From",
+      "value": "Union Square",
+      "box": [85, 180, 177, 21]
+    },
+    {
+      "ref": "n47",
+      "role": "text",
+      "name": "To",
+      "box": [266, 181, 17, 17]
+    },
+    {
+      "ref": "n15",
+      "role": "textbox",
+      "name": "To",
+      "box": [287, 180, 177, 21]
+    },
+    {
+      "ref": "n48",
+      "role": "text",
+      "name": "Depart at",
+      "box": [469, 181, 66, 17]
+    },
+    {
+      "ref": "n19",
+      "role": "combobox",
+      "name": "Depart at",
+      "value": "Leave now",
+      "box": [539, 181, 87, 19]
+    },
+    {
+      "ref": "n35",
+      "role": "textbox",
+      "name": "Time",
+      "value": "8:00 AM",
+      "box": [630, 180, 177, 21]
+    },
+    {
+      "ref": "n38",
+      "role": "checkbox",
+      "name": "Transit only",
+      "states": ["checked"],
+      "box": [816, 182, 13, 13]
+    },
+    {
+      "ref": "n39",
+      "role": "button",
+      "name": "Search",
+      "box": [923, 180, 58, 21]
+    },
+    {
+      "ref": "n52",
+      "role": "text",
+      "name": "Best route:",
+      "box": [43, 217, 82, 17]
+    },
+    {
+      "ref": "n53",
+      "role": "text",
+      "name": "BART Yellow line",
+      "box": [125, 217, 130, 17]
+    },
+    {
+      "ref": "n54",
+      "role": "text",
+      "name": ", 36 min, $11.65",
+      "box": [255, 217, 114, 17]
+    },
+    {
+      "ref": "n42",
+      "role": "link",
+      "name": "Route details",
+      "box": [43, 251, 93, 17]
+    }
+  ],
+  "offscreen": 1,
+  "window": "Trip planner - Chromium",
+  "width": 1024,
+  "height": 768
+}

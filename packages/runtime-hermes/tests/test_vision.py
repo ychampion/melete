@@ -19,7 +19,7 @@ from PIL import Image
 from test_plugin import ACTION, CONNECTION, HASH, RecordingContext, broker, client  # noqa: F401, I001
 
 from melete_plugin import register  # noqa: E402
-from melete_plugin.vision import MAX_EDGE, MAX_ENCODED_BYTES, VISION_ENV, encode  # noqa: E402
+from melete_plugin.vision import CANNOT_VIEW, MAX_EDGE, MAX_ENCODED_BYTES, VISION_ENV, encode  # noqa: E402
 
 SHOT = f".melete/computer/{ACTION}.png"
 
@@ -192,11 +192,26 @@ def test_a_model_without_vision_is_told_a_device_screenshot_is_not_a_file(client
     assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
 
 
-def test_a_model_without_vision_gets_the_text_receipt_unchanged(client, broker, workspace, monkeypatch):  # noqa: F811
+def test_a_text_only_model_gets_no_image_and_a_plain_note(client, broker, workspace, monkeypatch):  # noqa: F811
+    """A model that can't view pictures is sent none, by itself or any other
+    model: it gets the receipt, with the screen's text, and is told so plainly."""
     monkeypatch.setenv(VISION_ENV, "0")
-    result = run(client, broker)
-    assert isinstance(result, str)
-    assert json.loads(result) == {"status": "succeeded", "action_id": ACTION, "receipt": receipt()["receipt"]}
+    for name in ("computer.screenshot", "computer.click", "computer.batch"):
+        broker.catalog = [screenshot_tool(name)]
+        record = receipt()
+        record["receipt"]["detail"]["screen_text"] = {"source": "accessibility", "lines": 'n39 button "Search" box=923,180,58,21'}
+        broker.action_record = record
+        ctx = RecordingContext()
+        register(ctx, client)
+        result = ctx.tools[0]["handler"]({"step": 1}, task_id="engine")
+        assert isinstance(result, str), name
+        assert "data:image" not in result and "base64" not in result
+        shown = json.loads(result)
+        assert shown["picture"] == CANNOT_VIEW
+        assert shown["receipt"] == record["receipt"]
+    # No picture was even fetched, and no model was asked about one.
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
+    assert not [r for r in broker.requests if r["path"].startswith("/providers/")]
 
 
 def test_without_a_vision_answer_the_receipt_is_text(client, broker, workspace, monkeypatch):  # noqa: F811

@@ -50,6 +50,12 @@ export function startBrowserFixture() {
         variant === 'credentials'
           ? '<label for="password">Password</label><input id="password" type="password" autocomplete="current-password"><label for="otp">Verification code</label><input id="otp" autocomplete="one-time-code">'
           : '';
+      // One more field, labelled as the test asks: a secret's label, or an ordinary one.
+      const labelled = (url.searchParams.get('label') ?? '').replace(/[^A-Za-z0-9 '/-]/g, '');
+      const named =
+        variant === 'labelled' && labelled
+          ? `<label for="labelled">${labelled.replace(/'/g, '&#39;')}</label><input id="labelled" name="labelled">`
+          : '';
       const duplicate = variant === 'ambiguous_save' ? '<button type="submit">Save</button>' : '';
       const hidden =
         variant === 'hidden_destination'
@@ -84,7 +90,7 @@ export function startBrowserFixture() {
           ? `<script>document.getElementById('name').addEventListener('input',()=>{document.querySelector('label[for="email"]').textContent='Contact email';});</script>`
           : '';
       return new Response(
-        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${named}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
         { headers: { 'content-type': 'text/html' } },
       );
     },

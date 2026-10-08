@@ -41,6 +41,7 @@ import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
+import { steerWebTools, webScores } from './web-steer.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
 /** A skill with where it came from: a built-in is readable by anyone the space admits. */
@@ -269,11 +270,15 @@ export function selectCore(
   );
   if (harness.length) budget += toolTokens(harness.map((item) => item.tool));
   const query = terms(context.text ?? '');
-  const scored = items
+  const healthy = items
     .filter((item) => item.entry.health !== 'failing')
-    .map((item) => ({
+    .map((item) => ({ item, score: relevance(query, item.entry) }));
+  // A browser tool ranks at least as high as the computer's best, and ahead of it.
+  const lifted = webScores(healthy.map(({ item, score }) => ({ name: item.tool.name, score })));
+  const scored = healthy
+    .map(({ item, score }) => ({
       item,
-      score: relevance(query, item.entry),
+      score: lifted.get(item.tool.name) ?? score,
       pinned: pinOf(item.tool, context),
     }))
     .sort(
@@ -281,6 +286,7 @@ export function selectCore(
         b.pinned - a.pinned ||
         granted(b.item) - granted(a.item) ||
         b.score - a.score ||
+        Number(lifted.has(b.item.tool.name)) - Number(lifted.has(a.item.tool.name)) ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
         compare(a.item.entry.name, b.item.entry.name),
@@ -651,7 +657,8 @@ export class ToolCatalog {
         item.entry.name = item.tool.name;
       }
     }
-    return items.sort((a, b) => compare(a.entry.name, b.entry.name));
+    // Web pages go to the browser tools first wherever the desktop is offered beside them.
+    return steerWebTools(items).sort((a, b) => compare(a.entry.name, b.entry.name));
   }
 
   /**

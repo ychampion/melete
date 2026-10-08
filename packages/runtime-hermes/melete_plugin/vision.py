@@ -10,7 +10,10 @@ in the job's workspace, its size and its digest. A model that reads images is
 also given the picture itself, through the engine's multimodal tool result
 (``{"_multimodal": True, "content": [...], "text_summary": ...}``, accepted by
 ``tools/registry.py`` ``_normalize_handler_result`` at the pinned release). A
-model that does not is given the receipt exactly as before.
+model that does not is sent no picture, by this model or any other: it is given
+the receipt, which carries the screen as text (``screen_text``: the page's
+accessibility tree, or OCR marked as such), and told plainly that it cannot
+view screenshots.
 
 The engine decides the rest, and none of it is changed here:
 
@@ -109,6 +112,12 @@ class Withheld:
         self.reason = reason
 
 
+#: Said beside the agent's own screenshot to a model that cannot view pictures.
+CANNOT_VIEW = (
+    "This model can't view screenshots, so no picture was sent. The receipt's screen_text is what "
+    "the screen says; work from it, and say what you could not check rather than guessing."
+)
+
 #: Said beside a paired computer's screenshot to a model that is not shown pictures.
 NOT_SHOWN = (
     "This model is not shown pictures. The screenshot is kept by Melete and is not a file "
@@ -196,7 +205,9 @@ def attach(
     if tool not in SCREENSHOT_TOOLS or result.get("status") != "succeeded":
         return result
     own = tool in OWN_SCREENSHOT_TOOLS
-    if not enabled() or fetch is None:
+    if not enabled():
+        return {**result, "picture": CANNOT_VIEW if own else NOT_SHOWN}
+    if fetch is None:
         return result if own else {**result, "picture": NOT_SHOWN}
     path = screenshot_path(result)
     action_id = result.get("action_id")

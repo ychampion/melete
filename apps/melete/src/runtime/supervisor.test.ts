@@ -238,6 +238,16 @@ server.serve_forever()
       'api-secret',
     );
     expect(responses.MELETE_MODEL_API_MODE).toBe('codex_responses');
+    // A model that can't view pictures is told so, and the plugin sends it none.
+    const textOnly = attemptEnvironment(
+      {
+        ...bundle,
+        model: { provider: 'fireworks', model: 'text-only', fallback: null, vision: false },
+      },
+      options.brokerUrl,
+      'api-secret',
+    );
+    expect(textOnly.MELETE_ENGINE_SUPPORTS_VISION).toBe('0');
     // The engine is given a zone name in canonical spelling, never an offset.
     const zone = (time_zone?: string) =>
       attemptEnvironment({ ...bundle, time_zone }, options.brokerUrl, 'api-secret').HERMES_TIMEZONE;
