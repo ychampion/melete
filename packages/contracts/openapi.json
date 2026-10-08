@@ -27830,7 +27830,7 @@
                     "record": {
                       "anyOf": [
                         {
-                          "$ref": "#/components/schemas/__schema443"
+                          "$ref": "#/components/schemas/__schema457"
                         },
                         {
                           "type": "null"
@@ -27840,7 +27840,7 @@
                     "created_at": {
                       "anyOf": [
                         {
-                          "$ref": "#/components/schemas/__schema201"
+                          "$ref": "#/components/schemas/__schema208"
                         },
                         {
                           "type": "null"
@@ -27862,7 +27862,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema203"
+                  "$ref": "#/components/schemas/__schema210"
                 }
               }
             }
@@ -27872,7 +27872,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema203"
+                  "$ref": "#/components/schemas/__schema210"
                 }
               }
             }
