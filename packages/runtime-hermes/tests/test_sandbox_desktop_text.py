@@ -44,7 +44,7 @@ def node(node_id, role, name="", parent=None, children=(), backend=None, value=N
 
 #: A trip form with a time picker that scrolls: two options are scrolled out of it.
 TREE = [
-    node("1", "RootWebArea", "Trip planner", children=["2", "3", "4", "5", "6", "9"]),
+    node("1", "RootWebArea", "Trip planner", children=["2", "3", "4", "5", "6", "7", "8", "9"]),
     node("2", "textbox", "From", parent="1", children=["20"], value="Union Square"),
     node("20", "StaticText", "Union Square", parent="2"),
     node("3", "button", "Search", parent="1", children=["30"]),
@@ -52,6 +52,9 @@ TREE = [
     node("4", "checkbox", "Transit only", parent="1", props=[("checked", "true"), ("focusable", True)]),
     node("5", "generic", "", parent="1", ignored=True),
     node("6", "StaticText", "36 min, $11.65", parent="1"),
+    node("7", "textbox", "Password", parent="1", children=["70"], value="hunter2secret"),
+    node("70", "StaticText", "hunter2secret", parent="7"),
+    node("8", "textbox", "Code", parent="1", value="424242", props=[("autocomplete", "one-time-code")]),
     node("9", "listbox", "", parent="1", children=["10", "11", "12"]),
     node("10", "option", "7:30 AM", parent="9"),
     node("11", "option", "8:00 AM", parent="9"),
@@ -64,6 +67,9 @@ BOXES = {
     3: (300, 100, 360, 120),
     4: (380, 104, 392, 116),
     6: (40, 140, 160, 160),
+    7: (400, 100, 560, 120),
+    70: (404, 102, 500, 118),
+    8: (600, 100, 700, 120),
     9: (40, 200, 200, 260),
     10: (40, 170, 200, 200),  # scrolled above the picker
     11: (40, 200, 200, 230),
@@ -74,19 +80,28 @@ BOXES = {
 class FakeDevTools:
     """Answers the calls the helper makes, for one page."""
 
+    #: The page's secret fields, by DOM node id: the password input.
+    secure = [7]
+
     def __init__(self, url):
         self.sent = {}
         self.last = 0
+        self.looking_for = None
 
     def call(self, method, params=None):
         if method == "Runtime.evaluate" and params.get("returnByValue"):
             # screenX, screenY, outer and inner sizes: 80 pixels of browser above the page.
             return {"result": {"value": '[0, 0, 1024, 768, 1024, 688, "https://trips.example/", "Trip planner", 0, 2000]'}}
         if method == "Runtime.evaluate":
-            return {"result": {"objectId": "clippers"}}
+            self.looking_for = "secure" if "password" in params["expression"] else "clips"
+            return {"result": {"objectId": self.looking_for}}
         if method == "Runtime.callFunctionOn":
+            if params["objectId"] == "secure":
+                return {"result": {"value": [[0, 0, 1, 1]] * len(self.secure)}}
             return {"result": {"value": [[40, 200, 200, 260]]}}
         if method == "Runtime.getProperties":
+            if params["objectId"] == "secure":
+                return {"result": [{"name": str(i), "value": {"objectId": f"secure-{n}"}} for i, n in enumerate(self.secure)]}
             return {"result": [{"name": "0", "value": {"objectId": "picker"}}, {"name": "length", "value": {}}]}
         if method == "Accessibility.getFullAXTree":
             return {"nodes": TREE}
@@ -102,7 +117,8 @@ class FakeDevTools:
         for sent_id in ids:
             method, params = self.sent[sent_id]
             if method == "DOM.describeNode":
-                out[sent_id] = {"node": {"backendNodeId": 9}}
+                oid = params["objectId"]
+                out[sent_id] = {"node": {"backendNodeId": int(oid.split("-")[1]) if oid.startswith("secure-") else 9}}
             elif method == "DOM.getContentQuads":
                 box = BOXES.get(params["backendNodeId"])
                 if box is None:
@@ -161,3 +177,29 @@ def test_ocr_words_become_lines_with_boxes(desktop):
 def test_a_name_is_one_bounded_line(desktop):
     assert desktop.clean("Pay\nnow\t please") == "Pay now please"
     assert len(desktop.clean("x" * 1000)) == desktop.MAX_FIELD
+
+
+def test_a_secret_field_is_kept_without_its_value(view):
+    elements = {element["ref"]: element for element in view["elements"]}
+    text = repr(view)
+    assert "hunter2secret" not in text and "424242" not in text
+    # A password input, by its type, and a one-time code, by what it autocompletes.
+    assert elements["n7"] == {"ref": "n7", "role": "textbox", "name": "Password", "states": ["protected"], "box": [400, 180, 160, 20]}
+    assert elements["n8"]["states"] == ["protected"] and "value" not in elements["n8"]
+    assert "n70" not in elements
+    # Other fields keep theirs.
+    assert elements["n2"]["value"] == "Union Square"
+
+
+def test_when_secret_fields_cannot_be_found_no_value_is_read(desktop, monkeypatch):
+    class Blind(FakeDevTools):
+        def call(self, method, params=None):
+            if method == "Runtime.evaluate" and "password" in (params or {}).get("expression", ""):
+                raise OSError("the page went away")
+            return super().call(method, params)
+
+    monkeypatch.setattr(desktop, "DevToolsSocket", Blind)
+    monkeypatch.setattr(desktop, "page_target", lambda port, title: {"webSocketDebuggerUrl": "ws://127.0.0.1:9/page"})
+    view = desktop.accessibility_view(9222, "Trip planner")
+    assert not [element for element in view["elements"] if "value" in element]
+    assert "hunter2secret" not in repr(view)

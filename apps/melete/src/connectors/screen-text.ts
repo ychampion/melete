@@ -68,7 +68,11 @@ function oneLine(text: string, max = 300): string {
 function line(item: z.infer<typeof element>): string {
   const parts: string[] = [item.ref, item.role];
   if (item.name) parts.push(JSON.stringify(oneLine(item.name)));
-  if (item.value) parts.push(`value=${JSON.stringify(oneLine(item.value))}`);
+  // A secret field (a password, a one-time code) is said without its value.
+  const secret =
+    item.states?.some((state) => state === 'protected') ||
+    /^(passwordfield|securetextfield)$/i.test(item.role);
+  if (item.value && !secret) parts.push(`value=${JSON.stringify(oneLine(item.value))}`);
   if (item.states?.length)
     parts.push(`[${item.states.map((state) => oneLine(state, 64)).join(' ')}]`);
   parts.push(`box=${item.box.join(',')}`);

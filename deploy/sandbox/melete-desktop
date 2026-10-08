@@ -352,12 +352,18 @@ def candidates(nodes):
             role = "text"
         elif not name and not value and role not in CONTROL_ROLES:
             continue
-        states = []
+        states, secret = [], False
         for prop in node.get("properties") or []:
             key = prop.get("name")
             got = (prop.get("value") or {}).get("value")
             if key in STATES and got not in (None, False, "false"):
                 states.append(key if got in (True, "true") else f"{key}={clean(got)}")
+            if (key == "protected" and got in (True, "true")) or (
+                key == "autocomplete" and re.search(r"password|one-time-code", str(got or ""), re.I)
+            ):
+                secret = True
+        if role.lower() in ("passwordfield", "securetextfield"):
+            secret = True
         # The elements around it, nearest first, for the clip of any that scrolls.
         around, above = [], by_id.get(node.get("parentId"))
         while above is not None and len(around) < 64:
@@ -366,7 +372,7 @@ def candidates(nodes):
             above = by_id.get(above.get("parentId"))
         picked.append(
             {"ref": f"n{node['backendDOMNodeId']}", "role": role, "name": name, "value": value,
-             "states": states, "backend": node["backendDOMNodeId"], "around": around}
+             "states": states, "backend": node["backendDOMNodeId"], "around": around, "secure": secret}
         )
         if len(picked) >= MAX_CANDIDATES:
             break
@@ -393,11 +399,20 @@ CLIP_RECTS = """function () {
 }"""
 
 
-def clip_boxes(tools):
-    """Each clipping element's visible inside, in page pixels, by its DOM node id."""
+#: Fields whose value is a secret: passwords and one-time codes, by type, by
+#: what they autocomplete, or by text the page draws masked.
+SECURE_FIELDS = """(() => [...document.querySelectorAll('input, textarea, [contenteditable]')].filter((element) =>
+  element.type === 'password' ||
+  /password|one-time-code/i.test(element.getAttribute('autocomplete') || '') ||
+  !/^(none|)$/.test(getComputedStyle(element).getPropertyValue('-webkit-text-security'))
+).slice(0, 400))()"""
+
+
+def clip_boxes(tools, expression=CLIPPERS):
+    """Each element the expression finds, by its DOM node id, with its visible inside in page pixels."""
     group = "melete-text"
     try:
-        listed = tools.call("Runtime.evaluate", {"expression": CLIPPERS, "objectGroup": group})
+        listed = tools.call("Runtime.evaluate", {"expression": expression, "objectGroup": group})
         array = (listed.get("result") or {}).get("objectId")
         if not array:
             return {}
@@ -461,6 +476,12 @@ def accessibility_view(port, window_title):
             clips = clip_boxes(tools)
         except (OSError, KeyError, TypeError, ValueError):
             clips = {}
+        # A secret field's value is never read out. When the fields cannot be
+        # told apart, no field's value is.
+        try:
+            secure = set(clip_boxes(tools, SECURE_FIELDS))
+        except (OSError, KeyError, TypeError, ValueError):
+            secure = None
         sent = {tools.send("DOM.getContentQuads", {"backendNodeId": item["backend"]}): item for item in found}
         answers = tools.answers(list(sent))
     finally:
@@ -484,11 +505,16 @@ def accessibility_view(port, window_title):
             continue
         if len(elements) >= MAX_ELEMENTS:
             continue
+        hidden = item["secure"] or (secure is not None and item["backend"] in secure)
+        if secure is not None and any(node in secure for node in item["around"]):
+            # What is drawn inside a secret field is its value too.
+            continue
         element = {key: item[key] for key in ("ref", "role", "name") if item[key]}
-        if item["value"]:
+        if item["value"] and not hidden and secure is not None:
             element["value"] = item["value"]
-        if item["states"]:
-            element["states"] = item["states"]
+        states = item["states"] + (["protected"] if hidden else [])
+        if states:
+            element["states"] = states
         element["box"] = [round(left + x1), round(top + y1), round(x2 - x1), round(y2 - y1)]
         elements.append(element)
     return {

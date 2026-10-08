@@ -393,12 +393,20 @@ export async function runComputerAction(options: {
     const info = infoOf(
       await provider.computer(handle, { kind: 'info' }, signal).catch(() => new Uint8Array()),
     );
+    let screen = await readScreen(provider, handle, signal);
+    // Read after the picture: what a person who took the computer meanwhile
+    // has on the screen, what they type included, is never returned.
+    const after = await controls.state(session.providerSandboxId);
+    if (after.control === 'human' || after.epoch !== held.epoch) {
+      base.control_changed = true;
+      screen = { unavailable: 'not read: a person took control of this computer' };
+    }
     return {
       ...base,
       ...picture,
       ...(typeof info.window === 'string' ? { window: info.window } : {}),
       ...(typeof info.browser === 'boolean' ? { browser: info.browser } : {}),
-      screen_text: await readScreen(provider, handle, signal),
+      screen_text: screen,
     };
   }
   const steps: Record<string, JsonValue>[] = [];

@@ -171,3 +171,78 @@ test('a desktop that cannot read its screen as text still answers the step', asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('a secret field never has its value in the text', () => {
+  const view = screenText(
+    encode({
+      source: 'accessibility',
+      elements: [
+        {
+          ref: 'n7',
+          role: 'textbox',
+          name: 'Password',
+          value: 'hunter2',
+          states: ['protected'],
+          box: [1, 2, 3, 4],
+        },
+        { ref: 'n8', role: 'PasswordField', name: 'PIN', value: '4242', box: [1, 2, 3, 4] },
+        { ref: 'n9', role: 'textbox', name: 'From', value: 'Union Square', box: [1, 2, 3, 4] },
+      ],
+    }),
+  );
+  expect(String(view.lines)).not.toContain('hunter2');
+  expect(String(view.lines)).not.toContain('4242');
+  expect(String(view.lines)).toContain('n7 textbox "Password" [protected] box=1,2,3,4');
+  expect(String(view.lines)).toContain('value="Union Square"');
+});
+
+test('a person who takes the computer while its text is read is not shown it', async () => {
+  const controls = new MemoryComputerControls();
+  const sandbox = `melete-sbx-text-${Math.random().toString(36).slice(2)}`;
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      if (command.kind === 'screenshot') return png(1024, 768);
+      if (command.kind === 'text') {
+        // The person takes over between the picture and the text, and types.
+        await controls.change(sandbox, 'human');
+        return encode({
+          source: 'accessibility',
+          elements: [
+            {
+              ref: 'n1',
+              role: 'textbox',
+              name: 'Note',
+              value: 'what the person typed',
+              box: [1, 2, 3, 4],
+            },
+          ],
+        });
+      }
+      return encode({ window: 'Notes - Chromium' });
+    },
+  } as unknown as DockerSandboxProvider;
+  const root = await mkdtemp(path.join(tmpdir(), 'melete-screen-text-'));
+  try {
+    const detail = await runComputerAction({
+      action: {
+        id: 'act_TEXT3',
+        kind: 'computer.screenshot',
+        canonical_payload: { step: 1 },
+      } as unknown as Action,
+      jobId: 'job_TEXT',
+      workRoot: root,
+      session: { id: 'sbx_T3', providerSandboxId: sandbox } as unknown as SessionRow,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(JSON.stringify(detail)).not.toContain('what the person typed');
+    expect(detail.control_changed).toBe(true);
+    expect((detail.screen_text as Record<string, string>).unavailable).toContain(
+      'a person took control',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
