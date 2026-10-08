@@ -302,9 +302,10 @@ export class ModelSettingsService {
   }
 
   /**
-   * The model the next attempt runs on, as `activeChoice`, told to send its
-   * pictures when the operator configured a vision model that will read them
-   * for it. A model the owner chose in the app is used exactly as chosen.
+   * The model the next attempt runs on, as `activeChoice`, told whether the
+   * operator's vision model describes its screenshots (`visionRoute`) when it
+   * reads no pictures itself. A model the owner chose in the app is used
+   * exactly as chosen.
    * Background work runs on the `background` role when one is filled: an
    * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
    * `attemptCause`), the same reading that meters it as background.
@@ -313,7 +314,7 @@ export class ModelSettingsService {
     routing: ModelRouting,
     db: Runner = this.options.db,
     work?: AttemptWork,
-  ): Promise<{ provider: string; model: string; vision: boolean }> {
+  ): Promise<{ provider: string; model: string; vision: boolean; visionRoute: boolean }> {
     const background =
       work?.usageClass === 'background'
         ? (await this.routingFor(work.spaceId, routing, db)).background
@@ -330,7 +331,7 @@ export class ModelSettingsService {
         ownerChose: false,
         primaryReadsImages: reads,
       });
-      return { ...background, vision: reads || Boolean(routes?.vision) };
+      return { ...background, vision: reads, visionRoute: Boolean(routes?.vision) };
     }
     const chosen = await this.chosen(db);
     const { provider, model, vision } = await this.active(chosen, db);
@@ -339,7 +340,7 @@ export class ModelSettingsService {
       { provider, model },
       { ownerChose: this.ownerChose({ provider, model }), primaryReadsImages: vision },
     );
-    return { provider, model, vision: vision || Boolean(routes?.vision) };
+    return { provider, model, vision, visionRoute: Boolean(routes?.vision) };
   }
 
   /**

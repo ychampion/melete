@@ -238,6 +238,16 @@ server.serve_forever()
       'api-secret',
     );
     expect(responses.MELETE_MODEL_API_MODE).toBe('codex_responses');
+    // A model that reads no pictures is never sent one. With the operator's
+    // vision model set, that model describes each screenshot for it.
+    const text = { provider: 'fireworks', model: 'accounts/fireworks/models/text', fallback: null };
+    const pictures = (model: AttemptBundle['model']) => {
+      const env = attemptEnvironment({ ...bundle, model }, options.brokerUrl, 'api-secret');
+      return [env.MELETE_ENGINE_SUPPORTS_VISION, env.MELETE_ENGINE_DESCRIBES_PICTURES];
+    };
+    expect(pictures({ ...text, vision: false })).toEqual(['0', '0']);
+    expect(pictures({ ...text, vision: false, vision_route: true })).toEqual(['0', '1']);
+    expect(pictures({ ...text, vision: true, vision_route: true })).toEqual(['1', '0']);
     // The engine is given a zone name in canonical spelling, never an offset.
     const zone = (time_zone?: string) =>
       attemptEnvironment({ ...bundle, time_zone }, options.brokerUrl, 'api-secret').HERMES_TIMEZONE;

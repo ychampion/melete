@@ -370,7 +370,13 @@ test('a batch runs its steps in order and looks once, after the last', async () 
     signal: AbortSignal.timeout(5_000),
     settleMs: 0,
   });
-  expect(seen.map((command) => command.kind)).toEqual(['click', 'type', 'key', 'screenshot', 'text']);
+  expect(seen.map((command) => command.kind)).toEqual([
+    'click',
+    'type',
+    'key',
+    'screenshot',
+    'text',
+  ]);
   expect(detail).toMatchObject({
     computer: 'batch',
     completed: 3,

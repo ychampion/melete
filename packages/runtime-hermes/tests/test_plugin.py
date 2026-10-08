@@ -79,12 +79,22 @@ class FakeBroker:
         self.requests: List[Dict[str, Any]] = []
         #: Screenshot pictures the broker reads for the runtime, by action id.
         self.screenshots: Dict[str, Any] = {}
+        self.capability: str | None = None
+        #: The model gateway's answer to a call, on the same host.
+        self.model_reply: Dict[str, Any] = {
+            "model": "fixture-vision",
+            "choices": [{"message": {"role": "assistant", "content": "A trip form."}}],
+        }
 
     # -- the HTTP surface, matching apps/melete/src/broker/http.ts -------------
     def handle(self, method: str, path: str, body: Dict[str, Any] | None, auth: str | None):
         self.requests.append({"method": method, "path": path, "body": body, "auth": auth})
+        if self.capability is not None:
+            self.requests[-1]["capability"] = self.capability
         if self.error_body is not None:
             return self.status_code, self.error_body
+        if method == "POST" and path.startswith("/providers/"):
+            return 200, self.model_reply
         if method == "GET" and path == "/tools":
             return 200, {"tools": self.catalog}
         if method == "POST" and path == "/reactions":
@@ -126,9 +136,9 @@ def broker():
             length = int(self.headers.get("content-length") or 0)
             raw = self.rfile.read(length) if length else b""
             body = json.loads(raw) if raw else None
-            status, payload = state.handle(
-                method, self.path, body, self.headers.get("authorization")
-            )
+            # The model gateway's header, kept beside the request it came with.
+            state.capability = self.headers.get("x-melete-capability")
+            status, payload = state.handle(method, self.path, body, self.headers.get("authorization"))
             encoded = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json")

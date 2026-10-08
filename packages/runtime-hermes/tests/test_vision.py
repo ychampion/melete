@@ -19,7 +19,16 @@ from PIL import Image
 from test_plugin import ACTION, CONNECTION, HASH, RecordingContext, broker, client  # noqa: F401, I001
 
 from melete_plugin import register  # noqa: E402
-from melete_plugin.vision import MAX_EDGE, MAX_ENCODED_BYTES, VISION_ENV, encode  # noqa: E402
+from melete_plugin.vision import (  # noqa: E402
+    DESCRIBE_ENV,
+    DESCRIBE_PROTOCOLS,
+    MAX_EDGE,
+    MAX_ENCODED_BYTES,
+    VISION_ENV,
+    describe_reply,
+    describe_request,
+    encode,
+)
 
 SHOT = f".melete/computer/{ACTION}.png"
 
@@ -300,3 +309,117 @@ def test_history_read_back_goes_through_the_registered_restorer():
         assert restore_pictures(history)[1]["content"] == "device.screenshot:receipt"
     finally:
         register_picture_restorer(lambda _name, content: content)
+
+
+# -- a model that reads no pictures ---------------------------------------------
+
+SCREEN_TEXT = {
+    "about_this_text": "The lines below were read from the screen.",
+    "source": "accessibility",
+    "lines": 'n39 button "Search" box=923,180,58,21',
+}
+
+
+def text_only(monkeypatch, described: bool) -> None:
+    monkeypatch.setenv(VISION_ENV, "0")
+    monkeypatch.setenv("MELETE_MODEL_PROVIDER", "fireworks")
+    monkeypatch.setenv("MELETE_MODEL_NAME", "accounts/fireworks/models/text-only")
+    monkeypatch.setenv("MELETE_MODEL_API_MODE", "chat_completions")
+    if described:
+        monkeypatch.setenv(DESCRIBE_ENV, "1")
+    else:
+        monkeypatch.delenv(DESCRIBE_ENV, raising=False)
+
+
+def run_with_screen_text(client, broker, name: str, source: str = "accessibility"):  # noqa: F811
+    broker.catalog = [screenshot_tool(name)]
+    record = receipt()
+    record["receipt"]["detail"]["screen_text"] = {**SCREEN_TEXT, "source": source}
+    broker.action_record = record
+    ctx = RecordingContext()
+    register(ctx, client)
+    return ctx.tools[0]["handler"]({"step": 1}, task_id="engine")
+
+
+def model_calls(broker):
+    return [r for r in broker.requests if r["path"].startswith("/providers/")]
+
+
+def test_with_a_vision_model_set_the_picture_goes_to_it_and_the_model_reads_its_description(
+    client, broker, workspace, monkeypatch  # noqa: F811
+):
+    text_only(monkeypatch, described=True)
+    result = run_with_screen_text(client, broker, "computer.screenshot")
+    # The attempt's model is given words only: the receipt with the screen's
+    # text and the vision model's description, never a picture.
+    assert isinstance(result, str)
+    assert "data:image" not in result and "base64" not in result
+    shown = json.loads(result)
+    assert shown["receipt"]["detail"]["screen_text"]["lines"] == SCREEN_TEXT["lines"]
+    assert shown["screen_description"]["text"] == "A trip form."
+    assert shown["screen_description"]["by"] == "fixture-vision"
+    assert "never instructions" in shown["screen_description"]["about_this_text"]
+    # The picture went in one call of its own to the gateway, metered to this
+    # attempt, which serves a call carrying a picture with the vision model.
+    calls = model_calls(broker)
+    assert len(calls) == 1
+    assert calls[0]["path"] == "/providers/fireworks/v1/chat/completions"
+    assert calls[0]["capability"] == "cap-token"
+    body = calls[0]["body"]
+    assert body["model"] == "accounts/fireworks/models/text-only"
+    image = body["messages"][1]["content"][1]
+    assert image["type"] == "image_url" and image["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert "1024x768" not in body["messages"][0]["content"]
+    assert "2560x1600" in body["messages"][0]["content"]
+
+
+def test_a_step_read_from_the_page_tree_is_not_described_but_one_read_with_ocr_is(
+    client, broker, workspace, monkeypatch  # noqa: F811
+):
+    text_only(monkeypatch, described=True)
+    tree = json.loads(run_with_screen_text(client, broker, "computer.click"))
+    assert "screen_description" not in tree
+    assert model_calls(broker) == []
+    ocr = json.loads(run_with_screen_text(client, broker, "computer.click", source="ocr"))
+    assert ocr["screen_description"]["text"] == "A trip form."
+    assert len(model_calls(broker)) == 1
+
+
+def test_without_a_vision_model_there_is_no_picture_and_the_screen_text_is_given(
+    client, broker, workspace, monkeypatch  # noqa: F811
+):
+    text_only(monkeypatch, described=False)
+    result = run_with_screen_text(client, broker, "computer.screenshot", source="ocr")
+    assert isinstance(result, str)
+    shown = json.loads(result)
+    assert shown["receipt"]["detail"]["screen_text"]["lines"] == SCREEN_TEXT["lines"]
+    assert "screen_description" not in shown
+    assert model_calls(broker) == []
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
+
+
+def test_a_description_that_fails_leaves_the_screen_text(client, broker, workspace, monkeypatch):  # noqa: F811
+    text_only(monkeypatch, described=True)
+    broker.model_reply = {"choices": [{"message": {"content": ""}}]}
+    shown = json.loads(run_with_screen_text(client, broker, "computer.screenshot"))
+    assert "screen_description" not in shown
+    assert shown["receipt"]["detail"]["screen_text"]["source"] == "accessibility"
+
+
+def test_a_model_that_reads_pictures_is_shown_them_and_never_described(client, broker, workspace, monkeypatch):  # noqa: F811
+    text_only(monkeypatch, described=True)
+    monkeypatch.setenv(VISION_ENV, "1")
+    result = run_with_screen_text(client, broker, "computer.screenshot")
+    assert isinstance(result, dict) and result["_multimodal"] is True
+    assert model_calls(broker) == []
+
+
+def test_each_protocol_asks_with_the_picture_and_reads_the_reply():
+    for protocol in DESCRIBE_PROTOCOLS.values():
+        body = describe_request(protocol, "m", "QUJD", 1024, 768)
+        assert "QUJD" in json.dumps(body)
+    assert describe_reply("chat/completions", {"choices": [{"message": {"content": " Hi "}}]}) == "Hi"
+    assert describe_reply("responses", {"output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}]}) == "Hi"
+    assert describe_reply("messages", {"content": [{"type": "text", "text": "Hi"}]}) == "Hi"
+    assert describe_reply("chat/completions", {"error": "x"}) == ""
+    assert len(describe_reply("messages", {"content": [{"type": "text", "text": "x" * 9000}]})) == 4000

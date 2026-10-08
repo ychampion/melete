@@ -566,12 +566,13 @@ describeWithDb('a secondary model beside the primary', () => {
       vision: { provider: 'fireworks', model: VISION },
       fallback: [{ provider: 'fireworks', model: SPARE }],
     };
-    // A woken attempt runs on the secondary, and is told it may send pictures.
+    // A woken attempt runs on the secondary, and is told the vision model
+    // describes its pictures, which it does not read itself.
     const woken = await api.settings.routedChoice(routing, database().db, {
       spaceId,
       usageClass: 'background',
     });
-    expect(woken).toMatchObject({ model: SMALL, vision: true });
+    expect(woken).toMatchObject({ model: SMALL, vision: false, visionRoute: true });
     // Its calls may go to the vision model and, when limited, to the fallback.
     expect(
       await api.settings.attemptRoutes(routing, {

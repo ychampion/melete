@@ -69,7 +69,8 @@ function line(item: z.infer<typeof element>): string {
   const parts: string[] = [item.ref, item.role];
   if (item.name) parts.push(JSON.stringify(oneLine(item.name)));
   if (item.value) parts.push(`value=${JSON.stringify(oneLine(item.value))}`);
-  if (item.states?.length) parts.push(`[${item.states.map((state) => oneLine(state, 64)).join(' ')}]`);
+  if (item.states?.length)
+    parts.push(`[${item.states.map((state) => oneLine(state, 64)).join(' ')}]`);
   parts.push(`box=${item.box.join(',')}`);
   return parts.join(' ');
 }

@@ -445,6 +445,49 @@ describe('files the person sent, as the model is given them', () => {
     expect(unrouted.sent[0]?.body).toContain(PICTURE_NOT_SHOWN);
   });
 
+  test('a screenshot goes only to a model that reads pictures: the vision route, else none', async () => {
+    const shot = [
+      { type: 'text', text: 'The screen after the click.' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG_DATA}` } },
+    ];
+    const reads = (attachments: GatewayAttachments) => {
+      attachments.vision = async (_provider, model) => model === 'vision-model';
+      return attachments;
+    };
+    // Unmarked pictures are kept from cloud models by the privacy router, so
+    // what is checked here is the sentence this guard puts in their place.
+    const NOT_READ = 'This model reads no pictures';
+    // With the vision route set, the picture goes there and only there.
+    const routed = await start({
+      attachments: reads(source(true)),
+      routes: { vision: { provider: 'openai', model: 'vision-model' } },
+    });
+    expect((await routed.chat('openai', shot)).status).toBe(200);
+    expect(routed.sent).toHaveLength(1);
+    expect(JSON.parse(routed.sent[0]?.body ?? '{}').model).toBe('vision-model');
+    expect(routed.sent[0]?.body).not.toContain(NOT_READ);
+    // With none, the model that reads no pictures is sent the words alone.
+    const plain = await start({ attachments: reads(source(true)) });
+    expect((await plain.chat('openai', shot)).status).toBe(200);
+    expect(JSON.parse(plain.sent[0]?.body ?? '{}').model).toBe('cloud-model');
+    expect(plain.sent[0]?.body).not.toContain(PNG_DATA);
+    expect(plain.sent[0]?.body).toContain(NOT_READ);
+    expect(plain.sent[0]?.body).toContain('The screen after the click.');
+    // A vision route this call may not use leaves the picture out as well.
+    const barred = await start({
+      attachments: reads(source(true)),
+      routes: { vision: { provider: 'openai', model: 'not-allowed' } },
+    });
+    expect((await barred.chat('openai', shot)).status).toBe(200);
+    expect(barred.sent[0]?.body).toContain(NOT_READ);
+    // A model that reads pictures is still sent them.
+    const seeing = source(true);
+    seeing.vision = async () => true;
+    const shown = await start({ attachments: seeing });
+    expect((await shown.chat('openai', shot)).status).toBe(200);
+    expect(shown.sent[0]?.body).not.toContain(NOT_READ);
+  });
+
   test('a document is charged by its pages, not by its base64 text', () => {
     const body = {
       messages: [

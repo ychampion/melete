@@ -8,10 +8,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Action } from '@melete/contracts';
-import trip from './fixtures/screen-text-trip.json';
 import type { DesktopCommand, DockerSandboxProvider } from '../sandbox/adapters/docker.ts';
 import { MemoryComputerControls } from '../sandbox/computer-control.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
+import trip from './fixtures/screen-text-trip.json' with { type: 'json' };
 import { runComputerAction } from './sandbox-computer.ts';
 import { MAX_SCREEN_TEXT_CHARS, SCREEN_TEXT_NOTICE, screenText } from './screen-text.ts';
 
@@ -115,7 +115,11 @@ test('a computer screenshot result includes the text view built from the page’
       ['computer.click', { x: 923, y: 190 }],
     ] as const) {
       const detail = await runComputerAction({
-        action: { id: 'act_TEXT1', kind, canonical_payload: { step: 1, ...payload } } as unknown as Action,
+        action: {
+          id: 'act_TEXT1',
+          kind,
+          canonical_payload: { step: 1, ...payload },
+        } as unknown as Action,
         jobId: 'job_TEXT',
         workRoot: root,
         session,

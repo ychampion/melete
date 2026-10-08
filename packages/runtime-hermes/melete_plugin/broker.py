@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Union
 
-from .vision import Withheld
+from .vision import DESCRIBE_PROTOCOLS, Withheld, describe_reply, describe_request
 
 #: Where the broker listens. In compose this is the service's internal address;
 #: the container has no route anywhere else, so a wrong value fails closed.
@@ -37,6 +37,17 @@ ATTEMPT_TOKEN_ENV = "MELETE_ATTEMPT_TOKEN"
 #: the turn instead of holding a socket until the run's wall clock expires.
 #: Waiting for a person happens on the ledger, never here.
 DEFAULT_TIMEOUT_SECONDS = 30.0
+
+#: The attempt's model, as the engine is given it: the gateway's provider name,
+#: the model's name, the protocol, and the surrogate key the gateway ignores.
+MODEL_PROVIDER_ENV = "MELETE_MODEL_PROVIDER"
+MODEL_NAME_ENV = "MELETE_MODEL_NAME"
+MODEL_API_MODE_ENV = "MELETE_MODEL_API_MODE"
+MODEL_KEY_ENV = "MELETE_MODEL_KEY"
+
+#: A description is one short model call; a slow one is given up on, and the
+#: model has the screen's text without it.
+DESCRIBE_TIMEOUT_SECONDS = 60.0
 
 
 class BrokerError(RuntimeError):
@@ -183,6 +194,47 @@ class BrokerClient:
             return base64.b64decode(data, validate=True)
         except ValueError:
             return None
+
+    def describe_picture(self, picture: str, width: int, height: int) -> Optional[Dict[str, str]]:
+        """What the operator's vision model says a screenshot shows, or None.
+
+        One call to the model gateway on the same host, metered to this attempt
+        like any of the engine's own: it is made in this attempt's model's
+        protocol and naming it, and the gateway sends a request that carries a
+        picture to the vision model, never to a model that reads none.
+        """
+        provider = os.environ.get(MODEL_PROVIDER_ENV, "")
+        model = os.environ.get(MODEL_NAME_ENV, "")
+        protocol = DESCRIBE_PROTOCOLS.get(os.environ.get(MODEL_API_MODE_ENV) or "chat_completions")
+        if not self.base_url or not self.token or not provider or not model or protocol is None:
+            return None
+        body = describe_request(protocol, model, picture, width, height)
+        headers = {
+            "content-type": "application/json",
+            "accept": "application/json",
+            "x-melete-capability": self.token,
+        }
+        surrogate = os.environ.get(MODEL_KEY_ENV, "melete-surrogate")
+        if protocol == "messages":
+            headers["x-api-key"] = surrogate
+        else:
+            headers["authorization"] = f"Bearer {surrogate}"
+        request = urllib.request.Request(
+            f"{self.base_url}/providers/{urllib.parse.quote(provider, safe='')}/v1/{protocol}",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with self._open(request, DESCRIBE_TIMEOUT_SECONDS) as response:
+                reply = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, ValueError, OSError):
+            return None
+        text = describe_reply(protocol, reply)
+        if not text:
+            return None
+        said = reply.get("model") if isinstance(reply, dict) else None
+        return {"text": text, "model": said if isinstance(said, str) and said else "the vision model"}
 
     def start_execution(self, action_id: str) -> Dict[str, Any]:
         """Claim one admitted intent once; a lost response is never replayed."""

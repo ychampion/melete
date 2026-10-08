@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { type AttemptBundle, canonicalTimeZone, prefixedId } from '@melete/contracts';
 import {
   attemptEngineFeatures,
+  DESCRIBE_ENV,
   type EngineConfig,
   engineSettingsFromEnvironment,
   engineVision,
@@ -116,6 +117,9 @@ export function attemptEnvironment(
     MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
     // The plugin sends a screenshot as a picture only when the model reads them.
     [VISION_ENV]: engineVision(bundle.model) ? '1' : '0',
+    // Otherwise the operator's vision model may describe each one for it, and
+    // the picture goes only there.
+    [DESCRIBE_ENV]: bundle.model.vision_route && !engineVision(bundle.model) ? '1' : '0',
     // The engine dates the conversation in this zone, read before its config.
     // A space with no profile is UTC, never the host's zone.
     HERMES_TIMEZONE: canonicalTimeZone(bundle.time_zone),
@@ -222,6 +226,7 @@ export const ATTEMPT_ENVIRONMENT_KEYS = [
   'MELETE_MODEL_NAME',
   'MELETE_MODEL_API_MODE',
   VISION_ENV,
+  DESCRIBE_ENV,
   'HERMES_TIMEZONE',
   'TERMINAL_CWD',
 ] as const;
