@@ -477,6 +477,13 @@ withDb('signing in to Google through Composio', () => {
       .parse(await (await t.app.request('/connections', t.as(t.cookie))).json())
       .connections.find((row) => row.id === id);
     expect(listed?.reading_note).toBe(MANAGED_REACHED_WORDS);
+    // And on the app's own list of connections, where the person reads it.
+    const shown = (
+      (await (await t.app.request('/experience/connections', t.as(t.cookie))).json()) as {
+        connections: { id: string; reading_note?: string; via?: string }[];
+      }
+    ).connections.find((row) => row.id === id);
+    expect(shown).toMatchObject({ reading_note: MANAGED_REACHED_WORDS, via: 'composio' });
 
     // A send the person approved goes, limit or not.
     const connector = registry.get(id) as EmailConnector;

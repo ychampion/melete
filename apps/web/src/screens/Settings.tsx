@@ -111,6 +111,8 @@ export function ConnectionCard({
           </span>
           {connection.status === 'error' && connection.problem ? (
             <span className="connection-problem">{connection.problem.detail}</span>
+          ) : connection.reading_note ? (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{connection.reading_note}</span>
           ) : null}
         </div>
       </div>
