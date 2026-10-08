@@ -3665,7 +3665,10 @@ export class BrokerService implements BrokerOperations {
         handoff?: { take_over?: { session_id?: string }; action_id?: string | null };
       } | null
     )?.handoff;
-    if (card?.take_over?.session_id !== sessionId) return 'none';
+    // A person who took the browser over with no card, mid-task, handed it
+    // back: the work they paused goes on, from a fresh look at the page.
+    if (card?.take_over?.session_id !== sessionId)
+      return (await this.resumeAfterControl(jobId, 'Browser control:')) ? 'resumed' : 'none';
     const doubted = typeof card.action_id === 'string' ? card.action_id : null;
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);
@@ -3689,6 +3692,31 @@ export class BrokerService implements BrokerOperations {
       }
       await this.wake(tx, job, 'recovery');
       return 'resumed';
+    });
+  }
+
+  /**
+   * Wake a job a person's takeover parked, once they hand control back. Only
+   * the takeover's own wait is ended (its question starts with `parkedBy`); a
+   * job waiting on anything else, or settling an unconfirmed effect, stays as
+   * it is. True when the job was woken.
+   */
+  async resumeAfterControl(
+    jobId: string,
+    parkedBy: 'Browser control:' | 'Computer control:',
+  ): Promise<boolean> {
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, jobId);
+      const [held] = await tx`select wait from job where id = ${jobId}`;
+      const question = (held?.wait as { question?: unknown } | null)?.question;
+      if (
+        job.state !== 'waiting_for_input' ||
+        typeof question !== 'string' ||
+        !question.startsWith(parkedBy)
+      )
+        return false;
+      await this.wake(tx, job, 'recovery');
+      return true;
     });
   }
 

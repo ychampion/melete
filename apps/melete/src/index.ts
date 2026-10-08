@@ -1404,10 +1404,14 @@ export async function bootstrap(
           await effectBoundary?.broker.handedBack(scope.job_id, sessionId);
         };
       }
-      if (sandboxComputers)
+      if (sandboxComputers) {
         sandboxComputers.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
+        // Work the person paused by taking the computer over goes on when they hand it back.
+        sandboxComputers.onHandedBack = async (jobId) =>
+          effectBoundary?.broker.resumeAfterControl(jobId, 'Computer control:');
+      }
       learning = await startLearning(
         jobs,
         env,

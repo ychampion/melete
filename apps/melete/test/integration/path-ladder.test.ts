@@ -227,4 +227,26 @@ describe('the path ladder', () => {
     expect(job?.wait.handoff).toMatchObject({ reason: 'path', service: SERVICE });
     expect(s.submits()).toBe(0);
   });
+
+  databaseTest(
+    'a person who takes the browser over mid-task and hands it back has the work go on without typing',
+    async () => {
+      const s = await setup({ api: false });
+      // No card: the person simply took the browser while the agent worked.
+      await s.sessions.control(s.session.id, 'takeover');
+      const parked = await s.job();
+      expect(parked?.state).toBe('waiting_for_input');
+      expect(parked?.wait.question).toStartWith('Browser control:');
+      await s.sessions.control(s.session.id, 'handback');
+      const resumed = await s.job();
+      expect(resumed?.state).toBe('queued');
+      expect(resumed?.next_wake_at).not.toBeNull();
+      // A wait that is about something else is the person's to answer, and stays.
+      await s.sql`update job set state = 'waiting_for_input',
+        wait = ${JSON.stringify({ kind: 'user_input', question: 'Which date works?' })}::jsonb
+        where id = ${s.claims.job_id}`;
+      expect(await s.broker.resumeAfterControl(s.claims.job_id, 'Browser control:')).toBe(false);
+      expect((await s.job())?.state).toBe('waiting_for_input');
+    },
+  );
 });
