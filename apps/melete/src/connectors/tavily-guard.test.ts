@@ -106,9 +106,29 @@ test('the privacy check is given the address as sent, decoded, and as words', ()
   ).toEqual([
     'https://portal.example/people/jane-marlowe?email=john.doe%40gmail.com',
     'portal.example/people/jane-marlowe email john.doe@gmail.com',
-    'portal example people jane marlowe email john doe@gmail com',
+    'portal example people jane marlowe email john doe gmail com',
   ]);
   expect(addressTexts(new URL('https://a.example/x?q=a+b%20c'))[2]).toBe('a example x q a b c');
+  expect(addressTexts(new URL('https://a.example/people/JaneMarlowe,HTMLParser~v2:x'))[2]).toBe(
+    'a example people Jane Marlowe HTML Parser v2 x',
+  );
+});
+
+test('a name joined by any punctuation, or written in camel case, is read as the name', async () => {
+  for (const url of [
+    'https://portal.example/people/jane,marlowe',
+    'https://portal.example/people/jane~marlowe',
+    'https://portal.example/people/jane:marlowe',
+    'https://portal.example/people/jane!marlowe',
+    'https://portal.example/people/jane;marlowe',
+    'https://portal.example/people/jane*marlowe',
+    'https://portal.example/people/JaneMarlowe',
+    'https://portal.example/patient?name=Jane%2CMarlowe',
+  ]) {
+    // Each address is shareable, so the privacy check alone keeps it in.
+    expect({ url, shareable: shareableAddress(new URL(url)) }).toEqual({ url, shareable: true });
+    expect({ url, sent: await sent(url, routerLike) }).toEqual({ url, sent: [] });
+  }
 });
 
 // --------------------------------------------------------------------------
@@ -202,6 +222,62 @@ test("a private resource's 403 keeps its address here", async () => {
       forbidden,
     ),
   ).toEqual([]);
+});
+
+test('a captcha, an Akamai server, a sign-in page or a session keeps a private page here', async () => {
+  const PRIVATE = 'https://intranet-app.example/folders/project-nightjar-board-minutes';
+  const answer =
+    (status: number, headers: Record<string, string>, body: string): WebTransport =>
+    async () => ({ status, headers: { 'content-type': 'text/html', ...headers }, body });
+  const kept: [string, WebTransport][] = [
+    [
+      'a sign-in form with reCAPTCHA',
+      answer(403, {}, '<form><div class="g-recaptcha" data-sitekey="x"></div>No access</form>'),
+    ],
+    ['an hCaptcha widget', answer(403, {}, '<div class="h-captcha"></div><p>Forbidden</p>')],
+    ['an Akamai server header alone', answer(403, { server: 'AkamaiGHost' }, '<p>Denied</p>')],
+    [
+      'a challenge page that also asks to sign in',
+      answer(403, { 'cf-mitigated': 'challenge' }, '<p>Sign in to continue</p>'),
+    ],
+    [
+      'a challenge page with a password field',
+      answer(403, {}, '<title>Just a moment...</title><input type="password" name="p">'),
+    ],
+    [
+      'a bot wall that also opened a session',
+      answer(
+        403,
+        { 'cf-mitigated': 'challenge', 'set-cookie': '__cf_bm=a; Path=/, app_session=b; Path=/' },
+        '<p>Blocked</p>',
+      ),
+    ],
+    ['a site asking for credentials', answer(503, { 'www-authenticate': 'Basic' }, '<p>Busy</p>')],
+    ['a script-built page that set a session', answer(200, { 'set-cookie': 'sid=abc' }, SHELL)],
+  ];
+  for (const [name, transport] of kept)
+    expect({ name, sent: await sent(PRIVATE, allow, transport) }).toEqual({ name, sent: [] });
+
+  // A session opened on the way, before a redirect, counts too.
+  let hop = 0;
+  const redirected: WebTransport = async () =>
+    hop++ === 0
+      ? { status: 302, headers: { location: '/app', 'set-cookie': 'connect.sid=s%3Aabc' }, body: '' }
+      : { status: 200, headers: { 'content-type': 'text/html' }, body: SHELL };
+  expect(await sent(PRIVATE, allow, redirected)).toEqual([]);
+
+  // A bot wall's own challenge, cookies included, still goes.
+  expect(
+    await sent(
+      PRIVATE,
+      allow,
+      answer(
+        403,
+        { 'cf-mitigated': 'challenge', 'set-cookie': '__cf_bm=abc; Path=/; HttpOnly' },
+        '<title>Just a moment...</title>',
+      ),
+    ),
+  ).toEqual([PRIVATE]);
 });
 
 test('IP encodings, mapped forms and private redirect endings never reach Extract', async () => {
