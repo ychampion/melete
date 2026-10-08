@@ -42,6 +42,20 @@ describe('the fields an effect is gated on', () => {
       { path: 'intent.url', category: 'destination', value: 'https://example.com/save' },
     ]);
   });
+  test('each value of a field a form sends more than once is gated on its own', () => {
+    const payload = canonicalizePayload({
+      intent: {
+        url: 'https://example.com/save',
+        fields: { topping: ['bacon', 'onion'], notify_list_3: ['a.example', ''] },
+      },
+    }).canonical;
+    expect(collectOriginFields(payload, 'browser.submit')).toEqual([
+      { path: 'intent.fields.notify_list_3[0]', category: 'resource', value: 'a.example' },
+      { path: 'intent.fields.topping[0]', category: 'resource', value: 'bacon' },
+      { path: 'intent.fields.topping[1]', category: 'resource', value: 'onion' },
+      { path: 'intent.url', category: 'destination', value: 'https://example.com/save' },
+    ]);
+  });
   test('a message body chooses nothing and is not gated', () => {
     expect(fields({ body: 'Meet at 3pm.', subject: 'Lunch' })).toEqual([]);
   });

@@ -1153,3 +1153,107 @@ test("the persistent profile sends no cookie on a cross-site request while the p
   );
   expect(cookies['https://third.example/pixel.gif']).toBe('session=signed-in');
 });
+
+test("a resource whose host is down is left out and named, while the page's own document still fails plainly", async () => {
+  const dead = Object.assign(new Error('getaddrinfo ENOTFOUND cdn.example'), {
+    code: 'ENOTFOUND',
+  });
+  const fixture = await setup({
+    resolve: async (name) => {
+      if (name === 'cdn.example') throw dead;
+      return [{ address: '8.8.8.8', family: 4 }];
+    },
+  });
+  await fixture.egress.run('navigate', async () => {
+    expect((await fixture.dispatch()).aborted).toBe(false);
+    const script = await fixture.dispatch({
+      url: 'https://cdn.example/snippet.js',
+      resourceType: 'script',
+      top: 'https://public.example/form',
+    });
+    expect(script.aborted).toBe(true);
+    const frame = await fixture.dispatch({
+      url: 'https://cdn.example/frame',
+      subframe: true,
+      top: 'https://public.example/form',
+    });
+    expect(frame.aborted).toBe(true);
+  });
+  expect(fixture.egress.takeUnreachable()).toEqual(['cdn.example']);
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
+  await expect(
+    fixture.egress.run('navigate', () => fixture.dispatch({ url: 'https://cdn.example/' })),
+  ).rejects.toMatchObject({ code: 'site_not_found', message: 'cdn.example could not be found.' });
+  // A refusal of a resource still ends the operation, as before.
+  await expect(
+    fixture.egress.run('navigate', () =>
+      fixture.dispatch({ url: 'http://127.0.0.1/image.png', resourceType: 'image' }),
+    ),
+  ).rejects.toThrow('non-public');
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
+});
+
+test('a host that fails during a reversible step or a commit is not passed over', async () => {
+  const fixture = await setup({
+    transport: async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    },
+  });
+  await expect(
+    fixture.egress.run(
+      'commit',
+      () =>
+        fixture.dispatch({
+          method: 'POST',
+          url: 'https://public.example/form',
+          body: Buffer.alloc(0),
+        }),
+      binding(),
+    ),
+  ).rejects.toMatchObject({ code: 'site_unreachable' });
+  await expect(
+    fixture.egress.run('reversible', () =>
+      fixture.dispatch({ url: 'https://cdn.example/a.js', resourceType: 'script' }),
+    ),
+  ).rejects.toMatchObject({ code: 'network_reversible' });
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
+});
+
+test('a resource refused for what the page asks to send still ends the load; a host that broke its answer is passed over', async () => {
+  const fixture = await setup({
+    transport: async (url) => {
+      if (url.hostname === 'chain.example')
+        throw Object.assign(new Error('unable to verify the first certificate'), {
+          code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        });
+      if (url.hostname === 'broken.example')
+        return { status: 200, headers: { 'bad header': 'x' }, body: Buffer.alloc(0) };
+      return OK;
+    },
+  });
+  await fixture.egress.run('navigate', async () => {
+    for (const host of ['chain.example', 'broken.example'])
+      expect(
+        (
+          await fixture.dispatch({
+            url: `https://${host}/a.js`,
+            resourceType: 'script',
+            top: 'https://public.example/form',
+          })
+        ).aborted,
+      ).toBe(true);
+  });
+  expect(fixture.egress.takeUnreachable()).toEqual(['broken.example', 'chain.example']);
+  // Nothing was sent: the guard refused the page's own request, which is no dead host.
+  await expect(
+    fixture.egress.run('navigate', () =>
+      fixture.dispatch({
+        url: 'https://cdn.example/a.js',
+        resourceType: 'script',
+        top: 'https://public.example/form',
+        headers: { 'x-page': 'line\nbreak' },
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'invalid_headers' });
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
+});

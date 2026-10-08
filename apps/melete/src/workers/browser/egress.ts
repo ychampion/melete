@@ -90,6 +90,70 @@ export class BrowserRedirect extends BrowserNetworkError {
   }
 }
 
+/** A page's own address that could not be loaded, said plainly with the host it names. */
+export const SITE_FAILURES = new Set([
+  'site_not_found',
+  'site_unreachable',
+  'site_certificate_invalid',
+  'site_timeout',
+]);
+const DNS_FAILURES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EAI_NODATA', 'EAI_FAIL']);
+const CONNECT_FAILURES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EHOSTDOWN',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+/** Ways a host can fail to serve what was asked of it, as opposed to a request being refused. */
+const SERVE_FAILURES = new Set([
+  'request_timeout',
+  'response_too_large',
+  'invalid_response',
+  'invalid_headers',
+  'headers_too_large',
+]);
+
+/**
+ * A request that failed because its host could not be reached or did not serve it, put plainly;
+ * undefined for anything else, including every refusal the guard makes. The size and header
+ * checks also refuse what a page asks to send, so they count only once the request went out.
+ */
+function siteFailure(error: unknown, host: string, sent: boolean): BrowserNetworkError | undefined {
+  if (error instanceof BrowserNetworkError) {
+    if (!SERVE_FAILURES.has(error.code)) return undefined;
+    if (!sent && error.code !== 'request_timeout') return undefined;
+    return error.code === 'request_timeout'
+      ? new BrowserNetworkError('site_timeout', `${host} timed out without answering.`)
+      : error;
+  }
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string') return undefined;
+  if (DNS_FAILURES.has(code))
+    return new BrowserNetworkError('site_not_found', `${host} could not be found.`);
+  if (CONNECT_FAILURES.has(code))
+    return new BrowserNetworkError('site_unreachable', `${host} did not answer.`);
+  if (/CERT|SSL|TLS|UNABLE_TO_VERIFY/.test(code))
+    return new BrowserNetworkError(
+      'site_certificate_invalid',
+      `${host} has a security certificate that could not be checked.`,
+    );
+  return undefined;
+}
+
+/** A resource or a frame's document; the top-level page's own document is not one. */
+function subresource(request: Request): boolean {
+  if (request.resourceType() !== 'document') return true;
+  try {
+    return request.frame().parentFrame() !== null;
+  } catch {
+    return false;
+  }
+}
+
 const READ_METHODS = new Set(['GET', 'HEAD']);
 /** Refusals of a person's navigation that leave them on the page they were on. */
 const STAY_ON_PAGE = new Set([
@@ -374,6 +438,8 @@ export function createBrowserEgress(
   let active: Operation | undefined;
   let closed = false;
   let commitDispatched = false;
+  /** Hosts whose resources failed while a page loaded, until the controller takes them. */
+  const unreachable = new Set<string>();
 
   async function checkAddress(
     url: URL,
@@ -552,6 +618,8 @@ export function createBrowserEgress(
   async function relay(route: Route, operation: Operation | undefined): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let place: RequestPlace = {};
+    let url: URL | undefined;
+    let sent = false;
     const abort = new AbortController();
     const abortOperation = () => abort.abort(operation?.abort.signal.reason);
     operation?.abort.signal.addEventListener('abort', abortOperation, { once: true });
@@ -565,7 +633,7 @@ export function createBrowserEgress(
         timeoutMs,
       );
       const request = route.request();
-      const url = parseUrl(request.url());
+      url = parseUrl(request.url());
       const body = request.postDataBuffer();
       if (body && body.length > maxRequestBytes) {
         networkError('request_too_large', 'browser request exceeds the size limit');
@@ -591,6 +659,7 @@ export function createBrowserEgress(
       // rechecks takeover here, synchronously adjacent to the actual dispatch.
       operation.guard?.();
       if (operation.mode === 'commit' && request.method() === 'POST') commitDispatched = true;
+      sent = true;
       const response = await untilAborted(
         transport(url, address, {
           method: request.method(),
@@ -684,10 +753,27 @@ export function createBrowserEgress(
         body: response.body,
       });
     } catch (error) {
-      // A person's refused request fails alone; it never ends the takeover's network window.
-      if (operation && operation.mode !== 'human' && !operation.error) {
+      const failed = url && siteFailure(error, hostname(url), sent);
+      // A resource whose host is down or broken is left out and the page loads without it, as a
+      // browser would load it; the look after says which hosts. Every refusal still ends the
+      // operation, and so does a failure of the page's own document, by a plain name.
+      const pageResource =
+        operation?.mode === 'navigate' &&
+        !operation.abort.signal.aborted &&
+        subresource(route.request());
+      if (pageResource && failed) {
+        if (url) unreachable.add(hostname(url));
+      } else if (
+        pageResource &&
+        operation.ending &&
+        error instanceof BrowserNetworkError &&
+        error.code === 'network_idle'
+      ) {
+        // A resource asked for once the page had loaded is refused, and the load stands.
+      } else if (operation && operation.mode !== 'human' && !operation.error) {
+        // A person's refused request fails alone; it never ends the takeover's network window.
         operation.error =
-          error instanceof Error ? error : new Error('browser network request failed');
+          failed || (error instanceof Error ? error : new Error('browser network request failed'));
       }
       // A refused navigation answers 204, so Chromium stays on the current page instead of
       // committing an error page; the person's notice says why nothing happened.
@@ -717,6 +803,13 @@ export function createBrowserEgress(
 
     get commitDispatched(): boolean {
       return commitDispatched;
+    },
+
+    /** The hosts resources could not be loaded from since the last call, then forgets them. */
+    takeUnreachable(): string[] {
+      const hosts = [...unreachable].sort();
+      unreachable.clear();
+      return hosts;
     },
 
     get idle(): boolean {

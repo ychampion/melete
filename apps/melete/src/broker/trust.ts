@@ -130,13 +130,14 @@ export function collectOriginFields(payload: JsonObject, kind?: string): OriginF
     if (values && typeof values === 'object' && !Array.isArray(values)) {
       // A site controls its field names. An unfamiliar name must not hide a destination or amount.
       for (const [name, value] of Object.entries(values)) {
-        const path = `intent.fields.${name}`;
-        if (typeof value === 'string' && value && !found.some((field) => field.path === path))
-          found.push({
-            path,
-            category: CATEGORY_BY_NAME.get(name.toLowerCase()) ?? 'resource',
-            value,
-          });
+        const category = CATEGORY_BY_NAME.get(name.toLowerCase()) ?? 'resource';
+        // A name sent more than once (a checkbox group) has a list, and each value in it counts.
+        const entries: Array<[string, unknown]> = Array.isArray(value)
+          ? value.map((item, index) => [`intent.fields.${name}[${index}]`, item])
+          : [[`intent.fields.${name}`, value]];
+        for (const [path, item] of entries)
+          if (typeof item === 'string' && item && !found.some((field) => field.path === path))
+            found.push({ path, category, value: item });
       }
     }
   }

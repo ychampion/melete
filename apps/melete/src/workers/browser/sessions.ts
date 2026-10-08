@@ -15,6 +15,29 @@ export class BrowserFault extends Error {
 }
 
 export type BrowserPolicy = { public_compartment: boolean; allowed_domains: string[] };
+/**
+ * Where the person is, as their browser shows it to sites: the language pages are asked for and
+ * the clock their scripts read. A context starts with it and keeps it until it closes.
+ */
+export type BrowserRegion = { locale: string; timezone_id: string };
+/** Without the person's own settings a page sees a neutral place, never the server's. */
+export const DEFAULT_BROWSER_REGION: BrowserRegion = { locale: 'en-US', timezone_id: 'UTC' };
+
+/** The region with anything Chromium would not accept replaced by the neutral default. */
+export function browserRegion(region?: Partial<BrowserRegion>): BrowserRegion {
+  let locale = DEFAULT_BROWSER_REGION.locale;
+  let timezone_id = DEFAULT_BROWSER_REGION.timezone_id;
+  try {
+    if (region?.locale) locale = Intl.getCanonicalLocales(region.locale)[0] ?? locale;
+  } catch {}
+  try {
+    if (region?.timezone_id)
+      timezone_id = new Intl.DateTimeFormat('en-US', {
+        timeZone: region.timezone_id,
+      }).resolvedOptions().timeZone;
+  } catch {}
+  return { locale, timezone_id };
+}
 export type BrowserSession = {
   id: string;
   space_id: string;
@@ -155,7 +178,11 @@ export class BrowserSessions {
       if (!Number.isSafeInteger(value) || value < 1) throw new BrowserFault('invalid_idle_timeout');
   }
 
-  async lease(jobId: string, policy: BrowserPolicy): Promise<BrowserSession> {
+  async lease(
+    jobId: string,
+    policy: BrowserPolicy,
+    region?: Partial<BrowserRegion>,
+  ): Promise<BrowserSession> {
     return this.exclusive(async () => {
       if (this.idle()) await this.closeContext();
       if (this.session) {
@@ -183,7 +210,12 @@ export class BrowserSessions {
         if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
       }
       // Research has no private cookies: its disposable context never opens the signed-in profile.
-      const launch = this.launchOptions();
+      const place = browserRegion(region);
+      const launch = {
+        ...this.launchOptions(),
+        locale: place.locale,
+        timezoneId: place.timezone_id,
+      };
       const context = this.options.launch
         ? await this.options.launch(profile, policy)
         : policy.public_compartment

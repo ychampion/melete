@@ -39,6 +39,7 @@ const schema = (properties: Record<string, JsonValue>, required: string[]) => ({
   required,
   additionalProperties: false,
 });
+const fieldValues = { type: 'array', items: { type: 'string' } };
 const intentSchema = {
   type: 'object',
   properties: {
@@ -48,7 +49,11 @@ const intentSchema = {
     name: text,
     form_hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
     body_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
-    fields: { type: 'object', additionalProperties: { type: 'string' } },
+    fields: {
+      type: 'object',
+      // A name the form sends more than once, as a checkbox group does, has a list of values.
+      additionalProperties: { anyOf: [{ type: 'string' }, fieldValues] },
+    },
   },
   required: ['url', 'method', 'role', 'name', 'form_hash', 'body_sha256', 'fields'],
   additionalProperties: false,
@@ -96,7 +101,7 @@ const definitions: Array<{
   {
     name: 'click',
     description:
-      'Click one reversible control by exact role and name. To repeat an earlier click, observe again and pass that observation id as after_observation. Consequential controls require browser.submit. Returns an observation of the page after it.',
+      'Click one reversible control by exact role and name. A link opens its address, with the same checks as browser.open. To repeat an earlier click, observe again and pass that observation id as after_observation. Consequential controls require browser.submit. Returns an observation of the page after it.',
     effect: 'write_reversible',
     properties: { role: text, name: text, after_observation: observationProperty },
     required: ['role', 'name'],
@@ -104,10 +109,10 @@ const definitions: Array<{
   {
     name: 'select',
     description:
-      'Select a visible choice by exact accessible label. To repeat an earlier choice, observe again and pass that observation id as after_observation. Returns an observation of the page after it.',
+      'Choose an option in a visible dropdown. Name the dropdown by its label, accessible name, placeholder or the text just before it; leave label out when the option is offered by only one dropdown on the page. To repeat an earlier choice, observe again and pass that observation id as after_observation. Returns an observation of the page after it.',
     effect: 'write_reversible',
     properties: { label: text, value: text, after_observation: observationProperty },
-    required: ['label', 'value'],
+    required: ['value'],
   },
   {
     name: 'read',
