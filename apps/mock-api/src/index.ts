@@ -6,10 +6,12 @@
  * simulation of Melete's judgment: the scenarios are scripted and the state
  * machine is the real one.
  */
+import { mcpCatalogEntry } from '@melete/contracts';
 import { createMockApp, MOCK_VERSION } from './app.ts';
 import { Runner } from './runner.ts';
 import { loadScenarios } from './scenarios.ts';
 import { seed } from './seed.ts';
+import { addCatalogConnection } from './sign-ins.ts';
 import { Store } from './store.ts';
 import { REALTIME_PATH, type RealtimeState, realtimeSocket } from './voice.ts';
 
@@ -30,8 +32,11 @@ export type MockOptions = {
   computer?: boolean;
   /** `shared` makes the session's space a shared one the person owns, with two others in it. */
   space?: 'personal' | 'shared';
-  /** `none` starts with nothing connected, as before the person connects an app. */
-  connections?: 'seeded' | 'none';
+  /**
+   * `none` starts with nothing connected, as before the person connects an app;
+   * `apps` adds two catalog apps to the seed, one running and one failing.
+   */
+  connections?: 'seeded' | 'none' | 'apps';
   /** `none` shows Home's "Needs you" with nothing in it. */
   needsYou?: 'seeded' | 'none';
   /** Texts and calls to the person's own number; false shows an installation without a provider. */
@@ -63,6 +68,12 @@ export function createMock(options: MockOptions = {}) {
     multiplayer: options.multiplayer ?? false,
   });
   if (options.connections === 'none') store.connections.clear();
+  if (options.connections === 'apps') {
+    const notion = mcpCatalogEntry('notion');
+    const linear = mcpCatalogEntry('linear');
+    if (notion) addCatalogConnection(store, spaceId, notion);
+    if (linear) addCatalogConnection(store, spaceId, linear, 'failing');
+  }
   return { app, store, runner, scenarios, spaceId, connections };
 }
 
@@ -75,7 +86,12 @@ if (import.meta.main) {
     reach: process.env.MELETE_MOCK_REACH !== 'off',
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
-    connections: process.env.MELETE_MOCK_CONNECTIONS === 'none' ? 'none' : 'seeded',
+    connections:
+      process.env.MELETE_MOCK_CONNECTIONS === 'none'
+        ? 'none'
+        : process.env.MELETE_MOCK_CONNECTIONS === 'apps'
+          ? 'apps'
+          : 'seeded',
     needsYou: process.env.MELETE_MOCK_NEEDS_YOU === 'none' ? 'none' : 'seeded',
     voice:
       process.env.MELETE_MOCK_VOICE === 'private'

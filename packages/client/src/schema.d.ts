@@ -9808,6 +9808,9 @@ export interface paths {
                     } | {
                         client?: components["schemas"]["__schema128"];
                         connection_id: string;
+                    } | {
+                        catalog_id: string;
+                        space_id?: string;
                     };
                 };
             };
@@ -23711,6 +23714,7 @@ export interface components {
                 access: "read_only" | "draft_only" | "asks_before_acting";
                 app: components["schemas"]["__schema288"];
                 builtin?: boolean;
+                catalog_id?: string;
                 id: components["schemas"]["__schema287"];
                 label: components["schemas"]["__schema288"];
                 problem?: {
@@ -24579,6 +24583,11 @@ export interface components {
             method: "mcp_sign_in";
             start: string;
             suggested_id: string;
+            tools?: {
+                asks_first: boolean;
+                effect_class: components["schemas"]["EffectClass"];
+                label: string;
+            }[];
             /** Format: uri */
             url: string;
         } | {

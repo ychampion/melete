@@ -615,6 +615,17 @@ export const mcpSignInRequest = z.union([
       client: preRegisteredClient.optional(),
     })
     .strict(),
+  z
+    .object({
+      /**
+       * Connect an app from the catalog (`GET /connection-kinds`) in one step:
+       * its server, its tools and what each may do come from the catalog entry.
+       */
+      catalog_id: z.string().regex(/^[a-z][a-z0-9_]*$/),
+      /** Left out, the space of the signed-in session. */
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+    })
+    .strict(),
 ]);
 
 /** One permission a sign-in asks for, with the plain words a person reads for it when known. */
@@ -793,6 +804,21 @@ export const connectionCatalogEntry = z
         /** A short name for the installation's `mcp.id`, which prefixes its grants. */
         suggested_id: z.string().regex(/^[a-z][a-z0-9_]*$/),
         start: z.string(),
+        /**
+         * Present for an app whose tools Melete already knows: `POST` to `start`
+         * with `{ catalog_id }` and nothing else, and these are what it may do.
+         * Tools the app's server does not offer when it is connected are left out.
+         */
+        tools: z
+          .array(
+            z.object({
+              label: z.string(),
+              effect_class: effectClass,
+              /** True when every use waits for the person's approval. */
+              asks_first: z.boolean(),
+            }),
+          )
+          .optional(),
       }),
       z.object({
         method: z.literal('form'),
@@ -891,51 +917,6 @@ export const ACCOUNT_CATALOG = [
  */
 export const DRIVE_CONSENT_WORDS =
   'To keep a deadline on a Drive file, Melete needs to see your Google Drive files’ names, change times and sharing, never their contents. Sign in with Google once more to allow it.';
-
-/**
- * Remote MCP servers known to sign in with OAuth. Their tools are still named
- * and granted in the installation's `mcp` block, as for any MCP server.
- */
-export const MCP_CATALOG = [
-  {
-    id: 'notion',
-    title: 'Notion',
-    description: "Search and edit your Notion workspace through Notion's MCP server.",
-    url: 'https://mcp.notion.com/mcp',
-  },
-  {
-    id: 'linear',
-    title: 'Linear',
-    description: "Find, create and update Linear issues and projects through Linear's MCP server.",
-    url: 'https://mcp.linear.app/mcp',
-  },
-  {
-    id: 'atlassian',
-    title: 'Atlassian',
-    description: "Work with Jira and Confluence through Atlassian's MCP server.",
-    url: 'https://mcp.atlassian.com/v2/mcp',
-  },
-  {
-    id: 'sentry',
-    title: 'Sentry',
-    description: "Look into issues and errors through Sentry's MCP server.",
-    url: 'https://mcp.sentry.dev/mcp',
-  },
-  {
-    id: 'stripe',
-    title: 'Stripe',
-    description: "Look up and manage Stripe objects through Stripe's MCP server.",
-    url: 'https://mcp.stripe.com',
-    warning:
-      "Stripe's tools can move money: they can issue refunds, and create payment links and invoices. Mark those tools as spend when you grant them, so each one waits for your approval.",
-  },
-] as const satisfies ReadonlyArray<{
-  id: string;
-  title: string;
-  description: string;
-  url: string;
-  warning?: string;
-}>;
 
 const text = (
   path: string,

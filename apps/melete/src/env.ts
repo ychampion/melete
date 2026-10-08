@@ -192,6 +192,13 @@ const variables = z.object({
   GOOGLE_OAUTH_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
   GOOGLE_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
   /**
+   * The operator's GitHub OAuth app, for connecting GitHub's MCP server from the
+   * app catalog: GitHub's sign-in accepts only a client registered ahead of time
+   * (docs/CONNECTORS.md). Both, or neither.
+   */
+  GITHUB_MCP_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  GITHUB_MCP_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  /**
    * The operator's Microsoft Entra app, for signing in to Outlook mail and
    * calendar (docs/mail-calendar.md). Both, or neither. The tenant is `common`,
    * for personal and work accounts, unless a tenant id or domain is named.
@@ -1020,6 +1027,12 @@ export const envSchema = variables.transform((value, context) => {
         value.GOOGLE_OAUTH_CLIENT_ID ? 'GOOGLE_OAUTH_CLIENT_SECRET' : 'GOOGLE_OAUTH_CLIENT_ID',
       ],
       message: 'set both GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, or neither',
+    });
+  if (Boolean(value.GITHUB_MCP_CLIENT_ID) !== Boolean(value.GITHUB_MCP_CLIENT_SECRET))
+    context.addIssue({
+      code: 'custom',
+      path: [value.GITHUB_MCP_CLIENT_ID ? 'GITHUB_MCP_CLIENT_SECRET' : 'GITHUB_MCP_CLIENT_ID'],
+      message: 'set both GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET, or neither',
     });
   return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });

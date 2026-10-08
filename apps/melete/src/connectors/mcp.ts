@@ -15,7 +15,10 @@ import {
 } from '@melete/contracts';
 import { z } from 'zod';
 import { ConnectorFaultError } from './faults.ts';
+import { type McpParamHeader, mcpParamHeaders, mcpParamHeaderValues } from './mcp-headers.ts';
 import {
+  MCP_CLIENT_INFO,
+  MCP_HANDSHAKE_VERSIONS,
   MCP_PROTOCOL_VERSION,
   type McpTransport,
   type McpTransportOptions,
@@ -68,8 +71,12 @@ const serverTool = z.object({
   // rather than asked about, which never widens what a tool may do.
   annotations: z.object({ readOnlyHint: z.boolean().optional() }).optional(),
 });
+/** A tool whose definition is larger than this is never offered: no schema that size fits a turn. */
+export const MAX_TOOL_DEFINITION_BYTES = 64 * 1024;
+/** All of a server's tool list, every page together. */
+const MAX_TOOL_LIST_BYTES = 4 * 1024 * 1024;
 const toolPage = z.object({
-  tools: z.array(serverTool).max(256),
+  tools: z.array(z.unknown()).max(256),
   nextCursor: z.string().min(1).max(2048).optional(),
 });
 
@@ -237,6 +244,84 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
   return { tools, definitions, readOnly: readOnly.sort(), rawNames, healthNotes };
 }
 
+/**
+ * Meets a server and reads its tools: a stateless server (2026-07-28) is found
+ * by asking it, and any other is spoken to with the handshake, at whichever
+ * revision it settles on. Over HTTP a tool's parameters may ask to be mirrored
+ * into headers; a tool whose annotations break the rules is not offered at all.
+ */
+async function introduce(transport: McpTransport) {
+  const statelessServer = transport.discover ? await transport.discover() : null;
+  const stateless = statelessServer !== null;
+  let capabilities: JsonObject;
+  if (statelessServer) capabilities = statelessServer.capabilities;
+  else {
+    const initialized = jsonObject.parse(
+      await transport.request('initialize', {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { ...MCP_CLIENT_INFO },
+      }),
+    );
+    const agreed = initialized.protocolVersion;
+    if (typeof agreed !== 'string' || !MCP_HANDSHAKE_VERSIONS.includes(agreed)) {
+      throw new Error('MCP server negotiated an unsupported protocol version');
+    }
+    transport.agreed?.(agreed);
+    capabilities = jsonObject.parse(initialized.capabilities);
+  }
+  if (!capabilities.tools) throw new Error('MCP server does not expose tools');
+  if (!stateless) await transport.notify('notifications/initialized');
+  const discovered = new Map<string, McpToolDefinition>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let listBytes = 0;
+  for (let pageNumber = 0; ; pageNumber++) {
+    if (pageNumber >= 16) throw new Error('MCP catalog page limit exceeded');
+    const page = toolPage.parse(await transport.request('tools/list', cursor ? { cursor } : {}));
+    for (const raw of page.tools) {
+      const size = Buffer.byteLength(JSON.stringify(raw) ?? '');
+      listBytes += size;
+      if (listBytes > MAX_TOOL_LIST_BYTES) throw new Error('MCP tool list is too large');
+      if (size > MAX_TOOL_DEFINITION_BYTES) continue;
+      const tool = serverTool.parse(raw);
+      if (discovered.has(tool.name)) throw new Error('Duplicate MCP server tool');
+      discovered.set(tool.name, tool);
+    }
+    if (discovered.size > 256) throw new Error('MCP catalog tool limit exceeded');
+    cursor = page.nextCursor;
+    if (!cursor) break;
+    if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
+    cursors.add(cursor);
+  }
+  const paramHeaders = new Map<string, McpParamHeader[]>();
+  for (const [name, definition] of discovered) {
+    const annotated = mcpParamHeaders(definition.inputSchema);
+    if (annotated === null && stateless) discovered.delete(name);
+    else if (annotated?.length) paramHeaders.set(name, annotated);
+  }
+  return { stateless, discovered, paramHeaders };
+}
+
+/**
+ * The names of the tools a remote server offers now, read once and let go.
+ * Connecting an app from the catalog installs only the tools its server has.
+ */
+export async function listMcpServerTools(
+  endpoint: { transport: 'http'; url: string },
+  options: McpTransportOptions = {},
+): Promise<string[]> {
+  const transport = openHttpMcpTransport(
+    { transport: 'http', url: mcpHttpUrl.parse(endpoint.url) },
+    options,
+  );
+  try {
+    return [...(await introduce(transport)).discovered.keys()];
+  } finally {
+    await transport.close();
+  }
+}
+
 async function openMcpSession(
   input: McpServerConfig,
   binding: { connectionId: string; spaceId: string },
@@ -253,35 +338,7 @@ async function openMcpSession(
         : undefined);
   if (!transport) throw new Error('A container MCP server needs its isolating launcher');
   try {
-    const initialized = jsonObject.parse(
-      await transport.request('initialize', {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: { name: 'melete', version: '0.1.0' },
-      }),
-    );
-    if (initialized.protocolVersion !== MCP_PROTOCOL_VERSION) {
-      throw new Error('MCP server negotiated an unsupported protocol version');
-    }
-    const capabilities = jsonObject.parse(initialized.capabilities);
-    if (!capabilities.tools) throw new Error('MCP server does not expose tools');
-    await transport.notify('notifications/initialized');
-    const discovered = new Map<string, McpToolDefinition>();
-    const cursors = new Set<string>();
-    let cursor: string | undefined;
-    for (let pageNumber = 0; ; pageNumber++) {
-      if (pageNumber >= 16) throw new Error('MCP catalog page limit exceeded');
-      const page = toolPage.parse(await transport.request('tools/list', cursor ? { cursor } : {}));
-      for (const tool of page.tools) {
-        if (discovered.has(tool.name)) throw new Error('Duplicate MCP server tool');
-        discovered.set(tool.name, tool);
-      }
-      if (discovered.size > 256) throw new Error('MCP catalog tool limit exceeded');
-      cursor = page.nextCursor;
-      if (!cursor) break;
-      if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
-      cursors.add(cursor);
-    }
+    const { stateless, discovered, paramHeaders } = await introduce(transport);
     const { tools, definitions, readOnly, rawNames, healthNotes } = policyTools(config, discovered);
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
@@ -319,17 +376,29 @@ async function openMcpSession(
         context.signal?.throwIfAborted();
         try {
           await options.checkCredential?.();
+          const raw = rawNames.get(action.kind) as string;
+          const annotated = stateless ? paramHeaders.get(raw) : undefined;
           const result = jsonObject.parse(
             await transport.request(
               'tools/call',
               {
-                name: rawNames.get(action.kind) as string,
+                name: raw,
                 arguments: action.canonical_payload,
                 _meta: { 'melete/action_id': action.id, 'melete/idempotency_key': action.id },
               },
               context.signal,
+              annotated ? mcpParamHeaderValues(annotated, action.canonical_payload) : undefined,
             ),
           );
+          // A stateless server that needs more input before it acts has not acted.
+          // Melete gives servers nothing beyond the call itself, so the call fails.
+          if (result.resultType === 'input_required') {
+            return {
+              outcome: 'failed',
+              reason: 'MCP server asked for more input before acting; nothing was done',
+              retryable: false,
+            };
+          }
           if (result.isError === true) {
             return { outcome: 'failed', reason: 'MCP tool returned an error', retryable: false };
           }
@@ -369,7 +438,8 @@ async function openMcpSession(
       },
       async health() {
         try {
-          await transport.request('ping');
+          // The stateless revision has no ping; asking a server about itself is its check.
+          await transport.request(stateless ? 'server/discover' : 'ping');
           return {
             status: healthNotes.length ? 'degraded' : 'ok',
             detail: ['MCP server answered ping', ...healthNotes].join('; '),

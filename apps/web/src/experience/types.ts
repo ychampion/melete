@@ -163,6 +163,7 @@ export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
 export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
 /** Signing in to a remote MCP server, for a connection that is already installed. */
 export type McpSignInStart = Ok<paths['/mcp-sign-ins'], 'post'>;
+export type McpSignInStatus = Ok<paths['/mcp-sign-ins/{id}'], 'get'>;
 export type ConnectionField = ConnectionKind['fields'][number];
 export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;

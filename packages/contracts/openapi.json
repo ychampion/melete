@@ -18748,6 +18748,23 @@
                       "connection_id"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "catalog_id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]*$"
+                      },
+                      "space_id": {
+                        "type": "string",
+                        "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                      }
+                    },
+                    "required": [
+                      "catalog_id"
+                    ],
+                    "additionalProperties": false
                   }
                 ]
               }
@@ -37893,6 +37910,9 @@
                     "detail"
                   ],
                   "additionalProperties": false
+                },
+                "catalog_id": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -42131,6 +42151,29 @@
               },
               "start": {
                 "type": "string"
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "effect_class": {
+                      "$ref": "#/components/schemas/EffectClass"
+                    },
+                    "asks_first": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "effect_class",
+                    "asks_first"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [

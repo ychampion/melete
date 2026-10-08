@@ -35,9 +35,15 @@ type PreRegistered = { client_id: string; client_secret?: string };
 export type McpSignInRequest =
   | { space_id?: string; label: string; mcp: McpConnectionConfig; client?: PreRegistered }
   /** Signing in again for a connection that exists: after its grant ended, or to grant more. */
-  | { connection_id: string; client?: PreRegistered };
+  | { connection_id: string; client?: PreRegistered }
+  /** Connecting an app from the catalog: its server and tools are the catalog's. */
+  | { catalog_id: string; space_id?: string };
 
 type NewConnection = Extract<McpSignInRequest, { mcp: McpConnectionConfig }>;
+type CatalogConnection = Extract<McpSignInRequest, { catalog_id: string }>;
+
+/** Where a catalog app's server is, and the client its sign-in needs when it takes no other. */
+export type CatalogServer = { url: string; client?: PreRegistered };
 
 /** What signing in again needs to know about the connection it is for. */
 export type ExistingConnection = {
@@ -87,6 +93,16 @@ export type McpSignInHooks = {
   install(
     actor: string,
     request: NewConnection & { credentials: Record<string, string> },
+  ): Promise<ConnectionResponse>;
+  /**
+   * A catalog app's server, or a refusal (`McpSignInFailure`) when this
+   * installation does not offer it. Runs before any address is fetched.
+   */
+  catalog?(id: string): CatalogServer;
+  /** Installs a catalog app with the credential its sign-in earned. */
+  installCatalog?(
+    actor: string,
+    request: CatalogConnection & { space_id: string; credentials: Record<string, string> },
   ): Promise<ConnectionResponse>;
   /** Gives an existing connection the credential a new sign-in earned. */
   renew(
@@ -161,11 +177,15 @@ export class McpSignIns {
         : undefined;
     const spaceId =
       existing?.spaceId ??
-      (await this.hooks.authorize(actor, 'mcp' in request ? request.space_id : undefined));
+      (await this.hooks.authorize(
+        actor,
+        'connection_id' in request ? undefined : request.space_id,
+      ));
+    const app = 'catalog_id' in request ? this.catalogServer(request.catalog_id) : undefined;
     const redirectUri = this.redirectUri();
     if (!redirectUri) throw new McpSignInFailure('callback_unavailable');
     const fetcher = await this.hooks.fetcherFor(spaceId);
-    const serverUrl = existing?.url ?? ('mcp' in request ? request.mcp.url : '');
+    const serverUrl = existing?.url ?? app?.url ?? ('mcp' in request ? request.mcp.url : '');
     const protectedResource = await discoverProtectedResource(serverUrl, fetcher);
     if (!protectedResource) throw new McpSignInFailure('sign_in_not_needed');
     // The first listed server; the resource's metadata names them in its own preference.
@@ -174,7 +194,7 @@ export class McpSignIns {
     const client = await registerClient(server, {
       redirectUri,
       clientMetadataUrl: this.clientMetadataUrl(),
-      preRegistered: request.client,
+      preRegistered: app ? app.client : 'client' in request ? request.client : undefined,
       fetcher,
     });
     const { verifier, challenge } = pkcePair();
@@ -186,7 +206,7 @@ export class McpSignIns {
       id,
       actor,
       spaceId,
-      request: 'mcp' in request ? { ...request, space_id: spaceId } : request,
+      request: 'connection_id' in request ? request : { ...request, space_id: spaceId },
       ...(scope ? { requestedScope: scope } : {}),
       state,
       verifier,
@@ -264,7 +284,13 @@ export class McpSignIns {
       const installed =
         'connection_id' in entry.request
           ? await this.hooks.renew(actor, entry.request.connection_id, credentials)
-          : await this.hooks.install(actor, { ...entry.request, credentials });
+          : 'catalog_id' in entry.request
+            ? await this.installCatalog(actor, {
+                ...entry.request,
+                space_id: entry.spaceId,
+                credentials,
+              })
+            : await this.hooks.install(actor, { ...entry.request, credentials });
       await this.finish(entry.id, actor, {
         state: 'connected',
         connection_id: installed.connection.id,
@@ -275,6 +301,17 @@ export class McpSignIns {
       await this.finish(entry.id, actor, { state: 'failed', error: code });
       throw error;
     }
+  }
+
+  /** A catalog app's server; an installation that offers no catalog knows no app. */
+  private catalogServer(id: string): CatalogServer {
+    if (!this.hooks.catalog) throw new McpSignInFailure('catalog_unknown');
+    return this.hooks.catalog(id);
+  }
+
+  private installCatalog(...args: Parameters<NonNullable<McpSignInHooks['installCatalog']>>) {
+    if (!this.hooks.installCatalog) throw new McpSignInFailure('catalog_unknown');
+    return this.hooks.installCatalog(...args);
   }
 
   async status(actor: string, id: string): Promise<McpSignInStatus | null> {

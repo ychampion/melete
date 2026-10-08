@@ -65,6 +65,7 @@ import type {
   LocalModelCheck,
   LocalModelCheckRequest,
   McpSignInStart,
+  McpSignInStatus,
   MemoryDigestResponse,
   MemoryExplanation,
   MemoryItem,
@@ -672,11 +673,25 @@ export const adapter = {
         ? api.GET('/google-sign-ins/{id}', path(id))
         : api.GET('/microsoft-sign-ins/{id}', path(id)),
     ),
-  /** Starts signing in to the MCP server behind an installed connection. */
-  startMcpSignIn: (connectionId: string) =>
+  /**
+   * Starts signing in to the MCP server behind an installed connection; with a
+   * client, as the OAuth app the person registered with that server themselves.
+   */
+  startMcpSignIn: (connectionId: string, client?: { client_id: string; client_secret?: string }) =>
     guard<McpSignInStart>(() =>
-      api.POST('/mcp-sign-ins', { body: { connection_id: connectionId } }),
+      api.POST('/mcp-sign-ins', {
+        body: { connection_id: connectionId, ...(client ? { client } : {}) },
+      }),
     ),
+  /** Starts connecting an app from the catalog: one sign-in, and its tools come from the catalog. */
+  startCatalogSignIn: (catalogId: string, spaceId?: string) =>
+    guard<McpSignInStart>(() =>
+      api.POST('/mcp-sign-ins', {
+        body: { catalog_id: catalogId, ...(spaceId ? { space_id: spaceId } : {}) },
+      }),
+    ),
+  mcpSignInStatus: (id: string) =>
+    guard<McpSignInStatus>(() => api.GET('/mcp-sign-ins/{id}', path(id))),
   /** The body is built from a kind's descriptor; the service validates it per kind. */
   installConnection: (body: Record<string, unknown>) =>
     guard<ConnectionInstalled>(() =>
