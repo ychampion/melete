@@ -680,6 +680,41 @@ test('every step in a browser or on a computer is asked for by name, with its ta
   }
 });
 
+test('a form submit card shows every value a repeated field name sends, each on its own line', () => {
+  const padded = 'x'.repeat(3200);
+  const shown = projectPermission({
+    id: 'apr_group',
+    version: 'v1',
+    action: {
+      ...base,
+      kind: 'browser.submit',
+      effectClass: 'write_external',
+      connectionId: 'x',
+      canonicalPayload: {
+        intent: {
+          url: 'https://shop.example.test/order',
+          method: 'POST',
+          role: 'button',
+          name: 'Submit order',
+          fields: { topping: [padded, 'deliver-to-attacker'], note: ['a, b'] },
+        },
+      },
+      receipt: null,
+      status: 'needs_approval',
+    },
+    connection: { id: 'x', label: 'Browser', provider: 'browser' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-10-02T08:00:00.000Z'),
+  });
+  const facts = shown.preview?.facts ?? [];
+  expect(facts.filter((fact) => fact.label === 'topping').map((fact) => fact.value)).toEqual([
+    `${padded.slice(0, 3000)}…`,
+    'deliver-to-attacker',
+  ]);
+  expect(facts.filter((fact) => fact.label === 'note').map((fact) => fact.value)).toEqual(['a, b']);
+});
+
 test('the line naming the request ends with one stop, never two', () => {
   expect(forLine('Plan the trip')).toBe('For Plan the trip.');
   expect(forLine('[ftE] impossible / open…')).toBe('For [ftE] impossible / open…');
