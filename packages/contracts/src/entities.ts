@@ -135,6 +135,13 @@ export const connection = z.object({
   shared_use: z.enum(['owner', 'room']).optional(),
   /** The account a command-line connection acts as, as the service it reaches names it. */
   account: z.string().max(200).optional(),
+  /** How the account's requests travel when it is not the service's own sign-in: through Composio. */
+  via: z.literal('composio').optional(),
+  /**
+   * Why a watched account is read less often than usual, or could not be
+   * read, in plain words; left out when its reads are going as they should.
+   */
+  reading_note: z.string().max(400).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

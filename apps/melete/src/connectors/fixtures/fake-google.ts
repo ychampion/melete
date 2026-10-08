@@ -330,6 +330,9 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         const refused = needs(GOOGLE_SCOPES.calendar);
         if (refused) return refused;
         const rest = at.slice(calendar.length);
+        // The primary calendar's id is its owner's address.
+        if (rest === '' && request.method === 'GET')
+          return Response.json({ id: email, summary: email, timeZone: 'UTC' });
         if (rest === '/events' && request.method === 'GET')
           return Response.json({ items: [...state.events.values()] });
         if (rest === '/events' && request.method === 'POST') {

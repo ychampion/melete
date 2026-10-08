@@ -105,3 +105,27 @@ export const subjectState = pgTable(
     index('subject_state_space_idx').on(table.spaceId),
   ],
 );
+
+/**
+ * Calls made through a managed sign-in provider (Composio), counted per
+ * person and calendar month: a watched account's reads and the agent's own
+ * calls alike. The installation's monthly limit is read against the sum of a
+ * month's rows. Only counts are kept, never what a call asked or answered.
+ */
+export const managedCall = pgTable(
+  'managed_call',
+  {
+    /** The person whose space the connection is in. */
+    principalId: text('principal_id').notNull(),
+    /** The calendar month in UTC, `YYYY-MM`. */
+    month: text('month').notNull(),
+    calls: integer('calls').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.principalId, table.month] }),
+    index('managed_call_month_idx').on(table.month),
+    check('managed_call_month_check', sql`${table.month} ~ '^[0-9]{4}-[0-9]{2}$'`),
+    check('managed_call_calls_check', sql`${table.calls} >= 0`),
+  ],
+);

@@ -27,6 +27,8 @@ import {
   installPluginResponse,
   MCP_CATALOG,
   type McpCatalogEntry,
+  managedSignInRequest,
+  managedSignInStart,
   mcpCatalogConfig,
   mcpCatalogEntry,
   mcpSignInRequest,
@@ -48,6 +50,7 @@ import {
 } from '../connectors/account-sign-in.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
 import { CalendarDiscoveryError, discoverCalendar } from '../connectors/caldav-discovery.ts';
+import type { ComposioToolkit } from '../connectors/composio.ts';
 import {
   type ConnectionSource,
   type ConnectorFactory,
@@ -57,6 +60,8 @@ import {
 import { asConnectorFault, ConnectorFaultError } from '../connectors/faults.ts';
 import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
+import { managedAccountInUse } from '../connectors/managed-accounts.ts';
+import { type ManagedGrant, ManagedSignIns } from '../connectors/managed-sign-in.ts';
 import { listMcpServerTools, mcpServerConfig } from '../connectors/mcp.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
@@ -116,16 +121,39 @@ type AccountInstallation = {
   | { kind: 'google_calendar' | 'outlook_calendar'; provider: 'caldav' }
   | { kind: 'google_drive'; provider: 'drive' }
 );
-type Installation = ConnectionInstallation | AccountInstallation;
+/** A Google account signed in through Composio: no secret here, only which account it is. */
+type ManagedInstallation = {
+  managed: true;
+  account: string;
+  scopes: string[];
+  connectedAccountId: string;
+} & (
+  | { kind: 'gmail'; provider: 'imap' }
+  | { kind: 'google_calendar'; provider: 'caldav' }
+  | { kind: 'google_drive'; provider: 'drive' }
+);
+type Installation = ConnectionInstallation | AccountInstallation | ManagedInstallation;
 const signedIn = (installation: Installation): installation is AccountInstallation =>
   'credential' in installation;
+const managedInstallation = (installation: Installation): installation is ManagedInstallation =>
+  'managed' in installation;
+/** What a connection signed in through Composio keeps: the account it acts for, never a token. */
+const managedConfiguration = (kind: string, account: string, connectedAccountId: string) => ({
+  kind,
+  account,
+  via: 'composio',
+  connected_account_id: connectedAccountId,
+});
+/** What the connect screen says about a Google sign-in through Composio. */
+export const COMPOSIO_NOTE =
+  'Composio handles this sign-in and keeps the Google access. Your mail, calendar and Drive reach Melete through Composio.';
 type ConnectionResponse = ReturnType<typeof connectionResponse.parse>;
 
 const CHECK_TIMEOUT_MS = 25_000;
 /** Procedure evaluation spaces are throwaway and never the space a person means. */
 const EVALUATION_SPACE_PATH = 'evaluation/%';
 
-function view(row: typeof connection.$inferSelect) {
+function view(row: typeof connection.$inferSelect, readingNote?: string | null) {
   return connectionView.parse({
     id: row.id,
     space_id: row.spaceId,
@@ -145,6 +173,8 @@ function view(row: typeof connection.$inferSelect) {
     ...(row.provider === 'command_line' && typeof row.configuration.account === 'string'
       ? { account: row.configuration.account }
       : {}),
+    ...(row.configuration.via === 'composio' ? { via: 'composio' } : {}),
+    ...(readingNote ? { reading_note: readingNote.slice(0, 400) } : {}),
     last_checked_at: row.lastCheckedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
   });
@@ -345,6 +375,25 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         ? {}
         : { unavailable_reason: reason, ...(operator ? { setup_hint: hint } : {}) };
     const accounts = ACCOUNT_CATALOG.map((entry): ConnectionCatalogEntry => {
+      // With a Composio key, Google signs in through Composio; Microsoft keeps its own sign-in.
+      if (entry.provider === 'google' && factory.options.composio) {
+        const hint = managedSignIns.redirectUri() ? undefined : RETURN_ADDRESS_NEEDED;
+        return {
+          id: entry.id,
+          title: entry.title,
+          description: entry.description,
+          covers: [...entry.covers],
+          connect: {
+            method: 'managed_sign_in',
+            provider: 'google',
+            via: 'composio',
+            start: '/managed-sign-ins',
+            note: COMPOSIO_NOTE,
+          },
+          available: hint === undefined,
+          ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
+        };
+      }
       const hint = !factory.options[entry.provider]
         ? `Signing in with ${entry.title} needs its OAuth client. Set ${ACCOUNT_SETTINGS[entry.provider]}.`
         : !accountSignIns[entry.provider]?.redirectUri()
@@ -428,7 +477,15 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         ),
       )
       .orderBy(connection.id);
-    return c.json(connectionListResponse.parse({ connections: rows.map(view) }));
+    const notes = await readingNotes(
+      deps.sql,
+      rows.map((row) => row.id),
+    );
+    return c.json(
+      connectionListResponse.parse({
+        connections: rows.map((row) => view(row, notes.get(row.id))),
+      }),
+    );
   });
   app.get('/connections/:id', async (c) => {
     const [row] = await deps.db
@@ -436,7 +493,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       .from(connection)
       .where(eq(connection.id, c.req.param('id')));
     if (!row) throw new ServiceError('not_found', 'Connection not found.', 404);
-    return c.json(connectionResponse.parse({ connection: view(row) }));
+    const notes = await readingNotes(deps.sql, [row.id]);
+    return c.json(connectionResponse.parse({ connection: view(row, notes.get(row.id)) }));
   });
 
   /**
@@ -528,8 +586,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     catalogId?: string,
   ) => {
     // Everything but an MCP server without a token or secret variables has something to seal.
-    const seals =
-      installation.kind === 'mcp'
+    const seals = managedInstallation(installation)
+      ? false
+      : installation.kind === 'mcp'
         ? Boolean(installation.credentials)
         : installation.kind === 'mcp_stdio'
           ? installation.config.secret_env.length > 0
@@ -924,12 +983,87 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
    * more, gives the connection already made for that account the new
    * credential rather than making a second one.
    */
+  /** The Composio client, when the operator set a key. */
+  const composio = factory.options.composio;
+
+  /**
+   * Remove a Composio account no live connection acts for any more, best
+   * effort: the person is not kept waiting on it, and a failure is only noted.
+   */
+  const releaseManagedAccount = async (connectedAccountId: string) => {
+    if (!composio) return;
+    if (await managedAccountInUse(deps.sql, connectedAccountId)) return;
+    await composio.client.removeAccount(connectedAccountId).catch(() => {
+      process.stderr.write('connections: a Composio account could not be removed\n');
+    });
+  };
+
+  /**
+   * Move a connection between its native sign-in and Composio, keeping the
+   * row: what it already reported is keyed by the connection, so nothing it
+   * read before is reported again. Its generation moves on, so a read or a
+   * call still on the old way is set aside, and its connector is rebuilt.
+   */
+  const switchTransport = async (
+    actor: string,
+    row: typeof connection.$inferSelect,
+    next: { configuration: Record<string, unknown>; secretRef: string | null; scopes: string[] },
+  ): Promise<ConnectionResponse> => {
+    const kind = String(row.configuration.kind) as Installation['kind'];
+    const updated = await serviceTransaction(deps.db, async (tx) => {
+      await installer(tx, row.spaceId, actor, kind, true);
+      const [changed] = await tx
+        .update(connection)
+        .set({
+          configuration: next.configuration,
+          secretRef: next.secretRef,
+          scopes: next.scopes,
+          generation: row.generation + 1,
+        })
+        .where(
+          and(
+            eq(connection.id, row.id),
+            eq(connection.generation, row.generation),
+            ne(connection.status, 'revoked'),
+          ),
+        )
+        .returning();
+      return changed;
+    });
+    if (!updated)
+      throw new ServiceError('generation_conflict', 'Connection changed during sign-in.', 409);
+    const running = deps.registry.get(row.id);
+    if (running) {
+      await deps.registry.remove(row.id, running).catch(() => {});
+      factory.mailers.delete(row.id);
+    }
+    if (row.secretRef && row.secretRef !== next.secretRef)
+      await new PostgresSecretRepository(deps.sql).forget(row.secretRef, row.spaceId).catch(() => {
+        process.stderr.write('connections: a replaced sign-in could not be removed\n');
+      });
+    const opened = await factory.open(source(updated)).catch(() => undefined);
+    if (opened && !deps.registry.get(row.id)) factory.register(deps.registry, row.id, opened);
+    const tested = await retest(updated);
+    return connectionResponse.parse({ connection: view(tested.connection), check: tested.check });
+  };
+
   const reconnect = async (
     actor: string,
     row: typeof connection.$inferSelect,
     installation: AccountInstallation,
   ): Promise<ConnectionResponse> => {
     const secretRef = await secrets.put(row.spaceId, JSON.stringify(installation.credential));
+    // Signed in through Composio until now: the connection moves back to its own sign-in.
+    const previous = row.configuration.connected_account_id;
+    if (row.configuration.via === 'composio') {
+      const switched = await switchTransport(actor, row, {
+        configuration: { kind: installation.kind, account: installation.account },
+        secretRef,
+        scopes: installation.scopes,
+      });
+      if (typeof previous === 'string') await releaseManagedAccount(previous);
+      return switched;
+    }
     const updated = await serviceTransaction(deps.db, async (tx) => {
       await installer(tx, row.spaceId, actor, installation.kind, true);
       const [next] = await tx
@@ -1004,6 +1138,152 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
     return installed;
   };
+
+  /**
+   * One part a sign-in through Composio connected. An address already
+   * connected in the space natively moves to Composio on its own row; one
+   * already connected through another active Composio account is refused.
+   */
+  const installManaged = async (
+    actor: string,
+    grant: ManagedGrant,
+  ): Promise<ConnectionResponse[]> => {
+    const [existing] = await deps.db
+      .select()
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, grant.spaceId),
+          eq(connection.provider, grant.provider),
+          ne(connection.status, 'revoked'),
+          query`${connection.configuration}->>'kind' = ${grant.kind}`,
+          query`lower(${connection.configuration}->>'account') = ${grant.account}`,
+        ),
+      )
+      .orderBy(asc(connection.id))
+      .limit(1);
+    const configuration = managedConfiguration(grant.kind, grant.account, grant.connectedAccountId);
+    if (!existing) {
+      const installation = {
+        managed: true,
+        kind: grant.kind,
+        provider: grant.provider,
+        account: grant.account,
+        scopes: grant.scopes,
+        connectedAccountId: grant.connectedAccountId,
+      } as ManagedInstallation;
+      return [await installResolved(actor, grant.spaceId, grant.label, installation)];
+    }
+    if (existing.configuration.via !== 'composio')
+      return [
+        await switchTransport(actor, existing, {
+          configuration,
+          secretRef: null,
+          scopes: grant.scopes,
+        }),
+      ];
+    const previous = String(existing.configuration.connected_account_id ?? '');
+    if (previous === grant.connectedAccountId) {
+      const tested = await retest(existing);
+      return [
+        connectionResponse.parse({ connection: view(tested.connection), check: tested.check }),
+      ];
+    }
+    // The same address through another Composio account: refused while that one still works.
+    const standing = composio ? await composio.client.account(previous).catch(() => null) : null;
+    if (standing && standing.status === 'ACTIVE' && !standing.disabled)
+      throw new SignInFailure('account_already_connected');
+    const switched = await switchTransport(actor, existing, {
+      configuration,
+      secretRef: null,
+      scopes: grant.scopes,
+    });
+    if (previous) await releaseManagedAccount(previous);
+    return [switched];
+  };
+
+  /** This installation's Composio user for a person: stable, and never shown. */
+  const managedUser = async (actor: string) => {
+    const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
+    if (!installation) throw new ServiceError('unauthorized', 'Setup is required.', 401);
+    return `melete:${installation.id}:${actor}`;
+  };
+  const authConfigSettings: Record<ComposioToolkit, string | undefined> = {
+    gmail: deps.env.COMPOSIO_AUTH_CONFIG_GMAIL,
+    googlecalendar: deps.env.COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR,
+    googledrive: deps.env.COMPOSIO_AUTH_CONFIG_GOOGLEDRIVE,
+  };
+  const meter = composio?.meter;
+  const managedSignIns = new ManagedSignIns<ConnectionResponse>({
+    store: pendingSignIns,
+    publicUrl: deps.env.MELETE_PUBLIC_URL,
+    ...(composio ? { composio: composio.client } : {}),
+    authConfig: async (toolkit) => {
+      if (!composio) throw new SignInFailure('provider_not_configured');
+      return composio.client.authConfig(toolkit, authConfigSettings[toolkit]);
+    },
+    userId: managedUser,
+    authorize: async (actor, requested) => {
+      const spaceId = requested ?? (await personalSpace(deps.db, actor));
+      await installer(deps.db, spaceId, actor, 'gmail');
+      // A sign-in waits sealed with the master key, as every sign-in does.
+      if (!factory.options.masterKey)
+        throw new ServiceError(
+          'sealing_unavailable',
+          'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+          409,
+        );
+      return spaceId;
+    },
+    install: installManaged,
+    connectionId: (installed) => installed.connection.id,
+    ...(meter ? { charge: (spaceId: string) => meter.charge(spaceId) } : {}),
+  });
+
+  app.post('/managed-sign-ins', async (c) => {
+    const parsed = managedSignInRequest.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    try {
+      return c.json(
+        managedSignInStart.parse(await managedSignIns.start(c.get('owner').id, parsed.data)),
+        201,
+      );
+    } catch (error) {
+      throw managedSignInError(error);
+    }
+  });
+
+  // Composio sends the browser here after each consent page: on to the next
+  // one, or a short page once the sign-in is done. The app reads the outcome
+  // from the sign-in's status. Mounted before `/:id`, which would take it.
+  app.get('/managed-sign-ins/callback', async (c) => {
+    try {
+      const done = await managedSignIns.complete(
+        c.get('owner').id,
+        new URL(c.req.url).searchParams,
+      );
+      if (done.next) return c.redirect(done.next, 302);
+      const labels = done.installed.map((item) => item.connection.label).join(' and ');
+      return c.html(
+        done.installed.some((item) => item.check?.status === 'failing')
+          ? signInPage(
+              'Signed in',
+              `You signed in to ${labels}, but Google did not answer through Composio. Test the connection from the app.`,
+            )
+          : signInPage('Connected', `${labels} connected. You can close this tab.`),
+      );
+    } catch (error) {
+      const refused = managedSignInError(error);
+      return c.html(signInPage('Not connected', refused.message), refused.status);
+    }
+  });
+
+  app.get('/managed-sign-ins/:id', async (c) => {
+    const status = await managedSignIns.status(c.get('owner').id, c.req.param('id'));
+    if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
+    return c.json(accountSignInStatus.parse(status));
+  });
 
   const accountProviders = {
     google: factory.options.google
@@ -1367,6 +1647,77 @@ function accountSignInError(name: AccountProviderName, error: unknown): ServiceE
   return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
 }
 
+/** What a sign-in through Composio tells the person, by its fixed code. */
+const MANAGED_SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message: string }> =
+  {
+    provider_not_configured: {
+      status: 409,
+      message:
+        'Signing in with Google through Composio needs a Composio key. Set COMPOSIO_API_KEY.',
+    },
+    callback_unavailable: {
+      status: 409,
+      message:
+        'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.',
+    },
+    sign_in_not_found: {
+      status: 404,
+      message:
+        'That sign-in has expired, was already used, or was started by someone else. Start again.',
+    },
+    sign_in_declined: { status: 400, message: 'Google did not approve the sign-in.' },
+    account_mismatch: {
+      status: 400,
+      message: 'That sign-in came back for another account than the one it started. Start again.',
+    },
+    account_foreign: {
+      status: 400,
+      message: 'That account belongs to another sign-in. Start again.',
+    },
+    account_inactive: {
+      status: 400,
+      message: 'Composio did not finish connecting the account. Start again.',
+    },
+    account_unverified: {
+      status: 502,
+      message: 'Google did not confirm an address for this account.',
+    },
+    account_already_connected: {
+      status: 409,
+      message: 'This Google account is already connected here.',
+    },
+    provider_unreachable: {
+      status: 502,
+      message: 'Composio could not be reached for sign-in. Try again shortly.',
+    },
+  };
+
+function managedSignInError(error: unknown): ServiceError {
+  if (error instanceof ServiceError) return error;
+  if (error instanceof SignInFailure) {
+    const known = MANAGED_SIGN_IN_FAILURES[error.code];
+    return new ServiceError(
+      error.code,
+      known?.message ?? 'Composio could not be reached for sign-in. Try again shortly.',
+      known?.status ?? 502,
+    );
+  }
+  return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
+}
+
+/** Why each watched account is read less often than usual, or could not be read. */
+async function readingNotes(sql: Sql, ids: string[]): Promise<Map<string, string>> {
+  if (!ids.length) return new Map();
+  const rows = await sql`select connection_id, last_error from source_cursor
+    where connection_id in ${sql(ids)} and last_error is not null
+    order by connection_id, stream`;
+  const notes = new Map<string, string>();
+  for (const row of rows)
+    if (!notes.has(String(row.connection_id)))
+      notes.set(String(row.connection_id), String(row.last_error));
+  return notes;
+}
+
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 /** The small page the browser lands on after signing in. */
@@ -1403,6 +1754,16 @@ async function storedShape(
   factory: ConnectorFactory,
   reach: Reach,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
+  if (managedInstallation(installation))
+    return {
+      scopes: installation.scopes,
+      secret: null,
+      configuration: managedConfiguration(
+        installation.kind,
+        installation.account,
+        installation.connectedAccountId,
+      ),
+    };
   if (signedIn(installation))
     return {
       scopes: installation.scopes,

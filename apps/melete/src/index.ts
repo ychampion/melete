@@ -73,6 +73,7 @@ import {
   readConnectionConfig,
 } from './connectors/configured.ts';
 import { startTrashSweep } from './connectors/files-trash.ts';
+import { managedRevocation } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
@@ -206,6 +207,7 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
+import { ManagedCallMeter } from './signals/managed-calls.ts';
 import { SignalPoller } from './signals/poller.ts';
 import { startObservationRetention } from './signals/retention.ts';
 import { mountSituations } from './situations/routes.ts';
@@ -800,6 +802,7 @@ export async function bootstrap(
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
+  let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -1004,6 +1007,9 @@ export async function bootstrap(
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
+      // A Google account signed in through Composio is revoked there when disconnected.
+      const composio = connectors.options.composio;
+      releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions) {
         releaseSandboxes = sandboxKeyChange({
@@ -1441,7 +1447,18 @@ export async function bootstrap(
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
       policy = new PolicyService(jobs, runner, {
-        beforeKeyChange: releaseSandboxes,
+        ...(releaseSandboxes || releaseManaged
+          ? {
+              beforeKeyChange: async (
+                connection: { id: string; provider: string },
+                change: 'revoke' | 'switch',
+                next?: { secretRef: string; spaceId: string },
+              ) => {
+                await releaseSandboxes?.(connection, change, next);
+                await releaseManaged?.(connection, change);
+              },
+            }
+          : {}),
         ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
       });
       // Revocations a stopped process left part way finish now, in the
@@ -1624,6 +1641,15 @@ export async function bootstrap(
             connectors,
             leads: () => leading(leases, 'signal-poller'),
             load,
+            // Reads through Composio count toward its monthly limit, and slow near it.
+            ...(env.COMPOSIO_API_KEY
+              ? {
+                  managedCalls: new ManagedCallMeter(
+                    sql,
+                    env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null,
+                  ),
+                }
+              : {}),
             ...(noticing
               ? {
                   detectorDemand: () => noticing.demand(),

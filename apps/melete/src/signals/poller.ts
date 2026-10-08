@@ -56,6 +56,11 @@ import {
 import { namedDocuments, type TriggerService } from '../jobs/triggers.ts';
 import { isQuiet } from '../push/policy.ts';
 import {
+  MANAGED_NEAR_WORDS,
+  MANAGED_REACHED_WORDS,
+  type ManagedStanding,
+} from './managed-calls.ts';
+import {
   type CalendarCursor,
   diffCalendar,
   documentFields,
@@ -105,6 +110,16 @@ export const MAX_CONFIRMS = 20;
  */
 export const DEFAULT_WATCH_SECONDS = 300;
 export const DEFAULT_WATCH_NIGHT_SECONDS = 1800;
+/**
+ * An account signed in through Composio costs a call for each read, so it is
+ * watched less often by default: mail every ten minutes in the day, a
+ * calendar every fifteen, and both hourly at night. A trigger or a detector
+ * that asks for less still gets it.
+ */
+export const MANAGED_WATCH_SECONDS: Record<string, { day: number; night: number }> = {
+  mail: { day: 600, night: 3600 },
+  calendar: { day: 900, night: 3600 },
+};
 
 /**
  * The stream a watched account is read on, by provider: a mailbox's mail, a
@@ -158,6 +173,12 @@ export type SignalPollerDeps = {
   detectorDemand?: () => Promise<
     Array<{ connectionId: string; spaceId: string; stream: Stream; seconds: number }>
   >;
+  /**
+   * Where this month's calls through Composio stand against the limit. Near
+   * or past it, accounts signed in through Composio are read less often, and
+   * say why. Without it, they are read as any other.
+   */
+  managedCalls?: { standing(): Promise<ManagedStanding> };
   /** Called after a calendar read has kept its fields, to move clocks and look for overlaps. */
   afterCalendarRead?: (connectionId: string) => Promise<void>;
   now?: () => number;
@@ -174,6 +195,8 @@ type CursorRow = {
   failures: number;
   /** Which provider, and which of its servers, the account is read from. */
   provider_key: string;
+  /** Signed in through Composio, where each read is a call that counts. */
+  managed: boolean;
 };
 
 /** Failures in a row at one provider before its reads pause. */
@@ -195,6 +218,8 @@ function providerTrouble(error: unknown): boolean {
 
 /** The provider an account is read from: its kind of connection, and the server where it names one. */
 function providerKey(provider: string, configuration: Record<string, unknown> | null): string {
+  // Every account signed in through Composio is read through the same service.
+  if (configuration?.via === 'composio') return 'composio';
   const kind = typeof configuration?.kind === 'string' ? configuration.kind : '';
   const server = (() => {
     const mail = (configuration?.mail as { imap?: { host?: unknown } } | undefined)?.imap?.host;
@@ -342,6 +367,7 @@ export class SignalPoller {
     // What it reports still reaches only the work the connection serves.
     const watched = await this.deps.sql`
       select c.id, c.space_id, c.provider, c.watch_changes, s.kind,
+        c.configuration->>'via' as via,
         pr.day_start, pr.day_end, pr.time_zone
       from connection c join space s on s.id = c.space_id
         left join lateral (select p.day_start, p.day_end, p.time_zone from experience_profile p
@@ -360,7 +386,14 @@ export class SignalPoller {
         end: row.day_end ? String(row.day_end) : '22:00',
         timeZone: row.time_zone ? String(row.time_zone) : 'UTC',
       });
-      const seconds = night ? DEFAULT_WATCH_NIGHT_SECONDS : DEFAULT_WATCH_SECONDS;
+      const managed = row.via === 'composio' ? MANAGED_WATCH_SECONDS[stream] : undefined;
+      const seconds = managed
+        ? night
+          ? managed.night
+          : managed.day
+        : night
+          ? DEFAULT_WATCH_NIGHT_SECONDS
+          : DEFAULT_WATCH_SECONDS;
       const key = `${String(row.id)} ${stream}`;
       const before = wanted.get(key);
       wanted.set(key, {
@@ -444,6 +477,7 @@ export class SignalPoller {
         String(row.provider ?? ''),
         (row.configuration as Record<string, unknown> | null) ?? null,
       ),
+      managed: (row.configuration as Record<string, unknown> | null)?.via === 'composio',
     }));
   }
 
@@ -516,6 +550,10 @@ export class SignalPoller {
       return { delivered: 0, failed: false };
     }
     const context: ReadContext = { generation: Number(current.generation), abandoned: false };
+    // Near or past this month's limit of calls through Composio, the account
+    // is read less often, never not at all, and says why.
+    const slowed = row.managed ? await this.managedSlowdown(row.interval_s) : null;
+    const interval = slowed?.seconds ?? row.interval_s;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const reading = this.poll(row, source, context);
@@ -531,9 +569,10 @@ export class SignalPoller {
         }),
       ]);
       await this.deps.sql`update source_cursor
-        set cursor = ${JSON.stringify(read.cursor)}::jsonb, failures = 0, last_error = ${read.note ?? null},
+        set cursor = ${JSON.stringify(read.cursor)}::jsonb, failures = 0,
+          last_error = ${slowed?.note ?? read.note ?? null},
           last_ok_at = ${new Date(this.now()).toISOString()}::timestamptz,
-          next_poll_at = ${new Date(this.now() + (read.more ? 0 : row.interval_s * 1000)).toISOString()}::timestamptz
+          next_poll_at = ${new Date(this.now() + (read.more && !slowed ? 0 : interval * 1000)).toISOString()}::timestamptz
         where connection_id = ${row.connection_id} and stream = ${row.stream}`;
       this.providerWorked(row.provider_key);
       return { delivered: read.delivered, failed: false };
@@ -555,12 +594,14 @@ export class SignalPoller {
       // A provider's own Retry-After, on a SourceError or a mailbox's own error.
       const said = (error as { retryAfter?: unknown } | null)?.retryAfter;
       const asked = typeof said === 'number' && said >= 0 ? said : null;
-      const wait =
+      const wait = Math.max(
         error instanceof CalendarTooLarge
           ? MAX_POLL_SECONDS
           : asked !== null
             ? Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(asked, row.interval_s))
-            : backoff;
+            : backoff,
+        interval,
+      );
       this.providerFailed(row.provider_key, row.connection_id, error);
       await this.deps.sql`update source_cursor
         set failures = failures + 1, last_error = ${failureWords(error)},
@@ -573,6 +614,30 @@ export class SignalPoller {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * How much slower an account signed in through Composio is read this month:
+   * twice its interval once the month's calls are close to the limit, once an
+   * hour once they reach it. Null when they are not near it, or a standing
+   * could not be read, in which case reading goes on as usual.
+   */
+  private async managedSlowdown(
+    seconds: number,
+  ): Promise<{ seconds: number; note: string } | null> {
+    if (!this.deps.managedCalls) return null;
+    let standing: ManagedStanding;
+    try {
+      standing = await this.deps.managedCalls.standing();
+    } catch {
+      process.stderr.write('signals: managed_standing_unread\n');
+      return null;
+    }
+    if (standing.state === 'reached')
+      return { seconds: MAX_POLL_SECONDS, note: MANAGED_REACHED_WORDS };
+    if (standing.state === 'near')
+      return { seconds: Math.min(MAX_POLL_SECONDS, seconds * 2), note: MANAGED_NEAR_WORDS };
+    return null;
   }
 
   /** Stops a read whose connection changed, or that timed out, before it writes anything. */
