@@ -14,8 +14,17 @@ be done by.
 The person's words are read by Melete from their own message in the
 conversation. Only the lines they wrote count: a quoted line, a forwarded email,
 a reply chain or pasted email headers inside their message are someone else's
-words, and a message that opens with one counts as none of theirs. Text pasted
-with no such marker reads as theirs.
+words, and a message that opens with one counts as none of theirs. A paste
+with no marker is told by its shape: a copied email, from its greeting or its
+headers (as written, or as a mail app shows them) to its sign-off and
+signature, and a long passage (six lines, or 400 characters, in one
+paragraph). Text the web composer saw pasted counts as pasted whatever its
+shape. Where the shape is unsure, the text counts as pasted, which only means
+a warning on the card. The person's own lines around a paste stay theirs, so a
+value they state again in their own words is theirs (`a copied email with no
+marker is not the person’s, so the card keeps its warning`). A short pasted
+line with none of these shapes, sent from somewhere that cannot tell a paste,
+reads as theirs.
 
 Each detail is marked as theirs only when their own lines say it, as something
 they want: a name or a phrase as itself, and never right after "not", "no" or
