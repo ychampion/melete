@@ -1134,6 +1134,8 @@ conversations use a local model instead: set one under Settings → Privacy, or
 with `MELETE_LOCAL_MODEL_URL` (an OpenAI-compatible version prefix on this
 machine or a private network, for example `http://127.0.0.1:11434/v1`),
 `MELETE_LOCAL_MODEL` and, when the server needs one, `MELETE_LOCAL_MODEL_KEY`.
+Only the installation's owner sets one in the app; everyone else's private
+conversations use the one in the environment.
 Listed private values and the vault of swapped details are sealed with
 `MELETE_MASTER_KEY`. A configured model whose address is on this machine or
 your network is still redacted for, since it may be a proxy to a cloud service,

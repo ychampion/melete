@@ -60,11 +60,31 @@ export type PlainSettings = {
 /** What is sealed beside it. */
 export type SealedSettings = { known: KnownValue[]; local_api_key?: string };
 
+/** A space's settings as stored, and who may name addresses in them. */
+export type StoredSettings = {
+  plain: PlainSettings;
+  sealed: SealedSettings | null;
+  version: number;
+  /**
+   * Whether the space belongs to the installation's owner, who may name a
+   * local model on this machine or network. False for everyone else, whose
+   * local model is the operator's. Left out by a store that cannot tell.
+   */
+  installation?: boolean;
+};
+
+/**
+ * `installation` is false when the space is not the installation owner's: its
+ * local model then comes from the operator's configuration only, and an
+ * address saved in the space (before this rule, or by any other route) is
+ * never used. Turning the local model off still holds.
+ */
 export function resolveSettings(
   plain: PlainSettings,
   sealed: SealedSettings | null,
   version: number,
   fallbackLocal: LocalModel | null,
+  installation = true,
 ): ResolvedSettings {
   const enabled = (plain.enabled ?? [...PRIVACY_CATEGORIES]).filter((category) =>
     PRIVACY_CATEGORIES.includes(category),
@@ -72,7 +92,7 @@ export function resolveSettings(
   const local =
     plain.local_model === null
       ? null
-      : plain.local_model
+      : plain.local_model && installation
         ? {
             baseUrl: plain.local_model.base_url,
             model: plain.local_model.model,
@@ -174,10 +194,7 @@ export interface PrivacyStore {
    * connection of the store's own: a caller holding the event order lock must
    * not wait for another connection.
    */
-  settings(
-    spaceId: string | null,
-    query?: Sql | TransactionSql,
-  ): Promise<{ plain: PlainSettings; sealed: SealedSettings | null; version: number }>;
+  settings(spaceId: string | null, query?: Sql | TransactionSql): Promise<StoredSettings>;
   saveSettings(
     spaceId: string,
     plain: PlainSettings,
@@ -318,11 +335,19 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return { jobId, attemptId, spaceId: null, conversationId: null, agentId: null, turnId: null };
   }
 
-  async settings(spaceId: string | null, query?: Sql | TransactionSql) {
-    if (!spaceId) return { plain: {}, sealed: null, version: 0 };
-    const [row] = await (query ??
-      this.sql)`select settings, sealed, version from privacy_settings where space_id = ${spaceId}`;
-    if (!row) return { plain: {}, sealed: null, version: 0 };
+  async settings(spaceId: string | null, query?: Sql | TransactionSql): Promise<StoredSettings> {
+    if (!spaceId) return { plain: {}, sealed: null, version: 0, installation: false };
+    // The installation owner's space: one they own (a space that names no
+    // owner predates accounts and is theirs), or any space before setup.
+    const [row] = await (query ?? this.sql)`select p.settings, p.sealed, p.version,
+        (o.id is null or coalesce(s.owner_principal_id, o.id) = o.id) as installation
+      from space s
+      left join privacy_settings p on p.space_id = s.id
+      left join lateral (select id from owner order by created_at limit 1) o on true
+      where s.id = ${spaceId}`;
+    if (!row) return { plain: {}, sealed: null, version: 0, installation: false };
+    const installation = row.installation === true;
+    if (row.version === null) return { plain: {}, sealed: null, version: 0, installation };
     let sealed: SealedSettings | null = null;
     if (row.sealed && this.sealing) {
       try {
@@ -332,7 +357,12 @@ export class PostgresPrivacyStore implements PrivacyStore {
         sealed = null;
       }
     }
-    return { plain: (row.settings ?? {}) as PlainSettings, sealed, version: Number(row.version) };
+    return {
+      plain: (row.settings ?? {}) as PlainSettings,
+      sealed,
+      version: Number(row.version),
+      installation,
+    };
   }
 
   async saveSettings(spaceId: string, plain: PlainSettings, sealed: SealedSettings | null) {
@@ -512,7 +542,13 @@ export class PostgresPrivacyStore implements PrivacyStore {
 /** For tests and for a service without a database: everything in memory. */
 export class MemoryPrivacyStore implements PrivacyStore {
   readonly sealing = true;
-  constructor(private readonly options: { keepLogs?: boolean } = {}) {}
+  constructor(
+    private readonly options: {
+      keepLogs?: boolean;
+      /** Whether the spaces here are the installation owner's. Unset, they are. */
+      installation?: boolean;
+    } = {},
+  ) {}
   readonly vaults = new Map<string, VaultData>();
   readonly logs: RequestLog[] = [];
   readonly conversations = new Map<string, ConversationState>();
@@ -537,8 +573,9 @@ export class MemoryPrivacyStore implements PrivacyStore {
     };
   }
 
-  async settings(spaceId: string | null) {
-    return (spaceId && this.stored.get(spaceId)) || { plain: {}, sealed: null, version: 0 };
+  async settings(spaceId: string | null): Promise<StoredSettings> {
+    const stored = (spaceId && this.stored.get(spaceId)) || { plain: {}, sealed: null, version: 0 };
+    return { ...stored, installation: this.options.installation ?? true };
   }
 
   async saveSettings(spaceId: string, plain: PlainSettings, sealed: SealedSettings | null) {

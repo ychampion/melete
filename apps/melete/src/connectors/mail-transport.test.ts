@@ -4,7 +4,9 @@ import { simpleParser } from 'mailparser';
 import { EmailConnector } from './email.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import { type EmailConnection, ImapSmtpTransport, toMailMessage } from './mail-transport.ts';
+import { UNREACHABLE } from './public-fetch.ts';
 import type { SecretAccess } from './secrets.ts';
+import type { ResolvedAddress } from './web.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
 async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
@@ -13,12 +15,14 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
   const sent: string[] = [];
   const auth: string[] = [];
   let dropAck = false;
+  let connections = 0;
   const inbox = [
     'From: friend@example.test\r\nTo: owner@example.test\r\nMessage-ID: <normal@example.test>\r\nSubject: Dinner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee you Friday.',
     'From: account@example.test\r\nTo: owner@example.test\r\nMessage-ID: <sensitive@example.test>\r\nSubject: Account information\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
       Buffer.from('Your one-time passcode is 123456.').toString('base64'),
   ];
   const imap = createServer((socket) => {
+    connections += 1;
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
@@ -85,6 +89,7 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
     });
   });
   const smtp = createServer((socket) => {
+    connections += 1;
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
@@ -145,6 +150,7 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
   };
   return {
     config,
+    connections: () => connections,
     auth,
     sent,
     dropAck: () => {
@@ -369,4 +375,78 @@ describe('what a parsed message says about its thread and its sender', () => {
       expect(toMailMessage(1, await raw(lines(header))).automated).toBe(true);
     expect(toMailMessage(1, await raw(lines('Auto-Submitted: no'))).automated).toBe(false);
   });
+});
+
+describe('a mailbox added in the app is held to its space’s reach', () => {
+  const answers =
+    (address: string, family: 4 | 6 = 4) =>
+    async (): Promise<ResolvedAddress[]> => [{ address, family }];
+  const outcome = (promise: Promise<unknown>) =>
+    promise.then(
+      () => 'passed',
+      (error: { fault?: unknown }) => error.fault ?? error,
+    );
+
+  test('someone else’s mailbox on the server’s own network is refused before any connection', async () => {
+    const servers = await mailServers();
+    try {
+      // By address, and by a name that answers with one.
+      for (const config of [
+        { ...servers.config, reach: 'public' as const },
+        {
+          ...servers.config,
+          imap: { ...servers.config.imap, host: 'localhost' },
+          smtp: { ...servers.config.smtp, host: 'localhost' },
+          reach: 'public' as const,
+        },
+      ]) {
+        const transport = new ImapSmtpTransport(config, 'test-app-password', answers('127.0.0.1'));
+        expect(await outcome(transport.health())).toMatchObject({
+          kind: 'unsupported_route',
+          detail: UNREACHABLE,
+          may_have_committed: false,
+        });
+        expect(
+          await outcome(
+            transport.send({
+              to: ['friend@example.test'],
+              cc: [],
+              bcc: [],
+              subject: 'Hi',
+              body: 'x',
+              messageId: '<act_reach@melete.local>',
+            }),
+          ),
+        ).toMatchObject({ kind: 'unsupported_route', may_have_committed: false });
+      }
+      expect(servers.connections()).toBe(0);
+      expect(servers.auth).toEqual([]);
+    } finally {
+      await servers.close();
+    }
+  }, 30_000);
+
+  test('the installation owner’s mailbox on their own network connects to the address it checked', async () => {
+    const servers = await mailServers();
+    try {
+      const named = {
+        ...servers.config,
+        imap: { ...servers.config.imap, host: 'localhost' },
+        smtp: { ...servers.config.smtp, host: 'localhost' },
+        reach: 'installation' as const,
+      };
+      await new ImapSmtpTransport(named, 'test-app-password', answers('127.0.0.1')).health();
+      expect(servers.connections()).toBeGreaterThan(0);
+      // The same name answering with cloud metadata reaches nothing.
+      const before = servers.connections();
+      expect(
+        await outcome(
+          new ImapSmtpTransport(named, 'test-app-password', answers('169.254.169.254')).health(),
+        ),
+      ).toMatchObject({ kind: 'unsupported_route', detail: UNREACHABLE });
+      expect(servers.connections()).toBe(before);
+    } finally {
+      await servers.close();
+    }
+  }, 30_000);
 });
