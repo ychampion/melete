@@ -37,6 +37,13 @@ const records = (terms: string) =>
   new RegExp(String.raw`\b${OWN}\s+(?:${WORD}){0,2}?(?:${terms})\b`, 'i');
 const phrase = (terms: string) => new RegExp(String.raw`\b(?:${terms})\b`, 'i');
 
+/**
+ * Allergies and dietary needs are not on these lists. They are what a personal
+ * assistant must remember to order a meal or book a table, and gating on
+ * "allergy" sent a plain "I'm allergic to shellfish" to the privacy question
+ * and then kept nothing of the chat. Diagnoses, conditions, medications and
+ * medical records still mark a conversation as health.
+ */
 const TOPICS: Record<SensitiveTopic, Topic> = {
   health: {
     strong: [
@@ -44,13 +51,13 @@ const TOPICS: Record<SensitiveTopic, Topic> = {
         `medical (?:records?|history|reports?|charts?|notes?)|health records?|lab (?:results?|reports?|work)|blood (?:tests?|work)(?: results?)?|discharge (?:summary|papers|notes)|pathology reports?|biopsy(?: results?)?|(?:MRI|CT|PET) (?:scans?|results?|reports?)|x-ray results?|prescriptions?|ICD-?10 codes?`,
       ),
       about(
-        String.raw`diagnos(?:is|ed)|symptoms|medications?|meds|surgery|chemo(?:therapy)?|biopsy|HIV|cancer|diabetes|tumou?r|miscarriage|pregnan(?:t|cy)|blood pressure|allerg(?:y|ies)|illness|chronic \w+|treatment`,
+        String.raw`diagnos(?:is|ed)|symptoms|medications?|meds|surgery|chemo(?:therapy)?|biopsy|HIV|cancer|diabetes|tumou?r|miscarriage|pregnan(?:t|cy)|blood pressure|illness|chronic \w+|treatment`,
       ),
       phrase(
         `my (?:doctor|GP|oncologist|surgeon|cardiologist|neurologist)|I(?:['’]ve| have| was| got| am)(?: been| being)? diagnosed|a diagnosis of`,
       ),
     ],
-    weak: /\b(?:doctor|physician|clinic|hospital|patient|symptoms?|medication|dosage|prescri(?:bed|ption)|surgery|treatment|illness|disease|allerg(?:y|ies)|chronic|insulin|diabetes|cancer|pregnan(?:t|cy)|referral|specialist|cardiolog\w*|neurolog\w*|dermatolog\w*|ultrasound|vaccin\w*|biopsy|HIV)\b/i,
+    weak: /\b(?:doctor|physician|clinic|hospital|patient|symptoms?|medication|dosage|prescri(?:bed|ption)|surgery|treatment|illness|disease|chronic|insulin|diabetes|cancer|pregnan(?:t|cy)|referral|specialist|cardiolog\w*|neurolog\w*|dermatolog\w*|ultrasound|vaccin\w*|biopsy|HIV)\b/i,
   },
   therapy: {
     strong: [

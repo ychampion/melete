@@ -15,6 +15,7 @@ import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
 import { sharedRevisionEligible, withSharedItems } from '../rooms/shares.ts';
 import { withStyleCheck } from '../runtime/style.ts';
+import { chatIntent } from './capture.ts';
 import { eligibleRevision } from './claims.ts';
 import {
   iso,
@@ -49,6 +50,64 @@ async function heldRevision(tx: MemoryTx, scope: MemoryScope, claimId: string, r
  */
 export const NOT_REMEMBERED_NOTE =
   'Memory has not kept what the person wrote in this turn and will not: this conversation is private and there is no local model set up to read it. If they asked you to remember something, tell them plainly that it was not saved; never say it was saved or that you will remember it.';
+
+/**
+ * What the agent is told about a request to forget in this turn. Memory acts on
+ * the request itself, beside the attempt; without its answer the agent guessed,
+ * and told the person "it's off the record" when nothing had been forgotten.
+ * The agent may say a detail is forgotten only when memory's receipt says so.
+ */
+export const FORGET_NOTES = {
+  forgot:
+    "Memory carried out the person's request to forget: the detail is deleted, and the conversation shows the receipt. You may tell them it is forgotten.",
+  none: 'Memory found nothing saved that matches what the person asked to forget, so nothing was deleted. Tell them plainly that nothing matched and nothing was forgotten; never say it was forgotten, deleted or is off the record.',
+  ask: 'Memory has not forgotten anything yet: the request matched no single saved detail, and the conversation shows which one memory needs named. Ask them which one; never say it was forgotten.',
+  unconfirmed:
+    "Memory has not confirmed the person's request to forget: it did not run, or it failed. Tell them plainly that it could not be done right now and that nothing was forgotten; never say it was forgotten, deleted or is off the record.",
+} as const;
+/** How long an attempt waits for memory to answer a request to forget made in its turn. */
+export const FORGET_WAIT_MS = 8000;
+
+/**
+ * Memory's answer to a request to forget in this attempt's new messages, for
+ * the agent, or null when there is none. Waits for the capture of the message
+ * to settle, at most `waitMs`; unsettled by then counts as unconfirmed.
+ */
+export async function forgetOutcomeNote(
+  sql: MemorySql,
+  bundle: Pick<AttemptBundle, 'attempt' | 'inputs'>,
+  waitMs = FORGET_WAIT_MS,
+): Promise<string | null> {
+  const asked = bundle.inputs.new_user_messages.filter(
+    (message) => chatIntent(message.content).kind === 'forget',
+  );
+  if (!asked.length) return null;
+  const times = asked.flatMap((message) => (message.at ? [Date.parse(message.at)] : []));
+  const since = new Date(times.length ? Math.min(...times) : 0).toISOString();
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const rows = await sql`select e.payload->>'text' as text, c.outcome from event e
+      left join memory_capture c on c.event_seq = e.seq
+      where e.job_id = ${bundle.attempt.job_id} and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message' and e.created_at >= ${since}::timestamptz
+      order by e.seq`;
+    const outcomes = rows
+      .filter((row) => chatIntent(String(row.text ?? '')).kind === 'forget')
+      .map((row) => (row.outcome as string | null) ?? 'pending');
+    const settled = outcomes.length > 0 && outcomes.every((outcome) => outcome !== 'pending');
+    if (settled || Date.now() >= deadline) {
+      const last = settled ? outcomes.at(-1) : undefined;
+      return last === 'forgot'
+        ? FORGET_NOTES.forgot
+        : last === 'forgot:none'
+          ? FORGET_NOTES.none
+          : last === 'forgot:ask'
+            ? FORGET_NOTES.ask
+            : FORGET_NOTES.unconfirmed;
+    }
+    await Bun.sleep(Math.min(200, Math.max(0, deadline - Date.now())));
+  }
+}
 
 /**
  * Whether memory will not keep this attempt's new messages because they came
@@ -473,14 +532,20 @@ export function withMemoryRuntime(
         bundle,
         options.refusesMemoryRead,
       );
+      // Memory's own answer to a request to forget, so the agent never claims one.
+      const forgetNote = await forgetOutcomeNote(sql, bundle);
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
         job: {
           ...bundle.job,
           constraints: job.constraints,
-          objective: unremembered
-            ? [bundle.job.objective, NOT_REMEMBERED_NOTE].filter(Boolean).join('\n\n')
-            : bundle.job.objective,
+          objective: [
+            bundle.job.objective,
+            unremembered ? NOT_REMEMBERED_NOTE : '',
+            forgetNote ?? '',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
         },
         inputs: { ...(assembled ?? bundle).inputs, repair_briefs: briefs },
         // The delta brief carries the same briefs as the inputs. The delta is

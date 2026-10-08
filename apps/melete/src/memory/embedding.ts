@@ -79,6 +79,10 @@ export type EmbeddingPrivacy = {
 const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 export const RETRY_MS = 200;
 
+/** How many recent requests' embeddings are kept, and for how long. */
+export const QUERY_CACHE_SIZE = 256;
+export const QUERY_CACHE_MS = 30 * 60_000;
+
 /** Failures in a row after which the provider is left alone for `PAUSE_MS`. */
 export const BREAKER_FAILURES = 3;
 export const PAUSE_MS = 60_000;
@@ -128,12 +132,25 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
     consecutive_failures: 0,
     paused_until: null,
   };
-  const failed = (code: string) => {
+  const failed = (code: string, httpStatus: number | null) => {
     state.last_error = code;
     state.consecutive_failures++;
     if (state.consecutive_failures >= BREAKER_FAILURES)
       state.paused_until = new Date(Date.now() + PAUSE_MS).toISOString();
-    options.onError?.(code);
+    // The provider's answer is told with the code, so a failing provider can
+    // be told apart from a refused key or a malformed request in the log.
+    options.onError?.(httpStatus === null ? code : `${code}:${httpStatus}`);
+  };
+  /** Requests embedded lately, so the same question is not asked of the provider again. */
+  const asked = new Map<string, { vector: number[]; at: number }>();
+  const cached = (text: string) => {
+    const hit = asked.get(text);
+    if (!hit) return undefined;
+    if (Date.now() - hit.at > QUERY_CACHE_MS) {
+      asked.delete(text);
+      return undefined;
+    }
+    return hit.vector;
   };
   const principalFor = (call: EmbeddingCall | undefined): GatewayPrincipal | null =>
     call
@@ -170,6 +187,11 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
     },
     async embed(texts, signal, call) {
       if (!texts.length) return [];
+      const query = call?.purpose === 'query';
+      if (query) {
+        const known = texts.map(cached);
+        if (known.every((vector): vector is number[] => vector !== undefined)) return known;
+      }
       if (state.paused_until && Date.now() < Date.parse(state.paused_until))
         throw new MemoryError('embedding_paused');
       const prefix = model.prefixes?.[call?.purpose ?? 'document'] ?? '';
@@ -242,6 +264,16 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
         state.consecutive_failures = 0;
         state.paused_until = null;
         state.last_success_at = new Date().toISOString();
+        if (query)
+          texts.forEach((text, index) => {
+            asked.delete(text);
+            asked.set(text, { vector: vectors[index] as number[], at: Date.now() });
+            while (asked.size > QUERY_CACHE_SIZE) {
+              const oldest = asked.keys().next().value;
+              if (oldest === undefined) break;
+              asked.delete(oldest);
+            }
+          });
         return vectors;
       } catch (error) {
         failed(
@@ -250,6 +282,7 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
             : error instanceof Error && error.name === 'TimeoutError'
               ? 'embedding_timeout'
               : 'embedding_unreachable',
+          httpStatus,
         );
         throw error;
       } finally {
