@@ -81,6 +81,7 @@ import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
 import type { TriggerRow, TriggerService } from '../jobs/triggers.ts';
+import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import {
   ownJob,
   principalContext,
@@ -148,6 +149,32 @@ const ACTIVE_RUN_LIMIT = 10;
 const PUSH_EVERY_MS = 30 * 60_000;
 /** Kinds of entry that mark where a result stands: offered, checked, given. */
 const RESULT_KINDS = ['proposed', 'check', 'finished'];
+/**
+ * A check of a result that has gone this long, and is not in the middle of a
+ * shift, is given up on: the result is given as it is, saying so.
+ */
+const CHECK_STALL_MS = 2 * HELPER_FALLBACK_MS;
+/** States a check can stop in that nobody answers: a helper has no one to ask. */
+const PARKED_STATES = ['waiting_for_input', 'waiting_for_approval', 'needs_reconciliation'];
+/**
+ * How soon a run whose result is given tries to close again while an action
+ * it started is still out. The result has reached the person already.
+ */
+const CLOSE_RETRY_MS = 2 * 60_000;
+/** Statuses of an action still on its way, which a job cannot complete over. */
+const IN_FLIGHT_ACTIONS = ['proposed', 'needs_approval', 'approved', 'admitted', 'dispatched'];
+/**
+ * Work due this long ago that has still not started is stalled: something
+ * keeps it from starting, and waking it again will not. The watchdog stops it
+ * and asks the person.
+ */
+export const RUN_STALL_MS = 15 * 60_000;
+/** How often the watchdog looks for stalled work. */
+const WATCH_EVERY_MS = 60_000;
+/** The reason a stalled run's pause carries, which shows it as waiting for the person. */
+const STALLED = 'stalled';
+/** What the person is told and asked when the watchdog stops their work. */
+export const STALLED_QUESTION = `It stopped making progress: its next step has not started for ${RUN_STALL_MS / 60_000} minutes, so it is paused. Reply "continue" to try again, or say what to change. Stop ends it.`;
 
 const missing = () => new ServiceError('not_found', 'That piece of work was not found.', 404);
 const ENDED_STATES = ['completed', 'failed', 'cancelled'];
@@ -1170,6 +1197,8 @@ export class RunService {
     const run = this.rootOf(state);
     const step = state.parentRunId ? row.id : null;
     const shifts = state.shifts + 1;
+    // A run whose result is being checked waits on that check, as on a helper.
+    const checking = step ? false : await this.checkUnderWay(tx, row.id);
     // Standing work rests on its trigger after a shift unless it asks otherwise.
     const stands = step ? null : await standingTrigger(tx, row.id);
     const mine = await tx
@@ -1208,11 +1237,12 @@ export class RunService {
         ? ON_TRIGGER
         : 'now';
     const resting =
-      askedNext === ON_TRIGGER
+      checking ||
+      (askedNext === ON_TRIGGER
         ? Boolean(stands)
         : askedNext === 'when_helpers_finish'
           ? !step && (await this.activeSteps(tx, row.id)) > 0
-          : askedNext !== 'now' && Date.parse(askedNext) > (await databaseNow(tx)).getTime();
+          : askedNext !== 'now' && Date.parse(askedNext) > (await databaseNow(tx)).getTime());
     // Waiting on a trigger is not idling: a quiet day is the point of standing work.
     const idle =
       progressed || (askedNext === ON_TRIGGER && stands)
@@ -1220,9 +1250,11 @@ export class RunService {
         : resting
           ? state.idleShifts
           : state.idleShifts + 1;
+    // Kept on while a check is under way, however this shift ended, so the
+    // check's end wakes the run.
     await tx
       .update(runState)
-      .set({ shifts, idleShifts: idle, waitingOnSteps: false })
+      .set({ shifts, idleShifts: idle, waitingOnSteps: checking })
       .where(eq(runState.jobId, row.id));
 
     // A helper has nobody to ask: the person does not see it, and its run
@@ -1233,8 +1265,23 @@ export class RunService {
         ? { kind: 'failed', retryable: false, reason: why }
         : { kind: 'waiting_for_input', question };
 
-    const finished = mine.find((entry) => entry.kind === 'finished');
-    if (finished) return { kind: 'completed', summary: finished.body, evidence: [] };
+    // The result is given, by this shift or by one before it that could not
+    // close yet: the run completes, and no later shift reworks it. While an
+    // action it started is still out it cannot complete, so it rests a little
+    // and closes once that action reports back. The person has the result.
+    const finished =
+      mine.find((entry) => entry.kind === 'finished') ??
+      (!step && state.finishedAt ? await this.givenResult(tx, row.id) : undefined);
+    if (finished) {
+      if (!step && (await this.stillOut(tx, row.id, attemptId))) {
+        const now = (await databaseNow(tx)).getTime();
+        return {
+          kind: 'waiting_for_event_or_time',
+          wait: { kind: 'timer', wake_at: new Date(now + CLOSE_RETRY_MS).toISOString() },
+        };
+      }
+      return { kind: 'completed', summary: finished.body, evidence: [] };
+    }
     if (step && outcome.kind === 'waiting_for_input')
       return ask(outcome.question, `It stopped to ask: ${clip(outcome.question, 1000)}`);
     if (step && outcome.kind === 'unknown_check')
@@ -1255,7 +1302,6 @@ export class RunService {
     // the run rests until the check is done, rather than on a trigger it
     // stands on, and one whose check already ended is given its result now.
     // Whatever else the shift ended with, the result stands.
-    const checking = step ? false : await this.checkUnderWay(tx, row.id);
     if (
       !step &&
       (checking ||
@@ -1508,6 +1554,15 @@ export class RunService {
       ? await tx.select().from(runEntry).where(eq(runEntry.id, state.checking))
       : [];
     if (!proposal) return;
+    // Once per check: a check given up on is recorded before it is stopped.
+    const [already] = await tx
+      .select({ id: runEntry.id })
+      .from(runEntry)
+      .where(
+        and(eq(runEntry.runJobId, run), eq(runEntry.stepJobId, row.id), eq(runEntry.kind, 'check')),
+      )
+      .limit(1);
+    if (already) return;
     const found = object(result?.data);
     const verdict =
       row.state === 'completed' && (found.verdict === 'passes' || found.verdict === 'gaps')
@@ -1580,19 +1635,116 @@ export class RunService {
     return last;
   }
 
+  /** The result the run gave, when the newest entry about its result is that. */
+  private async givenResult(tx: Transaction, run: string): Promise<Entry | undefined> {
+    const last = await this.lastResult(tx, run);
+    return last?.kind === 'finished' ? last : undefined;
+  }
+
+  /**
+   * Whether an action of the run is still on its way, so the run cannot
+   * complete yet. A permission an earlier shift asked for and nobody gave is
+   * withdrawn first: the work has given its result, and no shift will carry
+   * that action out, as when any job ends.
+   */
+  private async stillOut(tx: Transaction, jobId: string, attemptId: string): Promise<boolean> {
+    await withdrawPermissions(
+      tx,
+      and(eq(action.jobId, jobId), ne(action.attemptId, attemptId)),
+      ENDED_NOTE,
+    );
+    const [out] = await tx
+      .select({ id: action.id })
+      .from(action)
+      .where(and(eq(action.jobId, jobId), inArray(action.status, IN_FLIGHT_ACTIONS)))
+      .limit(1);
+    return Boolean(out);
+  }
+
+  /** The check of the run's result that has not ended, if one is under way. */
+  private async currentCheck(tx: Transaction, run: string) {
+    const [found] = await tx
+      .select({ job, state: runState })
+      .from(runState)
+      .innerJoin(job, eq(job.id, runState.jobId))
+      .where(
+        and(
+          eq(runState.parentRunId, run),
+          isNotNull(runState.checking),
+          notInArray(job.state, ENDED_STATES),
+        ),
+      )
+      .orderBy(desc(runState.createdAt))
+      .limit(1);
+    return found ?? null;
+  }
+
+  /**
+   * Ends a check that cannot finish: one stopped to ask (a helper has nobody
+   * to ask), or one that has gone `CHECK_STALL_MS` and is not in the middle of
+   * a shift. What it could not do goes into the record with the result as it
+   * stands, and the check is stopped. True when it was ended here.
+   */
+  private async giveUpCheck(
+    tx: Transaction,
+    run: string,
+    check: { job: JobRow; state: State },
+  ): Promise<boolean> {
+    const now = (await databaseNow(tx)).getTime();
+    const parked = PARKED_STATES.includes(check.job.state);
+    const old =
+      check.job.state !== 'running' && now - check.job.createdAt.getTime() >= CHECK_STALL_MS;
+    if (!parked && !old) return false;
+    // A check busy right now is left to end on its own.
+    const locked = await this.jobs.lock(tx, check.job.id, true);
+    if (!locked || isTerminal(locked.state as JobState)) return false;
+    await this.checked(
+      tx,
+      run,
+      check.state,
+      locked,
+      undefined,
+      parked
+        ? 'It stopped to wait for an answer or a permission, which a check cannot get.'
+        : `It did not finish within ${CHECK_STALL_MS / 60_000} minutes.`,
+    );
+    await this.jobs.cancelInTransaction(tx, locked, 'check_stalled');
+    return true;
+  }
+
   /**
    * A run whose result has been through its check is given it now, by a
    * shift that only records it: no model call. Null when there is work to do.
    */
   async settle(tx: Transaction, row: JobRow, attemptId: string): Promise<AttemptOutcome | null> {
     if (row.kind !== 'run') return null;
-    const last = await this.lastResult(tx, row.id);
-    const data = object(last?.data);
-    if (!settledCheck(last) || typeof data.result !== 'string') return null;
     // The person wrote and no shift has read it yet (an answer to a question
     // asked while the check ran, say): a shift reads it first, with the
     // checked result in its brief.
-    if (await this.unread(tx, row.id, attemptId)) return null;
+    const unread = await this.unread(tx, row.id, attemptId);
+    let last = await this.lastResult(tx, row.id);
+    // The result was given and the run could not close then: it closes now.
+    const [state] = await tx.select().from(runState).where(eq(runState.jobId, row.id));
+    if (state?.finishedAt && last?.kind === 'finished' && !unread)
+      return { kind: 'completed', summary: last.body, evidence: [] };
+    // A check of the result is under way. One that stopped where nobody can
+    // answer it, or has gone too long, is given up on and the result given as
+    // it is; otherwise the run waits for it, without a shift that could only
+    // wait as well.
+    if (last?.kind === 'proposed') {
+      const check = await this.currentCheck(tx, row.id);
+      if (check && !(await this.giveUpCheck(tx, row.id, check)) && !unread) {
+        const now = (await databaseNow(tx)).getTime();
+        return {
+          kind: 'waiting_for_event_or_time',
+          wait: { kind: 'timer', wake_at: new Date(now + HELPER_FALLBACK_MS).toISOString() },
+        };
+      }
+      last = await this.lastResult(tx, row.id);
+    }
+    const data = object(last?.data);
+    if (!settledCheck(last) || typeof data.result !== 'string') return null;
+    if (unread) return null;
     const [proposal] =
       typeof data.proposal === 'string'
         ? await tx.select().from(runEntry).where(eq(runEntry.id, data.proposal))
@@ -1794,6 +1946,10 @@ export class RunService {
         .where(and(inArray(question.jobId, ids), eq(question.state, 'open')))
         .orderBy(question.jobId);
       const helpers = await stepsOfRuns(tx, ids);
+      const pauses = await pausedFor(
+        tx,
+        rows.filter((entry) => entry.paused).map((entry) => entry.id),
+      );
       const views: RunView[] = [];
       for (const row of rows) {
         const state = states.get(row.id);
@@ -1807,7 +1963,10 @@ export class RunService {
           .map(({ entry }) => entry);
         const top = best.find(({ entry }) => entry.runJobId === row.id)?.entry ?? null;
         const steps = helpers.get(row.id) ?? [];
-        const status = runStatusOf(row.state, row.paused);
+        // Stopped by the watchdog, it waits for the person, who is asked.
+        const stalled =
+          row.paused && !isTerminal(row.state as JobState) && pauses.get(row.id) === STALLED;
+        const status = stalled ? 'needs_you' : runStatusOf(row.state, row.paused);
         const metric = state.metric ?? null;
         const check = checkOf(
           state,
@@ -1815,9 +1974,12 @@ export class RunService {
         );
         const wait = object(row.wait);
         const asked = open.find((entry) => entry.job === row.id)?.text;
-        const question_ =
-          asked ??
-          (wait.kind === 'user_input' && typeof wait.question === 'string' ? wait.question : null);
+        const question_ = stalled
+          ? STALLED_QUESTION
+          : (asked ??
+            (wait.kind === 'user_input' && typeof wait.question === 'string'
+              ? wait.question
+              : null));
         const report = newest('report');
         const handoff = newest('checkpoint');
         const finished = newest('finished');
@@ -1848,6 +2010,7 @@ export class RunService {
               question: question_,
               check: check.state,
               standing: onTrigger ? (standing?.kind ?? null) : null,
+              closing: Boolean(state.finishedAt) && !isTerminal(row.state as JobState),
             }),
             conversation_id: state.conversationId,
             agent_id: row.agentId,
@@ -2076,6 +2239,8 @@ export class RunService {
    * shift reads them at the next; a finished run takes them up again.
    */
   async message(row: JobRow, text: string) {
+    // The watchdog paused it and asked: the person's reply is the answer.
+    let resume = false;
     await this.jobs.transaction(async (tx) => {
       const locked = await this.jobs.lock(tx, row.id);
       if (!locked) throw missing();
@@ -2115,13 +2280,132 @@ export class RunService {
           { kind: 'conversation_continued' },
           { reason: 'input' },
         );
-      } else if (locked.paused) {
         return;
+      }
+      // A result given that could not close yet is taken up again: the next
+      // shift reads these words instead of closing on it.
+      await tx
+        .update(runState)
+        .set({ finishedAt: null })
+        .where(and(eq(runState.jobId, row.id), isNotNull(runState.finishedAt)));
+      if (locked.paused) {
+        resume = (await pausedFor(tx, [row.id])).get(row.id) === STALLED;
       } else if (locked.state === 'waiting_for_event_or_time') {
         await tx.update(runState).set({ waitingOnSteps: false }).where(eq(runState.jobId, row.id));
         await this.jobs.move(tx, locked, { kind: 'timer_fired' }, { reason: 'input' });
       }
     });
+    if (resume) await this.setPaused(row, false);
+  }
+
+  // -------------------------------------------------------------------------
+  // The watchdog.
+
+  private watching: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Looks for stalled work every minute. `capacity` is how many attempts run
+   * at once: while every one of them is taken, work waits for a turn, which is
+   * not a stall.
+   */
+  startWatchdog(capacity: number) {
+    if (this.watching) return;
+    this.watching = setInterval(() => {
+      void this.watch(capacity).catch((error: unknown) =>
+        process.stderr.write(
+          `run watchdog failed: ${error instanceof Error ? error.message : 'error'}\n`,
+        ),
+      );
+    }, WATCH_EVERY_MS);
+    this.watching.unref?.();
+  }
+
+  stopWatchdog() {
+    if (this.watching) clearInterval(this.watching);
+    this.watching = null;
+  }
+
+  /**
+   * Work due more than `RUN_STALL_MS` ago that has not started: whatever
+   * keeps it from starting will not go away by waking it again. A run is
+   * paused and the person asked, on its card and as a notification, so it
+   * does not sit "working" with nothing happening; their reply or Resume
+   * tries again. A helper is stopped, and its run hears why.
+   */
+  async watch(capacity: number): Promise<{ paused: string[]; stopped: string[] }> {
+    const done = { paused: [] as string[], stopped: [] as string[] };
+    const [busy] = await this.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(attempt)
+      .where(
+        and(
+          isNull(attempt.endedAt),
+          or(isNull(attempt.leaseExpiresAt), sql`${attempt.leaseExpiresAt} > now()`),
+        ),
+      );
+    if (Number(busy?.n ?? 0) >= capacity) return done;
+    const stalled = and(
+      eq(job.paused, false),
+      inArray(job.state, ['queued', 'waiting_for_event_or_time']),
+      sql`${job.nextWakeAt} <= now() - make_interval(secs => ${RUN_STALL_MS / 1000})`,
+      sql`not exists (select 1 from attempt a where a.job_id = ${job.id} and a.ended_at is null)`,
+    );
+    const rows = await this.db
+      .select({ id: job.id, kind: job.kind })
+      .from(job)
+      .where(and(inArray(job.kind, ['run', 'run_step']), stalled))
+      .limit(50);
+    for (const entry of rows) {
+      // Decided again under the lock: one that started meanwhile is left alone.
+      const isStalled = async (tx: Transaction) => {
+        const locked = await this.jobs.lock(tx, entry.id, true);
+        if (!locked) return null;
+        const [still] = await tx
+          .select({ id: job.id })
+          .from(job)
+          .where(and(eq(job.id, entry.id), stalled));
+        return still ? locked : null;
+      };
+      if (entry.kind === 'run_step') {
+        // It has not started, so nothing of it is running to interrupt.
+        const stopped = await this.jobs.transaction(async (tx) => {
+          const locked = await isStalled(tx);
+          if (locked) await this.jobs.cancelInTransaction(tx, locked, 'helper_stalled');
+          return Boolean(locked);
+        });
+        if (stopped) done.stopped.push(entry.id);
+        continue;
+      }
+      const triggers = await this.jobs.transaction(async (tx) => {
+        const locked = await isStalled(tx);
+        if (!locked) return null;
+        await tx
+          .update(job)
+          .set({ paused: true, updatedAt: new Date() })
+          .where(eq(job.id, entry.id));
+        await appendEvent(tx, {
+          jobId: entry.id,
+          type: 'notice',
+          payload: { kind: 'run_paused', reason: STALLED, message: STALLED_QUESTION },
+          dedupKey: `${entry.id}:${STALLED}:${newId('op')}`,
+        });
+        await this.write(tx, {
+          run: entry.id,
+          kind: 'report',
+          title: 'It stopped making progress',
+          body: STALLED_QUESTION,
+          data: { automatic: true, stalled: true },
+        });
+        await this.reported(tx, entry.id, locked, 'It stopped making progress', STALLED_QUESTION, {
+          spaced: false,
+          key: 'run-stalled',
+        });
+        done.paused.push(entry.id);
+        return setStandingEnabled(tx, entry.id, false);
+      });
+      if (triggers) await this.syncSchedules();
+    }
+    return done;
   }
 
   /** The person's settings for the work: a limit (null clears it) and whether results are checked. */
@@ -2186,6 +2470,33 @@ function experimentView(entry: Entry) {
   };
 }
 
+/**
+ * Why each of these jobs is paused, from its newest pause or resume: the
+ * reason its pause gave (the watchdog's, say), or null for a plain pause.
+ * Jobs whose newest such notice is a resume are left out.
+ */
+async function pausedFor(tx: Transaction, ids: string[]): Promise<Map<string, string | null>> {
+  const reasons = new Map<string, string | null>();
+  if (!ids.length) return reasons;
+  const rows = await tx
+    .selectDistinctOn([event.jobId], { job: event.jobId, payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        inArray(event.jobId, ids),
+        eq(event.type, 'notice'),
+        sql`${event.payload}->>'kind' in ('run_paused', 'run_resumed')`,
+      ),
+    )
+    .orderBy(event.jobId, desc(event.seq));
+  for (const row of rows) {
+    const payload = object(row.payload);
+    if (payload.kind !== 'run_paused' || !row.job) continue;
+    reasons.set(row.job, typeof payload.reason === 'string' ? payload.reason : null);
+  }
+  return reasons;
+}
+
 /** Whether the newest entry about the run's result is a check that gives it. */
 function settledCheck(last: Entry | undefined): boolean {
   const data = object(last?.data);
@@ -2234,6 +2545,8 @@ function statusLine(input: {
   /** Set while standing work rests on its trigger. */
   standing: 'schedule' | 'event' | 'watch' | null;
   check: RunView['check']['state'];
+  /** The result is given; the run closes once what it started reports back. */
+  closing: boolean;
 }): string {
   const tried =
     input.experiments > 0
@@ -2262,9 +2575,11 @@ function statusLine(input: {
     case 'needs_you':
       return input.question ? clip(input.question, 200) : 'Waiting for you';
     case 'working':
+      if (input.closing) return join('Result ready · finishing up', tried);
       return join(input.check === 'checking' ? 'Checking the result' : 'Working on it', tried);
     default:
       if (input.paused) return join('Paused', tried);
+      if (input.closing) return join('Result ready · finishing up', tried);
       if (input.check === 'checking') return join('Checking the result', tried);
       if (input.waitingOnSteps)
         return join(

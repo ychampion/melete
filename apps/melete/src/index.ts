@@ -837,6 +837,7 @@ export async function bootstrap(
           pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
+          runs?.stopWatchdog(),
           operations?.stop(),
         ]),
       () => supervisedRuntime?.close(),
@@ -1499,6 +1500,8 @@ export async function bootstrap(
         await operations.start();
         await triggers.start();
         await runner.start();
+        // Long work that cannot start its next step is stopped and the person asked.
+        runs?.startWatchdog(env.MELETE_ATTEMPT_CONCURRENCY);
         // Threads that deleted routines left behind before deleting a routine
         // took its thread go now, in the background.
         if (handle && jobs) {
