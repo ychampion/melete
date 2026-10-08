@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import importlib.machinery
 import pathlib
+import re
+import struct
+import time
 import types
 
 import pytest
@@ -77,6 +80,10 @@ BOXES = {
 }
 
 
+#: The page as the browser lists it.
+TARGET = {"webSocketDebuggerUrl": "ws://127.0.0.1:9/page", "url": "https://trips.example/", "title": "Trip planner"}
+
+
 class FakeDevTools:
     """Answers the calls the helper makes, for one page."""
 
@@ -91,7 +98,10 @@ class FakeDevTools:
     def call(self, method, params=None):
         if method == "Runtime.evaluate" and params.get("returnByValue"):
             # screenX, screenY, outer and inner sizes: 80 pixels of browser above the page.
-            return {"result": {"value": '[0, 0, 1024, 768, 1024, 688, "https://trips.example/", "Trip planner", 0, 2000]'}}
+            if "location.href" in params["expression"]:
+                # The page's own script can say it is somewhere else.
+                return {"result": {"value": '[0, 0, 1024, 768, 1024, 688, "https://bank.example/", "Your bank", 0, 2000]'}}
+            return {"result": {"value": "[0, 0, 1024, 768, 1024, 688, 0, 2000]"}}
         if method == "Runtime.evaluate":
             self.looking_for = "secure" if "password" in params["expression"] else "clips"
             return {"result": {"objectId": self.looking_for}}
@@ -135,7 +145,7 @@ class FakeDevTools:
 @pytest.fixture()
 def view(desktop, monkeypatch):
     monkeypatch.setattr(desktop, "DevToolsSocket", FakeDevTools)
-    monkeypatch.setattr(desktop, "page_target", lambda port, title: {"webSocketDebuggerUrl": "ws://127.0.0.1:9/page"})
+    monkeypatch.setattr(desktop, "page_target", lambda port, title: TARGET)
     return desktop.accessibility_view(9222, "Trip planner")
 
 
@@ -199,7 +209,79 @@ def test_when_secret_fields_cannot_be_found_no_value_is_read(desktop, monkeypatc
             return super().call(method, params)
 
     monkeypatch.setattr(desktop, "DevToolsSocket", Blind)
-    monkeypatch.setattr(desktop, "page_target", lambda port, title: {"webSocketDebuggerUrl": "ws://127.0.0.1:9/page"})
+    monkeypatch.setattr(desktop, "page_target", lambda port, title: TARGET)
     view = desktop.accessibility_view(9222, "Trip planner")
     assert not [element for element in view["elements"] if "value" in element]
     assert "hunter2secret" not in repr(view)
+
+
+def test_the_address_and_title_are_the_browsers_not_what_the_page_says(view):
+    # The page's script claims to be a bank; the browser lists where it is.
+    assert view["url"] == "https://trips.example/"
+    assert view["title"] == "Trip planner"
+    assert "bank" not in repr(view)
+
+
+def test_secret_fields_are_found_as_the_browser_tools_find_them(desktop):
+    # Every kind of field the browser tools hold back by what it autocompletes
+    # (a card's number and code among them) is a secret field here too.
+    controller = (HELPER.parents[2] / "apps" / "melete" / "src" / "workers" / "browser" / "controller.ts").read_text(
+        encoding="utf-8"
+    )
+    lists = set(re.findall(r"/((?:password|one-time-code|webauthn|cc-number|cc-csc)(?:\|[a-z-]+)+)/i", controller))
+    assert lists, "the browser tools' list of secret autocomplete values was not found"
+    for listed in lists:
+        for kind in listed.split("|"):
+            assert kind in desktop.SECRET_AUTOCOMPLETE.split("|"), kind
+            assert kind in desktop.SECURE_FIELDS
+    # A component's fields sit in its shadow root, which the tree shows.
+    assert "shadowRoot" in desktop.SECURE_FIELDS
+
+
+class Wire:
+    """A socket that answers with what it was given, then the rest of `endless`, counting what is read."""
+
+    def __init__(self, data, endless=b"", pause=0.0):
+        self.data, self.endless, self.pause, self.read = bytearray(data), endless, pause, 0
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def recv(self, size):
+        if self.pause:
+            time.sleep(self.pause)
+        if not self.data:
+            if not self.endless:
+                return b""
+            self.data += self.endless * 1024
+        chunk = bytes(self.data[:size])
+        del self.data[:size]
+        self.read += len(chunk)
+        if self.read > 200 << 20:
+            raise AssertionError("kept reading")
+        return chunk
+
+
+def wired(desktop, wire, seconds=None):
+    tools = object.__new__(desktop.DevToolsSocket)
+    tools.sock, tools.buffer, tools.last, tools.timeout = wire, bytearray(), 0, 5.0
+    tools.deadline = time.monotonic() + (seconds if seconds is not None else desktop.READ_SECONDS)
+    return tools
+
+
+def test_an_answer_too_large_to_hold_is_refused_before_it_is_read(desktop):
+    # A text frame that says it is 64 MiB long, then that many bytes.
+    wire = Wire(bytes([0x81, 127]) + struct.pack(">Q", 64 << 20), endless=b"x" * 64)
+    with pytest.raises(OSError):
+        wired(desktop, wire).receive()
+    assert wire.read < 1 << 20
+
+
+def test_a_page_that_answers_slowly_is_given_up_on(desktop):
+    # Each byte comes promptly, but the whole never ends.
+    wire = Wire(bytes([0x01, 126]) + struct.pack(">H", 60000), endless=b"x", pause=0.002)
+    wire.recv = (lambda base: lambda size: base(1))(wire.recv)
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        wired(desktop, wire, seconds=0.5).receive()
+    assert time.monotonic() - started < 5

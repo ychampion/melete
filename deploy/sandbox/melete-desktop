@@ -164,6 +164,12 @@ CONTROL_ROLES = {
     "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "listbox",
     "treeitem", "gridcell", "ComboBoxSelect", "ComboBoxMenuButton", "PopUpButton", "DisclosureTriangle",
 }
+#: The most bytes one DevTools answer may take. A page whose tree is larger
+#: (a large article's is about 14 MB) is read with OCR instead, so the reader's
+#: memory stays bounded whatever the page holds.
+MAX_MESSAGE = 32 << 20
+#: The most seconds one reading of the page may take, all calls together.
+READ_SECONDS = 20.0
 #: Element states worth saying, as the accessibility tree names them.
 STATES = ("focused", "checked", "pressed", "selected", "expanded", "disabled", "required", "invalid")
 
@@ -171,7 +177,9 @@ STATES = ("focused", "checked", "pressed", "selected", "expanded", "disabled", "
 class DevToolsSocket:
     """Just enough of a WebSocket client for the DevTools protocol on the loopback address."""
 
-    def __init__(self, url, timeout=5.0):
+    def __init__(self, url, timeout=5.0, seconds=READ_SECONDS):
+        self.deadline = time.monotonic() + seconds
+        self.timeout = timeout
         parsed = urllib.parse.urlparse(url)
         if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
             raise OSError("the DevTools endpoint is not on this computer")
@@ -196,6 +204,10 @@ class DevToolsSocket:
         self.last = 0
 
     def _fill(self):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise OSError("the page took too long to read")
+        self.sock.settimeout(min(self.timeout, left))
         chunk = self.sock.recv(1 << 16)
         if not chunk:
             raise OSError("the DevTools endpoint closed the connection")
@@ -237,6 +249,8 @@ class DevToolsSocket:
                 size = struct.unpack(">H", self._take(2))[0]
             elif size == 127:
                 size = struct.unpack(">Q", self._take(8))[0]
+            if len(message) + size > MAX_MESSAGE:
+                raise OSError("the page's accessibility tree is too large to read")
             mask = self._take(4) if second & 0x80 else None
             data = self._take(size)
             if mask:
@@ -399,13 +413,29 @@ CLIP_RECTS = """function () {
 }"""
 
 
-#: Fields whose value is a secret: passwords and one-time codes, by type, by
-#: what they autocomplete, or by text the page draws masked.
-SECURE_FIELDS = """(() => [...document.querySelectorAll('input, textarea, [contenteditable]')].filter((element) =>
-  element.type === 'password' ||
-  /password|one-time-code/i.test(element.getAttribute('autocomplete') || '') ||
-  !/^(none|)$/.test(getComputedStyle(element).getPropertyValue('-webkit-text-security'))
-).slice(0, 400))()"""
+#: What a field autocompletes when its value is a secret, as the browser tools
+#: read it (`apps/melete/src/workers/browser/controller.ts`): a password, a
+#: one-time code, a passkey, a card's number or its security code.
+SECRET_AUTOCOMPLETE = "password|one-time-code|webauthn|cc-number|cc-csc"
+#: Fields whose value is a secret: passwords and codes, by type, by what they
+#: autocomplete, or by text the page draws masked. Fields inside a component's
+#: open shadow root are looked at as well, since its tree shows them.
+SECURE_FIELDS = """(() => {
+  const found = [];
+  const look = (root) => {
+    for (const element of root.querySelectorAll('*')) {
+      if (found.length >= 400) return;
+      if (element.matches('input, textarea, [contenteditable]') && (
+        element.type === 'password' ||
+        /%s/i.test(element.getAttribute('autocomplete') || '') ||
+        !/^(none|)$/.test(getComputedStyle(element).getPropertyValue('-webkit-text-security'))
+      )) found.push(element);
+      if (element.shadowRoot) look(element.shadowRoot);
+    }
+  };
+  look(document);
+  return found;
+})()""" % SECRET_AUTOCOMPLETE
 
 
 def clip_boxes(tools, expression=CLIPPERS):
@@ -460,8 +490,7 @@ def accessibility_view(port, window_title):
                 "Runtime.evaluate",
                 {
                     "expression": "JSON.stringify([screenX, screenY, outerWidth, outerHeight, innerWidth,"
-                    " innerHeight, location.href, document.title, scrollY,"
-                    " document.documentElement.scrollHeight])",
+                    " innerHeight, scrollY, document.documentElement.scrollHeight])",
                     "returnByValue": True,
                 },
             )
@@ -469,7 +498,7 @@ def accessibility_view(port, window_title):
             if isinstance(said, str) or attempt:
                 break
             time.sleep(0.5)
-        sx, sy, outer_w, outer_h, inner_w, inner_h, url, title, scroll_y, page_h = json.loads(said)
+        sx, sy, outer_w, outer_h, inner_w, inner_h, scroll_y, page_h = json.loads(said)
         tools.call("Accessibility.enable")
         found = candidates(tools.call("Accessibility.getFullAXTree").get("nodes") or [])
         try:
@@ -519,8 +548,10 @@ def accessibility_view(port, window_title):
         elements.append(element)
     return {
         "source": "accessibility",
-        "url": str(url)[:2048],
-        "title": clean(title),
+        # Where the page is and what it is called, as the browser lists it: a
+        # page's own script can say anything about itself.
+        "url": str(target.get("url") or "")[:2048],
+        "title": clean(target.get("title") or ""),
         "scroll": {"top": round(scroll_y), "page_height": round(page_h), "view_height": round(inner_h)},
         "elements": elements,
         "offscreen": offscreen,
