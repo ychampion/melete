@@ -177,7 +177,9 @@ const MAX_QUERY_TERMS = 32;
  */
 export function lexicalQuery(query: string): string | null {
   const terms = lexicalTerms(query);
-  return terms.length ? terms.map(stemTerm).join(' | ') : null;
+  // A typed key names one detail exactly; only words in a sentence are stemmed.
+  const exact = memoryKey.safeParse(query.trim()).success;
+  return terms.length ? terms.map(exact ? tsqueryTerm : stemTerm).join(' | ') : null;
 }
 /** Endings a word drops to match its other forms: "allergies", "allergic" and "allergy". */
 const ENDINGS = /(?:ations?|ities|ies|ing|ic|es|ed|y|s)$/u;

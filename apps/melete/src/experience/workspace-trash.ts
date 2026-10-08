@@ -17,7 +17,7 @@ import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { moveToTrash } from '../connectors/files-trash.ts';
-import { removeConfined, segmentsFor } from '../paths.ts';
+import { segmentsFor } from '../paths.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 
 /** Where job workspaces are, and how long a deleted one is kept restorable. */
@@ -70,7 +70,7 @@ export async function trashWorkspace(trash: WorkspaceTrash, jobId: string): Prom
       id = moved.trash_id;
     }
   }
-  await removeConfined(trash.workRoot, jobId);
+  await workspaces.removeWorkspace(jobId);
   return id;
 }
 
