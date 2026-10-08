@@ -563,11 +563,12 @@ export class SpendingGuard implements GatewaySpending {
         const hold: Hold = {
           personId: scope.personId,
           usageClass: scope.usageClass,
-          usd: callCost(this.prices, call, {
-            inputTokens: call.inputTokens,
-            outputTokens: call.maxOutputTokens,
-            cachedInputTokens: 0,
-          }),
+          usd:
+            callCost(this.prices, call, {
+              inputTokens: call.inputTokens,
+              outputTokens: call.maxOutputTokens,
+              cachedInputTokens: 0,
+            }) + (call.feeUsd ?? 0),
           tokens: call.inputTokens + call.maxOutputTokens,
           at: this.now().getTime(),
         };
@@ -595,12 +596,16 @@ export class SpendingGuard implements GatewaySpending {
     return turn;
   }
 
-  async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
+  release(principal: GatewayPrincipal): void {
     const list = this.holds.get(principal);
     if (list?.length) {
       list.shift();
       if (!list.length) this.holds.delete(principal);
     }
+  }
+
+  async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
+    this.release(principal);
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;

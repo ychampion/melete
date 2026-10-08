@@ -89,6 +89,8 @@ export interface GatewaySpendingCall {
   maxOutputTokens: number;
   /** On the person's own model. */
   local: boolean;
+  /** A flat fee the call may cost on top of its tokens, held with them. */
+  feeUsd?: number;
 }
 
 /**
@@ -105,6 +107,8 @@ export interface GatewaySpending {
   admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void>;
   /** Records one settled call's usage and cost. Never throws. */
   record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void>;
+  /** Lets go of an admitted call's hold without recording it: the call was never sent, or cost nothing. */
+  release?(principal: GatewayPrincipal): void;
 }
 
 export interface GatewayReservationRequest {

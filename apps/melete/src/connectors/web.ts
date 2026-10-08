@@ -546,7 +546,7 @@ function unreadable(response: WebResponse, read: Read, method: string): boolean 
   if (method !== 'GET' || read.note) return false;
   if (response.status === 429 || response.status === 503) return true;
   // A private resource answers a signed-out read with 403 too; its address stays here.
-  if (response.status === 403) return botWall(response);
+  if (response.status === 403) return botWall(response) && !SIGN_IN_PAGE.test(pageHead(response));
   const type = response.headers['content-type'] ?? '';
   return (
     response.status === 200 &&
@@ -555,16 +555,45 @@ function unreadable(response: WebResponse, read: Read, method: string): boolean 
   );
 }
 
-/** What a bot-protection service's challenge or block page says, in its markup. */
+const pageHead = (response: WebResponse) => response.body.slice(0, 64_000);
+
+/**
+ * What a bot-protection service's challenge or block page says, in its
+ * markup: marks of the service itself. A captcha widget is left out, since a
+ * site's own sign-in form carries one too.
+ */
 const BOT_WALL_PAGE =
-  /cf-chl|cf_chl_|challenge-platform|<title>\s*(?:just a moment|attention required)|checking your browser|_incapsula_resource|incapsula incident|px-captcha|perimeterx|captcha-delivery|datadome|ddos-guard|sucuri website firewall|g-recaptcha|h-captcha|hcaptcha/i;
+  /cf-chl|cf_chl_|challenge-platform|<title>\s*(?:just a moment|attention required)|checking your browser|_incapsula_resource|incapsula incident|px-captcha|perimeterx|captcha-delivery|datadome|ddos-guard|sucuri website firewall|errors(?:\.|&#46;)edgesuite(?:\.|&#46;)net/i;
 
 /** A 403 served by a bot wall rather than by the site deciding the reader may not see the page. */
 function botWall(response: WebResponse): boolean {
   const headers = response.headers;
   if (headers['cf-mitigated'] || headers['x-datadome'] || headers['x-sucuri-block']) return true;
-  if (/akamaighost/i.test(headers.server ?? '')) return true;
-  return BOT_WALL_PAGE.test(response.body.slice(0, 64_000));
+  return BOT_WALL_PAGE.test(pageHead(response));
+}
+
+/** A page that asks the reader to sign in or to ask for access: a private resource's own answer. */
+const SIGN_IN_PAGE =
+  /<input[^>]*type\s*=\s*["']?password|\b(?:sign|log)[\s_-]?(?:in|on)\b|request access|ask (?:the|an?|your) (?:owner|admin|administrator) for access|you (?:do not|don't|dont) have access/i;
+
+/** Cookies a bot-protection service sets on its challenge, which say nothing about a session. */
+const BOT_WALL_COOKIE =
+  /^(?:__cf_bm|cf_clearance|__cflb|__cfruid|_cfuvid|cf_chl\w*|datadome|incap_ses_\w*|visid_incap_\w*|nlbi_\w*|_px\w*|__ddg\w*|sucuri\w*|ak_bmsc|bm_\w+|_abck)$/i;
+/** A cookie name that reads like a session or a sign-in. */
+const SESSION_COOKIE =
+  /sess|sid|auth|token|login|logged|user|jwt|remember|csrf|xsrf|identity|account/i;
+
+/**
+ * Whether a response opened or asked for a session: a sign-in challenge
+ * (`www-authenticate`) or a cookie that reads like a session. Such a site
+ * keeps people's own pages, so none of its addresses go to the hosted reader.
+ */
+export function sessionSignals(response: WebResponse): boolean {
+  if (response.headers['www-authenticate']) return true;
+  const cookies = response.headers['set-cookie'] ?? '';
+  for (const [, name] of cookies.matchAll(/(?:^|,)\s*([^=;,\s]+)=/g))
+    if (name && !BOT_WALL_COOKIE.test(name) && SESSION_COOKIE.test(name)) return true;
+  return false;
 }
 
 /** Readable text shorter than this, from an HTML page, is taken as a page built by scripts. */
@@ -629,8 +658,9 @@ export function shareableAddress(url: URL): boolean {
 
 /**
  * The address as the privacy check reads it: as sent, decoded, and decoded
- * with its separators turned to spaces, so `Jane%20Marlowe`, `jane-marlowe`
- * and `john.doe%40gmail.com` are read as the words they are.
+ * and split into words at every punctuation mark and at each change from
+ * lower to upper case, so `Jane%20Marlowe`, `jane-marlowe`, `jane,marlowe`,
+ * `JaneMarlowe` and `john.doe%40gmail.com` are read as the words they are.
  */
 export function addressTexts(url: URL): string[] {
   const path = url.pathname
@@ -640,8 +670,9 @@ export function addressTexts(url: URL): string[] {
   const query = [...url.searchParams].map(([name, value]) => `${name} ${value}`).join(' ');
   const plain = `${url.hostname}${path} ${query}`.trim();
   const words = plain
-    .replace(/[-_/+.=&]+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/(\p{Ll}|\p{N})(\p{Lu})/gu, '$1 $2')
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2')
+    .replace(/[\p{P}\p{S}\s]+/gu, ' ')
     .trim();
   return [...new Set([url.href, plain, words])];
 }
@@ -937,6 +968,8 @@ export function createWebConnector(
       }
       const deadline = Date.now() + totalTimeoutMs;
       const visited: string[] = [];
+      // Set once any answer on the way opened or asked for a session.
+      let session = false;
       for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop += 1) {
         ctx.signal?.throwIfAborted();
         const early = addressRefusal(url);
@@ -986,6 +1019,7 @@ export function createWebConnector(
             retryable: true,
           };
         }
+        session ||= sessionSignals(response);
         if ([301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
           try {
             url = new URL(response.headers.location, url);
@@ -996,7 +1030,12 @@ export function createWebConnector(
         }
         let read = readBody(response, url, method, maxChars);
         let readThrough: string | undefined;
-        if (options.extract && unreadable(response, read, method) && shareableAddress(url)) {
+        if (
+          options.extract &&
+          !session &&
+          unreadable(response, read, method) &&
+          shareableAddress(url)
+        ) {
           const extracted = await extractPage(options.extract, url, deadline, action, ctx);
           if (extracted && 'refused' in extracted)
             read = {

@@ -457,7 +457,8 @@ test('a bot wall, a rate limit or an unavailable site is tried through Extract; 
     {
       status: 403,
       headers: { 'content-type': 'text/html', server: 'AkamaiGHost' },
-      body: '<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD></HTML>',
+      // Akamai's own block page names its reference on errors.edgesuite.net.
+      body: '<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY><P>errors&#46;edgesuite&#46;net</P></BODY></HTML>',
     },
     html('<div id="px-captcha"></div>', 403),
     html('<p>Slow down</p>', 429),
