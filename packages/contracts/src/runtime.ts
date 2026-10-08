@@ -29,6 +29,9 @@ export const runtimeCapabilities = z.object({
 });
 export type RuntimeCapabilities = z.infer<typeof runtimeCapabilities>;
 
+/** The most the summary of a conversation's earlier messages may take, rendered. */
+export const EARLIER_SUMMARY_CHARACTERS = 16_000;
+
 /** Provider-agnostic message shape. Nothing provider-specific reaches the transcript. */
 export const canonicalMessage = z.object({
   role: z.enum(['user', 'assistant', 'tool', 'system']),
@@ -339,6 +342,19 @@ export const attemptBundle = z.object({
    */
   since_last: sinceLast.default(EMPTY_SINCE_LAST),
   transcript: z.array(canonicalMessage),
+  /**
+   * The earlier part of the conversation, which `transcript` no longer
+   * carries: Melete's summary of the messages up to `through`, and how many
+   * later ones did not fit and are not in that summary either. Optional, so
+   * an older producer still parses; absent, nothing was left out.
+   */
+  earlier: z
+    .object({
+      summary: z.string().max(EARLIER_SUMMARY_CHARACTERS).nullable(),
+      through: timestamp.nullable(),
+      left_out: z.number().int().nonnegative(),
+    })
+    .optional(),
   tools: z.array(toolSpec),
   skills: z.array(skillPayload),
   /**

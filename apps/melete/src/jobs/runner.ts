@@ -76,6 +76,7 @@ import {
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
+import { UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
 import {
   attemptCause,
   emptyWakes,
@@ -840,6 +841,20 @@ export class AttemptRunner {
         input = { kind: 'attempt_budget_exhausted' };
         break;
     }
+    // Something this attempt sent is unconfirmed, and the turn rests on it: the
+    // person is asked, with answers to press, rather than left with a state
+    // and nothing to do about it. Where the broker parked the job already, the
+    // question it asked, if any, stays the one asked.
+    const unconfirmed =
+      (outcome.kind === 'completed' &&
+        input.kind === 'attempt_completed' &&
+        input.has_unknown_action &&
+        !brokerParked) ||
+      (brokerParked && row.state === 'needs_reconciliation');
+    if (unconfirmed) {
+      if (!brokerParked) wait = { kind: 'user_input', question: UNCONFIRMED_NOTE };
+      carried = [unsettledQuestion(attemptId, UNCONFIRMED_NOTE), ...carried];
+    }
     const completionVerified =
       outcome.kind === 'completed' &&
       input.kind === 'attempt_completed' &&
@@ -907,7 +922,7 @@ export class AttemptRunner {
       attemptId,
       carried,
       askable:
-        (parked && explicit !== null) ||
+        (parked && (explicit !== null || unconfirmed)) ||
         (!parked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete),
       fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
       ...(explicit ? { explicit } : {}),
@@ -1521,11 +1536,15 @@ export class AttemptRunner {
         // The work is done and its answer written; what it started is still
         // out. Running the turn again would do every step a second time, so
         // the turn rests on its answer until that action reports back.
+        // The person is asked what to do about it, with answers to press.
         const draft = completed.summary;
         await this.commitOutcome(claims, {
-          kind: 'waiting_for_input',
-          question: STILL_RUNNING_NOTE,
-          ...(draft.trim() ? { draft } : {}),
+          outcome: {
+            kind: 'waiting_for_input',
+            question: STILL_RUNNING_NOTE,
+            ...(draft.trim() ? { draft } : {}),
+          },
+          questions: [unsettledQuestion(claims.attempt_id, STILL_RUNNING_NOTE)],
         }).catch(async (failure: unknown) => {
           await this.loseAttempt(
             claims.attempt_id,

@@ -28,9 +28,14 @@ const INTERACTIVE_PURPOSES: ReadonlySet<string> = new Set(['voice', 'companies']
 
 /**
  * Side calls made inside an agent turn, which take that turn's class: a
- * search the turn ran, a review of an action the turn proposed.
+ * search the turn ran, a review of an action the turn proposed, the summary
+ * of earlier messages the turn needed.
  */
-export const TURN_PURPOSES: ReadonlySet<string> = new Set(['web_search', 'action_review']);
+export const TURN_PURPOSES: ReadonlySet<string> = new Set([
+  'web_search',
+  'action_review',
+  'history',
+]);
 
 /** Side calls that read in batches what came in. */
 const TRIAGE_PURPOSES: ReadonlySet<string> = new Set(['triage']);

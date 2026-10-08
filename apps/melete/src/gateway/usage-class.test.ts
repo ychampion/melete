@@ -15,8 +15,8 @@ describe('which calls a person is waiting on', () => {
     expect(serviceClass('something_new')).toBe('background');
   });
 
-  test("a turn's searches and reviews take the class of the turn", () => {
-    expect([...TURN_PURPOSES].sort()).toEqual(['action_review', 'web_search']);
+  test("a turn's searches, reviews and summaries take the class of the turn", () => {
+    expect([...TURN_PURPOSES].sort()).toEqual(['action_review', 'history', 'web_search']);
   });
 
   test('the tier says which step made the call', () => {

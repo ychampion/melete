@@ -1544,7 +1544,10 @@ place beyond that, as above. These follow the smallest window that applies:
 below the baseline, and never above the catalog's figure for the model), and
 the conversation is also held to four tenths of the compaction trigger, so with
 the default `MELETE_COMPACTION_MAX_TOKENS` a million-token model carries about
-52,000 tokens of it. Tokens are counted the way the engine counts them, a token
+52,000 tokens of it. Older messages past that are summarised for the agent by
+the secondary or fast model, once each, and the chat says "Earlier messages
+summarised"; a private conversation with no local model is not summarised, and
+the agent is told what it cannot see. Tokens are counted the way the engine counts them, a token
 per character in scripts such as Chinese or Japanese, so a conversation in any
 language stays inside these numbers and inside the largest request the gateway
 accepts.

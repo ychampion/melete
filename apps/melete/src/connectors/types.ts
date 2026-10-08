@@ -120,6 +120,13 @@ export interface Connector {
    */
   ownComputer?: boolean;
   /**
+   * With `ownComputer`: no step of this connector can reach anything outside
+   * Melete (files in the agent's workspace and the person's Files), so an
+   * open outcome is the agent's to check whatever any computer's network
+   * allows. Without it, only a step on a computer that could reach nothing is.
+   */
+  staysInside?: boolean;
+  /**
    * How long one dispatch of this action may take before its outcome is
    * unknown, for a connector whose work may outlast the broker's own dispatch
    * timeout: a command the admitted payload gives two minutes. The broker

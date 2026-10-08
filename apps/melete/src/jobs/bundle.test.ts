@@ -380,6 +380,13 @@ describe('persisted completion evidence', () => {
       });
       expect(own.has_unknown_action).toBe(false);
       expect(own.all_actions_terminal).toBe(true);
+      // A step on Melete's own files is the agent's to check the same way.
+      const file = evaluateCompletion(subject(), completed, {
+        ...records(),
+        actions: [{ ...storedAction, status, closedStep: false, provider: 'files' }],
+      });
+      expect(file.has_unknown_action).toBe(false);
+      expect(file.all_actions_terminal).toBe(true);
       const outside = evaluateCompletion(subject(), completed, {
         ...records(),
         actions: [{ ...storedAction, status, closedStep: false }],
