@@ -59,6 +59,7 @@ import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { appendToolTrace, heldSearchCall } from '../experience/tools.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
+import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
@@ -2991,12 +2992,13 @@ export class BrokerService implements BrokerOperations {
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, action.job_id);
       if (['cancelled', 'completed'].includes(job.state)) return;
+      // An uncertain outcome is answered with the person's choices: wait, check, or say which.
       const [row] = await tx`insert into question
-          (id, source, job_id, attempt_id, text, because, if_ignored, blocks_external_effect)
+          (id, source, job_id, attempt_id, text, because, if_ignored, blocks_external_effect, options)
         values (${recordId('qst')}, 'job', ${job.id}, ${action.attempt_id}, ${text},
           ${JSON.stringify(because)}::jsonb,
           'This responsibility stays where it is until you answer, and nothing is sent in the meantime.',
-          true)
+          true, ${JSON.stringify(uncertain ? UNSETTLED_OPTIONS : [])}::jsonb)
         on conflict (job_id) where state = 'open' do nothing
         returning id`;
       await appendEvent(tx, job.id, action.attempt_id, 'notice', {

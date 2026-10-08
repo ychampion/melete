@@ -21,7 +21,7 @@ import {
 import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
-import { agent, attempt, event, experienceTurn, job, question } from '../db/schema.ts';
+import { agent, attempt, event, experienceTurn, job, owner, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -35,6 +35,14 @@ import {
 import { privacyConversation } from '../privacy/schema.ts';
 import type { JobRow, JobService } from './service.ts';
 import type { SubmissionService } from './submissions.ts';
+import {
+  isUnsettledQuestion,
+  UNSETTLED_CHECK,
+  UNSETTLED_DONE,
+  UNSETTLED_NOT_DONE,
+  UNSETTLED_WAIT,
+  type UnsettledSteps,
+} from './unsettled.ts';
 
 export type QuestionRow = typeof question.$inferSelect;
 
@@ -333,6 +341,11 @@ export class QuestionService {
   private readonly answers = new Map<string, string>();
   /** The option an answer in flight picked, by its submission ID. */
   private readonly offered = new Map<string, OfferedChoice>();
+  /**
+   * What answering a turn's unsettled-step question can do, where the broker
+   * runs in this process. Left out, its answers are passed on as the person's words.
+   */
+  unsettled?: UnsettledSteps;
 
   constructor(
     readonly jobs: JobService,
@@ -607,6 +620,61 @@ export class QuestionService {
   }
 
   /**
+   * The answer to a turn's unsettled-step question, carried out here: wait,
+   * check again, or settle what is still open as the person says. The
+   * question stays open, and is returned as it is, while anything is still
+   * open; once nothing is, the answer goes on as an ordinary one (null), so
+   * the conversation carries on with the person's choice in it, or, where the
+   * settling already woke the work, the question is closed as answered.
+   */
+  private async settleUnsettled(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    option: OfferedChoice,
+  ): Promise<AnswerResult | null> {
+    const steps = this.unsettled;
+    const jobId = current.row.jobId;
+    if (!steps || !jobId || current.row.state !== 'open') return null;
+    const unchanged: AnswerResult = {
+      question: current.view,
+      job: null,
+      receipt: null,
+      status: 200,
+    };
+    if (option.id === UNSETTLED_WAIT) return unchanged;
+    const holder = await this.jobs.get(jobId);
+    const speaker = requestPrincipal();
+    if (speaker) await requireJobAccess(this.jobs.db, jobId, speaker);
+    if (option.id === UNSETTLED_CHECK) await steps.check(jobId);
+    else if (option.id === UNSETTLED_DONE || option.id === UNSETTLED_NOT_DONE) {
+      // The person answering, else the job's own person, else the setup owner.
+      const [owned] =
+        speaker || holder.principalId ? [] : await this.jobs.db.select().from(owner).limit(1);
+      const actor = speaker ?? holder.principalId ?? owned?.id;
+      if (!actor) throw new ServiceError('scope_denied', 'Sign in to answer this.', 403);
+      await steps.mark(jobId, actor, option.id === UNSETTLED_DONE ? 'succeeded' : 'failed');
+    }
+    if ((await steps.open(jobId)) > 0)
+      return { ...unchanged, question: (await this.read(current.row.id)).view };
+    const after = await this.jobs.get(jobId);
+    if (after.state === 'waiting_for_input') return null;
+    // Settling it woke the work already, which reads what was settled.
+    await this.jobs.transaction((tx) =>
+      closeOpen(
+        tx,
+        jobId,
+        { state: 'answered', answer: option.label, answerSubmissionId: answerKey(current.row.id) },
+        'answered',
+      ),
+    );
+    return {
+      question: (await this.read(current.row.id)).view,
+      job: after,
+      receipt: null,
+      status: 200,
+    };
+  }
+
+  /**
    * A routine rests on its schedule while its question waits, and a resting
    * routine takes no message: its runs are the schedule's. The answer is
    * recorded on the question, written into the routine's thread as the
@@ -752,6 +820,10 @@ export class QuestionService {
     const first = await this.read(id);
     if (first.row.source === 'memory') return this.settle(first, value);
     if (await this.isPrivacyQuestion(first.row)) return this.decidePrivacy(first, value.text);
+    if (offered && isUnsettledQuestion(first.row.options)) {
+      const kept = await this.settleUnsettled(first, offered);
+      if (kept) return kept;
+    }
     const holder = first.row.jobId ? await this.jobs.get(first.row.jobId) : null;
     if (holder?.kind === 'routine' && holder.state === 'waiting_for_event_or_time')
       return this.answerRoutine(first, value.text, offered);

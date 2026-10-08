@@ -30,7 +30,7 @@ import {
   triggerSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
@@ -71,6 +71,15 @@ import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
 import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import {
+  EMPTY_SUMMARY_TEXT,
+  HISTORY_SUMMARY_KIND,
+  isToolIdentity,
+  madeUnder,
+  renderSummary,
+  type StoredSummary,
+  storedSummary,
+} from './history-summary.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
@@ -386,8 +395,15 @@ export function assembleHistory(
     /** How much transcript this attempt's model has room for. */
     limits?: TranscriptLimits;
   } = {},
-): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
+): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & {
+  progressSummary: string;
+  /** The whole conversation in order, before any of it is summarised or bounded. */
+  full: CanonicalMessage[];
+  /** The newest summary of its earlier messages, if one was made. */
+  stored: StoredSummary | null;
+} {
   const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT } = context;
+  let stored: StoredSummary | null = null;
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
     approval_results: [],
@@ -451,6 +467,9 @@ export function assembleHistory(
     } else if (row.seq > afterSeq && row.type === 'notice' && payload.kind === 'trigger_event') {
       const delivered = jsonObject.safeParse(payload.event);
       if (delivered.success) inputs.trigger_events.push(delivered.data);
+    } else if (row.type === 'notice' && payload.kind === HISTORY_SUMMARY_KIND) {
+      // Events come in order, so the newest summary is the one that counts.
+      stored = storedSummary(payload) ?? stored;
     }
   }
   let progressSummary = '';
@@ -469,10 +488,63 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  const bounded = boundHistory(transcript, inputs.new_user_messages, stored, limits);
   return {
     inputs,
-    transcript: boundAroundNewMessages(transcript, inputs.new_user_messages, limits),
+    transcript: bounded.transcript,
+    ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
     progressSummary,
+    full: transcript,
+    stored,
+  };
+}
+
+/**
+ * The conversation as an attempt is handed it. Messages a summary covers are
+ * replaced by the summary, which takes its own size out of the room; a
+ * completed tool call it covers keeps its identity, with its body left in the
+ * record, so it can never be replayed. What is still too long is bounded as
+ * before, and `earlier` says how many messages that left out, so a gap is
+ * never silent and the summary can be extended over them.
+ */
+export function boundHistory(
+  transcript: readonly CanonicalMessage[],
+  fresh: readonly CanonicalMessage[],
+  stored: StoredSummary | null,
+  limits: TranscriptLimits,
+): { transcript: CanonicalMessage[]; earlier?: NonNullable<AttemptBundle['earlier']> } {
+  const isFresh = new Set(fresh);
+  // A summary with nothing in it still says the messages were read, never a silent gap.
+  const summary = stored ? renderSummary(stored.summary) || EMPTY_SUMMARY_TEXT : null;
+  const through = stored ? Date.parse(stored.through) : Number.NEGATIVE_INFINITY;
+  const kept = transcript.flatMap((message) => {
+    if (isFresh.has(message) || Date.parse(message.at) > through) return [message];
+    return isToolIdentity(message) ? [{ ...message, content: omitted }] : [];
+  });
+  const room: TranscriptLimits = summary
+    ? {
+        maxMessages: limits.maxMessages,
+        maxTokens: Math.max(0, limits.maxTokens - estimateInputTokens(JSON.stringify(summary))),
+        maxBytes: Math.max(0, limits.maxBytes - wireBytes(summary)),
+      }
+    : limits;
+  const bounded = boundAroundNewMessages(kept, fresh, room);
+  const said = (message: CanonicalMessage) => !isToolIdentity(message);
+  const shown = bounded.filter(
+    (message) => said(message) && !message.content.endsWith(omitted),
+  ).length;
+  const leftOut = Math.max(0, kept.filter(said).length - shown);
+  return {
+    transcript: bounded,
+    ...(summary || leftOut > 0
+      ? {
+          earlier: {
+            summary,
+            through: summary ? (stored?.through ?? null) : null,
+            left_out: leftOut,
+          },
+        }
+      : {}),
   };
 }
 
@@ -656,7 +728,9 @@ async function firedTimer(
         eq(event.jobId, jobId),
         eq(event.attemptId, lastAttemptId),
         eq(event.type, 'notice'),
-        sql`${event.payload}->>'kind' = 'runtime_wait_requested'`,
+        // The wait the agent asked for, or the one put back when a later
+        // turn ended without choosing another ("thanks" after the reminder was set).
+        sql`${event.payload}->>'kind' in ('runtime_wait_requested', 'wait_restored')`,
       ),
     )
     .orderBy(desc(event.seq))
@@ -722,19 +796,18 @@ async function situation(tx: Transaction, row: JobRow): Promise<string> {
   return parts.join('\n\n');
 }
 
-export async function buildAttemptSkeleton(
+/**
+ * What a job's history is read from, with what the current context may no
+ * longer carry taken out: a revoked context's tool results keep only their
+ * identities, and its approvals and connector events are dropped. `upTo`
+ * reads only the events written by then.
+ */
+async function historyRows(
   tx: Transaction,
   row: JobRow,
-  attemptIdentity: { id: string; epoch: number; revision: number; token: string },
-  model: AttemptBundle['model'],
-  afterSeq: number,
-  expected?: ContextGenerations,
-  runtimeVersion?: string,
-): Promise<ResponsibilityAttemptBundle> {
-  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-  const generations = expected
-    ? await requireGenerations(tx, row.spaceId, expected)
-    : await readGenerations(tx, row.spaceId);
+  generations: ContextGenerations,
+  upTo?: number,
+) {
   const events = await tx
     .select()
     .from(event)
@@ -742,6 +815,7 @@ export async function buildAttemptSkeleton(
       and(
         eq(event.jobId, row.id),
         inArray(event.type, ['notice', 'tool_result', 'approval_decided']),
+        upTo === undefined ? undefined : lte(event.seq, upTo),
       ),
     )
     .orderBy(asc(event.seq));
@@ -787,6 +861,11 @@ export async function buildAttemptSkeleton(
       ];
     }
     if (entry.type === 'approval_decided' && payload.decision === 'approved' && !current) return [];
+    // A summary made under a context since revoked carries what that context gave.
+    if (entry.type === 'notice' && payload.kind === HISTORY_SUMMARY_KIND) {
+      const stored = storedSummary(payload);
+      if (!stored || !madeUnder(stored, generations)) return [];
+    }
     if (entry.type === 'notice' && payload.kind === 'trigger_event') {
       const source = jsonObject.safeParse(payload.event);
       if (
@@ -811,6 +890,48 @@ export async function buildAttemptSkeleton(
     tx,
     row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
   );
+  return { usableEvents, attempts, contextMatches, currentAttempts, room, files };
+}
+
+/**
+ * A job's whole conversation as its attempts read it, up to the event `upTo`,
+ * with the newest summary of its earlier messages. Read again outside the
+ * claim when that summary has to be extended.
+ */
+export async function readConversation(
+  tx: Transaction,
+  row: JobRow,
+  generations: ContextGenerations,
+  upTo: number,
+): Promise<{ full: CanonicalMessage[]; stored: StoredSummary | null }> {
+  const { usableEvents, attempts, contextMatches, room, files } = await historyRows(
+    tx,
+    row,
+    generations,
+    upTo,
+  );
+  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), upTo, {
+    ...(room?.names ? { names: room.names } : {}),
+    fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+  });
+  return { full: history.full, stored: history.stored };
+}
+
+export async function buildAttemptSkeleton(
+  tx: Transaction,
+  row: JobRow,
+  attemptIdentity: { id: string; epoch: number; revision: number; token: string },
+  model: AttemptBundle['model'],
+  afterSeq: number,
+  expected?: ContextGenerations,
+  runtimeVersion?: string,
+): Promise<ResponsibilityAttemptBundle> {
+  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
+  const generations = expected
+    ? await requireGenerations(tx, row.spaceId, expected)
+    : await readGenerations(tx, row.spaceId);
+  const { usableEvents, attempts, contextMatches, currentAttempts, room, files } =
+    await historyRows(tx, row, generations);
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq, {
     ...(room?.names ? { names: room.names } : {}),
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
@@ -999,6 +1120,8 @@ export async function buildAttemptSkeleton(
     transcript: room
       ? boundTranscript(inTimeOrder(room.thread, history.transcript))
       : history.transcript,
+    // A room's thread is bounded with its own; only a conversation's is summarised.
+    ...(!room && history.earlier ? { earlier: history.earlier } : {}),
     tools: [],
     skills: mergeSkills(
       procedures,
@@ -1111,6 +1234,8 @@ type CompletionAction = Pick<
   spaceId: string | null;
   /** It ran on an agent's computer that could reach nothing outside. */
   closedStep?: boolean;
+  /** The provider of its connection. */
+  provider?: string | null;
 };
 type CompletionArtifact = Pick<
   typeof artifact.$inferSelect,
@@ -1224,8 +1349,10 @@ export function evaluateCompletion(
   // whose outcome is open was the agent's to check, and it was told so. It
   // neither holds the turn open nor asks the person; a late receipt still
   // lands on the action. With network access it reconciles like any effect.
+  // A step on Melete's own files is the same: nothing it does can leave, and
+  // the agent can look at the file itself.
   const checkedByAgent = (candidate: CompletionAction) =>
-    open(candidate) && candidate.closedStep === true;
+    open(candidate) && (candidate.closedStep === true || candidate.provider === 'files');
   return {
     all_actions_terminal: actions.every(
       (candidate) =>
@@ -1259,6 +1386,7 @@ export async function completionFacts(
       receipt: action.receipt,
       spaceId: connection.spaceId,
       closedStep: closedComputerStepColumn,
+      provider: connection.provider,
     })
     .from(action)
     .leftJoin(connection, eq(connection.id, action.connectionId))

@@ -228,6 +228,21 @@ script stays inside both (`the transcript bound holds for text in any script`).
 The identity and each skill body keep their fixed sizes. Past these budgets the
 engine compacts in place, inside the attempt.
 
+The engine keeps no session between attempts, so its own compaction never sees
+earlier turns: each attempt is handed the conversation again. Messages that no
+longer fit the transcript are replaced by a running summary
+(`jobs/history-summary.ts`, `jobs/history-extend.ts`). When the messages after
+the summary outgrow their room, the oldest are summarised until what stays takes
+half of it, by the person's secondary or fast model through the gateway, as that
+conversation (`purpose: 'history'`, so a private one stays on a local model or is
+not summarised), with structured output keeping stated facts, decisions, open
+tasks and names. The summary is stored as a `history_summary` notice in the
+job's events and extended from where it stopped, so no message is summarised
+twice; it sits before the conversation in the input and changes only when it is
+extended, which keeps the cached prefix stable. The chat shows the `compacted`
+marker. When no summary can be made, the attempt is told how many earlier
+messages it cannot see.
+
 The broker serves a token-budgeted core catalog (the budget above, `core uses a
 serialized token budget, never a count cap, with stable ordering`) plus
 `search_tools` and `load_tool`; the contract's tool-count constant is not an

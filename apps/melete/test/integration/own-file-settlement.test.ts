@@ -11,7 +11,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { DispatchResult } from '@melete/contracts';
+import type { DispatchResult, JsonObject } from '@melete/contracts';
 import { createArtifactRecorder } from '../../src/artifact/record.ts';
 import { BrokerService, OWN_COMPUTER_UNKNOWN } from '../../src/broker/service.ts';
 import { createFilesConnector, settledFromDisk } from '../../src/connectors/files.ts';
@@ -46,7 +46,7 @@ async function setup(wrap: (files: Connector) => Connector = (files) => files) {
     recordArtifact: createArtifactRecorder(undefined, { workRoot, spacesRoot }),
     dispatchTimeoutMs: 300,
   });
-  const write = (payload: Record<string, unknown>) =>
+  const write = (payload: JsonObject) =>
     broker.propose(seed.claims, {
       kind: 'files.write',
       connection_id: seed.connectionId,
@@ -96,6 +96,30 @@ databaseTest(
     );
     const result = await ctx.write({ path: 'notes.txt', content: 'stretch at 14:44' });
     expect(result.status).toBe('succeeded');
+    expect(await ctx.state()).toEqual({ job: 'running', questions: 0 });
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a declared file is never settled from the disk alone: it stays open for the agent, and asks nobody',
+  async () => {
+    const ctx = await setup((files) =>
+      settledFromDisk({
+        ...files,
+        async execute(action, context) {
+          await files.execute(action, context);
+          throw new Error('a check after the write failed');
+        },
+      }),
+    );
+    const result = await ctx.write({
+      path: 'report.csv',
+      content: CSV,
+      expect: { kind: 'csv', checks: [{ kind: 'non_empty' }] },
+    });
+    expect(result.status).toBe('unknown');
+    expect(result.own_computer).toBe(true);
     expect(await ctx.state()).toEqual({ job: 'running', questions: 0 });
   },
   SLOW,

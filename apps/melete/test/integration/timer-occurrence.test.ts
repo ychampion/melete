@@ -9,6 +9,7 @@ import { renderInput } from '@melete/runtime-hermes';
 import { eq } from 'drizzle-orm';
 import { requestRuntimeWait } from '../../src/broker/runtime-wait.ts';
 import { job, space } from '../../src/db/schema.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { newId } from '../../src/ids.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -42,7 +43,7 @@ async function claimNow(row: JobRow) {
 }
 
 /** A conversation that asked for a reminder: its first turn sets the timer and rests. */
-async function waitingOnTimer(wakeAt: string) {
+async function waitingOnTimer(wakeAt: string, restored = false) {
   const spaceId = newId('sp');
   await required(handle).db.insert(space).values({ id: spaceId, name: 'Timer', gitPath: spaceId });
   const created = await required(jobs).create({
@@ -54,7 +55,18 @@ async function waitingOnTimer(wakeAt: string) {
   // The first turn is the setting up, so nothing tells it a time has come.
   expect(first.bundle.inputs.trigger_events).toEqual([]);
   const wait = { kind: 'timer' as const, wake_at: wakeAt };
-  await requestRuntimeWait(required(handle).sql, first.claims, wait);
+  if (restored)
+    // A turn that ended without choosing a wait gets back the one it was told was cancelled.
+    await required(jobs).transaction((tx) =>
+      appendEvent(tx, {
+        jobId: created.id,
+        attemptId: first.claims.attempt_id,
+        type: 'notice',
+        payload: { kind: 'wait_restored', wait },
+        dedupKey: `${first.claims.attempt_id}:wait-restored`,
+      }),
+    );
+  else await requestRuntimeWait(required(handle).sql, first.claims, wait);
   await required(runner).commitOutcome(first.claims, { kind: 'waiting_for_event_or_time', wait });
   const rested = await required(jobs).get(created.id);
   expect(rested.state).toBe('waiting_for_event_or_time');
@@ -93,5 +105,16 @@ withDb('a timer the agent set', () => {
     const later = await claimNow(await required(jobs).get(rested.id));
     expect(later.bundle.inputs.trigger_events).toEqual([]);
     expect(renderInput(later.bundle)).not.toContain('The time you were waiting for has come');
+  });
+
+  test('a timer put back after a later turn is that moment too when it comes due', async () => {
+    const wakeAt = new Date(Date.now() + 60_000).toISOString();
+    const rested = await waitingOnTimer(wakeAt, true);
+    await required(handle)
+      .db.update(job)
+      .set({ nextWakeAt: new Date(Date.now() - 1000) })
+      .where(eq(job.id, rested.id));
+    const fired = await claimNow(await required(jobs).get(rested.id));
+    expect(fired.bundle.inputs.trigger_events).toEqual([{ kind: 'timer_fired', wake_at: wakeAt }]);
   });
 });

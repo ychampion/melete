@@ -13,16 +13,19 @@ import {
   type EventSink,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
-import { action, attempt, connection, space } from '../../src/db/schema.ts';
+import { action, attempt, connection, question, space } from '../../src/db/schema.ts';
 import { newId } from '../../src/ids.ts';
 import { verifyCapability } from '../../src/jobs/capability.ts';
+import { QuestionService } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, STILL_RUNNING_NOTE } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
+import { SubmissionService } from '../../src/jobs/submissions.ts';
+import { UNCONFIRMED_NOTE, UNSETTLED_OPTIONS, unsettledSteps } from '../../src/jobs/unsettled.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -374,5 +377,113 @@ withDb('an action its tool call stopped waiting for', () => {
     const [only] = await attempts(row.id);
     expect(only?.outcome).toBe('waiting_for_input');
     expect(await attempts(row.id)).toHaveLength(1);
+  });
+
+  test('a turn that ends with a send nobody can confirm asks, with the same answers', async () => {
+    const { handle, jobs } = fixture();
+    const { connectionId, row } = await setup();
+    const { runtime } = impatientRuntime(async (bundle) => {
+      await handle.db.insert(action).values({
+        id: newId('act'),
+        jobId: bundle.attempt.job_id,
+        attemptId: bundle.attempt.id,
+        connectionId,
+        kind: 'test.slow',
+        effectClass: 'write_reversible',
+        canonicalPayload: { command: 'deploy' },
+        payloadHash: 'd'.repeat(64),
+        idempotencyKey: newId('act'),
+        status: 'unknown',
+        dispatchedAt: new Date(),
+      });
+    });
+    await runner(runtime, 300).handleWake(wake(row));
+    expect((await jobs.get(row.id)).state).toBe('needs_reconciliation');
+    const [open] = await handle.db.select().from(question).where(eq(question.jobId, row.id));
+    expect(open?.text).toBe(UNCONFIRMED_NOTE);
+    expect(open?.options.map((option) => option.id)).toEqual(
+      UNSETTLED_OPTIONS.map((option) => option.id),
+    );
+  });
+
+  test('the resting turn offers answers: wait, check again, or say whether it went through', async () => {
+    const { handle, jobs } = fixture();
+    const { connectionId, row } = await setup();
+    const actionId = newId('act');
+    const { runtime } = impatientRuntime(async (bundle) => {
+      await handle.db.insert(action).values({
+        id: actionId,
+        jobId: bundle.attempt.job_id,
+        attemptId: bundle.attempt.id,
+        connectionId,
+        kind: 'test.slow',
+        effectClass: 'write_reversible',
+        canonicalPayload: { command: 'make' },
+        payloadHash: 'c'.repeat(64),
+        idempotencyKey: actionId,
+        status: 'dispatched',
+        dispatchedAt: new Date(),
+      });
+    }, 1_000);
+    await runner(runtime, 300).handleWake(wake(row));
+    const submissions = new SubmissionService(jobs);
+    const questions = new QuestionService(jobs, submissions);
+    // A job from before principals is the setup owner's to answer for.
+    await handle.sql`insert into owner (id, email) values (${newId('own')}, 'unsettled@example.test')
+      on conflict do nothing`;
+    // The broker's side of an answer, as this process would run it.
+    const asked: string[] = [];
+    questions.unsettled = unsettledSteps(handle.sql, () => ({
+      // The sender has stopped waiting: the broker calls the step unknown.
+      async settleAbandoned(attemptId: string) {
+        asked.push(`abandoned:${attemptId}`);
+        await handle.db
+          .update(action)
+          .set({ status: 'unknown' })
+          .where(and(eq(action.attemptId, attemptId), eq(action.status, 'dispatched')));
+      },
+      async verify(id: string) {
+        asked.push(`verify:${id}`);
+      },
+      async resolveByOwner(_actor: string, id: string, input: { resolution: string }) {
+        asked.push(`${input.resolution}:${id}`);
+        await handle.db
+          .update(action)
+          .set({ status: input.resolution, resolvedAt: new Date() })
+          .where(eq(action.id, id));
+      },
+    }));
+    const [open] = await handle.db.select().from(question).where(eq(question.jobId, row.id));
+    if (!open) throw new Error('expected the turn to ask');
+    expect(open.text).toBe(STILL_RUNNING_NOTE);
+    expect(open.options.map((option) => option.label)).toEqual([
+      'Keep waiting',
+      'Check again',
+      'It went through',
+      'It did not go through',
+    ]);
+    const choose = (label: string) => {
+      const option = UNSETTLED_OPTIONS.find((entry) => entry.label === label);
+      if (!option) throw new Error(label);
+      return questions.answer(open.id, { text: label }, option);
+    };
+    // Waiting changes nothing, and the question stays.
+    expect((await choose('Keep waiting')).question.state).toBe('open');
+    expect(asked).toEqual([]);
+    // Checking again asks the destination, which cannot say: it stays open.
+    expect((await choose('Check again')).question.state).toBe('open');
+    const [{ attemptId } = { attemptId: '' }] = await handle.db
+      .select({ attemptId: action.attemptId })
+      .from(action)
+      .where(eq(action.id, actionId));
+    expect(asked).toEqual([`abandoned:${attemptId}`, `verify:${actionId}`]);
+    // The person says it went through.
+    const settled = await choose('It went through');
+    expect(asked.at(-1)).toBe(`succeeded:${actionId}`);
+    expect(settled.question.state).toBe('answered');
+    const [after] = await handle.db.select().from(action).where(eq(action.id, actionId));
+    expect(after?.status).toBe('succeeded');
+    // The conversation carries on, with the person's choice as what they said.
+    expect((await jobs.get(row.id)).state).toBe('queued');
   });
 });

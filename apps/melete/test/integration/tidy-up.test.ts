@@ -382,13 +382,6 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     expect(await listed()).toContain(chat.id);
     const [kept] = await db.select().from(action).where(eq(action.id, actionId));
     expect(kept?.status).toBe('dispatched');
-    // An effect whose outcome is unknown holds it too, with its own reason.
-    await db.update(action).set({ status: 'unknown' }).where(eq(action.id, actionId));
-    const unclear = await call(`/conversations/${chat.id}`, 'DELETE');
-    expect(unclear.status).toBe(409);
-    expect(((await unclear.json()) as { error: { code: string } }).error.code).toBe(
-      'outcome_unclear',
-    );
     // Once it settles, the chat goes and the send stays on record.
     await db
       .update(action)
@@ -400,6 +393,36 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     expect(activity.find((entry) => entry.reference === 'msg-9')?.destination).toBe(
       'billing@example.test',
     );
+  });
+
+  test('a chat whose step nobody could settle is deleted, the step settled as abandoned', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await runningChat('Unconfirmed send');
+    const connectionId = newId('conn');
+    await db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    for (const status of ['unknown', 'unresolved'] as const) {
+      const actionId = newId('act');
+      await db.insert(action).values({
+        id: actionId,
+        jobId: chat.id,
+        attemptId: claims.attempt_id,
+        connectionId,
+        kind: 'email.send',
+        effectClass: 'write_external',
+        canonicalPayload: { to: ['billing@example.test'], subject: status, body: 'Paid.' },
+        payloadHash: status === 'unknown' ? 'a'.repeat(64) : 'b'.repeat(64),
+        idempotencyKey: actionId,
+        status,
+        dispatchedAt: new Date(),
+      });
+    }
+    // Nothing is on its way out, so nothing is left to wait for or to settle first.
+    const deleted = await call(`/conversations/${chat.id}`, 'DELETE');
+    expect(deleted.status).toBe(200);
+    expect(await listed()).not.toContain(chat.id);
+    expect(await db.select().from(action).where(eq(action.jobId, chat.id))).toEqual([]);
   });
 
   test('a read never holds a deletion up, whatever state it was left in', async () => {

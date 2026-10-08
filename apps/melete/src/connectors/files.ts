@@ -1831,8 +1831,11 @@ export function settledFromDisk(connector: Connector): Connector {
       try {
         return await execute(action, ctx);
       } catch (error) {
+        // A declared file is recorded with its checks from the receipt the
+        // write makes; the disk alone cannot stand in for that.
         if (
           !SETTLED_FROM_DISK.has(action.kind) ||
+          action.canonical_payload.expect !== undefined ||
           error instanceof ConnectorFaultError ||
           error instanceof BrokerFault
         )

@@ -101,6 +101,23 @@ function inFlightRefusal(rows: readonly { status: string; kind: string }[]): Ser
   return null;
 }
 
+/** Effects whose outcome nobody settled: nothing more is on its way for them. */
+const UNSETTLED = ['unknown', 'unresolved'];
+
+/**
+ * A step whose outcome was never settled holds nothing up once its chat is
+ * being deleted: nothing more is on its way out for it, and refusing left the
+ * person with nothing to settle and no way to delete. It is settled as
+ * abandoned, failed by the deletion and not by any evidence, which its record
+ * says, and the deletion goes ahead.
+ */
+const ABANDONED = JSON.stringify({ decided_by: 'deletion', resolution: 'abandoned' });
+async function abandonUnsettled(query: Sql | TransactionSql, list: readonly string[]) {
+  await query`update action set status = 'failed', resolved_at = now(),
+      reconciliation = coalesce(reconciliation, '{}'::jsonb) || ${ABANDONED}::jsonb
+    where job_id = any(${[...list]}) and status = any(${UNSETTLED})`;
+}
+
 /**
  * A deletion waits for what is on its way out. The broker settles a send and
  * reconciles a late receipt against its action row; deleting the row first
@@ -237,8 +254,16 @@ export async function removeJobs(
         })
         .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)));
     }
-    // Checked after the stop, which refuses anything parked. What is left is
-    // on its way out, and the whole deletion waits for it: this rolls back.
+    // What nobody could settle is settled as abandoned; what is still on its
+    // way out is not, and the whole deletion waits for it: this rolls back.
+    await tx
+      .update(action)
+      .set({
+        status: 'failed',
+        resolvedAt: new Date(),
+        reconciliation: sql`coalesce(${action.reconciliation}, '{}'::jsonb) || ${ABANDONED}::jsonb`,
+      })
+      .where(and(inArray(action.jobId, list), inArray(action.status, UNSETTLED)));
     const pending = await tx
       .select({ status: action.status, kind: action.kind })
       .from(action)
@@ -260,6 +285,7 @@ export async function removeJobs(
   let fileKeys: BlobKey[] = [];
   await deps.sql.begin(async (tx) => {
     await tx`select id from job where id = any(${list}) order by id for update`;
+    await abandonUnsettled(tx, list);
     await refuseInFlight(tx, list);
     await keepActivity(tx, list);
     // A chat started from a deleted plan stays, no longer linked to it.

@@ -111,6 +111,8 @@ import { mountIntents } from './intents/routes.ts';
 import { IntentService, undoThrough } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
+import { withHistorySummary } from './jobs/history-extend.ts';
+import { configuredHistorySummariser, type HistorySummariser } from './jobs/history-gateway.ts';
 import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { QuestionService } from './jobs/questions.ts';
@@ -122,6 +124,7 @@ import { connectionScopesForJob } from './jobs/scopes.ts';
 import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
+import { unsettledSteps } from './jobs/unsettled.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
@@ -788,6 +791,7 @@ export async function bootstrap(
   let signalPoller: SignalPoller | undefined;
   let triage: TriageService | undefined;
   let triageClassifier: TriageClassifier | null = null;
+  let historySummariser: HistorySummariser | undefined;
   let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
@@ -850,6 +854,7 @@ export async function bootstrap(
       () => memory?.stop(),
       () => memoryGateway?.close(),
       () => triageClassifier?.close(),
+      () => historySummariser?.close(),
       () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
@@ -1299,9 +1304,25 @@ export async function bootstrap(
                     : [],
               })
             : observed;
+      // A long conversation's earlier messages are summarised for the attempt
+      // when they no longer fit, through the gateway as that conversation.
+      if (handle)
+        historySummariser = await configuredHistorySummariser(env, privacy, {
+          settings: modelSettings,
+          signIn,
+          spending,
+          ...(options.fakeProvider ? { fake: options.fakeProvider } : {}),
+        });
+      const summarisingRuntime = historySummariser
+        ? withHistorySummary(contextualRuntime, {
+            jobs,
+            summariser: historySummariser,
+            log: (line) => process.stderr.write(`${line}\n`),
+          })
+        : contextualRuntime;
       // A conversation that must stay private, with no local model to stay on,
       // asks the person before the engine starts.
-      const gatedRuntime = withPrivacyGate(contextualRuntime, {
+      const gatedRuntime = withPrivacyGate(summarisingRuntime, {
         router: () => privacy,
         engineProtocol: engineProtocol(env),
         providerUrl: providerAddress(env),
@@ -1434,6 +1455,9 @@ export async function bootstrap(
             }, handle.sql)
           : undefined,
       );
+      // A turn left with something unsettled offers answers the broker carries
+      // out: check again, or settle it as the person says.
+      if (handle) questions.unsettled = unsettledSteps(handle.sql, () => effectBoundary?.broker);
       // A child loads its broker catalog once at boot, so the listener must
       // precede workers that can claim a job and launch that child.
       if (!effectBoundary && handle && (options.effects ?? env.MELETE_RUNTIME_ADAPTER === 'docker'))
