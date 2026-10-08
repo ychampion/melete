@@ -261,8 +261,6 @@ type Task = {
   run(b: Backend): Promise<{ ok: boolean; detail: string }>;
 };
 
-const lines = (text: string) => text.split('\n');
-
 const TASKS: Task[] = [
   {
     id: 'form',
@@ -314,14 +312,17 @@ const TASKS: Task[] = [
     async run(b) {
       await b.open('https://the-internet.herokuapp.com/tables');
       const text = await b.text();
-      const row = lines(text).find(
-        (l) => l.includes('Doe') && l.includes('Jason') && l.includes('$100.00'),
+      // A row is everything from one `row` line to the next, whether a side names
+      // the row by its cells or nests the cells under it.
+      const rows = text.split(/\n(?=\s*- row\b)/);
+      const row = rows.find(
+        (block) => block.includes('Doe') && block.includes('Jason') && block.includes('$100.00'),
       );
       return {
         ok: Boolean(row),
         detail: row
-          ? `row: ${row.trim().slice(0, 100)}`
-          : 'no single line holds Doe, Jason and $100.00',
+          ? `row: ${row.replace(/\s+/g, ' ').trim().slice(0, 120)}`
+          : 'no row holds Doe, Jason and $100.00 together',
       };
     },
   },

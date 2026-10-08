@@ -68,8 +68,10 @@ jobs:
           export CUA_DRIVER_BIN="$RUNNER_TEMP/cua/cua-driver"
           dbus-run-session -- bash -c '
             "$CUA_DRIVER_BIN" doctor || true
-            CUA_DELIVERY=background bun apps/melete/spike/cua-compare.ts both compare-background.json
-            CUA_DELIVERY=foreground bun apps/melete/spike/cua-compare.ts cua compare-foreground.json
+            for run in 1 2 3; do
+              CUA_DELIVERY=foreground bun apps/melete/spike/cua-compare.ts both "compare-run$run.json"
+            done
+            CUA_DELIVERY=background bun apps/melete/spike/cua-compare.ts cua compare-background.json
           '
       - name: Results
         if: always()

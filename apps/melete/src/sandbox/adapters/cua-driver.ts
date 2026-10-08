@@ -129,7 +129,14 @@ export class CuaDriverBrowser {
 
   async open(url: string): Promise<void> {
     await this.call('browser_navigate', { ...this.at, url }, 60_000);
-    await this.snapshot();
+    // Navigation can answer while a blocking script still holds the parser; look
+    // again, as an agent would, until the page shows more than its root.
+    for (let look = 0; look < 10; look++) {
+      const refs = await this.snapshot();
+      if (refs.some((ref) => ref.role !== 'rootwebarea')) return;
+      if (look === 0) this.notes.push('page was empty at first look');
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
 
   /** A whole ranked snapshot: follows continuations until the driver says it is complete. */
@@ -215,7 +222,14 @@ export class CuaDriverBrowser {
         ref: ref.ref,
         delivery_mode: this.settings.delivery,
       });
-    await this.call('browser_type', { ...this.at, ref: ref.ref, text: value, replace: true });
+    // Replacing selects the old content first, which some input types refuse; an
+    // empty field needs no replacing.
+    await this.call('browser_type', {
+      ...this.at,
+      ref: ref.ref,
+      text: value,
+      ...(ref.value ? { replace: true } : {}),
+    });
     await this.snapshot();
   }
 
