@@ -1218,3 +1218,42 @@ test('a host that fails during a reversible step or a commit is not passed over'
   ).rejects.toMatchObject({ code: 'network_reversible' });
   expect(fixture.egress.takeUnreachable()).toEqual([]);
 });
+
+test('a resource refused for what the page asks to send still ends the load; a host that broke its answer is passed over', async () => {
+  const fixture = await setup({
+    transport: async (url) => {
+      if (url.hostname === 'chain.example')
+        throw Object.assign(new Error('unable to verify the first certificate'), {
+          code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        });
+      if (url.hostname === 'broken.example')
+        return { status: 200, headers: { 'bad header': 'x' }, body: Buffer.alloc(0) };
+      return OK;
+    },
+  });
+  await fixture.egress.run('navigate', async () => {
+    for (const host of ['chain.example', 'broken.example'])
+      expect(
+        (
+          await fixture.dispatch({
+            url: `https://${host}/a.js`,
+            resourceType: 'script',
+            top: 'https://public.example/form',
+          })
+        ).aborted,
+      ).toBe(true);
+  });
+  expect(fixture.egress.takeUnreachable()).toEqual(['broken.example', 'chain.example']);
+  // Nothing was sent: the guard refused the page's own request, which is no dead host.
+  await expect(
+    fixture.egress.run('navigate', () =>
+      fixture.dispatch({
+        url: 'https://cdn.example/a.js',
+        resourceType: 'script',
+        top: 'https://public.example/form',
+        headers: { 'x-page': 'line\nbreak' },
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'invalid_headers' });
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
+});

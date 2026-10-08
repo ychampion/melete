@@ -119,11 +119,13 @@ const SERVE_FAILURES = new Set([
 
 /**
  * A request that failed because its host could not be reached or did not serve it, put plainly;
- * undefined for anything else, including every refusal the guard makes.
+ * undefined for anything else, including every refusal the guard makes. The size and header
+ * checks also refuse what a page asks to send, so they count only once the request went out.
  */
-function siteFailure(error: unknown, host: string): BrowserNetworkError | undefined {
+function siteFailure(error: unknown, host: string, sent: boolean): BrowserNetworkError | undefined {
   if (error instanceof BrowserNetworkError) {
     if (!SERVE_FAILURES.has(error.code)) return undefined;
+    if (!sent && error.code !== 'request_timeout') return undefined;
     return error.code === 'request_timeout'
       ? new BrowserNetworkError('site_timeout', `${host} timed out without answering.`)
       : error;
@@ -134,7 +136,7 @@ function siteFailure(error: unknown, host: string): BrowserNetworkError | undefi
     return new BrowserNetworkError('site_not_found', `${host} could not be found.`);
   if (CONNECT_FAILURES.has(code))
     return new BrowserNetworkError('site_unreachable', `${host} did not answer.`);
-  if (/CERT|SSL|TLS/.test(code))
+  if (/CERT|SSL|TLS|UNABLE_TO_VERIFY/.test(code))
     return new BrowserNetworkError(
       'site_certificate_invalid',
       `${host} has a security certificate that could not be checked.`,
@@ -617,6 +619,7 @@ export function createBrowserEgress(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let place: RequestPlace = {};
     let url: URL | undefined;
+    let sent = false;
     const abort = new AbortController();
     const abortOperation = () => abort.abort(operation?.abort.signal.reason);
     operation?.abort.signal.addEventListener('abort', abortOperation, { once: true });
@@ -656,6 +659,7 @@ export function createBrowserEgress(
       // rechecks takeover here, synchronously adjacent to the actual dispatch.
       operation.guard?.();
       if (operation.mode === 'commit' && request.method() === 'POST') commitDispatched = true;
+      sent = true;
       const response = await untilAborted(
         transport(url, address, {
           method: request.method(),
@@ -749,7 +753,7 @@ export function createBrowserEgress(
         body: response.body,
       });
     } catch (error) {
-      const failed = url && siteFailure(error, hostname(url));
+      const failed = url && siteFailure(error, hostname(url), sent);
       // A resource whose host is down or broken is left out and the page loads without it, as a
       // browser would load it; the look after says which hosts. Every refusal still ends the
       // operation, and so does a failure of the page's own document, by a plain name.
