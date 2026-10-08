@@ -190,7 +190,13 @@ export class BrowserSessionService {
   async handOff(
     scope: { space_id: string; job_id: string },
     sessionId: string,
-    input: { reason: HandOffReason; service: string; action_id?: string | null },
+    input: {
+      reason: HandOffReason;
+      service: string;
+      action_id?: string | null;
+      /** The action it was handed over at (`paths/operations.ts`), when not the submit's own. */
+      operation?: string;
+    },
     expectedAttemptId?: string,
   ): Promise<HandOff | null> {
     await this.authorize(sessionId, scope);
@@ -237,10 +243,15 @@ export class BrowserSessionService {
       });
       await appendEvent(tx, scope.job_id, null, 'notice', { kind: 'handed_to_person', ...card });
       // An unclear submit was counted when it landed unknown; a blocker met on
-      // the way, or the policy's own choice of the person, is counted here.
+      // the way, or the policy's own choice of the person, is counted here,
+      // against the action it was met at.
+      const [submitted] = card.action_id
+        ? await tx`select operation_key from action where id = ${card.action_id}`
+        : [];
       await recordPathOutcome(tx, {
         spaceId: scope.space_id,
         service: card.service,
+        operation: String(submitted?.operation_key ?? input.operation ?? `page ${card.service}`),
         taskKind: await taskKindOf(tx, scope.job_id),
         path: card.reason === 'path' ? 'person' : 'browser',
         outcome: 'handed',

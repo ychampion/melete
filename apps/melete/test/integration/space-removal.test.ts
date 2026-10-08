@@ -739,8 +739,10 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`int_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'chat',
         'message:1:a', ${seeded.jobId}, 'Book a table', 'booking', ${`intent:int_${seeded.spaceId}`})`;
     // What Melete learned works at a site there, by path.
-    await sql`insert into service_path (space_id, service_key, task_kind, path, attempts, successes)
-      values (${seeded.spaceId}, 'book.example', 'booking', 'browser', 1, 1)`;
+    await sql`insert into service_path (space_id, service_key, operation_key, task_kind, path,
+        attempts, successes)
+      values (${seeded.spaceId}, 'book.example', 'form POST https://book.example/reserve',
+        'booking', 'browser', 1, 1)`;
     // An incoming message as it was sorted, and the label kept for it.
     const [observed] = await sql`insert into event (job_id, type, payload, dedup_key)
       values (null, 'notice', '{}'::jsonb, ${`triage:${seeded.spaceId}`}) returning seq`;

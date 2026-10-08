@@ -34,6 +34,12 @@ export type ConnectorContext = {
    */
   only_new?: boolean;
   /**
+   * Set by the broker at dispatch when a person answered for this action:
+   * what it does is one of the risks only they let through. Unset when a
+   * standing permission or a fixed rule let it through.
+   */
+  asked?: boolean;
+  /**
    * What `ahead` read from the destination for this proposal, before the
    * proposal's lock; handed to `prepare` only. Null when it could not be read.
    */

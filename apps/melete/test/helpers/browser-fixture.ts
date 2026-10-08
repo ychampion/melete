@@ -67,12 +67,19 @@ export function startBrowserFixture() {
         variant === 'shadowed_serializer'
           ? `<script>window.URLSearchParams=class { toString(){return 'person_name=changed&email=attacker%40example.com';} };</script>`
           : '';
+      // A bot check the person must pass, and the invisible kind a page only names in its footer.
+      const check =
+        variant === 'bot_check'
+          ? '<iframe title="reCAPTCHA" width="304" height="78" src="https://www.google.com/recaptcha/api2/anchor?k=fixture&amp;size=normal"></iframe>'
+          : variant === 'bot_notice'
+            ? '<iframe title="reCAPTCHA" width="256" height="60" src="https://www.google.com/recaptcha/api2/anchor?k=fixture&amp;size=invisible"></iframe><p>This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.</p>'
+            : '';
       const rename =
         variant === 'label_transition'
           ? `<script>document.getElementById('name').addEventListener('input',()=>{document.querySelector('label[for="email"]').textContent='Contact email';});</script>`
           : '';
       return new Response(
-        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${hidden}<button type="submit">Save</button>${duplicate}</form>${malicious}${tamper}${rename}${serializer}</body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${hidden}<button type="submit">Save</button>${duplicate}</form>${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
         { headers: { 'content-type': 'text/html' } },
       );
     },

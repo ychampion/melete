@@ -157,6 +157,13 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     ).rejects.toThrow('sensitive_input_require_takeover');
     expect(fixture.effects.filter((effect) => effect.run === 'credentials')).toHaveLength(0);
   }, 15_000);
+  test('a visible bot check is reported from the page itself, and a notice about one is not', async () => {
+    const checked = await call({ kind: 'open', url: `${fixture.url}/form/bot_check?run=check` });
+    expect(checked.result?.challenge).toBe(true);
+    const named = await call({ kind: 'open', url: `${fixture.url}/form/bot_notice?run=notice` });
+    expect(named.result?.challenge).toBeUndefined();
+    expect(named.observation?.tree).toContain('protected by reCAPTCHA');
+  }, 15_000);
   test('hidden destinations are included in the complete observed submit intent', async () => {
     await call({ kind: 'open', url: `${fixture.url}/form/hidden_destination?run=hidden` });
     await call({ kind: 'fill', label: 'Name', value: 'A Person' });

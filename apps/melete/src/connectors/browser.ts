@@ -15,8 +15,10 @@ import { serviceOfUrl } from '../paths/services.ts';
 import type { BrowserArtifactSink } from '../workers/browser/artifacts.ts';
 import { planBrowserRecipe, recipePlanDetail } from '../workers/browser/planning.ts';
 import type { BrowserRecipeStore } from '../workers/browser/recipes.ts';
+import { REDACTED, redactSecretText } from '../workers/browser/redact.ts';
 import { type BrowserSessionService, browserInputReasons } from '../workers/browser/routes.ts';
 import { BrowserFault } from '../workers/browser/sessions.ts';
+import { sensitiveName } from '../workers/browser/visible.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 const text = { type: 'string', minLength: 1, maxLength: 8000 };
@@ -134,7 +136,7 @@ const definitions: Array<{
   {
     name: 'submit',
     description:
-      "Submit exactly one intent from the latest observation, copied whole, including its destination and complete field values. Approval is required. Where a connected app reaches the same site, use the app's own tool instead: the browser is used there only when the app cannot do it. The page is read back afterwards, and a submit it does not confirm stops until it is checked.",
+      'Submit exactly one intent from the latest observation, copied whole, including its destination and complete field values. Approval is required unless a standing permission covers it. Where a connected app has a tool for the same action, use that tool instead. The page is read back afterwards, and the same form is not sent again while its outcome is unconfirmed.',
     effect: 'write_external',
     properties: { intent: intentSchema },
     required: ['intent'],
@@ -226,17 +228,47 @@ function pageOf(observed: Observed | null): PageSeen | null {
       : [],
     forms,
     status: typeof status === 'number' ? status : null,
+    challenge: observed.result?.challenge === true,
   };
 }
 
 const sentForm = (payload: JsonObject): SentForm => {
   const intent = (payload.intent ?? {}) as Record<string, unknown>;
+  const fields =
+    intent.fields && typeof intent.fields === 'object' && !Array.isArray(intent.fields)
+      ? Object.fromEntries(
+          Object.entries(intent.fields as Record<string, unknown>).flatMap(([name, value]) =>
+            typeof value === 'string' ? [[name, value]] : [],
+          ),
+        )
+      : {};
   return {
     url: String(intent.url ?? ''),
     name: String(intent.name ?? ''),
     form_hash: String(intent.form_hash ?? ''),
+    fields,
   };
 };
+
+/** Field names that carry a token or a secret rather than anything the person said. */
+const SECRET_FIELD = /csrf|xsrf|token|nonce|secret|signature|session|captcha|key/i;
+
+/**
+ * The values a submit sent, for its receipt, so what is said about it can be
+ * checked against what went: empty fields left out, a field that names a token
+ * or secret blanked, and the shapes of codes and keys blanked in the rest.
+ */
+export function submittedFields(sent: SentForm): JsonObject {
+  const shown: JsonObject = {};
+  for (const [name, value] of Object.entries(sent.fields ?? {}).slice(0, 64)) {
+    if (!value.trim()) continue;
+    shown[name.slice(0, 120)] =
+      SECRET_FIELD.test(name) || sensitiveName.test(name)
+        ? REDACTED
+        : redactSecretText(value).slice(0, 500);
+  }
+  return shown;
+}
 
 /** The page a sign-in, code or card field is on could not be read: only the person may go on. */
 const SENSITIVE_PAGE: Omit<ReadBack, 'looks' | 'url'> = {
@@ -320,8 +352,11 @@ export function createBrowserConnector(options: {
 
   /**
    * What a submit came to, from the page it ended on: done, not done, or
-   * unclear after a second look, which hands the work to the person and
-   * leaves the outcome unknown until it is checked.
+   * unclear after a second look. The receipt carries what was sent. An unclear
+   * page with a check only the person can pass, or after a submit the person
+   * had to answer for, hands the work to them and leaves the outcome unknown
+   * until it is checked. Any other unclear submit is recorded as sent and
+   * unconfirmed, and the work goes on.
    */
   const settleSubmit = async (
     action: Action,
@@ -332,17 +367,27 @@ export function createBrowserConnector(options: {
   ) => {
     const sent = sentForm(action.canonical_payload);
     let seen = readBack(sent, first, 1);
+    // Whether a page was read at all: a commit whose answer was lost, on a
+    // page that cannot be read either, is not a page that said nothing.
+    let read = first !== null;
     if (seen.verdict === 'unclear' && !seen.blocker) {
       await Bun.sleep(options.secondLookMs ?? SECOND_LOOK_MS);
       const again = await lookAgain(ctx, sessionId);
+      read ||= again.page !== null;
       seen = again.sensitive
         ? { ...SENSITIVE_PAGE, looks: 2, url: seen.url }
         : again.page || !first
           ? readBack(sent, again.page, 2)
           : { ...seen, looks: 2 };
     }
-    const evidence = { read_back: seen } as unknown as JsonObject;
-    if (seen.verdict === 'done')
+    const evidence = {
+      read_back: seen,
+      submitted: submittedFields(sent),
+    } as unknown as JsonObject;
+    const sensitive = seen.evidence === SENSITIVE_PAGE.evidence;
+    const unconfirmed =
+      read && seen.verdict === 'unclear' && !seen.blocker && !sensitive && !ctx.asked;
+    if (seen.verdict === 'done' || unconfirmed)
       return {
         outcome: 'succeeded' as const,
         receipt: {
@@ -351,7 +396,7 @@ export function createBrowserConnector(options: {
           external_ref: sessionId,
           received_at: new Date().toISOString(),
           late: false,
-          detail: { ...detail, ...evidence },
+          detail: { ...detail, ...evidence, ...(unconfirmed ? { unconfirmed: true } : {}) },
         },
       };
     if (seen.verdict === 'not_done')
@@ -364,7 +409,7 @@ export function createBrowserConnector(options: {
     await handOff(
       ctx,
       sessionId,
-      seen.blocker ?? (seen.evidence === SENSITIVE_PAGE.evidence ? 'sign_in' : 'unclear'),
+      seen.blocker ?? (sensitive ? 'sign_in' : 'unclear'),
       seen.url ?? sent.url,
       action,
     ).catch(() => {});

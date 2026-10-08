@@ -28,6 +28,8 @@ describe(`conformance 17: ${spec.title}`, () => {
       const write = deferred();
       const release = deferred();
       const s = await paths.setup({
+        // One dinner the person asked for: every way to it is the same action.
+        intent: true,
         dispatchTimeoutMs: 400,
         // The destination takes the booking, then its answer is held past the timeout.
         execute: async (action, ctx, app) => {

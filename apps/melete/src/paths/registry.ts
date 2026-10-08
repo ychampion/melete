@@ -1,6 +1,6 @@
 /**
- * Melete's record of what works at each service, kept per space, path and
- * kind of work, and the queries the path policy reads before it decides.
+ * Melete's record of what works at each service, kept per space, action, path
+ * and kind of work, and the queries the path policy reads before it decides.
  */
 import type { Query } from '../broker/records.ts';
 import type { PathRecord } from './policy.ts';
@@ -34,6 +34,19 @@ export async function workOf(tx: Query, jobId: string): Promise<string[]> {
 }
 
 /**
+ * The one intent a piece of work is for: the intent whose run or whose
+ * conversation it is. Null when it is for none, or for more than one open
+ * intent, so no one of them can be told apart.
+ */
+export async function intentOfWork(tx: Query, work: readonly string[]): Promise<string | null> {
+  const rows = await tx`select id from intent
+    where (run_id = any(${work as string[]}) or conversation_id = any(${work as string[]}))
+      and closed_at is null
+    limit 2`;
+  return rows.length === 1 ? String(rows[0]?.id) : null;
+}
+
+/**
  * Record one outcome on one path. A success clears the run of misses; a new
  * try that did not get through adds to it, once, however it is settled later.
  */
@@ -42,6 +55,8 @@ export async function recordPathOutcome(
   input: {
     spaceId: string;
     service: string;
+    /** The action at the service (`operations.ts`): what a run of misses is counted against. */
+    operation: string;
     taskKind: string;
     path: 'api' | 'browser' | 'person';
     outcome: PathOutcome;
@@ -52,14 +67,14 @@ export async function recordPathOutcome(
 ): Promise<void> {
   const ok = input.outcome === 'succeeded';
   const fault = ok ? null : (input.fault ?? input.outcome).slice(0, 300);
-  await tx`insert into service_path (space_id, service_key, task_kind, path, attempts,
-      successes, failures, unknowns, handed, streak, last_ok_at, last_fault, last_fault_at)
-    values (${input.spaceId}, ${input.service}, ${input.taskKind}, ${input.path},
+  await tx`insert into service_path (space_id, service_key, operation_key, task_kind, path,
+      attempts, successes, failures, unknowns, handed, streak, last_ok_at, last_fault, last_fault_at)
+    values (${input.spaceId}, ${input.service}, ${input.operation.slice(0, 2048)}, ${input.taskKind}, ${input.path},
       ${input.attempt ? 1 : 0}, ${ok ? 1 : 0}, ${input.outcome === 'failed' ? 1 : 0},
       ${input.outcome === 'unknown' ? 1 : 0}, ${input.outcome === 'handed' ? 1 : 0},
       ${ok || !input.attempt ? 0 : 1}, ${ok ? new Date().toISOString() : null}, ${fault},
       ${ok ? null : new Date().toISOString()})
-    on conflict (space_id, service_key, task_kind, path) do update set
+    on conflict (space_id, service_key, operation_key, task_kind, path) do update set
       attempts = service_path.attempts + excluded.attempts,
       successes = service_path.successes + excluded.successes,
       failures = service_path.failures + excluded.failures,
@@ -73,13 +88,20 @@ export async function recordPathOutcome(
       updated_at = now()`;
 }
 
-/** The record for one path at one service, or null when it has never been tried. */
+/** The record for one path to one action at one service, or null when it has never been tried. */
 export async function pathRecord(
   tx: Query,
-  input: { spaceId: string; service: string; taskKind: string; path: 'api' | 'browser' },
+  input: {
+    spaceId: string;
+    service: string;
+    operation: string;
+    taskKind: string;
+    path: 'api' | 'browser';
+  },
 ): Promise<PathRecord | null> {
   const [row] = await tx`select attempts, successes, streak, last_fault_at from service_path
     where space_id = ${input.spaceId} and service_key = ${input.service}
+      and operation_key = ${input.operation.slice(0, 2048)}
       and task_kind = ${input.taskKind} and path = ${input.path}`;
   if (!row) return null;
   return {

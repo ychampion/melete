@@ -54,7 +54,10 @@ function worker(pages: { submit: JsonObject; looks?: JsonObject[] }) {
           screenshot: '',
           schema: (page.schema as JsonObject[] | undefined) ?? [],
         },
-        result: { submit_intents: (page.forms as JsonObject[] | undefined) ?? [] },
+        result: {
+          submit_intents: (page.forms as JsonObject[] | undefined) ?? [],
+          ...(page.challenge === true ? { challenge: true } : {}),
+        },
       });
     },
   });
@@ -78,8 +81,14 @@ function worker(pages: { submit: JsonObject; looks?: JsonObject[] }) {
   return { connector, operations, handOffs, parks };
 }
 
-const submit = () =>
-  connectorAction('browser.submit', { session_id: 'brws_fixture', control_epoch: 4, intent });
+const submit = (fields: Record<string, string> = intent.fields) =>
+  connectorAction('browser.submit', {
+    session_id: 'brws_fixture',
+    control_epoch: 4,
+    intent: { ...intent, fields },
+  });
+/** Dispatched after the person answered for it: one of the risks only they let through. */
+const asked = (action: ReturnType<typeof submit>) => ({ ...connectorContext(action), asked: true });
 
 test('a submit the page confirms is done, and the receipt says what the page said', async () => {
   const w = worker({
@@ -115,10 +124,10 @@ test('a page that settles on a second look is decided by it', async () => {
   expect(w.operations).toEqual(['submit', 'observe']);
 });
 
-test('a page unclear twice is unknown and goes to the person, never sent again', async () => {
+test('after a submit the person answered for, a page unclear twice is unknown and goes to them', async () => {
   const w = worker({ submit: { tree: '- heading "Book a table"' } });
   const action = submit();
-  const result = await w.connector.execute(action, connectorContext(action));
+  const result = await w.connector.execute(action, asked(action));
   expect(result.outcome).toBe('unknown');
   if (result.outcome !== 'unknown') return;
   expect(result.evidence?.read_back).toMatchObject({ verdict: 'unclear', looks: 2 });
@@ -128,8 +137,48 @@ test('a page unclear twice is unknown and goes to the person, never sent again',
   expect(w.operations.filter((kind) => kind === 'submit')).toHaveLength(1);
 });
 
+test('a submit nobody had to answer for, on a page that does not say, is sent and unconfirmed', async () => {
+  // A page in another language says nothing the read-back knows either.
+  for (const tree of ['- heading "Book a table"', '- heading "Reserva recibida, gracias"']) {
+    const w = worker({ submit: { tree } });
+    const action = submit();
+    const result = await w.connector.execute(action, connectorContext(action));
+    expect(result.outcome).toBe('succeeded');
+    if (result.outcome !== 'succeeded') return;
+    expect(result.receipt.detail).toMatchObject({
+      unconfirmed: true,
+      read_back: { verdict: 'unclear', looks: 2 },
+    });
+    expect(w.handOffs).toHaveLength(0);
+  }
+});
+
+test('the receipt carries what the form sent, with secrets blanked', async () => {
+  const w = worker({ submit: { tree: '- heading "Your table is booked"' } });
+  const action = submit({ party: '6', name: 'Ada', notes: '', csrf_token: 'f00dfeed' });
+  const result = await w.connector.execute(action, connectorContext(action));
+  expect(result.outcome).toBe('succeeded');
+  if (result.outcome !== 'succeeded') return;
+  expect(result.receipt.detail.submitted).toEqual({
+    party: '6',
+    name: 'Ada',
+    csrf_token: '[redacted]',
+  });
+});
+
+test('a page that shows back the form without a value it was sent is not done, naming it', async () => {
+  const w = worker({
+    submit: { tree: '- text: {"form": {"custname": "Ada Lovelace", "custtel": "555-0100"}}' },
+  });
+  const action = submit({ custname: 'Ada Lovelace', custtel: '555-0100', size: 'medium' });
+  const result = await w.connector.execute(action, connectorContext(action));
+  expect(result).toMatchObject({ outcome: 'failed', retryable: false });
+  if (result.outcome !== 'failed') return;
+  expect(result.reason).toContain('except size');
+});
+
 test('a captcha after a submit goes straight to the person, and the submit stays unknown', async () => {
-  const w = worker({ submit: { tree: '- iframe "reCAPTCHA"' } });
+  const w = worker({ submit: { challenge: true } });
   const action = submit();
   const result = await w.connector.execute(action, connectorContext(action));
   expect(result.outcome).toBe('unknown');
@@ -138,11 +187,23 @@ test('a captcha after a submit goes straight to the person, and the submit stays
 });
 
 test('a check on a page the agent opens hands the work over, with no submit', async () => {
-  const w = worker({ submit: {}, looks: [{ tree: '- heading "Enter the code we sent to you"' }] });
+  const w = worker({ submit: {}, looks: [{ challenge: true }] });
   const action = connectorAction('browser.observe', {});
   const result = await w.connector.execute(action, connectorContext(action));
   expect(result.outcome).toBe('succeeded');
-  expect(w.handOffs).toEqual([{ reason: 'two_factor', service: 'book.example', action_id: null }]);
+  expect(w.handOffs).toEqual([{ reason: 'captcha', service: 'book.example', action_id: null }]);
+  // Words about a code or a card, with nothing on the page to type them into, hand nothing over.
+  const words = worker({
+    submit: {},
+    looks: [
+      {
+        tree: ['- heading "Enter the code we sent to you"', '- paragraph: Card number'].join('\n'),
+      },
+    ],
+  });
+  const looked = connectorAction('browser.observe', {});
+  await words.connector.execute(looked, connectorContext(looked));
+  expect(words.handOffs).toHaveLength(0);
 });
 
 test('verify reads the page back: a confirmed page settles an unknown submit', async () => {

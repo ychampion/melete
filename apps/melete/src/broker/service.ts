@@ -61,7 +61,7 @@ import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
-import { PathRefusal, routeEffect, standsIn, unsettledBefore } from '../paths/gate.ts';
+import { PathRefusal, routeEffect, unsettledBefore } from '../paths/gate.ts';
 import { recordPathOutcome, taskKindOf } from '../paths/registry.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
@@ -310,6 +310,9 @@ async function personalSpace(tx: Query, spaceId: string): Promise<boolean> {
 
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
+/** Approvals given by a fixed rule or the reviewer, not by a person. */
+const AUTOMATIC_DECIDERS: ReadonlySet<string> = new Set(['policy', 'reviewer', 'auto_review']);
+
 /**
  * Refusals that leave an approved action unable ever to run: the binding or
  * the job revision moved, or the approval expired. Each needs a newly reviewed
@@ -450,7 +453,7 @@ export class BrokerService implements BrokerOperations {
   onHandToPerson?: (
     scope: { space_id: string; job_id: string },
     sessionId: string,
-    input: { reason: 'path'; service: string },
+    input: { reason: 'path'; service: string; operation: string },
   ) => Promise<unknown>;
 
   constructor(private readonly options: BrokerOptions) {
@@ -1026,11 +1029,7 @@ export class BrokerService implements BrokerOperations {
     const input = { job, action, tool, phase, warnings };
     // A room's work is answered by the people its rule names, each time: no
     // standing rule or scope, made by anyone for their own work, answers for it.
-    // A browser submit standing in for a connected app's own tools asks as the
-    // app would, every time: no permission given to the browser answers for it.
-    const roomWork =
-      requiresApproval &&
-      ((await roomAuthorityOf(tx, job.id)) !== null || (await standsIn(tx, action.id)));
+    const roomWork = requiresApproval && (await roomAuthorityOf(tx, job.id)) !== null;
     const authorizedBy =
       requiresApproval && !roomWork && warnings.length > 0 && this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
@@ -1839,15 +1838,28 @@ export class BrokerService implements BrokerOperations {
                 connector,
                 connectionId: request.connection_id,
                 kind: request.kind,
+                key,
                 payload: canonical.canonical,
               });
         const id = recordId('act');
         const [row] = await tx`insert into action
         (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash,
-          idempotency_key, intent_key, path, service_key, stands_in_for)
+          idempotency_key, intent_key, path, service_key, operation_key, operation_intent,
+          stands_in_for)
         values (${id}, ${job.id}, ${claims.attempt_id}, ${request.connection_id}, ${request.kind},
           ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key},
-          ${route?.path ?? null}, ${route?.service ?? null}, ${route?.standsInFor ?? null}) returning *`;
+          ${route?.path ?? null}, ${route?.service ?? null}, ${route?.operation ?? null},
+          ${route?.intent ?? null}, ${route?.standsInFor ?? null}) returning *`;
+        // The receipt says which way it went and why.
+        if (route)
+          await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
+            action_id: id,
+            phase: 'path_chosen',
+            path: route.path,
+            service: route.service,
+            reason: route.reason,
+            ...(route.standsInFor ? { stands_in_for: route.standsInFor } : {}),
+          });
         if (!row) throw new Error('Action insert returned no record');
         const created = actionFromRow(row);
         const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
@@ -1910,7 +1922,7 @@ export class BrokerService implements BrokerOperations {
           await this.onHandToPerson(
             { space_id: claims.space_id, job_id: claims.job_id },
             error.handTo.sessionId,
-            { reason: 'path', service: error.handTo.service },
+            { reason: 'path', service: error.handTo.service, operation: error.handTo.operation },
           ).catch(() => {});
         // A search refused before it left records no action; the conversation
         // still shows that it was held back.
@@ -2640,9 +2652,12 @@ export class BrokerService implements BrokerOperations {
         // The person's approval of this action has its own expiry. An action that
         // waited past it for its destination is refused, not sent on an old yes.
         const [given] = action.authorization_ref
-          ? await tx`select expires_at from approval
+          ? await tx`select expires_at, decided_by from approval
             where id = ${action.authorization_ref} and action_id = ${action.id}`
           : [];
+        // A person answered for it: what it does is one of the risks only they let through.
+        const asked =
+          given !== undefined && !AUTOMATIC_DECIDERS.has(String(given.decided_by ?? ''));
         if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
           return {
             action: await this.rejectDispatch(
@@ -2699,7 +2714,11 @@ export class BrokerService implements BrokerOperations {
             ?.staysInSpace?.(action, job.space_id) === true;
         return {
           action: await loadAction(tx, id),
-          context: { ...this.context(job, action), ...(onlyNew ? { only_new: true } : {}) },
+          context: {
+            ...this.context(job, action),
+            ...(onlyNew ? { only_new: true } : {}),
+            ...(asked ? { asked: true } : {}),
+          },
         };
       });
     } catch (error) {
@@ -3631,12 +3650,13 @@ export class BrokerService implements BrokerOperations {
     if (!sent && !settling) return;
     if (settling && status !== 'succeeded' && status !== 'failed') return;
     if (!['succeeded', 'failed', 'unknown', 'unresolved'].includes(status)) return;
-    const [row] = await tx`select a.path, a.service_key, j.space_id from action a
+    const [row] = await tx`select a.path, a.service_key, a.operation_key, j.space_id from action a
       join job j on j.id = a.job_id where a.id = ${action.id}`;
-    if (!row?.path || !row.service_key) return;
+    if (!row?.path || !row.service_key || !row.operation_key) return;
     await recordPathOutcome(tx, {
       spaceId: String(row.space_id),
       service: String(row.service_key),
+      operation: String(row.operation_key),
       taskKind: await taskKindOf(tx, action.job_id),
       path: row.path === 'browser' ? 'browser' : 'api',
       outcome: status === 'unresolved' ? 'unknown' : (status as 'succeeded' | 'failed' | 'unknown'),

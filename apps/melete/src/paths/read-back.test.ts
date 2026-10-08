@@ -68,16 +68,6 @@ describe('reading a page back after a submit', () => {
     );
   });
 
-  test('a notice that a site uses a bot check is not a check', () => {
-    const notice =
-      '- paragraph: This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.';
-    expect(blockerOf(page({ tree: `- heading "Contact us"\n${notice}` }))).toBeNull();
-    expect(
-      readBack(sent, page({ tree: `- heading "Thanks for your message"\n${notice}` })),
-    ).toMatchObject({ verdict: 'done', blocker: null });
-    expect(blockerOf(page({ tree: `${notice}\n- iframe "reCAPTCHA"` }))).toBe('captcha');
-  });
-
   test('a page that says nothing, or says both, is unclear', () => {
     expect(readBack(sent, page({ tree: '- heading "Book a table"' })).verdict).toBe('unclear');
     expect(
@@ -98,19 +88,67 @@ describe('reading a page back after a submit', () => {
     ).toBe('unclear');
   });
 
-  test('a check for a person, a code or a card is a blocker only the person can pass', () => {
-    expect(blockerOf(page({ tree: '- iframe "reCAPTCHA"' }))).toBe('captcha');
-    expect(blockerOf(page({ tree: '- heading "Enter the code we sent to your phone"' }))).toBe(
-      'two_factor',
-    );
-    expect(
-      blockerOf(page({ schema: [{ label: 'Card number', role: 'textbox', sensitive: true }] })),
-    ).toBe('payment');
-    // A footer link about security settings asks for nothing.
-    expect(blockerOf(page({ tree: '- link "Set up two-factor authentication"' }))).toBeNull();
-    expect(readBack(sent, page({ tree: '- iframe "reCAPTCHA"' }))).toMatchObject({
+  test('only the structure of the page hands it over: a bot check it shows, never words about one', () => {
+    expect(blockerOf(page({ challenge: true }))).toBe('captcha');
+    expect(readBack(sent, page({ challenge: true }))).toMatchObject({
       verdict: 'unclear',
       blocker: 'captcha',
     });
+    // Words alone, wherever they are, ask nothing of the person.
+    for (const tree of [
+      '- paragraph: This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.',
+      '- iframe "reCAPTCHA"',
+      '- heading "Enter the code we sent to your phone"',
+      '- heading "Two-factor authentication"',
+    ])
+      expect(blockerOf(page({ tree }))).toBeNull();
+    for (const label of ['Card number', 'Billing address', 'Passport expiration date'])
+      expect(blockerOf(page({ schema: [{ label, role: 'textbox' }] }))).toBeNull();
+    expect(
+      readBack(
+        sent,
+        page({
+          tree: '- heading "Thanks for your message"\n- paragraph: This site is protected by reCAPTCHA.',
+        }),
+      ),
+    ).toMatchObject({ verdict: 'done', blocker: null });
+  });
+
+  test('a page that shows back what was sent must show all of it', () => {
+    const form = {
+      ...sent,
+      fields: {
+        custname: 'Ada Lovelace',
+        custtel: '555-0100',
+        size: 'medium',
+        comments: 'Ring twice',
+      },
+    };
+    // An echo page, as a form tester shows it: the fields by name, with what arrived.
+    const echoed = (shown: Record<string, string>) =>
+      page({
+        tree: `- text: ${JSON.stringify({ form: shown })}`,
+      });
+    expect(readBack(form, echoed({ custname: 'Ada Lovelace', custtel: '555-0100' }))).toMatchObject(
+      {
+        verdict: 'not_done',
+        evidence: 'The page shows what was sent except size, comments.',
+      },
+    );
+    expect(
+      readBack(
+        form,
+        echoed({
+          custname: 'Ada Lovelace',
+          custtel: '555-0100',
+          size: 'medium',
+          comments: 'Ring twice',
+        }),
+      ),
+    ).toMatchObject({ verdict: 'done', evidence: 'The page shows every value that was sent.' });
+    // A thank-you note that greets the person by name is not an echo page.
+    expect(readBack(form, page({ tree: '- heading "Thank you, Ada Lovelace"' })).verdict).toBe(
+      'done',
+    );
   });
 });

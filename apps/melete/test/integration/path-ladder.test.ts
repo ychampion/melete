@@ -1,8 +1,9 @@
 /**
- * The path ladder at the broker: a connected app before the browser, nothing
- * on any path while an earlier effect on the same service is unsettled, the
- * browser never around a question the app would ask, a submit read back from
- * its page, and the person handed the browser when Melete is stuck.
+ * The path ladder at the broker: a connected app before the browser for what
+ * the app has a tool for, nothing on any path while the same action is
+ * unsettled, the browser never around a pending or refused app request, a
+ * submit read back from its page, and the person handed the browser when
+ * Melete is stuck.
  *
  * One job reaches `book.example` two ways: a scripted app (the test
  * connector, told it reaches that service) and the agent's browser (a
@@ -11,7 +12,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { rejectionOf } from '../helpers/broker.ts';
 import { deferred } from '../helpers/conformance.ts';
-import { createPathFixture, OWNER, SERVICE } from '../helpers/paths.ts';
+import { createPathFixture, MESSAGE, OWNER, SERVICE } from '../helpers/paths.ts';
 
 const paths = await createPathFixture();
 const databaseTest = paths ? test : test.skip;
@@ -24,14 +25,31 @@ const setup = (options: Parameters<NonNullable<typeof paths>['setup']>[0] = {}) 
 describe('the path ladder', () => {
   databaseTest('the policy picks the API when one exists', async () => {
     const s = await setup();
-    const refused = await rejectionOf(s.submit());
+    // A message form, where the app has a send tool: the app is used.
+    const refused = await rejectionOf(s.submit(SERVICE, 'a', MESSAGE));
     expect(refused).toMatchObject({ code: 'path_refused' });
     expect(String((refused as Error).message)).toContain('use test.send');
     expect(s.submits()).toBe(0);
     // With no app for the site, the same submit is the browser's, and it asks first.
-    const elsewhere = await s.submit('other.example');
+    const elsewhere = await s.submit('other.example', 'a', MESSAGE);
     expect(elsewhere.status).toBe('needs_approval');
   });
+
+  databaseTest(
+    'where the app has no tool for the action, the browser does it without the app failing first',
+    async () => {
+      const s = await setup();
+      // A booking form; the app here only sends messages.
+      const booking = await s.submit();
+      expect(booking.status).toBe('needs_approval');
+      const [chosen] = await s.sql`select payload from event where job_id = ${s.claims.job_id}
+        and type = 'notice' and payload->>'phase' = 'path_chosen'
+        and payload->>'action_id' = ${booking.action_id}`;
+      expect(chosen?.payload).toMatchObject({ path: 'browser', service: SERVICE });
+      expect(String(chosen?.payload.reason)).toContain('No connected app has a tool for this');
+      expect(s.appCalls()).toBe(0);
+    },
+  );
 
   databaseTest(
     'a timeout after dispatch on the API path never leads to a browser retry until reconciled',
@@ -39,6 +57,7 @@ describe('the path ladder', () => {
       const write = deferred();
       const release = deferred();
       const s = await setup({
+        intent: true,
         dispatchTimeoutMs: 400,
         // The booking lands, then its answer is lost past the dispatch timeout.
         execute: async (action, ctx, app) => {
@@ -74,11 +93,11 @@ describe('the path ladder', () => {
   );
 
   databaseTest(
-    'an app that cannot do it lets the browser stand in, and it still asks',
+    'an app that cannot do it lets the browser stand in, on the usual approval rules, with the reason on the receipt',
     async () => {
       let grants = 0;
       const s = await setup({
-        // A standing permission that would let any browser submit through.
+        // A standing permission that lets browser submits through.
         resolveStandingGrant: async (_tx, input) => {
           if (input.action.kind !== 'browser.submit') return false;
           grants++;
@@ -88,15 +107,16 @@ describe('the path ladder', () => {
       const refused = await s.viaApp({ body: 'Book it', fault: 'unsupported_route' });
       const failed = await s.approve(refused);
       expect(failed.status).toBe('failed');
-      const standIn = await s.submit();
-      expect(standIn.status).toBe('needs_approval');
-      expect(s.submits()).toBe(0);
-      // The same permission does let a submit through where no app reaches.
-      s.pages.submit = { url: 'https://other.example/done', tree: '- heading "Request received"' };
-      const elsewhere = await s.submit('other.example');
+      s.pages.submit = { tree: '- heading "Your message was sent"' };
+      const standIn = await s.submit(SERVICE, 'a', MESSAGE);
       expect(grants).toBeGreaterThan(0);
-      expect(elsewhere.status).toBe('succeeded');
+      expect(standIn.status).toBe('succeeded');
       expect(s.submits()).toBe(1);
+      const [chosen] = await s.sql`select payload from event where job_id = ${s.claims.job_id}
+        and type = 'notice' and payload->>'phase' = 'path_chosen'
+        and payload->>'action_id' = ${standIn.action_id}`;
+      expect(chosen?.payload).toMatchObject({ path: 'browser', stands_in_for: 'test.send' });
+      expect(String(chosen?.payload.reason)).toContain('test.send could not do this');
     },
   );
 
@@ -111,13 +131,15 @@ describe('the path ladder', () => {
       const asked = await s.viaApp({ body: 'Table for six at 7' });
       expect(asked.status).toBe('needs_approval');
       // While the app waits for the person's answer, the browser does not do it instead.
-      expect(await rejectionOf(s.submit())).toMatchObject({ code: 'path_refused' });
+      expect(await rejectionOf(s.submit(SERVICE, 'a', MESSAGE))).toMatchObject({
+        code: 'path_refused',
+      });
       await s.broker.decide(asked.action_id, {
         decision: 'denied',
         payload_hash: asked.payload_hash,
       });
       // After the person's no, it does not do it instead either.
-      const denied = await rejectionOf(s.submit());
+      const denied = await rejectionOf(s.submit(SERVICE, 'a', MESSAGE));
       expect(denied).toMatchObject({ code: 'path_refused' });
       expect(String((denied as Error).message)).toContain('said no');
       expect(s.submits()).toBe(0);
@@ -167,7 +189,7 @@ describe('the path ladder', () => {
     'a captcha or 2FA hands to the person with a take-over link, and work resumes after hand-back',
     async () => {
       const s = await setup({ api: false });
-      s.pages.looks.push({ tree: '- iframe "reCAPTCHA"' });
+      s.pages.looks.push({ challenge: true });
       const looked = await s.browse('observe', { after_observation: 'obs_again' });
       expect(looked.status).toBe('succeeded');
       const held = await s.job();
@@ -194,39 +216,78 @@ describe('the path ladder', () => {
     },
   );
 
-  databaseTest(
-    'a code asked for after a submit is handed over, and checked on hand-back',
-    async () => {
-      const s = await setup({ api: false });
-      s.pages.submit = { tree: '- heading "Enter the code we sent to your phone"' };
-      const sent = await s.approve(await s.submit());
-      expect(sent.status).toBe('unknown');
-      expect((await s.job())?.wait.handoff).toMatchObject({
-        reason: 'two_factor',
-        action_id: sent.id,
-      });
-      await s.sessions.control(s.session.id, 'takeover');
-      // The page the person leaves shows the booking: reading it back settles the submit.
-      s.pages.looks.push({ tree: '- heading "Your table is booked"' });
-      await s.sessions.control(s.session.id, 'handback');
-      const [settled] = await s.sql`select status from action where id = ${sent.id}`;
-      expect(settled?.status).toBe('succeeded');
-      expect((await s.job())?.state).toBe('queued');
-      expect(s.submits()).toBe(1);
-    },
-  );
-
-  databaseTest('a site where the browser keeps failing goes to the person', async () => {
+  databaseTest('a bot check after a submit is handed over, and checked on hand-back', async () => {
     const s = await setup({ api: false });
-    await s.sql`insert into service_path (space_id, service_key, task_kind, path, attempts,
-        failures, streak, last_fault_at)
-      values (${s.claims.space_id}, ${SERVICE}, 'other', 'browser', 3, 3, 3, now())`;
+    s.pages.submit = { challenge: true };
+    const sent = await s.approve(await s.submit());
+    expect(sent.status).toBe('unknown');
+    expect((await s.job())?.wait.handoff).toMatchObject({
+      reason: 'captcha',
+      action_id: sent.id,
+    });
+    await s.sessions.control(s.session.id, 'takeover');
+    // The page the person leaves shows the booking: reading it back settles the submit.
+    s.pages.looks.push({ tree: '- heading "Your table is booked"' });
+    await s.sessions.control(s.session.id, 'handback');
+    const [settled] = await s.sql`select status from action where id = ${sent.id}`;
+    expect(settled?.status).toBe('succeeded');
+    expect((await s.job())?.state).toBe('queued');
+    expect(s.submits()).toBe(1);
+  });
+
+  databaseTest('an action the browser keeps failing at goes to the person', async () => {
+    const s = await setup({ api: false });
+    await s.sql`insert into service_path (space_id, service_key, operation_key, task_kind, path,
+        attempts, failures, streak, last_fault_at)
+      values (${s.claims.space_id}, ${SERVICE}, 'form POST https://book.example/reserve', 'other',
+        'browser', 3, 3, 3, now())`;
+    // Another form at the same site is its own action, with its own record.
+    const other = await s.submit(SERVICE, 'b', { email: 'ada@example.test' }, '/newsletter');
+    expect(other.status).toBe('needs_approval');
     expect(await rejectionOf(s.submit())).toMatchObject({ code: 'path_refused' });
     const job = await s.job();
     expect(job?.state).toBe('waiting_for_input');
     expect(job?.wait.handoff).toMatchObject({ reason: 'path', service: SERVICE });
     expect(s.submits()).toBe(0);
   });
+
+  databaseTest(
+    'an unconfirmed submit holds back the same form only; other actions at the site go on',
+    async () => {
+      const s = await setup({ api: false });
+      s.pages.submit = { tree: '- heading "Book a table"' };
+      const sent = await s.approve(await s.submit());
+      expect(sent.status).toBe('unknown');
+      // The same form, read from a fresh page, waits.
+      await s.nextAttempt();
+      expect(await rejectionOf(s.submit(SERVICE, 'c'))).toMatchObject({
+        code: 'outcome_unconfirmed',
+      });
+      // A different form at the same site is a different action.
+      const other = await s.submit(SERVICE, 'd', { email: 'ada@example.test' }, '/newsletter');
+      expect(other.status).toBe('needs_approval');
+    },
+  );
+
+  databaseTest(
+    'a submit nobody had to answer for, on a page that does not say, is recorded unconfirmed and the work goes on',
+    async () => {
+      const s = await setup({ api: false, resolveStandingGrant: async () => true });
+      // A page in another language: the read-back knows none of its words.
+      s.pages.submit = { tree: '- heading "Reserva recibida"' };
+      const sent = await s.submit();
+      expect(sent.status).toBe('succeeded');
+      const [row] = await s.sql`select receipt from action where id = ${sent.action_id}`;
+      expect(row?.receipt.detail).toMatchObject({
+        unconfirmed: true,
+        read_back: { verdict: 'unclear' },
+        submitted: { party: '6' },
+      });
+      const job = await s.job();
+      expect(job?.state).not.toBe('waiting_for_input');
+      expect(job?.wait?.handoff).toBeUndefined();
+    },
+  );
 
   databaseTest(
     'a person who takes the browser over mid-task and hands it back has the work go on without typing',

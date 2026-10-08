@@ -24,17 +24,28 @@ import { seedJob } from './broker.ts';
 import { testDatabase } from './database.ts';
 
 export const SERVICE = 'book.example';
-export const intentFor = (host = SERVICE, form = 'a') => ({
-  url: `https://${host}/reserve`,
+/** A form that books a table; `MESSAGE` is one that sends a message, which the app has a tool for. */
+export const BOOKING: Record<string, string> = { party: '6' };
+export const MESSAGE: Record<string, string> = {
+  to: 'tables@book.example',
+  message: 'A table for six at 7',
+};
+export const intentFor = (
+  host = SERVICE,
+  form = 'a',
+  fields: Record<string, string> = BOOKING,
+  path = '/reserve',
+) => ({
+  url: `https://${host}${path}`,
   method: 'POST',
   role: 'button',
   name: 'Book',
   form_hash: form.repeat(64),
   body_sha256: 'b'.repeat(64),
-  fields: { party: '6' },
+  fields,
 });
 
-type Page = { url?: string; tree?: string };
+type Page = { url?: string; tree?: string; challenge?: boolean };
 
 /** The installation's owner, whose spaces and jobs these are. */
 export const OWNER = 'own_pathladder';
@@ -61,6 +72,8 @@ export async function createPathFixture() {
       execute?: (action: Action, ctx: ConnectorContext, app: Connector) => Promise<DispatchResult>;
       dispatchTimeoutMs?: number;
       resolveStandingGrant?: StandingGrantResolver;
+      /** Whether the conversation is for one intent the person stated, so all its effects share it. */
+      intent?: boolean;
     } = {},
   ) {
     const sql = fixture.sql;
@@ -71,6 +84,13 @@ export async function createPathFixture() {
     const appId = recordId('conn');
     await sql`insert into connection (id, space_id, provider, label, scopes)
       values (${appId}, ${seed.claims.space_id}, 'test', 'Booking app', ${JSON.stringify(['test.send'])}::jsonb)`;
+    if (options.intent) {
+      const intentId = recordId('int');
+      await sql`insert into intent (id, space_id, principal_id, source, source_key,
+          conversation_id, title, kind, subject_key)
+        values (${intentId}, ${seed.claims.space_id}, ${OWNER}, 'chat', 'message:1:a',
+          ${seed.claims.job_id}, 'Dinner for six', 'booking', ${`intent:${intentId}`})`;
+    }
     const session: BrowserSession = {
       id: `brws_${recordId('session')}`,
       space_id: seed.claims.space_id,
@@ -110,7 +130,7 @@ export async function createPathFixture() {
             screenshot: '',
             schema: [],
           },
-          result: { submit_intents: [] },
+          result: { submit_intents: [], ...(page.challenge ? { challenge: true } : {}) },
         });
       },
     });
@@ -164,11 +184,16 @@ export async function createPathFixture() {
         payload,
       });
     /** A submit from the page as it is; `form` stands for a form read from a fresh page. */
-    const submit = (host = SERVICE, form = 'a') =>
+    const submit = (
+      host = SERVICE,
+      form = 'a',
+      fields: Record<string, string> = BOOKING,
+      path = '/reserve',
+    ) =>
       browse('submit', {
         session_id: session.id,
         control_epoch: session.control_epoch,
-        intent: intentFor(host, form),
+        intent: intentFor(host, form, fields, path),
       });
     const approve = async (proposal: { action_id: string; payload_hash: string }) => {
       await broker.decide(proposal.action_id, {

@@ -6,26 +6,27 @@
  * that path may be used now, and if not, which one is.
  *
  * In order:
- * 1. An earlier effect on the same service whose outcome is unknown stops
- *    every path, the same one included, until it is settled by reading the
- *    service or by the person. Moving on after an unknown is how a booking
- *    is made twice.
- * 2. A connected app's own tools are always allowed (the broker's tiers still
- *    decide whether they ask).
- * 3. The browser is allowed for a service a connected app reaches only when
- *    that app refused the effect for a reason a browser can get around
+ * 1. An earlier try at the same action (the same form, the same request, or
+ *    anything for the same intent) whose outcome is unknown stops every path
+ *    to it, the same one included, until it is settled by reading the service
+ *    or by the person. Moving on after an unknown is how a booking is made
+ *    twice. Other actions at the same service go on.
+ * 2. A connected app's own tools are always allowed (the broker's usual
+ *    approval rules decide whether they ask).
+ * 3. Where a connected app has a tool for the action, the browser is used for
+ *    it only when the app refused it for a reason a browser can get around
  *    legitimately: it has no way to do it, its interface changed, or it is
  *    down. A refusal about permission, a rate limit, a pending answer or the
  *    person's own no is never routed around.
- * 4. With no app for the service, the browser is allowed, unless Melete's own
- *    record says the browser has not got through there lately; then the work
- *    goes to the person.
+ * 4. With no app tool for the action, the browser is allowed, unless Melete's
+ *    own record says the browser has not got through with this action lately;
+ *    then the work goes to the person.
  */
 import type { ActionPath } from '@melete/contracts';
 
-/** What a connected app for the service has done in this piece of work. */
+/** What a connected app with a tool for the action has done in this piece of work. */
 export type ApiState = {
-  /** The app tools this work may use that change something at the service. */
+  /** The app tools this work may use for the same action at the service. */
   tools: readonly string[];
   /** An app effect on the service is waiting for an answer or to be sent. */
   pending: boolean;
@@ -50,10 +51,10 @@ export type PathRecord = {
 export type PathInput = {
   service: string;
   via: Exclude<ActionPath, 'person'>;
-  /** The earliest unsettled effect on this service in this piece of work. */
+  /** The earliest unsettled try at the same action in this piece of work. */
   unsettled: { action_id: string; via: string } | null;
   api: ApiState;
-  /** The browser's record at this service, for this kind of work. */
+  /** The browser's record with this action, for this kind of work. */
   record: PathRecord | null;
   now: number;
 };
@@ -90,10 +91,10 @@ export function decidePath(input: PathInput): PathDecision {
       allow: false,
       code: 'outcome_unconfirmed',
       path: 'settle',
-      reason: `An earlier ${input.unsettled.via === 'browser' ? 'browser submit' : 'request'} to ${service} (${input.unsettled.action_id}) may have gone through and is not confirmed yet. Nothing more is tried at ${service}, on any path, until it is checked: wait for the check or for the person to say what happened.`,
+      reason: `An earlier ${input.unsettled.via === 'browser' ? 'browser submit' : 'request'} for the same thing at ${service} (${input.unsettled.action_id}) may have gone through and is not confirmed yet. It is not tried again, on any path, until that is checked: wait for the check or for the person to say what happened.`,
     };
   if (input.via === 'api')
-    return { allow: true, path: 'api', reason: `A connected app reaches ${service}.` };
+    return { allow: true, path: 'api', reason: `A connected app's own tool reaches ${service}.` };
   if (api.tools.length > 0) {
     if (api.denied)
       return {
@@ -114,7 +115,7 @@ export function decidePath(input: PathInput): PathDecision {
         allow: false,
         code: 'path_refused',
         path: 'api',
-        reason: `A connected app reaches ${service}: use ${listed(api.tools)}. The browser is used there only when the app cannot do it.`,
+        reason: `A connected app has a tool for this at ${service}: use ${listed(api.tools)}. The browser is used for it only when the app cannot do it.`,
       };
   }
   const record = input.record;
@@ -128,14 +129,14 @@ export function decidePath(input: PathInput): PathDecision {
       allow: false,
       code: 'path_refused',
       path: 'person',
-      reason: `The browser has not got through at ${service} the last ${record.streak} times, so this goes to the person to finish.`,
+      reason: `The browser has not got through with this at ${service} the last ${record.streak} times, so this goes to the person to finish.`,
     };
   return {
     allow: true,
     path: 'browser',
     reason:
       api.tools.length > 0
-        ? `${listed(api.tools)} could not do this, so the browser is used, and it still asks first.`
-        : `No connected app reaches ${service}.`,
+        ? `${listed(api.tools)} could not do this, so the browser is used instead.`
+        : `No connected app has a tool for this at ${service}, so the browser is used.`,
   };
 }

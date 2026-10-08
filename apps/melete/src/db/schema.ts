@@ -521,9 +521,14 @@ export const action = pgTable(
     // before the columns existed.
     path: text('path'),
     serviceKey: text('service_key'),
-    // For a browser submit to a service a connected app also reaches: the app
-    // tools it stands in for. It is then never let through on a standing
-    // permission, so the browser never skips a question the app would ask.
+    // Which action at the service it is (`paths/operations.ts`): a form's
+    // address, or an app request's own key. An unconfirmed effect holds back
+    // the same action only, or anything for the same intent.
+    operationKey: text('operation_key'),
+    // The one open intent the work is for, when there is exactly one.
+    operationIntent: text('operation_intent'),
+    // For a browser submit doing what a connected app has a tool for, after
+    // the app could not: the app tools it stands in for, shown on its receipt.
     standsInFor: text('stands_in_for'),
     createdAt: created(),
   },

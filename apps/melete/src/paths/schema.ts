@@ -15,6 +15,8 @@ export const servicePath = pgTable(
       .references(() => space.id, { onDelete: 'cascade' }),
     /** `google:mail`, `opentable.com`: see `services.ts`. */
     serviceKey: text('service_key').notNull(),
+    /** The action there, such as one form's address (`operations.ts`); misses are counted per action. */
+    operationKey: text('operation_key').notNull(),
     /** The kind of work: an intent's kind, or `other`. */
     taskKind: text('task_kind').notNull(),
     /** `api`, `browser` or `person`. */
@@ -33,7 +35,7 @@ export const servicePath = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    primaryKey({ columns: [t.spaceId, t.serviceKey, t.taskKind, t.path] }),
+    primaryKey({ columns: [t.spaceId, t.serviceKey, t.operationKey, t.taskKind, t.path] }),
     check('service_path_path', sql`${t.path} in ('api', 'browser', 'person')`),
     check(
       'service_path_counts',

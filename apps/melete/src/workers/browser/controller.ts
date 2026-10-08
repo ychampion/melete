@@ -42,6 +42,7 @@ type BrowserElement = {
   getAttribute(name: string): string | null;
   hasAttribute(name: string): boolean;
   getClientRects(): { length: number };
+  getBoundingClientRect(): { width: number; height: number };
   focus(): void;
   select(): void;
   dispatchEvent(event: Event): boolean;
@@ -52,6 +53,11 @@ declare const document: {
   querySelectorAll(selector: string): BrowserElement[];
 };
 declare const location: { href: string };
+declare function getComputedStyle(element: BrowserElement): {
+  visibility: string;
+  display: string;
+  opacity: string;
+};
 declare const FormData: {
   new (
     form: BrowserForm,
@@ -133,6 +139,45 @@ export type BrowserCommandResult = {
   observation?: BrowserObservation;
   result?: Record<string, unknown>;
 };
+
+/**
+ * Whether the page shows a check that a person is there: a visible widget or
+ * frame from a bot-check provider. The invisible kind, which only names itself
+ * in a badge or a footer line, asks nothing of anyone and is left out. Runs in
+ * the page.
+ */
+function challengeShown(): boolean {
+  const provider =
+    /(^|\.)(recaptcha\.net|hcaptcha\.com|challenges\.cloudflare\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)$/i;
+  const shown = (element: BrowserElement) => {
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return (
+      box.width >= 30 &&
+      box.height >= 30 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      Number(style.opacity) > 0
+    );
+  };
+  for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+    let url: URL;
+    try {
+      url = new URL(frame.getAttribute('src') ?? '', location.href);
+    } catch {
+      continue;
+    }
+    const google = /(^|\.)google\.com$/i.test(url.hostname) && url.pathname.includes('/recaptcha/');
+    if (!google && !provider.test(url.hostname)) continue;
+    if (url.searchParams.get('size') === 'invisible') continue;
+    if (shown(frame)) return true;
+  }
+  for (const widget of Array.from(
+    document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile'),
+  ))
+    if (widget.getAttribute('data-size') !== 'invisible' && shown(widget)) return true;
+  return false;
+}
 
 /** All browser input is dispatched here, below the broker and independent of a model's cooperation. */
 export class BrowserController {
@@ -424,6 +469,9 @@ export class BrowserController {
         if (!(error instanceof BrowserFault)) throw error;
       }
     }
+    // Read from the page's structure, never its words: a widget or frame of a
+    // bot check, big enough to be clicked, that a person has to pass.
+    const challenge = !handedBack && (await page.evaluate(challengeShown).catch(() => false));
     this.sessions.observed(session.id, epoch);
     this.metrics.observations++;
     // A page still loads when a third-party host it uses is down; the look says which ones.
@@ -441,7 +489,11 @@ export class BrowserController {
         tree,
         screenshot,
       },
-      result: { submit_intents: intents, ...unreachableResult(unreachable) },
+      result: {
+        submit_intents: intents,
+        ...unreachableResult(unreachable),
+        ...(challenge ? { challenge: true } : {}),
+      },
     };
   }
 

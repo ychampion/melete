@@ -1,5 +1,5 @@
 {
-  "id": "41231fec-c83c-4b97-98c6-1ea18c46ac3e",
+  "id": "bb968a75-79d7-4317-af01-c197ab03e73f",
   "prevId": "10c980bd-b0da-4fb1-a02a-09800a142165",
   "version": "7",
   "dialect": "postgresql",
@@ -222,6 +222,18 @@
         },
         "service_key": {
           "name": "service_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operation_key": {
+          "name": "operation_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operation_intent": {
+          "name": "operation_intent",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -20621,6 +20633,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "operation_key": {
+          "name": "operation_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "task_kind": {
           "name": "task_kind",
           "type": "text",
@@ -20718,11 +20736,12 @@
         }
       },
       "compositePrimaryKeys": {
-        "service_path_space_id_service_key_task_kind_path_pk": {
-          "name": "service_path_space_id_service_key_task_kind_path_pk",
+        "service_path_space_id_service_key_operation_key_task_kind_path_pk": {
+          "name": "service_path_space_id_service_key_operation_key_task_kind_path_pk",
           "columns": [
             "space_id",
             "service_key",
+            "operation_key",
             "task_kind",
             "path"
           ]
