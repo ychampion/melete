@@ -79,6 +79,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pastedSpans } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
@@ -562,6 +563,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const flight = useInFlight();
   // A message that failed to send keeps its request, so Retry resends that message once.
   const outbox = useRef<Outbox | null>(null);
+  /** What the person pasted into the box since the last send. */
+  const pastes = useRef<string[]>([]);
   // Files in the message box, uploaded as they are added and sent with the words.
   const files = useAttachments();
   const { clear: clearFiles, restore: restoreFiles } = files;
@@ -707,6 +710,8 @@ export function ChatScreen({ id }: { id: string | null }) {
       const clean = body.trim();
       if (!clean && !attached.length) return false;
       const fileIds = attached.map((file) => file.id);
+      const pasted = pastedSpans(clean, pastes.current);
+      pastes.current = [];
       setText('');
       if (attached.length) clearFiles();
       // With no agent chosen the service hands the chat to Melete.
@@ -731,6 +736,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           clean,
           messageKey(),
           fileIds,
+          pasted,
         );
         if (accepted.data === null)
           toast({
@@ -758,7 +764,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (!box) return false;
       const post = async (): Promise<boolean> => {
         state.settle(localId, 'sending');
-        const accepted = await adapter.send(conversationId, clean, key, fileIds);
+        const accepted = await adapter.send(conversationId, clean, key, fileIds, pasted);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
           toast({
@@ -1271,6 +1277,7 @@ ${words}`
                   onChange={setText}
                   onSend={() => void send(text, files.ready)}
                   attachments={files}
+                  onPasteText={(pasted) => pastes.current.push(pasted)}
                   agentName={
                     // A turn handed to another agent with @Name is that agent's while it works.
                     (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??

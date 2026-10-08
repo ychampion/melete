@@ -74,6 +74,7 @@ export function Composer({
   working = false,
   voice,
   attachments,
+  onPasteText,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -96,6 +97,8 @@ export function Composer({
   voice?: { maxSeconds: number; place: VoicePlace; off: string | null };
   /** The files in the box, where files can be sent. */
   attachments?: AttachmentsControl;
+  /** Told the text of each paste, so the message can say which words were pasted. */
+  onPasteText?: (text: string) => void;
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
@@ -227,6 +230,8 @@ export function Composer({
   };
   // A pasted picture (a screenshot, say) is attached; pasted text stays text.
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData('text/plain');
+    if (text) onPasteText?.(text);
     if (!attachments) return;
     const pasted = [...event.clipboardData.files];
     if (!pasted.length || event.clipboardData.types.includes('text/plain')) return;

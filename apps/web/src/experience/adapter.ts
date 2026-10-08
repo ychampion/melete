@@ -257,13 +257,26 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations', { body })),
   turns: (id: string) =>
     guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
-  /** `attachments` names files uploaded for this message, in the order they show. */
-  send: (id: string, text: string, key: string, attachments: readonly string[] = []) =>
+  /**
+   * `attachments` names files uploaded for this message, in the order they show;
+   * `pasted` says which stretches of `text` the person pasted rather than typed.
+   */
+  send: (
+    id: string,
+    text: string,
+    key: string,
+    attachments: readonly string[] = [],
+    pasted: readonly { start: number; end: number }[] = [],
+  ) =>
     guard<MessageAcceptance>(() =>
       api.POST('/conversations/{id}/messages', {
         ...path(id),
         headers: { 'Idempotency-Key': key },
-        body: { text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
+        body: {
+          text,
+          ...(attachments.length ? { attachments: [...attachments] } : {}),
+          ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
+        },
       }),
     ),
   pause: (id: string) =>
