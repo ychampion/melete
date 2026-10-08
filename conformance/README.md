@@ -1,7 +1,7 @@
 # Service conformance
 
-The runner lists twelve scenarios, then executes the tests in
-`conformance/scenarios`. Scenarios 1–5, 9, 11 and 12 run anywhere with disposable
+The runner lists thirteen scenarios, then executes the tests in
+`conformance/scenarios`. Scenarios 1–5, 9, 11, 12 and 17 run anywhere with disposable
 Postgres; 6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1`
 is set; 10 runs against a Docker engine when `MELETE_CONFORMANCE_DOCKER=1` is
 set.
@@ -37,6 +37,7 @@ executable test bodies and the reported results are the evidence.
 | 5: [runtime death](scenarios/05-runtime-death.test.ts) | Child-process faults during streaming and after a completed tool result | `no action is duplicated: the completed tool call is not run twice` |
 | 11: [MCP server](scenarios/11-mcp-server.test.ts) | Two accounts connect assistants with `@modelcontextprotocol/sdk` through the web proxy, call every tool, ask to send an email, try each other's work, refresh and disconnect; seven tests | `an assistant connects through discovery, registration, PKCE and consent`; `each tool acts as the person the token names`; `another person's token is refused the first person's work`; `safe_send waits for approval in Melete and never sends on its own`; `the person approves the exact text in Melete and the broker sends it once` |
 | 12: [deadline fresh check](scenarios/12-deadline-fresh-check.test.ts) | Three deadlines a person set on scripted documents: one signed before its time, one not, one moved later; two sweeps at once at each moment, on a test clock | `a deadline met before its time is checked at its time and says nothing to anyone`; `an unmet deadline is raised exactly once, with its reason, however many sweeps run at its time`; `a deadline moved before its time is read and raised at the new time only`; `no clock is read before its time, and no model is called` |
+| 17: [once across paths](scenarios/17-once-across-paths.test.ts) | One booking reachable through a scripted app and a scripted browser: the app's answer is lost past the dispatch timeout, then the browser and the app are tried again; separately a browser submit lands on a page that says nothing, and the person is handed the browser and hands it back | `a timeout after dispatch on the API path never leads to a browser retry until reconciled`; `a browser submit whose page does not confirm rests unknown and is handed to the person with what is done and what is left`; `handing the browser back reads the page before the work goes on` |
 
 The fixture tests also check recorded receipts, recovery events and uncertainty
 messages. An assertion mentioning UI text checks the returned message, not a
