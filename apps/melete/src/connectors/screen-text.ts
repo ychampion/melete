@@ -21,7 +21,7 @@
 import type { JsonValue } from '@melete/contracts';
 import { z } from 'zod';
 import { handbackUrl, REDACTED, redactSecretText } from '../workers/browser/redact.ts';
-import { isSensitiveControl } from '../workers/browser/visible.ts';
+import { isSensitiveControl, sensitiveName } from '../workers/browser/visible.ts';
 
 /** The most characters of element lines one result carries. */
 export const MAX_SCREEN_TEXT_CHARS = 6_000;
@@ -142,7 +142,9 @@ const namesSecret = (item: z.infer<typeof element>) =>
 function bareSecretLabel(item: z.infer<typeof element>): boolean {
   if (CONTROL_ROLES.has(item.role) || item.value || !item.name) return false;
   const name = oneLine(item.name);
-  return name.length <= 60 && namesSecret(item) && redactSecretText(name) === name;
+  // The browser tools' list of secret names; a label is text, not a field, so
+  // the list is asked directly rather than through the field check.
+  return name.length <= 60 && sensitiveName.test(name) && redactSecretText(name) === name;
 }
 
 /** One element as a line: `n12 textbox "From" value="Union Square" [focused] box=85,180,177,21`. */
