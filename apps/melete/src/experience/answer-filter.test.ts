@@ -59,6 +59,45 @@ test('ordinary answers are kept exactly, model ids, paths, links and addresses i
   for (const answer of KEPT) expect(answerText(answer)).toBe(answer);
 });
 
+test('hashes, commit ids, UUIDs and checksums are shown as written', () => {
+  for (const answer of [
+    `The SHA-256 of the file is ${HASH}.`,
+    `${HASH}  release.tar.gz`,
+    `sha256sum says ${HASH.toUpperCase()}`,
+    'Commit 3f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39 is on main, short id 3f2a9c1.',
+    'The id is 123e4567-e89b-12d3-a456-426614174000 and the md5 is d41d8cd98f00b204e9800998ecf8427e.',
+  ])
+    expect(answerText(answer)).toBe(answer);
+  // A key with a known prefix, or a hash named as a token or a payload, is still hidden.
+  expect(answerText(`token: ${HASH}`)).toBe(`token: ${HIDDEN}`);
+  expect(answerText(`The payload hash was ${HASH}.`)).toBe(`The payload hash was ${HIDDEN}.`);
+});
+
+test('a hex value said to be a secret is hidden, however it is worded', () => {
+  const said: [string, string][] = [
+    [`api_key=${HASH}`, `api_key=${HIDDEN}`],
+    [`secret: ${HASH}`, `secret: ${HIDDEN}`],
+    [`My API key is ${HASH}, keep it.`, `My API key is ${HIDDEN}, keep it.`],
+    [`Your token ${HASH} expires soon.`, `Your token ${HIDDEN} expires soon.`],
+    [`The password is ${HASH.toUpperCase()}`, `The password is ${HIDDEN}`],
+    [`The signing key: ${HASH.slice(0, 40)}`, `The signing key: ${HIDDEN}`],
+    [`Authorization: Bearer ${HASH}`, `Authorization: Bearer ${HIDDEN}`],
+  ];
+  for (const [text, shown] of said) expect(answerText(text)).toBe(shown);
+  // Keys with a known prefix, signed tokens and private key blocks, as before.
+  for (const secret of [
+    OPENAI_KEY,
+    'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8',
+    'xoxb-1234567890-abcdefghij',
+    'AKIAIOSFODNN7EXAMPLE',
+    SIGNED,
+  ])
+    expect(answerText(`Here: ${secret} done`)).toBe(`Here: ${HIDDEN} done`);
+  expect(
+    answerText('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n-----END PRIVATE KEY-----'),
+  ).not.toContain('MIIEvQ');
+});
+
 test('only the secret is hidden; the words around it stay', () => {
   expect(answerText(`Your key is ${OPENAI_KEY}, keep it safe.`)).toBe(
     `Your key is ${HIDDEN}, keep it safe.`,
@@ -105,7 +144,7 @@ const HIDING = [
   `Header: Authorization: Bearer ${SIGNED}\nThen call it again.`,
   `Checking.{"tool_call": {"name": "email.search", "arguments": {"q": "invoice"}}} Found three invoices from ${'billing@example.com'}.`,
   `-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7Yq\nQm9yZQ==\n-----END RSA PRIVATE KEY-----\nThat is the key you pasted; rotate it.`,
-  `password = "Tr0ub4dor&3x" in the old file, and hash ${HASH}.`,
+  `password = "Tr0ub4dor&3x" in the old file, and approval hash ${HASH}.`,
 ];
 
 /** A seeded generator, so a failure names the cuts that caused it. */

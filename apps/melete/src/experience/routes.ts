@@ -50,6 +50,7 @@ import { draftForReview, projectArtifact, projectCards, projectReceipt } from '.
 import { ExperienceQuestions } from './questions.ts';
 import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
+import type { WorkspaceTrash } from './workspace-trash.ts';
 
 export type ExperienceDeps = {
   db: Database;
@@ -74,6 +75,8 @@ export type ExperienceDeps = {
   runs?: RunService;
   /** The files people send in chat. */
   attachments?: AttachmentService;
+  /** Where conversations' workspaces are, so a deleted one's goes to its trash. */
+  workspaces?: WorkspaceTrash;
   /** Whether an active connection's connector runs here; see connectorLiveness. */
   liveness?: ConnectionLiveness;
 };
@@ -110,6 +113,7 @@ const SPACE_OWNER_SURFACES = new Set([
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   if (deps.attachments) service.attachments = deps.attachments;
+  if (deps.workspaces) service.workspaces = deps.workspaces;
   const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
   const memory = deps.sql
     ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
@@ -622,7 +626,13 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
           forget = async (sources) => (await memory?.forgetSources(spaceId, ownerId, sources)) ?? 0;
       }
       const removal = await removeJobs(
-        { jobs: deps.jobs, sql: deps.sql, runner: deps.runner, blobs: deps.attachments?.store },
+        {
+          jobs: deps.jobs,
+          sql: deps.sql,
+          runner: deps.runner,
+          blobs: deps.attachments?.store,
+          workspaces: deps.workspaces,
+        },
         ids,
         forget,
       );

@@ -10,9 +10,11 @@
  * then do the rows go, in one transaction.
  *
  * What goes is what the job owns: its turns, events, attempts, actions and
- * approvals, which the schema cascades from the job. What stays is what was
- * never only the job's: files it made stay in the space (their `job_id` is
- * cleared), a computer it used stays, and memory stays. Memory is the person's,
+ * approvals, which the schema cascades from the job. Its workspace goes too,
+ * into its trash, restorable for the trash period (see `workspace-trash.ts`).
+ * What stays is what was never only the job's: files it saved to the person's
+ * Files or the space stay (their `job_id` is cleared), a computer it used
+ * stays, and memory stays. Memory is the person's,
  * so it is forgotten only when they ask, through the same source deletion that
  * "forget that" uses; see `memorySourcesOf`.
  */
@@ -30,6 +32,7 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import { roomAuthorityOf } from '../rooms/approvals.ts';
 import type { BlobKey, BlobStore } from '../storage/blob.ts';
+import { trashWorkspace, type WorkspaceTrash } from './workspace-trash.ts';
 
 export type JobRemovalDeps = {
   jobs: JobService;
@@ -37,6 +40,10 @@ export type JobRemovalDeps = {
   runner?: AttemptRunner;
   /** Where the files sent in the chats are kept; their bytes go with them. */
   blobs?: BlobStore;
+  /** Where the jobs' workspaces are; each goes to its trash with the job. */
+  workspaces?: WorkspaceTrash;
+  /** Told when a workspace could not go yet; the next start tries again. */
+  log?: (line: string) => void;
 };
 
 export type JobRemoval = {
@@ -281,6 +288,10 @@ export async function removeJobs(
     await tx`update awaited_reply set job_id = null where job_id = any(${list})`;
     await tx`update ledger_item set job_id = null where job_id = any(${list})`;
     await tx`update ledger_item set last_job_id = null where last_job_id = any(${list})`;
+    // A file recorded in a job's own workspace goes with the workspace.
+    if (deps.workspaces)
+      await tx`delete from artifact where job_id = any(${list}) and area = 'work'
+        and source_job_id = job_id`;
     await tx`update artifact set source_job_id = null where source_job_id = any(${list})`;
     // The privacy router's per-conversation records hold sealed private
     // values; they mean nothing without the conversation.
@@ -312,6 +323,17 @@ export async function removeJobs(
   // Bytes nothing else refers to go now. Without the store here, the collector
   // takes them once their grace period passes.
   if (deps.blobs && fileKeys.length) await purgeUnreferenced(deps.sql, deps.blobs, fileKeys);
+  // The workspaces go to the trash once nothing can run in them again. One
+  // that cannot go now is moved at the next start.
+  if (deps.workspaces) {
+    const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+    for (const id of list)
+      await trashWorkspace(deps.workspaces, id).catch((error: unknown) =>
+        log(
+          `the workspace of ${id} could not be moved to the trash yet: ${error instanceof Error ? error.message : 'unknown error'}`,
+        ),
+      );
+  }
   // Forgotten only now, after the jobs are gone, so nothing captured from them
   // in between is left behind. Then the capture log stops naming them.
   let forgotten = 0;

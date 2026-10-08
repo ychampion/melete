@@ -285,6 +285,12 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     await removeConfined(join(this.workRoot, TRASH_DIRECTORY), job, beforeRetry);
   }
 
+  /** Removes the job's workspace only, keeping its trash (a deleted chat's, restorable). */
+  async removeWorkspace(job: string): Promise<void> {
+    checkJob(job);
+    await removeConfined(this.workRoot, job);
+  }
+
   async remaining(job: string): Promise<string | null> {
     const path = join(this.workRoot, job);
     try {

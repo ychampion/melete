@@ -16,7 +16,8 @@
  * learned privately, the detectors, the local name detector and the
  * conversation's vault. Only a local model reads memory as written.
  *
- * A provider that fails three times in a row is not asked again for a minute:
+ * A provider that answers busy or briefly down is asked once more. One that
+ * still fails three times in a row is not asked again for a minute:
  * recall stays lexical meanwhile instead of waiting on it every turn.
  *
  * Every call is counted in the spending ledger as a `memory_embedding` call,
@@ -73,6 +74,10 @@ export type EmbeddingPrivacy = {
     jobId?: string | null,
   ): Promise<string[] | null>;
 };
+
+/** Answers that say the provider is busy or briefly down: asked once more, after `RETRY_MS`. */
+const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+export const RETRY_MS = 200;
 
 /** Failures in a row after which the provider is left alone for `PAUSE_MS`. */
 export const BREAKER_FAILURES = 3;
@@ -183,8 +188,8 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
       let status: 'succeeded' | 'failed' | 'unknown' = 'unknown';
       let httpStatus: number | null = null;
       let tokens: number | null = null;
-      try {
-        const response = await request(endpoint, {
+      const send = () =>
+        request(endpoint, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -198,6 +203,16 @@ export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingPro
           redirect: 'error',
           signal,
         });
+      try {
+        let response = await send();
+        // A busy or briefly failing provider is asked once more before recall
+        // gives up on meaning for this turn.
+        if (RETRY_STATUSES.has(response.status)) {
+          await response.body?.cancel();
+          await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+          signal?.throwIfAborted();
+          response = await send();
+        }
         httpStatus = response.status;
         if (!response.ok) {
           status = 'failed';
