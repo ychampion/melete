@@ -373,6 +373,9 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
       const words = spec?.success && spec.data.kind === 'schedule' ? cronWords(spec.data.cron) : '';
       lines.push(
         `Why this shift started: it is the scheduled time${words ? ` (${words.toLowerCase()})` : ''}: ${formatAt(woke.createdAt, zone)}.`,
+        // Told only the time, a shift read "remind me every Monday" as the
+        // request and answered by setting the reminder up again.
+        'This shift is that occurrence: do the work for it now. A reminder or a briefing reaches the person as a report (run.log kind "report") addressed to them, saying the thing itself, never that it is scheduled.',
       );
     } else if (source.kind === 'connector_event') {
       const label = await labelOf(tx, String(source.connection_id ?? ''));

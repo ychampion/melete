@@ -294,7 +294,8 @@ export function renderInput(bundle: AttemptBundle): string {
   for (const approval of bundle.inputs.approval_results)
     lines.push('', '## A decision was made', '', renderDecision(approval));
   for (const event of bundle.inputs.trigger_events) {
-    lines.push('', '## Something happened', '', JSON.stringify(event));
+    const due = dueNow(event);
+    lines.push('', ...(due ? due : ['## Something happened', '', JSON.stringify(event)]));
   }
   // In a room each message names who said it; anywhere else it is the owner's.
   for (const message of bundle.inputs.new_user_messages) {
@@ -308,6 +309,36 @@ export function renderInput(bundle: AttemptBundle): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * What a wake that is itself the awaited moment means. Told only "a schedule
+ * fired", a model reads the request that set it up ("remind me every Monday")
+ * as a request, and answers by setting it up again: "I'll remind you every
+ * Monday". This says the occurrence is now, and what doing it means.
+ */
+export const DUE_NOW_WORDS =
+  'This turn is that moment, not the setting up of it. Do now what was asked for this time: a reminder is given to the person now, as the reminder itself, in your own words; a briefing or a check is done and given now. Do not set this one up again, and do not tell the person when it is scheduled. Only when more times were asked for and nothing already brings them, arrange the next one after doing this one.';
+
+/** The section for a wake that is a scheduled time or the agent's own timer, or null. */
+function dueNow(event: Record<string, unknown>): string[] | null {
+  if (event.kind === 'schedule_event')
+    return [
+      '## The scheduled time has come',
+      '',
+      'This turn was started by this work’s schedule: it is one scheduled occurrence of it.',
+      DUE_NOW_WORDS,
+    ];
+  if (event.kind === 'timer_fired') {
+    const at = typeof event.wake_at === 'string' ? ` for ${event.wake_at}` : '';
+    return [
+      '## The time you were waiting for has come',
+      '',
+      `This turn was started by the timer you set with job.wait${at}.`,
+      DUE_NOW_WORDS,
+    ];
+  }
+  return null;
 }
 
 const DECISION_PAYLOAD_CHARACTERS = 2000;

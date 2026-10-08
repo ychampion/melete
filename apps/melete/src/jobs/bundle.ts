@@ -30,7 +30,7 @@ import {
   triggerSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
@@ -621,6 +621,50 @@ export async function buildSinceLast(
   });
 }
 
+/**
+ * When this wake is a timer the agent set with job.wait coming due, the time
+ * it was set for; otherwise null. The timer firing is the transition this wake
+ * made, and the wait is the one the attempt before it asked for: a retry's
+ * backoff or a rest at a spending limit is a timer too, and is not one the
+ * agent set.
+ */
+async function firedTimer(
+  tx: Transaction,
+  jobId: string,
+  afterSeq: number,
+  lastAttemptId: string | undefined,
+): Promise<string | null> {
+  if (!lastAttemptId) return null;
+  const [fired] = await tx
+    .select({ seq: event.seq })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(event.type, 'job_state_changed'),
+        gt(event.seq, afterSeq),
+        sql`${event.payload}->>'input' = 'timer_fired'`,
+      ),
+    )
+    .limit(1);
+  if (!fired) return null;
+  const [asked] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(event.attemptId, lastAttemptId),
+        eq(event.type, 'notice'),
+        sql`${event.payload}->>'kind' = 'runtime_wait_requested'`,
+      ),
+    )
+    .orderBy(desc(event.seq))
+    .limit(1);
+  const wait = waitSpec.safeParse((asked?.payload as { wait?: unknown } | undefined)?.wait);
+  return wait.success && wait.data.kind === 'timer' ? wait.data.wake_at : null;
+}
+
 /** Reserve the durable attempt first; its capability is usable only after commit. */
 /** How many of the person's open tasks a routine is shown. */
 const ROUTINE_TASK_LIMIT = 50;
@@ -772,6 +816,10 @@ export async function buildAttemptSkeleton(
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
     limits: transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
   });
+  // The agent's own timer came due: this wake is that moment, and is told so,
+  // or the request that set the timer reads as a request to set it again.
+  const timer = await firedTimer(tx, row.id, afterSeq, attempts[0]?.id);
+  if (timer) history.inputs.trigger_events.push({ kind: 'timer_fired', wake_at: timer });
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
   const decided = history.inputs.approval_results.map((entry) => entry.action_id);
