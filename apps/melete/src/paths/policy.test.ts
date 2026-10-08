@@ -99,4 +99,22 @@ describe('services', () => {
     ).toBe('linear.app');
     expect(serviceOfUrl('javascript:alert(1)')).toBeNull();
   });
+
+  test('sites under a shared suffix stay apart, and a host is named the same however it is written', () => {
+    // Two people's pages on one hosting suffix, or two companies under one
+    // country suffix, are different sites: what is unsettled at one never stops the other.
+    expect(serviceOfUrl('https://alice.github.io/form')).toBe('alice.github.io');
+    expect(serviceOfUrl('https://bob.github.io/form')).not.toBe(
+      serviceOfUrl('https://alice.github.io/form'),
+    );
+    expect(serviceOfUrl('https://shop.example.co.kr/x')).toBe('example.co.kr');
+    expect(serviceOfUrl('https://a.vercel.app/x')).not.toBe(serviceOfUrl('https://b.vercel.app/x'));
+    expect(serviceOfUrl('https://Book.OpenTable.com.:8443/x')).toBe('opentable.com');
+    expect(
+      serviceOfConnection({
+        provider: 'imap',
+        configuration: { kind: 'mail', mail: { smtp: { host: 'Mail.Acme.Test.' } } },
+      }),
+    ).toBe('mail:mail.acme.test');
+  });
 });

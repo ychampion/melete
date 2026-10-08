@@ -10,6 +10,9 @@
  * on the same company's website is never taken for a send from that mailbox.
  */
 
+import { isIP } from 'node:net';
+import { getDomain } from 'tldts';
+
 /** Web apps whose address says which of their parts a page belongs to. */
 const WEB_APPS: ReadonlyArray<{
   hosts: readonly string[];
@@ -70,42 +73,31 @@ const CALENDAR_HOSTS: Readonly<Record<string, string>> = {
   'fastmail.com': 'fastmail:calendar',
 };
 
-/** Second-level names under which a site's own name takes three labels. */
-const SECOND_LEVEL = new Set([
-  'co.uk',
-  'org.uk',
-  'ac.uk',
-  'gov.uk',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.nz',
-  'co.jp',
-  'co.in',
-  'com.br',
-  'com.mx',
-  'co.za',
-  'com.sg',
-  'com.hk',
-]);
+/** A host as one spelling: lower case, with no trailing dot and no IPv6 brackets. */
+function normalHost(host: string): string {
+  return host
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+}
 
-const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
-
-/** A host's registrable name: `book.opentable.com` is `opentable.com`. */
+/**
+ * A host's registrable name from the public suffix list: `book.opentable.com`
+ * is `opentable.com`, `shop.example.co.kr` is `example.co.kr`, and each
+ * person's `name.github.io` is a site of its own. An address, or a name with
+ * nothing registrable in it, stays as it is.
+ */
 export function registrableName(host: string): string {
-  const name = host.toLowerCase().replace(/\.$/, '');
-  if (IPV4.test(name) || name.includes(':')) return name;
-  const labels = name.split('.').filter(Boolean);
-  if (labels.length <= 2) return labels.join('.');
-  const lastTwo = labels.slice(-2).join('.');
-  return labels.slice(SECOND_LEVEL.has(lastTwo) ? -3 : -2).join('.');
+  const name = normalHost(host);
+  if (isIP(name)) return name;
+  return getDomain(name, { allowPrivateDomains: true }) ?? name;
 }
 
 function hostOf(raw: string): { host: string; path: string } | null {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-    return { host: url.hostname.toLowerCase().replace(/\.$/, ''), path: url.pathname };
+    return { host: normalHost(url.hostname), path: url.pathname };
   } catch {
     return null;
   }
@@ -122,13 +114,13 @@ export function serviceOfUrl(raw: string): string | null {
 /** The service a mail server reaches. */
 export function serviceOfMailHost(host: string): string {
   const name = registrableName(host);
-  return MAIL_HOSTS[name] ?? `mail:${host.toLowerCase()}`;
+  return MAIL_HOSTS[name] ?? `mail:${normalHost(host)}`;
 }
 
 /** The service a calendar server reaches. */
 export function serviceOfCalendarHost(host: string): string {
   const name = registrableName(host);
-  return CALENDAR_HOSTS[name] ?? `calendar:${host.toLowerCase()}`;
+  return CALENDAR_HOSTS[name] ?? `calendar:${normalHost(host)}`;
 }
 
 type ConnectionLike = {
