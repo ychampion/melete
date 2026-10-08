@@ -134,6 +134,12 @@ export interface GatewayOptions {
   prices?: PriceTable;
   /** The files people sent in chat, swapped into a job's requests as files where allowed. */
   attachments?: GatewayAttachments;
+  /**
+   * Whether a model reads pictures, as the model settings say. A request for
+   * one that reads none has its pictures taken out, with or without a file
+   * store; left out, the attachments' own setting is asked.
+   */
+  vision?: (provider: string, model: string) => Promise<boolean>;
 }
 
 /** A provider's own web search tool: `web_search` (Responses) or `web_search_YYYYMMDD` (Messages). */
@@ -433,7 +439,9 @@ export function createModelGateway(options: GatewayOptions): Server {
       // A picture never reaches a model that reads none. One the vision route
       // serves goes there; otherwise, when the model this call names reads no
       // pictures, each picture the request carries becomes a sentence saying so.
-      if (!primaryLocal && countImages(body) > 0) {
+      // A model on the person's own machine is held to it too: it is not
+      // rerouted, but it is never sent a picture it cannot read.
+      if (countImages(body) > 0) {
         const vision = principal.routes?.vision;
         const toVision =
           vision !== undefined &&
@@ -442,10 +450,11 @@ export function createModelGateway(options: GatewayOptions): Server {
           );
         if (!toVision) {
           // A vision route is set only for a model that reads no pictures.
+          const readsPictures = options.vision ?? options.attachments?.vision;
           const reads = vision
             ? false
-            : options.attachments
-              ? await options.attachments.vision(provider.name, model)
+            : readsPictures
+              ? await readsPictures(provider.name, model)
               : true;
           if (!reads) body = withoutImages(body, PICTURE_NOT_READ);
         }

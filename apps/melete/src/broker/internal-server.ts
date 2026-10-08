@@ -66,6 +66,8 @@ export function createInternalServer(options: {
   reasoningEffort?: GatewayOptions['reasoningEffort'];
   /** The files people sent in chat, for the model to see as files where allowed. */
   attachments?: GatewayOptions['attachments'];
+  /** Whether a model reads pictures, for the gateway's picture guard. */
+  vision?: GatewayOptions['vision'];
 }) {
   const broker =
     options.broker ??
@@ -150,6 +152,7 @@ export function createInternalServer(options: {
     // across service restarts and computable by nobody outside it.
     promptCacheSecret: options.capabilityKey,
     attachments: options.attachments,
+    ...(options.vision ? { vision: options.vision } : {}),
     // A placeholder still in a runtime payload is resolved before the broker reads it.
     brokerFetch: withPlaceholderResolution(
       learningRuntimeFetch({

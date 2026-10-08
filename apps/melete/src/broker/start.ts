@@ -163,6 +163,7 @@ export async function startEffectBoundary(
       spending,
       ...(env.MELETE_JOB_USD_COUNTS_MODELS ? { modelDollars: spending.prices } : {}),
       routes: (attempt) => modelSettings.attemptRoutes(routing, attempt),
+      vision: (provider, model) => modelSettings.visionFor(provider, model),
       reasoningEffort: env.MELETE_REASONING_EFFORT_AGENT,
       ...(dependencies.blobs
         ? {

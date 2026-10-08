@@ -22,7 +22,9 @@ import {
   createModelGateway,
   GatewayError,
   type GatewayPrincipal,
+  type GatewayProvider,
   type GatewayReservationRequest,
+  PICTURE_NOT_READ,
   providersFromEnv,
 } from './index.ts';
 import { estimateInputTokens } from './metering.ts';
@@ -346,4 +348,85 @@ describe('the gateway forwards screenshots within its limits', () => {
     expect(response.status).toBe(200);
     expect(sent).toHaveLength(1);
   });
+});
+
+describe('a model that reads no pictures is sent none, whatever the deployment', () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))),
+    );
+  });
+  /** A model on the person's own machine, as a local install names one. */
+  const LOCAL: GatewayProvider = {
+    name: 'ollama',
+    baseUrl: 'http://127.0.0.1:11434/v1/',
+    apiKey: 'local',
+    allowHttp: true,
+    protocols: ['chat/completions'],
+  };
+
+  // No file store and so no attachments: the picture guard asks the model settings alone.
+  async function start(provider: 'fireworks' | 'ollama', reads: boolean) {
+    const model = provider === 'ollama' ? 'llama3.1' : MODEL;
+    const principal: GatewayPrincipal = {
+      privacy: { kind: 'job' },
+      jobId: 'job-test',
+      attemptId: 'attempt-test',
+      epoch: 1,
+      revision: 1,
+      maxRequests: 10,
+      maxTokens: 20_000,
+      allowedModels: [{ provider, model }],
+    };
+    const sent: string[] = [];
+    const server = createModelGateway({
+      privacy: false,
+      authenticate: async () => principal,
+      budget: { reserve: async () => ({ id: '1' }), settle: async () => {} },
+      providers: [...providersFromEnv({ FIREWORKS_API_KEY: 'fw-key' }), LOCAL],
+      defaultProvider: 'fireworks',
+      vision: async () => reads,
+      fetch: async (request) => {
+        sent.push(await request.text());
+        return Response.json({
+          model,
+          choices: [],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        });
+      },
+    });
+    servers.push(server);
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('expected a TCP listener');
+    const messages = [
+      { role: 'user', content: 'look' },
+      ...screenshotTurn('call_1', picture(4096)),
+    ];
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/providers/${provider}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer melete-surrogate-test',
+          'x-melete-capability': 'attempt',
+        },
+        body: JSON.stringify({ model, max_tokens: 100, messages }),
+      },
+    );
+    expect(response.status).toBe(200);
+    return sent[0] ?? '';
+  }
+
+  for (const provider of ['fireworks', 'ollama'] as const)
+    test(`${provider === 'ollama' ? 'a local model' : 'a cloud model with no file store'}: pictures go only where they are read`, async () => {
+      const blind = await start(provider, false);
+      expect(blind).not.toContain('image_url');
+      expect(blind).toContain(PICTURE_NOT_READ.slice(1, 40));
+      const seeing = await start(provider, true);
+      expect(seeing).toContain('image_url');
+      expect(seeing).not.toContain(PICTURE_NOT_READ.slice(1, 40));
+    });
 });
