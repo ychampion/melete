@@ -65,6 +65,8 @@ export class CuaDriverBrowser {
   private refs: SemanticRef[] = [];
   private outline = '';
   private omittedOffscreen = 0;
+  /** Choices made while resolving a step, for the record. */
+  readonly notes: string[] = [];
 
   constructor(
     options: CuaDriverOptions,
@@ -159,29 +161,33 @@ export class CuaDriverBrowser {
     return refs;
   }
 
-  /** The ref for a control: exact accessible name first, then a name that contains it. */
-  private async find(
-    roles: readonly string[],
-    label: string,
-    action = 'click',
-  ): Promise<SemanticRef> {
+  /**
+   * The ref for a control, as an agent reading the snapshot would pick it: the
+   * exact accessible name (the first, when a page repeats a name, such as a
+   * picture link and a title link to the same place), else the one name that
+   * contains it, else the only control of that role on the page.
+   */
+  private async find(roles: readonly string[], label: string): Promise<SemanticRef> {
     const wanted = norm(label);
     for (let scroll = 0; scroll <= 4; scroll++) {
       const candidates = this.refs.filter(
-        (ref) => roles.includes(ref.role) && (ref.actions ?? []).includes(action),
+        (ref) => roles.includes(ref.role) && (ref.actions ?? []).length > 0,
       );
       const exact = candidates.filter((ref) => norm(ref.name ?? '') === wanted);
       const loose = candidates.filter((ref) => norm(ref.name ?? '').includes(wanted));
       const found =
-        exact.length === 1
-          ? exact[0]
-          : exact.length === 0 && loose.length === 1
-            ? loose[0]
-            : undefined;
-      if (found) return found;
-      if (exact.length > 1 || loose.length > 1)
+        exact[0] ??
+        (loose.length === 1 ? loose[0] : undefined) ??
+        (loose.length === 0 && candidates.length === 1 ? candidates[0] : undefined);
+      if (found) {
+        if (exact.length > 1) this.notes.push(`picked the first of ${exact.length} "${label}"`);
+        if (!exact.length && !loose.length) this.notes.push(`took the only ${found.role}`);
+        return found;
+      }
+      if (loose.length > 1)
         throw new CuaStepRefused('find', 'ambiguous_control', `${roles.join('|')} "${label}"`);
-      if (scroll === 4) break;
+      // Offscreen controls are left out of a snapshot; scroll only when some were.
+      if (scroll === 4 || this.omittedOffscreen === 0) break;
       // Offscreen controls are left out of a snapshot; scroll and look again.
       await this.call('browser_pointer', {
         ...this.at,
@@ -201,12 +207,14 @@ export class CuaDriverBrowser {
   }
 
   async fill(label: string, value: string): Promise<void> {
-    const ref = await this.find(['textbox', 'searchbox', 'combobox', 'spinbutton'], label, 'type');
-    await this.call('browser_click', {
-      ...this.at,
-      ref: ref.ref,
-      delivery_mode: this.settings.delivery,
-    });
+    const ref = await this.find(['textbox', 'searchbox', 'spinbutton'], label);
+    // Focus by clicking only where the ref offers a click; typing focuses an editable itself.
+    if ((ref.actions ?? []).includes('click'))
+      await this.call('browser_click', {
+        ...this.at,
+        ref: ref.ref,
+        delivery_mode: this.settings.delivery,
+      });
     await this.call('browser_type', { ...this.at, ref: ref.ref, text: value, replace: true });
     await this.snapshot();
   }
@@ -269,6 +277,17 @@ export class CuaDriverBrowser {
       (r) => roles.includes(r.role) && norm(r.name ?? '').includes(wanted),
     );
     return ref?.value ?? undefined;
+  }
+
+  /** The latest refs in one line each, for a failure record. */
+  refSummary(max = 40): string {
+    return this.refs
+      .slice(0, max)
+      .map(
+        (r) =>
+          `${r.ref} ${r.role} ${JSON.stringify(r.name ?? '')} [${(r.actions ?? []).join(',')}]${r.value ? ` = ${r.value}` : ''}`,
+      )
+      .join('\n');
   }
 
   /** What the page shows: the snapshot outline plus every ref's name and value. */

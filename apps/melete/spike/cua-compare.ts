@@ -33,6 +33,8 @@ interface Backend {
   /** Driver-level calls so far (observations included). */
   callCount(): number;
   refusals(): string[];
+  /** What the side saw last, for a failure record. */
+  diagnostics(): string;
 }
 
 // ── The browser worker, as the service drives it ───────────────────────────
@@ -151,6 +153,9 @@ class MeleteBackend implements Backend {
   callCount() {
     return this.calls;
   }
+  diagnostics() {
+    return (this.last?.tree ?? '').slice(0, 2500);
+  }
   refusals() {
     return this.refused;
   }
@@ -232,6 +237,13 @@ class CuaBackend implements Backend {
   }
   callCount() {
     return this.browser.calls.length;
+  }
+  diagnostics() {
+    return `notes: ${this.browser.notes.join('; ')}
+refs:
+${this.browser.refSummary()}
+text:
+${this.browser.text().slice(0, 1500)}`;
   }
   refusals() {
     return this.refused;
@@ -336,6 +348,7 @@ type TaskResult = {
   ms: number;
   refusals: string[];
   error?: string;
+  seen?: string;
 };
 
 async function runBackend(
@@ -377,6 +390,7 @@ async function runBackend(
       ms: Math.round(performance.now() - t0),
       refusals: backend.refusals().slice(refusals0),
       error,
+      ...(outcome.ok && !error ? {} : { seen: backend.diagnostics() }),
     });
     console.log(JSON.stringify(results.at(-1)));
   }
