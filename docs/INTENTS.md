@@ -138,16 +138,18 @@ model. Every way taken is on the receipt, with the reason.
   form sent, with tokens and secrets blanked. A page that shows back what it
   received must show every value sent; one that leaves a value out counts as
   not done, naming the field. An unclear page is read once more. If it is
-  still unclear after a form the person approved themselves, the outcome stays
-  open, the person is handed the browser, and the form is never sent again
-  unasked (`a browser submit whose page doesn't confirm is recorded unclear and
-  is never resubmitted unasked`). After any other form, it is recorded as sent
+  still unclear after a form that pays, carries a password or card detail,
+  deletes something, sends to someone outside or changes who can see
+  something, the outcome stays open, the person is handed the browser, and the
+  form is never sent again unasked, whatever let it through (`a browser submit whose page doesn't confirm is recorded unclear and
+  is never resubmitted unasked`; `a submit that pays, let through by a standing
+  permission, on a page that does not say, stays unknown and asks`). After any other form, it is recorded as sent
   and unconfirmed, and the work goes on (`a submit nobody had to answer for, on
   a page that does not say, is recorded unconfirmed and the work goes on`).
 - **Over to you.** What the page is built of decides when the person takes
   over, never words on it: a bot-check widget they have to pass, or a
   password, one-time code, card or sign-in field, which the browser leaves for
-  them to type. A card says what is done, what is left, and links to the
+  them to type. A link or button that only leads to signing in is not one. A card says what is done, what is left, and links to the
   agent's computer to take over. When they hand the browser back, Melete reads
   the page and carries on (`a captcha or 2FA hands to the person with a
   take-over link, and work resumes after hand-back`; `a bot check after a

@@ -12,7 +12,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { rejectionOf } from '../helpers/broker.ts';
 import { deferred } from '../helpers/conformance.ts';
-import { createPathFixture, MESSAGE, OWNER, SERVICE } from '../helpers/paths.ts';
+import { createPathFixture, MESSAGE, OWNER, SERVICE, TABLE } from '../helpers/paths.ts';
 
 const paths = await createPathFixture();
 const databaseTest = paths ? test : test.skip;
@@ -275,7 +275,7 @@ describe('the path ladder', () => {
       const s = await setup({ api: false, resolveStandingGrant: async () => true });
       // A page in another language: the read-back knows none of its words.
       s.pages.submit = { tree: '- heading "Reserva recibida"' };
-      const sent = await s.submit();
+      const sent = await s.submit(SERVICE, 'a', TABLE);
       expect(sent.status).toBe('succeeded');
       const [row] = await s.sql`select receipt from action where id = ${sent.action_id}`;
       expect(row?.receipt.detail).toMatchObject({
@@ -286,6 +286,31 @@ describe('the path ladder', () => {
       const job = await s.job();
       expect(job?.state).not.toBe('waiting_for_input');
       expect(job?.wait?.handoff).toBeUndefined();
+    },
+  );
+
+  databaseTest(
+    'a submit that pays, let through by a standing permission, on a page that does not say, stays unknown and asks',
+    async () => {
+      const s = await setup({ api: false, resolveStandingGrant: async () => true });
+      s.pages.submit = { tree: '- heading "Reserva recibida"' };
+      // A booking that takes a deposit: a payment, whoever let it through.
+      const sent = await s.submit();
+      expect(sent.status).toBe('unknown');
+      const [row] = await s.sql`select reconciliation from action where id = ${sent.action_id}`;
+      expect(row?.reconciliation.evidence).toMatchObject({
+        read_back: { verdict: 'unclear', looks: 2 },
+        handed_to: 'person',
+      });
+      const job = await s.job();
+      expect(job?.state).toBe('waiting_for_input');
+      expect(job?.wait.handoff).toMatchObject({ reason: 'unclear', action_id: sent.action_id });
+      // And the same form is not sent again while it is unconfirmed.
+      await s.nextAttempt();
+      expect(await rejectionOf(s.submit(SERVICE, 'c'))).toMatchObject({
+        code: 'outcome_unconfirmed',
+      });
+      expect(s.submits()).toBe(1);
     },
   );
 

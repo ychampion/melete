@@ -91,6 +91,7 @@ import {
   reviewInput,
   reviewLimit,
   reviewTier,
+  submitRisk,
   type TierDecision,
 } from './auto-review.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
@@ -310,8 +311,6 @@ async function personalSpace(tx: Query, spaceId: string): Promise<boolean> {
 
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
-/** Approvals given by a fixed rule or the reviewer, not by a person. */
-const AUTOMATIC_DECIDERS: ReadonlySet<string> = new Set(['policy', 'reviewer', 'auto_review']);
 
 /**
  * Refusals that leave an approved action unable ever to run: the binding or
@@ -2652,12 +2651,12 @@ export class BrokerService implements BrokerOperations {
         // The person's approval of this action has its own expiry. An action that
         // waited past it for its destination is refused, not sent on an old yes.
         const [given] = action.authorization_ref
-          ? await tx`select expires_at, decided_by from approval
+          ? await tx`select expires_at from approval
             where id = ${action.authorization_ref} and action_id = ${action.id}`
           : [];
-        // A person answered for it: what it does is one of the risks only they let through.
-        const asked =
-          given !== undefined && !AUTOMATIC_DECIDERS.has(String(given.decided_by ?? ''));
+        // What the effect itself does, whoever let it through: one of the risks
+        // only the person lets through, or none.
+        const risk = action.kind === 'browser.submit' ? submitRisk(action.canonical_payload) : null;
         if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
           return {
             action: await this.rejectDispatch(
@@ -2717,7 +2716,7 @@ export class BrokerService implements BrokerOperations {
           context: {
             ...this.context(job, action),
             ...(onlyNew ? { only_new: true } : {}),
-            ...(asked ? { asked: true } : {}),
+            ...(risk ? { risk: risk.risk } : {}),
           },
         };
       });

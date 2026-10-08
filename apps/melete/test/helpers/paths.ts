@@ -24,8 +24,12 @@ import { seedJob } from './broker.ts';
 import { testDatabase } from './database.ts';
 
 export const SERVICE = 'book.example';
-/** A form that books a table; `MESSAGE` is one that sends a message, which the app has a tool for. */
-export const BOOKING: Record<string, string> = { party: '6' };
+/**
+ * A form that books a table and takes a deposit, so it spends; `TABLE` books
+ * one with nothing to pay; `MESSAGE` sends a message, which the app has a tool for.
+ */
+export const BOOKING: Record<string, string> = { party: '6', amount: '50' };
+export const TABLE: Record<string, string> = { party: '6' };
 export const MESSAGE: Record<string, string> = {
   to: 'tables@book.example',
   message: 'A table for six at 7',

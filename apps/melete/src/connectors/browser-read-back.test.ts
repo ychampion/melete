@@ -87,8 +87,11 @@ const submit = (fields: Record<string, string> = intent.fields) =>
     control_epoch: 4,
     intent: { ...intent, fields },
   });
-/** Dispatched after the person answered for it: one of the risks only they let through. */
-const asked = (action: ReturnType<typeof submit>) => ({ ...connectorContext(action), asked: true });
+/** Dispatched with what it does marked as one of the risks only the person lets through. */
+const paying = (action: ReturnType<typeof submit>) => ({
+  ...connectorContext(action),
+  risk: 'spend' as const,
+});
 
 test('a submit the page confirms is done, and the receipt says what the page said', async () => {
   const w = worker({
@@ -124,10 +127,10 @@ test('a page that settles on a second look is decided by it', async () => {
   expect(w.operations).toEqual(['submit', 'observe']);
 });
 
-test('after a submit the person answered for, a page unclear twice is unknown and goes to them', async () => {
+test('after a submit that pays, a page unclear twice is unknown and goes to the person', async () => {
   const w = worker({ submit: { tree: '- heading "Book a table"' } });
   const action = submit();
-  const result = await w.connector.execute(action, asked(action));
+  const result = await w.connector.execute(action, paying(action));
   expect(result.outcome).toBe('unknown');
   if (result.outcome !== 'unknown') return;
   expect(result.evidence?.read_back).toMatchObject({ verdict: 'unclear', looks: 2 });

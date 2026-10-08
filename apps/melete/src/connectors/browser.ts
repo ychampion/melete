@@ -353,10 +353,12 @@ export function createBrowserConnector(options: {
   /**
    * What a submit came to, from the page it ended on: done, not done, or
    * unclear after a second look. The receipt carries what was sent. An unclear
-   * page with a check only the person can pass, or after a submit the person
-   * had to answer for, hands the work to them and leaves the outcome unknown
-   * until it is checked. Any other unclear submit is recorded as sent and
-   * unconfirmed, and the work goes on.
+   * page with a check only the person can pass, or after a submit that does
+   * one of the risks only the person lets through (it pays, carries
+   * credentials, deletes, sends to someone outside or widens who can see
+   * something), hands the work to them and leaves the outcome unknown until it
+   * is checked, whoever let the submit through. Any other unclear submit is
+   * recorded as sent and unconfirmed, and the work goes on.
    */
   const settleSubmit = async (
     action: Action,
@@ -386,7 +388,7 @@ export function createBrowserConnector(options: {
     } as unknown as JsonObject;
     const sensitive = seen.evidence === SENSITIVE_PAGE.evidence;
     const unconfirmed =
-      read && seen.verdict === 'unclear' && !seen.blocker && !sensitive && !ctx.asked;
+      read && seen.verdict === 'unclear' && !seen.blocker && !sensitive && !ctx.risk;
     if (seen.verdict === 'done' || unconfirmed)
       return {
         outcome: 'succeeded' as const,

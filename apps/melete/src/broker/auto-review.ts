@@ -190,6 +190,72 @@ function carriesCredentials(kind: string, payload: JsonObject): boolean {
   return false;
 }
 
+/** The risks only the person lets through, by what an effect does. */
+export type RiskClass = 'spend' | 'credentials' | 'delete' | 'outside_send' | 'visibility';
+
+/** Fields that pay or carry card details. */
+const PAYMENT_FIELD =
+  /(?:^|[_-])(?:card|cc|payment|pay|billing|iban|bic|routing|tip|deposit)(?:$|[_-])/i;
+/** A form's own button that buys, pays or orders. */
+const PAYING_CONTROL =
+  /\b(?:pay|pay now|buy|buy now|purchase|checkout|check out|place order|order now|donate)\b/i;
+/** Fields that set who can see something. */
+const VISIBILITY_FIELD =
+  /(?:^|[_-])(?:visibility|privacy|public|share|sharing|shared_with|audience|permission|permissions|access|role)(?:$|[_-])/i;
+/** Fields that only prove the form came from the site's own page. */
+const FORM_GUARD =
+  /(?:^|[_-])(?:csrf|xsrf|authenticity|nonce|form_?key|request_?verification)(?:$|[_-])/i;
+const RISK_REASON: Record<RiskClass, string> = {
+  spend: 'It pays or spends money.',
+  credentials: 'It carries a password, key or payment detail.',
+  delete: 'It deletes or removes something.',
+  outside_send: 'It sends something to someone outside.',
+  visibility: 'It changes who can see something.',
+};
+
+/**
+ * Whether a browser submit does something only the person lets through, read
+ * from what it sends: the same categories the tiers ask about (spend,
+ * credentials, deletes, sends to someone outside, widening who can see
+ * something), judged from the form's fields and its button, never from who
+ * let it through. Null for a form that does none of them. A field that only
+ * guards the form against forgery (`csrf_token`) is not a credential.
+ */
+export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: string } | null {
+  const intent =
+    payload.intent && typeof payload.intent === 'object' && !Array.isArray(payload.intent)
+      ? (payload.intent as JsonObject)
+      : {};
+  const fields =
+    intent.fields && typeof intent.fields === 'object' && !Array.isArray(intent.fields)
+      ? Object.entries(intent.fields as JsonObject).filter(
+          ([, value]) => typeof value === 'string' && value.trim() !== '',
+        )
+      : [];
+  const control = typeof intent.name === 'string' ? intent.name : '';
+  const named = (category: string) =>
+    collectOriginFields(payload, 'browser.submit').some(
+      (field) => field.path.startsWith('intent.fields.') && field.category === category,
+    );
+  const found = (risk: RiskClass) => ({ risk, reason: RISK_REASON[risk] });
+  const names = fields.map(([name]) => words(name).toLowerCase());
+  if (names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
+    return found('credentials');
+  if (
+    named('amount') ||
+    names.some((name) => PAYMENT_FIELD.test(name)) ||
+    PAYING_CONTROL.test(control)
+  )
+    return found('spend');
+  const action = `${control} ${typeof intent.url === 'string' ? intent.url : ''}`
+    .toLowerCase()
+    .replace(/[\s/?=&]+/g, '_');
+  if (DESTRUCTIVE.test(action)) return found('delete');
+  if (named('recipient')) return found('outside_send');
+  if (names.some((name) => VISIBILITY_FIELD.test(name))) return found('visibility');
+  return null;
+}
+
 /**
  * Which tier an action is in. `doubts` are the recipient, destination and
  * amount values whose origin is not the person or a verified app.

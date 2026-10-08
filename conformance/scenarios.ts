@@ -220,7 +220,7 @@ export const SCENARIOS: readonly Scenario[] = [
     assertions: [
       'a timeout after dispatch on the API path never leads to a browser retry until reconciled',
       'reconciled by reading the destination, the booking exists exactly once, and the browser is not a second way to it',
-      'a browser submit the person approved, whose page does not confirm, rests unknown and is handed to the person with what is done and what is left',
+      'a browser submit that pays, whose page does not confirm, rests unknown and is handed to the person with what is done and what is left',
       'the same form is not submitted again while it is unconfirmed, on any path',
       'handing the browser back reads the page before the work goes on',
     ],
