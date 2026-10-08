@@ -389,12 +389,6 @@ export const attemptBundle = z.object({
      * the model catalog decides (`modelSupportsVision`).
      */
     vision: z.boolean().optional(),
-    /**
-     * True when the model reads no pictures and the operator's vision model
-     * describes each screenshot for it: the picture goes to that model, and
-     * this one is given its description beside the screen's text.
-     */
-    vision_route: z.boolean().optional(),
   }),
 });
 export type AttemptBundle = z.infer<typeof attemptBundle>;

@@ -412,9 +412,7 @@ def engine_result(name: str, result: Dict[str, Any], client: Optional[BrokerClie
     model that reads images: then the engine's multimodal envelope, which the
     registry passes through as it is (``_normalize_handler_result``).
     """
-    shaped = attach_picture(
-        name, result, getattr(client, "screenshot", None), getattr(client, "describe_picture", None)
-    )
+    shaped = attach_picture(name, result, getattr(client, "screenshot", None))
     if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
         return shaped
     # The receipt, with what was said about a picture that is not shown.

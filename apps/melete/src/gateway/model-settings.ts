@@ -302,10 +302,10 @@ export class ModelSettingsService {
   }
 
   /**
-   * The model the next attempt runs on, as `activeChoice`, told whether the
-   * operator's vision model describes its screenshots (`visionRoute`) when it
-   * reads no pictures itself. A model the owner chose in the app is used
-   * exactly as chosen.
+   * The model the next attempt runs on, as `activeChoice`. It is shown the
+   * agent's screenshots only when it reads pictures itself; a model that reads
+   * none gets the screen's text, and no screenshot goes to another model for
+   * it. A model the owner chose in the app is used exactly as chosen.
    * Background work runs on the `background` role when one is filled: an
    * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
    * `attemptCause`), the same reading that meters it as background.
@@ -314,33 +314,21 @@ export class ModelSettingsService {
     routing: ModelRouting,
     db: Runner = this.options.db,
     work?: AttemptWork,
-  ): Promise<{ provider: string; model: string; vision: boolean; visionRoute: boolean }> {
+  ): Promise<{ provider: string; model: string; vision: boolean }> {
     const background =
       work?.usageClass === 'background'
         ? (await this.routingFor(work.spaceId, routing, db)).background
         : null;
     if (background) {
-      // The operator's vision model and fallbacks serve background work on
-      // the secondary as they serve the primary.
       const reads = effectiveVision(
         background.provider,
         background.model,
         await this.visionSaid(background.provider, background.model, db),
       );
-      const routes = agentRoutes(routing, background, {
-        ownerChose: false,
-        primaryReadsImages: reads,
-      });
-      return { ...background, vision: reads, visionRoute: Boolean(routes?.vision) };
+      return { ...background, vision: reads };
     }
-    const chosen = await this.chosen(db);
-    const { provider, model, vision } = await this.active(chosen, db);
-    const routes = agentRoutes(
-      routing,
-      { provider, model },
-      { ownerChose: this.ownerChose({ provider, model }), primaryReadsImages: vision },
-    );
-    return { provider, model, vision, visionRoute: Boolean(routes?.vision) };
+    const { provider, model, vision } = await this.active(await this.chosen(db), db);
+    return { provider, model, vision };
   }
 
   /**

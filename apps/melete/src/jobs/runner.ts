@@ -112,7 +112,7 @@ export type RunnerOptions = {
     tx: Transaction,
     row: JobRow,
     usageClass: UsageClass,
-  ) => Promise<{ provider: string; model: string; vision?: boolean; visionRoute?: boolean }>;
+  ) => Promise<{ provider: string; model: string; vision?: boolean }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
@@ -265,7 +265,7 @@ export class AttemptRunner {
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const chosen: { provider: string; model: string; vision?: boolean; visionRoute?: boolean } =
+      const chosen: { provider: string; model: string; vision?: boolean } =
         (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
           provider: this.options.provider ?? 'stub',
           model: this.options.model ?? 'script',
@@ -275,7 +275,6 @@ export class AttemptRunner {
         model: chosen.model,
         fallback: null,
         ...(typeof chosen.vision === 'boolean' ? { vision: chosen.vision } : {}),
-        ...(chosen.visionRoute ? { vision_route: true } : {}),
       };
       const budget = jobBudget.parse(row.budget);
       const [latest] = await tx

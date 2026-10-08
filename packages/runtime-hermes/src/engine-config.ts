@@ -146,12 +146,6 @@ export const GATEWAY_PROVIDER = 'melete-gateway';
 /** Says whether the attempt's model is shown screenshots as pictures: `1` or `0`. */
 export const VISION_ENV = 'MELETE_ENGINE_SUPPORTS_VISION';
 
-/**
- * Says whether the operator's vision model describes the attempt's screenshots
- * for a model that reads no pictures: `1` or `0`.
- */
-export const DESCRIBE_ENV = 'MELETE_ENGINE_DESCRIBES_PICTURES';
-
 /** The header the model gateway meters by. */
 export const CAPABILITY_HEADER = 'x-melete-capability';
 
