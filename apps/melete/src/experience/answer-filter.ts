@@ -58,6 +58,9 @@ const SECRET_PATTERNS: RegExp[] = [
   // An approval's payload hash, named as one. A bare sha256 is a checksum, a
   // download's digest or a commit, and is shown as written.
   /(?<=\b(?:payload|approv(?:al|ed))(?:[ _-]?hash)?\b[^\n]{0,24})(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])/gi,
+  // A long hex value said to be a secret in any wording ("my API key is …",
+  // "token …", "secret …"), not only after a colon or an equals sign.
+  /(?<=\b(?:password|passwd|passphrase|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|client[ _-]?secret|credential|bearer|auth(?:orization)?|key)s?\b[^\n]{0,24})(?<![0-9A-Za-z])[0-9a-f]{32,}(?![0-9A-Za-z])/gi,
   // The service's own record ids: a known prefix and a 26-character time-ordered id.
   // One that names a file (`act_….png`, `…/act_…`) is a file name, not a record.
   /(?<![A-Za-z0-9_/\\])(?:job|att|act|apr|sec|turn)_[0-9A-HJKMNP-TV-Z]{26}(?![A-Za-z0-9_]|\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9_-]))/g,

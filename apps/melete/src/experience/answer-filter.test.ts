@@ -73,6 +73,31 @@ test('hashes, commit ids, UUIDs and checksums are shown as written', () => {
   expect(answerText(`The payload hash was ${HASH}.`)).toBe(`The payload hash was ${HIDDEN}.`);
 });
 
+test('a hex value said to be a secret is hidden, however it is worded', () => {
+  const said: [string, string][] = [
+    [`api_key=${HASH}`, `api_key=${HIDDEN}`],
+    [`secret: ${HASH}`, `secret: ${HIDDEN}`],
+    [`My API key is ${HASH}, keep it.`, `My API key is ${HIDDEN}, keep it.`],
+    [`Your token ${HASH} expires soon.`, `Your token ${HIDDEN} expires soon.`],
+    [`The password is ${HASH.toUpperCase()}`, `The password is ${HIDDEN}`],
+    [`The signing key: ${HASH.slice(0, 40)}`, `The signing key: ${HIDDEN}`],
+    [`Authorization: Bearer ${HASH}`, `Authorization: Bearer ${HIDDEN}`],
+  ];
+  for (const [text, shown] of said) expect(answerText(text)).toBe(shown);
+  // Keys with a known prefix, signed tokens and private key blocks, as before.
+  for (const secret of [
+    OPENAI_KEY,
+    'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8',
+    'xoxb-1234567890-abcdefghij',
+    'AKIAIOSFODNN7EXAMPLE',
+    SIGNED,
+  ])
+    expect(answerText(`Here: ${secret} done`)).toBe(`Here: ${HIDDEN} done`);
+  expect(
+    answerText('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n-----END PRIVATE KEY-----'),
+  ).not.toContain('MIIEvQ');
+});
+
 test('only the secret is hidden; the words around it stay', () => {
   expect(answerText(`Your key is ${OPENAI_KEY}, keep it safe.`)).toBe(
     `Your key is ${HIDDEN}, keep it safe.`,

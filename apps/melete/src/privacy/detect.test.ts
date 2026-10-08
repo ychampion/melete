@@ -227,6 +227,38 @@ describe('one-time codes and sign-in links', () => {
     });
 });
 
+describe('secrets stay detected beside the hashes that pass', () => {
+  const hex = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+  const secrets: [string, string][] = [
+    [`api_key=${hex}`, hex],
+    [`secret: ${hex}`, hex],
+    [`My API key is ${hex}`, hex],
+    [`password: ${hex.toUpperCase()}`, hex.toUpperCase()],
+    [`token = ${hex.slice(0, 40)}`, hex.slice(0, 40)],
+    [`Authorization: Bearer ${hex}`, hex],
+    ['use sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs now', 'sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs'],
+    ['ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8', 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'],
+    ['xoxb-1234567890-abcdefghij', 'xoxb-1234567890-abcdefghij'],
+    ['AKIAIOSFODNN7EXAMPLE', 'AKIAIOSFODNN7EXAMPLE'],
+    [
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw',
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw',
+    ],
+    ['Your verification code is 7f3a9c', '7f3a9c'],
+    ['Your code is 482913', '482913'],
+  ];
+  for (const [text, value] of secrets)
+    test(`detected: ${text.slice(0, 40)}`, () => {
+      expect(found(text)).toEqual([['credential', value]]);
+    });
+
+  test('a private key block is detected whole', () => {
+    const block =
+      '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----';
+    expect(found(`key:\n${block}`)).toContainEqual(['credential', block]);
+  });
+});
+
 describe('randomized look-alikes stay untouched', () => {
   // A small seeded generator, so a failure names the exact text.
   let seed = 0x5eed;
