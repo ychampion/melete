@@ -198,8 +198,17 @@ only what it fetched for the person viewing:
 |---|---|
 | `{type:'melete.data', id, name}` | The data named `name`, as the publish approval listed it: parsed JSON, a string, or `null` before there is a version to show |
 | `{type:'melete.submit', id, collection, record}` | Sends a response, for a collection the app declares |
+| `{type:'melete.save', id, collection, record}` | Keeps `record` for the person viewing, in a collection the app declares; it replaces what they saved there before |
+| `{type:'melete.load', id, collection}` | What the person viewing last saved in that collection, or `null` |
 | `{type:'melete.link', url}` | Asks the person, then opens an https link in a new tab |
 | `{type:'melete.size', height}` | Sets the frame's height, within limits |
+
+The frame has no storage of its own that outlives a reload: its origin is
+opaque. What an app keeps for its viewer, such as a tracker's ticks, it saves
+with `melete.save` and reads back with `melete.load` when it opens. A save is
+a response like any other (it counts toward the same limits, and the app's
+managers can read and delete it), but only the newest one per person and
+collection is kept.
 
 Answers come back as `{type:'melete.reply', id, ok, value}` or
 `{type:'melete.reply', id, ok:false, error}`. Melete also sends
@@ -231,6 +240,8 @@ const melete = (() => {
   return {
     data: (name) => ask({ type: 'melete.data', name }),
     submit: (collection, record) => ask({ type: 'melete.submit', collection, record }),
+    save: (collection, record) => ask({ type: 'melete.save', collection, record }),
+    load: (collection) => ask({ type: 'melete.load', collection }),
     onChange: (listener) => changed.add(listener),
     link: (url) => parent.postMessage({ type: 'melete.link', url }, '*'),
     size: (height) => parent.postMessage({ type: 'melete.size', height }, '*'),
@@ -252,7 +263,8 @@ const melete = (() => {
 | `GET /apps/{id}/data/{name}` | One of the app's data, for the person viewing it |
 | `GET /apps/{id}/data-updates` | New data versions waiting for review (publisher or space owner) |
 | `POST /apps/{id}/data-updates` | Let the newest version of reviewed data through to viewers |
-| `POST /apps/{id}/submissions` | Send a response from the app |
+| `POST /apps/{id}/submissions` | Send a response from the app; with `replace: true`, it replaces the sender's earlier ones in the collection |
+| `GET /apps/{id}/submissions/mine?collection={name}` | The newest record the person viewing sent in one collection, or `null` |
 | `GET /apps/{id}/submissions` | The app's responses, newest first (managers) |
 | `DELETE /apps/{id}/submissions/{submission_id}` | Delete one response (managers) |
 | `DELETE /apps/{id}/submissions?from={account}` | Delete every response from one person (managers) |

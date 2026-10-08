@@ -145,4 +145,23 @@ export const appBridgeCalls = (appId: string) => ({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ collection, record }),
     }),
+  /** What the app keeps for this viewer: the collection's one record, replaced each time. */
+  save: (collection: string, record: Record<string, unknown>) =>
+    forViewer(`/apps/${encodeURIComponent(appId)}/submissions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ collection, record, replace: true }),
+    }),
+  /** What this viewer last saved in the collection: the record itself, or null. */
+  load: async (
+    collection: string,
+  ): Promise<{ ok: true; value: unknown } | { ok: false; error: string; status?: number }> => {
+    const result = await forViewer(
+      `/apps/${encodeURIComponent(appId)}/submissions/mine?collection=${encodeURIComponent(collection)}`,
+      { method: 'GET' },
+    );
+    if (!result.ok) return result;
+    const body = result.value as { record?: unknown } | null;
+    return { ok: true, value: body?.record ?? null };
+  },
 });

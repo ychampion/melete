@@ -70,6 +70,7 @@ describe('the bridge', () => {
     const frame = { contentWindow: appWindow } as unknown as HTMLIFrameElement;
     const target = new EventTarget() as unknown as Window;
     const asked: string[] = [];
+    const saved = new Map<string, Record<string, unknown>>();
     const host: BridgeHost = {
       data: async (name) => {
         asked.push(name);
@@ -78,6 +79,11 @@ describe('the bridge', () => {
           : { ok: false, error: 'No such data.' };
       },
       submit: async () => ({ ok: true, value: null }),
+      save: async (collection, record) => {
+        saved.set(collection, record);
+        return { ok: true, value: null };
+      },
+      load: async (collection) => ({ ok: true, value: saved.get(collection) ?? null }),
       confirmLink: async () => false,
       resize: () => undefined,
     };
@@ -110,6 +116,23 @@ describe('the bridge', () => {
     await settle();
     expect(asked).toEqual([]);
     expect(replies).toEqual([]);
+  });
+
+  test('what an app saves for its viewer comes back when it asks again', async () => {
+    const { replies, send } = harness();
+    send({ type: 'melete.load', id: 1, collection: 'state' });
+    send({ type: 'melete.save', id: 2, collection: 'state', record: { water: [true, false] } });
+    await settle();
+    send({ type: 'melete.load', id: 3, collection: 'state' });
+    // A malformed one is not answered at all.
+    send({ type: 'melete.load', id: 4, collection: '../state' });
+    send({ type: 'melete.save', id: 5, collection: 'state', record: [1, 2] });
+    await settle();
+    expect(replies).toEqual([
+      { type: 'melete.reply', id: 1, ok: true, value: null },
+      { type: 'melete.reply', id: 2, ok: true, value: null },
+      { type: 'melete.reply', id: 3, ok: true, value: { water: [true, false] } },
+    ]);
   });
 
   test('stops listening when it is closed', async () => {

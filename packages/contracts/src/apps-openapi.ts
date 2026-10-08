@@ -16,6 +16,7 @@ import {
   appSubmissionAccepted,
   appSubmissionDeleted,
   appSubmissionList,
+  appSubmissionMine,
   appSubmissionRequest,
   appSubmissionsDeleted,
   appView,
@@ -256,6 +257,26 @@ export const appsPaths = () => ({
         '200': jsonResponse('Deleted', appSubmissionsDeleted),
         '400': problem('No account named'),
         '403': problem('Not a manager of this app'),
+        '404': problem('No such app, or this person cannot open it'),
+      },
+    },
+  },
+  '/apps/{id}/submissions/mine': {
+    get: {
+      tags: ['apps'],
+      summary: 'The newest record the viewer sent in one collection',
+      description:
+        "What an app kept for this viewer, such as a tracker's ticks, read back when it opens. " +
+        "Only the viewer's own records; null when they sent none in that collection.",
+      requestParams: {
+        path: z.object({ id: z.string().meta({ description: 'App id' }) }),
+        query: z.object({
+          collection: z.string().meta({ description: 'A collection the app declares' }),
+        }),
+      },
+      responses: {
+        '200': jsonResponse('The record, or null', appSubmissionMine),
+        '400': problem('No collection, or one the app does not declare'),
         '404': problem('No such app, or this person cannot open it'),
       },
     },

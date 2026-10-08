@@ -1537,6 +1537,7 @@ export interface paths {
                     "application/json": {
                         collection: components["schemas"]["__schema185"];
                         record: components["schemas"]["__schema67"];
+                        replace?: boolean;
                     };
                 };
             };
@@ -1717,6 +1718,72 @@ export interface paths {
                 };
             };
         };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{id}/submissions/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest record the viewer sent in one collection
+         * @description What an app kept for this viewer, such as a tracker's ticks, read back when it opens. Only the viewer's own records; null when they sent none in that collection.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description A collection the app declares */
+                    collection: string;
+                };
+                header?: never;
+                path: {
+                    /** @description App id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The record, or null */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            created_at: components["schemas"]["__schema201"] | null;
+                            record: components["schemas"]["__schema443"] | null;
+                        };
+                    };
+                };
+                /** @description No collection, or one the app does not declare */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema203"];
+                    };
+                };
+                /** @description No such app, or this person cannot open it */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema203"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3504,7 +3571,7 @@ export interface paths {
                             tools: components["schemas"]["__schema109"];
                         };
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes" | "drive";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes" | "skills" | "drive";
                         sandbox?: {
                             /** @enum {string} */
                             adapter: "e2b" | "daytona" | "modal" | "docker";
@@ -24423,7 +24490,7 @@ export interface components {
         __schema530: string;
         __schema531: string;
         /** @enum {string} */
-        __schema532: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes" | "drive";
+        __schema532: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes" | "skills" | "drive";
         __schema533: string;
         __schema534: string[];
         /** @enum {string} */
