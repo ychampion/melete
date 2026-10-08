@@ -83,6 +83,24 @@ test('a file that does not parse fails every check that needed the contents', ()
   expect(named(results, 'schema').detail).toContain('did not parse');
 });
 
+test('a declared parses check is answered once, by the parse every write gets', () => {
+  const declared = (kind: 'csv' | 'json', text: string) =>
+    validateArtifact(
+      artifactExpectation.parse({ kind, checks: [{ kind: 'parses' }, { kind: 'non_empty' }] }),
+      utf8(text),
+    );
+  const good = declared('csv', 'city,population\nHouston,2397315\n');
+  expect(good.filter((result) => result.name.endsWith('parses')).map((r) => r.name)).toEqual([
+    'csv.parses',
+  ]);
+  expect(good.every((result) => result.status === 'passed')).toBe(true);
+  const bad = declared('json', '{ not json');
+  expect(bad.filter((result) => result.name.endsWith('parses')).map((r) => r.name)).toEqual([
+    'json.parses',
+  ]);
+  expect(named(bad, 'json.parses').status).toBe('failed');
+});
+
 test('required sections are matched against real headings, not any old text', () => {
   expect(markdownHeadings('# One\ntext\n```\n## Not a heading\n```\n## Two\n')).toEqual([
     'One',

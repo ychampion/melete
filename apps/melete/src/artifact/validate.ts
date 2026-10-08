@@ -512,7 +512,12 @@ export function validateArtifact(
   } else if (parsed.kind !== 'bytes') {
     results.push(pass('deterministic', `${expectation.kind}.parses`));
   }
+  // Every kind but raw bytes is parsed above, so a declared `parses` check has
+  // already been answered under the same name; recording it again would make
+  // two results with one name and fail a write that has already landed.
+  const parseRecorded = results.length > 0;
   for (const check of expectation.checks) {
+    if (check.kind === 'parses' && parseRecorded) continue;
     // A file that did not parse cannot answer a question about its contents.
     if (error && check.kind !== 'non_empty') {
       results.push(

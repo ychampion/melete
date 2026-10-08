@@ -2894,7 +2894,9 @@ export class BrokerService implements BrokerOperations {
     q: Query,
     action: Pick<Action, 'id' | 'connection_id'>,
   ): Promise<boolean> {
-    if (this.options.connectors.get(action.connection_id)?.ownComputer !== true) return false;
+    const connector = this.options.connectors.get(action.connection_id);
+    if (connector?.ownComputer !== true) return false;
+    if (connector.staysInside === true) return true;
     // A computer with network access may have reached outside it; only one that
     // could reach nothing keeps an open step the agent's alone.
     return closedComputerStep(q, action.id);
