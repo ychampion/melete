@@ -61,6 +61,8 @@ import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
+import { PathRefusal, routeEffect, unsettledBefore } from '../paths/gate.ts';
+import { recordPathOutcome, taskKindOf } from '../paths/registry.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
@@ -89,6 +91,7 @@ import {
   reviewInput,
   reviewLimit,
   reviewTier,
+  submitRisk,
   type TierDecision,
 } from './auto-review.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
@@ -308,6 +311,7 @@ async function personalSpace(tx: Query, spaceId: string): Promise<boolean> {
 
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
+
 /**
  * Refusals that leave an approved action unable ever to run: the binding or
  * the job revision moved, or the approval expired. Each needs a newly reviewed
@@ -441,6 +445,15 @@ export class BrokerService implements BrokerOperations {
   private readonly dispatchTimeoutMs: number;
   /** Dispatches this process sent and is still waiting on, by action id. */
   private readonly inFlight = new Set<string>();
+  /**
+   * Hand the work to the person in the agent's browser, when the path policy
+   * sends a browser submit to them rather than trying it again.
+   */
+  onHandToPerson?: (
+    scope: { space_id: string; job_id: string },
+    sessionId: string,
+    input: { reason: 'path'; service: string; operation: string },
+  ) => Promise<unknown>;
 
   constructor(private readonly options: BrokerOptions) {
     this.sql = options.sql;
@@ -1810,11 +1823,42 @@ export class BrokerService implements BrokerOperations {
           { kind: request.kind, canonical_payload: canonical.canonical },
           proposing,
         );
+        // Which way this effect reaches its service, decided by the path policy,
+        // never the model: a connected app before the browser, and nothing at
+        // all while an earlier effect there may have landed unconfirmed.
+        const route =
+          tool.effect_class === 'read'
+            ? null
+            : await routeEffect(tx, {
+                job,
+                claims,
+                allowed: access.allowed ?? null,
+                connectors: this.options.connectors,
+                connector,
+                connectionId: request.connection_id,
+                kind: request.kind,
+                key,
+                payload: canonical.canonical,
+              });
         const id = recordId('act');
         const [row] = await tx`insert into action
-        (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key, intent_key)
+        (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash,
+          idempotency_key, intent_key, path, service_key, operation_key, operation_intent,
+          stands_in_for)
         values (${id}, ${job.id}, ${claims.attempt_id}, ${request.connection_id}, ${request.kind},
-          ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key}) returning *`;
+          ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key},
+          ${route?.path ?? null}, ${route?.service ?? null}, ${route?.operation ?? null},
+          ${route?.intent ?? null}, ${route?.standsInFor ?? null}) returning *`;
+        // The receipt says which way it went and why.
+        if (route)
+          await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
+            action_id: id,
+            phase: 'path_chosen',
+            path: route.path,
+            service: route.service,
+            reason: route.reason,
+            ...(route.standsInFor ? { stands_in_for: route.standsInFor } : {}),
+          });
         if (!row) throw new Error('Action insert returned no record');
         const created = actionFromRow(row);
         const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
@@ -1871,6 +1915,14 @@ export class BrokerService implements BrokerOperations {
         return { action: await loadAction(tx, id), key, repeated: false, pending: null };
       })
       .catch(async (error: unknown) => {
+        // The policy sent the work to the person: they are handed the browser
+        // with what is done and what is left, and this turn ends.
+        if (error instanceof PathRefusal && error.handTo && this.onHandToPerson)
+          await this.onHandToPerson(
+            { space_id: claims.space_id, job_id: claims.job_id },
+            error.handTo.sessionId,
+            { reason: 'path', service: error.handTo.service, operation: error.handTo.operation },
+          ).catch(() => {});
         // A search refused before it left records no action; the conversation
         // still shows that it was held back.
         if (
@@ -2194,6 +2246,12 @@ export class BrokerService implements BrokerOperations {
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
         if (repeated && !['proposed', 'approved'].includes(action.status))
           return { action, error: null };
+        // Something on the same service may have landed since this was asked
+        // for, on any path: it is settled first, and this waits.
+        if (['proposed', 'approved'].includes(action.status)) {
+          const waiting = await unsettledBefore(tx, id);
+          if (waiting) throw waiting;
+        }
         judgingApproval = true;
         const classified = await this.classify(tx, job, action, tool, 'admission', guests);
         let authorization: string | null = null;
@@ -2596,6 +2654,9 @@ export class BrokerService implements BrokerOperations {
           ? await tx`select expires_at from approval
             where id = ${action.authorization_ref} and action_id = ${action.id}`
           : [];
+        // What the effect itself does, whoever let it through: one of the risks
+        // only the person lets through, or none.
+        const risk = action.kind === 'browser.submit' ? submitRisk(action.canonical_payload) : null;
         if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
           return {
             action: await this.rejectDispatch(
@@ -2652,7 +2713,11 @@ export class BrokerService implements BrokerOperations {
             ?.staysInSpace?.(action, job.space_id) === true;
         return {
           action: await loadAction(tx, id),
-          context: { ...this.context(job, action), ...(onlyNew ? { only_new: true } : {}) },
+          context: {
+            ...this.context(job, action),
+            ...(onlyNew ? { only_new: true } : {}),
+            ...(risk ? { risk: risk.risk } : {}),
+          },
         };
       });
     } catch (error) {
@@ -3176,9 +3241,19 @@ export class BrokerService implements BrokerOperations {
         resolved_at = ${result.outcome === 'unknown' ? null : new Date().toISOString()},
         reconciliation = ${JSON.stringify(
           result.outcome === 'unknown'
-            ? { reason: question, detail: result.reason, late }
+            ? {
+                reason: question,
+                detail: result.reason,
+                late,
+                ...(result.evidence ? { evidence: result.evidence } : {}),
+              }
             : result.outcome === 'failed'
-              ? { reason: result.reason, retryable: result.retryable, late }
+              ? {
+                  reason: result.reason,
+                  retryable: result.retryable,
+                  late,
+                  ...(result.evidence ? { evidence: result.evidence } : {}),
+                }
               : {
                   late,
                   ...(wasUncertain ? { decision: 'succeeded', source: 'authentic_receipt' } : {}),
@@ -3559,7 +3634,109 @@ export class BrokerService implements BrokerOperations {
       from: action.status,
       to: status,
     });
+    await this.notePath(tx, action, status);
     if (status === 'succeeded') await this.options.recordStandingScope?.(tx, action);
+  }
+
+  /**
+   * Feed Melete's record of what works at a service: an outcome that came back
+   * from a dispatch, or an unknown one settled since. A refusal before
+   * dispatch says nothing about the path, so it is not counted.
+   */
+  private async notePath(tx: Query, action: Action, status: ActionStatus) {
+    const sent = action.status === 'dispatched';
+    const settling = action.status === 'unknown' || action.status === 'unresolved';
+    if (!sent && !settling) return;
+    if (settling && status !== 'succeeded' && status !== 'failed') return;
+    if (!['succeeded', 'failed', 'unknown', 'unresolved'].includes(status)) return;
+    const [row] = await tx`select a.path, a.service_key, a.operation_key, j.space_id from action a
+      join job j on j.id = a.job_id where a.id = ${action.id}`;
+    if (!row?.path || !row.service_key || !row.operation_key) return;
+    await recordPathOutcome(tx, {
+      spaceId: String(row.space_id),
+      service: String(row.service_key),
+      operation: String(row.operation_key),
+      taskKind: await taskKindOf(tx, action.job_id),
+      path: row.path === 'browser' ? 'browser' : 'api',
+      outcome: status === 'unresolved' ? 'unknown' : (status as 'succeeded' | 'failed' | 'unknown'),
+      attempt: sent,
+      fault: status === 'succeeded' ? null : `${action.kind} ${status}`,
+    });
+  }
+
+  /**
+   * A person handed back a browser they were handed this job's work in. A
+   * submit whose outcome was in doubt is read back from the page first: a
+   * page that settles it settles it and the work goes on; one that does not
+   * leaves the person to say what happened, as for any unconfirmed effect.
+   * Anything else handed over simply goes on. Nothing is sent again here.
+   */
+  async handedBack(jobId: string, sessionId: string): Promise<'resumed' | 'asked' | 'none'> {
+    // Every submit from this browser still in doubt is read back, whether or
+    // not the work is still waiting on the person.
+    const doubts = await this.sql`select id from action where job_id = ${jobId}
+      and kind = 'browser.submit' and status in ('unknown', 'unresolved')
+      and canonical_payload->>'session_id' = ${sessionId} order by created_at, id`;
+    for (const row of doubts) await this.verify(String(row.id)).catch(() => null);
+    const [held] = await this.sql`select wait from job where id = ${jobId}`;
+    const card = (
+      held?.wait as {
+        handoff?: { take_over?: { session_id?: string }; action_id?: string | null };
+      } | null
+    )?.handoff;
+    // A person who took the browser over with no card, mid-task, handed it
+    // back: the work they paused goes on, from a fresh look at the page.
+    if (card?.take_over?.session_id !== sessionId)
+      return (await this.resumeAfterControl(jobId, 'Browser control:')) ? 'resumed' : 'none';
+    const doubted = typeof card.action_id === 'string' ? card.action_id : null;
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, jobId);
+      const [now] = await tx`select wait from job where id = ${jobId}`;
+      const wait = now?.wait as { handoff?: { take_over?: { session_id?: string } } } | null;
+      if (job.state !== 'waiting_for_input' || wait?.handoff?.take_over?.session_id !== sessionId)
+        return 'none';
+      const action = doubted ? await loadAction(tx, doubted) : null;
+      await appendEvent(tx, job.id, null, 'notice', {
+        kind: 'handed_back',
+        session_id: sessionId,
+        ...(action ? { action_id: action.id, status: action.status } : {}),
+        fresh_observation_required: true,
+      });
+      if (action && ['unknown', 'unresolved', 'dispatched'].includes(action.status)) {
+        await this.moveJob(tx, job, 'needs_reconciliation', {
+          kind: 'user_input',
+          question: this.reconcileQuestion(action),
+        });
+        return 'asked';
+      }
+      await this.wake(tx, job, 'recovery');
+      return 'resumed';
+    });
+  }
+
+  /**
+   * Wake a job a person's takeover parked, once they hand control back. Only
+   * the takeover's own wait is ended (its question starts with `parkedBy`); a
+   * job waiting on anything else, or settling an unconfirmed effect, stays as
+   * it is. True when the job was woken.
+   */
+  async resumeAfterControl(
+    jobId: string,
+    parkedBy: 'Browser control:' | 'Computer control:',
+  ): Promise<boolean> {
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, jobId);
+      const [held] = await tx`select wait from job where id = ${jobId}`;
+      const question = (held?.wait as { question?: unknown } | null)?.question;
+      if (
+        job.state !== 'waiting_for_input' ||
+        typeof question !== 'string' ||
+        !question.startsWith(parkedBy)
+      )
+        return false;
+      await this.wake(tx, job, 'recovery');
+      return true;
+    });
   }
 
   private async rejectDispatch(

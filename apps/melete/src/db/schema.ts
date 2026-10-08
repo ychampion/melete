@@ -515,6 +515,21 @@ export const action = pgTable(
     // Set when a destination asked to be left alone. The job then waits on a
     // timer rather than on a worker, so nothing spins against a rate limit.
     retryAfterAt: timestamp('retry_after_at', { withTimezone: true }),
+    // Which way it reached its service (`api` or `browser`) and which service
+    // that is (`google:mail`, `opentable.com`), set by the path policy at
+    // proposal. Null for an effect on no outside service, and on rows written
+    // before the columns existed.
+    path: text('path'),
+    serviceKey: text('service_key'),
+    // Which action at the service it is (`paths/operations.ts`): a form's
+    // address, or an app request's own key. An unconfirmed effect holds back
+    // the same action only, or anything for the same intent.
+    operationKey: text('operation_key'),
+    // The one open intent the work is for, when there is exactly one.
+    operationIntent: text('operation_intent'),
+    // For a browser submit doing what a connected app has a tool for, after
+    // the app could not: the app tools it stands in for, shown on its receipt.
+    standsInFor: text('stands_in_for'),
     createdAt: created(),
   },
   (t) => [

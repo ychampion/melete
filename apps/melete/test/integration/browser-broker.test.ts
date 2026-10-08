@@ -115,7 +115,22 @@ async function setup() {
       }
       if (observedEpoch !== session.control_epoch)
         return Response.json({ error: 'fresh_observation_required' }, { status: 409 });
-      if (operation.kind === 'submit') effects++;
+      if (operation.kind === 'submit') {
+        effects++;
+        // The page a submit lands on says it went through, as the read-back needs.
+        return Response.json({
+          session_id: session.id,
+          control_epoch: session.control_epoch,
+          observation: {
+            id: `obs_${calls.length}`,
+            url: 'https://fixture.example/saved',
+            tree: '- status: Your details were saved',
+            screenshot: '',
+            schema: [],
+          },
+          result: { effect_count: effects },
+        });
+      }
       return Response.json({
         session_id: session.id,
         control_epoch: session.control_epoch,

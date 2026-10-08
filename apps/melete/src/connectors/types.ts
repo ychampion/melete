@@ -34,6 +34,13 @@ export type ConnectorContext = {
    */
   only_new?: boolean;
   /**
+   * Set by the broker at dispatch when what this action does is one of the
+   * risks only the person lets through (spend, credentials, a delete, a send
+   * to someone outside, widening who can see something), whoever let it
+   * through: a standing permission does not make a payment less of one.
+   */
+  risk?: 'spend' | 'credentials' | 'delete' | 'outside_send' | 'visibility';
+  /**
    * What `ahead` read from the destination for this proposal, before the
    * proposal's lock; handed to `prepare` only. Null when it could not be read.
    */
@@ -47,6 +54,13 @@ export type ConnectorContext = {
 
 export interface Connector {
   manifest: ConnectorManifest;
+  /**
+   * The outside service this connector's tools reach (`google:mail`,
+   * `opentable.com`), when it is fixed where the connector is built. Left out,
+   * it is read from the connection's stored configuration (`paths/services.ts`).
+   * The path policy compares it with where a browser submit goes.
+   */
+  service?: string | null;
   /**
    * Resolve trusted resource identities before hashing an approval payload.
    * `kind` is the tool asked for, for tools whose payloads look alike.

@@ -8,6 +8,7 @@ import { Hono } from 'hono';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { ServiceError } from '../api/errors.ts';
 import { recordId } from '../broker/records.ts';
+import { BrokerService } from '../broker/service.ts';
 import { openDatabase } from '../db/client.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
@@ -108,6 +109,7 @@ async function scene(options: { wrap?: (controls: ComputerControls) => ComputerC
   return {
     sql,
     scope,
+    service,
     providers,
     owner: () => owner,
     attemptId,
@@ -149,8 +151,11 @@ withDb('the computer a person steers', () => {
     expect((await s.controls.state(s.sandbox)).control).toBe('agent');
   });
 
-  test('taking over parks the job and fences its attempt; handing back leaves it for the person to answer', async () => {
+  test('taking over parks the job and fences its attempt; handing back carries the work on', async () => {
     const s = await scene();
+    // Wired as the server wires it: the hand-back wakes the job the takeover parked.
+    const broker = new BrokerService({ sql: s.sql, connectors: { get: () => undefined } });
+    s.service.onHandedBack = (jobId) => broker.resumeAfterControl(jobId, 'Computer control:');
     const taken = await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
     expect(await taken.json()).toEqual({
       session_id: s.sessionId,
@@ -168,8 +173,9 @@ withDb('the computer a person steers', () => {
     expect(s.parked.length).toBe(1);
     const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
     expect(await back.json()).toMatchObject({ control: 'agent', control_epoch: 3 });
-    const [after] = await s.sql`select state from job where id = ${s.scope.jobId}`;
-    expect(after?.state).toBe('waiting_for_input');
+    const [after] = await s.sql`select state, next_wake_at from job where id = ${s.scope.jobId}`;
+    expect(after?.state).toBe('queued');
+    expect(after?.next_wake_at).not.toBeNull();
     const events =
       await s.sql`select type, payload from event where job_id = ${s.scope.jobId} order by seq`;
     expect(events.map((event) => event.payload?.kind ?? event.type)).toEqual(
