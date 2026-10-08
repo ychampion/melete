@@ -177,7 +177,19 @@ const MAX_QUERY_TERMS = 32;
  */
 export function lexicalQuery(query: string): string | null {
   const terms = lexicalTerms(query);
-  return terms.length ? terms.map(tsqueryTerm).join(' | ') : null;
+  return terms.length ? terms.map(stemTerm).join(' | ') : null;
+}
+/** Endings a word drops to match its other forms: "allergies", "allergic" and "allergy". */
+const ENDINGS = /(?:ations?|ities|ies|ing|ic|es|ed|y|s)$/u;
+/**
+ * A plain word of five letters or more is matched by its stem as a prefix, so
+ * "do I have allergies" finds "I am allergic to cashews" when recall has only
+ * words to go on. Shorter words, numbers and addresses match as written.
+ */
+export function stemTerm(term: string): string {
+  if (term.length < 5 || !/^\p{L}+$/u.test(term)) return tsqueryTerm(term);
+  const stem = term.replace(ENDINGS, '');
+  return `${tsqueryTerm(stem.length >= 4 ? stem : term)}:*`;
 }
 /** The meaningful words of a request, lower-cased and split as the index splits them. */
 export function lexicalTerms(query: string): string[] {
@@ -345,6 +357,27 @@ export function attemptRecallQuery(bundle: {
   return [...said, bundle.job.objective].join('\n').slice(0, 2000);
 }
 export const PROFILE_SIZE = 8;
+/** The most parts of one request embedded on their own, beside the whole of it. */
+export const QUERY_PARTS = 4;
+/**
+ * The separate questions of a request, asked one after another on a line. A
+ * message that asks several things ("which sibling lives in Colorado? which
+ * nut should I avoid?") is, as one vector, closest to the part worded most
+ * like a memory, and the floor that closest match sets drops the answers to
+ * the other parts. Each part is also ranked on its own. A request of one
+ * question (a message and the chat's title on the next line among them) gives
+ * just the whole, and costs one embedding as before.
+ */
+export function queryParts(query: string): string[] {
+  const whole = query.trim();
+  if (!whole) return [];
+  const parts = whole
+    .split(/(?<=[?!])[^\S\n]+|[^\S\n]*(?:…|\.{3})[^\S\n]*|;[^\S\n]+/u)
+    .map((part) => part.trim())
+    .filter((part) => part && part !== whole && lexicalTerms(part).length > 0);
+  const distinct = [...new Set(parts)].slice(0, QUERY_PARTS);
+  return distinct.length > 1 ? [whole, ...distinct] : [whole];
+}
 /** The most semantic candidates one recall ranks beside the lexical ones. */
 export const DENSE_CANDIDATES = 100;
 /**
@@ -388,9 +421,10 @@ type DenseMatrix = {
   revisions: number[];
   dimensions: number;
   vectors: Float32Array;
-  query: Float32Array;
+  /** The whole request first, then each of its parts that could be embedded. */
+  queries: Float32Array[];
 };
-type Loaded = Omit<DenseMatrix, 'query'>;
+type Loaded = Omit<DenseMatrix, 'queries'>;
 
 /**
  * Loaded vectors, by space, generation and embedding. Every write moves the
@@ -484,26 +518,39 @@ async function prepareDense(
     const vectors = loadVectors(sql, scope.spaceId, generation, embedding);
     // A rejection is read below; this keeps it from going unhandled meanwhile.
     vectors.catch(() => {});
+    const parts = queryParts(request.query);
     const screened = embedding.screen
-      ? await embedding.screen(scope.spaceId, [request.query], request.job_id ?? null)
-      : [request.query];
+      ? await embedding.screen(scope.spaceId, parts, request.job_id ?? null)
+      : parts;
     const text = screened?.[0];
     if (!text) return { matrix: null, generation };
-    const made = (
-      await embedding.embed([text], AbortSignal.timeout(QUERY_EMBED_MS), {
-        purpose: 'query',
-        call: {
-          spaceId: scope.spaceId,
-          jobId: request.job_id ?? null,
-          actor: scope.principalId ?? null,
-        },
-      })
-    )[0];
+    const signal = AbortSignal.timeout(QUERY_EMBED_MS);
+    const call = {
+      spaceId: scope.spaceId,
+      jobId: request.job_id ?? null,
+      actor: scope.principalId ?? null,
+    };
+    // The whole request on its own, as it was prefetched; its parts in one more call.
+    const rest = (screened ?? []).slice(1).filter((part): part is string => Boolean(part));
+    const [whole, split] = await Promise.allSettled([
+      embedding.embed([text], signal, { purpose: 'query', call }),
+      rest.length ? embedding.embed(rest, signal, { purpose: 'query', call }) : [],
+    ]);
+    if (whole.status === 'rejected') throw whole.reason;
+    const made = whole.value[0];
     if (!made) throw new MemoryError('embedding_space_mismatch');
     validateVector(made, embedding.dimensions);
     const query = normalized(made);
     if (!query) return { matrix: null, generation };
-    return { matrix: { ...(await vectors), query }, generation };
+    const queries = [query];
+    // A part that could not be embedded is left to the whole and to the words.
+    if (split.status === 'fulfilled' && split.value.length === rest.length)
+      for (const vector of split.value) {
+        if (vector.length !== embedding.dimensions) continue;
+        const part = normalized(vector);
+        if (part) queries.push(part);
+      }
+    return { matrix: { ...(await vectors), queries }, generation };
   } catch (error) {
     const code =
       error instanceof MemoryError
@@ -518,26 +565,28 @@ async function prepareDense(
 }
 
 /**
- * The closest eligible revisions to the request, best first. Scored in
+ * The closest eligible revisions to one query vector, best first. Scored in
  * memory; only the shortlist is read back, its audience checked in one query,
  * and each kept one revalidated like any other candidate. Only what is nearly
  * as close as the closest eligible one is kept.
  */
-async function rankDense(
+async function rankOne(
   tx: MemoryTx,
   scope: MemoryScope,
   request: RecallRequest,
   matrix: DenseMatrix,
+  query: Float32Array,
   audiences: readonly string[],
   kept: ReadonlySet<string> | null,
   disputed: ReadonlySet<string>,
+  eligible: Map<string, boolean>,
 ): Promise<Candidate[]> {
   const d = matrix.dimensions;
   const scored: Candidate[] = [];
   for (let row = 0; row < matrix.claimIds.length; row++) {
     let score = 0;
     const offset = row * d;
-    for (let i = 0; i < d; i++) score += (matrix.vectors[offset + i] ?? 0) * (matrix.query[i] ?? 0);
+    for (let i = 0; i < d; i++) score += (matrix.vectors[offset + i] ?? 0) * (query[i] ?? 0);
     if (score > 0)
       scored.push({
         claim_id: matrix.claimIds[row] ?? '',
@@ -562,11 +611,52 @@ async function rankDense(
   for (const candidate of shortlist) {
     if (ranked.length >= DENSE_CANDIDATES || candidate.score < floor) break;
     if (!visible.has(candidate.claim_id)) continue;
-    if (!(await itemAt(tx, scope, candidate, request, disputed))) continue;
+    const key = `${candidate.claim_id}:${candidate.revision}`;
+    let ok = eligible.get(key);
+    if (ok === undefined) {
+      ok = Boolean(await itemAt(tx, scope, candidate, request, disputed));
+      eligible.set(key, ok);
+    }
+    if (!ok) continue;
     // The floor is set by the closest one this read may return.
     if (!ranked.length) floor = candidate.score * DENSE_RELATIVE_FLOOR;
     ranked.push(candidate);
   }
+  return ranked;
+}
+
+/**
+ * The closest eligible revisions to the request and to each of its parts,
+ * taken in turn: the whole request's closest, then each part's closest, then
+ * the next of each. A part's answer is kept by its own floor, not the whole's.
+ */
+async function rankDense(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  request: RecallRequest,
+  matrix: DenseMatrix,
+  audiences: readonly string[],
+  kept: ReadonlySet<string> | null,
+  disputed: ReadonlySet<string>,
+): Promise<Candidate[]> {
+  const eligible = new Map<string, boolean>();
+  const lists: Candidate[][] = [];
+  for (const query of matrix.queries)
+    lists.push(
+      await rankOne(tx, scope, request, matrix, query, audiences, kept, disputed, eligible),
+    );
+  const ranked: Candidate[] = [];
+  const seen = new Set<string>();
+  const longest = Math.max(0, ...lists.map((list) => list.length));
+  for (let rank = 0; rank < longest && ranked.length < DENSE_CANDIDATES; rank++)
+    for (const list of lists) {
+      const candidate = list[rank];
+      if (!candidate) continue;
+      const key = `${candidate.claim_id}:${candidate.revision}`;
+      if (seen.has(key) || ranked.length >= DENSE_CANDIDATES) continue;
+      seen.add(key);
+      ranked.push(candidate);
+    }
   return ranked;
 }
 

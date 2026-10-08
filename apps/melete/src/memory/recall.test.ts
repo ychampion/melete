@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { recallRequest } from '@melete/contracts';
-import { cacheIdentity, type ReadAudience } from './recall.ts';
+import { cacheIdentity, lexicalQuery, queryParts, type ReadAudience } from './recall.ts';
 import { cosine, validateVector } from './views.ts';
 
 test('cache identity binds audience, policy, data, access, job revision, query, and recipe', () => {
@@ -47,4 +47,30 @@ test('dense vectors cannot mix dimensions or nonfinite components', () => {
   expect(cosine([1, 0], [1, 0])).toBe(1);
   expect(() => validateVector([1, Number.NaN], 2)).toThrow('embedding_space_mismatch');
   expect(() => cosine([1, 0], [1])).toThrow('embedding_space_mismatch');
+});
+
+test('a plain word is matched by its stem, so other forms of it are found', () => {
+  expect(lexicalQuery('do I have allergies?')).toBe("'allerg':*");
+  expect(lexicalQuery('cashews')).toBe("'cashew':*");
+  // Short words, numbers and addresses match as written.
+  expect(lexicalQuery('nut 2019 maya@example.com')).toBe("'nut' | '2019' | 'maya@example.com'");
+});
+
+test('a request that asks several things is split into its questions and lines', () => {
+  const asked =
+    'Which sibling is out in Colorado… which nut to stay away from… which mornings do I work out?';
+  expect(queryParts(asked)).toEqual([
+    asked,
+    'Which sibling is out in Colorado',
+    'which nut to stay away from',
+    'which mornings do I work out?',
+  ]);
+  expect(queryParts('Any food I should avoid? And my sister?\nNew chat')).toEqual([
+    'Any food I should avoid? And my sister?\nNew chat',
+    'Any food I should avoid?',
+    'And my sister?\nNew chat',
+  ]);
+  // One question, with the chat's title below it, is the whole request alone.
+  expect(queryParts('do I have allergies?\nNew chat')).toEqual(['do I have allergies?\nNew chat']);
+  expect(queryParts('   ')).toEqual([]);
 });
