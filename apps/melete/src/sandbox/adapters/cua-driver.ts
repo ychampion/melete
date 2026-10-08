@@ -131,12 +131,18 @@ export class CuaDriverBrowser {
     await this.call('browser_navigate', { ...this.at, url }, 60_000);
     // Navigation can answer while a blocking script still holds the parser; look
     // again, as an agent would, until the page shows more than its root.
-    for (let look = 0; look < 10; look++) {
+    const started = performance.now();
+    for (let look = 0; look < 20; look++) {
       const refs = await this.snapshot();
-      if (refs.some((ref) => ref.role !== 'rootwebarea')) return;
-      if (look === 0) this.notes.push('page was empty at first look');
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (refs.some((ref) => ref.role !== 'rootwebarea')) {
+        if (look > 0)
+          this.notes.push(`content after ${Math.round(performance.now() - started)} ms`);
+        return;
+      }
+      if (look === 0) this.notes.push(`${url} was empty at first look`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
+    this.notes.push(`${url} still empty after ${Math.round(performance.now() - started)} ms`);
   }
 
   /** A whole ranked snapshot: follows continuations until the driver says it is complete. */
