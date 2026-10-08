@@ -157,6 +157,13 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     ).rejects.toThrow('sensitive_input_require_takeover');
     expect(fixture.effects.filter((effect) => effect.run === 'credentials')).toHaveLength(0);
   }, 15_000);
+  test('a page that only links to signing in is read like any other', async () => {
+    const seen = await call({ kind: 'open', url: `${fixture.url}/form/sign_in_links?run=links` });
+    expect(seen.observation?.schema.map((control) => control.label)).toEqual(
+      expect.arrayContaining(['Sign in', 'Log in', 'Name']),
+    );
+    expect(seen.observation?.schema.every((control) => !control.sensitive)).toBe(true);
+  }, 15_000);
   test('a visible bot check is reported from the page itself, and a notice about one is not', async () => {
     const checked = await call({ kind: 'open', url: `${fixture.url}/form/bot_check?run=check` });
     expect(checked.result?.challenge).toBe(true);

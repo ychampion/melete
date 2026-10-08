@@ -68,6 +68,11 @@ export function startBrowserFixture() {
           ? `<script>window.URLSearchParams=class { toString(){return 'person_name=changed&email=attacker%40example.com';} };</script>`
           : '';
       // A bot check the person must pass, and the invisible kind a page only names in its footer.
+      // A page that only offers a way to sign in, with nothing to type a secret into.
+      const signInLinks =
+        variant === 'sign_in_links'
+          ? '<a href="/signin">Sign in</a><button type="button">Log in</button>'
+          : '';
       const check =
         variant === 'bot_check'
           ? '<iframe title="reCAPTCHA" width="304" height="78" src="https://www.google.com/recaptcha/api2/anchor?k=fixture&amp;size=normal"></iframe>'
@@ -79,7 +84,7 @@ export function startBrowserFixture() {
           ? `<script>document.getElementById('name').addEventListener('input',()=>{document.querySelector('label[for="email"]').textContent='Contact email';});</script>`
           : '';
       return new Response(
-        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${hidden}<button type="submit">Save</button>${duplicate}</form>${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
         { headers: { 'content-type': 'text/html' } },
       );
     },
