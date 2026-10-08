@@ -85,6 +85,15 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     );
   }
 
+  const accounts = bundle.connected_accounts ?? [];
+  if (accounts.length > 0) {
+    // An account the computer's command line reaches has no tool to find, so
+    // without this the model says nothing is connected.
+    parts.push(
+      `# Connected accounts\n\nThe person connected these. Use them when the work needs them; never say one is not connected, and never ask for a password or token for one.\n\n${accounts.map((line) => `- ${line}`).join('\n')}`,
+    );
+  }
+
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
 }

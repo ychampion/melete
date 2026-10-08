@@ -362,6 +362,12 @@ export const attemptBundle = z.object({
    * own token allowance. Additive: a producer that omits it offers none.
    */
   skill_index: z.array(skillIndexEntry).optional(),
+  /**
+   * The accounts the person connected that this attempt may use, one short
+   * line each saying how (an account reached through the computer's command
+   * line has no tool of its own). Additive: a producer that omits it names none.
+   */
+  connected_accounts: z.array(z.string().min(1).max(300)).max(20).optional(),
   knowledge: z.array(knowledgeExcerpt),
   workspace: z.object({
     mount: z.literal('/work'),

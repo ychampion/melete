@@ -807,9 +807,22 @@ export class ToolCatalog {
    */
   find(claims: CapabilityClaims, query: string): Promise<CatalogSearch> {
     const parsed = z.string().trim().min(1).max(500).parse(query);
-    return this.within(claims, async (tx, _job, items, context) => {
+    return this.within(claims, async (tx, job, items, context, access) => {
       const loaded = new Set(this.current(context, items).map((tool) => tool.name));
       const rest = items.filter((item) => !loaded.has(item.entry.name)).map((item) => item.entry);
+      // An account the computer's command line reaches has no tool to match, so
+      // a search that names one is told how it is reached instead.
+      const accounts = await commandLineAccounts(tx, job, claims, access);
+      const asked = new Set(words(parsed));
+      const named = accounts.filter((account) => account.words.some((word) => asked.has(word)));
+      const reached = named.length
+        ? `Connected through the computer's command line, with no tool of their own: ${named
+            .map(
+              (account) =>
+                `${account.label} (run ${account.commands} with terminal.run; the account is added for you)`,
+            )
+            .join('; ')}.`
+        : null;
       // Only letters and digits reach the query text, so it cannot carry an operator.
       const lexemes = words(parsed).slice(0, SEARCH_TERMS).join(' | ');
       // The input contains only already-authorized entries. Even the ranking engine
@@ -846,7 +859,7 @@ export class ToolCatalog {
         names: result.map((item) => item.name),
         effect_class: 'read',
       });
-      if (result.length > 0) return { tools: result };
+      if (result.length > 0) return { tools: result, ...(reached ? { hint: reached } : {}) };
       const index: CatalogSearch['index'] = [];
       for (const entry of rest) {
         if (entry.health === 'failing') continue;
@@ -857,9 +870,14 @@ export class ToolCatalog {
       return {
         tools: [],
         index,
-        hint: index.length
-          ? `No tool matched ${JSON.stringify(parsed)}. These are the tools load_tool can fetch by exact name.`
-          : `No tool matched ${JSON.stringify(parsed)}, and nothing further can be loaded in this attempt.`,
+        hint: [
+          reached,
+          index.length
+            ? `No tool matched ${JSON.stringify(parsed)}. These are the tools load_tool can fetch by exact name.`
+            : `No tool matched ${JSON.stringify(parsed)}, and nothing further can be loaded in this attempt.`,
+        ]
+          .filter(Boolean)
+          .join(' '),
       };
     });
   }
@@ -945,4 +963,57 @@ export class ToolCatalog {
       return { name: skill.frontmatter.name, body: skill.body };
     });
   }
+}
+
+/** The words that point a search at a command-line account, and the commands that use it. */
+const COMMAND_LINE_WORDS: Record<string, { words: string[]; commands: string }> = {
+  github: {
+    words: ['github', 'gh', 'git', 'repo', 'repository', 'issue', 'issues', 'pull', 'pr', 'commit'],
+    commands: 'git or gh',
+  },
+  gitlab: {
+    words: ['gitlab', 'glab', 'git', 'repo', 'repository', 'issue', 'issues', 'merge', 'mr'],
+    commands: 'git or glab',
+  },
+  aws: { words: ['aws', 'amazon', 's3', 'ec2', 'lambda'], commands: 'aws' },
+  npm: { words: ['npm', 'package', 'registry'], commands: 'npm' },
+};
+
+/**
+ * The command-line accounts (GitHub, for one) this job may use: active in its
+ * space, serving it, offered to its agent and granted for reads, as the egress
+ * relay decides. Read through the caller's transaction.
+ */
+async function commandLineAccounts(
+  tx: Query,
+  job: LockedJob,
+  claims: CapabilityClaims,
+  access: AgentAccess,
+): Promise<{ label: string; words: string[]; commands: string }[]> {
+  const rows = await tx`select id, label, scopes, shared_use, configuration->>'adapter' as adapter
+    from connection where space_id = ${job.space_id} and provider = 'command_line'
+      and status = 'active' and configuration->>'kind' = 'command_line' order by label`;
+  if (!rows.length) return [];
+  const audience = await jobConnectionAudience(tx, job.id);
+  if (!audience) return [];
+  return rows.flatMap((row) => {
+    const adapter = String(row.adapter);
+    const known = COMMAND_LINE_WORDS[adapter];
+    const read = `egress.${adapter}_read`;
+    if (
+      !known ||
+      !connectionServesJob(audience, String(row.shared_use)) ||
+      !connectionOffered(access, String(row.id)) ||
+      !((row.scopes ?? []) as string[]).includes(read) ||
+      !claims.scopes.includes(read)
+    )
+      return [];
+    return [
+      {
+        label: String(row.label),
+        words: [...known.words, ...words(String(row.label))],
+        commands: known.commands,
+      },
+    ];
+  });
 }
