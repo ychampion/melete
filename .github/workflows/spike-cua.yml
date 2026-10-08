@@ -38,7 +38,7 @@ jobs:
           # Chromium's renderer sandbox needs user namespaces, which this image restricts.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # The image ships Chrome's launcher world-writable; Cua Driver refuses such a browser.
-          sudo chmod 755 /opt/google/chrome/google-chrome
+          sudo chmod -R go-w /opt/google/chrome
           ls -l /opt/google/chrome/google-chrome /opt/google/chrome/chrome
       - name: Cua Driver, pinned by checksum
         run: |
