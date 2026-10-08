@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { TransactionSql } from 'postgres';
 import type { Database } from './client.ts';
+import { callSite, heldEventOrder } from './lock-guard.ts';
 
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -37,10 +38,13 @@ function reportLimit(error: unknown): void {
  * filter reads it, so it is in force before the lock is requested.
  */
 export async function lockEventOrderIn(tx: TransactionSql): Promise<void> {
+  // Read before the first await, while the caller is still on the stack.
+  const site = callSite();
   try {
     await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})
       from (select set_config('lock_timeout', ${EVENT_ORDER_LOCK_TIMEOUT}, true) as timeout) limits
       where limits.timeout is not null`;
+    heldEventOrder(site);
   } catch (error) {
     reportLimit(error);
     throw error;
@@ -60,12 +64,14 @@ export function serviceTransaction<T>(
   db: Database,
   operation: (tx: Transaction) => Promise<T>,
 ): Promise<T> {
+  const site = callSite();
   return db
     .transaction(async (tx) => {
       // The same statement as `lockEventOrderIn`, in Drizzle form.
       await tx.execute(sql`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})
         from (select set_config('lock_timeout', ${EVENT_ORDER_LOCK_TIMEOUT}, true) as timeout) limits
         where limits.timeout is not null`);
+      heldEventOrder(site);
       return operation(tx);
     })
     .catch((error: unknown) => {

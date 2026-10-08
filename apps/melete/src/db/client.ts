@@ -4,6 +4,13 @@
  */
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import {
+  currentScope,
+  guardPoolWait,
+  holdingEventOrder,
+  inTransaction,
+  transactionEnded,
+} from './lock-guard.ts';
 import { schema } from './schema.ts';
 import { verifyingTls } from './tls.ts';
 
@@ -25,6 +32,9 @@ export type DatabaseHandle = {
  * logs each one ("terminating connection due to idle-in-transaction timeout").
  */
 export const IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
+
+/** Connections kept for statements a holder of the event order lock sends outside it. */
+export const RESERVE_CONNECTIONS = 2;
 
 /**
  * Say so when a transaction ended because its connection did. Postgres ends
@@ -52,23 +62,73 @@ export function openDatabase(
 ): DatabaseHandle {
   // For verify-ca and verify-full, the server is checked against the URL's own host (db/tls.ts).
   const tls = verifyingTls(url);
-  const sql = postgres(url, {
-    max,
+  const settings = {
     onnotice: () => {},
     connection: { idle_in_transaction_session_timeout: idleInTransactionMs },
     ...(tls ? { ssl: tls } : {}),
-  });
+  };
+  const sql = postgres(url, { max, ...settings });
+  /**
+   * Two connections kept apart for a statement sent outside the transaction
+   * that holds the event order lock. Every pool connection can be queued on
+   * that lock, so such a statement would otherwise wait until those waiters
+   * gave up, 30 s later, with the whole service paused behind it. Opened on
+   * first use; the statement is still reported (`guardPoolWait`).
+   */
+  let reserve: ReturnType<typeof postgres> | undefined;
+  const spare = () => {
+    reserve ??= postgres(url, { max: RESERVE_CONNECTIONS, ...settings });
+    return reserve;
+  };
   // Every transaction, the Drizzle service's included, begins here.
   const begin = sql.begin.bind(sql) as (...args: unknown[]) => Promise<unknown>;
+  const unsafe = sql.unsafe.bind(sql) as (...args: unknown[]) => unknown;
   Object.assign(sql, {
-    begin: (...args: unknown[]) =>
-      begin(...args).catch((error: unknown) => {
-        reportClosedTransaction(error);
-        throw error;
-      }),
+    begin: (...args: unknown[]) => {
+      // One opened while this code holds the event order lock takes a reserve connection.
+      const nested = holdingEventOrder();
+      if (nested) guardPoolWait('a transaction was opened on another connection');
+      const body = args.pop() as (tx: unknown) => unknown;
+      let scope: ReturnType<typeof currentScope>;
+      const scoped = (tx: unknown) =>
+        inTransaction(() => {
+          scope = currentScope();
+          return body(tx);
+        });
+      const start = nested
+        ? (spare().begin.bind(spare()) as (...args: unknown[]) => Promise<unknown>)
+        : begin;
+      return start(...args, scoped)
+        .finally(() => transactionEnded(scope))
+        .catch((error: unknown) => {
+          reportClosedTransaction(error);
+          throw error;
+        });
+    },
+    // Drizzle sends a statement outside a transaction through `unsafe`.
+    unsafe: (...args: unknown[]) => {
+      if (!holdingEventOrder()) return unsafe(...args);
+      guardPoolWait();
+      return (spare().unsafe as (...args: unknown[]) => unknown)(...args);
+    },
   });
-  const db = drizzle(sql, { schema });
-  return { db, sql, close: () => sql.end({ timeout: 5 }) };
+  // A tagged statement on the pool (not a helper such as `sql(values)`) is checked too.
+  const pool = new Proxy(sql, {
+    apply(target, self, args: unknown[]) {
+      if (!(Array.isArray(args[0]) && 'raw' in (args[0] as object) && holdingEventOrder()))
+        return Reflect.apply(target, self, args);
+      guardPoolWait();
+      return Reflect.apply(spare(), self, args);
+    },
+  });
+  const db = drizzle(pool, { schema });
+  return {
+    db,
+    sql: pool,
+    close: async () => {
+      await Promise.all([sql.end({ timeout: 5 }), reserve?.end({ timeout: 5 })]);
+    },
+  };
 }
 
 /** Used by /health. Returns false rather than throwing, so health stays a report. */

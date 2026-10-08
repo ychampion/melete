@@ -102,6 +102,8 @@ type Lookups = {
   because: Map<string, BecauseLink[]>;
   /** Tool arguments with their privacy placeholders resolved, by `callKey`. */
   arguments: Map<string, unknown>;
+  /** What a receipt shows beside its outcome (its Undo, its hold), by action id. */
+  receipts: Map<string, Awaited<ReturnType<ExperienceEffects['receiptState']>>>;
 };
 
 /**
@@ -671,14 +673,11 @@ export class ExperienceEvents {
                   eq(connection.spaceId, spaceId),
                 ),
               );
+            // Looked up before the lock: it reads and writes through the effects
+            // service's own connections, which may all be queued on this lock.
             const state =
-              effect &&
-              this.projections?.receiptState &&
-              (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
-                ? // A receipt whose Undo cannot be worked out is drawn without one.
-                  await this.projections
-                    .receiptState(spaceId, effect.action.id)
-                    .catch(() => ({}) as Awaited<ReturnType<ExperienceEffects['receiptState']>>)
+              effect && (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
+                ? (lookups.receipts.get(effect.action.id) ?? {})
                 : {};
             if (effect && payload.to !== 'succeeded') {
               if (state.held) {
@@ -910,6 +909,7 @@ export class ExperienceEvents {
       questions: new Map(),
       because: new Map(),
       arguments: new Map(),
+      receipts: new Map(),
     };
     const projections = this.projections;
     const rehydrate = projections?.rehydrate;
@@ -926,6 +926,27 @@ export class ExperienceEvents {
     };
     for (const source of raw) {
       const payload = object(source.payload);
+      // As the locked pass asks for it: a success, or a change held or cancelled before sending.
+      if (
+        projections?.receiptState &&
+        source.type === 'action_status_changed' &&
+        typeof payload.action_id === 'string' &&
+        ['succeeded', 'admitted', 'failed'].includes(String(payload.to)) &&
+        !lookups.receipts.has(payload.action_id)
+      ) {
+        const [found] = await this.db
+          .select({ effectClass: action.effectClass })
+          .from(action)
+          .where(eq(action.id, payload.action_id));
+        if (found && (payload.to === 'succeeded' || found.effectClass !== 'read'))
+          lookups.receipts.set(
+            payload.action_id,
+            // A receipt whose Undo cannot be worked out is drawn without one.
+            await projections
+              .receiptState(spaceId, payload.action_id)
+              .catch(() => ({}) as Awaited<ReturnType<ExperienceEffects['receiptState']>>),
+          );
+      }
       if (source.type === 'approval_requested' && typeof payload.approval_id === 'string') {
         if (projections && !lookups.permissions.has(payload.approval_id))
           lookups.permissions.set(
