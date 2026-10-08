@@ -10,6 +10,7 @@ import type {
 } from '../../src/workers/browser/controller.ts';
 import type { BrowserSession } from '../../src/workers/browser/sessions.ts';
 import { startBrowserFixture } from '../helpers/browser-fixture.ts';
+import { ORDINARY_LABELS, SECRET_LABELS } from '../helpers/secret-labels.ts';
 
 if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
 (chromiumAvailable ? describe : describe.skip)('Chromium controller', () => {
@@ -171,6 +172,30 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     expect(named.result?.challenge).toBeUndefined();
     expect(named.observation?.tree).toContain('protected by reCAPTCHA');
   }, 15_000);
+  test('a field labelled for a secret is the person’s to fill, and an ordinary one is not', async () => {
+    // Name and Email are on every form of the fixture already.
+    for (const label of ORDINARY_LABELS.filter((each) => each !== 'Name' && each !== 'Email')) {
+      const run = `ordinary-${label}`;
+      await call({
+        kind: 'open',
+        url: `${fixture.url}/form/labelled?label=${encodeURIComponent(label)}&run=${encodeURIComponent(run)}`,
+      });
+      await call({ kind: 'observe' });
+      await call({ kind: 'fill', label, value: 'plain words' });
+      await call({ kind: 'read', selector: 'body' });
+    }
+    for (const label of SECRET_LABELS) {
+      const page = `${fixture.url}/form/labelled?label=${encodeURIComponent(label)}&run=secret`;
+      await expect(call({ kind: 'open', url: page })).rejects.toThrow(
+        'sensitive_input_require_takeover',
+      );
+      await expect(call({ kind: 'observe' })).rejects.toThrow('sensitive_input_require_takeover');
+      await expect(call({ kind: 'fill', label, value: '123-45-6789' })).rejects.toThrow(
+        'sensitive_input_require_takeover',
+      );
+    }
+    expect(fixture.effects.filter((effect) => effect.run === 'secret')).toHaveLength(0);
+  }, 120_000);
   test('hidden destinations are included in the complete observed submit intent', async () => {
     await call({ kind: 'open', url: `${fixture.url}/form/hidden_destination?run=hidden` });
     await call({ kind: 'fill', label: 'Name', value: 'A Person' });
