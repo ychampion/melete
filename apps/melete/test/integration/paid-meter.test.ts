@@ -8,7 +8,9 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import type { CapabilityClaims } from '@melete/contracts';
 import {
   EXTRACT_CAP_REACHED,
+  EXTRACT_RUN_CAP_REACHED,
   jobPaidMeter,
+  MAX_EXTRACTS_PER_RUN,
   MAX_EXTRACTS_PER_TURN,
   PAID_BUDGET_REFUSED,
 } from '../../src/broker/paid-meter.ts';
@@ -18,6 +20,7 @@ import {
   PaidCallRefused,
   TAVILY_CREDIT_USD,
 } from '../../src/connectors/web-search.ts';
+import { NO_LIMIT, SpendingGuard } from '../../src/gateway/spending.ts';
 import {
   GatewayError,
   type GatewayPrincipal,
@@ -193,5 +196,99 @@ withDb('paid search and reading calls', () => {
     const ledger = await db()`select id from budget_ledger where job_id in
       (${tight.claims.job_id}, ${seeded.claims.job_id})`;
     expect(ledger.length).toBe(0);
+  });
+
+  test("calls side by side are held against the installation's cap while they run, and let go when settled or given up", async () => {
+    // A month of its own, so no other spending counts toward this cap.
+    const now = new Date('2031-03-15T12:00:00Z');
+    const extract = { provider: 'tavily', kind: 'extract', maxCredits: 2 } as const;
+    const guard = new SpendingGuard(
+      db(),
+      {
+        // Room for exactly one extract at its ceiling.
+        installation: { day: { usd: 2 * TAVILY_CREDIT_USD, tokens: null }, month: NO_LIMIT },
+        person: { day: NO_LIMIT, month: NO_LIMIT },
+        noticePercent: 80,
+      },
+      undefined,
+      () => now,
+    );
+    const meter = jobPaidMeter(db(), guard);
+    const first = await job();
+    const second = await job();
+    const tight = await job({ max_usd_est: 0.001 });
+    try {
+      const both = await Promise.allSettled([
+        meter.reserve(await first.call(), extract),
+        meter.reserve(await second.call(), extract),
+      ]);
+      const admitted = both.filter((result) => result.status === 'fulfilled');
+      const refused = both.filter((result) => result.status === 'rejected');
+      expect(admitted).toHaveLength(1);
+      expect(refused).toHaveLength(1);
+      expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(PaidCallRefused);
+      // A call that cost nothing lets its hold go.
+      await meter.settle((admitted[0] as PromiseFulfilledResult<{ id: string }>).value, 0);
+      // So does one the job itself refused after the cap admitted it.
+      const overJob = await refusal(meter.reserve(await tight.call(), extract));
+      expect((overJob as Error).message).toBe(PAID_BUDGET_REFUSED);
+      const next = await meter.reserve(await second.call(), extract);
+      // Settled at its cost, the call is spending, and the cap is reached.
+      await meter.settle(next, 2);
+      const capped = await refusal(meter.reserve(await first.call(), extract));
+      expect(capped).toBeInstanceOf(PaidCallRefused);
+      expect((capped as Error).message).not.toBe(PAID_BUDGET_REFUSED);
+    } finally {
+      await db()`delete from model_usage where job_id in
+        (${first.claims.job_id}, ${second.claims.job_id}, ${tight.claims.job_id})`;
+      await db()`delete from spending_notice where period >= '2031-01-01'`;
+    }
+  });
+
+  test('a run and its helper steps share one count of hosted-reader pages across all their shifts', async () => {
+    const run = await job();
+    const runId = run.claims.job_id;
+    await db()`update job set kind = 'run' where id = ${runId}`;
+    await db()`insert into run_state (job_id, space_id, goal)
+      values (${runId}, ${run.claims.space_id}, 'Keep the reading list current')`;
+    const step = await job();
+    await db()`update job set kind = 'run_step' where id = ${step.claims.job_id}`;
+    await db()`insert into run_state (job_id, space_id, parent_run_id, goal)
+      values (${step.claims.job_id}, ${step.claims.space_id}, ${runId}, 'Read one source')`;
+    const meter = jobPaidMeter(db());
+    const extract = { provider: 'tavily', kind: 'extract', maxCredits: 2 } as const;
+    /** A new shift: a new attempt on the run, which alone would start a fresh turn count. */
+    const shift = async (epoch: number) => {
+      const attemptId = recordId('att');
+      await db()`update job set lease_epoch = ${epoch} where id = ${runId}`;
+      await db()`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${runId}, ${epoch}, 'fake', 'fake', 'scripted')`;
+      return attemptId;
+    };
+    const read = async (target: typeof run, attemptId?: string) => {
+      const call = await target.call();
+      return meter.reserve(attemptId ? { ...call, attemptId } : call, extract);
+    };
+    let pages = 0;
+    for (let epoch = 2; pages < MAX_EXTRACTS_PER_RUN - 1; epoch += 1) {
+      const attemptId = await shift(epoch);
+      for (let n = 0; n < MAX_EXTRACTS_PER_TURN && pages < MAX_EXTRACTS_PER_RUN - 1; n += 1) {
+        await meter.settle(await read(run, attemptId), 2);
+        pages += 1;
+      }
+    }
+    // The helper step's page counts toward the run.
+    await meter.settle(await read(step), 2);
+    const fresh = await shift(50);
+    const overRun = await refusal(read(run, fresh));
+    expect(overRun).toBeInstanceOf(PaidCallRefused);
+    expect((overRun as Error).message).toBe(EXTRACT_RUN_CAP_REACHED);
+    expect((await refusal(read(step))) as Error).toBeInstanceOf(PaidCallRefused);
+    // Searches are not counted.
+    const search = await meter.reserve(
+      { ...(await run.call()), attemptId: fresh },
+      { provider: 'tavily', kind: 'search', maxCredits: 1 },
+    );
+    await meter.settle(search, 1);
   });
 });
