@@ -188,6 +188,8 @@ describe('one-time codes and sign-in links', () => {
     ['Your Slack confirmation code is ABC-123', 'ABC-123'],
     ['Your verification code is X7K2PQ', 'X7K2PQ'],
     ['Your security code is 5531', '5531'],
+    ['Your code is 482913', '482913'],
+    ['Your Acme verification code is 7f3a9c', '7f3a9c'],
     ['Sign in: https://app.example.com/login?token=abcDEF123456xyz', 'abcDEF123456xyz'],
     ['https://acme.example/magic-link/9f8e7d6c5b4a3f2e1d0c', '9f8e7d6c5b4a3f2e1d0c'],
   ];
@@ -210,6 +212,14 @@ describe('one-time codes and sign-in links', () => {
     'Your order 123456 is your best deal',
     'The code is in the repo',
     'Your code review is ready',
+    // Hashes, commit ids, UUIDs and checksums are not secrets.
+    'The code is 4fe2a91 on main',
+    'Check the code in 3f2a9c1',
+    'sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+    '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  release.tar.gz',
+    'commit 3f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39',
+    'id 123e4567-e89b-12d3-a456-426614174000',
+    'checksum: d41d8cd98f00b204e9800998ecf8427e',
   ];
   for (const text of ordinary)
     test(`not a code: ${text}`, () => {
