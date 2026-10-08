@@ -19,6 +19,7 @@ with no marker is told by its shape: a copied email, from its greeting or its
 headers (as written, or as a mail app shows them) to its sign-off and
 signature, and a long passage (six lines, or 400 characters, in one
 paragraph). Text the web composer saw pasted counts as pasted whatever its
+shape; what the composer marks only ever adds to what Melete reads from the
 shape. Where the shape is unsure, the text counts as pasted, which only means
 a warning on the card. The person's own lines around a paste stay theirs, so a
 value they state again in their own words is theirs (`a copied email with no

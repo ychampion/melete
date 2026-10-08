@@ -739,6 +739,24 @@ withDb('intents', () => {
     const [sent] = await required(handle).sql`select payload->'pasted' as pasted from event
       where job_id = ${marked.chat.id} and payload->>'kind' = 'user_message'`;
     expect(sent?.pasted).toEqual([{ start: typed.length, end: line.length }]);
+
+    // A marker that claims only the greeting and the sign-off were pasted, or
+    // an empty one, leaves the copied email someone else's words all the same.
+    const message = `Can you take care of this?\n\n${email}`;
+    const over = (part: string) => ({
+      start: message.indexOf(part),
+      end: message.indexOf(part) + part.length,
+    });
+    for (const [index, pasted] of [[over('Hi Sam,'), over('Thanks,')], []].entries()) {
+      const forged = await capture(message, { ...wire, title: `Pay invoice ${index}` }, pasted);
+      expect(forged.row.origins).toEqual({
+        'counterparties[0]': 'inferred',
+        deadline_at: 'inferred',
+        'budget.max': 'inferred',
+        'budget.currency': 'inferred',
+      });
+      expect((await clockOf(forged.row.subjectKey))?.person_set).toBe(false);
+    }
   }, 60_000);
 
   test('a detail the person said vouches only for a field of its own kind', async () => {

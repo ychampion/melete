@@ -293,4 +293,30 @@ describe('a paste with no marker says nothing for the person', () => {
       ],
     ).toBe('inferred');
   });
+
+  test('a forged, empty or malformed marker never makes a pasted value the person’s', () => {
+    const message = `Deal with this one\n${letter}`;
+    const at = (part: string) => ({
+      start: message.indexOf(part),
+      end: message.indexOf(part) + part.length,
+    });
+    for (const pasted of [
+      [],
+      // Over the greeting and the sign-off, as if they had been the paste.
+      [at('Hi Sam,'), at('Thanks,')],
+      // Over the person's own lead-in only, as if the letter were typed.
+      [at('Deal with this one')],
+      [
+        { start: Number.NaN, end: 5 },
+        { start: 40, end: 3 },
+        { start: -10, end: 1e9 },
+      ],
+    ])
+      expect(markOrigins(wire, '2026-10-09', utc(message, pasted))).toEqual(allInferred);
+    // A marker over "not" leaves what it rules out ruled out.
+    const ruled = 'Not Haidilao this time';
+    expect(
+      markOrigins({ place: { name: 'Haidilao' } }, null, utc(ruled, [{ start: 0, end: 3 }])),
+    ).toEqual({ 'place.name': 'inferred' });
+  });
 });

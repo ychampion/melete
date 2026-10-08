@@ -152,39 +152,44 @@ export function pastedLines(lines: string[]): boolean[] {
   return pasted;
 }
 
-/** The text with what the composer saw pasted taken out, each piece leaving a paragraph break. */
-function withoutPasted(text: string, pasted: readonly Span[]): string {
-  const clamp = (at: number) => Math.max(0, Math.min(text.length, Math.floor(at)));
-  const spans = pasted
-    .map((span) => ({ start: clamp(span.start), end: clamp(span.end) }))
-    .filter((span) => span.end > span.start)
-    .sort((a, b) => a.start - b.start);
-  let out = '';
-  let at = 0;
-  for (const span of spans) {
-    if (span.end <= at) continue;
-    out += `${text.slice(at, Math.max(at, span.start))}\n\n`;
-    at = span.end;
-  }
-  return out + text.slice(at);
-}
-
 /**
  * The person's own lines of a message: quotes, forwards, pasted headers,
- * letters and long passages, and whatever the composer saw pasted, left out.
+ * letters and long passages left out, by the message's own shape. With
+ * `pasted`, the stretches the composer saw pasted are cut from those lines as
+ * well, each leaving a break. They are cut after the shape is read, from the
+ * message as sent, so they can only take words away: a stretch that covers a
+ * greeting, a sign-off or a forward line leaves the paste it opens or closes
+ * found all the same.
  */
 export function ownWords(text: string, pasted: readonly Span[] = []): string {
-  const trimmed = withoutPasted(text, pasted).trim();
-  if (!trimmed || QUOTED.test(trimmed)) return '';
-  const lines: string[] = [];
-  for (const line of trimmed.split(/\r?\n/)) {
+  if (!text.trim() || QUOTED.test(text.trim())) return '';
+  const spans = pasted.filter(
+    (span) => Number.isFinite(span.start) && Number.isFinite(span.end) && span.end > span.start,
+  );
+  const lines: { text: string; at: number }[] = [];
+  let at = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
     if (FORWARDED.test(line) || PASTE_STARTS.test(line)) break;
     // A quoted line keeps its place as a break between paragraphs.
-    lines.push(/^\s*>/.test(line) ? '' : line);
+    lines.push({ text: /^\s*>/.test(line) ? '' : line, at });
+    at += raw.length + 1;
   }
-  const pastedLine = pastedLines(lines);
-  return lines
-    .filter((_, at) => !pastedLine[at])
+  const pastedLine = pastedLines(lines.map((line) => line.text));
+  const kept = lines
+    .filter((_, index) => !pastedLine[index])
+    .map((line) => {
+      if (!spans.length) return line.text;
+      let out = '';
+      for (let index = 0; index < line.text.length; index++) {
+        const offset = line.at + index;
+        out += spans.some((span) => offset >= span.start && offset < span.end)
+          ? '\n'
+          : line.text[index];
+      }
+      return out;
+    });
+  return kept
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

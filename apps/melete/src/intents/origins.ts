@@ -168,15 +168,26 @@ export function markOrigins(
   words: Said,
 ): Record<string, ValueOrigin> {
   // Only the person's own lines: a quote, a forward or a paste says nothing for them.
-  const own: Said = { ...words, words: ownWords(words.words, words.pasted) };
-  let cached: { at: number; minute: boolean }[] | null = null;
-  const moments = () => {
-    cached ??= own.words ? spokenMoments(own) : [];
-    return cached;
-  };
+  // The service reads a paste from the message's shape; what the composer says
+  // was pasted can only take more away, so a detail is theirs only when both
+  // readings say it.
+  const readings = [
+    ownWords(words.words),
+    ...(words.pasted?.length ? [ownWords(words.words, words.pasted)] : []),
+  ].map((text) => {
+    const own: Said = { ...words, words: text };
+    let cached: { at: number; minute: boolean }[] | null = null;
+    const moments = () => {
+      cached ??= own.words ? spokenMoments(own) : [];
+      return cached;
+    };
+    return { own, moments };
+  });
   const origins: Record<string, ValueOrigin> = {};
   for (const leaf of leaves(constraints, deadline))
-    origins[leaf.path] = own.words && said(leaf, own, moments) ? 'person' : 'inferred';
+    origins[leaf.path] = readings.every(({ own, moments }) => own.words && said(leaf, own, moments))
+      ? 'person'
+      : 'inferred';
   return origins;
 }
 
