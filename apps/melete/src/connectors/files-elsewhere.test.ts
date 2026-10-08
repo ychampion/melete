@@ -239,4 +239,41 @@ withDb('files saved in other conversations', () => {
     expect(result.outcome).toBe('succeeded');
     expect(JSON.stringify(result)).not.toContain(FROM_CHATS);
   });
+
+  test("a file a deleted chat saved to the person's Files is deleted there, and the agent is told where", async () => {
+    const { chat, call, ownerId, sql, spaceId, spacesRoot, workRoot } = await setup();
+    const now = await chat('Tidy up', ownerId);
+    await mkdir(path.join(spacesRoot, spaceId, 'artifacts'), { recursive: true });
+    await writeFile(path.join(spacesRoot, spaceId, 'artifacts', 'o-test-note.txt'), 'note');
+    // As a deleted chat leaves it: no job, in the person's Files.
+    const id = recordId('art');
+    await sql`insert into artifact (id, space_id, job_id, source_job_id, area, path, content_hash, mime, size)
+      values (${id}, ${spaceId}, null, null, 'artifacts', 'o-test-note.txt', ${digest('note')}, 'text/plain', 4)`;
+    const listed = await call(now, 'files.list', { path: FROM_CHATS, area: 'artifacts' });
+    expect(JSON.stringify(listed)).toContain(`${id}/o-test-note.txt`);
+    const files = createFilesConnector({
+      workRoot,
+      spacesRoot,
+      sql,
+      privateContext: async () => false,
+    });
+    let said = 'resolved';
+    try {
+      await files.prepare?.(
+        { path: `${FROM_CHATS}/${id}/o-test-note.txt`, area: 'artifacts' },
+        {
+          job_id: now,
+          space_id: spaceId,
+          idempotency_key: '',
+          constraints: jobConstraints.parse({}),
+        },
+        sql,
+        'files.delete',
+      );
+    } catch (error) {
+      said = String(error);
+    }
+    expect(said).toContain("in the person's Files");
+    expect(said).toContain('o-test-note.txt');
+  });
 });
