@@ -104,6 +104,10 @@ describe('the path ladder', () => {
     "the browser path can't be used to get around an approval the API path needs",
     async () => {
       const s = await setup();
+      // The app could not do an earlier request, which alone would let the browser stand in.
+      expect(
+        (await s.approve(await s.viaApp({ body: 'Hold', fault: 'unsupported_route' }))).status,
+      ).toBe('failed');
       const asked = await s.viaApp({ body: 'Table for six at 7' });
       expect(asked.status).toBe('needs_approval');
       // While the app waits for the person's answer, the browser does not do it instead.
@@ -117,7 +121,7 @@ describe('the path ladder', () => {
       expect(denied).toMatchObject({ code: 'path_refused' });
       expect(String((denied as Error).message)).toContain('said no');
       expect(s.submits()).toBe(0);
-      expect(s.appCalls()).toBe(0);
+      expect(s.appCalls()).toBe(1);
     },
   );
 
