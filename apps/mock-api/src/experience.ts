@@ -1649,7 +1649,10 @@ export class ExperienceMock {
       .map((row) =>
         C.experienceConnection.parse({
           id: row.id,
-          app: row.provider === 'smtp' ? 'Mail' : appName(row),
+          app:
+            row.provider === 'smtp'
+              ? 'Mail'
+              : appName({ ...row, configuration: this.catalogOf(row.id) }),
           label: plainText(row.label, 'Connected app'),
           status: row.status === 'active' && row.health !== 'failing' ? 'connected' : 'error',
           access: row.scopes.some((scope) => /send|create|write/.test(scope))
@@ -1666,8 +1669,16 @@ export class ExperienceMock {
                 },
               }
             : {}),
+          ...(this.deps.store.connectionCatalog.has(row.id)
+            ? { catalog_id: this.deps.store.connectionCatalog.get(row.id) }
+            : {}),
         }),
       );
+  }
+  /** What appName reads to tell a catalog app by its name. */
+  private catalogOf(id: string): Record<string, unknown> {
+    const catalog = this.deps.store.connectionCatalog.get(id);
+    return catalog ? { catalog } : {};
   }
   automation(raw: unknown) {
     const parsed = C.automationCreate.parse(raw);

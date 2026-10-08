@@ -271,6 +271,8 @@ export type ConnectorOptions = {
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
   commandLine?: CommandLineCheckOptions & { awsSts?: StsOptions };
+  /** Server addresses for app catalog entries, by entry id. Only a test replaces them. */
+  mcpCatalogUrls?: Record<string, string>;
 };
 
 /**

@@ -1,5 +1,11 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { connectionResponse, mcpSignInStart, mcpSignInStatus } from '@melete/contracts';
+import {
+  connectionKindListResponse,
+  connectionResponse,
+  experienceConnectionList,
+  mcpSignInStart,
+  mcpSignInStatus,
+} from '@melete/contracts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { startFakeMcpAuth } from '../../src/connectors/fixtures/fake-mcp-auth.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -15,6 +21,8 @@ const PUBLIC_URL = 'http://localhost:3000';
 const fixture = await testDatabase();
 const queue = fixture ? await startQueue(fixture.url) : null;
 const registry = new ConnectorRegistry();
+/** Where the catalog's apps are, for this run: the fake servers each test starts. */
+const catalogUrls: Record<string, string> = {};
 const closers: Array<() => Promise<unknown> | unknown> = [];
 afterAll(async () => {
   for (const close of closers) await close();
@@ -33,6 +41,7 @@ async function harness() {
       spacesRoot: 'unused',
       masterKey: MASTER_KEY,
       insecureLocalFixtures: true,
+      mcpCatalogUrls: catalogUrls,
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
@@ -224,5 +233,157 @@ withDb('signing in to a remote MCP server', () => {
       redirect_uris: ['https://melete.example.test/api/oauth/callback'],
       token_endpoint_auth_method: 'none',
     });
+  }, 30_000);
+});
+
+withDb('connecting an app from the catalog', () => {
+  test('one click installs the tools the catalog names that the app has, and disconnect removes it', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    // The app speaks the stateless revision and lists one tool the catalog does not name.
+    const server = await startFakeMcpAuth({
+      issParameter: true,
+      protocol: '2026-07-28',
+      tools: [
+        { name: 'notion-search' },
+        { name: 'notion-fetch' },
+        { name: 'notion-create-comment' },
+        { name: 'notion-delete-everything' },
+      ],
+    });
+    closers.push(server.stop);
+    catalogUrls.notion = server.mcpUrl;
+
+    const kinds = connectionKindListResponse.parse(
+      await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
+    );
+    const notion = kinds.catalog?.find((entry) => entry.id === 'notion');
+    if (notion?.connect.method !== 'mcp_sign_in') throw new Error('Notion is not in the catalog');
+    expect(notion.available).toBe(true);
+    // What it may do is shown before connecting, with what asks first.
+    expect(notion.connect.tools).toContainEqual({
+      label: 'Comment as you',
+      effect_class: 'write_external',
+      asks_first: true,
+    });
+    expect(notion.connect.tools).toContainEqual({
+      label: 'Search your workspace',
+      effect_class: 'read',
+      asks_first: false,
+    });
+
+    const started = await h.app.request('/mcp-sign-ins', h.as(h.cookie, { catalog_id: 'notion' }));
+    expect(started.status).toBe(201);
+    const start = mcpSignInStart.parse(await started.json());
+    expect(start.issuer).toBe(server.issuer);
+    // The app takes dynamic registration, and is told what kind of client this is.
+    expect(server.registrations).toHaveLength(1);
+    expect(server.registrations[0]).toMatchObject({ application_type: 'native' });
+
+    const approved = await fetch(start.authorize_url, { redirect: 'manual' });
+    const back = new URL(approved.headers.get('location') ?? '');
+    expect(new URL(start.authorize_url).searchParams.get('resource')).toBe(server.mcpUrl);
+    const landed = await h.app.request(`/oauth/callback${back.search}`, h.as(h.cookie));
+    expect(landed.status).toBe(200);
+    expect(await landed.text()).toContain('Notion is connected');
+    const done = mcpSignInStatus.parse(
+      await (await h.app.request(`/mcp-sign-ins/${start.sign_in_id}`, h.as(h.cookie))).json(),
+    );
+    if (done.state !== 'connected') throw new Error(`Sign-in ended ${done.state}`);
+
+    const [row] = await h.sql`select label, scopes, configuration from connection
+      where id = ${done.connection_id}`;
+    if (!row) throw new Error('Notion was not installed');
+    expect(row.label).toBe('Notion');
+    expect(row.configuration.catalog).toBe('notion');
+    const installed = (row.configuration.server.tools as Array<{ name: string }>).map(
+      (tool) => tool.name,
+    );
+    expect(installed.sort()).toEqual(['notion-create-comment', 'notion-fetch', 'notion-search']);
+    expect([...(row.scopes as string[])].sort()).toEqual([
+      'mcp_notion.create_comment',
+      'mcp_notion.fetch',
+      'mcp_notion.search',
+    ]);
+    // The running connector offers exactly those, and asks first only for the comment.
+    const connector = registry.get(done.connection_id);
+    const offered = Object.fromEntries(
+      (connector?.manifest.tools ?? []).map((tool) => [tool.name, tool.requires_approval]),
+    );
+    expect(offered).toEqual({
+      'mcp_notion.create_comment': true,
+      'mcp_notion.fetch': false,
+      'mcp_notion.search': false,
+    });
+    // Every request after signing in was a stateless one, with the earned token.
+    const signedIn = server.messages;
+    expect(signedIn.map((message) => message.method)).not.toContain('initialize');
+    expect(signedIn.every((message) => message.headers.authorization?.startsWith('Bearer '))).toBe(
+      true,
+    );
+
+    // The app shows as Notion, running.
+    const listed = experienceConnectionList.parse(
+      await (await h.app.request('/experience/connections', h.as(h.cookie))).json(),
+    );
+    expect(listed.connections.find((item) => item.id === done.connection_id)).toMatchObject({
+      app: 'Notion',
+      label: 'Notion',
+      catalog_id: 'notion',
+      status: 'connected',
+    });
+
+    // Disconnecting removes it from the list, and its tools from the agent.
+    const current = connectionResponse.parse(
+      await (await h.app.request(`/connections/${done.connection_id}`, h.as(h.cookie))).json(),
+    ).connection;
+    const removed = await h.app.request(
+      `/connections/${done.connection_id}/lifecycle`,
+      h.as(h.cookie, { kind: 'revoke', expected_generation: current.generation }),
+    );
+    expect(removed.status).toBe(200);
+    const after = experienceConnectionList.parse(
+      await (await h.app.request('/experience/connections', h.as(h.cookie))).json(),
+    );
+    expect(after.connections.some((item) => item.id === done.connection_id)).toBe(false);
+    // Each call re-reads the row before it goes out, and a revoked row authorizes none.
+    const [revoked] = await h.sql`select status from connection where id = ${done.connection_id}`;
+    expect(revoked?.status).toBe('revoked');
+  }, 60_000);
+
+  test('an app whose server offers none of the catalog tools is not installed', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const server = await startFakeMcpAuth({ tools: [{ name: 'something_else' }] });
+    closers.push(server.stop);
+    catalogUrls.linear = server.mcpUrl;
+    const started = mcpSignInStart.parse(
+      await (await h.app.request('/mcp-sign-ins', h.as(h.cookie, { catalog_id: 'linear' }))).json(),
+    );
+    const approved = await fetch(started.authorize_url, { redirect: 'manual' });
+    const back = new URL(approved.headers.get('location') ?? '');
+    const landed = await h.app.request(`/oauth/callback${back.search}`, h.as(h.cookie));
+    expect(landed.status).toBe(502);
+    const [counted] = await h.sql`select count(*)::int as count from connection
+      where configuration->>'catalog' = 'linear'`;
+    expect(counted?.count).toBe(0);
+    const status = mcpSignInStatus.parse(
+      await (await h.app.request(`/mcp-sign-ins/${started.sign_in_id}`, h.as(h.cookie))).json(),
+    );
+    expect(status).toEqual({ state: 'failed', error: 'catalog_tools_unavailable' });
+  }, 60_000);
+
+  test('an app that needs a registered client is not offered until the operator sets one', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const kinds = connectionKindListResponse.parse(
+      await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
+    );
+    const github = kinds.catalog?.find((entry) => entry.id === 'github');
+    expect(github?.available).toBe(false);
+    // The operator is told what to set; the URL to register the callback is in it.
+    expect(github?.setup_hint).toContain('GITHUB_MCP_CLIENT_ID');
+    expect(github?.setup_hint).toContain(`${PUBLIC_URL}/api/oauth/callback`);
+    const refused = await h.app.request('/mcp-sign-ins', h.as(h.cookie, { catalog_id: 'github' }));
+    expect(refused.status).toBe(409);
+    const unknown = await h.app.request('/mcp-sign-ins', h.as(h.cookie, { catalog_id: 'nope' }));
+    expect(unknown.status).toBe(404);
   }, 30_000);
 });

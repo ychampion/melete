@@ -495,7 +495,12 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             {connections.data && !connections.error && list.length === 0 ? (
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
-            <AddConnection onInstalled={connections.reload} />
+            <AddConnection
+              onInstalled={connections.reload}
+              connected={
+                new Set(list.flatMap((item) => (item.catalog_id ? [item.catalog_id] : [])))
+              }
+            />
             <ConnectedAssistants />
           </div>
         ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (

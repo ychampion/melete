@@ -1,13 +1,16 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { ConnectionKind } from '../experience/types.ts';
+import type { Connection, ConnectionKind } from '../experience/types.ts';
 import {
   AccountSignIn,
+  AppConnect,
+  type AppEntry,
   ConnectionActions,
   KindForm,
   Linked,
   type SignInEntry,
 } from './ConnectionInstall.tsx';
+import { ConnectionCard } from './Settings.tsx';
 
 /** A kind this application has never heard of: the form has only the descriptor to go on. */
 const invented = {
@@ -136,12 +139,12 @@ test('a connection the service keeps in every space is tested here and not remov
     <ConnectionActions id="conn_files" label="Files" removable={false} onChanged={() => {}} />,
   );
   expect(kept).toContain('Test');
-  expect(kept).not.toContain('Remove');
+  expect(kept).not.toContain('Disconnect');
   const installed = renderToStaticMarkup(
     <ConnectionActions id="conn_mail" label="Mail" removable onChanged={() => {}} />,
   );
   expect(installed).toContain('Test');
-  expect(installed).toContain('Remove');
+  expect(installed).toContain('Disconnect');
 });
 
 /** A catalog entry for Google, as the service serves it. */
@@ -203,4 +206,126 @@ test('an address in help text is a link', () => {
   );
   expect(html).toContain('href="https://myaccount.google.com/apppasswords"');
   expect(html).toContain('create one named Melete.');
+});
+
+/** A catalog app, as the service serves it. */
+const stripeEntry = (extra: Partial<AppEntry> = {}): AppEntry => ({
+  id: 'stripe',
+  title: 'Stripe',
+  description: 'Look up customers, payments, invoices and subscriptions in Stripe.',
+  covers: ['tools'],
+  connect: {
+    method: 'mcp_sign_in',
+    url: 'https://mcp.stripe.com',
+    suggested_id: 'stripe',
+    start: '/mcp-sign-ins',
+    tools: [
+      { label: 'List customers', effect_class: 'read', asks_first: false },
+      { label: 'Add a customer', effect_class: 'write_reversible', asks_first: false },
+      { label: 'Refund a payment', effect_class: 'spend', asks_first: true },
+    ],
+  },
+  available: true,
+  warning: 'Stripe can move money: refunds each wait for your approval.',
+  ...extra,
+});
+
+test('before connecting an app, the person sees what it looks up, what it changes, and what asks first', () => {
+  const html = renderToStaticMarkup(
+    <AppConnect entry={stripeEntry()} onDone={() => {}} onInstalled={() => {}} />,
+  );
+  expect(html).toContain('Connect Stripe');
+  expect(html).toContain('Looks things up');
+  expect(html).toContain('List customers');
+  expect(html).toContain('Makes changes');
+  // Only the tool that waits for approval says so.
+  expect(html.split('Asks you first')).toHaveLength(2);
+  expect(html.indexOf('Asks you first')).toBeGreaterThan(html.indexOf('Refund a payment'));
+  expect(html).toContain('Stripe can move money');
+  expect(html).toContain('Continue to Stripe');
+});
+
+test('an app this server is not set up for links the setup guide and never names settings', () => {
+  const html = renderToStaticMarkup(
+    <AppConnect
+      entry={stripeEntry({
+        id: 'github',
+        title: 'GitHub',
+        available: false,
+        unavailable_reason: 'Connecting GitHub is not set up on this Melete yet.',
+        setup_hint: 'Set GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET.',
+      })}
+      onDone={() => {}}
+      onInstalled={() => {}}
+    />,
+  );
+  expect(html).toContain('Available when your server is set up for it.');
+  expect(html).toContain('docs/CONNECTORS.md#connecting-github');
+  expect(html).not.toContain('GITHUB_MCP');
+  expect(html).not.toContain('Continue to GitHub');
+});
+
+test('a connected app shows whether it runs, and why not when it fails', () => {
+  const base: Connection = {
+    id: 'conn_notion',
+    app: 'Notion',
+    label: 'Notion',
+    status: 'connected',
+    access: 'asks_before_acting',
+    catalog_id: 'notion',
+  };
+  const running = renderToStaticMarkup(<ConnectionCard connection={base} />);
+  expect(running).toContain('Connected');
+  expect(running).toContain('aria-label="Notion"');
+  const failing = renderToStaticMarkup(
+    <ConnectionCard
+      connection={{
+        ...base,
+        status: 'error',
+        problem: {
+          kind: 'failing',
+          detail: 'Its last check failed. Press Test to check it again.',
+        },
+      }}
+    />,
+  );
+  expect(failing).toContain('Failing');
+  expect(failing).toContain('Its last check failed. Press Test to check it again.');
+  const stopped = renderToStaticMarkup(
+    <ConnectionCard
+      connection={{
+        ...base,
+        status: 'error',
+        problem: { kind: 'not_running', detail: 'Installed, but not running on this server.' },
+      }}
+    />,
+  );
+  expect(stopped).toContain('Not running');
+  expect(stopped).toContain('Installed, but not running on this server.');
+});
+
+test('two tools that read the same to a person are one line, and the one that asks first decides', () => {
+  const html = renderToStaticMarkup(
+    <AppConnect
+      entry={stripeEntry({
+        connect: {
+          method: 'mcp_sign_in',
+          url: 'https://mcp.stripe.com',
+          suggested_id: 'stripe',
+          start: '/mcp-sign-ins',
+          tools: [
+            { label: 'Read an invoice', effect_class: 'read', asks_first: false },
+            { label: 'Read an invoice', effect_class: 'read', asks_first: false },
+            { label: 'Change an invoice', effect_class: 'write_reversible', asks_first: false },
+            { label: 'Change an invoice', effect_class: 'spend', asks_first: true },
+          ],
+        },
+      })}
+      onDone={() => {}}
+      onInstalled={() => {}}
+    />,
+  );
+  expect(html.split('Read an invoice')).toHaveLength(2);
+  expect(html.split('Change an invoice')).toHaveLength(2);
+  expect(html).toContain('Asks you first');
 });

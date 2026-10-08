@@ -4,6 +4,7 @@ import {
   accountSignInRequest,
   accountSignInStart,
   accountSignInStatus,
+  asksFirst,
   CONNECTION_CHECK_DETAIL,
   CONNECTION_KIND_DESCRIPTORS,
   type ConnectionCatalogEntry,
@@ -25,6 +26,9 @@ import {
   installPluginRequest,
   installPluginResponse,
   MCP_CATALOG,
+  type McpCatalogEntry,
+  mcpCatalogConfig,
+  mcpCatalogEntry,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
@@ -53,7 +57,7 @@ import {
 import { asConnectorFault } from '../connectors/faults.ts';
 import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
-import { mcpServerConfig } from '../connectors/mcp.ts';
+import { listMcpServerTools, mcpServerConfig } from '../connectors/mcp.ts';
 import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
@@ -300,6 +304,21 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const factory = factoryFor(deps);
   const secrets = factory.secrets;
 
+  /** Where a catalog app's server is: the catalog's address, unless a test replaced it. */
+  const catalogUrl = (entry: McpCatalogEntry) =>
+    factory.options.mcpCatalogUrls?.[entry.id] ?? entry.url;
+  /**
+   * The client an app's sign-in needs when it takes no other, from the
+   * operator's settings: undefined when it needs none, null when it is unset.
+   */
+  const catalogClient = (entry: McpCatalogEntry) => {
+    if (!entry.client) return undefined;
+    const settings = deps.env as unknown as Record<string, string | undefined>;
+    const clientId = settings[entry.client.id_setting];
+    const clientSecret = settings[entry.client.secret_setting];
+    return clientId && clientSecret ? { client_id: clientId, client_secret: clientSecret } : null;
+  };
+
   /** Filled in as each provider's sign-in is mounted, below. */
   const accountSignIns: Partial<Record<AccountProviderName, AccountSignIns<ConnectionResponse>>> =
     {};
@@ -340,24 +359,33 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
       };
     });
-    const mcpHint = signIns.redirectUri() ? undefined : RETURN_ADDRESS_NEEDED;
-    const servers = MCP_CATALOG.map(
-      (entry): ConnectionCatalogEntry => ({
+    const servers = MCP_CATALOG.map((entry): ConnectionCatalogEntry => {
+      const hint = !signIns.redirectUri()
+        ? RETURN_ADDRESS_NEEDED
+        : entry.client && !catalogClient(entry)
+          ? `Connecting ${entry.title} needs an OAuth app registered with ${entry.title} (${entry.client.register_at}), with ${signIns.redirectUri()} as its callback. Set ${entry.client.id_setting} and ${entry.client.secret_setting}.`
+          : undefined;
+      return {
         id: entry.id,
         title: entry.title,
         description: entry.description,
         covers: ['tools'],
         connect: {
           method: 'mcp_sign_in',
-          url: entry.url,
+          url: catalogUrl(entry),
           suggested_id: entry.id,
           start: '/mcp-sign-ins',
+          tools: entry.tools.map((tool) => ({
+            label: tool.label,
+            effect_class: tool.effect_class,
+            asks_first: asksFirst(tool.effect_class),
+          })),
         },
-        available: mcpHint === undefined,
-        ...unavailable(`Signing in to ${entry.title} is not set up on this Melete yet.`, mcpHint),
-        ...('warning' in entry ? { warning: entry.warning } : {}),
-      }),
-    );
+        available: hint === undefined,
+        ...unavailable(`Connecting ${entry.title} is not set up on this Melete yet.`, hint),
+        ...(entry.warning ? { warning: entry.warning } : {}),
+      };
+    });
     const forms = kinds.map(
       (kind): ConnectionCatalogEntry => ({
         id: kind.id,
@@ -469,10 +497,18 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     actor: string,
     request: CreateConnectionRequest,
     plugin?: { id: string; version: string; values: Record<string, string> },
+    catalogId?: string,
   ) => {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
-    return installResolved(actor, request.space_id, request.label, resolved.value, plugin);
+    return installResolved(
+      actor,
+      request.space_id,
+      request.label,
+      resolved.value,
+      plugin,
+      catalogId,
+    );
   };
 
   const installResolved = async (
@@ -481,6 +517,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     label: string,
     installation: Installation,
     plugin?: { id: string; version: string; values: Record<string, string> },
+    /** The catalog entry it is connected from, kept so the app is shown as that app. */
+    catalogId?: string,
   ) => {
     // Everything but an MCP server without a token or secret variables has something to seal.
     const seals =
@@ -569,7 +607,11 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           label,
           scopes: stored.scopes,
           secretRef,
-          configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
+          configuration: {
+            ...stored.configuration,
+            ...(plugin ? { plugin } : {}),
+            ...(catalogId ? { catalog: catalogId } : {}),
+          },
           status: 'disabled',
           setupState: 'connecting',
           sharedUse: installedUse(access),
@@ -656,6 +698,15 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   // would otherwise be pasted, and ends on the same installation path.
   // A sign-in may come back to any instance, so they wait in Postgres.
   const pendingSignIns = signInStore(deps.sql, factory.options.masterKey);
+  /**
+   * Only the setup owner's own space may reach a private address; everyone
+   * else's server and authorization server must be public, and are checked and
+   * pinned on every request.
+   */
+  const reachFor = async (spaceId: string) =>
+    (await setupOwnersSpace(deps.sql, spaceId))
+      ? (url: string, init: RequestInit) => fetch(url, init)
+      : publicOnlyFetch();
   const signIns = new McpSignIns({
     store: pendingSignIns,
     publicUrl: deps.env.MELETE_PUBLIC_URL,
@@ -672,10 +723,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       return spaceId;
     },
     // The same reach the connection itself will have once installed.
-    fetcherFor: async (spaceId) =>
-      (await setupOwnersSpace(deps.sql, spaceId))
-        ? (url, init) => fetch(url, init)
-        : publicOnlyFetch(),
+    fetcherFor: (spaceId) => reachFor(spaceId),
     existing: async (actor, connectionId) => {
       const [row] = await deps.db.select().from(connection).where(eq(connection.id, connectionId));
       if (!row || row.provider !== 'mcp' || row.status === 'revoked')
@@ -745,6 +793,46 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         credentials: request.credentials,
         mcp: request.mcp,
       }),
+    catalog: (id) => {
+      const entry = mcpCatalogEntry(id);
+      if (!entry) throw new McpSignInFailure('catalog_unknown');
+      const client = catalogClient(entry);
+      if (client === null) throw new McpSignInFailure('catalog_client_unset');
+      return { url: catalogUrl(entry), ...(client ? { client } : {}) };
+    },
+    // The app's server is asked which of the catalog's tools it has now, with
+    // the credential just earned, and only those are installed. A tool it has
+    // that the catalog does not name is never offered.
+    installCatalog: async (actor, request) => {
+      const entry = mcpCatalogEntry(request.catalog_id);
+      if (!entry) throw new McpSignInFailure('catalog_unknown');
+      const url = catalogUrl(entry);
+      const fetcher = await reachFor(request.space_id);
+      const offered = new Set(
+        await listMcpServerTools(
+          { transport: 'http', url },
+          { accessToken: async () => request.credentials.access_token, fetch: fetcher },
+        ).catch((error: unknown) => {
+          if (asConnectorFault(error)) throw error;
+          throw new McpSignInFailure('catalog_tools_unreadable');
+        }),
+      );
+      const tools = entry.tools.filter((tool) => offered.has(tool.name));
+      if (!tools.length) throw new McpSignInFailure('catalog_tools_unavailable');
+      return install(
+        actor,
+        {
+          space_id: request.space_id,
+          provider: 'mcp',
+          label: entry.title,
+          scopes: [],
+          credentials: request.credentials,
+          mcp: mcpCatalogConfig(entry, url, tools),
+        },
+        undefined,
+        entry.id,
+      );
+    },
   });
 
   app.post('/mcp-sign-ins', async (c) => {
@@ -1150,6 +1238,19 @@ const SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message:
     status: 404,
     message:
       'That sign-in has expired, was already used, or was started by someone else. Start again.',
+  },
+  catalog_unknown: { status: 404, message: 'There is no app by that name to connect.' },
+  catalog_client_unset: {
+    status: 409,
+    message: 'Connecting this app is not set up on this Melete yet.',
+  },
+  catalog_tools_unreadable: {
+    status: 502,
+    message: 'You signed in, but the app did not say what it can do. Try again shortly.',
+  },
+  catalog_tools_unavailable: {
+    status: 502,
+    message: 'You signed in, but the app offers none of the tools Melete uses.',
   },
 };
 

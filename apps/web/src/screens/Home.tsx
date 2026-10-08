@@ -55,6 +55,7 @@ import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
+import { ConnectAppsHint } from './ConnectAppsHint.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 import { WhatImOnSection } from './WhatImOnSection.tsx';
@@ -1080,6 +1081,7 @@ export function HomeScreen() {
               </nav>
             ) : null}
           </div>
+          <ConnectAppsHint />
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />

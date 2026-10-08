@@ -1141,6 +1141,8 @@ export const experienceConnection = z.strictObject({
    * The detail is a plain sentence for the person.
    */
   problem: z.strictObject({ kind: z.enum(['not_running', 'failing']), detail: text }).optional(),
+  /** The catalog entry it was connected from, when it was (`GET /connection-kinds`). */
+  catalog_id: z.string().optional(),
 });
 export type ExperienceConnectionProblem = NonNullable<
   z.infer<typeof experienceConnection>['problem']

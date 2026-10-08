@@ -13,7 +13,6 @@ import {
   connectionRequestProblem,
   connectionResponse,
   createConnectionRequest,
-  MCP_CATALOG,
   modalTokenParts,
   sandboxAdapterHasDesktop,
   sandboxAdapterTakesKey,
@@ -21,6 +20,7 @@ import {
 } from './connections.ts';
 import { connectionView } from './entities.ts';
 import { addressPointsAtHost, mayPullImage, mcpConnectionConfig } from './mcp.ts';
+import { MCP_CATALOG } from './mcp-catalog.ts';
 
 const SPACE = 'sp_01J00000000000000000000000';
 

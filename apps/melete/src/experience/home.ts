@@ -18,7 +18,15 @@ import { ownJob } from '../principals/authority.ts';
 import { watchedByDefault } from '../signals/poller.ts';
 import { watchable } from '../signals/watching.ts';
 import type { ExperienceEffects } from './effects.ts';
-import { actionLabel, appName, object, plainText, safeUrl, senderAddress } from './projectors.ts';
+import {
+  actionLabel,
+  appName,
+  catalogId,
+  object,
+  plainText,
+  safeUrl,
+  senderAddress,
+} from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
 export const taskView = (row: typeof task.$inferSelect) =>
@@ -69,6 +77,8 @@ export type ConnectionLiveness = (
 const NOT_RUNNING =
   'Installed, but not running on this server, so Melete cannot use it. Whoever runs Melete can check its settings and service log.';
 const FAILING = 'Its last check failed. Press Test to check it again, or reconnect it.';
+const NEEDS_ACCESS =
+  'It asked for more access than it was given. Sign in again to grant it, or Melete keeps going without that part.';
 
 export class ExperienceHome {
   constructor(
@@ -223,13 +233,16 @@ export class ExperienceHome {
     );
     return {
       connections: rows.map((row, index) => {
+        const needsAccess =
+          Array.isArray(row.configuration.needs_scope) && row.configuration.needs_scope.length > 0;
         const problem = !settled(row)
           ? undefined
           : row.status === 'active' && live[index] === 'not_running'
             ? { kind: 'not_running' as const, detail: NOT_RUNNING }
             : row.status !== 'active' || row.health === 'failing'
-              ? { kind: 'failing' as const, detail: FAILING }
+              ? { kind: 'failing' as const, detail: needsAccess ? NEEDS_ACCESS : FAILING }
               : undefined;
+        const catalog = catalogId(row);
         return experienceConnection.parse({
           id: row.id,
           app: appName(row),
@@ -248,6 +261,7 @@ export class ExperienceHome {
             ? { watching: watchedByDefault(parent?.kind ?? 'personal', row.watchChanges) }
             : {}),
           ...(problem ? { problem } : {}),
+          ...(catalog ? { catalog_id: catalog } : {}),
         });
       }),
     };

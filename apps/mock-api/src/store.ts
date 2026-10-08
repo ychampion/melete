@@ -68,6 +68,8 @@ export class MockConflict extends Error {
 export class Store {
   readonly spaces = new Map<string, Space>();
   readonly connections = new Map<string, Connection>();
+  /** The catalog app each connection was made from, when it was, by connection id. */
+  readonly connectionCatalog = new Map<string, string>();
   readonly jobs = new Map<string, Job>();
   readonly attempts = new Map<string, Attempt>();
   readonly actions = new Map<string, Action>();

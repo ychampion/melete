@@ -8,6 +8,7 @@ import {
   experienceDecision,
   experienceDraft,
   experienceReceipt,
+  mcpCatalogEntry,
   PERMISSION_FILE_PREVIEW_CHARS,
   type PermissionCard,
   permissionCard,
@@ -98,7 +99,16 @@ export function appName(row: ConnectionRow): string {
   };
   if (row.provider === 'generation')
     return row.configuration?.builtin === 'transcription' ? 'Transcription' : 'Speech';
+  // An app connected from the catalog is shown as that app.
+  const catalog = catalogId(row);
+  if (catalog) return mcpCatalogEntry(catalog)?.title ?? 'Connected app';
   return names[row.provider] ?? 'Connected app';
+}
+
+/** The catalog entry an MCP connection was made from, when it was. */
+export function catalogId(row: ConnectionRow): string | undefined {
+  const value = row.configuration?.catalog;
+  return row.provider === 'mcp' && typeof value === 'string' ? value : undefined;
 }
 const LABELS: Record<string, string> = {
   'calendar.list': 'Checked your calendar',

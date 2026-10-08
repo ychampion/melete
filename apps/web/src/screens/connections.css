@@ -30,3 +30,173 @@
   font-weight: 500;
   color: var(--secondary);
 }
+
+/* The app catalog: one card per app, two across where there is room. */
+.app-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 8px;
+}
+.app-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 12px 12px 14px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.app-card-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.app-card-note {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.app-card[data-unavailable] .app-card-name,
+.app-card[data-unavailable] .app-card-note {
+  color: var(--muted);
+}
+.app-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+}
+
+/* Connecting one app: what it does, what asks first, where the person signs in. */
+.app-connect {
+  gap: 14px;
+  padding: 16px;
+  max-width: 640px;
+}
+.app-connect-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.app-connect-note {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+.app-connect-note a {
+  color: inherit;
+  text-decoration: underline;
+}
+.app-access {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 14px;
+}
+.app-access ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text);
+}
+.app-access li {
+  overflow-wrap: anywhere;
+}
+.app-access li > span {
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.app-reads {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.app-reads > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.app-reads > ul {
+  margin-top: 6px;
+}
+
+/* Everything that takes more than one click. */
+.connect-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.connect-advanced > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 0;
+}
+.connect-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.connect-advanced-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.connect-advanced-title::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+.connect-advanced[open] .connect-advanced-title::after {
+  transform: rotate(45deg);
+}
+.connect-advanced-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The first-run hint: what connecting does, once, until the person acts on it. */
+.connect-hint {
+  gap: 12px;
+  padding: 12px 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.connect-hint-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  flex-shrink: 0;
+}
+.connect-hint-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.connect-hint-note {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}

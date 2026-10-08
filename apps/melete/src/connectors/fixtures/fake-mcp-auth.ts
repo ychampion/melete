@@ -29,6 +29,24 @@ export type FakeMcpAuthOptions = {
   wrongIss?: string;
   /** The server needs no sign-in at all. */
   open?: boolean;
+  /**
+   * The revision the MCP endpoint speaks once signed in. A handshake revision
+   * (`2025-03-26` to `2025-11-25`, or any other string, which the client should
+   * refuse) answers `initialize` with it and keeps a session; `2026-07-28` is
+   * stateless, answers only `server/discover` and requests that carry their
+   * revision, and checks the headers that mirror each request. Default
+   * `2025-11-25`.
+   */
+  protocol?: string;
+  /** The tools the endpoint lists; left out, one `read_file`. */
+  tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+};
+
+/** One request the MCP endpoint answered once signed in, as it arrived. */
+export type FakeMcpMessage = {
+  method: string;
+  params: Record<string, unknown>;
+  headers: Record<string, string>;
 };
 
 export type FakeMcpAuth = {
@@ -42,19 +60,107 @@ export type FakeMcpAuth = {
   tokenRequests: URLSearchParams[];
   /** Tokens handed out, to search logs and answers for. */
   issued: string[];
+  /** What the MCP endpoint was sent once signed in, in order. */
+  messages: FakeMcpMessage[];
   stop(): Promise<void>;
 };
 
-/** Once signed in, the endpoint speaks enough MCP for a connection's handshake and tool list. */
-async function answerMcp(request: Request): Promise<Response> {
-  const message = (await request.json().catch(() => ({}))) as { id?: unknown; method?: string };
+const STATELESS = '2026-07-28';
+const rpcError = (id: unknown, code: number, message: string, data?: unknown, status = 400) =>
+  Response.json(
+    { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data ? { data } : {}) } },
+    { status },
+  );
+
+/**
+ * Once signed in, the endpoint speaks enough MCP for a connection's handshake,
+ * its tool list and its calls, in the revision the options name.
+ */
+async function answerMcp(
+  request: Request,
+  options: FakeMcpAuthOptions,
+  messages: FakeMcpMessage[],
+): Promise<Response> {
+  const message = (await request.json().catch(() => ({}))) as {
+    id?: unknown;
+    method?: string;
+    params?: Record<string, unknown>;
+  };
+  const method = String(message.method ?? '');
+  const params = message.params ?? {};
+  messages.push({ method, params, headers: Object.fromEntries(request.headers.entries()) });
   if (message.id === undefined) return new Response(null, { status: 202 });
+  const protocol = options.protocol ?? '2025-11-25';
+  const tools = options.tools ?? [{ name: 'read_file' }];
+  const listed = tools.map((tool) => ({ inputSchema: { type: 'object' }, ...tool }));
+  const call = () => {
+    const name = String(params.name ?? '');
+    if (!tools.some((tool) => tool.name === name))
+      return { isError: true, content: [{ type: 'text', text: 'Unknown tool' }] };
+    if (name === 'needs_input')
+      return {
+        resultType: 'input_required',
+        inputRequests: { ask: { method: 'elicitation/create', params: {} } },
+      };
+    return { content: [{ type: 'text', text: `${name} done` }] };
+  };
+  if (protocol === STATELESS) {
+    const meta = (params._meta ?? {}) as Record<string, unknown>;
+    const version = meta['io.modelcontextprotocol/protocolVersion'];
+    if (method === 'initialize' || typeof version !== 'string')
+      return rpcError(message.id, -32022, 'Unsupported protocol version', {
+        supported: [STATELESS],
+      });
+    if (version !== STATELESS)
+      return rpcError(message.id, -32022, 'Unsupported protocol version', {
+        supported: [STATELESS],
+        requested: version,
+      });
+    const named = ['tools/call', 'resources/read', 'prompts/get'].includes(method);
+    if (
+      request.headers.get('mcp-protocol-version') !== version ||
+      request.headers.get('mcp-method') !== method ||
+      (named && request.headers.get('mcp-name') !== params.name) ||
+      request.headers.has('mcp-session-id')
+    )
+      return rpcError(message.id, -32020, 'Header mismatch');
+    const result =
+      method === 'server/discover'
+        ? { supportedVersions: [STATELESS], capabilities: { tools: {} } }
+        : method === 'tools/list'
+          ? { tools: listed, ttlMs: 60_000, cacheScope: 'private' }
+          : method === 'tools/call'
+            ? call()
+            : null;
+    if (!result) return rpcError(message.id, -32601, 'Method not found', undefined, 404);
+    return Response.json({
+      jsonrpc: '2.0',
+      id: message.id,
+      result: { resultType: 'complete', ...result },
+    });
+  }
+  // A handshake server knows nothing of the stateless probe, and refuses any
+  // request but `initialize` that comes without its session.
+  if (method === 'initialize')
+    return Response.json(
+      {
+        jsonrpc: '2.0',
+        id: message.id,
+        result: { protocolVersion: protocol, capabilities: { tools: {} } },
+      },
+      { headers: { 'mcp-session-id': 'fake-session' } },
+    );
+  if (request.headers.get('mcp-session-id') !== 'fake-session')
+    return rpcError(message.id, -32000, 'Bad Request: No valid session ID provided');
   const result =
-    message.method === 'initialize'
-      ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
-      : message.method === 'tools/list'
-        ? { tools: [{ name: 'read_file', inputSchema: { type: 'object' } }] }
-        : {};
+    method === 'tools/list'
+      ? { tools: listed }
+      : method === 'tools/call'
+        ? call()
+        : method === 'ping'
+          ? {}
+          : null;
+  if (!result) return rpcError(message.id, -32601, 'Method not found', undefined, 200);
   return Response.json({ jsonrpc: '2.0', id: message.id, result });
 }
 
@@ -69,6 +175,7 @@ export async function startFakeMcpAuth(options: FakeMcpAuthOptions = {}): Promis
     authorizeRequests: [] as URLSearchParams[],
     tokenRequests: [] as URLSearchParams[],
     issued: [] as string[],
+    messages: [] as FakeMcpMessage[],
   };
   let origin = '';
   const issuer = () => `${origin}/auth`;
@@ -94,13 +201,14 @@ export async function startFakeMcpAuth(options: FakeMcpAuthOptions = {}): Promis
       const url = new URL(request.url);
       const at = url.pathname;
       state.requests.push(at);
+      if (at === '/mcp' && request.method === 'DELETE') return new Response(null, { status: 204 });
       if (at === '/mcp') {
         const bearer = request.headers.get('authorization');
         if (
           options.open ||
           (bearer?.startsWith('Bearer ') && state.issued.includes(bearer.slice(7)))
         )
-          return answerMcp(request);
+          return answerMcp(request, options, state.messages);
         const parts = [
           ...(options.challengeHeader !== false
             ? [`resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`]

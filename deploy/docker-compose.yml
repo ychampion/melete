@@ -269,6 +269,9 @@ services:
       # Signing in with Google for Gmail and Google Calendar (docs/mail-calendar.md).
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      # Connecting GitHub from the app catalog (docs/CONNECTORS.md).
+      GITHUB_MCP_CLIENT_ID: ${GITHUB_MCP_CLIENT_ID:-}
+      GITHUB_MCP_CLIENT_SECRET: ${GITHUB_MCP_CLIENT_SECRET:-}
       # Signing in with Microsoft for Outlook mail and calendar (docs/mail-calendar.md).
       MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
       MICROSOFT_OAUTH_CLIENT_SECRET: ${MICROSOFT_OAUTH_CLIENT_SECRET:-}
