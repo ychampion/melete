@@ -215,7 +215,9 @@ describe('signing in', () => {
 
     const callback = await approve(started.authorize_url);
     const done = await service.complete('prn_owner', callback.searchParams);
-    expect(done.connection.id).toBe('conn_01J00000000000000000000000');
+    expect('connection' in done ? done.connection.id : null).toBe(
+      'conn_01J00000000000000000000000',
+    );
     // The token endpoint checked the verifier against the challenge and the resource.
     const exchange = server.tokenRequests[0];
     expect(exchange?.get('resource')).toBe(server.mcpUrl);
@@ -375,7 +377,9 @@ describe('asking for more access', () => {
     expect(asked).toEqual(expect.arrayContaining(['files:read', 'files:write', 'offline_access']));
     const back = await approve(started.authorize_url);
     const result = await service.complete('prn_owner', back.searchParams);
-    expect(result.connection.id).toBe('conn_01J00000000000000000000001');
+    expect('connection' in result ? result.connection.id : null).toBe(
+      'conn_01J00000000000000000000001',
+    );
     expect(installed).toHaveLength(0);
     expect(renewed[0]?.connectionId).toBe('conn_01J00000000000000000000001');
     expect(renewed[0]?.credentials).toMatchObject({ resource: server.mcpUrl, scope: 'files:read' });

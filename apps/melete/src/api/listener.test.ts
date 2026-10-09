@@ -103,6 +103,35 @@ describe('owner API network boundary', () => {
       expect(await seen(proxy, headers)).toEqual({ remoteAddress: proxy, clientAddress: proxy });
   });
 
+  test('the web origin header counts only from the trusted proxy, and only as a bare origin', async () => {
+    const proxy = '172.20.0.5';
+    const fetch = apiFetch(
+      { fetch: (_request, bindings) => Response.json(bindings) },
+      network,
+      (peer) => peer === proxy,
+    );
+    const seen = async (peer: string, origin: string) =>
+      (
+        await fetch(
+          new Request('http://melete-api:8787/connection-kinds', {
+            headers: { 'X-Melete-Web-Origin': origin },
+          }),
+          { requestIP: () => ({ address: peer }) },
+        )
+      ).json();
+    expect(await seen(proxy, 'http://127.0.0.1:13200')).toEqual({
+      remoteAddress: proxy,
+      clientAddress: proxy,
+      webOrigin: 'http://127.0.0.1:13200',
+    });
+    expect(await seen('172.20.0.1', 'https://melete.example.com')).toEqual({
+      remoteAddress: '172.20.0.1',
+      clientAddress: '172.20.0.1',
+    });
+    for (const origin of ['https://melete.example.com/path', 'javascript:alert(1)', 'nonsense'])
+      expect(await seen(proxy, origin)).toEqual({ remoteAddress: proxy, clientAddress: proxy });
+  });
+
   test('without a configured proxy no peer is believed', async () => {
     const fetch = apiFetch({ fetch: (_request, bindings) => Response.json(bindings) }, network);
     const response = await fetch(

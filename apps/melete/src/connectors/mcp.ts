@@ -14,12 +14,13 @@ import {
   type VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
-import { ConnectorFaultError } from './faults.ts';
+import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import { type McpParamHeader, mcpParamHeaders, mcpParamHeaderValues } from './mcp-headers.ts';
 import {
   MCP_CLIENT_INFO,
   MCP_HANDSHAKE_VERSIONS,
   MCP_PROTOCOL_VERSION,
+  McpProtocolError,
   type McpTransport,
   type McpTransportOptions,
   openHttpMcpTransport,
@@ -69,7 +70,9 @@ const serverTool = z.object({
   // inputs: the operator's policy sets each tool's effect. A declared
   // readOnlyHint only lets a read whose answer never came be settled as failed
   // rather than asked about, which never widens what a tool may do.
-  annotations: z.object({ readOnlyHint: z.boolean().optional() }).optional(),
+  annotations: z
+    .object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional() })
+    .optional(),
 });
 /** A tool whose definition is larger than this is never offered: no schema that size fits a turn. */
 export const MAX_TOOL_DEFINITION_BYTES = 64 * 1024;
@@ -119,6 +122,51 @@ export type McpWorkerOptions = McpTransportOptions & {
    */
   pinned?: McpToolDefinition[];
 };
+
+/** A tool the installation names that the server does not list. */
+export class McpToolMissingError extends Error {
+  constructor(readonly tool: string) {
+    super(`Configured MCP tool is unavailable: ${tool}`);
+    this.name = 'McpToolMissingError';
+  }
+}
+
+/** Transport failures that mean nothing answered, or nothing answered in time. */
+const UNANSWERED = new Set([
+  'MCP server did not answer in time',
+  'MCP server stopped sending before it answered',
+]);
+
+/**
+ * Why opening an MCP server failed, in the terms a person can act on: it
+ * could not be reached, what answered is not an MCP server, or it lacks a tool
+ * the installation names. Anything else (a refused credential included) is
+ * left to the caller.
+ */
+export function mcpOpenFailure(error: unknown): 'unreachable' | 'not_mcp' | 'tool_missing' | null {
+  if (error instanceof McpToolMissingError) return 'tool_missing';
+  const fault = asConnectorFault(error);
+  if (fault)
+    return fault.kind === 'transient_before_dispatch' || fault.kind === 'unsupported_route'
+      ? 'unreachable'
+      : null;
+  if (!(error instanceof Error)) return null;
+  if (UNANSWERED.has(error.message)) return 'unreachable';
+  // A socket, DNS or TLS failure from the request itself.
+  const code = (error as { code?: unknown }).code;
+  if (error.name === 'TypeError' || 'syscall' in error || (typeof code === 'string' && code))
+    return 'unreachable';
+  if (
+    error instanceof McpProtocolError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError ||
+    /^(Unsupported MCP response content type|Invalid MCP|Empty MCP response|MCP response id mismatch|MCP stream ended|MCP server negotiated)/.test(
+      error.message,
+    )
+  )
+    return 'not_mcp';
+  return null;
+}
 
 const notRunning = () =>
   new ConnectorFaultError({
@@ -216,7 +264,7 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
   const tools = config.tools
     .flatMap((policy) => {
       const definition = discovered.get(policy.name);
-      if (!definition) throw new Error(`Configured MCP tool is unavailable: ${policy.name}`);
+      if (!definition) throw new McpToolMissingError(policy.name);
       // What is recorded is the tool, never the server's own annotations.
       const { annotations, ...recorded } = definition;
       definitions.push(recorded);
@@ -313,6 +361,26 @@ async function introduce(transport: McpTransport) {
 }
 
 /**
+ * The tools a remote server offers now, as it describes them, read once and
+ * let go. Its own hints come back too, for suggesting where each starts; they
+ * are never recorded with an installation.
+ */
+export async function discoverMcpServerTools(
+  endpoint: { transport: 'http'; url: string },
+  options: McpTransportOptions = {},
+): Promise<McpToolDefinition[]> {
+  const transport = openHttpMcpTransport(
+    { transport: 'http', url: mcpHttpUrl.parse(endpoint.url) },
+    options,
+  );
+  try {
+    return [...(await introduce(transport)).discovered.values()];
+  } finally {
+    await transport.close();
+  }
+}
+
+/**
  * The names of the tools a remote server offers now, read once and let go.
  * Connecting an app from the catalog installs only the tools its server has.
  */
@@ -320,15 +388,7 @@ export async function listMcpServerTools(
   endpoint: { transport: 'http'; url: string },
   options: McpTransportOptions = {},
 ): Promise<string[]> {
-  const transport = openHttpMcpTransport(
-    { transport: 'http', url: mcpHttpUrl.parse(endpoint.url) },
-    options,
-  );
-  try {
-    return [...(await introduce(transport)).discovered.keys()];
-  } finally {
-    await transport.close();
-  }
+  return (await discoverMcpServerTools(endpoint, options)).map((tool) => tool.name);
 }
 
 async function openMcpSession(

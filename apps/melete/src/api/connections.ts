@@ -21,26 +21,32 @@ import {
   connectionResponse,
   connectionView,
   createConnectionRequest,
+  type DiscoveredMcpTool,
   DRIVE_CONSENT_WORDS,
   describePlugin,
   installPluginRequest,
   installPluginResponse,
+  MAX_DISCOVERED_TOOLS,
   MCP_CATALOG,
   type McpCatalogEntry,
   managedSignInRequest,
   managedSignInStart,
   mcpCatalogConfig,
   mcpCatalogEntry,
+  mcpSignInInstall,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
+  mcpToolDiscovery,
+  mcpToolDiscoveryRequest,
   PLUGIN_CATALOG,
   pluginEntry,
   pluginInstallation,
   pluginListResponse,
+  suggestedEffect,
 } from '@melete/contracts';
 import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import {
   type AccountGrant,
@@ -70,7 +76,14 @@ import {
   settleManagedRemoval,
 } from '../connectors/managed-accounts.ts';
 import { type ManagedGrant, ManagedSignIns } from '../connectors/managed-sign-in.ts';
-import { listMcpServerTools, mcpServerConfig } from '../connectors/mcp.ts';
+import {
+  discoverMcpServerTools,
+  listMcpServerTools,
+  type McpToolDefinition,
+  mcpOpenFailure,
+  mcpServerConfig,
+} from '../connectors/mcp.ts';
+import { catalogAppMissing, RETURN_ADDRESS_NEEDED } from '../connectors/mcp-catalog-ready.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
 import { McpSignIns } from '../connectors/mcp-sign-in.ts';
@@ -107,6 +120,7 @@ import {
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { ServiceError } from './errors.ts';
+import type { RequestSource } from './listener.ts';
 
 export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegistry; env: Env };
 
@@ -206,11 +220,13 @@ const factoryFor = (deps: ConnectionDeps): ConnectorFactory =>
  * not answer at all.
  */
 function openFailure(error: unknown, provider: string): ConnectionCheck['code'] {
+  if (provider !== 'mcp') return 'unavailable';
   const fault = asConnectorFault(error);
-  return provider === 'mcp' &&
-    (fault?.kind === 'expired_credential' || fault?.kind === 'revoked_credential')
-    ? 'needs_sign_in'
-    : 'unavailable';
+  if (fault?.kind === 'expired_credential' || fault?.kind === 'revoked_credential')
+    return 'needs_sign_in';
+  // Said as what went wrong: nothing answered, what answered is not an MCP
+  // server, or the server lacks a tool the installation names.
+  return mcpOpenFailure(error) ?? 'unavailable';
 }
 
 /** A check is a code and the sentence that belongs to it, nothing else. */
@@ -377,6 +393,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const catalog = (
     kinds: ConnectionKindDescriptor[],
     operator: boolean,
+    /** The address the person's browser opened Melete at, when the trusted proxy said. */
+    webOrigin: string | undefined,
   ): ConnectionCatalogEntry[] => {
     const unavailable = (reason: string, hint: string | undefined) =>
       hint === undefined
@@ -423,12 +441,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
       };
     });
+    const returnTo = signIns.redirectUri(webOrigin);
     const servers = MCP_CATALOG.map((entry): ConnectionCatalogEntry => {
-      const hint = !signIns.redirectUri()
-        ? RETURN_ADDRESS_NEEDED
-        : entry.client && !catalogClient(entry)
-          ? `Connecting ${entry.title} needs an OAuth app registered with ${entry.title} (${entry.client.register_at}), with ${signIns.redirectUri()} as its callback. Set ${entry.client.id_setting} and ${entry.client.secret_setting}.`
-          : undefined;
+      const missing = catalogAppMissing(entry, returnTo, Boolean(catalogClient(entry)));
       return {
         id: entry.id,
         title: entry.title,
@@ -445,8 +460,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
             asks_first: asksFirst(tool.effect_class),
           })),
         },
-        available: hint === undefined,
-        ...unavailable(`Connecting ${entry.title} is not set up on this Melete yet.`, hint),
+        available: missing === undefined,
+        ...(missing ? unavailable(missing.reason, missing.hint) : {}),
         ...(entry.warning ? { warning: entry.warning } : {}),
       };
     });
@@ -470,7 +485,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     );
     const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
     const operator = installation !== undefined && installation.id === c.get('owner').id;
-    return c.json(connectionKindListResponse.parse({ kinds, catalog: catalog(kinds, operator) }));
+    return c.json(
+      connectionKindListResponse.parse({
+        kinds,
+        catalog: catalog(kinds, operator, webOriginOf(c)),
+      }),
+    );
   });
   app.get('/connections', async (c) => {
     const rows = await deps.db
@@ -884,6 +904,23 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         credentials: request.credentials,
         mcp: request.mcp,
       }),
+    // A server signed in to by its address: its tools are read with the
+    // credential just earned, for the person to choose from.
+    discover: async (spaceId, url, credentials) => {
+      try {
+        return discoveredTools(
+          await discoverMcpServerTools(
+            { transport: 'http', url },
+            {
+              accessToken: async () => credentials.access_token,
+              fetch: await reachFor(spaceId),
+            },
+          ),
+        );
+      } catch (error) {
+        throw new McpSignInFailure(`discover_${mcpOpenFailure(error) ?? 'failed'}`);
+      }
+    },
     catalog: (id) => {
       const entry = mcpCatalogEntry(id);
       if (!entry) throw new McpSignInFailure('catalog_unknown');
@@ -931,7 +968,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     if (!parsed.success)
       throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
     try {
-      const started = await signIns.start(c.get('owner').id, parsed.data);
+      const started = await signIns.start(c.get('owner').id, parsed.data, webOriginOf(c));
       return c.json(
         mcpSignInStart.parse({
           ...started,
@@ -941,6 +978,77 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       );
     } catch (error) {
       throw signInError(error);
+    }
+  });
+
+  // The tools a person kept from a server they signed in to by its address.
+  app.post('/mcp-sign-ins/:id/install', async (c) => {
+    const parsed = mcpSignInInstall.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    try {
+      return c.json(
+        await signIns.installReady(c.get('owner').id, c.req.param('id'), parsed.data.tools),
+        201,
+      );
+    } catch (error) {
+      throw signInError(error);
+    }
+  });
+
+  // What a server added by its address offers, before anything is installed:
+  // its tools with where each would start, or that it wants a sign-in first.
+  app.post('/mcp-servers/discover', async (c) => {
+    const parsed = mcpToolDiscoveryRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    const actor = c.get('owner').id;
+    const spaceId = parsed.data.space_id ?? (await personalSpace(deps.db, actor));
+    // Authority first, so no address is fetched for someone who may not install here.
+    await installer(deps.db, spaceId, actor, 'mcp');
+    if (
+      (await spaceReach(deps.sql, spaceId)) === 'public' &&
+      !(await isPublicEndpoint(parsed.data.url))
+    )
+      throw new ServiceError(
+        'address_not_reachable',
+        `${UNREACHABLE} An MCP server must be at a public address.`,
+        400,
+      );
+    const token = parsed.data.access_token;
+    if (token && !parsed.data.url.startsWith('https://'))
+      throw new ServiceError(
+        'invalid_request',
+        'A token is only sent to an https:// address. Use the server’s https:// address.',
+        400,
+      );
+    try {
+      const tools = await discoverMcpServerTools(
+        { transport: 'http', url: parsed.data.url },
+        {
+          ...(token ? { accessToken: async () => token } : {}),
+          fetch: await reachFor(spaceId),
+        },
+      );
+      return c.json(mcpToolDiscovery.parse({ state: 'ready', tools: discoveredTools(tools) }));
+    } catch (error) {
+      const fault = asConnectorFault(error);
+      if (fault?.kind === 'expired_credential' || fault?.kind === 'revoked_credential') {
+        // With a token, the server refused it; without one, it wants a sign-in.
+        if (token)
+          throw new ServiceError(
+            'mcp_token_refused',
+            'The server refused that token. Check it, or leave it out to sign in instead.',
+            400,
+          );
+        return c.json(mcpToolDiscovery.parse({ state: 'needs_sign_in' }));
+      }
+      const why = mcpOpenFailure(error);
+      throw new ServiceError(
+        `mcp_${why ?? 'failed'}`,
+        DISCOVERY_FAILURES[why ?? 'failed'],
+        why === 'unreachable' ? 502 : 400,
+      );
     }
   });
 
@@ -955,6 +1063,13 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   app.get('/oauth/callback', async (c) => {
     try {
       const installed = await signIns.complete(c.get('owner').id, new URL(c.req.url).searchParams);
+      if ('ready' in installed)
+        return c.html(
+          signInPage(
+            'Signed in',
+            'You signed in. Go back to Melete to choose which of its tools to use. You can close this tab.',
+          ),
+        );
       const label = installed.connection.label;
       return c.html(
         installed.check?.status === 'failing'
@@ -1578,7 +1693,55 @@ const SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message:
     status: 502,
     message: 'You signed in, but the app offers none of the tools Melete uses.',
   },
+  discovery_unavailable: { status: 409, message: 'This Melete cannot read a server’s tools.' },
+  discover_unreachable: {
+    status: 502,
+    message: 'You signed in, but the server could not be reached to read its tools. Try again.',
+  },
+  discover_not_mcp: {
+    status: 502,
+    message:
+      'You signed in, but the server did not answer as an MCP server when asked for its tools.',
+  },
+  discover_failed: {
+    status: 502,
+    message: 'You signed in, but the server did not list its tools. Try again shortly.',
+  },
+  tool_not_listed: {
+    status: 400,
+    message: 'Choose at least one of the tools the server listed.',
+  },
 };
+
+/** Why reading a server's tools failed, said as what went wrong. */
+const DISCOVERY_FAILURES: Record<'unreachable' | 'not_mcp' | 'tool_missing' | 'failed', string> = {
+  unreachable:
+    'Melete could not reach that address, or nothing answered in time. Check the address and that the server is running.',
+  not_mcp:
+    'Something answered at that address, but not as an MCP server. Check that it is the server’s MCP address, which often ends in /mcp.',
+  tool_missing: 'The server did not list its tools. Try again shortly.',
+  failed: 'The server did not list its tools as expected. Try again shortly.',
+};
+
+/** A server's tools as the person first sees them: where each starts, which they can change. */
+function discoveredTools(tools: McpToolDefinition[]): DiscoveredMcpTool[] {
+  return (
+    tools
+      // A name an installation could not hold is not offered.
+      .filter((tool) => /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name))
+      .slice(0, MAX_DISCOVERED_TOOLS * 4)
+      .map((tool) => ({
+        name: tool.name,
+        ...(tool.description
+          ? { description: tool.description.replace(/\s+/g, ' ').trim().slice(0, 400) }
+          : {}),
+        effect_class: suggestedEffect(tool),
+      }))
+  );
+}
+
+/** The address the person's browser opened Melete at, as only the trusted web proxy can say. */
+const webOriginOf = (c: Context) => (c.env as RequestSource | undefined)?.webOrigin;
 
 function signInError(error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
@@ -1594,8 +1757,7 @@ function signInError(error: unknown): ServiceError {
 }
 
 const ACCOUNT_TITLES = { google: 'Google', microsoft: 'Microsoft' } as const;
-const RETURN_ADDRESS_NEEDED =
-  'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.';
+
 /** What a connection of each kind can do, for the catalog. */
 const KIND_COVERS = {
   mail: 'mail',

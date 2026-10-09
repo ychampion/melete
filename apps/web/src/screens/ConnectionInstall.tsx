@@ -29,6 +29,7 @@ import type {
 import { toast } from '../shell/Shell.tsx';
 import { APP_PASSWORD } from './app-passwords.ts';
 import './connections.css';
+import { McpServerAdd } from './McpServerAdd.tsx';
 
 /** Where an installation's owner reads how to turn on each sign-in. */
 const SETUP_DOC = 'https://github.com/ychampion/melete/blob/main/docs/mail-calendar.md';
@@ -639,7 +640,8 @@ export function AppConnect({
           toast({ kind: 'ok', title: `${entry.title} connected` });
           onInstalled();
           onDone();
-        } else setError(SIGN_IN_ENDED[r.data.error] ?? 'The connection didn’t finish. Try again.');
+        } else if (r.data.state === 'failed')
+          setError(SIGN_IN_ENDED[r.data.error] ?? 'The connection didn’t finish. Try again.');
       });
     }, 2000);
     return () => window.clearInterval(timer);
@@ -692,14 +694,18 @@ export function AppConnect({
         </div>
       ) : null}
       {!entry.available ? (
-        <span className="app-connect-note">
-          {NOT_SET_UP}{' '}
-          {SETUP_DOCS[entry.id] ? (
-            <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
-              How to set this up
-            </a>
-          ) : null}
-        </span>
+        <div className="col" style={{ gap: 4 }}>
+          <span className="app-connect-note">
+            {entry.unavailable_reason ?? NOT_SET_UP}{' '}
+            {SETUP_DOCS[entry.id] ? (
+              <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
+                How to set this up
+              </a>
+            ) : null}
+          </span>
+          {/* Sent only to whoever runs this Melete: the one thing to change. */}
+          {entry.setup_hint ? <span className="app-connect-note">{entry.setup_hint}</span> : null}
+        </div>
       ) : host ? (
         <span className="app-connect-note">
           You sign in at <strong>{host}</strong>, and can disconnect here at any time.
@@ -833,6 +839,13 @@ export function AddConnection({
           onInstalled={onInstalled}
           {...(spaceId ? { spaceId } : {})}
         />
+      ) : kind?.kind === 'mcp' ? (
+        <McpServerAdd
+          key={kind.id}
+          {...(spaceId ? { spaceId } : {})}
+          onInstalled={onInstalled}
+          onDone={() => setChosen(null)}
+        />
       ) : kind ? (
         <KindForm
           key={kind.id}
@@ -921,8 +934,8 @@ export function AddConnection({
                       ))}
                     </div>
                     <span className="app-connect-note">
-                      A server that asks you to sign in offers it after you add it, with your own
-                      OAuth app if it takes no other.
+                      Melete reads a server’s tools from its address, after you sign in when it
+                      asks, and you choose which to use.
                     </span>
                   </div>
                 ) : null}

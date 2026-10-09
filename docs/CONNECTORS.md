@@ -791,7 +791,34 @@ instead of pasting a token. `POST /mcp-sign-ins` takes the same `label` and
 server returns the browser to `<MELETE_PUBLIC_URL>/api/oauth/callback`, the
 connection is installed exactly as a pasted credential would be, and
 `GET /mcp-sign-ins/{id}` reports `pending`, `connected` or `failed`.
-`MELETE_PUBLIC_URL` must be an `https://` address or a `localhost` one.
+`MELETE_PUBLIC_URL` must be an `https://` address or a `localhost` one. When it
+is unset (or not one of those), the browser is returned to the address the
+person opened Melete at, as the web proxy states it in `X-Melete-Web-Origin`
+(believed only from `MELETE_TRUSTED_PROXY`), when that address is `https://` or
+on this machine, such as an SSH tunnel to `http://127.0.0.1:<port>`. The web
+proxy lets that return through as a page load even though it arrives from the
+app's own site.
+
+### Adding a server by its address
+
+Nobody types tool names. `POST /mcp-servers/discover` takes the server's `url`
+(and an `access_token` when its owner issued one) and answers with its tools
+from `tools/list`, each with a suggested effect: `read` when the server marks it
+read-only or it is named like a lookup (`get_`, `list_`, `search_`, `read_`…)
+and does not say it destroys; `spend` when its name is about money; and
+`write_reversible` when it says it destroys nothing; otherwise `write_external`,
+which asks first. The suggestion is only where the person starts: they keep or
+drop each tool and choose how far it may act, and the installation is built
+from that, one grant per tool (`mcpDiscoveredConfig`). A server that wants a
+sign-in answers `needs_sign_in`; `POST /mcp-sign-ins` with
+`{ "label", "discover": { "id", "url" } }` signs in, reads the tools with the
+new credential, and waits (`ready`, with the tools) until
+`POST /mcp-sign-ins/{id}/install` names the tools kept.
+
+A connection that fails says what went wrong: `unreachable` (nothing answered,
+or not in time), `not_mcp` (something answered, but not as an MCP server), or
+`tool_missing` (the server no longer has a tool the connection names). Evidence:
+[mcp-discovery.test.ts](../apps/melete/src/connectors/mcp-discovery.test.ts).
 
 The client follows the MCP authorization specification: protected resource
 metadata (RFC 9728), authorization server metadata or OpenID discovery with an
@@ -912,7 +939,12 @@ app registered with GitHub ahead of time. Register one at
 github.com/settings/applications/new (free, with no review), with
 `<MELETE_PUBLIC_URL>/api/oauth/callback` as its callback URL, then set
 `GITHUB_MCP_CLIENT_ID` and `GITHUB_MCP_CLIENT_SECRET` and restart. Until both are
-set, GitHub is listed as not set up, and its operator is told what to set.
+set, GitHub is listed as not set up, people are told it needs an app registered
+by whoever runs Melete, and its operator is told what to set.
+
+Notion, Linear, Atlassian, Sentry and Stripe need nothing set up: each one's
+authorization server offers dynamic client registration (RFC 7591), so they are
+ready wherever the browser has somewhere to come back to.
 
 A stdio MCP server never runs under the service's own identity. The stdio
 fixture above is launched only by tests; a server a person installs runs in a

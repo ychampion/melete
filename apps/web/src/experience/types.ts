@@ -169,6 +169,9 @@ export type ManagedSignInStart = Ok<paths['/managed-sign-ins'], 'post'>;
 /** Signing in to a remote MCP server, for a connection that is already installed. */
 export type McpSignInStart = Ok<paths['/mcp-sign-ins'], 'post'>;
 export type McpSignInStatus = Ok<paths['/mcp-sign-ins/{id}'], 'get'>;
+/** The tools a server added by its address lists, or that it wants a sign-in first. */
+export type McpToolDiscovery = Ok<paths['/mcp-servers/discover'], 'post'>;
+export type DiscoveredMcpTool = Extract<McpToolDiscovery, { state: 'ready' }>['tools'][number];
 export type ConnectionField = ConnectionKind['fields'][number];
 export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;

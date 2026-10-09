@@ -336,6 +336,7 @@ describe('same-origin API proxy', () => {
             forwarded: request.headers.get('forwarded'),
             forwardedHost: request.headers.get('x-forwarded-host'),
             clientAddress: request.headers.get('x-melete-client-address'),
+            webOrigin: request.headers.get('x-melete-web-origin'),
             body: await request.text(),
           },
           {
@@ -375,6 +376,7 @@ describe('same-origin API proxy', () => {
         'content-type': 'application/json',
         forwarded: 'host=untrusted.example;proto=https',
         'x-forwarded-host': 'untrusted.example',
+        'x-melete-web-origin': 'https://untrusted.example',
       },
       body: '{"email":"owner@example.test"}',
     });
@@ -388,6 +390,8 @@ describe('same-origin API proxy', () => {
       forwarded: null,
       forwardedHost: null,
       clientAddress: '127.0.0.1',
+      // Where the browser opened Melete, replacing anything it claimed.
+      webOrigin: webOrigin(),
       body: '{"email":"owner@example.test"}',
     });
     expect(response.headers.getSetCookie()).toEqual([
@@ -447,6 +451,40 @@ describe('same-origin API proxy', () => {
       });
       expect(response.status).toBe(403);
     }
+    expect(apiRequests).toBe(count);
+  });
+
+  test("a sign-in's return from the app's own site reaches the API as a page load, and nothing else does", async () => {
+    for (const path of ['/api/oauth/callback', '/api/oauth/google/callback']) {
+      const response = await fetch(`${webOrigin()}${path}?code=c&state=s`, {
+        headers: {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+          cookie: 'melete_session=session-value',
+        },
+      });
+      expect(response.status).toBe(201);
+      const seen = (await response.json()) as { path: string; cookie: string | null };
+      expect(seen.path).toBe(path.slice('/api'.length));
+      // The sign-in is the person's own, so their session goes with it.
+      expect(seen.cookie).toBe('melete_session=session-value');
+    }
+    const count = apiRequests;
+    for (const init of [
+      { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' } },
+      {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
+        body: '{}',
+      },
+    ]) {
+      const response = await fetch(`${webOrigin()}/api/oauth/callback?code=c&state=s`, init);
+      expect(response.status).toBe(403);
+    }
+    const other = await fetch(`${webOrigin()}/api/connections`, {
+      headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
+    });
+    expect(other.status).toBe(403);
     expect(apiRequests).toBe(count);
   });
 

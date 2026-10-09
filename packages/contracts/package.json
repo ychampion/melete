@@ -25,6 +25,10 @@
       "types": "./src/mention.ts",
       "default": "./src/mention.ts"
     },
+    "./mcp-catalog": {
+      "types": "./src/mcp-catalog.ts",
+      "default": "./src/mcp-catalog.ts"
+    },
     "./attachments": {
       "types": "./src/attachments.ts",
       "default": "./src/attachments.ts"

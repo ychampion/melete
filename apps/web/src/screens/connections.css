@@ -200,3 +200,32 @@
   line-height: 19px;
   color: var(--muted);
 }
+
+/* A server added by its address: each tool it lists, kept or dropped, and how far it may act. */
+.mcp-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mcp-tool {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 260px);
+  gap: 8px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.mcp-tool[data-dropped="true"] {
+  opacity: 0.6;
+}
+.mcp-tool-name {
+  font-size: 13px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .mcp-tool {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
