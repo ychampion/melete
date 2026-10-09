@@ -128,6 +128,8 @@ export type AppDeps = {
    * switches them on the service. Off unless `MELETE_MOCK_MULTIPLAYER=on` or a test says so.
    */
   multiplayer?: boolean;
+  /** Google signs in through Composio, as with `COMPOSIO_API_KEY` (`MELETE_MOCK_COMPOSIO=on`). */
+  composio?: boolean;
 };
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
@@ -931,7 +933,7 @@ export function createMockApp(deps: AppDeps) {
   });
 
   // The catalog, and signing in to what it offers.
-  mountMockSignIns(app, store, deps.spaceId);
+  mountMockSignIns(app, store, deps.spaceId, { composio: deps.composio === true });
 
   app.post('/connections', async (c) => {
     const parsed = await parseBody(c.req.raw, createConnectionRequest);

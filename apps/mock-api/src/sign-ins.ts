@@ -17,6 +17,8 @@ import {
   ID_PREFIXES,
   MCP_CATALOG,
   type McpCatalogEntry,
+  managedSignInRequest,
+  managedSignInStart,
   mcpCatalogConfig,
   mcpCatalogEntry,
   mcpConnectedClientList,
@@ -37,24 +39,44 @@ const COVERS: Record<ConnectionKindDescriptor['kind'], ConnectionCatalogEntry['c
   command_line: 'execution',
 };
 
+/** What the service's catalog says about a Google sign-in through Composio. */
+const COMPOSIO_NOTE =
+  'Composio handles this sign-in and keeps the Google access. Your mail, calendar and Drive reach Melete through Composio.';
+
 /** Everything the mock offers to connect: account sign-ins, catalog apps, then forms. */
-export function mockCatalog(): ConnectionCatalogEntry[] {
+export function mockCatalog(options: { composio?: boolean } = {}): ConnectionCatalogEntry[] {
   return [
     ...ACCOUNT_CATALOG.map(
-      (entry): ConnectionCatalogEntry => ({
-        id: entry.id,
-        title: entry.title,
-        description: entry.description,
-        covers: [...entry.covers],
-        connect: {
-          method: 'sign_in',
-          provider: entry.provider,
-          start: `/${entry.provider}-sign-ins`,
-          issuer: entry.issuer,
-          scopes: entry.scopes.map((scope) => ({ ...scope })),
-        },
-        available: true,
-      }),
+      (entry): ConnectionCatalogEntry =>
+        options.composio && entry.provider === 'google'
+          ? {
+              id: entry.id,
+              title: entry.title,
+              description: entry.description,
+              covers: [...entry.covers],
+              connect: {
+                method: 'managed_sign_in',
+                provider: 'google',
+                via: 'composio',
+                start: '/managed-sign-ins',
+                note: COMPOSIO_NOTE,
+              },
+              available: true,
+            }
+          : {
+              id: entry.id,
+              title: entry.title,
+              description: entry.description,
+              covers: [...entry.covers],
+              connect: {
+                method: 'sign_in',
+                provider: entry.provider,
+                start: `/${entry.provider}-sign-ins`,
+                issuer: entry.issuer,
+                scopes: entry.scopes.map((scope) => ({ ...scope })),
+              },
+              available: true,
+            },
     ),
     ...MCP_CATALOG.map(
       (entry): ConnectionCatalogEntry => ({
@@ -126,7 +148,12 @@ type Pending = {
   expiresAt: number;
 };
 
-export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
+export function mountMockSignIns(
+  app: Hono,
+  store: Store,
+  spaceId: string,
+  options: { composio?: boolean } = {},
+) {
   const pending = new Map<string, Pending>();
   const origin = (url: string) => new URL(url).origin;
 
@@ -134,7 +161,7 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
     Response.json(
       connectionKindListResponse.parse({
         kinds: CONNECTION_KIND_DESCRIPTORS,
-        catalog: mockCatalog(),
+        catalog: mockCatalog(options),
       }),
     ),
   );
@@ -265,6 +292,43 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
       );
     });
   }
+
+  // Google through Composio: one consent page stands in for both of its pages.
+  app.post('/managed-sign-ins', async (c) => {
+    const parsed = managedSignInRequest.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success)
+      return Response.json(
+        { error: { code: 'invalid_request', message: 'Name the provider.' } },
+        { status: 400 },
+      );
+    const started = begin({ account: 'google' }, parsed.data.space_id ?? spaceId);
+    return Response.json(
+      managedSignInStart.parse({
+        sign_in_id: started.id,
+        authorize_url: `${origin(c.req.url)}/mock-consent/${started.id}`,
+        expires_at: started.expires_at,
+        issuer: origin(c.req.url),
+        via: 'composio',
+        connects: parsed.data.documents ? ['documents'] : ['mail', 'calendar'],
+      }),
+      { status: 201 },
+    );
+  });
+  app.get('/managed-sign-ins/:id', (c) => {
+    const found = status(c.req.param('id'));
+    if (!found)
+      return Response.json(
+        { error: { code: 'not_found', message: 'No sign-in by that id.' } },
+        { status: 404 },
+      );
+    return Response.json(
+      accountSignInStatus.parse(
+        found.state === 'pending'
+          ? { state: 'pending', expires_at: new Date(found.entry.expiresAt).toISOString() }
+          : { state: 'connected', connection_ids: found.ids },
+      ),
+    );
+  });
 
   // The mock has no assistants of its own connected; Settings lists none.
   app.get('/mcp/clients', () => Response.json(mcpConnectedClientList.parse({ clients: [] })));
