@@ -25,6 +25,12 @@ export type FakeContainer = {
   running: boolean;
   networks: Record<string, string>;
   labels: Record<string, string>;
+  /** The id of the image it was made from; `sha256:image` when not set. */
+  image?: string;
+  /** Execs the engine says still run in it. */
+  execIds?: string[];
+  /** Its id: `<name>-id` for the first made under its name, then `<name>-id-2` and on. */
+  id?: string;
 };
 
 const encoder = new TextEncoder();
@@ -40,6 +46,8 @@ function frame(kind: 1 | 2, payload: Uint8Array): Uint8Array {
 export class FakeDocker implements DockerSandboxApi {
   readonly calls: { method: string; path: string; body?: unknown }[] = [];
   readonly images = new Set(['melete-sandbox:test']);
+  /** The id an image name stands for now; `sha256:image` for any name not set here. */
+  readonly imageIds = new Map<string, string>();
   readonly containers = new Map<string, FakeContainer>();
   readonly volumes = new Map<string, Record<string, string>>();
   readonly networks = new Map<string, { labels: Record<string, string>; members: Set<string> }>();
@@ -51,6 +59,7 @@ export class FakeDocker implements DockerSandboxApi {
   failNext?: { match: RegExp; status: number };
   private next = 0;
   private address = 2;
+  private made = new Map<string, number>();
 
   private fail(method: string, path: string, status: number): never {
     throw new DockerError(status, method as 'GET', path);
@@ -68,7 +77,7 @@ export class FakeDocker implements DockerSandboxApi {
     const image = /^\/images\/([^/]+)\/json$/.exec(route);
     if (image)
       return this.images.has(decodeURIComponent(image[1] ?? ''))
-        ? { Id: 'sha256:image' }
+        ? { Id: this.imageIds.get(decodeURIComponent(image[1] ?? '')) ?? 'sha256:image' }
         : this.fail(method, path, 404);
     if (method === 'POST' && route === '/volumes/create') {
       const request = body as { Name: string; Labels: Record<string, string> };
@@ -116,6 +125,9 @@ export class FakeDocker implements DockerSandboxApi {
         HostConfig: { NetworkMode: string };
       };
       if (this.containers.has(name)) this.fail(method, path, 409);
+      const times = (this.made.get(name) ?? 0) + 1;
+      this.made.set(name, times);
+      const id = times === 1 ? `${name}-id` : `${name}-id-${times}`;
       const networks: Record<string, string> = {};
       if (request.HostConfig.NetworkMode !== 'none')
         networks[request.HostConfig.NetworkMode] = `172.30.0.${this.address++}`;
@@ -125,8 +137,10 @@ export class FakeDocker implements DockerSandboxApi {
         running: false,
         networks,
         labels: request.Labels,
+        image: this.imageIds.get(String(request.Image)) ?? 'sha256:image',
+        id,
       });
-      return { Id: `${name}-id` };
+      return { Id: id };
     }
     if (method === 'GET' && route === '/containers/json') {
       const filters = JSON.parse(new URLSearchParams(query).get('filters') ?? '{}') as {
@@ -145,7 +159,7 @@ export class FakeDocker implements DockerSandboxApi {
             !filters.status || (container.running && filters.status.includes('running')),
         )
         .map((container) => ({
-          Id: `${container.name}-id`,
+          Id: container.id ?? `${container.name}-id`,
           Names: [`/${container.name}`],
           Labels: container.labels,
           State: container.running ? 'running' : 'exited',
@@ -154,13 +168,18 @@ export class FakeDocker implements DockerSandboxApi {
     const containerRoute = /^\/containers\/([^/]+)(\/[a-z]+)?$/.exec(route);
     if (containerRoute) {
       const match = containerRoute;
-      const container = this.containers.get(match[1] ?? '');
+      // Named by its name or its id, as the engine takes either.
+      const container =
+        this.containers.get(match[1] ?? '') ??
+        [...this.containers.values()].find((each) => each.id === match[1]);
       if (!container) this.fail(method, path, 404);
       const action = match[2];
       if (method === 'GET' && action === '/json')
         return {
+          Id: container.id ?? `${container.name}-id`,
           Name: `/${container.name}`,
-          Image: 'sha256:image',
+          Image: container.image ?? 'sha256:image',
+          ExecIDs: container.execIds?.length ? container.execIds : null,
           State: {
             Running: container.running,
             Paused: false,

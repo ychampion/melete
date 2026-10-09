@@ -551,10 +551,14 @@ if (!live) {
             signal(),
           ),
         ),
-      ) as { navigated: boolean; window: string };
-      expect(shown.navigated).toBe(true);
+      ) as { navigated: boolean; window: string; address?: string; checked?: string };
+      expect(shown).toMatchObject({
+        navigated: true,
+        checked: 'address',
+        address: 'http://127.0.0.1:8765/pic.png',
+      });
       expect(shown.window).toStartWith('pic.png');
-      // Opening what the window already shows moves nothing, and says so.
+      // Opening what the window already shows: the page in front shows it.
       const again = JSON.parse(
         text(
           await host.computer(
@@ -564,8 +568,27 @@ if (!live) {
           ),
         ),
       ) as { navigated: boolean; window: string };
-      expect(again.navigated).toBe(false);
+      expect(again.navigated).toBe(true);
       expect(again.window).toStartWith('pic.png');
+      // An address the browser saves rather than shows leaves the picture in
+      // front, and the answer says so, with the address it still shows.
+      async function* download() {
+        yield { path: '/work/site/data.bin', bytes: new Uint8Array(64), mode: 0o644 };
+      }
+      await host.putFiles(handle, download(), signal());
+      const saved = JSON.parse(
+        text(
+          await host.computer(
+            handle,
+            { kind: 'open', url: 'http://127.0.0.1:8765/data.bin' },
+            signal(),
+          ),
+        ),
+      ) as { navigated: boolean; address?: string; reason?: string };
+      process.stdout.write(`docker live, an open that saved a file: ${JSON.stringify(saved)}\n`);
+      expect(saved.navigated).toBe(false);
+      expect(saved.address).toBe('http://127.0.0.1:8765/pic.png');
+      expect(saved.reason).toBeString();
     });
   });
 

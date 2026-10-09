@@ -38,6 +38,7 @@ import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { seeksCredentials } from '../broker/credential-stores.ts';
 import { appendEvent } from '../broker/records.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { egressHostsFor, newHostsFor } from '../egress/records.ts';
 import { type EgressHostSummary, hasCommandEgress, OTHER_HOSTS } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
@@ -57,6 +58,7 @@ import {
   type SandboxSessions,
   type SessionRow,
   sessionHandle,
+  type WorkspaceSession,
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
 import {
@@ -70,6 +72,7 @@ import { type FileRecords, loadFileRecords, personGivenReason } from './files-ow
 import {
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOLS,
+  ComputerOpenFailed,
   ComputerPayloadRefusal,
   HumanControlRefusal,
   MAX_BATCH_ACTIONS,
@@ -525,17 +528,48 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     if (facts.agentId && options.config.persistence !== 'ephemeral') {
       const agentId = facts.agentId;
       const persistence = options.config.persistence;
-      return {
-        row: await waitForWorkspace(ctx, agentId, signal, () =>
-          sessions.openWorkspace({ ...opening, agentId, persistence }, provider, specFor, signal),
-        ),
-        reused: false,
-      };
+      const row = await waitForWorkspace(ctx, agentId, signal, () =>
+        sessions.openWorkspace({ ...opening, agentId, persistence }, provider, specFor, signal),
+      );
+      await noteRecreated(ctx, row);
+      return { row, reused: false };
     }
     return {
       row: await sessions.open({ ...opening, agentId: null }, provider, specFor, signal),
       reused: false,
     };
+  };
+
+  /**
+   * The job's timeline records that the agent's computer was made again from
+   * the image it is configured with now, its files kept. A record that cannot
+   * be written never stops the step that needed the computer.
+   */
+  const noteRecreated = async (ctx: ConnectorContext, row: WorkspaceSession) => {
+    if (row.recreatedFrom === undefined) return;
+    await sql
+      .begin(async (tx) => {
+        await lockEventOrderIn(tx);
+        await appendEvent(
+          tx,
+          ctx.job_id,
+          null,
+          'notice',
+          {
+            kind: 'computer_updated',
+            session_id: row.id,
+            image: row.imageDigest,
+            replaced_image: row.recreatedFrom ?? null,
+          },
+          `${ctx.idempotency_key}:computer_updated`,
+        );
+      })
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `the computer update for ${row.id} was not recorded: ${error instanceof Error ? error.message : String(error)}
+`,
+        );
+      });
   };
 
   /**
@@ -777,11 +811,13 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       };
     } catch (error) {
       // Refused before anything reached the desktop: a person holds it, or the
-      // arguments or the adapter said no. Anything after that is not known.
+      // arguments or the adapter said no; or an open the desktop says left
+      // another page in front. Anything after that is not known.
       if (
         error instanceof HumanControlRefusal ||
         error instanceof SandboxAdapterRefusal ||
-        error instanceof ComputerPayloadRefusal
+        error instanceof ComputerPayloadRefusal ||
+        error instanceof ComputerOpenFailed
       )
         return { outcome: 'failed' as const, reason: error.message, retryable: false };
       return {

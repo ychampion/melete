@@ -143,6 +143,8 @@ export function proxyToken(header: string | string[] | undefined): string | null
 
 type Grant = {
   sandbox: string;
+  /** The engine's id for the container granted, when known. */
+  container: string | null;
   mode: SandboxEgressMode;
   /** The session that last ran a command here; unattributed records go to it. */
   session: string | null;
@@ -157,6 +159,8 @@ type Grant = {
 
 export type SandboxEgressGrantOptions = {
   mode?: SandboxEgressMode;
+  /** The engine's id for the container at the address. */
+  container?: string | null;
   session?: string | null;
   space?: string | null;
 };
@@ -225,6 +229,7 @@ export class SandboxEgressGuard {
       current.mode = mode;
       if (options.session) current.session = options.session;
       if (options.space) current.space = options.space;
+      if (options.container) current.container = options.container;
       return;
     }
     // An address handed to a new container ends whatever the old one held.
@@ -235,6 +240,7 @@ export class SandboxEgressGuard {
     }
     this.grants.set(key, {
       sandbox,
+      container: options.container ?? null,
       mode,
       session: options.session ?? null,
       space: options.space ?? null,
@@ -250,15 +256,24 @@ export class SandboxEgressGuard {
     });
   }
 
-  /** Every grant this sandbox holds ends, with the tunnels it opened and its commands' tokens. */
-  revoke(sandbox: string): void {
+  /**
+   * Every grant this sandbox holds ends, with the tunnels it opened and its
+   * commands' tokens. Given a container id, only that container's grants end
+   * (and one whose container is not known): a container made since under the
+   * same name keeps its own, and its commands keep their tokens.
+   */
+  revoke(sandbox: string, container?: string): void {
     for (const [key, grant] of this.grants)
-      if (grant.sandbox === sandbox) {
+      if (
+        grant.sandbox === sandbox &&
+        (!container || grant.container === null || grant.container === container)
+      ) {
         this.grants.delete(key);
         this.end(grant);
         this.flushWindow(grant.records);
       }
-    this.tokens.revokeSandbox(sandbox);
+    if (!container || ![...this.grants.values()].some((grant) => grant.sandbox === sandbox))
+      this.tokens.revokeSandbox(sandbox);
   }
 
   /** Writes the counts that grew since they were last written. */

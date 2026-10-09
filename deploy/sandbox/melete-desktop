@@ -5,7 +5,8 @@
     melete-desktop stream --fps N        length-prefixed JPEG frames on stdout until the pipe closes
     melete-desktop info                  JSON: the screen, the window in front, whether a browser runs
     melete-desktop text                  JSON: what the screen says, from the page's accessibility tree or OCR
-    melete-desktop open URL              open an address in the browser, starting it if needed
+    melete-desktop open URL              open an address in the browser, starting it if needed,
+                                         and say whether the page in front now shows it
     melete-desktop click X Y BUTTON N    click N times with button 1, 2 or 3
     melete-desktop type TEXT             type into whatever has focus
     melete-desktop key KEY...            press keys, such as Return or ctrl+l
@@ -634,6 +635,24 @@ def browser_windows():
     return found.stdout.split() if found.returncode == 0 else []
 
 
+def window_name(window):
+    result = subprocess.run(["xdotool", "getwindowname", window], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def front_browser_window():
+    """Bring the browser's own window to the front: the one in front already, else the top one.
+
+    A bubble the browser draws (such as one offering to restore pages) is a
+    window of the browser's too, but it holds no page, so it is never the one.
+    """
+    windows = browser_windows()
+    pages = [window for window in windows if window_name(window).endswith("Chromium")]
+    active = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True).stdout.strip()
+    choice = active if active in pages else (pages or windows)[-1]
+    xdotool("windowactivate", "--sync", choice, check=False)
+
+
 # Titles a window shows before any page is in it.
 BLANK_TITLES = {"", "chromium", "new tab - chromium", "about:blank - chromium", "untitled - chromium"}
 
@@ -650,25 +669,132 @@ def settled_title(before, seconds):
     return title
 
 
+def comparable(address):
+    """An address the way two addresses of one page compare equal.
+
+    The scheme (a site moves http to https), a leading `www.`, a default port, a
+    trailing slash, the fragment and how characters are escaped are set aside.
+    None for anything that is not a web address.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(address or "").strip())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        return None
+    host = parts.hostname.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = urllib.parse.unquote(parts.path) or "/"
+    if len(path) > 1:
+        path = path.rstrip("/") or "/"
+    return (host, None if port in (80, 443) else port, path, urllib.parse.unquote_plus(parts.query))
+
+
+def front_page(port):
+    """The page in the browser window in front, as the browser lists it, and that window's title."""
+    window = active_window()
+    title = window[: -len("Chromium")].rstrip(" -–") if window.endswith("Chromium") else ""
+    return page_target(port, title), window
+
+
+def asked_address(target):
+    """What was asked for in the entry the page shows, before any redirect, as the browser records it."""
+    tools = DevToolsSocket(target["webSocketDebuggerUrl"], seconds=5.0)
+    try:
+        history = tools.call("Page.getNavigationHistory")
+    finally:
+        tools.close()
+    entries, index = history.get("entries") or [], history.get("currentIndex")
+    if isinstance(index, int) and 0 <= index < len(entries):
+        return str(entries[index].get("userTypedURL") or "")
+    return ""
+
+
+def navigate(port, url):
+    """Load the address in the page in front through the browser's DevTools endpoint.
+
+    Unlike keys typed into the address bar, this reaches the page whatever has
+    the keyboard. Returns the browser's error, or None when the page loaded.
+    """
+    target, _ = front_page(port)
+    if not target or not target.get("webSocketDebuggerUrl"):
+        raise OSError("the browser showed no page")
+    tools = DevToolsSocket(target["webSocketDebuggerUrl"])
+    try:
+        tools.call("Page.bringToFront")
+        result = tools.call("Page.navigate", {"url": url})
+    finally:
+        tools.close()
+    return result.get("errorText") or None
+
+
+def showing(url, seconds):
+    """Whether the page in front shows `url`, waiting up to `seconds`.
+
+    Returns (shows, its address, the window's title, whether it was read). The
+    address is the one the browser lists for the page in the window in front,
+    read over its DevTools endpoint. A site that sends the browser on to another
+    address still counts: the browser records what was asked for. With no
+    endpoint to read, `shows` is None: not known.
+    """
+    want = comparable(url)
+    deadline = time.monotonic() + seconds
+    address, window, read = "", active_window(), False
+    while True:
+        port = devtools_port() if browser_running() else None
+        target = None
+        if port is not None:
+            try:
+                target, window = front_page(port)
+                read = True
+            except (OSError, ValueError, KeyError, TypeError):
+                target = None
+        if target:
+            address = str(target.get("url") or "")[:2048]
+            if want and comparable(address) == want:
+                return True, address, window, read
+            if want and comparable(address) is not None and target.get("webSocketDebuggerUrl"):
+                try:
+                    if comparable(asked_address(target)) == want:
+                        return True, address, window, read
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+        if time.monotonic() >= deadline:
+            return (False if read else None), address, window, read
+        time.sleep(0.25)
+
+
 def open_url(url):
     if not re.match(r"^https?://", url):
         fail("an address to open must start with http:// or https://")
+    error = None
     if browser_running() and browser_windows():
-        # The address goes into the window in front, the way a person types it:
-        # the address bar, the address, then Return. Handing it to a second
-        # browser process opened nothing when the running one did not take it.
+        # The visible browser is reused: its window comes to the front, and the
+        # address goes into the page it shows, over its DevTools endpoint.
+        front_browser_window()
         before = active_window()
-        xdotool("windowactivate", "--sync", browser_windows()[-1], check=False)
-        xdotool("key", "--clearmodifiers", "ctrl+l")
-        time.sleep(0.2)
-        xdotool("type", "--delay", "4", "--", url)
-        # Delete drops any completion the address bar added after the address.
-        xdotool("key", "--clearmodifiers", "Delete", "Return")
+        port, sent = devtools_port(), False
+        if port is not None:
+            try:
+                error, sent = navigate(port, url), True
+            except (OSError, ValueError, KeyError, TypeError):
+                sent = False
+        if not sent:
+            # A browser without the endpoint: the address bar, the address, then
+            # Return, the way a person types it. Delete drops any completion the
+            # address bar added after the address.
+            xdotool("key", "--clearmodifiers", "ctrl+l")
+            time.sleep(0.2)
+            xdotool("type", "--delay", "4", "--", url)
+            xdotool("key", "--clearmodifiers", "Delete", "Return")
     else:
         before = ""
         # A profile from a browser that is no longer running can still hold its
-        # lock, which keeps a new one from opening the address.
-        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        # lock, which keeps a new one from opening the address, and the port of
+        # an endpoint that is gone.
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"):
             try:
                 os.unlink(os.path.join(PROFILE, name))
             except FileNotFoundError:
@@ -692,8 +818,13 @@ def open_url(url):
             "--disable-gpu",
             "--disable-features=Translate,MediaRouter,OptimizationHints",
             "--password-store=basic",
-            # The page's accessibility tree, for `text`: on the loopback
-            # address inside this container, at a port written to the profile.
+            # A computer stopped while idle ends its browser abruptly; the next
+            # start would otherwise offer to restore pages in a bubble that
+            # takes the keyboard.
+            "--hide-crash-restore-bubble",
+            # The page's accessibility tree, for `text`, and the address of the
+            # page in front, for `open`: on the loopback address inside this
+            # container, at a port written to the profile.
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=0",
             "--window-position=0,0",
@@ -713,15 +844,32 @@ def open_url(url):
             time.sleep(0.25)
         else:
             fail("the browser did not open a window")
-    # Whether the window moved to the address is checked, not assumed: the
-    # title changes when a page, a picture or an error page takes its place.
-    title = settled_title(before, 15)
-    navigated = title != before and title.lower() not in BLANK_TITLES
+    # Whether the page in front shows the address is read from the browser,
+    # not assumed: an open that left an earlier page in front says so, and so
+    # does one the browser could not load, whatever its error page is called.
+    navigated, address, title, read = showing(url, 0 if error else 15)
+    if error:
+        navigated = False
+    elif navigated is None:
+        # No endpoint to read: the title changes when a page, a picture or an
+        # error page takes the window's place.
+        title = settled_title(before, 3)
+        navigated = title != before and title.lower() not in BLANK_TITLES
     if navigated:
         # Let the page start painting before anyone looks.
         time.sleep(1.5)
         title = active_window()
-    print(json.dumps({"opened": url, "navigated": navigated, "window": title, "browser": True}))
+    answer = {"opened": url, "navigated": navigated, "window": title, "browser": True,
+              "checked": "address" if read else "title"}
+    if address:
+        answer["address"] = address
+    if not navigated:
+        answer["reason"] = (
+            f"the browser could not load it ({error})" if error
+            else "the page in front is still another one" if read
+            else "the window did not change"
+        )
+    print(json.dumps(answer, ensure_ascii=False))
 
 
 def number(value, low, high, what):
