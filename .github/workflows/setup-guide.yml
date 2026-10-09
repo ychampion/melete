@@ -101,8 +101,9 @@ jobs:
           const job = 'job_setup_guide_proof';
           const session = await client.lease(job, { public_compartment: true, allowed_domains: [] });
           const step = (operation) => client.request('/command', { session_id: session.id, job_id: job, control_epoch: session.control_epoch, operation });
-          await step({ kind: 'open', url: 'https://example.com/' });
-          const seen = (await step({ kind: 'observe' })).observation;
+          // A page is observed before anything acts on it, as the agent's tools do.
+          await step({ kind: 'observe' });
+          const seen = (await step({ kind: 'open', url: 'https://example.com/' })).observation;
           const read = (await step({ kind: 'read', role: 'heading', name: 'Example Domain' })).result;
           console.log(JSON.stringify({ url: seen?.url, title: seen?.title, heading: read?.text }));
           await client.request('/release', {});
