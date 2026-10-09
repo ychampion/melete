@@ -19,6 +19,8 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   doctor [--json] [--offline]  Judge this machine: Docker, disk in MB, memory, ports, images, registry
   status [--json]            The installation's report: services, API, account and the optional parts
   set NAME=value ...         Change settings in deploy/.env; --from-env NAME for a key
+  browser enable [--space <id>]
+                             Turn on the browser worker for the first person's space, or the one named
   logs [service ...]         The stack's logs: --since, --tail, --follow, --timestamps
   deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
          [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
@@ -113,6 +115,8 @@ export async function main(argv: readonly string[], make = realContext): Promise
       );
     case 'set':
       return (await import('./commands/set.ts')).runSet(context, parsed.rest);
+    case 'browser':
+      return (await import('./commands/browser.ts')).runBrowser(context, parsed.rest);
     case 'logs':
       return (await import('./commands/logs.ts')).runLogs(context, parsed.rest);
     case 'init':

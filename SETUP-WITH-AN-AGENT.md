@@ -223,6 +223,20 @@ Don't create the account yourself: its password is the person's.
 **Worked when** `status.ts` reports Account `ok`. Wait for the person to say
 they are done, then run it.
 
+Then give the agent its own browser, for reading pages and filling in forms:
+
+```bash
+bun run melete browser enable
+```
+
+It sets up the [browser worker](docs/browser-worker.md) for the person's space,
+builds it and starts the stack with it; the first build takes a few minutes.
+**Worked when** it ends with `The browser worker is on.` and
+`bun run melete check` reports `browser.worker` as `ok`. It is safe to run
+again. If it says there is no account yet, wait for step 6. From here on, every
+`docker compose` command on this page also takes
+`-f deploy/docker-compose.browser.yml` right after `-f deploy/docker-compose.yml`.
+
 ## 7. The person connects a model
 
 Tell the person to open **Settings › Models** in Melete (it also opens by
@@ -346,16 +360,16 @@ claude mcp add --transport http melete https://melete.example.net/api/mcp
 then `/mcp` in Claude Code to sign in. Other assistants:
 [MCP-SERVER.md](docs/MCP-SERVER.md).
 
-## 12. Optional: the browser worker
+## 12. Optional: a browser worker for another space
 
-A separate browser that fills in web forms for the agent. Most people don't
-need it: the computer in step 8 already has a browser. It is built on the
-machine and needs a space ID and a token, so set it up only when the person
-asks, following [browser-worker.md](docs/browser-worker.md).
+Step 6 gave the person's own space its browser. One worker serves one space; a
+second space gets a worker of its own only when the person asks, following
+[browser-worker.md](docs/browser-worker.md#by-hand).
 
 ## Later: updating and removing
 
-- **Update**, with published images: `bun run melete init --adopt` once, then
+- **Update**, with published images: `bun run melete init --adopt` once (the
+  browser step already wrote `deploy/melete.deploy.json`, so skip it then), then
   `bun run melete deploy --checkout --dry-run` to show the person the plan, and
   `bun run melete deploy --checkout`. It sizes the update against the disk,
   backs up the database when the release adds migrations, pulls one image at a

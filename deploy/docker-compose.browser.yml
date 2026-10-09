@@ -21,6 +21,9 @@ services:
       MELETE_BROWSER_TOKEN: ${MELETE_BROWSER_TOKEN:?set MELETE_BROWSER_TOKEN in .env}
 
   browser:
+    # The published image when MELETE_IMAGE_TAG is set, as the base file's services
+    # are; otherwise the name Compose gives a build, <project>-browser:latest.
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/melete-browser:}${MELETE_IMAGE_TAG:-${COMPOSE_PROJECT_NAME:-melete}-browser}"
     build:
       context: ..
       dockerfile: deploy/Dockerfile.browser

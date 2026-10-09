@@ -98,6 +98,17 @@ name the provider and model, for example
 with `ANTHROPIC_API_KEY`. Then open http://localhost:3101 and create your
 account.
 
+Once your account exists, give the agent a browser of its own to read pages and
+fill in forms with:
+
+```bash
+bun run melete browser enable
+```
+
+It sets up the [browser worker](docs/browser-worker.md) for your space and
+starts it. From then on, add `-f deploy/docker-compose.browser.yml` after
+`-f deploy/docker-compose.yml` on a `docker compose` command.
+
 To try a demo with a practice model first, use
 `bun run deploy/scripts/configure.ts --fake` as the second line. It needs no
 key, and you can switch to your own model later.
