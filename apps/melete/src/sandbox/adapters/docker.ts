@@ -79,6 +79,8 @@ const EGRESS = 'com.melete.sandbox.egress';
 const BASE = 'com.melete.sandbox.name';
 export const EGRESS_ALIAS = 'melete-egress';
 const NAME = /^melete-sbx-[a-z0-9][a-z0-9_.-]{0,160}$/;
+/** A container id as the engine reports it, safe as one path segment. */
+const CONTAINER_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/;
 const NOT_FOUND_EXIT = 3;
 const NOT_REGULAR_EXIT = 4;
 const LISTING_LIMIT = 16 * MiB;
@@ -323,6 +325,7 @@ export class ExecCapture {
 }
 
 type ContainerState = {
+  Id?: string;
   Name?: string;
   Image?: string;
   /** Execs still running in it: a command, a desktop step, a live view. */
@@ -881,8 +884,12 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       if (state.ExecIDs?.length) return undefined;
       // Out of time before anything changed: the computer is left as it is.
       signal.throwIfAborted();
+      // Stopped and removed by the id read above, never by its name: an answer
+      // that comes late can then never reach a container made since under the
+      // same name by another opening of this computer.
+      const old = state.Id && CONTAINER_ID.test(state.Id) ? state.Id : name;
       if (state.State?.Running)
-        await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
+        await this.api.request('POST', `/containers/${old}/stop?t=10`).catch((error) => {
           if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
             throw error;
         });
@@ -891,7 +898,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       this.started.delete(name);
       this.usage.delete(name);
       // Without `v`: a named volume is never removed with its container.
-      await this.api.request('DELETE', `/containers/${name}?force=1`).catch((error) => {
+      await this.api.request('DELETE', `/containers/${old}?force=1`).catch((error) => {
         if (!notFound(error)) throw error;
       });
     } else if (!(await this.volumesKept(name))) return undefined;

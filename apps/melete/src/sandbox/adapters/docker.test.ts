@@ -622,9 +622,9 @@ describe('the life of a sandbox', () => {
       expect([...engine.volumes]).toEqual(volumes);
       const asked = engine.calls.map((call) => `${call.method} ${call.path}`);
       expect(asked.filter((call) => /^(POST|DELETE) \/volumes/.test(call))).toEqual([]);
-      // Stopped, then removed without `v`; no network made again.
-      expect(asked).toContain(`POST /containers/${NAME}/stop?t=10`);
-      expect(asked).toContain(`DELETE /containers/${NAME}?force=1`);
+      // Stopped, then removed without `v`, both by its id; no network made again.
+      expect(asked).toContain(`POST /containers/${NAME}-id/stop?t=10`);
+      expect(asked).toContain(`DELETE /containers/${NAME}-id?force=1`);
       expect(asked.filter((call) => call.startsWith('POST /networks/create'))).toEqual([]);
       if (open) {
         expect((container.body as EngineBody).HostConfig.NetworkMode).toBe(`${NAME}-net`);
@@ -670,6 +670,33 @@ describe('the life of a sandbox', () => {
       engine.calls.filter((call) => call.method === 'DELETE' || call.path.endsWith('/stop?t=10')),
     ).toEqual([]);
     expect(engine.containers.get(NAME)?.image).toBe('sha256:old');
+  });
+
+  test('a replacement that answers late removes only the container it read, never one made since under its name', async () => {
+    const { engine, host } = setup();
+    engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+    await host.create(spec(), signal());
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+    await host.resume(resumeRef, spec(), signal());
+    // While this replacement stops the old container, another opening of the
+    // same computer replaces it first and starts its own.
+    const request = engine.request.bind(engine);
+    let raced = false;
+    engine.request = async (method, path, body) => {
+      if (!raced && method === 'POST' && path.endsWith('/stop?t=10')) {
+        raced = true;
+        const old = engine.containers.get(NAME);
+        engine.containers.delete(NAME);
+        await request('POST', `/containers/create?name=${NAME}`, old?.body);
+        await request('POST', `/containers/${NAME}/start`);
+      }
+      return request(method, path, body);
+    };
+    await expect(host.resume(resumeRef, spec(), signal(), { quiet: true })).rejects.toThrow();
+    expect(raced).toBe(true);
+    // The other opening's container is still there, running.
+    expect(engine.containers.get(NAME)).toMatchObject({ id: `${NAME}-id-2`, running: true });
   });
 
   test('a computer whose container went while it was being made again comes back on its kept volumes', async () => {

@@ -906,12 +906,16 @@ export class SandboxSessions {
     }
     if (!row) {
       const current = await this.get(id);
+      // An opening still resuming the computer names it by its `resume_ref`
+      // only: its own sandbox id is pending until the resume answers.
       const [taken] = await this.sql`select 1 from sandbox_session
-        where id <> ${id} and provider_sandbox_id = ${handle.providerSandboxId}
+        where id <> ${id}
+          and (provider_sandbox_id = ${handle.providerSandboxId}
+            or resume_ref = ${handle.providerSandboxId})
           and status in ('opening', 'ready', 'paused') limit 1`;
       if (taken) {
         // The sweep gave this stale claim up and another opening has the
-        // computer now: it is theirs, and nothing is done to it.
+        // computer now, or is resuming it: it is theirs, and nothing is done to it.
       } else if (current?.status === 'paused')
         // The sweep gave up on this resume and put the workspace back: so is what came back.
         await this.abandon(handle, from.persistence, provider);

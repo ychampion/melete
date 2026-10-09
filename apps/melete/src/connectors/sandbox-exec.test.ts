@@ -675,6 +675,61 @@ withDb('a command in a remote sandbox', () => {
     }
   }, 60_000);
 
+  test('a late answer from a stale claim leaves alone a computer a later opening is still resuming', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider } = updating();
+    const s = await setup({ persistence: 'pause', provider, workspaceWaitMs: 0 });
+    const { sandbox, next } = await suspendedWorkspace(s);
+    // Both resumes are held: the stale one, then the later attempt's.
+    const updated = provider.resume.bind(provider);
+    const gates: Array<{ release: () => void; entered: Promise<void> }> = [];
+    const waits: Array<{ gate: Promise<void>; enter: () => void }> = [];
+    for (let index = 0; index < 2; index += 1) {
+      let release = () => {};
+      let enter = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      gates.push({ release, entered });
+      waits.push({ gate, enter });
+    }
+    let calls = 0;
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      const wait = waits[calls];
+      calls += 1;
+      if (wait) {
+        wait.enter();
+        await wait.gate;
+      }
+      return updated(ref, spec, signal, options);
+    };
+    const hung = s.run({ command: 'printf late' }, next);
+    let later: ReturnType<typeof s.run> | null = null;
+    try {
+      await gates[0]?.entered;
+      await handle.sql`update attempt set ended_at = now() where id = ${next}`;
+      later = s.run({ command: 'cat /work/notes.txt' }, await s.scope.attempt());
+      await gates[1]?.entered;
+      // The stale resume answers while the later opening still holds the claim.
+      gates[0]?.release();
+      await hung;
+      expect(provider.calls.destroy).toBe(0);
+      gates[1]?.release();
+      const after = await later;
+      if (after.result.outcome !== 'succeeded') throw new Error(JSON.stringify(after.result));
+      expect(after.result.receipt.detail.output_digest).toBe(digest('kept'));
+      const row = await s.sessions.get(String(after.result.receipt.detail.session_id));
+      expect(row).toMatchObject({ status: 'ready', providerSandboxId: sandbox });
+    } finally {
+      for (const gate of gates) gate.release();
+      await hung.catch(() => {});
+      await later?.catch(() => {});
+    }
+  }, 60_000);
+
   test('a workspace a person holds is not resumed, so never made again under them', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const { provider, told } = updating();
