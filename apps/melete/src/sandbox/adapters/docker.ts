@@ -50,6 +50,7 @@ import {
   type ExecSpec,
   type FileEntry,
   type PreviewAddress,
+  type ResumeOptions,
   SandboxAdapterRefusal,
   type SandboxCapabilities,
   SandboxFileNotFound,
@@ -78,6 +79,8 @@ const EGRESS = 'com.melete.sandbox.egress';
 const BASE = 'com.melete.sandbox.name';
 export const EGRESS_ALIAS = 'melete-egress';
 const NAME = /^melete-sbx-[a-z0-9][a-z0-9_.-]{0,160}$/;
+/** A container id as the engine reports it, safe as one path segment. */
+const CONTAINER_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/;
 const NOT_FOUND_EXIT = 3;
 const NOT_REGULAR_EXIT = 4;
 const LISTING_LIMIT = 16 * MiB;
@@ -322,8 +325,11 @@ export class ExecCapture {
 }
 
 type ContainerState = {
+  Id?: string;
   Name?: string;
   Image?: string;
+  /** Execs still running in it: a command, a desktop step, a live view. */
+  ExecIDs?: string[] | null;
   State?: { Running?: boolean; Paused?: boolean; Status?: string; StartedAt?: string };
   Config?: { Labels?: Record<string, string> };
   NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
@@ -516,6 +522,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     if (address)
       this.guard.allow(address, name, {
         mode,
+        container: state.Id ?? null,
         session: labels[LABEL_SESSION] ?? null,
         space: labels['melete.space'] ?? null,
       });
@@ -722,6 +729,201 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     }
   }
 
+  private labelsFor(name: string, spec: SandboxSpec): Record<string, string> {
+    return {
+      ...spec.labels,
+      [OWNER]: 'v1',
+      [BASE]: name,
+      [LIFETIME]: String(spec.lifetimeSeconds),
+      [EGRESS]: spec.egress.kind,
+    };
+  }
+
+  private async createNetwork(network: string, labels: Record<string, string>): Promise<void> {
+    await this.api.request('POST', '/networks/create', {
+      Name: network,
+      Driver: 'bridge',
+      Internal: true,
+      Labels: labels,
+      Options: {
+        'com.docker.network.bridge.gateway_mode_ipv4': 'isolated',
+        'com.docker.network.bridge.gateway_mode_ipv6': 'isolated',
+      },
+    });
+  }
+
+  /**
+   * The computer's container, from `spec`'s image, on its two volumes and, for
+   * egress that reaches anything, its own network: a new computer's, and the
+   * same one made again from a newer image.
+   */
+  private async createContainer(
+    name: string,
+    spec: SandboxSpec,
+    labels: Record<string, string>,
+  ): Promise<void> {
+    const open = spec.egress.kind !== 'deny_all';
+    const cpus = spec.cpu ?? this.settings.cpus;
+    const memory = (spec.memoryMb ?? this.settings.memoryMb) * MiB;
+    const disk = (spec.diskMb ?? this.settings.diskMb) * MiB;
+    const network = `${name}-net`;
+    const proxy = `http://${EGRESS_ALIAS}:${this.settings.egressPort}`;
+    const env = [
+      ...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
+      `HOME=${DOCKER_SANDBOX_HOME}`,
+      'USER=agent',
+      'DISPLAY=:0',
+      ...(open
+        ? [
+            `HTTPS_PROXY=${proxy}`,
+            `https_proxy=${proxy}`,
+            `HTTP_PROXY=${proxy}`,
+            `http_proxy=${proxy}`,
+            'NO_PROXY=localhost,127.0.0.1',
+            'no_proxy=localhost,127.0.0.1',
+          ]
+        : []),
+    ];
+    await this.api.request('POST', `/containers/create?name=${name}`, {
+      Image: spec.image,
+      User: `${DOCKER_SANDBOX_UID}:${DOCKER_SANDBOX_UID}`,
+      Hostname: 'sandbox',
+      WorkingDir: DOCKER_SANDBOX_WORK,
+      Env: env,
+      Labels: labels,
+      NetworkDisabled: !open,
+      HostConfig: {
+        NetworkMode: open ? network : 'none',
+        ReadonlyRootfs: true,
+        CapDrop: ['ALL'],
+        SecurityOpt: ['no-new-privileges:true'],
+        Privileged: false,
+        Init: true,
+        IpcMode: 'private',
+        PidsLimit: this.settings.pids,
+        Memory: memory,
+        MemorySwap: memory,
+        NanoCpus: Math.round(cpus * 1e9),
+        ShmSize: 256 * MiB,
+        Tmpfs: {
+          '/tmp': 'rw,nosuid,nodev,size=512m,mode=1777',
+          '/var/tmp': 'rw,nosuid,nodev,size=256m,mode=1777',
+        },
+        // No one file may outgrow the whole allowance, and a crash asks for no
+        // core file: a host that pipes cores to its crash handler reads this.
+        Ulimits: [
+          { Name: 'fsize', Soft: disk, Hard: disk },
+          { Name: 'core', Soft: 0, Hard: 0 },
+        ],
+        RestartPolicy: { Name: 'no' },
+        LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } },
+        Mounts: [
+          { Type: 'volume', Source: `${name}-work`, Target: DOCKER_SANDBOX_WORK },
+          { Type: 'volume', Source: `${name}-home`, Target: DOCKER_SANDBOX_HOME },
+        ],
+      },
+      ...(open ? { NetworkingConfig: { EndpointsConfig: { [network]: {} } } } : {}),
+    });
+  }
+
+  /** The id of the image `reference` names on this engine now, or null when it has none. */
+  private async imageId(reference: string): Promise<string | null> {
+    try {
+      const image = (await this.api.request(
+        'GET',
+        `/images/${encodeURIComponent(reference)}/json`,
+      )) as { Id?: string };
+      return image?.Id ?? null;
+    } catch (error) {
+      if (notFound(error)) return null;
+      throw error;
+    }
+  }
+
+  /** Whether both of a computer's volumes are still on the engine, made for it. */
+  private async volumesKept(name: string): Promise<boolean> {
+    const wanted = [`${name}-work`, `${name}-home`];
+    const filters = encodeURIComponent(
+      JSON.stringify({ label: [`${OWNER}=v1`, `${BASE}=${name}`], name: wanted }),
+    );
+    const listed =
+      (
+        (await this.api.request('GET', `/volumes?filters=${filters}`)) as {
+          Volumes?: { Name: string; Labels?: Record<string, string> }[] | null;
+        }
+      ).Volumes ?? [];
+    return wanted.every((volume) =>
+      listed.some((each) => each.Name === volume && each.Labels?.[BASE] === name),
+    );
+  }
+
+  /**
+   * Make a suspended computer again from the image its spec names now, when
+   * it runs an older one: an image an update brought is otherwise never used
+   * by a computer made before it. Its two volumes (the files, the home with
+   * the browser's profile) and its network are kept; only the container is
+   * replaced. Only for a computer the caller found quiet (no person holds it,
+   * no background process of its agent runs), and never while a command or a
+   * view still runs in it. A computer whose container went missing after a
+   * replacement began, with both its volumes still there, is made again the
+   * same way. Returns the image it ran before (null when its container was
+   * gone), or undefined when nothing was made.
+   */
+  private async refresh(
+    name: string,
+    state: ContainerState | null,
+    spec: SandboxSpec,
+    quiet: boolean,
+    signal: AbortSignal,
+  ): Promise<string | null | undefined> {
+    if (state) {
+      if (!quiet) return undefined;
+      const current = await this.imageId(spec.image);
+      // An image the engine does not have, or the one it already runs: nothing to do.
+      if (!current || !state.Image || state.Image === current) return undefined;
+      // A command, a desktop step or a live view still running in it.
+      if (state.ExecIDs?.length) return undefined;
+      // Out of time before anything changed: the computer is left as it is.
+      signal.throwIfAborted();
+      // Stopped and removed by the id read above, never by its name: an answer
+      // that comes late can then never reach a container made since under the
+      // same name by another opening of this computer.
+      const owned = state.Id && CONTAINER_ID.test(state.Id) ? state.Id : undefined;
+      const old = owned ?? name;
+      if (state.State?.Running)
+        await this.api.request('POST', `/containers/${old}/stop?t=10`).catch((error) => {
+          if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
+            throw error;
+        });
+      // Only the grants of the container read above end, for the same reason.
+      this.guard.revoke(name, owned);
+      this.trusted.delete(name);
+      this.started.delete(name);
+      this.usage.delete(name);
+      // Without `v`: a named volume is never removed with its container.
+      await this.api.request('DELETE', `/containers/${old}?force=1`).catch((error) => {
+        if (!notFound(error)) throw error;
+      });
+    } else if (!(await this.volumesKept(name))) return undefined;
+    if (spec.egress.kind !== 'deny_all') {
+      const network = `${name}-net`;
+      try {
+        await this.api.request('GET', `/networks/${network}`);
+      } catch (error) {
+        if (!notFound(error)) throw error;
+        await this.createNetwork(network, this.labelsFor(name, spec));
+      }
+    }
+    // Out of time after the removal: the next resume makes it on its kept volumes.
+    signal.throwIfAborted();
+    await this.createContainer(name, spec, this.labelsFor(name, spec));
+    const before = state?.Image ?? null;
+    process.stderr.write(
+      `docker sandbox ${name} made again from ${spec.image}${before ? `, replacing image ${before}` : ''}; its volumes are kept\n`,
+    );
+    return before;
+  }
+
   // ---- SandboxProvider ----------------------------------------------------
 
   async create(spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
@@ -754,35 +956,9 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       throw error;
     }
     const name = DockerSandboxHost.nameFor(project, session);
-    const cpus = spec.cpu ?? this.settings.cpus;
-    const memory = (spec.memoryMb ?? this.settings.memoryMb) * MiB;
-    const disk = (spec.diskMb ?? this.settings.diskMb) * MiB;
-    const labels: Record<string, string> = {
-      ...spec.labels,
-      [OWNER]: 'v1',
-      [BASE]: name,
-      [LIFETIME]: String(spec.lifetimeSeconds),
-      [EGRESS]: spec.egress.kind,
-    };
+    const labels = this.labelsFor(name, spec);
     const volumes = [`${name}-work`, `${name}-home`];
     const network = `${name}-net`;
-    const proxy = `http://${EGRESS_ALIAS}:${this.settings.egressPort}`;
-    const env = [
-      ...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
-      `HOME=${DOCKER_SANDBOX_HOME}`,
-      'USER=agent',
-      'DISPLAY=:0',
-      ...(open
-        ? [
-            `HTTPS_PROXY=${proxy}`,
-            `https_proxy=${proxy}`,
-            `HTTP_PROXY=${proxy}`,
-            `http_proxy=${proxy}`,
-            'NO_PROXY=localhost,127.0.0.1',
-            'no_proxy=localhost,127.0.0.1',
-          ]
-        : []),
-    ];
     const made: Array<() => Promise<unknown>> = [];
     try {
       for (const volume of volumes) {
@@ -790,58 +966,10 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
         made.push(() => this.removeVolume(volume));
       }
       if (open) {
-        await this.api.request('POST', '/networks/create', {
-          Name: network,
-          Driver: 'bridge',
-          Internal: true,
-          Labels: labels,
-          Options: {
-            'com.docker.network.bridge.gateway_mode_ipv4': 'isolated',
-            'com.docker.network.bridge.gateway_mode_ipv6': 'isolated',
-          },
-        });
+        await this.createNetwork(network, labels);
         made.push(() => this.removeNetwork(network));
       }
-      await this.api.request('POST', `/containers/create?name=${name}`, {
-        Image: spec.image,
-        User: `${DOCKER_SANDBOX_UID}:${DOCKER_SANDBOX_UID}`,
-        Hostname: 'sandbox',
-        WorkingDir: DOCKER_SANDBOX_WORK,
-        Env: env,
-        Labels: labels,
-        NetworkDisabled: !open,
-        HostConfig: {
-          NetworkMode: open ? network : 'none',
-          ReadonlyRootfs: true,
-          CapDrop: ['ALL'],
-          SecurityOpt: ['no-new-privileges:true'],
-          Privileged: false,
-          Init: true,
-          IpcMode: 'private',
-          PidsLimit: this.settings.pids,
-          Memory: memory,
-          MemorySwap: memory,
-          NanoCpus: Math.round(cpus * 1e9),
-          ShmSize: 256 * MiB,
-          Tmpfs: {
-            '/tmp': 'rw,nosuid,nodev,size=512m,mode=1777',
-            '/var/tmp': 'rw,nosuid,nodev,size=256m,mode=1777',
-          },
-          // No one file may outgrow the whole allowance, and a crash asks for no
-          // core file: a host that pipes cores to its crash handler reads this.
-          Ulimits: [
-            { Name: 'fsize', Soft: disk, Hard: disk },
-            { Name: 'core', Soft: 0, Hard: 0 },
-          ],
-          RestartPolicy: { Name: 'no' },
-          LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } },
-          Mounts: [
-            { Type: 'volume', Source: volumes[0], Target: DOCKER_SANDBOX_WORK },
-            { Type: 'volume', Source: volumes[1], Target: DOCKER_SANDBOX_HOME },
-          ],
-        },
-        ...(open ? { NetworkingConfig: { EndpointsConfig: { [network]: {} } } } : {}),
-      });
+      await this.createContainer(name, spec, labels);
       made.push(() => this.api.request('DELETE', `/containers/${name}?force=1`));
       this.lifetimes.set(name, spec.lifetimeSeconds);
       await this.ensureRunning(name);
@@ -1132,15 +1260,27 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     return { resumeRef: name };
   }
 
-  async resume(resumeRef: string, spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
+  async resume(
+    resumeRef: string,
+    spec: SandboxSpec,
+    signal: AbortSignal,
+    options: ResumeOptions = {},
+  ): Promise<SandboxHandle> {
     signal.throwIfAborted();
     const name = DockerSandboxHost.checkName(resumeRef);
-    const recorded = (await this.inspectContainer(name))?.Config?.Labels?.[EGRESS];
+    const found = await this.inspectContainer(name);
+    const recorded = found?.Config?.Labels?.[EGRESS];
     if (recorded && recorded !== spec.egress.kind)
       throw new SandboxAdapterRefusal('this workspace was created under another egress policy');
+    const recreatedFrom = await this.refresh(name, found, spec, options.quiet === true, signal);
     const state = await this.ensureRunning(name);
     this.lifetimes.set(name, spec.lifetimeSeconds);
-    return { providerSandboxId: name, imageDigest: state.Image ?? null, region: null };
+    return {
+      providerSandboxId: name,
+      imageDigest: state.Image ?? null,
+      region: null,
+      ...(recreatedFrom !== undefined ? { recreatedFrom } : {}),
+    };
   }
 
   async destroy(handle: SandboxHandle, signal: AbortSignal): Promise<void> {

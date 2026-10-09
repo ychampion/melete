@@ -22,6 +22,7 @@ import {
   type ExecOutcome,
   type ExecSpec,
   type FileEntry,
+  type ResumeOptions,
   type SandboxCapabilities,
   SandboxFileNotFound,
   SandboxGone,
@@ -1532,7 +1533,12 @@ export class FakeSandboxProvider implements SandboxProvider {
     return { resumeRef: sandbox.id };
   }
 
-  async resume(resumeRef: string, spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
+  async resume(
+    resumeRef: string,
+    spec: SandboxSpec,
+    signal: AbortSignal,
+    _options?: ResumeOptions,
+  ): Promise<SandboxHandle> {
     signal.throwIfAborted();
     this.calls.resume += 1;
     const saved = this.engine.snapshots.get(resumeRef);

@@ -460,6 +460,7 @@ describe('same-origin API proxy', () => {
         headers: {
           'sec-fetch-site': 'cross-site',
           'sec-fetch-mode': 'navigate',
+          'sec-fetch-dest': 'document',
           cookie: 'melete_session=session-value',
         },
       });
@@ -470,22 +471,73 @@ describe('same-origin API proxy', () => {
       expect(seen.cookie).toBe('melete_session=session-value');
     }
     const count = apiRequests;
-    for (const init of [
+    const refused: RequestInit[] = [
       { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' } },
+      // Another site framing the callback navigates too, but not as a page of its own.
+      {
+        headers: {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-dest': 'iframe',
+        },
+      },
+      { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' } },
       {
         method: 'POST',
         headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
         body: '{}',
       },
-    ]) {
+    ];
+    for (const init of refused) {
       const response = await fetch(`${webOrigin()}/api/oauth/callback?code=c&state=s`, init);
       expect(response.status).toBe(403);
     }
     const other = await fetch(`${webOrigin()}/api/connections`, {
-      headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
+      headers: {
+        'sec-fetch-site': 'cross-site',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-dest': 'document',
+      },
     });
     expect(other.status).toBe(403);
     expect(apiRequests).toBe(count);
+  });
+
+  test('states a browser origin only when it is plain http on this machine, never one the request wrote', async () => {
+    const CRLF = String.fromCharCode(13, 10);
+    /** One request written byte for byte, as no browser would send it. */
+    const written = (line: string, host: string) =>
+      new Promise<{ webOrigin: string | null }>((settle, fail) => {
+        const socket = connect(web.port as number, '127.0.0.1', () => {
+          socket.write([line, `Host: ${host}`, 'Connection: close', '', ''].join(CRLF));
+        });
+        let text = '';
+        socket.setTimeout(4000, () => {
+          socket.destroy();
+          fail(new Error(`no answer for ${line}: ${text.slice(0, 200)}`));
+        });
+        // Settled on the first whole answer: the connection may be kept open.
+        socket.on('data', (chunk) => {
+          text += chunk.toString('utf8');
+          const body = text.slice(text.indexOf(CRLF + CRLF) + 4);
+          try {
+            const answer = JSON.parse(body.slice(body.indexOf('{'), body.lastIndexOf('}') + 1));
+            socket.destroy();
+            settle(answer);
+          } catch {
+            // Not all of it yet.
+          }
+        });
+        socket.on('error', fail);
+      });
+    // An absolute-form target names https and any host it likes; a forged Host names any host.
+    expect(
+      (await written('GET https://evil.example/api/kinds HTTP/1.1', 'evil.example')).webOrigin,
+    ).toBeNull();
+    expect((await written('GET /api/kinds HTTP/1.1', 'evil.example')).webOrigin).toBeNull();
+    expect((await written('GET /api/kinds HTTP/1.1', `localhost:${web.port}`)).webOrigin).toBe(
+      `http://localhost:${web.port}`,
+    );
   });
 
   test("an app's file read from its opaque origin reaches the API, without the session", async () => {

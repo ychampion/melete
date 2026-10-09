@@ -49,7 +49,10 @@ type Labels = Record<string, string>;
  * real clients' requests are what is tested.
  */
 class Engine {
-  containers = new Map<string, { Id: string; Name: string; Labels: Labels; Running: boolean }>();
+  containers = new Map<
+    string,
+    { Id: string; Name: string; Labels: Labels; Running: boolean; Image?: string }
+  >();
   networks = new Map<string, { Id: string; Name: string; Internal: boolean; Labels: Labels }>();
   volumes = new Map<string, { Name: string; Labels: Labels }>();
   images = new Map<string, { Id: string; RepoDigests: string[]; Config: { Labels: Labels } }>();
@@ -158,6 +161,7 @@ class Engine {
         Name: `/${name}`,
         Labels: value.Labels as Labels,
         Running: false,
+        Image: this.images.get(String(value.Image))?.Id,
       });
       return { Id: name };
     }
@@ -166,11 +170,23 @@ class Engine {
       if (found) found.Running = true;
       return null;
     }
+    if (parts[0] === 'containers' && parts[2] === 'stop') {
+      const found = this.containers.get(parts[1] ?? '');
+      if (found) found.Running = false;
+      return null;
+    }
+    if (parts[0] === 'containers' && parts.length === 2 && method === 'DELETE') {
+      this.containers.delete(parts[1] ?? '');
+      return null;
+    }
+    if (url.pathname === '/volumes' && method === 'GET')
+      return { Volumes: [...this.volumes.values()] };
     if (parts[0] === 'containers' && parts[2] === 'json') {
       const found = this.containers.get(parts[1] ?? '');
       if (!found) throw new DockerError(404, 'GET', target);
       return {
         Id: found.Id,
+        Image: found.Image,
         Config: { Labels: found.Labels, Env: ['SECRET=1'] },
         State: { Running: found.Running, Status: found.Running ? 'running' : 'created' },
         NetworkSettings: {
@@ -324,6 +340,86 @@ describe('melete-cells accepts the fixed profiles the service uses', () => {
         new AbortController().signal,
       );
       expect(engine.refused).toEqual([]);
+    }
+  });
+
+  test("an agent's computer on an older image is made again from the current one, keeping its volumes", async () => {
+    for (const egress of ['deny_all', 'open'] as const) {
+      const engine = new Engine();
+      const sandbox = new DockerSandboxHost(
+        {
+          socket: '/unused.sock',
+          project: SANDBOX_PROJECT,
+          cpus: 1,
+          memoryMb: 2048,
+          pids: 512,
+          diskMb: 4096,
+          idleSeconds: 600,
+          egressPort: 8789,
+          selfId: 'self',
+        },
+        engine.api,
+      );
+      (sandbox as unknown as { grantEgress: () => Promise<void> }).grantEgress = async () => {};
+      const spec = (session: string) =>
+        ({
+          image: 'melete-sandbox:local',
+          egress: egress === 'open' ? { kind: 'open' } : { kind: 'deny_all' },
+          region: null,
+          lifetimeSeconds: 3600,
+          idleSeconds: null,
+          workdir: '/work',
+          labels: {
+            'melete.owner': 'v1',
+            'melete.project': SANDBOX_PROJECT,
+            'melete.session': session,
+          },
+          env: {},
+        }) as never;
+      const made = await sandbox.create(
+        spec('sbs_01J00000000000000000000000'),
+        new AbortController().signal,
+      );
+      const name = made.providerSandboxId;
+      const volumes = [...engine.volumes.keys()].sort();
+      // An update brings a newer image under the name the operator configured.
+      const NEW_ID = `sha256:${'9'.repeat(64)}`;
+      const newer = { Id: NEW_ID, RepoDigests: [], Config: { Labels: {} } };
+      engine.images.set('melete-sandbox:local', newer).set(NEW_ID, newer);
+      const resumed = await sandbox.resume(
+        name,
+        spec('sbs_01J00000000000000000000001'),
+        new AbortController().signal,
+        { quiet: true },
+      );
+      expect(engine.refused).toEqual([]);
+      expect(resumed.recreatedFrom).toBe(SANDBOX_ID);
+      expect(engine.containers.get(name)?.Image).toBe(NEW_ID);
+      expect([...engine.volumes.keys()].sort()).toEqual(volumes);
+      // The image it ran before is no longer one a computer may be made from.
+      expect(
+        await engine.ask('POST', `/containers/create?name=${name}`, {
+          Image: SANDBOX_ID,
+          User: '10004:10004',
+          Labels: engine.containers.get(name)?.Labels,
+          NetworkDisabled: true,
+          HostConfig: {
+            NetworkMode: 'none',
+            ReadonlyRootfs: true,
+            CapDrop: ['ALL'],
+            SecurityOpt: ['no-new-privileges:true'],
+            PidsLimit: 512,
+            Memory: 2 * 1024 ** 3,
+            RestartPolicy: { Name: 'no' },
+            LogConfig: { Type: 'json-file', Config: {} },
+            Mounts: [{ Type: 'volume', Source: `${name}-work`, Target: '/work' }],
+          },
+        }),
+      ).toEqual({
+        allow: false,
+        status: 403,
+        reason: 'the sandbox profile runs only the image the operator configured',
+      });
     }
   });
 

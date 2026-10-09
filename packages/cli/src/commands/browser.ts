@@ -31,15 +31,15 @@ import {
   fileReplacer,
   replaceFile,
 } from '../../../../deploy/scripts/tailscale-origin.ts';
-import { browserEntries, CONNECTIONS_FILE, readConnections } from '../browser.ts';
-import type { Context } from '../context.ts';
 import {
-  composeCommand,
-  DEPLOY_FILE,
-  type DeployConfig,
-  deployConfigSchema,
-  renderDeployConfig,
-} from '../deploy-config.ts';
+  browserFileChanges,
+  CONNECTION_ID,
+  CONNECTIONS_FILE,
+  readConnections,
+  SPACE_ID,
+} from '../browser.ts';
+import type { Context } from '../context.ts';
+import { composeCommand, DEPLOY_FILE } from '../deploy-config.ts';
 import { readInstallation } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
@@ -47,8 +47,7 @@ import { EXIT, type ExitCode } from '../schema.ts';
 export const BROWSER_USAGE = 'Usage: bun run melete browser enable [--space <space id>]';
 /** The worker's uid and gid, as deploy/docker-compose.browser.yml runs it. */
 export const BROWSER_UID = 10003;
-const SPACE_ID = /^sp_[A-Za-z0-9_-]+$/;
-const SERVICE_SCRIPT = 'apps/melete/src/workers/browser/enable.ts';
+export const SERVICE_SCRIPT = 'apps/melete/src/workers/browser/enable.ts';
 
 /**
  * Run as root in a container that sees only the space's own directory at
@@ -221,7 +220,7 @@ export async function runBrowser(
         typeof enabled.connection_id !== 'string' ||
         typeof enabled.created !== 'boolean' ||
         !SPACE_ID.test(enabled.space_id) ||
-        !/^conn_[A-Za-z0-9_-]+$/.test(enabled.connection_id)
+        !CONNECTION_ID.test(enabled.connection_id)
       )
         throw new BrowserRefusal('The service answered with an id this command does not accept.');
 
@@ -250,23 +249,16 @@ export async function runBrowser(
       let envAfter = withSetting(envBefore, 'MELETE_BROWSER_SPACE', enabled.space_id);
       if (!usableToken(env.MELETE_BROWSER_TOKEN))
         envAfter = withSetting(envAfter, 'MELETE_BROWSER_TOKEN', randomBytes(32).toString('hex'));
-      const next: DeployConfig = deployConfigSchema.parse({
-        ...current,
-        overlays: current.overlays.includes('browser')
-          ? current.overlays
-          : [...current.overlays, 'browser'],
-      });
       const contractPath = join(context.deployDir, DEPLOY_FILE);
-      const contractBefore = existsSync(contractPath) ? readFileSync(contractPath, 'utf8') : null;
-      const contractAfter =
-        installation.loaded.kind === 'found' &&
-        renderDeployConfig(installation.loaded.config) === renderDeployConfig(next)
-          ? contractBefore
-          : renderDeployConfig(next);
+      const changes = browserFileChanges({
+        loaded: installation.loaded,
+        config: current,
+        contractText: existsSync(contractPath) ? readFileSync(contractPath, 'utf8') : null,
+        connections,
+        connectionId: enabled.connection_id,
+      });
+      const next = changes.config;
       const connectionsPath = join(context.deployDir, CONNECTIONS_FILE);
-      const listed = browserEntries(connections).some(
-        (entry) => entry.id === enabled.connection_id,
-      );
       const written: string[] = [];
       const write = async (path: string, text: string, mode: number, name: string) => {
         try {
@@ -279,16 +271,11 @@ export async function runBrowser(
         written.push(name);
       };
       if (envAfter !== envBefore) await write(envPath, envAfter, ENV_FILE_MODE, 'deploy/.env');
-      if (contractAfter !== contractBefore && contractAfter !== null)
-        await write(contractPath, contractAfter, 0o644, `deploy/${DEPLOY_FILE}`);
+      if (changes.contract !== null)
+        await write(contractPath, changes.contract, 0o644, `deploy/${DEPLOY_FILE}`);
       // Written last: it is the file a start without the overlay refuses.
-      if (!listed)
-        await write(
-          connectionsPath,
-          `${JSON.stringify([...connections, { kind: 'browser', id: enabled.connection_id }], null, 2)}\n`,
-          0o644,
-          'deploy/config/connections.json',
-        );
+      if (changes.connections !== null)
+        await write(connectionsPath, changes.connections, 0o644, 'deploy/config/connections.json');
       context.out(
         written.length === 0 && !enabled.created
           ? `The browser worker's settings are already in place for ${enabled.space_id}.\n`

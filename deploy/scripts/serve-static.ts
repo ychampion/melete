@@ -53,12 +53,18 @@ export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
 
 /**
  * Tells the API the origin the browser opened Melete at: the configured
- * `MELETE_WEB_ORIGIN`, or this request's own. A sign-in to a connected app
+ * `MELETE_WEB_ORIGIN`, or this request's own when it is plain http on this
+ * machine (an SSH tunnel, or a browser on the server). A sign-in to a connected app
  * returns the browser there when the service has no public address of its
  * own. It replaces whatever the browser sent, and the API believes it only on
  * a connection from the proxy it was told to trust.
  */
 export const WEB_ORIGIN_HEADER = 'x-melete-web-origin';
+
+/** A plain http:// address on this machine, as a browser opening this server directly has. */
+export function loopbackHttp(url: URL): boolean {
+  return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
 
 /**
  * Where an app's or account's sign-in sends the browser back. That return is
@@ -70,6 +76,8 @@ export function signInReturn(request: Request, pathname: string): boolean {
   return (
     request.method === 'GET' &&
     request.headers.get('sec-fetch-mode') === 'navigate' &&
+    // A top-level page load only: a frame on another site navigates too.
+    request.headers.get('sec-fetch-dest') === 'document' &&
     /^\/api\/oauth\/(?:[a-z]+\/)?callback$/.test(pathname)
   );
 }
@@ -245,7 +253,12 @@ async function proxyApi(
   // way a browser cannot choose the address it is limited by.
   headers.delete(CLIENT_ADDRESS_HEADER);
   if (clientAddress) headers.set(CLIENT_ADDRESS_HEADER, clientAddress);
-  headers.set(WEB_ORIGIN_HEADER, publicOrigin ?? url.origin);
+  // Without a configured origin, only a plain http:// address on this machine
+  // can be the browser's own: this server speaks plain HTTP, so anything else
+  // came from a request target or Host the client wrote, and is not passed on.
+  const browserOrigin = publicOrigin ?? (loopbackHttp(url) ? url.origin : undefined);
+  headers.delete(WEB_ORIGIN_HEADER);
+  if (browserOrigin) headers.set(WEB_ORIGIN_HEADER, browserOrigin);
 
   try {
     const response = await fetch(target, {
