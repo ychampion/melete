@@ -5,6 +5,7 @@
  * against a real engine in docker.live.test.ts.
  */
 import { describe, expect, test } from 'bun:test';
+import { LIVE_LIMITS } from '@melete/contracts';
 import { sandboxLabels } from '../manifest.ts';
 import {
   type EgressPolicy,
@@ -17,6 +18,7 @@ import {
   SandboxTransportError,
 } from '../types.ts';
 import {
+  DESKTOP_STREAM_MAX_SECONDS,
   DOCKER_SANDBOX_DEFAULTS,
   DOCKER_SANDBOX_UID,
   DockerSandboxHost,
@@ -1018,9 +1020,44 @@ describe('the desktop', () => {
     };
     const seen: number[][] = [];
     for await (const frame of host.frames(handleOf(NAME), 40, signal())) seen.push([...frame]);
-    expect(argv).toEqual(['melete-desktop', 'stream', '--fps', '10']);
+    expect(argv.slice(0, 2)).toEqual(['bash', '-c']);
+    expect(argv[2]).toContain('melete-desktop stream --fps "$3"');
+    expect(argv.slice(5)).toEqual([String(DESKTOP_STREAM_MAX_SECONDS), '10']);
     // At most two wait for a slow viewer, so both arrive here.
     expect(seen).toEqual(frames.map((frame) => [...frame]));
+    // A stream that ended on its own leaves nothing to end.
+    expect([...engine.execs.values()].map((exec) => exec.cmd[0])).toEqual(['bash']);
+  });
+
+  test('a frame stream is ended inside the computer when its viewer leaves, and stops on its own at its limit', async () => {
+    const one = new Uint8Array([0, 0, 0, 2, 0xff, 0xd8]);
+    for (const leave of ['abort', 'break'] as const) {
+      const { engine, host } = setup();
+      await host.create(spec(), signal());
+      const ran: string[][] = [];
+      engine.onExec = (cmd) => {
+        ran.push(cmd);
+        // The stream runs until something ends it, as `melete-desktop stream` does.
+        return cmd[0] === 'bash' ? { stdout: one, hold: {} } : {};
+      };
+      const viewer = new AbortController();
+      for await (const _frame of host.frames(handleOf(NAME), 4, viewer.signal)) {
+        if (leave === 'break') break;
+        viewer.abort();
+      }
+      const [stream, end] = ran;
+      // Under a time limit of its own, past a live view's, tagged so it can be found again.
+      expect(stream?.[2]).toBe(
+        'exec -a "$1" timeout -s TERM "$2" melete-desktop stream --fps "$3"',
+      );
+      const tag = String(stream?.[4]);
+      expect(tag).toMatch(/^melete-desktop-stream-[0-9a-f-]{36}$/);
+      expect(stream?.slice(5)).toEqual([String(DESKTOP_STREAM_MAX_SECONDS), '4']);
+      expect(DESKTOP_STREAM_MAX_SECONDS * 1000).toBeGreaterThan(LIVE_LIMITS.takeover_ms);
+      // The one with that tag is ended, and only it.
+      expect(end).toEqual(['/bin/sh', '-c', 'pkill -TERM -f -- "^$1( |$)"; exit 0', 'melete', tag]);
+      expect(ran).toHaveLength(2);
+    }
   });
 });
 

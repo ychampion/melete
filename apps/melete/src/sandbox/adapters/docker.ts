@@ -29,6 +29,7 @@
  * vouch for is reported as such, never guessed.
  */
 
+import { randomUUID } from 'node:crypto';
 import { rootCertificates } from 'node:tls';
 import { EXEC_ENV_NAMES, type ExecEnvName } from '@melete/contracts';
 import type { ComputerTrust, EgressCredentialPort } from '../../egress/credentials.ts';
@@ -86,6 +87,21 @@ const NOT_REGULAR_EXIT = 4;
 const LISTING_LIMIT = 16 * MiB;
 const KILL_GRACE_MS = 15_000;
 const QUOTA_CHECK_MS = 20_000;
+/**
+ * The longest a live view's frame stream runs inside the computer, whatever
+ * happens to the service: past a live view's own limit, so a view never ends
+ * on it, and short enough that a stream nobody stopped is gone soon after.
+ */
+export const DESKTOP_STREAM_MAX_SECONDS = 25 * 60;
+/**
+ * The frame stream, named by a tag of its own so it can be ended from a second
+ * exec: the engine has no way to end an exec, and dropping its output leaves
+ * the process running. `timeout` ends it at the limit, and passes a signal it
+ * is sent on to the stream.
+ */
+const STREAM = 'exec -a "$1" timeout -s TERM "$2" melete-desktop stream --fps "$3"';
+/** Ends the frame stream that carries the tag, if it still runs. */
+const STREAM_END = 'pkill -TERM -f -- "^$1( |$)"; exit 0';
 /**
  * Enter the working directory and, past the disk allowance, lower the largest
  * file the command may write; or report, as the marker wrapper's own setup
@@ -1451,6 +1467,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     const waiting: { wake: (() => void) | null } = { wake: null };
     let pending = new Uint8Array(0);
     let finished = false;
+    /** The stream's process has exited, as the engine says. */
+    let exited = false;
     let failure: unknown = null;
     const onStdout = (bytes: Uint8Array) => {
       const joined = new Uint8Array(pending.byteLength + bytes.byteLength);
@@ -1470,11 +1488,23 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       this.activity.set(name, this.now());
       waiting.wake?.();
     };
+    const tag = `melete-desktop-stream-${randomUUID()}`;
     const running = this.execute(
       name,
-      ['melete-desktop', 'stream', '--fps', String(Math.max(1, Math.min(10, Math.round(fps))))],
+      [
+        'bash',
+        '-c',
+        STREAM,
+        'melete',
+        tag,
+        String(DESKTOP_STREAM_MAX_SECONDS),
+        String(Math.max(1, Math.min(10, Math.round(fps)))),
+      ],
       { signal, maxStdout: 0, maxStderr: 2048, onStdout },
     )
+      .then(() => {
+        exited = true;
+      })
       .catch((error) => {
         if (!signal.aborted) failure = error;
       })
@@ -1496,6 +1526,18 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
         waiting.wake = null;
       }
     } finally {
+      // The viewer left, or the view ended: the stream inside the computer is
+      // ended too, since closing its output does not stop it.
+      if (!exited)
+        await this.execute(name, ['/bin/sh', '-c', STREAM_END, 'melete', tag], {
+          signal: AbortSignal.timeout(10_000),
+          maxStdout: 0,
+          maxStderr: 1024,
+        }).catch((error) => {
+          process.stderr.write(
+            `desktop frame stream in ${name} could not be ended; it stops on its own within ${DESKTOP_STREAM_MAX_SECONDS} seconds: ${describe(error)}\n`,
+          );
+        });
       await Promise.race([running, delay(1000)]);
     }
     if (failure) throw failure;
