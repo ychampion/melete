@@ -384,6 +384,11 @@ export const DEFAULT_MAX_TURNS = 6;
 /** One light engine per attempt, driven by the same adapter the container path uses. */
 export class LightRuntime implements RuntimeAdapter {
   observe?: (bundle: AttemptBundle, event: RuntimeEvent) => Promise<void>;
+  /** Each tool call an attempt made and its result, for the grader. */
+  traceTool?: (
+    bundle: AttemptBundle,
+    call: { tool: string; args: Record<string, unknown>; result: Record<string, unknown> },
+  ) => Promise<void>;
   /** Model turns for the scenario running now; the lab sets it per scenario. */
   maxTurns = DEFAULT_MAX_TURNS;
   constructor(
@@ -407,6 +412,7 @@ export class LightRuntime implements RuntimeAdapter {
       // The same per-run ceilings the container path renders for a suite run.
       maxTurns: this.maxTurns,
       maxTokens: 4096,
+      ...(this.traceTool ? { onTool: (call) => this.traceTool?.(bundle, call) } : {}),
     });
     const baseUrl = engine.start();
     try {

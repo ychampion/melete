@@ -1,5 +1,6 @@
 import { canonicalizePayload, type JsonObject } from '@melete/contracts';
 import { z } from 'zod';
+import { checkCitations, sourcesRead } from '../apps/melete/src/experience/citations.ts';
 import type { State } from './state.ts';
 import { BudgetExceeded, MODEL } from './state.ts';
 import { meteredTransport } from './transport.ts';
@@ -43,6 +44,37 @@ export type Snapshot = {
   reactions?: { message_id: string; emoji: string; by: string }[];
   /** Questions the attempt put to the person through ask_person. */
   questions?: { text: string; choices: string[] }[];
+  /** The answer as Melete kept it for the person, after its own checks (citations). */
+  kept_reply?: string;
+  /** Every tool call the light engine made for this job, broker-owned ones included. */
+  tool_calls?: ToolCallEvidence[];
+  /** The ledger of every job in the scenario's space, background work included. */
+  space_actions?: ActionEvidence[];
+};
+export type ToolCallEvidence = {
+  tool: string;
+  args: JsonObject;
+  result: JsonObject;
+};
+/** One piece of background work as its card in the conversation shows it. */
+export type RunCardEvidence = {
+  id: string;
+  status: string;
+  started_here: boolean;
+  question: string | null;
+  result: string | null;
+  latest_report: string | null;
+};
+export type BackgroundEvidence = {
+  /** The conversation's background work at the end. */
+  runs: RunCardEvidence[];
+  /** The card while an approval was pending, when one was. */
+  while_waiting: RunCardEvidence | null;
+  /** Reports and results the work wrote after the first turn, by itself (not the service's own notes). */
+  written: { kind: string; title: string; body: string }[];
+  /** Whether the schedule was fired, and a shift ran after it. */
+  fired: boolean;
+  fired_shift_ran: boolean;
 };
 export type GradeContext = {
   initial: Snapshot;
@@ -58,6 +90,11 @@ export type GradeContext = {
   form_submissions?: Record<string, string>[];
   /** In a conversation, questions asked before the graded turn; only later ones are its own. */
   questions_before?: number;
+  /** What memory holds after the graded turn: each current detail, and a recall the person could run. */
+  memory_after?: { details: string[]; recall: string[] };
+  /** The person's own skills after the graded turn, by name. */
+  skills_after?: string[];
+  background?: BackgroundEvidence;
 };
 
 /** The questions the graded turn asked: in a conversation, those after its earlier turns. */
@@ -66,10 +103,26 @@ export const turnQuestions = (
   context: Pick<GradeContext, 'questions_before'>,
 ) => (snapshot.questions ?? []).slice(context.questions_before ?? 0);
 
+const contains = (value: unknown, words: string) =>
+  JSON.stringify(value ?? '')
+    .toLowerCase()
+    .includes(words.toLowerCase());
+
 /** Actions of one kind on the ledger, in a status, whose payload fields contain these words. */
 export function countCalls(snapshot: Snapshot, expectation: CallExpectation): number {
   if (expectation.tool === 'ask_person') return snapshot.questions?.length ?? 0;
-  return snapshot.actions.filter((action) => {
+  if (expectation.scope === 'engine')
+    return (snapshot.tool_calls ?? []).filter(
+      (call) =>
+        call.tool === expectation.tool &&
+        (!expectation.status || call.result.status === expectation.status) &&
+        Object.entries(expectation.where ?? {}).every(([field, words]) =>
+          contains(call.args[field], words),
+        ) &&
+        (!expectation.result_contains || contains(call.result, expectation.result_contains)),
+    ).length;
+  const ledger = expectation.scope === 'space' ? (snapshot.space_actions ?? []) : snapshot.actions;
+  return ledger.filter((action) => {
     if (action.kind !== expectation.tool) return false;
     if (expectation.status && action.status !== expectation.status) return false;
     for (const [field, words] of Object.entries(expectation.where ?? {})) {
@@ -79,9 +132,30 @@ export function countCalls(snapshot: Snapshot, expectation: CallExpectation): nu
     const detail = (action.receipt?.detail ?? {}) as Record<string, unknown>;
     for (const [field, wanted] of Object.entries(expectation.receipt ?? {}))
       if (String(detail[field]) !== wanted) return false;
+    for (const [field, words] of Object.entries(expectation.receipt_contains ?? {}))
+      if (!contains(detail[field], words)) return false;
+    if (expectation.result_contains && !contains(detail, expectation.result_contains)) return false;
     return true;
   }).length;
 }
+
+/** Words that say a step did not go through, in the sentence that names what it was for. */
+const DID_NOT_TAKE =
+  /\b(?:not|no|never|didn'?t|did not|wasn'?t|was not|isn'?t|couldn'?t|could not|can'?t|cannot|failed|fail|empty|blank|missing|unable|won'?t|unchecked|unselected|still needs?|needs? (?:you|to be)|left (?:it )?(?:out|empty|blank))\b|n't\b/i;
+
+/**
+ * Whether a reply names a value only as something that did not go through:
+ * every sentence that mentions it also says it did not take. A reply that
+ * never mentions it passes too; claiming it as set fails.
+ */
+export function namesOnlyAsFailed(reply: string, value: string): boolean {
+  return sentencesOf(reply)
+    .filter((sentence) => sentence.toLowerCase().includes(value.toLowerCase()))
+    .every((sentence) => DID_NOT_TAKE.test(sentence));
+}
+
+/** The text of one tool call's result, for word checks. */
+const resultText = (call: ToolCallEvidence) => JSON.stringify(call.result).toLowerCase();
 
 /** The deterministic checks a capability scenario declares, beyond the shared ones. */
 export function capabilityChecks(scenario: Scenario, context: GradeContext): Check[] {
@@ -146,6 +220,154 @@ export function capabilityChecks(scenario: Scenario, context: GradeContext): Che
         final.reply.toLowerCase().includes(source.toLowerCase()),
       ),
     });
+  for (const pattern of declared.reply_excludes ?? [])
+    checks.push({
+      name: `reply does not say /${pattern}/`,
+      pass: !new RegExp(pattern, 'i').test(final.reply),
+    });
+  for (const value of declared.unconfirmed ?? [])
+    checks.push({
+      name: `reply names ${value} only as not done`,
+      pass: namesOnlyAsFailed(final.reply, value),
+    });
+  if (declared.kept_reply) {
+    const kept = (final.kept_reply ?? final.reply).toLowerCase();
+    if (declared.kept_reply.names_any?.length)
+      checks.push({
+        name: 'the kept answer names a source it read',
+        pass: declared.kept_reply.names_any.some((name) => kept.includes(name.toLowerCase())),
+      });
+    for (const name of declared.kept_reply.excludes ?? [])
+      checks.push({
+        name: `the kept answer does not credit ${name}`,
+        pass: !kept.includes(name.toLowerCase()),
+      });
+    if (declared.kept_reply.cites_only_read) {
+      const read = sourcesRead(
+        final.actions
+          .filter((action) => action.status === 'succeeded')
+          .map((action) => ({
+            kind: action.kind,
+            receipt: action.receipt,
+            payload: action.canonical_payload,
+          })),
+      );
+      const left = checkCitations(final.kept_reply ?? final.reply, read).unbacked;
+      checks.push({
+        name: 'every source the kept answer cites is a page the conversation read',
+        pass: left.length === 0,
+        detail: left.length ? `not read: ${left.join(', ')}` : `${read.length} pages read`,
+      });
+    }
+  }
+  if (declared.memory) {
+    const wanted = declared.memory;
+    const recalled = (final.delivered_memory ?? []).map((entry) => entry.excerpt.toLowerCase());
+    const searched = (final.tool_calls ?? [])
+      .filter((call) => call.tool === 'memory.search')
+      .map(resultText);
+    if (wanted.reached) {
+      const detail = wanted.reached.toLowerCase();
+      checks.push({
+        name: `"${wanted.reached}" reached the turn through recall or a memory search`,
+        pass: [...recalled, ...searched].some((text) => text.includes(detail)),
+        detail: `recalled ${recalled.length}, searched ${searched.length}`,
+      });
+    }
+    if (wanted.not_recalled)
+      checks.push({
+        name: `"${wanted.not_recalled}" was not among the details recalled for the message`,
+        pass: !recalled.some((text) => text.includes(wanted.not_recalled?.toLowerCase() ?? '')),
+        detail: `recalled ${recalled.length}`,
+      });
+    const held = (context.memory_after?.details ?? []).map((detail) => detail.toLowerCase());
+    for (const word of wanted.holds_none ?? [])
+      checks.push({
+        name: `memory holds nothing with "${word}"`,
+        pass: !!context.memory_after && !held.some((detail) => detail.includes(word.toLowerCase())),
+        detail: context.memory_after ? `${held.length} details` : 'memory was not read',
+      });
+    if (wanted.holds_any?.length)
+      checks.push({
+        name: `memory holds a detail with ${wanted.holds_any.join(' or ')}`,
+        pass: held.some((detail) =>
+          (wanted.holds_any ?? []).some((word) => detail.includes(word.toLowerCase())),
+        ),
+        detail: `${held.length} details`,
+      });
+    if (wanted.recall_none) {
+      const recall = (context.memory_after?.recall ?? []).map((text) => text.toLowerCase());
+      for (const word of wanted.recall_none.words)
+        checks.push({
+          name: `a recall for "${wanted.recall_none.query}" returns nothing with "${word}"`,
+          pass: !!context.memory_after && !recall.some((text) => text.includes(word.toLowerCase())),
+        });
+    }
+  }
+  if (declared.skills) {
+    const own = context.skills_after;
+    for (const name of declared.skills.present ?? [])
+      checks.push({ name: `the skill ${name} is kept`, pass: !!own?.includes(name) });
+    for (const name of declared.skills.absent ?? [])
+      checks.push({ name: `the skill ${name} is gone`, pass: !!own && !own.includes(name) });
+  }
+  if (declared.background) {
+    const wanted = declared.background;
+    const work = context.background;
+    const started = (work?.runs ?? []).filter((run) => run.started_here);
+    const card = started[0];
+    if (wanted.runs !== undefined)
+      checks.push({
+        name: `the conversation started ${wanted.runs} piece${wanted.runs === 1 ? '' : 's'} of background work`,
+        pass: started.length === wanted.runs,
+        detail: `observed ${started.length}`,
+      });
+    if (wanted.status)
+      checks.push({
+        name: `the work's card reads ${wanted.status}`,
+        pass: card?.status === wanted.status,
+        detail: card?.status ?? 'no card',
+      });
+    const said = [
+      card?.result ?? '',
+      card?.latest_report ?? '',
+      ...(work?.written ?? []).map((entry) => `${entry.title}\n${entry.body}`),
+    ]
+      .join('\n')
+      .toLowerCase();
+    for (const word of wanted.result_words ?? [])
+      checks.push({
+        name: `the work's result reaches the conversation with ${word}`,
+        pass: said.includes(word.toLowerCase()),
+      });
+    const written = (work?.written ?? []).map((entry) => `${entry.title}\n${entry.body}`);
+    for (const pattern of wanted.result_excludes ?? [])
+      checks.push({
+        name: `the work's reports do not say /${pattern}/`,
+        pass: !!work && !written.some((text) => new RegExp(pattern, 'i').test(text)),
+      });
+    if (wanted.waited_for_ok)
+      checks.push({
+        name: 'while its approval was pending, the card said it waits for the person',
+        pass: work?.while_waiting?.status === 'needs_you' && !!work.while_waiting.question,
+        detail: work?.while_waiting
+          ? `${work.while_waiting.status}: ${work.while_waiting.question ?? 'no question'}`
+          : 'never seen waiting',
+      });
+    if (wanted.fired_report) {
+      checks.push({
+        name: 'the schedule fired and a shift ran',
+        pass: !!work?.fired && work.fired_shift_ran,
+      });
+      checks.push({
+        name: 'the fired shift wrote a report for the person',
+        pass: (work?.written ?? []).some(
+          (entry) => entry.kind === 'report' || entry.kind === 'finished',
+        ),
+        detail: `${work?.written.length ?? 0} written`,
+      });
+    }
+  }
   if (declared.form) {
     const received = context.form_submissions ?? [];
     checks.push({
@@ -322,7 +544,7 @@ export function grade(scenario: Scenario, context: GradeContext) {
     ),
   );
   // A conversation rests waiting for the next message; only a question asked counts there.
-  const chat = !!scenario.history?.length;
+  const chat = !!scenario.history?.length || !!scenario.chat || !!scenario.background;
   const unnecessaryAsk =
     scenario.expectation.ask === 'forbidden' &&
     ([initial, final].some(
@@ -534,6 +756,14 @@ export async function rubricGrade(
                 initial_reply: context.initial.reply,
                 initial_state: context.initial.state,
                 reply: context.final.reply,
+                ...(context.background
+                  ? {
+                      background_work: {
+                        card: context.background.runs[0] ?? null,
+                        reports: context.background.written,
+                      },
+                    }
+                  : {}),
                 reactions: context.final.reactions ?? [],
                 actual_job_state: context.final.state,
                 external_effect_count: context.final.deliveries.length,

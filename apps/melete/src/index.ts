@@ -1853,6 +1853,7 @@ export async function bootstrap(
     connections,
     learning,
     memory,
+    runs,
     boundary: effectBoundary,
     supervisor,
     broker: effectBoundary?.broker,
