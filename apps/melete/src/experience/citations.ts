@@ -66,6 +66,17 @@ export function sourcesRead(
       const url = detail.final_url ?? detail.url ?? object(action.payload).url;
       if (typeof url === 'string')
         read.push({ url, title: typeof detail.title === 'string' ? detail.title : null });
+    } else if (action.kind === 'computer.batch') {
+      // An open inside a batch is a page opened too, once the window showed it.
+      for (const step of Array.isArray(detail.steps) ? detail.steps : []) {
+        const opened = object(step);
+        if (opened.computer !== 'open' || opened.navigated === false) continue;
+        if (typeof opened.address === 'string')
+          read.push({
+            url: opened.address,
+            title: typeof opened.window === 'string' ? opened.window : null,
+          });
+      }
     }
   }
   return read;
