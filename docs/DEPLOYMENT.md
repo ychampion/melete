@@ -40,7 +40,10 @@ Keys are written into `deploy/.env` and never printed.
 
 Running it again downloads the Compose file again, pulls the newer images and
 restarts the stack. `deploy/.env`, the files in `deploy/config` and every
-volume are kept.
+volume are kept. Once your account exists, `bun run melete --deploy-dir
+~/melete/deploy browser enable`, run from a clone of the repository, turns on
+the [browser worker](browser-worker.md#one-command); from then on the installer
+starts the worker too, from its published image.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -421,7 +424,7 @@ over from a backup:
 
 ## Using prebuilt images
 
-Every push to `main` builds the four Melete images in GitHub Actions and
+Every push to `main` builds the five Melete images in GitHub Actions and
 publishes them to the GitHub Container Registry, so a host can pull finished
 images rather than build them. This is the recommended way to run a server: it
 needs no build cache, no compilers and far less free disk than a build.
@@ -432,11 +435,12 @@ needs no build cache, no compilers and far less free disk than a build.
 | `ghcr.io/ychampion/melete-web` | `deploy/Dockerfile.web` |
 | `ghcr.io/ychampion/melete-runtime` | `packages/runtime-hermes/Dockerfile` |
 | `ghcr.io/ychampion/melete-sandbox` | `deploy/Dockerfile.sandbox` |
+| `ghcr.io/ychampion/melete-browser` | `deploy/Dockerfile.browser`, the [browser worker](browser-worker.md) |
 
 Each image carries these tags:
 
-- `main`: the latest commit on `main` for which all four images built. The
-  tag moves on all four together, only after every one of them is published.
+- `main`: the latest commit on `main` for which all five images built. The
+  tag moves on all five together, only after every one of them is published.
 - the commit's first seven characters, such as `023df46`: one build, kept.
 - a release's version, such as `v0.3.0`, when that tag is pushed.
 

@@ -56,7 +56,9 @@ jobs:
           docker build -f deploy/Dockerfile.melete -t localhost:5000/melete-service:main .
           docker build -f deploy/Dockerfile.web --build-arg VITE_MELETE_API=/api -t localhost:5000/melete-web:main .
           docker build -t localhost:5000/melete-runtime:main packages/runtime-hermes
-          for image in service web runtime; do
+          # The browser worker the guide turns on, which the overlay names once a tag is set.
+          docker build -f deploy/Dockerfile.browser -t localhost:5000/melete-browser:main .
+          for image in service web runtime browser; do
             docker push "localhost:5000/melete-$image:main"
             # Removed here, so the guide's own pull is what puts them back.
             docker image rm "localhost:5000/melete-$image:main"

@@ -12,8 +12,11 @@ import { readInstallation } from './installation.ts';
 import { reportSchema } from './schema.ts';
 import { REAL_DEPLOY_DIR, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
-/** A temporary checkout with what the browser Compose check reads beside the Compose files. */
-function browserCheckout(): string {
+/**
+ * A temporary deployment directory as the one-line installer leaves it: the
+ * Compose files and deploy/config, with no Dockerfile and no service sources.
+ */
+function installedDir(): string {
   const deployDir = temporaryDeployDir();
   mkdirSync(join(deployDir, 'config'));
   copyFileSync(
@@ -21,6 +24,12 @@ function browserCheckout(): string {
     join(deployDir, 'config', 'browser-seccomp.json'),
   );
   writeFileSync(join(deployDir, 'config', 'connections.json'), '[]\n');
+  return deployDir;
+}
+
+/** A temporary checkout with what the browser Compose check reads beside the Compose files. */
+function browserCheckout(): string {
+  const deployDir = installedDir();
   copyFileSync(join(REAL_DEPLOY_DIR, 'Dockerfile.browser'), join(deployDir, 'Dockerfile.browser'));
   const service = join(dirname(deployDir), 'apps', 'melete');
   mkdirSync(service, { recursive: true });
@@ -143,9 +152,9 @@ describe('melete browser enable', () => {
     expect(PROVISION_SCRIPT).toContain('chmod 0700 "$d"');
     expect(PROVISION_SCRIPT).not.toMatch(/-R\b|--recursive|\bfind\b/);
 
-    // Then the worker is built and the stack starts with the overlay.
+    // Then the published worker is pulled and the stack starts with the overlay.
     expect(context.attached).toHaveLength(2);
-    expect(context.attached[0]?.slice(-2)).toEqual(['build', 'browser']);
+    expect(context.attached[0]?.slice(-2)).toEqual(['pull', 'browser']);
     for (const command of context.attached)
       expect(command).toContain(join(deployDir, 'docker-compose.browser.yml'));
     expect(context.attached[1]).toEqual(
@@ -155,6 +164,51 @@ describe('melete browser enable', () => {
     expect(judgeBrowser(readInstallation(deployDir, 'linux'))).toEqual([
       { id: 'browser.worker', level: 'ok', detail: `The browser worker works for ${SPACE}.` },
     ]);
+  });
+
+  test('an installation that builds its images builds the worker from the checkout', async () => {
+    const deployDir = browserCheckout();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '' });
+    const { context } = engine(deployDir);
+    expect(await runBrowser(context, ['enable'])).toBe(0);
+    expect(context.attached[0]?.slice(-2)).toEqual(['build', 'browser']);
+    // Without the Dockerfile beside the Compose files there is nothing to build, so it stops first.
+    const installed = installedDir();
+    writeEnv(installed, { MELETE_IMAGE_TAG: '' });
+    const before = files(installed);
+    const bare = engine(installed);
+    expect(await runBrowser(bare.context, ['enable'])).toBe(2);
+    expect(bare.context.errors()).toContain('fail their check');
+    expect(bare.calls).toEqual([]);
+    expect(files(installed)).toEqual(before);
+  });
+
+  test('a directory the one-line installer made pulls the published worker', async () => {
+    const deployDir = installedDir();
+    writeEnv(deployDir);
+    const { context } = engine(deployDir);
+    expect(await runBrowser(context, ['enable'])).toBe(0);
+    expect(context.attached[0]?.slice(-2)).toEqual(['pull', 'browser']);
+    expect(parseEnvFile(readFileSync(join(deployDir, '.env'), 'utf8')).MELETE_BROWSER_SPACE).toBe(
+      SPACE,
+    );
+  });
+
+  test('a service answer that is not its result changes nothing', async () => {
+    for (const stdout of [
+      'null\n',
+      '"sp_first"\n',
+      `${JSON.stringify({ space_id: SPACE, connection_id: CONNECTION })}\n`,
+      `${JSON.stringify({ space_id: '../x', connection_id: CONNECTION, created: true })}\n`,
+    ]) {
+      const deployDir = browserCheckout();
+      writeEnv(deployDir);
+      const before = files(deployDir);
+      const { context, calls } = engine(deployDir, { service: { stdout } });
+      expect(await runBrowser(context, ['enable']), stdout).toBe(2);
+      expect(calls.some((call) => call[1] === 'run')).toBe(false);
+      expect(files(deployDir)).toEqual(before);
+    }
   });
 
   test('running it again changes no file and keeps the token', async () => {

@@ -13,7 +13,9 @@
  *    existing token is kept), deploy/melete.deploy.json lists the `browser`
  *    overlay, and deploy/config/connections.json selects the browser for the
  *    connection. Each file is written only when it changes.
- * 5. The worker image is built, and the stack is started with the overlay.
+ * 5. The worker image is pulled when deploy/.env names a published image tag,
+ *    or built from this checkout when it names none, and the stack is started
+ *    with the overlay.
  *
  * The token is never printed. One worker serves one space: a second space runs
  * a worker of its own, set up by hand as docs/browser-worker.md describes.
@@ -152,9 +154,14 @@ export async function runBrowser(
       throw new BrowserRefusal(
         `The browser worker already works for ${configured}. One worker serves one space; docs/browser-worker.md shows how to run another for ${options.space}. Nothing was changed.`,
       );
+    // With a published image tag the overlay names the published worker, which is
+    // pulled; an installation without one builds the worker from this checkout.
+    const published = Boolean(env.MELETE_IMAGE_TAG?.trim());
     let failures: { name: string }[];
     try {
-      failures = browserComposeResults(context.deployDir).filter((result) => !result.ok);
+      failures = browserComposeResults(context.deployDir, {}, { dockerfile: !published }).filter(
+        (result) => !result.ok,
+      );
     } catch (error) {
       // A file that does not parse is refused like one that fails a check.
       failures = [
@@ -207,7 +214,15 @@ export async function runBrowser(
       } catch {
         throw new BrowserRefusal('The service answered with something other than its result.');
       }
-      if (!SPACE_ID.test(enabled.space_id) || !/^conn_[A-Za-z0-9_-]+$/.test(enabled.connection_id))
+      if (
+        enabled === null ||
+        typeof enabled !== 'object' ||
+        typeof enabled.space_id !== 'string' ||
+        typeof enabled.connection_id !== 'string' ||
+        typeof enabled.created !== 'boolean' ||
+        !SPACE_ID.test(enabled.space_id) ||
+        !/^conn_[A-Za-z0-9_-]+$/.test(enabled.connection_id)
+      )
         throw new BrowserRefusal('The service answered with an id this command does not accept.');
 
       // 3. The worker's directory, as root on that one subpath.
@@ -280,9 +295,9 @@ export async function runBrowser(
           : `Set up the browser worker for ${enabled.space_id}${written.length ? `: wrote ${written.join(', ')}` : ''}.\n`,
       );
 
-      // 5. Build the worker and start the stack with it.
+      // 5. Pull or build the worker, and start the stack with it.
       const compose = composeCommand(context.deployDir, next);
-      const built = await context.attach([...compose, 'build', 'browser']);
+      const built = await context.attach([...compose, published ? 'pull' : 'build', 'browser']);
       const started =
         built === 0
           ? await context.attach([
@@ -297,12 +312,12 @@ export async function runBrowser(
           : built;
       if (started !== 0) {
         context.err(
-          `The settings are written, but the stack did not ${built === 0 ? 'become healthy' : 'build the browser image'}. See ${compose.join(' ')} logs --tail=100 browser melete, then run this again.\n`,
+          `The settings are written, but the stack did not ${built === 0 ? 'become healthy' : `${published ? 'pull' : 'build'} the browser image`}. See ${compose.join(' ')} logs --tail=100 browser melete, then run this again.\n`,
         );
         return EXIT.partial;
       }
       context.out(
-        `The browser worker is on. bun run melete deploy starts it with the rest; a docker compose command needs -f deploy/docker-compose.browser.yml after -f deploy/docker-compose.yml from now on.\n`,
+        `The browser worker is on. bun run melete deploy and the one-line installer start it with the rest; a docker compose command needs -f deploy/docker-compose.browser.yml after -f deploy/docker-compose.yml from now on.\n`,
       );
       return EXIT.ok;
     });

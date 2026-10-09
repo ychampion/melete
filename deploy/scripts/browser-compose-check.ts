@@ -21,6 +21,10 @@ export type BrowserComposeFile = {
 const SPACE = '${MELETE_BROWSER_SPACE:?set MELETE_BROWSER_SPACE in .env}';
 // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this required variable.
 const TOKEN = '${MELETE_BROWSER_TOKEN:?set MELETE_BROWSER_TOKEN in .env}';
+/** The published worker when a tag is set, and Compose's own name for a build otherwise. */
+export const BROWSER_IMAGE =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands these variables.
+  '${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/melete-browser:}${MELETE_IMAGE_TAG:-${COMPOSE_PROJECT_NAME:-melete}-browser}';
 const CONTROL = 'browser-control';
 const EGRESS = 'browser-egress';
 /** Relative to this compose file, which is how the engine is given the profile. */
@@ -115,6 +119,7 @@ export function checkBrowserCompose(
   say(
     'the browser has no unreviewed privilege or credential channels',
     hasOnly(browser, [
+      'image',
       'build',
       'restart',
       'init',
@@ -138,7 +143,8 @@ export function checkBrowserCompose(
   const build = record(browser.build);
   say(
     'the browser runs its dedicated image as its own uid',
-    build?.context === '..' &&
+    browser.image === BROWSER_IMAGE &&
+      build?.context === '..' &&
       build.dockerfile === 'deploy/Dockerfile.browser' &&
       hasOnly(build, ['context', 'dockerfile']) &&
       browser.user === '10003:10003' &&
@@ -359,25 +365,29 @@ export const browserComposePaths = (
  * Every check, against the files of one deployment directory: the two Compose
  * files, the worker image beside them, and the renderer sandbox profile the
  * override names. `bun run melete browser enable` runs the same list before it
- * changes anything.
+ * changes anything. An installation that pulls the published worker has no
+ * Dockerfile to check (`dockerfile: false`): the Images workflow checked it
+ * before it built the image.
  */
 export function browserComposeResults(
   deploy?: string,
   files: { base?: string; override?: string } = {},
+  { dockerfile = true }: { dockerfile?: boolean } = {},
 ): CheckResult[] {
   const paths = browserComposePaths(deploy);
   const results = checkBrowserCompose(
     loadBrowserCompose(files.base ?? paths.base),
     loadBrowserCompose(files.override ?? paths.override),
   );
-  results.push(
-    checkBrowserImage(
-      readFileSync(join(dirname(paths.base), 'Dockerfile.browser'), 'utf8'),
-      JSON.parse(
-        readFileSync(join(dirname(paths.base), '..', 'apps', 'melete', 'package.json'), 'utf8'),
+  if (dockerfile)
+    results.push(
+      checkBrowserImage(
+        readFileSync(join(dirname(paths.base), 'Dockerfile.browser'), 'utf8'),
+        JSON.parse(
+          readFileSync(join(dirname(paths.base), '..', 'apps', 'melete', 'package.json'), 'utf8'),
+        ),
       ),
-    ),
-  );
+    );
   // Read by the path the compose file names, so a profile that is not there fails the check.
   let profile: string | undefined;
   try {
