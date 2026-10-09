@@ -25,8 +25,10 @@ export type ComposioFaultKind =
   | 'refused'
   /** Composio did not answer, timed out, or answered with a server error. */
   | 'unavailable'
-  /** The answer was not the shape the API documents, or was too large. */
-  | 'invalid_answer';
+  /** The answer was not the shape the API documents. */
+  | 'invalid_answer'
+  /** The answer was larger than the call allows. */
+  | 'too_large';
 
 export class ComposioFault extends Error {
   constructor(
@@ -91,9 +93,11 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const SMALL_ANSWER_BYTES = 64 * 1024;
 /**
  * A proxied answer carries the toolkit's own JSON inside Composio's. The
- * largest Melete asks for is one raw message (256 KiB, base64url in JSON).
+ * largest a connector reads is a page of calendar events or Drive changes
+ * (2 MiB); this leaves room for Composio's wrapping, and each connector then
+ * holds the answer to its own limit, as it does reading Google directly.
  */
-export const PROXY_ANSWER_BYTES = 1024 * 1024;
+export const PROXY_ANSWER_BYTES = 4 * 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function secondsOf(value: string | null): number | null {
@@ -148,7 +152,7 @@ export class ComposioClient {
       try {
         return await boundedJson(response, init.limit ?? SMALL_ANSWER_BYTES);
       } catch (error) {
-        if (error instanceof ResponseTooLarge) throw new ComposioFault('invalid_answer', 200);
+        if (error instanceof ResponseTooLarge) throw new ComposioFault('too_large', 200);
         throw new ComposioFault('invalid_answer', response.status);
       }
     }

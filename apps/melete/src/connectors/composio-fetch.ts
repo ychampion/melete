@@ -14,7 +14,7 @@
  */
 import type { ComposioClient, ComposioProxyRequest } from './composio.ts';
 import { ComposioFault } from './composio.ts';
-import { type SignedInAccess, SignInEnded } from './signed-in.ts';
+import { ResponseTooLarge, type SignedInAccess, SignInEnded } from './signed-in.ts';
 
 /** One request a fetcher allows: a method, a host, and a path at that host. */
 export type ProxyRule = { method: ComposioProxyRequest['method']; host: string; path: RegExp };
@@ -24,7 +24,12 @@ const GOOGLE_APIS = 'www.googleapis.com';
 const MAILBOX = '/gmail/v1/users/me';
 const CALENDAR = '/calendar/v3/calendars/primary';
 const DRIVE = '/drive/v3';
-const SEGMENT = '[A-Za-z0-9_@.%-]{1,1024}';
+/**
+ * One id in a path: a Gmail message, a calendar event or a Drive file. Their
+ * ids never hold anything else, so no segment can carry an encoded slash, a
+ * dot segment or an address that a server further on might read as a path.
+ */
+const SEGMENT = '[A-Za-z0-9_-]{1,1024}';
 
 const rule = (method: ProxyRule['method'], host: string, path: string): ProxyRule => ({
   method,
@@ -169,6 +174,10 @@ export function composioProxyFetch(options: ManagedFetchOptions): typeof fetch {
         init.signal ?? undefined,
       );
     } catch (error) {
+      // Too large to take is what reading Google directly would have found:
+      // each connector leaves such an answer out as it does natively.
+      if (error instanceof ComposioFault && error.kind === 'too_large')
+        throw new ResponseTooLarge();
       if (error instanceof ComposioFault) return faultResponse(error);
       throw error;
     }

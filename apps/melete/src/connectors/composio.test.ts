@@ -138,6 +138,11 @@ describe('the proxy fetcher', () => {
       'http://gmail.googleapis.com/gmail/v1/users/me/messages',
       `${MANAGED_GOOGLE_BASES.gmail}/settings/forwardingAddresses`,
       `${MANAGED_GOOGLE_BASES.calendar}/events`,
+      // A segment that would name another path once a server decodes it.
+      `${MANAGED_GOOGLE_BASES.gmail}/messages/..%2Fsettings%2FforwardingAddresses`,
+      `${MANAGED_GOOGLE_BASES.gmail}/messages/x%2F..%2F..%2Fsettings`,
+      `${MANAGED_GOOGLE_BASES.gmail}/messages/..%5Csettings`,
+      `${MANAGED_GOOGLE_BASES.gmail}/messages/me@other.example`,
     ])
       await expect(read(address)).rejects.toBeInstanceOf(ManagedRequestRefused);
     const answer = await read(`${MANAGED_GOOGLE_BASES.gmail}/messages?q=from%3Aa&maxResults=5`, {
@@ -340,6 +345,69 @@ describe('the same recorded answers, natively and through Composio', () => {
     const direct = await changes(google.fetcher, native);
     expect(direct[1]?.changes).toHaveLength(1);
     expect(await changes(proxied(id, MANAGED_READS.documents), managedAccess(client, id))).toEqual(
+      direct,
+    );
+  });
+
+  test('a calendar page as large as the connector itself reads is read the same', async () => {
+    // Three long events: past a megabyte, within the two the connector allows.
+    const items = [1, 2, 3].map((n) => ({
+      id: `big${n}`,
+      iCalUID: `big${n}@google.com`,
+      status: 'confirmed',
+      summary: `Planning ${n}`,
+      description: 'x'.repeat(450 * 1024),
+      start: { dateTime: `2026-10-0${n + 5}T09:00:00-07:00` },
+      end: { dateTime: `2026-10-0${n + 5}T10:00:00-07:00` },
+    }));
+    const google = recorded((url) =>
+      url.pathname.endsWith('/events') ? { body: { items } } : undefined,
+    );
+    const id = await activeAccount(google.upstream, 'googlecalendar');
+    const window = { from: '2026-10-05T12:00:00.000Z', to: '2026-10-19T12:00:00.000Z' };
+    const occurrences = async (fetcher: typeof fetch, access: SignedInAccess) => {
+      const connector = new GoogleCalendarConnector({
+        id: 'conn_same0004',
+        spaceId: 'spc_test',
+        base: MANAGED_GOOGLE_BASES.calendar,
+        access,
+        fetcher,
+      });
+      if (connector.signals?.stream !== 'calendar') throw new Error('expected a calendar');
+      return connector.signals.occurrences(window);
+    };
+    const direct = await occurrences(google.fetcher, native);
+    expect(direct.items).toHaveLength(3);
+    expect(
+      await occurrences(proxied(id, MANAGED_READS.calendar), managedAccess(client, id)),
+    ).toEqual(direct);
+  });
+
+  test('a message too large to read is left out of a search, as natively, rather than failing it', async () => {
+    const small = Buffer.from(
+      'From: a@example.test\r\nTo: me@example.test\r\nSubject: Hello\r\nMessage-ID: <small@example.test>\r\n\r\nHi\r\n',
+    ).toString('base64url');
+    const google = recorded((url) => {
+      if (url.pathname.endsWith('/messages'))
+        return { body: { messages: [{ id: 'big0001' }, { id: 'small001' }] } };
+      // A message with a large attachment: larger than any answer Composio is let send back.
+      if (url.pathname.endsWith('/messages/big0001'))
+        return { body: { id: 'big0001', raw: 'A'.repeat(5 * 1024 * 1024) } };
+      if (url.pathname.endsWith('/messages/small001'))
+        return { body: { id: 'small001', raw: small } };
+      return undefined;
+    });
+    const id = await activeAccount(google.upstream);
+    const search = (fetcher: typeof fetch, access: SignedInAccess) =>
+      new GmailApiTransport({
+        base: MANAGED_GOOGLE_BASES.gmail,
+        from: 'me@example.test',
+        access,
+        fetcher,
+      }).search('', 10);
+    const direct = await search(google.fetcher, native);
+    expect(direct.map((message) => message.subject)).toEqual(['Hello']);
+    expect(await search(proxied(id, MANAGED_READS.mail), managedAccess(client, id))).toEqual(
       direct,
     );
   });
