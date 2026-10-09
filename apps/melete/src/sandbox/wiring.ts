@@ -62,6 +62,13 @@ export type SandboxWiring = {
   sweep(signal: AbortSignal): Promise<string[]>;
   /** Called when an attempt finishes. Never blocks the outcome that called it. */
   afterAttempt(attemptId: string): void;
+  /**
+   * Called when a person stops a conversation's turn: the processes that turn
+   * started are ended at once. Never blocks the stop that called it.
+   */
+  afterStop(jobId: string): void;
+  /** Ends the processes a stopped turn of this job started; see `SandboxProcesses.endStopped`. */
+  endStopped(jobId: string, signal: AbortSignal): Promise<string[]>;
   /** Ends the attempt's session: suspended if it is a workspace, closed if not. */
   settleAttempt(attemptId: string, signal: AbortSignal): Promise<void>;
   /**
@@ -182,6 +189,26 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
           say(`sandbox session ${id} was not settled when its attempt ended: ${String(error)}`);
         }
       }
+    },
+
+    async endStopped(jobId, signal) {
+      return options.processes
+        ? options.processes.endStopped(options.providers, jobId, signal)
+        : [];
+    },
+
+    afterStop(jobId) {
+      const work = wiring
+        .endStopped(jobId, AbortSignal.timeout(120_000))
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            // The sweep ends them on its next pass.
+            say(`the processes of stopped job ${jobId} were not ended yet: ${String(error)}`);
+          },
+        )
+        .finally(() => pending.delete(work));
+      pending.add(work);
     },
 
     afterAttempt(attemptId) {

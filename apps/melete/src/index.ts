@@ -1426,6 +1426,8 @@ export async function bootstrap(
         };
       }
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
+      // A stopped turn's processes (a browser it launched, a server) end with it.
+      if (sandboxes) runner.onStopped.push((jobId) => sandboxes?.afterStop(jobId));
       // Where the broker runs here, what a finished attempt left dispatched with
       // nobody waiting on it is settled before the attempt commits.
       runner.settleAbandoned = async (attemptId) =>

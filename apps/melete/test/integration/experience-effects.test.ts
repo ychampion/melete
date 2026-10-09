@@ -641,12 +641,18 @@ databaseTest(
       new StubRuntimeAdapter(),
       { key: 'experience-fixture-signing-key-32-bytes' },
     );
+    // What the stopped turn started outside the runner (its processes) is told to end.
+    const stopped: string[] = [];
+    runner.onStopped.push((id) => stopped.push(id));
     try {
+      await runner.stopConversation(jobId);
+      // A second stop, with no turn in flight, has nothing more to end.
       await runner.stopConversation(jobId);
     } finally {
       await runner.stop();
       await queue.stop();
     }
+    expect(stopped).toEqual([jobId]);
     expect((await s.permissions.list(spaceId)).permissions).toEqual([]);
     const settled = async () =>
       (

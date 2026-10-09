@@ -18,7 +18,9 @@
  * is killed. A periodic sweep does the same for computers nobody is using,
  * stops processes past their time limit, stops a space's processes once its
  * allowance for the day is used, with a notice in the conversations that
- * started them, and stops those whose starting job was cancelled or deleted.
+ * started them, and stops those whose starting job was cancelled or deleted,
+ * or whose starting turn was stopped (at once when the stop is made here, see
+ * `endStopped`, and by the sweep for any start that was still on its way).
  * A computer found stopped while its session says it runs has lost its
  * processes, and their rows are closed. A process outlives the job that started it when that
  * job completes; that is the point of it.
@@ -132,6 +134,7 @@ export const END_REASONS = {
   expired: 'its time limit passed',
   allowance: "the space's awake time for today was used up",
   job: 'the job that started it was cancelled or deleted',
+  turn: 'the turn that started it was stopped',
   connection: "the computer's connection was revoked or removed",
   computer_gone: 'the computer it ran in no longer exists',
   computer_stopped:
@@ -157,6 +160,15 @@ export type AdmitRequest = {
   port: number | null;
   ttlMinutes: number | null;
 };
+
+/**
+ * Whether the attempt that started a process (`p`, with its action `a` and
+ * attempt `t` joined) was stopped or cancelled: Stop and a cancellation end
+ * the attempt in flight as fenced with a `cancelled` detail, and nothing else
+ * does. A takeover fences too, with its own detail, and keeps its processes.
+ */
+const startedByStopped = (sql: Sql) =>
+  sql`(t.outcome = 'fenced' and t.outcome_detail->>'kind' = 'cancelled')`;
 
 /** How long a start may take to reach the computer before its missing directory means it never did. */
 const STARTING_GRACE_MS = 300_000;
@@ -462,6 +474,48 @@ export class SandboxProcesses {
     return (await this.close(row.id, state, reason, facts)) ?? row;
   }
 
+  /**
+   * A conversation's turn was stopped: end, now, the processes that turn
+   * started, so the browser or server it left behind does not keep running
+   * into the next one. Processes earlier turns started stay; they were what
+   * those turns left on purpose. A computer that cannot be reached kills
+   * nothing here, and the next contact with it does.
+   */
+  async endStopped(
+    providers: ProcessProviders,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const rows = (
+      await this.sql`select p.* from sandbox_process p
+        join action a on a.id = p.action_id
+        join attempt t on t.id = a.attempt_id
+        where p.job_id = ${jobId} and p.state in ('starting', 'running')
+          and ${startedByStopped(this.sql)}
+        order by p.created_at, p.id`
+    ).map(rowOf);
+    const ended: string[] = [];
+    for (const row of rows) {
+      const held = providers().get(row.connectionId);
+      const [session] = await this.sql`select provider_sandbox_id, image_digest, region
+        from sandbox_session
+        where space_id = ${row.spaceId} and agent_id = ${row.agentId}
+          and connection_id = ${row.connectionId} and status = 'ready'
+        order by opened_at desc limit 1`;
+      const computer =
+        held && session
+          ? this.computer(held.provider, {
+              providerSandboxId: String(session.provider_sandbox_id),
+              imageDigest: (session.image_digest as string | null) ?? null,
+              region: (session.region as string | null) ?? null,
+            })
+          : null;
+      await this.end(row, computer, 'stopped', END_REASONS.turn, signal);
+      ended.push(row.id);
+    }
+    return ended;
+  }
+
   /** Close every live row of a connection whose computers were destroyed with it. */
   async closeForConnection(connectionId: string, reason: string = END_REASONS.connection) {
     const rows = await this.sql`update sandbox_process
@@ -481,16 +535,19 @@ export class SandboxProcesses {
     const stoppedForAllowance: ProcessRow[] = [];
     const live = (
       await this.sql`select p.*, c.status as connection_status,
-          j.state as job_state
+          j.state as job_state, coalesce(${startedByStopped(this.sql)}, false) as turn_stopped
         from sandbox_process p
         join connection c on c.id = p.connection_id
         left join job j on j.id = p.job_id
+        left join action a on a.id = p.action_id
+        left join attempt t on t.id = a.attempt_id
         where p.state in ('starting', 'running')
         order by p.space_id, p.agent_id`
     ).map((raw) => ({
       row: rowOf(raw),
       connectionActive: raw.connection_status === 'active',
       jobGone: raw.job_id === null || raw.job_state === 'cancelled',
+      turnStopped: raw.turn_stopped === true,
     }));
     const computers = new Map<string, typeof live>();
     for (const each of live) {
@@ -592,6 +649,7 @@ export class SandboxProcesses {
         else if (overAllowance.has(spaceId))
           ending = { state: 'stopped', reason: END_REASONS.allowance };
         else if (member?.jobGone) ending = { state: 'stopped', reason: END_REASONS.job };
+        else if (member?.turnStopped) ending = { state: 'stopped', reason: END_REASONS.turn };
         if (!ending) continue;
         const closed = await this.end(row, computer, ending.state, ending.reason, budget);
         ended.push(row.id);
