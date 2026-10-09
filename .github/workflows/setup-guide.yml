@@ -104,10 +104,10 @@ jobs:
           // A page is observed before anything acts on it, as the agent's tools do.
           await step({ kind: 'observe' });
           const seen = (await step({ kind: 'open', url: 'https://example.com/' })).observation;
-          const read = (await step({ kind: 'read', role: 'heading', name: 'Example Domain' })).result;
+          const read = (await step({ kind: 'read', selector: 'h1' })).result;
           console.log(JSON.stringify({ url: seen?.url, title: seen?.title, heading: read?.text }));
           await client.request('/release', {});
-          if (seen?.title !== 'Example Domain' || read?.text !== 'Example Domain') process.exit(1);
+          if (seen?.title !== 'Example Domain' || read?.text?.trim() !== 'Example Domain') process.exit(1);
           JS
           )"
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.browser.yml exec -T melete bun -e "$proof"
