@@ -219,7 +219,9 @@ export const CITING: readonly string[] = [
   'whose tools answered you, such as Open-Meteo for the weather. A search result you did not',
   'open is not a source. When a page you read reports another outlet, credit the page you',
   'read ("via aibriefs.news"). Link a source by its address. A citation nothing you read',
-  'backs is taken out of your answer.',
+  'backs is taken out of your answer. When you give something you found on a page (a fare,',
+  'a product, a route, an article), link that page with the address you opened, so the',
+  'person can go straight to it. Link only pages you opened; one link per result is enough.',
 ];
 
 /**

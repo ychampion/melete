@@ -166,7 +166,15 @@ export async function requestView(
       }),
     ),
     cards: [
-      ...effects.flatMap(({ action: effect, connection: source }) => projectCards(effect, source)),
+      // A file a files action saved opens only for that job's own principal,
+      // so a room's people see its card without the buttons.
+      ...effects.flatMap(({ action: effect, connection: source }) =>
+        projectCards(effect, source).map((card) =>
+          card.primary_action?.handle === effect.id
+            ? { ...card, primary_action: null, secondary_actions: [] }
+            : card,
+        ),
+      ),
       ...files.map(projectArtifact),
     ],
     receipts,

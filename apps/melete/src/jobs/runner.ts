@@ -50,6 +50,7 @@ import { appendEvent } from '../events/store.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
+import { pagesVisited, withVisitedLinks } from '../experience/visited-links.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
@@ -701,7 +702,9 @@ export class AttemptRunner {
   /**
    * A conversation's or a routine's answer keeps only the citations its turn
    * read: a source line, an attribution or a link no page it opened backs is
-   * taken out, and named in a closing note (`experience/citations.ts`).
+   * taken out, and named in a closing note (`experience/citations.ts`). An
+   * answer that names results from pages the turn opened, and links none of
+   * them, gets one short line of links to those pages (`visited-links.ts`).
    */
   private async citedOnlyWhatWasRead(
     tx: Transaction,
@@ -725,7 +728,9 @@ export class AttemptRunner {
         ),
       );
     const checked = checkCitations(given.summary, sourcesRead(reads));
-    return checked.unbacked.length ? { ...given, summary: checked.text } : given;
+    // A result found on a page is linked to that page, when the answer links nothing.
+    const summary = withVisitedLinks(checked.text, pagesVisited(reads));
+    return summary !== given.summary ? { ...given, summary } : given;
   }
 
   private async finish(

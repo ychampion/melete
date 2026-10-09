@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from 'node:fs';
 import * as C from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../../melete/src/api/errors.ts';
+import { savedFile } from '../../melete/src/artifact/shown.ts';
 import {
   AGENT_TEMPLATES,
   agentValues,
@@ -18,6 +20,7 @@ import {
   projectCards,
   projectReceipt,
 } from '../../melete/src/experience/projectors.ts';
+import { pagesVisited, withVisitedLinks } from '../../melete/src/experience/visited-links.ts';
 import type { AppDeps } from './app.ts';
 import type { MockAttachment } from './attachments.ts';
 import { MockBeliefError, MockBeliefs } from './beliefs.ts';
@@ -42,6 +45,8 @@ type Chat = {
   script?: Scenario;
   position: number;
   pending: { action: ActionRow; connection: { id: string; label: string; provider: string } }[];
+  /** Every tool step's receipt, by turn, for the links an answer gets. */
+  visited: { turn: string | null; kind: string; receipt: unknown; payload: unknown }[];
   timer?: ReturnType<typeof setTimeout>;
   paused: boolean;
   stopped: boolean;
@@ -682,6 +687,7 @@ export class ExperienceMock {
       drafts: [],
       position: 0,
       pending: [],
+      visited: [],
       paused: false,
       stopped: false,
       proposals: new Map(),
@@ -723,6 +729,20 @@ export class ExperienceMock {
     if (turn && !turn.answer && summary) {
       turn.answer = summary;
       this.event(chat, { type: 'text_delta', text: summary });
+    }
+    // Results found on pages it opened are linked, when the answer links none.
+    if (turn?.answer) {
+      const linked = withVisitedLinks(
+        turn.answer,
+        pagesVisited(chat.visited.filter((entry) => entry.turn === turn.id)),
+      );
+      if (linked !== turn.answer) {
+        const added = linked.slice(turn.answer.trimEnd().length);
+        if (linked.startsWith(turn.answer.trimEnd())) {
+          turn.answer = linked;
+          this.event(chat, { type: 'text_delta', text: added });
+        }
+      }
     }
     // The resting line counts this turn's sources, not the whole conversation's.
     const sources = chat.events.flatMap((event) =>
@@ -1096,11 +1116,27 @@ export class ExperienceMock {
         (provider === 'web'
           ? { id: `${this.deps.spaceId}:web`, label: 'Web', provider: 'web' }
           : undefined);
+      const id = newId('act');
+      // A page it opened, for the links its answer gets, as the service gives them.
+      chat.visited.push({
+        turn: chat.turns.at(-1)?.id ?? null,
+        kind: step.name,
+        receipt: { detail: step.result },
+        payload: step.arguments,
+      });
+      // A file a files action saved is served from a fixture of the same name.
+      const saved = savedFile(step.name, { detail: step.result });
+      const name = saved?.path.split('/').at(-1);
+      if (source && name && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+        const fixture = new URL(`../fixtures/files/${name}`, import.meta.url);
+        if (existsSync(fixture))
+          this.deps.store.savedFiles.set(id, { name, bytes: readFileSync(fixture) });
+      }
       if (source)
         chat.pending.push({
           connection: source,
           action: {
-            id: newId('act'),
+            id,
             jobId: chat.view.id,
             attemptId: newId('att'),
             connectionId: source.id,
