@@ -9,6 +9,7 @@ import {
   experienceDecision,
   experienceDraft,
   experienceReceipt,
+  handOff,
   mcpCatalogEntry,
   PERMISSION_FILE_PREVIEW_CHARS,
   type PermissionCard,
@@ -1028,6 +1029,35 @@ export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
     source_connection: null,
   });
 }
+/**
+ * The card that hands the work to the person (`notice {kind: handed_to_person}`): where the
+ * work is stuck, what is left for them, what is done, and a Take over that gives them the
+ * agent's browser or computer. Null for a notice that carries no hand-off.
+ */
+export function projectHandOff(payload: unknown, seq: number): ResultCard | null {
+  const parsed = handOff.safeParse(payload);
+  if (!parsed.success) return null;
+  const card = parsed.data;
+  const done = plainText(card.done.join('; '), '');
+  return resultCard.parse({
+    id: `handoff_${seq}`,
+    title: `Over to you at ${plainText(card.service, 'this site', 253)}`,
+    meta: 'Needs you',
+    facts: [
+      { label: 'About', value: plainText(card.left, 'Take over, then hand it back.', 500) },
+      ...(done ? [{ label: 'Done so far', value: done }] : []),
+    ],
+    primary_action: {
+      label: 'Take over',
+      kind: 'take_over',
+      handle: card.take_over.session_id,
+      surface: card.take_over.surface,
+    },
+    secondary_actions: [],
+    source_connection: null,
+  });
+}
+
 /** Approval must show the exact recipients and complete body, without hiding unsafe content. */
 export function draftForReview(row: ActionRow) {
   const payload = object(row.canonicalPayload);

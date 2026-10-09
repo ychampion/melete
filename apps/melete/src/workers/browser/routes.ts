@@ -312,6 +312,10 @@ export class BrowserSessionService {
       await tx`update job set state = 'waiting_for_input', wait = ${JSON.stringify(wait)}::jsonb,
         lease_epoch = lease_epoch + 1, state_version = state_version + 1,
         next_wake_at = null, updated_at = now() where id = ${scope.job_id}`;
+      // The conversation's turn waits on the person, as the conversation is read after a reload.
+      await tx`update experience_turn set status = 'needs_you'
+        where id = (select current_turn_id from job where id = ${scope.job_id})
+          and status in ('queued', 'working', 'streaming')`;
       const detail = { kind: 'handed_to_person', session_id: sessionId, reason: card.reason };
       const attempts = await tx`update attempt set outcome = 'fenced',
         outcome_detail = ${JSON.stringify(detail)}::jsonb,

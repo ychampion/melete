@@ -1041,7 +1041,8 @@ describe('the desktop', () => {
         return cmd[0] === 'bash' ? { stdout: one, hold: {} } : {};
       };
       const viewer = new AbortController();
-      for await (const _frame of host.frames(handleOf(NAME), 4, viewer.signal)) {
+      for await (const frame of host.frames(handleOf(NAME), 4, viewer.signal)) {
+        expect([...frame]).toEqual([0xff, 0xd8]);
         if (leave === 'break') break;
         viewer.abort();
       }

@@ -33,6 +33,7 @@ import type {
   ActionReview,
   Agent,
   BecauseLink,
+  CardAction,
   Draft,
   LedgerAction,
   Permission,
@@ -317,6 +318,7 @@ export function ResultCard({
   draft,
   onSend,
   onUndo,
+  onTakeOver,
   touch = false,
   sending = false,
   readOnly = false,
@@ -327,6 +329,8 @@ export function ResultCard({
   draft?: Draft;
   onSend?: (handle: string) => void;
   onUndo?: (handle: string) => void;
+  /** Take the agent's browser or computer over, from a card that hands the work to the person. */
+  onTakeOver?: (action: CardAction) => void;
   touch?: boolean;
   sending?: boolean;
   readOnly?: boolean;
@@ -373,6 +377,18 @@ export function ResultCard({
         </a>
       ) : null;
     }
+    if (a.kind === 'take_over')
+      return (
+        <Button
+          key={`take_over:${a.handle}`}
+          size={size}
+          block={touch}
+          disabled={readOnly || !onTakeOver}
+          onClick={() => onTakeOver?.(a)}
+        >
+          {a.label}
+        </Button>
+      );
     if (a.kind === 'send') {
       if (draft?.status === 'sent')
         return (

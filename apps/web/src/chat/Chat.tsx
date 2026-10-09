@@ -50,6 +50,7 @@ import { shortTitle } from '../experience/title.ts';
 import { foldedOptions, foldTogether, type Seen, seenTogether } from '../experience/together.ts';
 import type {
   ActionResolution,
+  CardAction,
   LedgerAction,
   Permission,
   PermissionOption,
@@ -82,6 +83,7 @@ import {
 } from './parts.tsx';
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
+import { takeOverFromCard } from './take-over.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
@@ -297,6 +299,7 @@ function TurnView({
   onDecide,
   onSendDraft,
   onUndo,
+  onTakeOver,
   onAnswer,
   onOwn,
   unknown,
@@ -320,6 +323,8 @@ function TurnView({
   ) => void;
   onSendDraft: (handle: string) => void;
   onUndo: (id: string) => void;
+  /** Take the agent's browser or computer over, from a card that hands the work over. */
+  onTakeOver: (action: CardAction) => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
   onAnswer: (questionId: string, answer: string | { text: string }) => void;
   onOwn: (text: string) => void;
@@ -362,6 +367,7 @@ function TurnView({
             touch={touch}
             onSend={onSendDraft}
             onUndo={onUndo}
+            onTakeOver={onTakeOver}
           />
         );
       }
@@ -928,6 +934,18 @@ export function ChatScreen({ id }: { id: string | null }) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t undo' });
     });
 
+  // The computer shows either way: what the person can do there is theirs to see.
+  const takeOver = (action: CardAction) =>
+    void takeOverFromCard(action).then((result) => {
+      setComputerOpen(true);
+      if (result.ok)
+        toast({
+          kind: 'ok',
+          title: result.what === 'browser' ? 'You have the browser' : 'You have the computer',
+        });
+      else toast({ kind: 'err', title: result.error });
+    });
+
   const answer = useCallback(
     (questionId: string, answer: string | { text: string }) =>
       void flight.run(questionId, async () => {
@@ -1207,6 +1225,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                       onDecide={decide}
                       onSendDraft={sendDraft}
                       onUndo={undo}
+                      onTakeOver={takeOver}
                       onAnswer={answer}
                       onOwn={(own) => void send(own)}
                       unknown={turn.id === lastId ? unknown : undefined}
