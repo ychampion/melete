@@ -409,7 +409,8 @@ button.previous-messages:hover {
   text-align: left;
   align-self: flex-start;
 }
-button.log-line:hover {
+button.log-line:hover,
+a.log-line:hover {
   color: var(--text);
   background: var(--row-hover);
 }
@@ -451,6 +452,8 @@ button.log-line:hover {
 }
 button.log-line:hover > .log-chevron,
 button.log-line:focus-visible > .log-chevron,
+a.log-line:hover > .log-chevron,
+a.log-line:focus-visible > .log-chevron,
 button.log-line[aria-expanded="true"] > .log-chevron {
   opacity: 1;
 }
@@ -642,6 +645,25 @@ button.log-line[aria-expanded="true"] > .log-chevron {
 .log-source > svg {
   flex-shrink: 0;
   color: var(--muted);
+}
+/* A single source opens from its row; its arrow points out, not down. */
+a.log-line-link > .log-chevron {
+  transform: none;
+}
+/* A named source inside a line of work, when it has a page to open. */
+.log-source-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 2px;
+}
+.log-source-link:hover {
+  color: var(--text);
+  text-decoration-color: currentColor;
+}
+.log-source-link:focus-visible {
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--ring);
 }
 
 /* A file the agent changed. */

@@ -137,6 +137,7 @@ import { ProcedureEvaluator } from './learning/evaluator.ts';
 import { LearnedService } from './learning/learned.ts';
 import { EngineSource } from './learning/learned-engine.ts';
 import { mountLearned } from './learning/learned-routes.ts';
+import { mountOwnSkills } from './learning/own-skills-routes.ts';
 import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
 import { mountProposals } from './learning/proposal-routes.ts';
@@ -437,6 +438,7 @@ export function createApp(deps: AppDeps) {
       new LearnedService(deps.jobs, procedures, episodes, [new EngineSource(engine)]),
     );
   } else if (deps.proposer) mountProposals(app, deps.proposer);
+  if (deps.db) mountOwnSkills(app, { db: deps.db, spacesRoot: deps.env.MELETE_SPACES_DIR });
   if (replies) mountReplies(app, replies);
   if (db) mountActions(app, db, deps.broker);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));

@@ -32,6 +32,20 @@ export async function currentSpaceId(): Promise<Result<string>> {
   return { data: first.id, error: null, unavailable: null };
 }
 
+/**
+ * The person's own personal space, which only they see: what they taught
+ * Melete and the skills they asked for live there. A person who is also a
+ * member of a shared space may list that one first.
+ */
+export async function ownSpaceId(): Promise<Result<string>> {
+  const result = await call<{ spaces: { id: string; kind?: string }[] }>('/spaces');
+  if (result.data === null) return result;
+  const own =
+    result.data.spaces.find((space) => space.kind === 'personal') ?? result.data.spaces[0];
+  if (!own) return { data: null, error: null, unavailable: 'This instance has no space yet.' };
+  return { data: own.id, error: null, unavailable: null };
+}
+
 export const companiesApi = {
   map: (spaceId: string) => call<CompanyMap>(`/spaces/${encodeURIComponent(spaceId)}/companies`),
   startScan: (spaceId: string) =>

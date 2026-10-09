@@ -447,7 +447,7 @@ withDb('web search', () => {
       const rows = await handle.sql`select space_id, scopes, status from connection
         where provider = 'web' and space_id in (${older}, ${removed})`;
       const bySpace = Object.fromEntries(rows.map((row) => [row.space_id, row]));
-      expect(bySpace[older]?.scopes).toEqual(['web.fetch', 'web.search']);
+      expect(bySpace[older]?.scopes).toEqual(['web.fetch', 'web.search', 'web.weather']);
       expect(bySpace[removed]?.scopes).toEqual(['web.fetch']);
       expect(rows.length).toBe(2);
     },

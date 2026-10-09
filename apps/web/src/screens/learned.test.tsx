@@ -7,6 +7,7 @@ import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LearnedItem } from '../experience/types.ts';
 import { expiryLine, LearnedRow, originLine, stateBadge } from './Learned.tsx';
+import { OwnSkillRow } from './OwnSkills.tsx';
 
 const item = (over: Partial<LearnedItem> = {}): LearnedItem => ({
   id: 'pc_1',
@@ -85,4 +86,30 @@ test('a stopped item says why', () => {
   );
   expect(html).toContain('Stopped');
   expect(html).toContain('You said not to do this.');
+});
+
+test('a skill the person asked for is named, says when it comes up, and offers show, edit and delete', () => {
+  const html = renderToStaticMarkup(
+    <OwnSkillRow
+      skill={{
+        name: 'weekly-recap',
+        description: 'Write the Friday recap.',
+        triggers: ['weekly recap', 'recap my week'],
+        body: '1. List what shipped.',
+        version: 'b'.repeat(64),
+        updated_at: '2026-10-08T09:00:00.000Z',
+      }}
+      busy={false}
+      onSave={async () => true}
+      onDelete={async () => true}
+    />,
+  );
+  expect(html).toContain('weekly-recap');
+  expect(html).toContain('Write the Friday recap.');
+  expect(html).toContain('When you ask to “weekly recap” or “recap my week”');
+  expect(html).toContain('aria-label="Show the steps of weekly-recap"');
+  expect(html).toContain('aria-label="Edit: weekly-recap"');
+  expect(html).toContain('aria-label="Delete: weekly-recap"');
+  // The steps are shown only when asked for.
+  expect(html).not.toContain('1. List what shipped.');
 });

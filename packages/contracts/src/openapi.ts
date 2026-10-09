@@ -128,6 +128,12 @@ import {
   learningScopeResponse,
   learningSpaceQuery,
   learningSpaceRequest,
+  ownSkillDeleteRequest,
+  ownSkillDeleteResponse,
+  ownSkillEditRequest,
+  ownSkillListResponse,
+  ownSkillName,
+  ownSkillResponse,
   procedureActivationRequest,
   procedureInspection,
   procedureListResponse,
@@ -1747,6 +1753,32 @@ export function buildOpenApiDocument() {
             summary: 'List the skills the engine wrote for itself in this space',
             requestParams: { query: learningSpaceQuery },
             responses: { '200': jsonResponse('Engine skills', engineSkillListResponse) },
+          },
+        },
+        '/own-skills': {
+          get: {
+            tags: ['learning'],
+            summary: "List the person's own skills in their personal space",
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Own skills', ownSkillListResponse) },
+          },
+        },
+        '/own-skills/{name}/edit': {
+          post: {
+            tags: ['learning'],
+            summary: "Change one of the person's own skills, against the version they were shown",
+            requestParams: { path: z.object({ name: ownSkillName() }) },
+            requestBody: json(ownSkillEditRequest),
+            responses: { '200': jsonResponse('Changed skill', ownSkillResponse) },
+          },
+        },
+        '/own-skills/{name}/delete': {
+          post: {
+            tags: ['learning'],
+            summary: "Delete one of the person's own skills, against the version they were shown",
+            requestParams: { path: z.object({ name: ownSkillName() }) },
+            requestBody: json(ownSkillDeleteRequest),
+            responses: { '200': jsonResponse('Deleted skill', ownSkillDeleteResponse) },
           },
         },
         '/engine-skills/held': {

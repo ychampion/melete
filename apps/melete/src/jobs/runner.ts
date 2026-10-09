@@ -47,6 +47,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
@@ -697,6 +698,36 @@ export class AttemptRunner {
     return parsed.success ? parsed.data : null;
   }
 
+  /**
+   * A conversation's or a routine's answer keeps only the citations its turn
+   * read: a source line, an attribution or a link no page it opened backs is
+   * taken out, and named in a closing note (`experience/citations.ts`).
+   */
+  private async citedOnlyWhatWasRead(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+    given: AttemptOutcome,
+  ): Promise<AttemptOutcome> {
+    if (given.kind !== 'completed' || !['chat', 'routine'].includes(row.kind)) return given;
+    if (!given.summary.trim()) return given;
+    const reads = await tx
+      .select({ kind: action.kind, receipt: action.receipt, payload: action.canonicalPayload })
+      .from(action)
+      .innerJoin(attempt, eq(attempt.id, action.attemptId))
+      .where(
+        and(
+          eq(action.jobId, row.id),
+          eq(action.status, 'succeeded'),
+          row.currentTurnId
+            ? sql`(${attempt.turnId} = ${row.currentTurnId} or ${action.attemptId} = ${attemptId})`
+            : eq(action.attemptId, attemptId),
+        ),
+      );
+    const checked = checkCitations(given.summary, sourcesRead(reads));
+    return checked.unbacked.length ? { ...given, summary: checked.text } : given;
+  }
+
   private async finish(
     tx: Transaction,
     row: JobRow,
@@ -711,7 +742,9 @@ export class AttemptRunner {
         ? ((await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId)))?.message ??
           null)
         : null;
-    const original: AttemptOutcome = capped ? { kind: 'budget_exhausted', summary: capped } : given;
+    const original: AttemptOutcome = capped
+      ? { kind: 'budget_exhausted', summary: capped }
+      : await this.citedOnlyWhatWasRead(tx, row, attemptId, given);
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx

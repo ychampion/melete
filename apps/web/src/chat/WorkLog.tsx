@@ -8,7 +8,7 @@
  * and no motion at all for a person who asked for less. Every string from
  * outside is drawn as plain text.
  */
-import { type ReactNode, useEffect, useId, useState } from 'react';
+import { Fragment, type ReactNode, useEffect, useId, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Dialog } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
@@ -300,8 +300,28 @@ export function WorkLine({
           {step.meta ? <span className="log-meta"> · {step.meta}</span> : null}
           {step.sources.length ? (
             <span className="log-meta">
-              {' '}
-              · {step.sources.map((source) => source.title).join(', ')}
+              {' · '}
+              {step.sources.map((source, index) => {
+                // A source with a web address opens it; anything else is named only.
+                const url = source.url ? webHref(source.url) : null;
+                return (
+                  <Fragment key={`${source.connection_id}:${source.url ?? source.title}`}>
+                    {index ? ', ' : null}
+                    {url ? (
+                      <a
+                        className="log-source-link"
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {source.title}
+                      </a>
+                    ) : (
+                      source.title
+                    )}
+                  </Fragment>
+                );
+              })}
             </span>
           ) : null}
         </span>
@@ -423,15 +443,40 @@ export function WorkGroup({
   );
 }
 
+/** The web address a source card opens, or null when it has none that is safe to open. */
+export function sourceHref(card: ResultCard): string | null {
+  return card.primary_action?.kind === 'open' ? webHref(card.primary_action.url ?? '') : null;
+}
+
 /** A page's site, the way a person names it: "bun.com", not the whole address. */
 function siteOf(card: ResultCard): string {
-  const url = card.primary_action?.kind === 'open' ? card.primary_action.url : undefined;
+  const url = sourceHref(card);
   if (!url) return '';
   try {
     return new URL(url).hostname.replace(/^www\./, '');
   } catch {
     return '';
   }
+}
+
+/** One source: a link to its page in a new tab when it has a web address, its name otherwise. */
+function SourceLink({ card }: { card: ResultCard }) {
+  const url = sourceHref(card);
+  const site = siteOf(card);
+  const inner = (
+    <>
+      <span className="log-source-title">{card.title}</span>
+      {site && site !== card.title ? <span className="log-source-site">{site}</span> : null}
+    </>
+  );
+  return url ? (
+    <a className="log-source" href={url} target="_blank" rel="noopener noreferrer">
+      {inner}
+      <Icon name="arrowUpRight" size={12} />
+    </a>
+  ) : (
+    <span className="log-source">{inner}</span>
+  );
 }
 
 /** At most this many sites are named on the folded row. */
@@ -453,6 +498,32 @@ export function SourcesLine({
   const sites = [...new Set(cards.map(siteOf).filter(Boolean))];
   const named = sites.slice(0, NAMED_SITES).join(', ');
   const more = sites.length > NAMED_SITES ? ` +${sites.length - NAMED_SITES}` : '';
+  const only = cards.length === 1 ? cards[0] : undefined;
+  const onlyUrl = only ? sourceHref(only) : null;
+  // One page opens straight from its row: there is nothing to unfold.
+  if (only && onlyUrl)
+    return (
+      <div className="log-row">
+        <a
+          className="log-line log-line-link"
+          href={onlyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={only.title}
+        >
+          <span className="log-icon" aria-hidden="true">
+            <Icon name="globe" size={15} />
+          </span>
+          <span className="log-title">
+            1 source
+            <span className="log-meta"> · {siteOf(only) || only.title}</span>
+          </span>
+          <span className="log-chevron" aria-hidden="true">
+            <Icon name="arrowUpRight" size={13} />
+          </span>
+        </a>
+      </div>
+    );
   return (
     <div className="log-row">
       <button
@@ -481,25 +552,12 @@ export function SourcesLine({
       </button>
       <Reveal id={id} open={open} className="log-detail">
         <ul className="log-sources">
-          {cards.map((card) => {
+          {cards.map((card) => (
             // A source opens only at a web address; anything else is shown and not linked.
-            const url =
-              card.primary_action?.kind === 'open'
-                ? (webHref(card.primary_action.url ?? '') ?? undefined)
-                : undefined;
-            const site = siteOf(card);
-            return (
-              <li key={card.id}>
-                <a className="log-source" href={url} target="_blank" rel="noopener noreferrer">
-                  <span className="log-source-title">{card.title}</span>
-                  {site && site !== card.title ? (
-                    <span className="log-source-site">{site}</span>
-                  ) : null}
-                  <Icon name="arrowUpRight" size={12} />
-                </a>
-              </li>
-            );
-          })}
+            <li key={card.id}>
+              <SourceLink card={card} />
+            </li>
+          ))}
         </ul>
       </Reveal>
     </div>

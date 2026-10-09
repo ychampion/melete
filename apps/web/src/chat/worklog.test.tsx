@@ -511,3 +511,63 @@ test('a search held back is its own quiet row and is counted as held back', () =
   expect(html).toContain('Search held back: it named something private');
   expect(html).not.toContain('Didn’t work');
 });
+
+test('one source opens straight from its row, in a new tab that cannot reach back', () => {
+  const html = renderToStaticMarkup(
+    <SourcesLine cards={[page(7, 'https://www.nist.gov/dst', 'Daylight Saving Time')]} />,
+  );
+  expect(html).toContain('href="https://www.nist.gov/dst"');
+  expect(html).toContain('target="_blank"');
+  expect(html).toContain('rel="noopener noreferrer"');
+  expect(html).toContain('1 source');
+  expect(html).toContain('nist.gov');
+  // An address that is not a web page is never a link, on its own or in a list.
+  const odd = renderToStaticMarkup(<SourcesLine cards={[page(8, 'javascript:alert(1)', 'Odd')]} />);
+  expect(odd).not.toMatch(/href="javascript:/i);
+  const listed = renderToStaticMarkup(
+    <SourcesLine
+      cards={[page(9, 'javascript:alert(1)', 'Odd'), page(10, 'https://bun.com', 'Bun')]}
+      initiallyOpen
+    />,
+  );
+  expect(listed).not.toContain('<a class="log-source">');
+  expect(listed).toContain('<span class="log-source">');
+  expect(listed).toContain('href="https://bun.com/"');
+});
+
+test('a grouped step names its sources as links when they have a web address', () => {
+  const html = renderToStaticMarkup(
+    <WorkLine
+      live={false}
+      work={{
+        type: 'group',
+        step: {
+          type: 'action',
+          label: 'Read two pages',
+          meta: '2 sources',
+          sources: [
+            {
+              app: 'Web',
+              title: 'NIST',
+              kind: 'page',
+              connection_id: 'conn_web',
+              url: 'https://www.nist.gov/dst',
+            },
+            { app: 'Drive', title: 'notes.md', kind: 'file', connection_id: 'conn_drive' },
+            {
+              app: 'Web',
+              title: 'Odd',
+              kind: 'page',
+              connection_id: 'conn_web',
+              url: 'javascript:alert(1)',
+            },
+          ],
+        },
+      }}
+    />,
+  );
+  expect(html).toContain('href="https://www.nist.gov/dst"');
+  expect(html).toContain('rel="noopener noreferrer"');
+  expect(html).toContain('notes.md');
+  expect(html).not.toMatch(/href="javascript:/i);
+});

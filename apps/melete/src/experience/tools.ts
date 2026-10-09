@@ -324,6 +324,10 @@ function actionInput(row: ActionRow): ToolSummary | null {
       return typeof payload.query === 'string' && payload.query.trim()
         ? summary('Looked for', quote(payload.query, 'request'))
         : null;
+    case 'web.weather':
+      return typeof payload.place === 'string' && payload.place.trim()
+        ? summary(`For ${toolText(payload.place, 80)}`)
+        : summary('For your city');
     case 'exec.run':
     case 'terminal.run':
     case 'device.run':
@@ -442,6 +446,10 @@ function actionOutput(
     }
     case 'web.fetch':
       return summary('Page read', quote(pageTitle(detail), 'page'));
+    case 'web.weather':
+      return typeof detail.summary === 'string' && detail.summary
+        ? summary(detail.summary)
+        : summary('Weather read');
     case 'web.search': {
       const results = array(detail.results);
       return summary(

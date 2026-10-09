@@ -6,13 +6,14 @@
  * person was shown, from the snackbar or from the last-change line.
  */
 import { useState } from 'react';
-import { currentSpaceId } from '../companies/api.ts';
+import { ownSpaceId } from '../companies/api.ts';
 import { Icon } from '../design/icons.tsx';
 import { Badge, type BadgeTone, Button } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
 import type { LearnedChange, LearnedItem, LearnedList } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
+import { OwnSkills } from './OwnSkills.tsx';
 
 type Action = LearnedItem['actions'][number];
 
@@ -234,7 +235,7 @@ export function LearnedRow({
 type Loaded = { space: string; list: LearnedList; bodies: Record<string, string> };
 
 async function loadLearned(): Promise<Result<Loaded>> {
-  const space = await currentSpaceId();
+  const space = await ownSpaceId();
   if (space.data === null) return space;
   const [list, skills] = await Promise.all([
     adapter.learned(space.data),
@@ -391,6 +392,7 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
           ) : null}
         </div>
       ) : null}
+      <OwnSkills />
     </div>
   );
 }

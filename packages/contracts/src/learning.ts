@@ -365,6 +365,36 @@ export const engineSkillRecord = z.object({
 });
 export const engineSkillListResponse = z.object({ skills: z.array(engineSkillRecord) });
 /**
+ * One of the person's own skills: a skill they asked the agent to make, or
+ * wrote, kept in their personal space's `skills/` folder. `version` is the
+ * file's sha256, and a change from the page names the version it was shown.
+ */
+const OWN_SKILL_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+/** A fresh schema each time, so the API document names no shared component for it. */
+export const ownSkillName = () => z.string().regex(OWN_SKILL_NAME);
+export const ownSkillRecord = z.strictObject({
+  name: ownSkillName(),
+  description: z.string(),
+  triggers: z.array(z.string()),
+  body: z.string(),
+  version: z.string().regex(/^[a-f0-9]{64}$/),
+  updated_at: timestamp,
+});
+export type OwnSkillRecord = z.infer<typeof ownSkillRecord>;
+export const ownSkillListResponse = z.strictObject({ skills: z.array(ownSkillRecord) });
+export const ownSkillResponse = z.strictObject({ skill: ownSkillRecord });
+/** Only what changes is sent; the rest stays as it was. */
+export const ownSkillEditRequest = learningSpaceRequest.extend({
+  version: z.string().regex(/^[a-f0-9]{64}$/),
+  description: z.string().trim().min(1).max(300).optional(),
+  triggers: z.array(z.string().trim().min(2).max(80)).min(1).max(12).optional(),
+  body: z.string().trim().min(1).max(1400).optional(),
+});
+export const ownSkillDeleteRequest = learningSpaceRequest.extend({
+  version: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const ownSkillDeleteResponse = z.strictObject({ deleted: ownSkillName() });
+/**
  * A standing "don't do this", by name and by body digest, in every space of the
  * person who placed it, until they lift it. `space_id` is where it was placed.
  */

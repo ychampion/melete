@@ -21,6 +21,11 @@ import {
   learnedTryRequest,
   learnedUndoRequest,
   learningSpaceRequest,
+  type OwnSkillRecord,
+  ownSkillDeleteRequest,
+  ownSkillEditRequest,
+  ownSkillListResponse,
+  ownSkillResponse,
   procedureReasonRequest,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -326,5 +331,95 @@ export function mountLearnedMock(app: Hono, deps: AppDeps): void {
     if (!entry) return response;
     setState(entry, 'reverted', 'You said not to do this.');
     return c.json(engineSkillResponse.parse({ skill: skillOf(entry) }));
+  });
+
+  // The person's own skills: files the agent saved for them, read whole here,
+  // changed or deleted against the version the person was shown.
+  const ownSkills = new Map<string, OwnSkillRecord>();
+  const ownSkill = (
+    name: string,
+    description: string,
+    triggers: string[],
+    steps: string[],
+  ): OwnSkillRecord => {
+    const body = steps.join('\n');
+    return {
+      name,
+      description,
+      triggers,
+      body,
+      version: hashOf(JSON.stringify([name, description, triggers, body])),
+      updated_at: new Date(now().getTime() - 2 * DAY).toISOString(),
+    };
+  };
+  if (process.env.MELETE_MOCK_LEARNED !== 'empty')
+    for (const skill of [
+      ownSkill(
+        'weekly-recap',
+        'Write your Friday recap of what shipped and what is next.',
+        ['weekly recap', 'recap my week'],
+        [
+          '1. List what shipped this week, newest first.',
+          '2. Say what is still open, in one short list.',
+          '3. End with the one thing most worth doing next week.',
+        ],
+      ),
+    ])
+      ownSkills.set(skill.name, skill);
+
+  app.get('/own-skills', (c) => {
+    if (c.req.query('space_id') !== deps.spaceId)
+      return c.json(fail('scope_denied', 'Skills are kept only in your own space.'), 403);
+    return c.json(
+      ownSkillListResponse.parse({
+        skills: [...ownSkills.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      }),
+    );
+  });
+
+  const ownFound = (c: Context, version: string) => {
+    const skill = ownSkills.get(c.req.param('name') ?? '');
+    if (!skill)
+      return {
+        skill: null,
+        response: c.json(fail('not_found', 'You have no skill by that name.'), 404),
+      };
+    if (skill.version !== version)
+      return {
+        skill: null,
+        response: c.json(
+          fail(
+            'skill_changed',
+            'This skill changed since you opened it. Look at it again before changing it.',
+          ),
+          409,
+        ),
+      };
+    return { skill, response: null };
+  };
+
+  app.post('/own-skills/:name/edit', async (c) => {
+    const body = await read(c, ownSkillEditRequest);
+    if (!body.ok) return body.response;
+    const { skill, response } = ownFound(c, body.value.version);
+    if (!skill) return response;
+    const next = ownSkill(
+      skill.name,
+      body.value.description ?? skill.description,
+      body.value.triggers ?? skill.triggers,
+      (body.value.body ?? skill.body).split('\n'),
+    );
+    next.updated_at = now().toISOString();
+    ownSkills.set(next.name, next);
+    return c.json(ownSkillResponse.parse({ skill: next }));
+  });
+
+  app.post('/own-skills/:name/delete', async (c) => {
+    const body = await read(c, ownSkillDeleteRequest);
+    if (!body.ok) return body.response;
+    const { skill, response } = ownFound(c, body.value.version);
+    if (!skill) return response;
+    ownSkills.delete(skill.name);
+    return c.json({ deleted: skill.name });
   });
 }

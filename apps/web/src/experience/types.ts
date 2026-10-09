@@ -103,6 +103,9 @@ export type LearnedItem = LearnedList['items'][number];
 export type LearnedChange = NonNullable<LearnedList['last_change']>;
 export type LearnedItemResult = Ok<paths['/learned/{id}/pause'], 'post'>;
 export type EngineSkill = Ok<paths['/engine-skills'], 'get'>['skills'][number];
+/** One of the person's own skills, read whole, with the version a change must name. */
+export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];
+export type OwnSkillEdit = Body<paths['/own-skills/{name}/edit'], 'post'>;
 export type Question = Success<Ok<paths['/quick-answers'], 'get'>>['questions'][number];
 
 /* ---------- agents, memory ---------- */

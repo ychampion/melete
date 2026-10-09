@@ -515,7 +515,7 @@ export function webExtractFromEnv(
 // Keyless search
 // --------------------------------------------------------------------------
 
-type PublicGet = (
+export type PublicGet = (
   url: URL,
   accept: string,
   signal?: AbortSignal,
