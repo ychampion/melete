@@ -459,3 +459,136 @@ test('a person who takes the computer while a step’s screen text is read is no
     await rm(root, { recursive: true, force: true });
   }
 });
+
+const checkPage = (elements: unknown[], extra: Record<string, unknown> = {}) =>
+  screenText(
+    encode({
+      source: 'accessibility',
+      url: 'https://shop.example/checkout',
+      title: 'Checkout',
+      elements,
+      ...extra,
+    }),
+  );
+const shown = (ref: string, role: string, name: string, box: number[]) => ({
+  ref,
+  role,
+  name,
+  box,
+});
+
+test('a check that a person is there is found by its frame or its words, with whose it is', () => {
+  // Cloudflare's own page, before its widget has drawn.
+  expect(
+    checkPage(
+      [
+        shown('n1', 'heading', 'shop.example', [40, 100, 400, 40]),
+        shown(
+          'n2',
+          'text',
+          'Verify you are human by completing the action below.',
+          [40, 160, 500, 20],
+        ),
+      ],
+      { title: 'Just a moment...' },
+    ).challenge,
+  ).toBe('cloudflare');
+  const frame = (name: string, box = [40, 200, 300, 65]) =>
+    checkPage([shown('n3', 'Iframe', name, box)]);
+  expect(frame('Widget containing a Cloudflare security challenge').challenge).toBe('cloudflare');
+  expect(frame('Widget containing checkbox for hCaptcha security challenge').challenge).toBe(
+    'hcaptcha',
+  );
+  expect(frame('reCAPTCHA', [40, 200, 304, 78]).challenge).toBe('recaptcha');
+  expect(frame('recaptcha challenge expires in two minutes', [40, 200, 400, 580]).challenge).toBe(
+    'recaptcha',
+  );
+  expect(
+    checkPage([
+      shown(
+        'n4',
+        'text',
+        'Verifying you are human. This may take a few seconds.',
+        [40, 160, 500, 20],
+      ),
+    ]).challenge,
+  ).toBe('other');
+  // The helper's own look at the page, through DevTools.
+  expect(checkPage([], { challenge: 'datadome' }).challenge).toBe('datadome');
+});
+
+test('a page with no check, a badge, or a frame too small to show one is not taken for one', () => {
+  expect(screenText(encode(trip)).challenge).toBeUndefined();
+  // The badge of the kind that asks nothing of anyone.
+  expect(
+    checkPage([shown('n5', 'Iframe', 'reCAPTCHA', [760, 700, 256, 60])]).challenge,
+  ).toBeUndefined();
+  expect(
+    checkPage([
+      shown('n6', 'Iframe', 'Widget containing a Cloudflare security challenge', [0, 0, 1, 1]),
+    ]).challenge,
+  ).toBeUndefined();
+  // A page talking about a check is not one.
+  expect(
+    checkPage([
+      shown('n7', 'text', 'How we verify you are human, in plain words', [40, 160, 500, 20]),
+    ]).challenge,
+  ).toBeUndefined();
+  // Anything else the page makes the helper say is not a provider.
+  expect(checkPage([], { challenge: 'click here' }).challenge).toBeUndefined();
+});
+
+test('a check that passes by itself while it is given its moment is not reported', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'melete-text-'));
+  try {
+    const page = (elements: unknown[]) =>
+      encode({ source: 'accessibility', title: 'Just a moment...', elements });
+    const checking = page([
+      shown(
+        'n2',
+        'text',
+        'Verifying you are human. This may take a few seconds.',
+        [40, 160, 500, 20],
+      ),
+    ]);
+    const run = async (answers: Uint8Array[]) => {
+      const texts = [...answers];
+      const provider = {
+        desktop: true,
+        async computer(_handle: unknown, command: DesktopCommand) {
+          if (command.kind === 'screenshot') return png(1024, 768);
+          if (command.kind === 'text') return texts.shift() ?? checking;
+          return encode({ window: 'shop.example - Chromium' });
+        },
+      } as unknown as DockerSandboxProvider;
+      const session = {
+        id: 'sbx_TEXT',
+        providerSandboxId: 'melete-sbx-text-check',
+        imageDigest: null,
+        region: null,
+      } as unknown as SessionRow;
+      const detail = await runComputerAction({
+        action: {
+          id: 'act_CHECK1',
+          kind: 'computer.open',
+          canonical_payload: { step: 1, url: 'https://shop.example/checkout' },
+        } as unknown as Action,
+        jobId: 'job_TEXT',
+        workRoot: root,
+        session,
+        provider,
+        controls: new MemoryComputerControls(),
+        signal: AbortSignal.timeout(5_000),
+        settleMs: 0,
+        challengeWaitMs: 1,
+      });
+      return (detail.screen_text as Record<string, unknown>).challenge;
+    };
+    expect(
+      await run([checking, page([shown('n9', 'heading', 'Checkout', [40, 100, 400, 40])])]),
+    ).toBeUndefined();
+    expect(await run([checking, checking])).toBe('cloudflare');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

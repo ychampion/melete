@@ -478,6 +478,65 @@ def union(quads):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+#: Who may draw a check that a person is there, as the service names them.
+CHALLENGE_PROVIDERS = ("cloudflare", "recaptcha", "hcaptcha", "arkose", "datadome")
+#: Whether the page shows such a check, and whose: a visible frame or widget
+#: from a bot-check provider, as the browser tools look for one
+#: (`apps/melete/src/workers/browser/controller.ts`, `challengeShown`), in open
+#: shadow roots too, or Cloudflare's own check page. The invisible kind, which
+#: asks nothing of anyone, is left out. Null when there is none.
+CHALLENGE_SHOWN = r"""(() => {
+  const hosts = [
+    [/(^|\.)challenges\.cloudflare\.com$/i, 'cloudflare'],
+    [/(^|\.)recaptcha\.net$/i, 'recaptcha'],
+    [/(^|\.)hcaptcha\.com$/i, 'hcaptcha'],
+    [/(^|\.)(arkoselabs\.com|funcaptcha\.com)$/i, 'arkose'],
+    [/(^|\.)captcha-delivery\.com$/i, 'datadome'],
+  ];
+  const shown = (element) => {
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return box.width >= 30 && box.height >= 30 && style.visibility !== 'hidden' &&
+      style.display !== 'none' && Number(style.opacity) > 0;
+  };
+  const found = [];
+  const look = (root) => {
+    for (const element of root.querySelectorAll('iframe, .g-recaptcha, .h-captcha, .cf-turnstile')) {
+      if (found.length >= 200) return;
+      found.push(element);
+    }
+    for (const element of root.querySelectorAll('*')) if (element.shadowRoot) look(element.shadowRoot);
+  };
+  look(document);
+  for (const element of found) {
+    if (element.tagName === 'IFRAME') {
+      let url;
+      try { url = new URL(element.getAttribute('src') || '', location.href); } catch (error) { continue; }
+      if (url.searchParams.get('size') === 'invisible') continue;
+      const google = /(^|\.)google\.com$/i.test(url.hostname) && url.pathname.includes('/recaptcha/');
+      const named = google ? 'recaptcha' : (hosts.find(([host]) => host.test(url.hostname)) || [])[1];
+      if (named && shown(element)) return named;
+    } else if (element.getAttribute('data-size') !== 'invisible' && shown(element)) {
+      return element.classList.contains('cf-turnstile') ? 'cloudflare'
+        : element.classList.contains('h-captcha') ? 'hcaptcha' : 'recaptcha';
+    }
+  }
+  if (window._cf_chl_opt || document.querySelector('#challenge-form, #challenge-stage, #challenge-running'))
+    return 'cloudflare';
+  return null;
+})()"""
+
+
+def challenge_shown(tools):
+    """Whose check that a person is there the page shows, or None; never a failure of the read."""
+    try:
+        looked = tools.call("Runtime.evaluate", {"expression": CHALLENGE_SHOWN, "returnByValue": True})
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+    said = (looked.get("result") or {}).get("value")
+    return said if said in CHALLENGE_PROVIDERS else None
+
+
 def accessibility_view(port, window_title):
     """The page in front, element by element, with boxes in screen pixels; None when there is none."""
     target = page_target(port, window_title)
@@ -512,6 +571,7 @@ def accessibility_view(port, window_title):
             secure = set(clip_boxes(tools, SECURE_FIELDS))
         except (OSError, KeyError, TypeError, ValueError):
             secure = None
+        challenge = challenge_shown(tools)
         sent = {tools.send("DOM.getContentQuads", {"backendNodeId": item["backend"]}): item for item in found}
         answers = tools.answers(list(sent))
     finally:
@@ -556,6 +616,7 @@ def accessibility_view(port, window_title):
         "scroll": {"top": round(scroll_y), "page_height": round(page_h), "view_height": round(inner_h)},
         "elements": elements,
         "offscreen": offscreen,
+        **({"challenge": challenge} if challenge else {}),
     }
 
 

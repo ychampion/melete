@@ -27,6 +27,7 @@ import { webHref } from '../experience/markdown.ts';
 import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
+import { foldedOptions } from '../experience/together.ts';
 import type {
   ActionResolution,
   ActionReview,
@@ -737,6 +738,7 @@ export function PermissionCard({
   touch = false,
   bare = false,
   busy = false,
+  together = [],
 }: {
   permission: Permission;
   decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
@@ -746,6 +748,8 @@ export function PermissionCard({
   bare?: boolean;
   /** The decision's request is in flight: its actions wait for the answer. */
   busy?: boolean;
+  /** The other asks of its kind made with it, answered by the same press. */
+  together?: readonly Permission[];
 }) {
   const [always, setAlways] = useState(false);
   const [cap, setCap] = useState('10');
@@ -754,7 +758,11 @@ export function PermissionCard({
   const pending = decided === null;
   const outcome = permissionOutcome(decided);
   const tile = permissionTile(decided);
-  const can = (option: PermissionOption) => permission.options.includes(option);
+  const options = foldedOptions(permission, together);
+  const can = (option: PermissionOption) => options.includes(option);
+  const what = together.length
+    ? `${permission.what}, and ${together.length} more like it`
+    : permission.what;
   // When a decision made here collapses the card, focus stays on it rather
   // than falling to the page with the buttons that were pressed.
   const cardRef = useRef<HTMLDivElement>(null);
@@ -810,7 +818,7 @@ export function PermissionCard({
       className="permission"
       data-pending={pending ? 'true' : undefined}
       role="group"
-      aria-label={permission.what}
+      aria-label={what}
       tabIndex={pending ? 0 : -1}
       onKeyDown={onKey}
     >
@@ -819,7 +827,7 @@ export function PermissionCard({
           <Icon name={tile.icon} size={16} stroke={tile.outcome === 'denied' ? 2.25 : undefined} />
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-          <span className="permission-what">{permission.what}</span>
+          <span className="permission-what">{what}</span>
           {/* Once decided the card is its head and the outcome: the request's
               reasons were for the decision, which has been made. */}
           {pending ? (
@@ -836,6 +844,12 @@ export function PermissionCard({
                   </span>
                 ),
               )}
+              {/* Everything this press answers is on the card, never only the first. */}
+              {together.map((other) => (
+                <span key={other.id} className="permission-why">
+                  {other.what}
+                </span>
+              ))}
             </>
           ) : null}
           <BecauseLine because={permission.because} />
@@ -860,6 +874,12 @@ export function PermissionCard({
           {permission.preview && !draft ? (
             <ResultCard card={permission.preview} readOnly touch={touch} />
           ) : null}
+          {/* Each ask answered with it shows what it does, as its own card would. */}
+          {together.map((other) =>
+            other.preview ? (
+              <ResultCard key={other.id} card={other.preview} readOnly touch={touch} />
+            ) : null,
+          )}
           {permission.file ? <FilePreview file={permission.file} /> : null}
           {draft ? (
             <div className="permission-draft">

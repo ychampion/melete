@@ -61,7 +61,72 @@ const answer = z.object({
   scroll: z.object({ top: whole, page_height: z.number().int(), view_height: whole }).optional(),
   elements: z.array(z.unknown()).max(5_000).optional(),
   offscreen: z.number().int().nonnegative().optional(),
+  /** A bot check the helper found in the page itself, through DevTools; any other word is dropped. */
+  challenge: z.string().max(40).optional(),
 });
+
+/** Who drew a check that a person is there, as far as the screen says. */
+export const CHALLENGE_PROVIDERS = [
+  'cloudflare',
+  'recaptcha',
+  'hcaptcha',
+  'arkose',
+  'datadome',
+  'other',
+] as const;
+export type ChallengeProvider = (typeof CHALLENGE_PROVIDERS)[number];
+
+/**
+ * The frames bot-check providers draw their checks in, by the title each
+ * gives its frame, as the page's accessibility tree names them. reCAPTCHA's
+ * bare "reCAPTCHA" frame is its checkbox only when it is checkbox-sized: the
+ * same title marks the small badge of the kind that asks nothing of anyone.
+ */
+const CHALLENGE_FRAMES: Array<{
+  provider: ChallengeProvider;
+  name: RegExp;
+  minHeight?: number;
+}> = [
+  { provider: 'cloudflare', name: /cloudflare security challenge/i },
+  { provider: 'hcaptcha', name: /hcaptcha/i },
+  { provider: 'recaptcha', name: /^recaptcha challenge/i },
+  { provider: 'recaptcha', name: /^recaptcha$/i, minHeight: 70 },
+  { provider: 'arkose', name: /arkose labs|funcaptcha/i },
+  { provider: 'datadome', name: /datadome/i },
+];
+/** The words a check page puts beside its widget, in its own frame. */
+const HUMAN_CHECK = /^verif(?:y|ying)(?: that)? you are (?:a )?human\b/i;
+/** Smaller than this, a frame is a badge or a placeholder, not a check to pass. */
+const SHOWN_PX = 30;
+
+/**
+ * Whether the screen shows a check that a person is there, and whose: the
+ * helper's own look at the page, else a bot-check frame or the words a check
+ * page shows beside one, by role and name in the accessibility tree (or the
+ * same words read off the screen). Null when there is none.
+ */
+export function challengeOn(parsed: z.infer<typeof answer>): ChallengeProvider | null {
+  const said = (CHALLENGE_PROVIDERS as readonly string[]).includes(parsed.challenge ?? '')
+    ? (parsed.challenge as ChallengeProvider)
+    : null;
+  if (said) return said;
+  for (const raw of parsed.elements ?? []) {
+    const checked = element.safeParse(raw);
+    if (!checked.success) continue;
+    const { role, name = '', box } = checked.data;
+    const [, , width, height] = box;
+    if (width < 1 || height < 1) continue;
+    if (/^iframe$/i.test(role)) {
+      if (width < SHOWN_PX || height < SHOWN_PX) continue;
+      const frame = CHALLENGE_FRAMES.find(
+        (each) => each.name.test(name.trim()) && height >= (each.minHeight ?? 0),
+      );
+      if (frame) return frame.provider;
+    } else if (HUMAN_CHECK.test(name.trim()))
+      return /^just a moment/i.test(parsed.title ?? '') ? 'cloudflare' : 'other';
+  }
+  return null;
+}
 
 /** One line of text however the page wrote it: no line breaks, no control characters. */
 function oneLine(text: string, max = 300): string {
@@ -227,5 +292,7 @@ export function screenText(bytes: Uint8Array): Record<string, JsonValue> {
   if (parsed.source === 'ocr' && parsed.reason)
     notes.push(`Read with OCR because ${oneLine(parsed.reason)}.`);
   if (notes.length) out.more = notes.join(' ');
+  const challenge = challengeOn(parsed);
+  if (challenge) out.challenge = challenge;
   return out;
 }

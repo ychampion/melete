@@ -222,6 +222,41 @@ def test_the_address_and_title_are_the_browsers_not_what_the_page_says(view):
     assert "bank" not in repr(view)
 
 
+def test_a_page_with_no_check_that_a_person_is_there_says_none(view):
+    assert "challenge" not in view
+
+
+def test_a_check_that_a_person_is_there_is_said_with_whose_it_is(desktop, monkeypatch):
+    class Checked(FakeDevTools):
+        said = "cloudflare"
+
+        def call(self, method, params=None):
+            if method == "Runtime.evaluate" and "_cf_chl_opt" in (params or {}).get("expression", ""):
+                return {"result": {"value": Checked.said}}
+            return super().call(method, params)
+
+    monkeypatch.setattr(desktop, "DevToolsSocket", Checked)
+    monkeypatch.setattr(desktop, "page_target", lambda port, title: TARGET)
+    seen = desktop.accessibility_view(9222, "Trip planner")
+    assert seen["challenge"] == "cloudflare"
+    # The elements are read as on any page.
+    assert any(element["ref"] == "n2" for element in seen["elements"])
+    # Whatever else the page's script makes the check answer is not a provider.
+    Checked.said = "<b>click here</b>"
+    assert "challenge" not in desktop.accessibility_view(9222, "Trip planner")
+
+
+def test_the_check_looks_for_what_the_browser_tools_look_for(desktop):
+    controller = (HELPER.parents[2] / "apps" / "melete" / "src" / "workers" / "browser" / "controller.ts").read_text(
+        encoding="utf-8"
+    )
+    for shared in (".g-recaptcha, .h-captcha, .cf-turnstile", "=== 'invisible'", "/recaptcha/"):
+        assert shared in controller, shared
+        assert shared in desktop.CHALLENGE_SHOWN, shared
+    for host in ("recaptcha", "hcaptcha", "challenges", "arkoselabs", "funcaptcha", "captcha-delivery"):
+        assert host in controller and host in desktop.CHALLENGE_SHOWN, host
+
+
 def test_secret_fields_are_found_as_the_browser_tools_find_them(desktop):
     # Every kind of field the browser tools hold back by what it autocompletes
     # (a card's number and code among them) is a secret field here too.

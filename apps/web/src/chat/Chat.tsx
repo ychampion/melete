@@ -47,6 +47,7 @@ import {
   turnIndexForReaction,
 } from '../experience/reduce.ts';
 import { shortTitle } from '../experience/title.ts';
+import { foldedOptions, foldTogether, type Seen, seenTogether } from '../experience/together.ts';
 import type {
   ActionResolution,
   LedgerAction,
@@ -277,7 +278,16 @@ function AgentSheet({
  * permission that also offers "Always allow" keeps its card footer, because
  * that choice opens its own dialog from the card.
  */
-const barePermission = (permission: Permission) => !permission.options.includes('always');
+const barePermission = (permission: Permission, together: readonly Permission[] = []) =>
+  !foldedOptions(permission, together).includes('always');
+
+/** A turn's permission blocks, with the asks made together folded under the first. */
+const foldBlocks = (blocks: readonly TurnBlock[]) =>
+  foldTogether(
+    blocks,
+    (block) => (block.type === 'permission' ? block.permission : null),
+    (block) => (block.type === 'permission' ? String(block.decided) : ''),
+  );
 
 function TurnView({
   turn,
@@ -301,7 +311,13 @@ function TurnView({
   now: number;
   touch: boolean;
   latest: boolean;
-  onDecide: (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) => void;
+  onDecide: (
+    id: string,
+    option: PermissionOption,
+    version: string,
+    bounds?: RuleBounds,
+    together?: Seen[],
+  ) => void;
   onSendDraft: (handle: string) => void;
   onUndo: (id: string) => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
@@ -328,8 +344,12 @@ function TurnView({
   const open = openQuestion(transcript);
 
   const shown = new Set(shownBlocks(turn.blocks));
+  // Asks made together show as the first of them; the rest are listed on it.
+  const togetherOf = new Map(foldBlocks(turn.blocks).map((entry) => [entry.item, entry.together]));
   const renderBlock = (block: TurnBlock) => {
     if (!shown.has(block)) return null;
+    const together = togetherOf.get(block);
+    if (!together) return null;
     switch (block.type) {
       case 'card': {
         const handle =
@@ -361,10 +381,17 @@ function TurnView({
             permission={block.permission}
             decided={block.decided}
             touch={touch}
-            bare={touch && barePermission(block.permission)}
+            bare={touch && barePermission(block.permission, together)}
             busy={busy(block.permission.id)}
+            together={together}
             onDecide={(option, bounds) =>
-              onDecide(block.permission.id, option, block.permission.version, bounds)
+              onDecide(
+                block.permission.id,
+                option,
+                block.permission.version,
+                bounds,
+                seenTogether(together),
+              )
             }
           />
         );
@@ -828,17 +855,35 @@ export function ChatScreen({ id }: { id: string | null }) {
   const retry = (localId: string) => void outbox.current?.retry(localId);
 
   // One request per decision: a second press while the first is in flight is refused.
-  const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) =>
+  const decide = (
+    id: string,
+    option: PermissionOption,
+    version: string,
+    bounds?: RuleBounds,
+    together: Seen[] = [],
+  ) =>
     void flight.run(id, async () => {
       const result =
         option === 'always' && bounds
           ? await adapter.decideAlways(id, version, bounds)
-          : await adapter.decide(id, option === 'always' ? 'allow_once' : option, version);
+          : await adapter.decide(
+              id,
+              option === 'always' ? 'allow_once' : option,
+              version,
+              together,
+            );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
       }
-      setTranscript((previous) => markPermission(previous, id, result.data.option));
+      // Every ask the answer settled closes; one it could not stays, on its own card.
+      const answered = result.data.answered ?? [id];
+      setTranscript((previous) =>
+        answered.reduce(
+          (marked, settled) => markPermission(marked, settled, result.data.option),
+          previous,
+        ),
+      );
       // Home's count and the sidebar read the same lists; refresh them together.
       refreshConversations();
       // The draft behind the decision has moved on; read where it stands now.
@@ -955,13 +1000,14 @@ export function ChatScreen({ id }: { id: string | null }) {
   );
   const pending = touch
     ? transcript.turns
-        .flatMap((turn) => turn.blocks)
-        .find(
-          (block): block is Extract<typeof block, { type: 'permission' }> =>
-            block.type === 'permission' &&
-            block.decided === null &&
-            barePermission(block.permission),
-        )
+        .flatMap((turn) => foldBlocks(turn.blocks))
+        .flatMap(({ item, together }) =>
+          item.type === 'permission' &&
+          item.decided === null &&
+          barePermission(item.permission, together)
+            ? [{ permission: item.permission, together }]
+            : [],
+        )[0]
     : undefined;
   const amount = found ? amountWords(found.item) : null;
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
@@ -1234,7 +1280,13 @@ ${words}`
                   className="btn-tall"
                   disabled={flight.has(pending.permission.id)}
                   onClick={() =>
-                    decide(pending.permission.id, 'allow_once', pending.permission.version)
+                    decide(
+                      pending.permission.id,
+                      'allow_once',
+                      pending.permission.version,
+                      undefined,
+                      seenTogether(pending.together),
+                    )
                   }
                 >
                   Allow once
@@ -1246,7 +1298,15 @@ ${words}`
                   variant="ghost"
                   className="btn-tall"
                   disabled={flight.has(pending.permission.id)}
-                  onClick={() => decide(pending.permission.id, 'deny', pending.permission.version)}
+                  onClick={() =>
+                    decide(
+                      pending.permission.id,
+                      'deny',
+                      pending.permission.version,
+                      undefined,
+                      seenTogether(pending.together),
+                    )
+                  }
                 >
                   Deny
                 </Button>

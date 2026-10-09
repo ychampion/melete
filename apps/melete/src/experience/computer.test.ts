@@ -72,6 +72,19 @@ test('an address loses its query, and the binding touched last is the browser sh
   });
 });
 
+test('binding times handed over as text still pick the binding touched last', () => {
+  const view = projectComputer({
+    rows: [],
+    bindings: [
+      { id: 'bs_1', control: 'automation', updated_at: at(9).toISOString() },
+      { id: 'bs_2', control: 'human', updated_at: at(5).toISOString() },
+      { id: 'bs_3', control: 'automation', updated_at: at(2) },
+    ],
+    available,
+  });
+  expect(view.browser).toMatchObject({ session_id: 'bs_1', control: 'agent' });
+});
+
 test('terminal text keeps the last lines, strips escapes and hides a credential line whole', () => {
   const text = terminalText(
     'first\r\nexport TOKEN=abcdef123456\n\u001b[1mbold\u001b[0m\n\n',

@@ -4617,6 +4617,9 @@
                       },
                       "version": {
                         "$ref": "#/components/schemas/__schema24"
+                      },
+                      "together": {
+                        "$ref": "#/components/schemas/PermissionsSeen"
                       }
                     },
                     "required": [
@@ -4676,6 +4679,9 @@
                       },
                       "version": {
                         "$ref": "#/components/schemas/__schema24"
+                      },
+                      "together": {
+                        "$ref": "#/components/schemas/PermissionsSeen"
                       }
                     },
                     "required": [
@@ -4721,6 +4727,12 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "answered": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/__schema301"
+                          }
                         }
                       },
                       "required": [
@@ -29100,6 +29112,29 @@
         "type": "string",
         "pattern": "^\\+[1-9]\\d{6,14}$"
       },
+      "PermissionsSeen": {
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/PermissionSeen"
+        }
+      },
+      "PermissionSeen": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/__schema24"
+          },
+          "version": {
+            "$ref": "#/components/schemas/__schema24"
+          }
+        },
+        "required": [
+          "id",
+          "version"
+        ],
+        "additionalProperties": false
+      },
       "PrivacyCategory": {
         "type": "string",
         "enum": [
@@ -31731,7 +31766,10 @@
         "properties": {
           "surface": {
             "type": "string",
-            "const": "browser"
+            "enum": [
+              "browser",
+              "computer"
+            ]
           },
           "session_id": {
             "type": "string",
@@ -37009,6 +37047,9 @@
           },
           "payload_hash": {
             "$ref": "#/components/schemas/__schema301"
+          },
+          "group": {
+            "$ref": "#/components/schemas/__schema301"
           }
         },
         "required": [
@@ -40519,7 +40560,10 @@
         "properties": {
           "surface": {
             "type": "string",
-            "const": "browser"
+            "enum": [
+              "browser",
+              "computer"
+            ]
           },
           "session_id": {
             "type": "string",

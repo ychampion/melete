@@ -151,8 +151,11 @@ type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
-  /** Called once the person hands the computer back: the work the takeover parked goes on. */
-  onHandedBack?: (jobId: string) => Promise<unknown>;
+  /**
+   * Called once the person hands the computer back: the work the takeover
+   * parked goes on, or the work handed to them at a check on its screen.
+   */
+  onHandedBack?: (jobId: string, sessionId: string) => Promise<unknown>;
   private readonly byId = new Map<string, Channel>();
   private readonly bySandbox = new Map<string, Channel>();
   private readonly now: () => number;
@@ -313,7 +316,7 @@ export class SandboxComputerService {
       // The work the takeover paused goes on, from a fresh screenshot. The
       // hand-back has happened whatever that finds; a job left waiting still
       // goes on when the person answers it.
-      await this.onHandedBack?.(binding.jobId).catch(() => {
+      await this.onHandedBack?.(binding.jobId, binding.sessionId).catch(() => {
         process.stderr.write('computer hand-back could not resume its job\n');
       });
     }
@@ -328,13 +331,15 @@ export class SandboxComputerService {
       await lockEventOrderIn(tx);
       const [job] =
         await tx`select id, space_id, state, wait from job where id = ${binding.jobId} for update`;
+      // Only work that is on the computer, or about to be, is parked. A turn
+      // that has ended keeps its state and its wait (a question, an approval,
+      // a timer), so handing the computer back later wakes nothing: a finished
+      // task is never started again, and pending work goes on as it would have.
       if (
         !job ||
         job.space_id !== binding.spaceId ||
-        ['completed', 'cancelled', 'failed'].includes(job.state)
+        !['queued', 'running', 'needs_reconciliation'].includes(job.state)
       )
-        return [];
-      if (job.state === 'waiting_for_input' && job.wait?.question?.startsWith('Computer control:'))
         return [];
       const state =
         job.state === 'needs_reconciliation' ? 'needs_reconciliation' : 'waiting_for_input';

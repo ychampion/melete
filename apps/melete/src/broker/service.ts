@@ -2206,7 +2206,13 @@ export class BrokerService implements BrokerOperations {
         decision: request.decision,
         note: request.note ?? null,
       });
-      if (job.state === 'waiting_for_approval') await this.wake(tx, job, 'approval');
+      // Asks made together are answered together: the work goes on once the
+      // last of them is answered, so its next attempt is told every answer.
+      // Woken at the first, that attempt would carry out only the one it knew
+      // of, and the rest, answered while it ran, would be left approved and
+      // never carried out.
+      if (job.state === 'waiting_for_approval' && !(await this.stillAsking(tx, job, id)))
+        await this.wake(tx, job, 'approval');
       return {
         approval_id: approval.id,
         action_id: id,
@@ -2222,6 +2228,52 @@ export class BrokerService implements BrokerOperations {
         'The request changed before it was answered, so it was withdrawn.',
       );
     return result;
+  }
+
+  /**
+   * Whether the job still waits on the person for another of its asks: an
+   * unanswered approval, at the job's revision, on an action still needing
+   * one, that has not run out. The same asks the runtime parks the job on.
+   */
+  private async stillAsking(tx: Query, job: LockedJob, answered: string): Promise<boolean> {
+    const [open] = await tx`select 1 from approval p join action a on a.id = p.action_id
+      where a.job_id = ${job.id} and a.id <> ${answered} and a.status = 'needs_approval'
+        and p.decision is null and p.job_revision = ${job.revision}
+        and (p.expires_at is null or p.expires_at > now())
+      limit 1`;
+    return Boolean(open);
+  }
+
+  /**
+   * Wake the work whose asks have all been answered or have run out, when
+   * the last of them ran out rather than being answered: an answer wakes the
+   * work only once no other ask is waiting, and running out answers nothing,
+   * so without this the asks answered first would wait for good. Called by
+   * the recovery sweep. Only work the person answered something of is woken;
+   * work none of whose asks was answered stays as it was.
+   */
+  async wakeAnswered(): Promise<number> {
+    const waiting = await this.sql`select j.id from job j
+      where j.state = 'waiting_for_approval'
+        and exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is not null)
+        and exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is null
+            and a.status = 'needs_approval' and p.expires_at <= now())
+        and not exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is null
+            and a.status = 'needs_approval'
+            and (p.expires_at is null or p.expires_at > now()))
+      limit 50`;
+    let woken = 0;
+    for (const row of waiting)
+      woken += await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, String(row.id));
+        if (job.state !== 'waiting_for_approval' || (await this.stillAsking(tx, job, ''))) return 0;
+        await this.wake(tx, job, 'approval');
+        return 1;
+      });
+    return woken;
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
@@ -3695,7 +3747,12 @@ export class BrokerService implements BrokerOperations {
    * leaves the person to say what happened, as for any unconfirmed effect.
    * Anything else handed over simply goes on. Nothing is sent again here.
    */
-  async handedBack(jobId: string, sessionId: string): Promise<'resumed' | 'asked' | 'none'> {
+  async handedBack(
+    jobId: string,
+    sessionId: string,
+    /** Whose takeover's wait a hand-back with no card ends: the browser's or the computer's. */
+    parkedBy: 'Browser control:' | 'Computer control:' = 'Browser control:',
+  ): Promise<'resumed' | 'asked' | 'none'> {
     // Every submit from this browser still in doubt is read back, whether or
     // not the work is still waiting on the person.
     const doubts = await this.sql`select id from action where job_id = ${jobId}
@@ -3708,10 +3765,10 @@ export class BrokerService implements BrokerOperations {
         handoff?: { take_over?: { session_id?: string }; action_id?: string | null };
       } | null
     )?.handoff;
-    // A person who took the browser over with no card, mid-task, handed it
-    // back: the work they paused goes on, from a fresh look at the page.
+    // A person who took the browser (or the computer) over with no card,
+    // mid-task, handed it back: the work they paused goes on, from a fresh look.
     if (card?.take_over?.session_id !== sessionId)
-      return (await this.resumeAfterControl(jobId, 'Browser control:')) ? 'resumed' : 'none';
+      return (await this.resumeAfterControl(jobId, parkedBy)) ? 'resumed' : 'none';
     const doubted = typeof card.action_id === 'string' ? card.action_id : null;
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);

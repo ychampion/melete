@@ -42,7 +42,8 @@ export type ComputerProcessRow = {
 export type ComputerBinding = {
   id: string;
   control: string;
-  updated_at: Date;
+  /** A timestamp; the database driver may hand it over as a Date or as its text. */
+  updated_at: Date | string;
 };
 
 const TERMINAL_KINDS = new Set(['terminal.run', 'exec.run']);
@@ -195,9 +196,9 @@ export function projectComputer(input: {
   processes?: readonly ComputerProcessRow[];
   available: AgentComputer['available'];
 }): AgentComputer {
+  const touched = (binding: ComputerBinding) => new Date(binding.updated_at).getTime();
   const binding = input.bindings.reduce<ComputerBinding | undefined>(
-    (latest, next) =>
-      !latest || next.updated_at.getTime() > latest.updated_at.getTime() ? next : latest,
+    (latest, next) => (!latest || touched(next) > touched(latest) ? next : latest),
     undefined,
   );
   const terminal = input.rows

@@ -13,6 +13,7 @@ import { openDatabase } from '../db/client.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
 import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
+import { COMPUTER_CHECK_LEFT, handComputerToPerson } from './hand-off.ts';
 import { seedSessionScope } from './session-fixtures.ts';
 
 const database = await testDatabase();
@@ -181,6 +182,114 @@ withDb('the computer a person steers', () => {
     expect(events.map((event) => event.payload?.kind ?? event.type)).toEqual(
       expect.arrayContaining(['computer_control', 'computer_handback']),
     );
+  });
+
+  test('a turn that has ended keeps its wait through a takeover, and a hand-back starts nothing again', async () => {
+    for (const ended of [
+      {
+        state: 'waiting_for_input',
+        wait: { kind: 'user_input', question: 'Which of the three should I book?' },
+      },
+      { state: 'waiting_for_approval', wait: { kind: 'approval' } },
+      { state: 'completed', wait: { kind: 'none' } },
+    ]) {
+      const s = await scene();
+      const broker = new BrokerService({ sql: s.sql, connectors: { get: () => undefined } });
+      s.service.onHandedBack = (jobId) => broker.resumeAfterControl(jobId, 'Computer control:');
+      await s.sql`update attempt set outcome = 'completed', ended_at = now(),
+        lease_expires_at = null, lease_status = 'ended' where id = ${s.attemptId}`;
+      await s.sql`update job set state = ${ended.state}, wait = ${JSON.stringify(ended.wait)}::jsonb
+        where id = ${s.scope.jobId}`;
+      const taken = await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+      expect(await taken.json()).toMatchObject({ control: 'human' });
+      const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+      expect(await back.json()).toMatchObject({ control: 'agent' });
+      const [job] =
+        await s.sql`select state, wait, next_wake_at from job where id = ${s.scope.jobId}`;
+      expect({ state: job?.state, wait: job?.wait, next_wake_at: job?.next_wake_at }).toEqual({
+        ...ended,
+        next_wake_at: null,
+      });
+      const [attempt] = await s.sql`select outcome from attempt where id = ${s.attemptId}`;
+      expect(attempt?.outcome).toBe('completed');
+      expect(s.parked).toEqual([]);
+    }
+  });
+
+  test('a check on the screen hands the work over with a card; a takeover keeps it and the hand-back carries the work on', async () => {
+    const s = await scene();
+    const broker = new BrokerService({ sql: s.sql, connectors: { get: () => undefined } });
+    // Wired as the server wires it.
+    s.service.onHandedBack = (jobId, sessionId) =>
+      broker.handedBack(jobId, sessionId, 'Computer control:');
+    await s.sql`update attempt set epoch = (select lease_epoch from job where id = ${s.scope.jobId})
+      where id = ${s.attemptId}`;
+    const card = await handComputerToPerson(s.sql, {
+      spaceId: s.scope.spaceId,
+      jobId: s.scope.jobId,
+      sessionId: s.sessionId,
+      attemptId: s.attemptId,
+      service: 'shop.example',
+      current: {
+        kind: 'computer.batch',
+        payload: {
+          step: 3,
+          actions: [
+            { action: 'open', url: 'https://shop.example/checkout' },
+            { action: 'type', text: 'never shown' },
+          ],
+        },
+      },
+    });
+    expect(card).toMatchObject({
+      reason: 'captcha',
+      service: 'shop.example',
+      done: ['Opened shop.example', 'Typed into the page'],
+      left: COMPUTER_CHECK_LEFT,
+      take_over: { surface: 'computer', session_id: s.sessionId },
+    });
+    expect(JSON.stringify(card)).not.toContain('never shown');
+    const job = async () =>
+      (await s.sql`select state, wait from job where id = ${s.scope.jobId}`)[0] as {
+        state: string;
+        wait: { question?: string; handoff?: unknown };
+      };
+    expect((await job()).state).toBe('waiting_for_input');
+    expect((await job()).wait.handoff).toEqual(card);
+    expect((await job()).wait.question).toStartWith('Over to you at shop.example.');
+    const [attempt] =
+      await s.sql`select outcome, outcome_detail from attempt where id = ${s.attemptId}`;
+    expect(attempt).toMatchObject({
+      outcome: 'fenced',
+      outcome_detail: { kind: 'handed_to_person', reason: 'captcha' },
+    });
+    // A second look by the same attempt hands nothing over again.
+    expect(
+      await handComputerToPerson(s.sql, {
+        spaceId: s.scope.spaceId,
+        jobId: s.scope.jobId,
+        sessionId: s.sessionId,
+        attemptId: s.attemptId,
+        service: 'shop.example',
+        current: { kind: 'computer.screenshot', payload: { step: 4 } },
+      }),
+    ).toBeNull();
+
+    // Taking the computer over keeps the card: it says what is left.
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(200);
+    expect((await job()).wait.handoff).toEqual(card);
+    expect(s.parked).toEqual([]);
+    // Handing it back carries the work on, told to look afresh.
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    const [after] = await s.sql`select state, next_wake_at from job where id = ${s.scope.jobId}`;
+    expect(after?.state).toBe('queued');
+    expect(after?.next_wake_at).not.toBeNull();
+    const [notice] = await s.sql`select payload from event where job_id = ${s.scope.jobId}
+      and type = 'notice' and payload->>'kind' = 'handed_back'`;
+    expect(notice?.payload).toMatchObject({
+      session_id: s.sessionId,
+      fresh_observation_required: true,
+    });
   });
 
   test('the live view shows the desktop to its owner and takes input only while they hold it', async () => {

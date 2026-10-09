@@ -1,5 +1,9 @@
 import { expect, test } from 'bun:test';
-import { APPROVAL_OUTDATED_NOTE, PERMISSION_FILE_PREVIEW_CHARS } from '@melete/contracts';
+import {
+  type ActionReview,
+  APPROVAL_OUTDATED_NOTE,
+  PERMISSION_FILE_PREVIEW_CHARS,
+} from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import { browserManifest } from '../connectors/browser.ts';
 import { COMPUTER_TOOLS } from '../connectors/sandbox-computer.ts';
@@ -10,6 +14,7 @@ import {
   type ActionRow,
   answerText,
   BACKEND_VOCABULARY,
+  calendarReasons,
   plainText,
   projectActionGroup,
   projectArtifact,
@@ -412,6 +417,60 @@ test('a permission for a connected computer writes out what would not show', () 
     { label: 'Page', value: 'http://192.168.1.1/admin' },
     { label: 'Network', value: 'This page is on your computer or your local network' },
   ]);
+});
+
+test('asks made together share a group only when they ask for the same reasons and nobody reviewed one', () => {
+  const event = (id: string, payload: Record<string, unknown>): ActionRow => ({
+    ...base,
+    id,
+    kind: 'calendar.create',
+    effectClass: 'write_reversible',
+    canonicalPayload: {
+      summary: id,
+      start: '2026-09-13T18:00:00Z',
+      end: '2026-09-13T19:00:00Z',
+      ...payload,
+    },
+    receipt: null,
+    status: 'needs_approval',
+  });
+  const plain = ['This change needs your permission before it happens.', 'For Plan the week'];
+  const card = (action: ActionRow, reasons = plain, review?: ActionReview) =>
+    projectPermission({
+      id: `apr_${action.id}`,
+      version: 'v1',
+      action,
+      connection: { id: 'calendar-connection', label: 'Calendar', provider: 'caldav' },
+      reasons: [
+        ...reasons,
+        ...calendarReasons(action.kind, action.canonicalPayload as Record<string, unknown>),
+      ],
+      canAlways: false,
+      requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+      ...(review ? { review } : {}),
+    });
+  const one = card(event('one', {}));
+  expect(one.group).toBeString();
+  expect(card(event('two', {})).group).toBe(one.group);
+  // Guests from outside, or a destination nobody confirmed, are a reason of
+  // the ask's own, which a folded card would not show: it is read on its own.
+  expect(card(event('three', { attendees: ['sam@outside.test'] })).group).not.toBe(one.group);
+  expect(
+    card(event('four', {}), [
+      'This destination has not been confirmed by you or the connected app.',
+      'For Plan the week',
+    ]).group,
+  ).not.toBe(one.group);
+  // One auto-review sent to the person carries its reason on its own card.
+  expect(
+    card(event('five', {}), plain, {
+      outcome: 'escalated',
+      by: 'reviewer',
+      reason: 'It lands on the morning of a flight.',
+      risk: 'high',
+      reviewed_at: '2026-09-24T08:00:00.000Z',
+    }).group,
+  ).toBeUndefined();
 });
 
 test('a permission for a connected computer shows the exact command and where it runs', () => {

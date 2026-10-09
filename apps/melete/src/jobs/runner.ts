@@ -191,6 +191,12 @@ export class AttemptRunner {
    */
   readonly onSettled: Array<(attemptId: string) => void> = [];
   /**
+   * Told the job of each conversation turn a person stopped, after the stop
+   * has committed, so what that turn started outside the runner can be ended
+   * too. Called outside any transaction; a handler must not throw.
+   */
+  readonly onStopped: Array<(jobId: string) => void> = [];
+  /**
    * Settles what an ended attempt left dispatched with nobody waiting on it,
    * where the broker runs in this process. Elsewhere the broker's own
    * recovery does it, and the wait below sees the result.
@@ -1044,12 +1050,20 @@ export class AttemptRunner {
 
   /** Stop fences new effects before signalling the adapter, and retains each streamed byte. */
   async stopConversation(jobId: string): Promise<void> {
-    await this.jobs.transaction(async (tx) => {
+    const stopped = await this.jobs.transaction(async (tx) => {
       const row = await this.jobs.lock(tx, jobId);
       if (row?.kind !== 'chat') throw new ServiceError('not_found', 'Conversation not found.', 404);
-      await this.stopTurn(tx, row);
+      return this.stopTurn(tx, row);
     });
     this.interrupt(jobId);
+    if (!stopped) return;
+    for (const handler of this.onStopped) {
+      try {
+        handler(jobId);
+      } catch {
+        // A handler's failure is its own; the turn has stopped regardless.
+      }
+    }
   }
 
   /**

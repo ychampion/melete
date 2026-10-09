@@ -15212,6 +15212,7 @@ export interface paths {
                     "application/json": {
                         /** @constant */
                         option: "allow_once";
+                        together?: components["schemas"]["PermissionsSeen"];
                         version: components["schemas"]["__schema24"];
                     } | {
                         bounds: {
@@ -15225,6 +15226,7 @@ export interface paths {
                     } | {
                         /** @constant */
                         option: "deny";
+                        together?: components["schemas"]["PermissionsSeen"];
                         version: components["schemas"]["__schema24"];
                     };
                 };
@@ -15237,6 +15239,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            answered?: components["schemas"]["__schema301"][];
                             /** @enum {string} */
                             option: "allow_once" | "always" | "deny";
                             rule: components["schemas"]["__schema336"] | null;
@@ -23196,8 +23199,8 @@ export interface components {
         __schema211: {
             link: string;
             session_id: string;
-            /** @constant */
-            surface: "browser";
+            /** @enum {string} */
+            surface: "browser" | "computer";
         };
         __schema212: string | null;
         __schema213: {
@@ -24024,6 +24027,7 @@ export interface components {
                 path: components["schemas"]["__schema302"];
                 truncated: boolean;
             };
+            group?: components["schemas"]["__schema301"];
             id: components["schemas"]["__schema301"];
             options: components["schemas"]["__schema326"][];
             payload_hash?: components["schemas"]["__schema301"];
@@ -24755,8 +24759,8 @@ export interface components {
         __schema445: {
             link: string;
             session_id: string;
-            /** @constant */
-            surface: "browser";
+            /** @enum {string} */
+            surface: "browser" | "computer";
         };
         __schema446: string | null;
         __schema447: {
@@ -26216,6 +26220,11 @@ export interface components {
         LiveScopeResponse: {
             site_scope: components["schemas"]["__schema650"];
         };
+        PermissionSeen: {
+            id: components["schemas"]["__schema24"];
+            version: components["schemas"]["__schema24"];
+        };
+        PermissionsSeen: components["schemas"]["PermissionSeen"][];
         PhoneNumber: string;
         Plugin: {
             description: components["schemas"]["__schema573"];

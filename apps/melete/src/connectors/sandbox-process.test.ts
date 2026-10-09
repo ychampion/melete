@@ -467,6 +467,106 @@ withDb('background processes in the agent computer', () => {
     expect(state.get(completed)).toEqual(['running', null]);
   }, 60_000);
 
+  /**
+   * One conversation, three turns on one computer: the first left a server
+   * running and finished, a person took the computer over during the second,
+   * and the third launched a browser and was stopped, as Stop ends a turn.
+   */
+  const threeTurns = async () => {
+    const s = await setup();
+    const finished = String(
+      s.detail(await s.run('process.start', { command: 'serve' })).process_id,
+    );
+    await db()`update attempt set outcome = 'completed', ended_at = now(),
+      lease_expires_at = null, lease_status = 'ended' where id = ${s.firstAttempt}`;
+    await s.endFirst();
+    const second = { jobId: s.scope.jobId, attemptId: await s.attempt(s.scope.jobId) };
+    const takenOver = String(
+      s.detail(await s.run('process.start', { command: 'watch' }, second)).process_id,
+    );
+    await db()`update attempt set outcome = 'fenced', ended_at = now(),
+      outcome_detail = '{"kind":"computer_control","reason":"human_control"}'::jsonb,
+      lease_expires_at = null, lease_status = 'ended' where id = ${second.attemptId}`;
+    await s.endFirst(second.attemptId);
+    const third = { jobId: s.scope.jobId, attemptId: await s.attempt(s.scope.jobId) };
+    const browser = String(
+      s.detail(
+        await s.run('process.start', { command: 'chromium --remote-debugging-port=9222' }, third),
+      ).process_id,
+    );
+    await db()`update attempt set outcome = 'fenced', ended_at = now(),
+      outcome_detail = '{"kind":"cancelled"}'::jsonb,
+      lease_expires_at = null, lease_status = 'ended' where id = ${third.attemptId}`;
+    const states = async () => {
+      const rows = await db()`select id, state, end_reason from sandbox_process`;
+      return new Map(rows.map((row) => [String(row.id), [row.state, row.end_reason]]));
+    };
+    const inComputer = (id: string) => s.computers.all().find((each) => each.id === id)?.state;
+    return { s, finished, takenOver, browser, states, inComputer };
+  };
+
+  test('stopping a turn ends, at once, the processes that turn started, and only those', async () => {
+    const { s, finished, takenOver, browser, states, inComputer } = await threeTurns();
+    const ended = await wiringFor(s).endStopped(s.scope.jobId, AbortSignal.timeout(10_000));
+    expect(ended).toEqual([browser]);
+    const state = await states();
+    expect(state.get(browser)).toEqual(['stopped', END_REASONS.turn]);
+    expect(state.get(finished)).toEqual(['running', null]);
+    expect(state.get(takenOver)).toEqual(['running', null]);
+    // Stopped in the computer itself, not only on its record.
+    expect(inComputer(browser)).toBe('exited');
+    expect(inComputer(finished)).toBe('running');
+    // Nothing is left for a second stop.
+    expect(await wiringFor(s).endStopped(s.scope.jobId, AbortSignal.timeout(10_000))).toEqual([]);
+  }, 60_000);
+
+  test('stopping a turn that waits on the person ends what any of its steps started', async () => {
+    const s = await setup();
+    const turn = async (id: string, status: string) =>
+      db()`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+        values (${id}, ${s.scope.jobId}, ${s.scope.agentId}, ${`sub_${id}`}, 'Go', ${status})`;
+    // An earlier turn left a server running and finished.
+    await turn('turn_done', 'done');
+    await db()`update attempt set turn_id = 'turn_done' where id = ${s.firstAttempt}`;
+    const finished = String(
+      s.detail(await s.run('process.start', { command: 'serve' })).process_id,
+    );
+    await db()`update attempt set outcome = 'completed', ended_at = now(),
+      lease_expires_at = null, lease_status = 'ended' where id = ${s.firstAttempt}`;
+    await s.endFirst();
+    // The next turn launched a browser, then asked the person and waited: no
+    // step of it was running when Stop was pressed.
+    await turn('turn_waiting', 'running');
+    const asking = { jobId: s.scope.jobId, attemptId: await s.attempt(s.scope.jobId) };
+    await db()`update attempt set turn_id = 'turn_waiting' where id = ${asking.attemptId}`;
+    const browser = String(
+      s.detail(
+        await s.run('process.start', { command: 'chromium --remote-debugging-port=9222' }, asking),
+      ).process_id,
+    );
+    await db()`update attempt set outcome = 'waiting_for_approval', ended_at = now(),
+      lease_expires_at = null, lease_status = 'ended' where id = ${asking.attemptId}`;
+    await db()`update experience_turn set status = 'stopped', finished_at = now()
+      where id = 'turn_waiting'`;
+    expect(await wiringFor(s).endStopped(s.scope.jobId, AbortSignal.timeout(10_000))).toEqual([
+      browser,
+    ]);
+    const rows = await db()`select id, state from sandbox_process`;
+    const state = new Map(rows.map((row) => [String(row.id), String(row.state)]));
+    expect(state.get(browser)).toBe('stopped');
+    expect(state.get(finished)).toBe('running');
+  }, 60_000);
+
+  test('the sweep ends a process a stopped turn started, should the stop have missed it', async () => {
+    const { s, finished, takenOver, browser, states, inComputer } = await threeTurns();
+    await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));
+    const state = await states();
+    expect(state.get(browser)).toEqual(['stopped', END_REASONS.turn]);
+    expect(state.get(finished)).toEqual(['running', null]);
+    expect(state.get(takenOver)).toEqual(['running', null]);
+    expect(inComputer(browser)).toBe('exited');
+  }, 60_000);
+
   test("revoking the computer's connection closes its processes' rows", async () => {
     const { run, detail, processes, providers, scope } = await setup();
     const id = String(detail(await run('process.start', { command: 'serve' })).process_id);

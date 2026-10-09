@@ -42,6 +42,7 @@ import { lockEventOrderIn } from '../db/transaction.ts';
 import { egressHostsFor, newHostsFor } from '../egress/records.ts';
 import { type EgressHostSummary, hasCommandEgress, OTHER_HOSTS } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
+import { serviceOfUrl } from '../paths/services.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
@@ -50,6 +51,7 @@ import {
   sandboxSpecFor,
   sandboxTimeZone,
 } from '../sandbox/connection.ts';
+import { checkHandOffs, handComputerToPerson, MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
 import type { SandboxProcesses } from '../sandbox/processes.ts';
@@ -74,6 +76,7 @@ import {
   COMPUTER_TOOLS,
   ComputerOpenFailed,
   ComputerPayloadRefusal,
+  challengeShown,
   HumanControlRefusal,
   MAX_BATCH_ACTIONS,
   runComputerAction,
@@ -243,6 +246,8 @@ export type SandboxExecOptions = {
   processes?: SandboxProcesses;
   /** How many days what a command deletes stays in the trash (`MELETE_TRASH_DAYS`). */
   trashDays?: number;
+  /** How long a bot check on the screen is given to pass by itself; for tests. */
+  challengeWaitMs?: number;
   /** The most one conversation's trash holds, in bytes (`MELETE_TRASH_MAX_MB`). */
   trashMaxBytes?: number;
 };
@@ -264,6 +269,24 @@ export const INTERRUPTED =
 /** The same, when the computer had network access: what it did may have reached outside. */
 export const INTERRUPTED_WITH_NETWORK =
   "This command's result was not captured from the agent's computer, so whether it finished is not known. It may have run in part or in full. The computer had network access, so the command may also have reached outside it, for example by sending or uploading something: check before running it again";
+
+/**
+ * What the agent is told when the screen shows a check that a person is
+ * there. Passing it is the person's alone: the agent stops, and never tries
+ * another way past it.
+ */
+export const CHECK_HANDED_OVER =
+  'The page on the screen is checking that a person is there. Only the person can pass that check, so it has been handed to them, with what you have done and what is left. Stop here and tell them in a sentence. Do not click the check, wait it out, restart or relaunch the browser, change its flags, use another browser, read cookies or try any other way past it. The work goes on by itself once they hand the computer back.';
+/** The same, when no card could be made: the work has ended, or moved to another attempt. */
+export const CHECK_FOR_PERSON =
+  'The page on the screen is checking that a person is there. Only the person can pass that check. Stop here and ask them to take over the computer, pass it and hand it back. Do not click the check, wait it out, restart or relaunch the browser, change its flags, use another browser, read cookies or try any other way past it.';
+/**
+ * The same, when this turn has already handed the computer over at a check
+ * as often as it may: the check is still there after the person handed it
+ * back, so it is not handed over again, and the work is not held at the page.
+ */
+export const CHECK_STILL_THERE =
+  'The page on the screen still shows a check that a person is there, after the computer was handed to the person for it. Only the person can pass that check. Do not click the check, wait it out, restart or relaunch the browser, change its flags, use another browser, read cookies or try any other way past it. Go on with what does not need this page, or stop here and tell the person in a sentence.';
 
 /** Why a click, key or other desktop step that never answered has no result. */
 export const DESKTOP_UNCONFIRMED =
@@ -799,7 +822,46 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         provider,
         controls: sessions.controls,
         signal,
+        ...(options.challengeWaitMs !== undefined
+          ? { challengeWaitMs: options.challengeWaitMs }
+          : {}),
       });
+      // A check only a person can pass ends the agent's turn here, with a card for them.
+      const challenge = detail.control_changed ? null : challengeShown(detail.screen_text ?? null);
+      if (challenge) {
+        const screen = detail.screen_text as Record<string, JsonValue>;
+        // A check still there after the person handed the computer back, as
+        // often as one turn may hand it over, is not handed over again.
+        const repeated =
+          (await checkHandOffs(sql, ctx.job_id).catch((error: unknown) => {
+            process.stderr.write(`earlier hand-offs could not be read: ${String(error)}\n`);
+            return 0;
+          })) >= MAX_CHECK_HAND_OFFS;
+        const card = repeated
+          ? null
+          : await handComputerToPerson(sql, {
+              spaceId: ctx.space_id,
+              jobId: ctx.job_id,
+              sessionId: session.id,
+              attemptId: action.attempt_id,
+              service:
+                serviceOfUrl(typeof screen.url === 'string' ? screen.url : '') ?? 'this site',
+              current: {
+                kind: action.kind,
+                payload: action.canonical_payload as Record<string, unknown>,
+              },
+            }).catch((error: unknown) => {
+              process.stderr.write(`the computer could not be handed over: ${String(error)}\n`);
+              return null;
+            });
+        detail.challenge = challenge;
+        if (card) detail.handed_to = 'person';
+        detail.next_step = card
+          ? CHECK_HANDED_OVER
+          : repeated
+            ? CHECK_STILL_THERE
+            : CHECK_FOR_PERSON;
+      }
       return {
         outcome: 'succeeded' as const,
         receipt: receiptFor(

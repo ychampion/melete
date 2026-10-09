@@ -258,7 +258,46 @@ export class ExperiencePermissions {
   async decide(spaceId: string, id: string, raw: unknown) {
     const input = permissionDecision.parse(raw);
     // The answer is recorded as the signed-in person's.
-    return this.answer(spaceId, id, await this.find(spaceId, id), input, requestPrincipal());
+    const decider = requestPrincipal();
+    const outcome = await this.answer(spaceId, id, await this.find(spaceId, id), input, decider);
+    if (input.option === 'always' || !input.together?.length) return outcome;
+    return { ...outcome, answered: await this.answerTogether(spaceId, id, input, decider) };
+  }
+
+  /**
+   * The same answer for the other asks of the card's group the person saw
+   * with it, each at the version they saw. One that is no longer waiting, has
+   * changed, or is not of the card's group is left as it is, and is not
+   * named in what comes back, so it is still shown, and asked, on its own.
+   */
+  private async answerTogether(
+    spaceId: string,
+    id: string,
+    input: Extract<ReturnType<typeof permissionDecision.parse>, { together?: unknown }>,
+    decider: string | undefined,
+  ): Promise<string[]> {
+    const answered = [id];
+    const group = (await this.card(spaceId, id)).group;
+    if (!group) return answered;
+    for (const member of input.together ?? []) {
+      if (answered.includes(member.id)) continue;
+      try {
+        const row = await this.find(spaceId, member.id);
+        if (row.decision) continue;
+        if ((await this.project(spaceId, member.id, row, true)).group !== group) continue;
+        await this.answer(
+          spaceId,
+          member.id,
+          row,
+          { option: input.option, version: member.version },
+          decider,
+        );
+        answered.push(member.id);
+      } catch (error) {
+        if (!(error instanceof ServiceError) && !(error instanceof BrokerFault)) throw error;
+      }
+    }
+    return answered;
   }
 
   /**
