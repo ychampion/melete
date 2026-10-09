@@ -1,7 +1,8 @@
 # Follows SETUP-WITH-AN-AGENT.md's main path on a clean runner, as a coding
 # agent would: the commands come from the guide's own `bash setup` blocks. It
 # pulls the images for main, starts them, checks the status report, creates the
-# owner account the way the person would, and removes everything.
+# owner account the way the person would, turns on the browser worker and has it
+# read a page, and removes everything.
 #
 # On main it runs once the Images workflow has published that commit's images,
 # so it pulls the images the guide names. On a pull request the published images
@@ -55,7 +56,9 @@ jobs:
           docker build -f deploy/Dockerfile.melete -t localhost:5000/melete-service:main .
           docker build -f deploy/Dockerfile.web --build-arg VITE_MELETE_API=/api -t localhost:5000/melete-web:main .
           docker build -t localhost:5000/melete-runtime:main packages/runtime-hermes
-          for image in service web runtime; do
+          # The browser worker the guide turns on, which the overlay names once a tag is set.
+          docker build -f deploy/Dockerfile.browser -t localhost:5000/melete-browser:main .
+          for image in service web runtime browser; do
             docker push "localhost:5000/melete-$image:main"
             # Removed here, so the guide's own pull is what puts them back.
             docker image rm "localhost:5000/melete-$image:main"
@@ -80,9 +83,42 @@ jobs:
         run: |
           bash "$RUNNER_TEMP/setup.sh"
           bun run deploy/scripts/status.ts --json | bun run deploy/scripts/setup-guide.ts expect after
+      - name: Turn on the browser worker, as the guide does once the account exists
+        run: bun run melete browser enable
+      - name: Turning it on again changes nothing
+        run: |
+          set -euo pipefail
+          files="deploy/.env deploy/melete.deploy.json deploy/config/connections.json"
+          before="$(sha256sum $files)"
+          bun run melete browser enable
+          test "$before" = "$(sha256sum $files)"
+          bun run melete check --json > "$RUNNER_TEMP/check.json" || true
+          jq -e '.results[] | select(.id == "browser.worker") | .level == "ok"' "$RUNNER_TEMP/check.json"
+      - name: The browser worker opens a page and sees it
+        run: |
+          set -euo pipefail
+          proof="$(cat <<'JS'
+          const { BrowserWorkerClient } = await import('/app/apps/melete/src/workers/browser/client.ts');
+          const client = new BrowserWorkerClient(process.env.MELETE_BROWSER_URL, process.env.MELETE_BROWSER_TOKEN);
+          const job = 'job_setup_guide_proof';
+          const session = await client.lease(job, { public_compartment: true, allowed_domains: [] });
+          const step = (operation) => client.request('/command', { session_id: session.id, job_id: job, control_epoch: session.control_epoch, operation });
+          // A page is observed before anything acts on it, as the agent's tools do.
+          await step({ kind: 'observe' });
+          const seen = (await step({ kind: 'open', url: 'https://example.com/' })).observation;
+          console.log(JSON.stringify({ url: seen?.url, title: seen?.title, tree: seen?.tree?.slice(0, 200) }));
+          await client.request('/release', {});
+          if (seen?.title !== 'Example Domain' || !seen?.tree?.includes('documentation examples')) process.exit(1);
+          JS
+          )"
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.browser.yml exec -T melete bun -e "$proof"
+      - name: Everything but the model is still ready, with the worker on
+        run: bun run deploy/scripts/status.ts --json | bun run deploy/scripts/setup-guide.ts expect after
       - name: Logs
         if: failure()
-        run: docker compose -f deploy/docker-compose.yml logs --tail=100
+        run: |
+          docker compose -f deploy/docker-compose.yml logs --tail=100
+          docker logs --tail=100 "$(docker ps -aq --filter label=com.docker.compose.service=browser | head -n1)" || true
       - name: Remove it
         if: always()
         run: |

@@ -1,11 +1,11 @@
-# Builds the four shipped images and publishes them to the GitHub Container
+# Builds the five shipped images and publishes them to the GitHub Container
 # Registry, so an installation can pull finished images instead of building
 # (docs/DEPLOYMENT.md, "Using prebuilt images").
 #
 # Each image is pushed first under the short commit only. The moving `main` tag,
-# and a release's version tag, are added in a last step once all four exist, so
-# a host that pulls `main` never gets a service from one commit and an engine
-# from another. A pull request that changes this file builds the same images
+# and a release's version tag, are added in a last step once all five exist, so
+# a host that pulls `main` never gets a service from one commit and an engine,
+# or a browser worker, from another. A pull request that changes this file builds the same images
 # without signing in or pushing. deploy/scripts/images-workflow.test.ts checks
 # this file.
 name: Images
@@ -59,8 +59,9 @@ jobs:
           exit 1
       - name: Compose boundary and plugin pin checks
         run: bun run compose:check
-      # The four Melete images switch together: built names without a tag, the
-      # published names with one.
+      # The Melete images switch together: built names without a tag, the
+      # published names with one. The browser worker's file names Compose's own
+      # build name without a tag.
       - name: Compose names the published images when a tag is set
         env:
           POSTGRES_PASSWORD: check
@@ -70,13 +71,16 @@ jobs:
           MELETE_APPROVAL_KEY: check
           MELETE_RUNTIME_KEY: check
           DOCKER_GID: '0'
+          MELETE_BROWSER_SPACE: sp_check
+          MELETE_BROWSER_TOKEN: check-check-check-check-check-check
         run: |
-          compose=(docker compose -f deploy/docker-compose.yml --profile sandbox)
+          compose=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.browser.yml --profile sandbox)
           built="$("${compose[@]}" config --images | sort -u)"
           published="$(MELETE_IMAGE_TAG=check "${compose[@]}" config --images | sort -u)"
           printf '%s\n' "$built" "$published"
           test "$(grep -c '^melete-[a-z]*:local$' <<<"$built")" = 4
-          test "$(grep -c '^ghcr.io/ychampion/melete-[a-z]*:check$' <<<"$published")" = 4
+          grep -qE '^melete-browser(:latest)?$' <<<"$built"
+          test "$(grep -c '^ghcr.io/ychampion/melete-[a-z]*:check$' <<<"$published")" = 5
 
   build:
     name: Build ${{ matrix.image }}
@@ -102,6 +106,9 @@ jobs:
           - image: melete-sandbox
             context: .
             file: deploy/Dockerfile.sandbox
+          - image: melete-browser
+            context: .
+            file: deploy/Dockerfile.browser
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Name the image
@@ -134,7 +141,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
-  # Moves `main`, or adds the release's version, to the commit's four images
+  # Moves `main`, or adds the release's version, to the commit's five images
   # together, after every one of them is in the registry. A manual run on
   # another branch publishes under its commit only.
   publish:
@@ -153,7 +160,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Tag melete-service, melete-web, melete-runtime and melete-sandbox
+      - name: Tag melete-service, melete-web, melete-runtime, melete-sandbox and melete-browser
         env:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
@@ -168,7 +175,7 @@ jobs:
           else
             moving=main
           fi
-          for image in melete-service melete-web melete-runtime melete-sandbox; do
+          for image in melete-service melete-web melete-runtime melete-sandbox melete-browser; do
             source="ghcr.io/${owner}/${image}:${commit}"
             docker buildx imagetools create --tag "ghcr.io/${owner}/${image}:${moving}" "$source"
             echo "${source} -> ${moving}"

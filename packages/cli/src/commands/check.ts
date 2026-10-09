@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
+import { judgeBrowser } from '../browser.ts';
 import type { Context } from '../context.ts';
 import {
   BLOBS_S3_FILE,
@@ -116,6 +117,7 @@ export function judgeCheck(installation: Installation): Result[] {
   });
 
   results.push(...judgeContractAgainstEnv(installation));
+  results.push(...judgeBrowser(installation));
   results.push(judgePorts(installation));
 
   const base = installation.compose[0]?.raw;

@@ -1,8 +1,12 @@
 # Runs the one-line installer on a clean runner exactly as a person would:
-# downloaded from this commit's raw URL and piped to bash, with no checkout of
-# the repository beside it. It pulls the published images, starts them, checks
-# the web app and the API, then runs the installer again to show a second run
-# keeps deploy/.env and the data. No secret is read.
+# downloaded from this commit's raw URL and piped to bash, into a directory with
+# no checkout of the repository in it. It pulls the published images, starts
+# them, checks the web app and the API, turns on the browser worker with
+# `bun run melete --deploy-dir`, then runs the installer again to show a second
+# run keeps deploy/.env, the data and the worker. On a pull request the
+# published images are main's, so this pull request's images are built and
+# served under the same names from a registry on the runner, as the setup-guide
+# workflow does. No secret is read.
 name: Install
 
 on:
@@ -11,6 +15,9 @@ on:
       - install.sh
       - install.ps1
       - .github/workflows/install.yml
+      - deploy/docker-compose.browser.yml
+      - packages/cli/src/commands/browser.ts
+      - apps/melete/src/workers/browser/enable.ts
   workflow_run:
     workflows: [Images]
     types: [completed]
@@ -36,12 +43,36 @@ jobs:
   install:
     name: Install with the one-line command on a clean machine
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     env:
       # The commit under test, so the script and the files it downloads are this commit's.
       REF: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
+      # Compose reads this before deploy/.env, so a pull request's install pulls its own images.
+      MELETE_IMAGE_REGISTRY: ${{ github.event_name == 'pull_request' && 'localhost:5000' || '' }}
     steps:
+      # The checkout is only for the melete command and the image builds; the
+      # installer runs from its URL into ~/melete, away from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Build this pull request's images and serve them as main's
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          docker run -d --name install-registry -p 127.0.0.1:5000:5000 registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          docker build -f deploy/Dockerfile.melete -t localhost:5000/melete-service:main .
+          docker build -f deploy/Dockerfile.web --build-arg VITE_MELETE_API=/api -t localhost:5000/melete-web:main .
+          docker build -t localhost:5000/melete-runtime:main packages/runtime-hermes
+          docker build -f deploy/Dockerfile.browser -t localhost:5000/melete-browser:main .
+          for image in service web runtime browser; do
+            docker push "localhost:5000/melete-$image:main"
+            # Removed here, so the installer's own pull is what puts them back.
+            docker image rm "localhost:5000/melete-$image:main"
+          done
       - name: Run the installer as a person would
         run: |
           set -euo pipefail
@@ -62,13 +93,29 @@ jobs:
           curl -fsS -X POST http://localhost:3101/api/setup \
             -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" > /dev/null
-      - name: Running it again keeps deploy/.env and the data
+      - name: Turn on the browser worker in the installed directory
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run melete --deploy-dir "$HOME/melete/deploy" browser enable
+          grep -q '^MELETE_BROWSER_SPACE=sp_' "$HOME/melete/deploy/.env"
+          test "$(stat -c %a "$HOME/melete/deploy/.env")" = 600
+      - name: Running it again keeps deploy/.env, the data and the browser worker
         run: |
           set -euo pipefail
           before="$(sha256sum < "$HOME/melete/deploy/.env")"
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
           test "$before" = "$(sha256sum < "$HOME/melete/deploy/.env")"
           curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          # The worker survived --remove-orphans, and is healthy beside the service.
+          compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml" -f "$HOME/melete/deploy/docker-compose.browser.yml")
+          worker="$("${compose[@]}" ps -q browser)"
+          test -n "$worker"
+          state="$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$worker")"
+          echo "browser worker: $state"
+          test "$state" = 'running healthy'
+          bun run melete --deploy-dir "$HOME/melete/deploy" check --json > "$RUNNER_TEMP/check.json" || true
+          jq -e '.results[] | select(.id == "browser.worker") | .level == "ok"' "$RUNNER_TEMP/check.json"
           # The owner made before the second run is still there, so setup is refused.
           code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3101/api/setup \
             -H 'content-type: application/json' \
@@ -77,7 +124,11 @@ jobs:
           test "$code" -ge 400
       - name: Logs
         if: failure()
-        run: docker compose -f "$HOME/melete/deploy/docker-compose.yml" logs --tail=100 || true
+        run: |
+          docker compose -f "$HOME/melete/deploy/docker-compose.yml" logs --tail=100 || true
+          docker logs --tail=100 "$(docker ps -aq --filter label=com.docker.compose.service=browser | head -n1)" || true
       - name: Remove it
         if: always()
-        run: docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true
+        run: |
+          docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true
+          docker rm -f install-registry || true

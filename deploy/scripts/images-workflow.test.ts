@@ -2,7 +2,7 @@
  * The image publishing workflow runs only on main, on release tags and by hand,
  * so what it promises is checked here on every pull request: which images it
  * builds and from what, that nothing is pushed from a pull request, that the
- * moving tags wait for all four images, and that it holds no credential but
+ * moving tags wait for all five images, and that it holds no credential but
  * the job's own token.
  */
 import { describe, expect, test } from 'bun:test';
@@ -73,9 +73,10 @@ describe('the image publishing workflow', () => {
     );
   });
 
-  test('builds the four shipped images for linux/amd64 from files that exist', () => {
+  test('builds the five shipped images for linux/amd64 from files that exist', () => {
     const matrix = build?.strategy?.matrix?.include ?? [];
     expect(matrix.map((entry) => entry.image).sort()).toEqual([
+      'melete-browser',
       'melete-runtime',
       'melete-sandbox',
       'melete-service',
@@ -87,6 +88,7 @@ describe('the image publishing workflow', () => {
       'melete-web': 'deploy/Dockerfile.web',
       'melete-runtime': 'packages/runtime-hermes/Dockerfile',
       'melete-sandbox': 'deploy/Dockerfile.sandbox',
+      'melete-browser': 'deploy/Dockerfile.browser',
     });
     for (const entry of matrix) {
       expect(existsSync(join(root, entry.file ?? ''))).toBe(true);
@@ -121,7 +123,7 @@ describe('the image publishing workflow', () => {
     expect(String(buildStep?.with?.['cache-to'])).toStartWith('type=gha');
   });
 
-  test('pushes under the commit, and moves main or the version only after all four', () => {
+  test('pushes under the commit, and moves main or the version only after all five', () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: an Actions expression, not a template.
     expect(String(buildStep?.with?.tags)).toBe('${{ steps.name.outputs.ref }}');
     const naming = build?.steps?.find((step) => step.run?.includes('GITHUB_OUTPUT'))?.run ?? '';
@@ -134,6 +136,8 @@ describe('the image publishing workflow', () => {
     );
     const run = publish?.steps?.map((step) => step.run ?? '').join('\n') ?? '';
     expect(run).toContain('docker buildx imagetools create');
-    expect(run).toContain('for image in melete-service melete-web melete-runtime melete-sandbox');
+    expect(run).toContain(
+      'for image in melete-service melete-web melete-runtime melete-sandbox melete-browser;',
+    );
   });
 });

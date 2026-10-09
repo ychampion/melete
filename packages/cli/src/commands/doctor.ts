@@ -21,6 +21,7 @@ import {
   remoteEngineHost,
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
+import { judgeBrowser } from '../browser.ts';
 import type { Context, PortProbe } from '../context.ts';
 import { databaseShell } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
@@ -61,6 +62,8 @@ export function expandPublished(published: string): number[] | null {
 export type DoctorFacts = {
   config: DeployConfig;
   contract: Result;
+  /** Whether the browser worker is on, judged from the installation's files; left out, not judged. */
+  browser?: Result[];
   /** Problems with the engine, Compose or the machine; empty when it can run the stack. */
   docker: string[];
   dockerVersions: string;
@@ -150,7 +153,7 @@ export function judgeDatabase(fact: DatabaseFact): Result[] {
 }
 
 export function judgeDoctor(facts: DoctorFacts): Result[] {
-  const results: Result[] = [facts.contract];
+  const results: Result[] = [facts.contract, ...(facts.browser ?? [])];
   results.push(
     facts.docker.length === 0
       ? { id: 'docker.engine', level: 'ok', detail: facts.dockerVersions }
@@ -332,6 +335,7 @@ export async function gatherDoctor(
   const facts: DoctorFacts = {
     config,
     contract: judgeContract(installation),
+    browser: judgeBrowser(installation),
     docker,
     dockerVersions: `Engine ${outputs.engine.stdout.trim().split(' ')[1] ?? '?'}, Compose ${outputs.compose.stdout.trim() || '?'}`,
     dockerNotes: describeDockerHost(host),

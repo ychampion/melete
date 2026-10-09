@@ -58,7 +58,60 @@ network isolation from that user's other files and processes.
 
 ## Container deployment
 
-Use the browser override together with the base file:
+### One command
+
+Once Melete is running and your account exists, turn the worker on for your own
+space from the repository root:
+
+```sh
+bun run melete browser enable
+```
+
+It runs the Compose check below, then:
+
+- has the service create the space's `Browser` connection, beside its own `web`
+  connection, and the space's directory;
+- creates the space's `browser` subdirectory as uid/gid 10003 with mode 0700,
+  from a one-shot container that runs as root with only that space's
+  subdirectory of the `spaces` volume mounted, no network and no other
+  capabilities, and that changes that one directory and nothing under it;
+- writes `MELETE_BROWSER_SPACE` and a new `MELETE_BROWSER_TOKEN` to
+  `deploy/.env`, keeping a token that is already there;
+- adds `browser` to `overlays` in `deploy/melete.deploy.json`, writing that
+  file from `deploy/.env` when there is none yet;
+- adds the connection to `deploy/config/connections.json`, keeping every other
+  entry;
+- pulls the published worker image when `deploy/.env` names an image tag
+  (`MELETE_IMAGE_TAG`), or builds it from the checkout when it names none, and
+  starts the stack with the override.
+
+Each file is written only when it changes, so running it again is safe and
+leaves everything as it is. `--space sp_...` names another space instead of the
+first person's own. The token is never printed.
+
+An installation made by the [one-line installer](DEPLOYMENT.md#one-line-install)
+has no checkout, so the command runs from a clone of the repository and names
+its directory:
+
+```sh
+bun run melete --deploy-dir ~/melete/deploy browser enable
+```
+
+From then on `bun run melete deploy` and the one-line installer run the worker
+with the rest (the installer adds the override whenever `deploy/.env` names
+`MELETE_BROWSER_SPACE`), and a `docker compose` command names
+`-f deploy/docker-compose.browser.yml` after `-f deploy/docker-compose.yml`.
+Without it, a command that recreates the service starts it without the worker's
+address, and the service refuses to start while
+`deploy/config/connections.json` names the browser connection. `bun run melete check` and `bun run melete
+doctor` report `browser.worker`: off, or set up in a way the stack cannot start
+with, together with the command that fixes it.
+
+### By hand
+
+One worker serves one space. To give a second space a worker of its own, or to
+set one up without the command, use the browser override together with the
+base file:
 
 ```sh
 bun run deploy/scripts/browser-compose-check.ts

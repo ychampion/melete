@@ -185,6 +185,24 @@ describe('the isolated browser deployment', () => {
     expect(failures(broken)).toContain('the browser runs its dedicated image as its own uid');
   });
 
+  test('runs only the published worker or its own build, never another image', () => {
+    for (const image of [
+      undefined,
+      'ghcr.io/ychampion/melete-service:main',
+      'chromium:latest',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+      '${MELETE_BROWSER_IMAGE}',
+    ]) {
+      const broken = mutation((browser) => {
+        if (image === undefined) delete browser.image;
+        else browser.image = image;
+      });
+      expect(failures(broken), image).toContain(
+        'the browser runs its dedicated image as its own uid',
+      );
+    }
+  });
+
   test('refuses removing read-only, capability, or privilege enforcement', () => {
     for (const field of ['read_only', 'cap_drop', 'security_opt']) {
       const broken = mutation((browser) => {

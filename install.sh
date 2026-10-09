@@ -15,7 +15,9 @@
 #                     or GOOGLE_API_KEY
 #   MELETE_NO_OPEN    set to 1 to leave the browser closed
 #
-# deploy/.env holds the same settings deploy/scripts/configure.ts writes.
+# deploy/.env holds the same settings deploy/scripts/configure.ts writes. Once
+# `bun run melete browser enable` has named the browser worker's space there,
+# every run starts the worker too, with deploy/docker-compose.browser.yml.
 #
 # Everything runs inside main(), called on the last line, so a download cut
 # short runs nothing.
@@ -286,6 +288,7 @@ main() {
   say "Installing Melete into $dir from $ref."
   mkdir -p "$DEPLOY/config" "$dir/packages/runtime-hermes"
   download deploy/docker-compose.yml "$DEPLOY/docker-compose.yml"
+  download deploy/docker-compose.browser.yml "$DEPLOY/docker-compose.browser.yml"
   download deploy/.env.example "$DEPLOY/.env.example"
   # Configuration a person may have edited is kept on a second run.
   local file
@@ -305,13 +308,20 @@ main() {
     write_env
   fi
 
-  local compose=(docker compose -f "$DEPLOY/docker-compose.yml")
+  # The browser worker, once turned on, is part of the stack: without its file
+  # --remove-orphans would remove it, and the service would refuse to start.
+  local compose=(docker compose -f "$DEPLOY/docker-compose.yml") browser=0
+  if grep -q '^MELETE_BROWSER_SPACE=[^[:space:]]' "$DEPLOY/.env"; then
+    browser=1
+    compose+=(-f "$DEPLOY/docker-compose.browser.yml")
+  fi
+  local shown="${compose[*]}"
   say 'Downloading the images. The first time takes a few minutes.'
   "${compose[@]}" pull --quiet ||
     fail 'Could not pull the images. Check the network, then run this again.'
   say 'Starting Melete.'
   "${compose[@]}" up -d --no-build --remove-orphans --wait --wait-timeout 600 ||
-    fail "Melete did not start. See why with: docker compose -f $DEPLOY/docker-compose.yml logs --tail=100"
+    fail "Melete did not start. See why with: $shown logs --tail=100"
 
   local port
   port="$(sed -n 's/^WEB_PORT=//p' "$DEPLOY/.env" | head -n 1)"
@@ -323,7 +333,10 @@ main() {
   else
     say 'Open it and create your account.'
   fi
-  say "Run this command again to update. Stop it with: docker compose -f $DEPLOY/docker-compose.yml down"
+  say "Run this command again to update. Stop it with: $shown down"
+  if [ "$browser" = 0 ]; then
+    say "To give the agent a browser of its own once your account exists, run this from a clone of the repository, with Bun: bun run melete --deploy-dir $DEPLOY browser enable"
+  fi
   open_browser "$url"
 }
 
