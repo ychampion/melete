@@ -383,6 +383,35 @@ async function readScreen(
 }
 
 /**
+ * How long a check that a person is there is given to pass by itself (some
+ * only look for a moment) before the screen is read again. One still there
+ * then is the person's to pass.
+ */
+export const CHALLENGE_WAIT_MS = 8_000;
+
+/** The bot check the screen's text shows, by who drew it; null when it shows none. */
+export function challengeShown(screen: JsonValue): string | null {
+  if (!screen || typeof screen !== 'object' || Array.isArray(screen)) return null;
+  const challenge = (screen as Record<string, JsonValue>).challenge;
+  return typeof challenge === 'string' ? challenge : null;
+}
+
+/** The screen read again after a check had its moment, unless a person took the computer. */
+async function lookPastChallenge(
+  screen: JsonValue,
+  provider: DockerSandboxProvider,
+  handle: ReturnType<typeof sessionHandle>,
+  signal: AbortSignal,
+  waitMs: number,
+  takenOver: () => Promise<boolean>,
+): Promise<JsonValue> {
+  if (!challengeShown(screen) || waitMs <= 0) return screen;
+  await Bun.sleep(waitMs);
+  if (await takenOver()) return screen;
+  return readScreen(provider, handle, signal);
+}
+
+/**
  * Carry out one admitted computer action in the session's container and say
  * what happened, in the words a receipt keeps. Every action but a screenshot
  * ends with one, taken after it, unless a person took the computer meanwhile:
@@ -400,6 +429,8 @@ export async function runComputerAction(options: {
   signal: AbortSignal;
   /** How long to wait after the last step before the screenshot. */
   settleMs?: number;
+  /** How long a bot check is given to pass by itself; `CHALLENGE_WAIT_MS` unless set. */
+  challengeWaitMs?: number;
 }): Promise<Record<string, JsonValue>> {
   const { action, session, provider, signal, controls } = options;
   const commands = desktopCommandsFor(action);
@@ -424,7 +455,18 @@ export async function runComputerAction(options: {
     const info = infoOf(
       await provider.computer(handle, { kind: 'info' }, signal).catch(() => new Uint8Array()),
     );
-    let screen = await readScreen(provider, handle, signal);
+    const moved = async () => {
+      const now = await controls.state(session.providerSandboxId);
+      return now.control === 'human' || now.epoch !== held.epoch;
+    };
+    let screen = await lookPastChallenge(
+      await readScreen(provider, handle, signal),
+      provider,
+      handle,
+      signal,
+      options.challengeWaitMs ?? CHALLENGE_WAIT_MS,
+      moved,
+    );
     // Read after the picture: what a person who took the computer meanwhile
     // has on the screen, what they type included, is never returned.
     const after = await controls.state(session.providerSandboxId);
@@ -502,7 +544,14 @@ export async function runComputerAction(options: {
   try {
     const picture = await capture(options, provider, handle, signal, takenOver);
     if (!picture) return notTaken;
-    const screen = await readScreen(provider, handle, signal);
+    const screen = await lookPastChallenge(
+      await readScreen(provider, handle, signal),
+      provider,
+      handle,
+      signal,
+      options.challengeWaitMs ?? CHALLENGE_WAIT_MS,
+      takenOver,
+    );
     // Read after the picture: a person who took the computer meanwhile is not shown either.
     if (await takenOver()) return notTaken;
     return { ...done, ...picture, screen_text: screen };

@@ -3715,7 +3715,12 @@ export class BrokerService implements BrokerOperations {
    * leaves the person to say what happened, as for any unconfirmed effect.
    * Anything else handed over simply goes on. Nothing is sent again here.
    */
-  async handedBack(jobId: string, sessionId: string): Promise<'resumed' | 'asked' | 'none'> {
+  async handedBack(
+    jobId: string,
+    sessionId: string,
+    /** Whose takeover's wait a hand-back with no card ends: the browser's or the computer's. */
+    parkedBy: 'Browser control:' | 'Computer control:' = 'Browser control:',
+  ): Promise<'resumed' | 'asked' | 'none'> {
     // Every submit from this browser still in doubt is read back, whether or
     // not the work is still waiting on the person.
     const doubts = await this.sql`select id from action where job_id = ${jobId}
@@ -3728,10 +3733,10 @@ export class BrokerService implements BrokerOperations {
         handoff?: { take_over?: { session_id?: string }; action_id?: string | null };
       } | null
     )?.handoff;
-    // A person who took the browser over with no card, mid-task, handed it
-    // back: the work they paused goes on, from a fresh look at the page.
+    // A person who took the browser (or the computer) over with no card,
+    // mid-task, handed it back: the work they paused goes on, from a fresh look.
     if (card?.take_over?.session_id !== sessionId)
-      return (await this.resumeAfterControl(jobId, 'Browser control:')) ? 'resumed' : 'none';
+      return (await this.resumeAfterControl(jobId, parkedBy)) ? 'resumed' : 'none';
     const doubted = typeof card.action_id === 'string' ? card.action_id : null;
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);

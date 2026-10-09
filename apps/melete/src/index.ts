@@ -1446,9 +1446,10 @@ export async function bootstrap(
         sandboxComputers.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
-        // Work the person paused by taking the computer over goes on when they hand it back.
-        sandboxComputers.onHandedBack = async (jobId) =>
-          effectBoundary?.broker.resumeAfterControl(jobId, 'Computer control:');
+        // Work the person paused by taking the computer over, or was handed at a
+        // check on its screen, goes on when they hand it back.
+        sandboxComputers.onHandedBack = async (jobId, sessionId) =>
+          effectBoundary?.broker.handedBack(jobId, sessionId, 'Computer control:');
       }
       learning = await startLearning(
         jobs,

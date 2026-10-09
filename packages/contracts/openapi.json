@@ -31660,7 +31660,10 @@
         "properties": {
           "surface": {
             "type": "string",
-            "const": "browser"
+            "enum": [
+              "browser",
+              "computer"
+            ]
           },
           "session_id": {
             "type": "string",
@@ -40451,7 +40454,10 @@
         "properties": {
           "surface": {
             "type": "string",
-            "const": "browser"
+            "enum": [
+              "browser",
+              "computer"
+            ]
           },
           "session_id": {
             "type": "string",

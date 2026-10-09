@@ -50,7 +50,8 @@ export const handOff = z
     done: z.array(z.string().max(300)).max(12),
     left: z.string().max(500),
     take_over: z.object({
-      surface: z.literal('browser'),
+      /** The agent's browser, or the desktop of the agent's computer. */
+      surface: z.enum(['browser', 'computer']),
       session_id: z.string().min(1).max(200),
       /** An address in the app that opens the agent's computer for this work. */
       link: z.string().max(300),

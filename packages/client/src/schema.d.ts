@@ -23111,8 +23111,8 @@ export interface components {
         __schema209: {
             link: string;
             session_id: string;
-            /** @constant */
-            surface: "browser";
+            /** @enum {string} */
+            surface: "browser" | "computer";
         };
         __schema210: string | null;
         __schema211: {
@@ -24671,8 +24671,8 @@ export interface components {
         __schema443: {
             link: string;
             session_id: string;
-            /** @constant */
-            surface: "browser";
+            /** @enum {string} */
+            surface: "browser" | "computer";
         };
         __schema444: string | null;
         __schema445: {

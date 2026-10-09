@@ -151,8 +151,11 @@ type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
-  /** Called once the person hands the computer back: the work the takeover parked goes on. */
-  onHandedBack?: (jobId: string) => Promise<unknown>;
+  /**
+   * Called once the person hands the computer back: the work the takeover
+   * parked goes on, or the work handed to them at a check on its screen.
+   */
+  onHandedBack?: (jobId: string, sessionId: string) => Promise<unknown>;
   private readonly byId = new Map<string, Channel>();
   private readonly bySandbox = new Map<string, Channel>();
   private readonly now: () => number;
@@ -313,7 +316,7 @@ export class SandboxComputerService {
       // The work the takeover paused goes on, from a fresh screenshot. The
       // hand-back has happened whatever that finds; a job left waiting still
       // goes on when the person answers it.
-      await this.onHandedBack?.(binding.jobId).catch(() => {
+      await this.onHandedBack?.(binding.jobId, binding.sessionId).catch(() => {
         process.stderr.write('computer hand-back could not resume its job\n');
       });
     }
