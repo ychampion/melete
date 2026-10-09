@@ -197,6 +197,20 @@ export const LOOKING_UP: readonly string[] = [
 ];
 
 /**
+ * What may be credited as a source. A morning brief once credited outlets it
+ * never opened, which reads as checked when it was not. The service takes out
+ * a citation that no read in the turn backs (`experience/citations.ts` in the
+ * service), so the model is given the same rule before it writes.
+ */
+export const CITING: readonly string[] = [
+  'Cite only pages you opened in this turn (web.fetch or your browser) and the services',
+  'whose tools answered you, such as Open-Meteo for the weather. A search result you did not',
+  'open is not a source. When a page you read reports another outlet, credit the page you',
+  'read ("via aibriefs.news"). Link a source by its address. A citation nothing you read',
+  'backs is taken out of your answer.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -219,6 +233,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     ...OUTSIDE_WORDS,
     ...ASKING,
     ...LOOKING_UP,
+    ...CITING,
     ...PLAIN_WORDS,
     ...PROGRESS_NOTES,
     'Reusable corrections from the person go through learning.propose when it is in the catalog.',
