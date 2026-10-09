@@ -372,6 +372,7 @@ withDb('installing each kind of connection through the API', () => {
       'mail',
       'mcp',
       'sandbox',
+      'sms',
     ]);
     expect(kinds.map((kind) => kind.id)).toContain('gmail');
     expect((await h.app.request('/connections', h.as('', { provider: 'imap' }))).status).toBe(401);
@@ -412,6 +413,11 @@ withDb('installing each kind of connection through the API', () => {
     });
     expect(notion?.unavailable_reason).not.toContain('MELETE_PUBLIC_URL');
     expect(notion?.setup_hint).toContain('MELETE_PUBLIC_URL');
+    // Texts can be sent without a public address; receiving them needs one.
+    const texts = catalog.find((entry) => entry.covers.includes('texts'));
+    expect(texts?.available).toBe(true);
+    expect(texts?.limited_reason).not.toContain('MELETE_PUBLIC_URL');
+    expect(texts?.setup_hint).toContain('MELETE_PUBLIC_URL');
     expect(catalog.find((entry) => entry.id === 'stripe')?.warning).toContain('move money');
     // Another account on this installation reads the plain reasons only.
     const member = { email: 'catalog-reader@example.test', password: 'catalog-reader-password' };

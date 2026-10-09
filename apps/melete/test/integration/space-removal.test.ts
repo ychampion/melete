@@ -380,6 +380,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   subject_link: 'operational',
   intent: 'operational',
   service_path: 'operational',
+  sms_text: 'operational',
   triage_item: 'operational',
   triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
@@ -743,6 +744,11 @@ describe.if(handle !== null)('removing a space', () => {
         attempts, successes)
       values (${seeded.spaceId}, 'book.example', 'form POST https://book.example/reserve',
         'booking', 'browser', 1, 1)`;
+    // A text that reached a connected number there.
+    await sql`insert into sms_text (id, connection_id, space_id, direction, counterpart, body,
+        state)
+      values (${`sms_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'in',
+        '+15550001111', 'hello', 'kept')`;
     // An incoming message as it was sorted, and the label kept for it.
     const [observed] = await sql`insert into event (job_id, type, payload, dedup_key)
       values (null, 'notice', '{}'::jsonb, ${`triage:${seeded.spaceId}`}) returning seq`;

@@ -120,7 +120,7 @@ import {
   sandboxCredentialValue,
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
-import { SMS_INBOUND_NEEDS, smsWebhookUrl } from '../sms/inbox.ts';
+import { SMS_INBOUND_LIMITED, SMS_INBOUND_NEEDS, smsWebhookUrl } from '../sms/inbox.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 
@@ -475,9 +475,13 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         covers: [KIND_COVERS[kind.kind]],
         connect: { method: 'form', kind_id: kind.id },
         available: true,
-        // Texts can always be sent; receiving them needs an address Twilio can reach.
+        // Texts can always be sent; receiving them needs an address Twilio can
+        // reach. What to set is for the operator alone, as with sign-ins.
         ...(kind.kind === 'sms' && !smsWebhookUrl(deps.env.MELETE_PUBLIC_URL, 'conn_x')
-          ? { limited_reason: SMS_INBOUND_NEEDS }
+          ? {
+              limited_reason: SMS_INBOUND_LIMITED,
+              ...(operator ? { setup_hint: SMS_INBOUND_NEEDS } : {}),
+            }
           : {}),
       }),
     );

@@ -574,7 +574,7 @@ export function createApp(deps: AppDeps) {
       secrets: factory.secrets,
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       twilio: factory.options.twilio,
-      experience,
+      experience: experience ?? undefined,
     });
   }
   if (deps.db)

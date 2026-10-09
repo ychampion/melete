@@ -160,7 +160,7 @@ can move money, and that those tools should be granted as `spend`, so each one
 waits for approval.
 An entry that is available but offers less than it could here carries
 `limited_reason` instead: text messages without a public address can be sent
-but not received.
+but not received. Its `setup_hint`, again only for the owner, says what to set.
 
 | Entry | Kind | What the person types |
 | --- | --- | --- |
@@ -585,7 +585,8 @@ and nothing is texted back.
 
 Without an `https://` public address, incoming texts are off and texts can
 still be sent. The catalog entry stays `available` and carries
-`limited_reason`, which says to set `MELETE_PUBLIC_URL`.
+`limited_reason`; for the installation's owner, its `setup_hint` says to set
+`MELETE_PUBLIC_URL`.
 
 **Texting someone else.** `sms.send` takes one E.164 number (`to`) and one text
 of up to 1,600 characters (`body`). It is `write_external` and always asks

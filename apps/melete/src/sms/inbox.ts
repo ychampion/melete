@@ -55,8 +55,12 @@ export function smsWebhookUrl(publicUrl: string | undefined, connectionId: strin
   }
 }
 
+/** What everyone reads when texts can be sent from here but cannot reach Melete yet. */
+export const SMS_INBOUND_LIMITED =
+  'Texts can be sent from here, but texts to Melete cannot reach it on this Melete yet.';
+/** What the operator reads: what to set so texts reach Melete. */
 export const SMS_INBOUND_NEEDS =
-  'Texting Melete needs the public https:// address Twilio can reach this service at. Set MELETE_PUBLIC_URL; until then texts can only be sent.';
+  'Texting Melete needs the public https:// address Twilio can reach this service at. Set MELETE_PUBLIC_URL.';
 
 /** What the person is told by text when their text could not become a message. */
 const BUSY =

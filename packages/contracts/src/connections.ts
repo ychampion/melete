@@ -999,15 +999,16 @@ export const connectionCatalogEntry = z
     /** When it is not available, why, in words for the person using this Melete. */
     unavailable_reason: z.string().optional(),
     /**
-     * When it is not available, what the operator has to set. Sent only to the
-     * installation's owner, who runs it; everyone else reads `unavailable_reason`.
+     * When it is not available, or offers less than it could, what the operator
+     * has to set. Sent only to the installation's owner, who runs it; everyone
+     * else reads `unavailable_reason` or `limited_reason`.
      */
     setup_hint: z.string().optional(),
     /** Something the person should know before connecting it, such as that it can move money. */
     warning: z.string().optional(),
     /**
-     * When it is available but offers less than it could here, the sentence
-     * that says what is missing and what the operator has to set.
+     * When it is available but offers less than it could here, what is missing,
+     * in words for the person using this Melete.
      */
     limited_reason: z.string().optional(),
   })
