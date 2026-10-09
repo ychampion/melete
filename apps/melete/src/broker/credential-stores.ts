@@ -61,14 +61,24 @@ function namesStore(text: string): boolean {
  * listens and whether it is running: the DevTools port, the single-instance
  * locks and its debug log. None holds a password, card, cookie or key.
  *
- * Only a path written out in full counts: a home prefix, the profile folder,
- * and one of these names exactly as Chromium spells it, with no `.` or `..`
- * steps, globs, variables or anything after the name. So `..`, a differently
- * cased name, or another file reached through a folder of the same name never
- * matches.
+ * Only the full literal path counts: `/home/<user>/.config/melete-browser/`
+ * and one of these names exactly as Chromium spells it. A relative path, `~`,
+ * a variable, `.` or `..` steps, doubled slashes, a different case or anything
+ * after the name never matches.
  */
 const PROFILE_DIAGNOSTIC =
-  /^(?:~|\$HOME|\$\{HOME\}|\/root|\/home\/[A-Za-z0-9_][A-Za-z0-9._-]*)\/+\.config\/+melete-browser\/+(?:DevToolsActivePort|SingletonLock|SingletonSocket|SingletonCookie|chrome_debug\.log)$/;
+  /^\/home\/[A-Za-z0-9_][A-Za-z0-9_.-]*\/\.config\/melete-browser\/(?:DevToolsActivePort|SingletonLock|SingletonSocket|SingletonCookie|chrome_debug\.log)$/;
+
+/**
+ * A command the shell runs exactly as written: plain words of these characters,
+ * separated by blanks, `;`, `&`, `&&`, `|` or `||`, with plain redirections.
+ * No quotes, escapes, globs, braces, `~`, variables, substitutions or comments,
+ * so every word is the literal file or argument the program receives.
+ */
+const LITERAL_COMMAND = /^[A-Za-z0-9_./:=,+@%\- \t\n;&|<>]*$/;
+
+/** One token of a literal command: blanks, a separator, a redirection, or a word. */
+const TOKEN = /([ \t]+)|(&&|\|\||[;&|\n])|(\d*(?:>>|>&|<&|<>|>\||&>>|&>|>|<)\d*)|([^ \t\n;&|<>]+)/g;
 
 /**
  * Programs that only read the files they are given and never write them. The
@@ -88,7 +98,6 @@ const READERS = new Set([
   'strings',
   'grep',
   'test',
-  '[',
 ]);
 
 /** Flags that make `grep` or `ls` walk a folder rather than read one file. */
@@ -97,181 +106,46 @@ const RECURSES: Record<string, RegExp> = {
   ls: /^-(?:[^-]*R|-recursive)/,
 };
 
-/** A word of a shell command, after quotes are removed, with where it sits in the text. */
 interface Word {
   text: string;
   start: number;
-  end: number;
-}
-
-/** One simple command: its words, and the files its redirections name. */
-interface Simple {
-  words: Word[];
-  targets: Word[];
-}
-
-/** Stands in for a command substitution inside a word; its commands are read on their own. */
-const SUBSTITUTION = '\u0000';
-
-/**
- * Splits a command into simple commands the way a POSIX shell reads it, as far
- * as this check needs: quotes, escapes, `$(...)`, separators and redirections.
- * Returns null for anything it does not follow (backquotes, here-documents,
- * process and arithmetic substitution, unbalanced quotes); the whole text is
- * then judged as before.
- */
-function simpleCommands(source: string): Simple[] | null {
-  const out: Simple[] = [];
-  return scan(source, 0, 0, out) === source.length ? out : null;
-}
-
-/** How deep `$(...)` may nest before the command is judged as plain text. */
-const MAX_NESTING = 16;
-
-/** Reads from `from` to the end, or to the `)` closing a `$(` when nested; -1 when it cannot. */
-function scan(src: string, from: number, level: number, out: Simple[]): number {
-  if (level > MAX_NESTING) return -1;
-  const nested = level > 0;
-  let simple: Simple = { words: [], targets: [] };
-  let word: Word | null = null;
-  let quoted = false;
-  let redirect = false;
-  let depth = 0;
-  const begin = (at: number): Word => {
-    word ??= { text: '', start: at, end: at };
-    return word;
-  };
-  const endWord = (at: number) => {
-    if (word === null) return;
-    word.end = at;
-    (redirect ? simple.targets : simple.words).push(word);
-    redirect = false;
-    word = null;
-    quoted = false;
-  };
-  const endSimple = (): boolean => {
-    if (redirect) return false;
-    if (simple.words.length > 0 || simple.targets.length > 0) out.push(simple);
-    simple = { words: [], targets: [] };
-    return true;
-  };
-  let i = from;
-  while (i < src.length) {
-    const c = src[i] as string;
-    if (c === ' ' || c === '\t') {
-      endWord(i);
-      i += 1;
-    } else if (c === '<' || c === '>' || (c === '&' && src[i + 1] === '>')) {
-      // Digits written right before the operator are a descriptor, not a file.
-      const current = word as Word | null;
-      if (current !== null && !quoted && /^\d+$/.test(current.text)) {
-        word = null;
-        quoted = false;
-      } else endWord(i);
-      if (redirect) return -1;
-      const next = src[i + 1];
-      if (c === '<' && (next === '<' || next === '(')) return -1;
-      if (c === '>' && next === '(') return -1;
-      i += c === '&' ? 2 : 1;
-      const op = src[i];
-      if (op === '>' || op === '&' || op === '|' || (c === '<' && op === '>')) i += 1;
-      redirect = true;
-    } else if (c === '\n' || c === ';' || c === '&' || c === '|' || c === '(' || c === ')') {
-      endWord(i);
-      if (!endSimple()) return -1;
-      i += 1;
-      if (c === '(') depth += 1;
-      if (c === ')') {
-        if (depth > 0) depth -= 1;
-        else return nested ? i : -1;
-      }
-    } else if (c === "'") {
-      const close = src.indexOf("'", i + 1);
-      if (close < 0) return -1;
-      begin(i).text += src.slice(i + 1, close);
-      quoted = true;
-      i = close + 1;
-    } else if (c === '"') {
-      const w = begin(i);
-      quoted = true;
-      i += 1;
-      for (;;) {
-        const d = src[i];
-        if (d === undefined || d === '`') return -1;
-        if (d === '"') break;
-        if (d === '\\') {
-          const e = src[i + 1];
-          if (e === undefined) return -1;
-          if (e === '\n') i += 2;
-          else if ('$`"\\'.includes(e)) {
-            w.text += e;
-            i += 2;
-          } else {
-            w.text += d;
-            i += 1;
-          }
-        } else if (d === '$' && src[i + 1] === '(') {
-          if (src[i + 2] === '(') return -1;
-          i = scan(src, i + 2, level + 1, out);
-          if (i < 0) return -1;
-          w.text += SUBSTITUTION;
-        } else {
-          w.text += d;
-          i += 1;
-        }
-      }
-      i += 1;
-    } else if (c === '\\') {
-      const e = src[i + 1];
-      if (e === undefined) return -1;
-      if (e !== '\n') {
-        begin(i).text += e;
-        quoted = true;
-      }
-      i += 2;
-    } else if (c === '`') {
-      return -1;
-    } else if (c === '$' && src[i + 1] === '(') {
-      if (src[i + 2] === '(') return -1;
-      const w = begin(i);
-      i = scan(src, i + 2, level + 1, out);
-      if (i < 0) return -1;
-      w.text += SUBSTITUTION;
-    } else {
-      begin(i).text += c;
-      i += 1;
-    }
-  }
-  endWord(i);
-  if (nested || depth > 0 || !endSimple()) return -1;
-  return i;
 }
 
 /**
- * The command with each plain read of a profile diagnostic file blanked out,
- * or the command unchanged when any other word in it, or any file one of its
- * redirections names, names a store. What remains is judged as before.
+ * The command with each read of a profile diagnostic file blanked out, so the
+ * rest is judged as before. Only a literal command qualifies; anything else is
+ * returned unchanged. A file named after a redirection is never blanked, since
+ * the redirection may write it.
  */
 function withoutProfileDiagnostics(command: string): string {
-  if (!command.includes('melete-browser')) return command;
-  const commands = simpleCommands(command);
-  if (commands === null) return command;
+  if (!command.includes('melete-browser') || !LITERAL_COMMAND.test(command)) return command;
   const reads: Word[] = [];
-  for (const { words, targets } of commands) {
+  let words: Word[] = [];
+  let target = false;
+  const judge = () => {
     const program = words[0]?.text ?? '';
     const recurses = RECURSES[program];
     const reader =
       READERS.has(program) && (recurses === undefined || !words.some((w) => recurses.test(w.text)));
-    for (const [index, w] of words.entries()) {
-      if (reader && index > 0 && PROFILE_DIAGNOSTIC.test(w.text)) reads.push(w);
-      else if (namesStore(w.text)) return command;
+    if (reader) reads.push(...words.slice(1).filter((w) => PROFILE_DIAGNOSTIC.test(w.text)));
+    words = [];
+  };
+  for (const match of command.matchAll(TOKEN)) {
+    const [, , separator, redirection, word] = match;
+    if (separator !== undefined) {
+      judge();
+      target = false;
+    } else if (redirection !== undefined) {
+      target = true;
+    } else if (word !== undefined) {
+      if (!target) words.push({ text: word, start: match.index });
+      target = false;
     }
-    // A redirection writes to the file it names (or feeds it in): never one of these reads.
-    if (targets.some((w) => namesStore(w.text))) return command;
   }
+  judge();
   let text = command;
   for (const w of reads) {
-    text = text.slice(0, w.start) + ' '.repeat(w.end - w.start) + text.slice(w.end);
+    text = text.slice(0, w.start) + ' '.repeat(w.text.length) + text.slice(w.start + w.text.length);
   }
   return text;
 }
