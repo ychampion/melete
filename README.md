@@ -9,6 +9,29 @@ and takes care of it.
 
 > Melete is in early beta. You can run it yourself today.
 
+Learn more at [melete.si](https://melete.si). Hosted Melete: join the waitlist at
+[waitlist.melete.si](https://waitlist.melete.si).
+
+## Try it
+
+With Docker running, one command installs and starts Melete:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+```
+
+On Windows with Docker Desktop, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ychampion/melete/main/install.ps1 | iex
+```
+
+Then open **http://localhost:3101** and create your account. It starts with a
+practice model, so you can look around right away; add your own key in
+**Settings → Models**. Run the command again to update. [Run it yourself](#run-it-yourself) shows the longer
+manual path, and [Deployment](docs/DEPLOYMENT.md#one-line-install) lists the
+installer's options.
+
 ## A day with Melete
 
 **2:10 a.m. It notices.** The card on your domain renewal was declined, and the
@@ -172,6 +195,7 @@ in with ChatGPT.
 
 ## Documentation
 
+- [melete.si](https://melete.si): the website
 - [Deployment](docs/DEPLOYMENT.md): hosting, providers, sandboxes, Tailscale, backups and removal
 - [Upgrading](docs/UPGRADING.md): moving an installation to a later release
 - [Connectors](docs/CONNECTORS.md) and [mail and calendars](docs/mail-calendar.md)
