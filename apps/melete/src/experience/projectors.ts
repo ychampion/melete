@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type ActionReview,
   type BecauseLink,
@@ -1273,6 +1274,17 @@ function egressCard(
   };
 }
 
+/**
+ * Which asks are answered as one: the same kind of change through the same
+ * connection, proposed by one attempt of the work. An attempt stops at the
+ * step that asked, so its asks were made together. Opaque to the reader.
+ */
+export const permissionGroup = (action: Pick<ActionRow, 'attemptId' | 'connectionId' | 'kind'>) =>
+  `grp_${createHash('sha256')
+    .update(`${action.attemptId}\u0000${action.connectionId}\u0000${action.kind}`)
+    .digest('hex')
+    .slice(0, 24)}`;
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -1378,6 +1390,10 @@ export function projectPermission(input: {
     ...(input.review?.outcome === 'escalated' ? { review: input.review } : {}),
     created_at: input.requestedAt.toISOString(),
     ...(input.because?.length ? { because: input.because } : {}),
+    // Asks of one kind made together, in one step of the work, are answered
+    // together. A card that shows a message or a file to read is not, so each
+    // of those is still read on its own.
+    ...(draft || file ? {} : { group: permissionGroup(input.action) }),
     preview: {
       id: input.id,
       title: what,

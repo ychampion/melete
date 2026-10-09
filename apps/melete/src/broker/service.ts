@@ -2206,7 +2206,13 @@ export class BrokerService implements BrokerOperations {
         decision: request.decision,
         note: request.note ?? null,
       });
-      if (job.state === 'waiting_for_approval') await this.wake(tx, job, 'approval');
+      // Asks made together are answered together: the work goes on once the
+      // last of them is answered, so its next attempt is told every answer.
+      // Woken at the first, that attempt would carry out only the one it knew
+      // of, and the rest, answered while it ran, would be left approved and
+      // never carried out.
+      if (job.state === 'waiting_for_approval' && !(await this.stillAsking(tx, job, id)))
+        await this.wake(tx, job, 'approval');
       return {
         approval_id: approval.id,
         action_id: id,
@@ -2222,6 +2228,20 @@ export class BrokerService implements BrokerOperations {
         'The request changed before it was answered, so it was withdrawn.',
       );
     return result;
+  }
+
+  /**
+   * Whether the job still waits on the person for another of its asks: an
+   * unanswered approval, at the job's revision, on an action still needing
+   * one, that has not run out. The same asks the runtime parks the job on.
+   */
+  private async stillAsking(tx: Query, job: LockedJob, answered: string): Promise<boolean> {
+    const [open] = await tx`select 1 from approval p join action a on a.id = p.action_id
+      where a.job_id = ${job.id} and a.id <> ${answered} and a.status = 'needs_approval'
+        and p.decision is null and p.job_revision = ${job.revision}
+        and (p.expires_at is null or p.expires_at > now())
+      limit 1`;
+    return Boolean(open);
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {

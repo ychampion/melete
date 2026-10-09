@@ -15128,6 +15128,7 @@ export interface paths {
                     "application/json": {
                         /** @constant */
                         option: "allow_once";
+                        together?: components["schemas"]["PermissionsSeen"];
                         version: components["schemas"]["__schema24"];
                     } | {
                         bounds: {
@@ -15141,6 +15142,7 @@ export interface paths {
                     } | {
                         /** @constant */
                         option: "deny";
+                        together?: components["schemas"]["PermissionsSeen"];
                         version: components["schemas"]["__schema24"];
                     };
                 };
@@ -15153,6 +15155,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            answered?: components["schemas"]["__schema299"][];
                             /** @enum {string} */
                             option: "allow_once" | "always" | "deny";
                             rule: components["schemas"]["__schema334"] | null;
@@ -23936,6 +23939,7 @@ export interface components {
                 path: components["schemas"]["__schema300"];
                 truncated: boolean;
             };
+            group?: components["schemas"]["__schema299"];
             id: components["schemas"]["__schema299"];
             options: components["schemas"]["__schema324"][];
             payload_hash?: components["schemas"]["__schema299"];
@@ -26128,6 +26132,11 @@ export interface components {
         LiveScopeResponse: {
             site_scope: components["schemas"]["__schema648"];
         };
+        PermissionSeen: {
+            id: components["schemas"]["__schema24"];
+            version: components["schemas"]["__schema24"];
+        };
+        PermissionsSeen: components["schemas"]["PermissionSeen"][];
         PhoneNumber: string;
         Plugin: {
             description: components["schemas"]["__schema571"];

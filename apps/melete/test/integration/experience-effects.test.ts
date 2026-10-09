@@ -702,6 +702,74 @@ databaseTest(
 );
 
 databaseTest(
+  'asks of one kind made together are answered from one card, and the work goes on once, after the last',
+  async () => {
+    const s = await setup('calendar');
+    const jobId = s.claims.job_id;
+    const spaceId = s.claims.space_id;
+    const ask = (summary: string) =>
+      s.broker.propose(s.claims, {
+        connection_id: s.connectionId,
+        kind: 'calendar.create',
+        payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+      });
+    const asked = [await ask('One'), await ask('Two'), await ask('Three'), await ask('Four')];
+    // The step ends parked on all of them, as the runner parks it.
+    await s.sql`update attempt set outcome = 'waiting_for_approval', ended_at = now()
+      where id = ${s.claims.attempt_id}`;
+    await s.sql`update job set state = 'waiting_for_approval',
+      wait = ${JSON.stringify({ kind: 'approval', action_ids: asked.map((a) => a.action_id) })}::jsonb
+      where id = ${jobId}`;
+    const [one, two, three, four] = await Promise.all(
+      asked.map((a) => s.permissions.card(spaceId, a.approval_id ?? '')),
+    );
+    if (!one || !two || !three || !four) throw new Error('cards missing');
+    // One key for the group, offered on each card.
+    expect(one.group).toBeString();
+    expect([two.group, three.group, four.group]).toEqual([one.group, one.group, one.group]);
+
+    // Allowing the first, with the two the person saw beside it: the one seen
+    // at an older version is left asking on its own, and the fourth, not seen,
+    // is not answered either.
+    const outcome = await s.permissions.decide(spaceId, one.id, {
+      option: 'allow_once',
+      version: one.version,
+      together: [
+        { id: two.id, version: two.version },
+        { id: three.id, version: `${three.version}-old` },
+      ],
+    });
+    expect(permissionOutcome.parse(outcome).answered).toEqual([one.id, two.id]);
+    const statuses = async () =>
+      (
+        await s.sql`select status from action where id in ${s.sql(asked.map((a) => a.action_id))}
+          order by array_position(${asked.map((a) => a.action_id)}::text[], id)`
+      ).map((row) => row.status);
+    expect(await statuses()).toEqual(['approved', 'approved', 'needs_approval', 'needs_approval']);
+    // Two asks are still waiting, so the work does not go on yet.
+    const state = async () =>
+      (await s.sql`select state from job where id = ${jobId}`)[0]?.state as string;
+    expect(await state()).toBe('waiting_for_approval');
+
+    await s.permissions.decide(spaceId, three.id, {
+      option: 'deny',
+      version: three.version,
+      together: [{ id: four.id, version: four.version }],
+    });
+    expect(await statuses()).toEqual(['approved', 'approved', 'denied', 'denied']);
+    expect(await state()).toBe('queued');
+    // Woken once, after every answer, so the next attempt is told all four.
+    const events = await s.sql`select type, payload from event where job_id = ${jobId}
+      and type in ('approval_decided', 'job_state_changed') order by seq`;
+    const order = events.map((row) =>
+      row.type === 'approval_decided' ? 'decided' : `to ${row.payload.to}`,
+    );
+    expect(order.slice(-5)).toEqual(['decided', 'decided', 'decided', 'decided', 'to queued']);
+    expect(order.filter((step) => step === 'to queued')).toHaveLength(1);
+  },
+);
+
+databaseTest(
   'identical requests deduplicate within a turn and remain distinct across turns',
   async () => {
     const s = await setup();

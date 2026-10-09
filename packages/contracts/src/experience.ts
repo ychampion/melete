@@ -247,6 +247,12 @@ export const permissionCard = z.strictObject({
    * nobody answers for content they did not see.
    */
   payload_hash: id.optional(),
+  /**
+   * Asks of one kind made together share this key, so they can be shown and
+   * answered as one (see `together` on a decision). Absent on a card that
+   * shows a message or a file, which is read on its own.
+   */
+  group: id.optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 
@@ -302,15 +308,34 @@ export const approvalSettingsResponse = z.strictObject({
   /** Whether an independent reviewer is configured; without one, reviewed classes ask. */
   reviewer_available: z.boolean(),
 });
+/**
+ * The other asks of a card's group the person saw with it, each at the
+ * version they saw. The same answer is given to each that is still waiting
+ * and still of that group; nothing the person did not see is answered.
+ */
+const permissionsTogether = z
+  .array(z.strictObject({ id, version: id }).meta({ id: 'PermissionSeen' }))
+  .max(50)
+  .meta({ id: 'PermissionsSeen' });
 export const permissionDecision = z.discriminatedUnion('option', [
-  z.strictObject({ option: z.literal('allow_once'), version: id }),
+  z.strictObject({
+    option: z.literal('allow_once'),
+    version: id,
+    together: permissionsTogether.optional(),
+  }),
   z.strictObject({ option: z.literal('always'), version: id, bounds: standingRuleBounds }),
-  z.strictObject({ option: z.literal('deny'), version: id }),
+  z.strictObject({
+    option: z.literal('deny'),
+    version: id,
+    together: permissionsTogether.optional(),
+  }),
 ]);
 export const permissionOutcome = z.strictObject({
   status: z.literal('ok'),
   option: z.enum(['allow_once', 'always', 'deny']),
   rule: standingRule.nullable(),
+  /** With `together`: every permission this answer settled, the card's own first. */
+  answered: z.array(id).optional(),
 });
 
 /**
