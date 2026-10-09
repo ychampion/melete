@@ -196,17 +196,18 @@ suite('the browser in everyday chats', () => {
     expect(busy.reason).toBe(BROWSER_BUSY);
     expect(busy.reason).not.toContain('session_busy');
     // A turn that ends while the second chat waits hands the browser over within the wait.
-    const waiting = s.browse(second, 'open', { url: `${site.url}/weather` });
+    // A new step, not the refused one again: an identical step in one attempt is answered once.
+    const waiting = s.browse(second, 'open', { url: `${site.url}/forecast` });
     await Bun.sleep(300);
     await s.finish(s.claims);
     const taken = await waiting;
     expect(taken.reason).toBe('');
     expect(taken.status).toBe('succeeded');
-    expect((taken.detail.observation as JsonObject).url).toBe(`${site.url}/weather`);
+    expect((taken.detail.observation as JsonObject).url).toBe(`${site.url}/forecast`);
     // The first chat's page went with its session: the second chat's browser is its own.
     expect(taken.detail.session_id).not.toBe(first.detail.session_id);
     const looked = await s.browse(second, 'observe', {});
-    expect((looked.detail.observation as JsonObject).url).toBe(`${site.url}/weather`);
+    expect((looked.detail.observation as JsonObject).url).toBe(`${site.url}/forecast`);
     // Stopped work gives the browser up at once, with nobody waiting for it.
     await sql`update job set state = 'cancelled' where id = ${second.job_id}`;
     await sql`update attempt set ended_at = now(), outcome = 'fenced' where id = ${second.attempt_id}`;
