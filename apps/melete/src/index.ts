@@ -148,11 +148,13 @@ import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
+import { MemoryError } from './memory/db.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { embeddingFromEnv } from './memory/embedding.ts';
 import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
+import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
@@ -1100,6 +1102,24 @@ export async function bootstrap(
       : null;
     memoryEmbedder = memoryEmbedding;
     const embedsQuery = (jobId: string, text: string) => privacy.cloudEmbedsRequest(jobId, text);
+    // `memory.search`: the agent looks in memory before it tells the person it
+    // doesn't know something, under the same rules as the attempt's own recall.
+    const memorySearch = handle
+      ? (claims: Parameters<typeof searchMemory>[1], input: unknown) =>
+          searchMemory(
+            {
+              sql: handle.sql,
+              scopeForJob: async (jobId) => {
+                const owner = memory ?? deploymentMemory;
+                if (!owner) throw new MemoryError('scope_denied');
+                return owner.scopeForJob(jobId);
+              },
+              ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
+            },
+            claims,
+            input,
+          )
+      : undefined;
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
     if (handle && voiceProvidersFromEnv(env).live)
@@ -1212,6 +1232,7 @@ export async function bootstrap(
           privacy,
           runs,
           intents,
+          memorySearch,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -1507,6 +1528,7 @@ export async function bootstrap(
           modelSettings,
           runs,
           intents,
+          memorySearch,
           spending,
           blobs: blobs?.store,
         });

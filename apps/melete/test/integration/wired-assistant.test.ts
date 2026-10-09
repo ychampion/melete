@@ -179,6 +179,7 @@ afterAll(async () => {
         'search_tools',
         'load_tool',
         'ask_person',
+        'memory.search',
         'react',
         'test.send',
       ]);
