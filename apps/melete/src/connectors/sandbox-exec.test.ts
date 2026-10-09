@@ -21,7 +21,7 @@ import { sandboxSpecFor } from '../sandbox/connection.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
-import type { SandboxHandle } from '../sandbox/types.ts';
+import type { ResumeOptions, SandboxHandle } from '../sandbox/types.ts';
 import { ConnectorRegistry } from './registry.ts';
 import {
   createSandboxExecConnector,
@@ -451,6 +451,85 @@ withDb('a command in a remote sandbox', () => {
     expect(outcome.receipt.detail.session_id).not.toBe(sessionId);
     expect(provider.calls.create).toBe(1);
     expect(provider.calls.resume).toBe(1);
+  }, 60_000);
+
+  /**
+   * A provider that makes a quiet workspace again from a newer image as it
+   * resumes, as the docker adapter does, and records what it was told.
+   */
+  const updating = () => {
+    const provider = new FakeSandboxProvider();
+    const told: (boolean | undefined)[] = [];
+    const resume = provider.resume.bind(provider);
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      told.push(options?.quiet);
+      const resumed = await resume(ref, spec, signal);
+      return options?.quiet ? { ...resumed, recreatedFrom: 'sha256:old' } : resumed;
+    };
+    return { provider, told };
+  };
+
+  /** Runs a first command, suspends the workspace, and returns the next attempt's run. */
+  const suspendedWorkspace = async (s: Awaited<ReturnType<typeof setup>>) => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    await handle.sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    const first = await s.run({ command: 'printf kept > /work/notes.txt' });
+    if (first.result.outcome !== 'succeeded') throw new Error(JSON.stringify(first.result));
+    const sessionId = String(first.result.receipt.detail.session_id);
+    await s.sessions.suspendWorkspace(sessionId, s.provider, AbortSignal.timeout(10_000));
+    const session = await s.sessions.get(sessionId);
+    return { sandbox: session?.providerSandboxId ?? '', next: await s.scope.attempt() };
+  };
+
+  test("a quiet workspace made again from a newer image keeps its files, and the job's timeline says so", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider, told } = updating();
+    const s = await setup({ persistence: 'pause', provider });
+    const { next } = await suspendedWorkspace(s);
+    const after = await s.run({ command: 'cat /work/notes.txt' }, next);
+    if (after.result.outcome !== 'succeeded') throw new Error(JSON.stringify(after.result));
+    expect(after.result.receipt.detail.output_digest).toBe(digest('kept'));
+    expect(told).toEqual([true]);
+    const notices = await handle.sql`select payload from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_updated'`;
+    expect(notices.map((row) => row.payload)).toEqual([
+      {
+        kind: 'computer_updated',
+        session_id: String(after.result.receipt.detail.session_id),
+        image: null,
+        replaced_image: 'sha256:old',
+      },
+    ]);
+  }, 60_000);
+
+  test('a workspace whose background processes still run is not called quiet, and nothing is recorded', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider, told } = updating();
+    const s = await setup({ persistence: 'pause', provider });
+    const { next } = await suspendedWorkspace(s);
+    await handle.sql`insert into sandbox_process (id, space_id, agent_id, connection_id,
+        command_redacted, command_digest, cwd, name, state, expires_at)
+      values ('prc_01J00000000000000000000000', ${s.scope.spaceId}, ${s.scope.agentId},
+        ${s.scope.connectionId}, 'npm run dev', 'd', '/work', 'dev server', 'running',
+        now() + interval '1 hour')`;
+    const after = await s.run({ command: 'printf next' }, next);
+    if (after.result.outcome !== 'succeeded') throw new Error(JSON.stringify(after.result));
+    expect(told).toEqual([false]);
+    const [notice] = await handle.sql`select 1 from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_updated'`;
+    expect(notice).toBeUndefined();
+  }, 60_000);
+
+  test('a workspace a person holds is not resumed, so never made again under them', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider, told } = updating();
+    const s = await setup({ persistence: 'pause', provider, workspaceWaitMs: 0 });
+    const { sandbox, next } = await suspendedWorkspace(s);
+    await s.sessions.controls.change(sandbox, 'human');
+    const after = await s.run({ command: 'printf next' }, next);
+    expect(after.result.outcome).toBe('failed');
+    expect(told).toEqual([]);
+    expect(provider.calls.resume).toBe(0);
   }, 60_000);
 
   test('a sandbox beyond the concurrency limit is refused, and nothing is dispatched', async () => {

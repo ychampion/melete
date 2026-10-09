@@ -102,7 +102,7 @@ export const COMPUTER_TOOLS: ToolManifest[] = [
   ),
   tool(
     'computer.open',
-    `Open an http or https address in the sandbox browser, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet. The result says whether the window moved to the address (navigated) and the title it shows; when navigated is false, the page did not open, so say so rather than describing it.${AFTER}`,
+    `Open an http or https address in the sandbox browser, the one the person sees and can take over, starting it if needed; a later open reuses its window. Public HTTPS sites load when the sandbox may reach the internet. It succeeds only once the page in front shows the address (a site sending you on counts); otherwise it fails and says what the window shows.${AFTER}`,
     schema({ url }, ['url']),
     'write_reversible',
   ),
@@ -288,6 +288,37 @@ export class HumanControlRefusal extends Error {
   override readonly name = 'HumanControlRefusal';
 }
 
+/** An open after which the page in front is not the address asked for: the step did not happen. */
+export class ComputerOpenFailed extends Error {
+  override readonly name = 'ComputerOpenFailed';
+}
+
+const shortText = (value: unknown, max: number) =>
+  typeof value === 'string' && value.trim()
+    ? value.trim().length > max
+      ? `${value.trim().slice(0, max - 1)}…`
+      : value.trim()
+    : null;
+
+/**
+ * Why an open did not bring the address to the front, with what the window
+ * shows instead, as the desktop said; null when it did, or for any other step.
+ */
+export function openFailure(
+  command: DesktopCommand,
+  info: Record<string, JsonValue>,
+): string | null {
+  if (command.kind !== 'open' || info.navigated !== false) return null;
+  const address = shortText(info.address, 300);
+  const title = shortText(info.window, 200);
+  const shows =
+    address && title
+      ? `${address} ("${title}")`
+      : (address ?? (title ? `"${title}"` : 'nothing it could read'));
+  const reason = shortText(info.reason, 200);
+  return `the browser did not open ${shortText(command.url, 300)}${reason ? `: ${reason}` : ''}. The window in front shows ${shows}. Look at the screen and try again in this browser, which the person can see; one started from a command is hidden from them`;
+}
+
 /** The admitted arguments do not describe a computer action; nothing was sent. */
 export class ComputerPayloadRefusal extends Error {
   override readonly name = 'ComputerPayloadRefusal';
@@ -429,7 +460,16 @@ export async function runComputerAction(options: {
       stopped = `step ${index + 1} (${command.kind}) failed: ${said(error)}; the steps after it did not run`;
       break;
     }
-    steps.push({ computer: command.kind, ...infoOf(answer) });
+    const info = infoOf(answer);
+    // An open that left another page in front did not happen: the steps
+    // after it would act on the wrong page.
+    const notOpened = openFailure(command, info);
+    if (notOpened) {
+      if (index === 0) throw new ComputerOpenFailed(notOpened);
+      stopped = `step ${index + 1} (open) failed: ${notOpened}; the steps after it did not run`;
+      break;
+    }
+    steps.push({ computer: command.kind, ...info });
   }
   // Checked again after the action: a takeover that landed while it ran is said so.
   if ((await controls.state(session.providerSandboxId)).epoch !== held.epoch)
