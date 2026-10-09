@@ -492,6 +492,12 @@ export class ConnectorFactory {
         artifacts: browserArtifactSink(options.sql, options.spacesRoot),
         recipes: new PostgresBrowserRecipeStore(options.sql),
         spaceId: row.spaceId,
+        // The browser opens public pages under the same rule, and the same setting, as web reads.
+        publicReads: databasePublicReads({
+          sql: options.sql,
+          connectionId: row.id,
+          privateContext: options.privateContext,
+        }),
       });
     }
     if (row.provider === 'web')

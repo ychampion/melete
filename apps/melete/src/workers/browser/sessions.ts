@@ -14,7 +14,16 @@ export class BrowserFault extends Error {
   }
 }
 
-export type BrowserPolicy = { public_compartment: boolean; allowed_domains: string[] };
+/**
+ * What a session's pages may reach. `public_web` opens every public address to a job with no
+ * domain list of its own, as the public-read setting allows its web reads, while the space's
+ * profile stays its own; a job with a list keeps to that list.
+ */
+export type BrowserPolicy = {
+  public_compartment: boolean;
+  allowed_domains: string[];
+  public_web?: boolean;
+};
 /**
  * Where the person is, as their browser shows it to sites: the language pages are asked for and
  * the clock their scripts read. A context starts with it and keeps it until it closes.
@@ -178,13 +187,26 @@ export class BrowserSessions {
       if (!Number.isSafeInteger(value) || value < 1) throw new BrowserFault('invalid_idle_timeout');
   }
 
+  /**
+   * `replaceJob` names a job the caller knows has finished: a session that job still holds, with
+   * no person in control, is closed with its pages and a new one opened for this job.
+   */
   async lease(
     jobId: string,
     policy: BrowserPolicy,
     region?: Partial<BrowserRegion>,
+    replaceJob?: string,
   ): Promise<BrowserSession> {
     return this.exclusive(async () => {
       if (this.idle()) await this.closeContext();
+      if (
+        this.session &&
+        replaceJob &&
+        replaceJob !== jobId &&
+        this.session.job_id === replaceJob &&
+        this.session.control === 'automation'
+      )
+        await this.closeContext();
       if (this.session) {
         if (this.session.job_id !== jobId) throw new BrowserFault('session_busy');
         if (JSON.stringify(this.policy) !== JSON.stringify(policy))
@@ -254,6 +276,28 @@ export class BrowserSessions {
         await context.browser()?.close();
         throw error;
       }
+    });
+  }
+
+  /** The job holding the warm session and who controls it, or null when none is open. */
+  holder(): Promise<{ job_id: string | null; control: BrowserSession['control'] } | null> {
+    return this.exclusive(async () => {
+      if (this.idle()) await this.closeContext();
+      return this.session ? { job_id: this.session.job_id, control: this.session.control } : null;
+    });
+  }
+
+  /**
+   * A job that has finished gives its session up: the pages close, and the next lease opens a
+   * new one. A session a person has taken over stays with them until they hand it back.
+   */
+  end(jobId: string): Promise<{ ended: boolean }> {
+    return this.exclusive(async () => {
+      const session = this.session;
+      if (!session || session.job_id !== jobId || session.control !== 'automation')
+        return { ended: false };
+      await this.closeContext();
+      return { ended: true };
     });
   }
 

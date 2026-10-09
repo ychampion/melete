@@ -187,6 +187,50 @@ test('private context allows exact trusted domains and copies policy before page
   expect(fixture.calls).toHaveLength(1);
 });
 
+test('a job with no list opens any public page when the public web is open to it, and a list still limits', async () => {
+  // A conversation's browser: the space's own profile, no list, public pages open to it.
+  const chat = await setup(
+    {},
+    { public_compartment: false, allowed_domains: [], public_web: true },
+  );
+  for (const url of ['https://public.example/', 'https://news.example.org/story']) {
+    expect((await chat.egress.run('navigate', () => chat.dispatch({ url }))).aborted).toBe(false);
+  }
+  expect(chat.calls.map((call) => call.url)).toEqual([
+    'https://public.example/',
+    'https://news.example.org/story',
+  ]);
+  // The address floor is unchanged: a private or local address is refused before any request.
+  for (const url of ['http://127.0.0.1/', 'http://10.0.0.8/', 'http://169.254.169.254/']) {
+    await expect(chat.egress.run('navigate', () => chat.dispatch({ url }))).rejects.toThrow(
+      'non-public',
+    );
+  }
+  const internal = await setup(
+    { resolve: async () => [{ address: '192.168.1.20', family: 4 }] },
+    { public_compartment: false, allowed_domains: [], public_web: true },
+  );
+  await expect(
+    internal.egress.run('navigate', () => internal.dispatch({ url: 'https://router.example/' })),
+  ).rejects.toThrow('non-public');
+  expect(internal.calls).toHaveLength(0);
+  // Without the public web, a job with no list opens nothing, as before.
+  const closed = await setup({}, { public_compartment: false, allowed_domains: [] });
+  await expect(
+    closed.egress.run('navigate', () => closed.dispatch({ url: 'https://public.example/' })),
+  ).rejects.toThrow('private-context');
+  // A job with a list keeps to it, whatever else the policy says.
+  const listed = await setup(
+    {},
+    { public_compartment: false, allowed_domains: ['public.example'], public_web: true },
+  );
+  expect((await listed.egress.run('navigate', () => listed.dispatch())).aborted).toBe(false);
+  await expect(
+    listed.egress.run('navigate', () => listed.dispatch({ url: 'https://other.example/' })),
+  ).rejects.toThrow('private-context');
+  expect(listed.calls).toHaveLength(1);
+});
+
 test('the fixture injection allows only its exact literal loopback origin and does not bypass compartment policy', async () => {
   const fixture = await setup({ fixtureOrigins: ['http://127.0.0.1:3130'] });
   const allowed = await fixture.egress.run('navigate', () =>
