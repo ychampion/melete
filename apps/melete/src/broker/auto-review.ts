@@ -15,8 +15,9 @@
  *   puts it in the person's tier, with the reason.
  * - `apps`: publishing an app, a new version of one, or going back to an
  *   earlier version, through Melete's own Apps connection, when nobody new can
- *   open it, its code opens no direct connections and it shows no data its
- *   viewers do not see now. A fixed rule approves it when the person allows
+ *   open it, nobody who can open it now loses that, its code opens no direct
+ *   connections and it shows no data its viewers do not see now. A fixed rule
+ *   approves it when the person allows
  *   it; each is undone by going back to the version before. Any of those risks
  *   puts it in the person's tier, with the reason.
  * - `person`: anything that spends, sends or publishes beyond undo, deletes,
@@ -120,6 +121,27 @@ export function appRisks(payload: JsonObject): string[] | null {
   return connecting && !found.length
     ? ['Its code can open direct connections to other servers (WebRTC).']
     : found;
+}
+
+/** Who can open an app, as the Apps connection binds it when nobody else can. */
+export const ONLY_YOU = 'only you';
+
+/**
+ * Whether an app publish or rollback reaches nobody but the person publishing,
+ * as its connector bound it: a publish only they may open (`only_me` with
+ * nobody else keeping access), a new version of an app only they can open
+ * now, or going back to a version of one. A room, a shared space or anyone
+ * granted access is someone else, so it reads false. The connector checks it
+ * again at admission and at dispatch (see `apps.ts`).
+ */
+export function reachesOnlyPublisher(name: string, payload: JsonObject): boolean {
+  if (name === 'apps.rollback') return payload.viewers_now === ONLY_YOU;
+  if (name !== 'apps.publish') return false;
+  const audience = payload.audience;
+  if (!audience || typeof audience !== 'object' || Array.isArray(audience)) return false;
+  if (audience.kind === 'only_me') return audience.also === undefined;
+  if (audience.kind === 'unchanged') return audience.now === ONLY_YOU;
+  return false;
 }
 
 const DESTRUCTIVE =
@@ -286,9 +308,23 @@ export function reviewTier(input: {
   // Opening a public page in the agent's own browser reads it there and sends
   // nothing anywhere, wherever the address came from: it is not a destination
   // to vouch for. A form sent from it is a submit, which still asks.
-  const doubts = SANDBOX_PROVIDERS.has(provider)
+  // Nothing in the agent's own workspace pays by a number in its payload: an
+  // `amount` there is a count, such as a scroll's wheel steps. Money leaves
+  // through a spend, a form submit or a connected app, which are judged on
+  // their own, so an amount field here is not money to vouch for.
+  const ownWorkspace = SANDBOX_PROVIDERS.has(provider);
+  const counts = ownWorkspace
+    ? new Set(
+        collectOriginFields(payload, tool.name)
+          .filter((field) => field.category === 'amount')
+          .map((field) => field.path),
+      )
+    : new Set<string>();
+  const doubts = ownWorkspace
     ? input.doubts.filter(
-        (doubt) => !publicPage(ownBrowserAddress(tool.name, payload, doubt.field)),
+        (doubt) =>
+          !counts.has(doubt.field) &&
+          !publicPage(ownBrowserAddress(tool.name, payload, doubt.field)),
       )
     : input.doubts;
   if (tool.effect_class === 'spend') return person('It spends money.');
@@ -334,8 +370,9 @@ export function reviewTier(input: {
     return {
       tier: 'apps',
       actionClass: 'apps',
-      reason:
-        tool.name === 'apps.rollback'
+      reason: reachesOnlyPublisher(tool.name, payload)
+        ? 'Only you can open it, and its code opens no direct connections.'
+        : tool.name === 'apps.rollback'
           ? 'It goes back to an earlier version for the same viewers, and shows them no new data.'
           : 'It publishes to the same people as now, opens no direct connections, and shows no new data.',
     };

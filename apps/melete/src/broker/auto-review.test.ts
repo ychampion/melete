@@ -2,11 +2,16 @@ import { describe, expect, test } from 'bun:test';
 import type { ConnectorTool, JsonObject, OriginWarning } from '@melete/contracts';
 import {
   changesPersonFiles,
+  deciding,
   escalationReason,
   publicPage,
+  reachesOnlyPublisher,
   reviewerApproves,
   reviewTier,
+  submitRisk,
 } from './auto-review.ts';
+import type { Query } from './records.ts';
+import { createTableTrustResolver, resolveOriginWarnings } from './trust.ts';
 
 type Tool = Pick<ConnectorTool, 'name' | 'effect_class' | 'requires_approval' | 'execution'>;
 const tool = (
@@ -325,6 +330,108 @@ describe("opening a page in the agent's own browser", () => {
     ).toBe('person');
   });
 
+  test('a scroll is a count of wheel steps, not money, wherever its number came from', () => {
+    const scroll = tool('computer.scroll', 'write_reversible');
+    expect(
+      tier(scroll, 'sandbox', { step: 1, x: 640, y: 400, amount: 15 }, [unvouched('amount')]),
+    ).toMatchObject({ tier: 'sandbox', actionClass: 'sandbox' });
+    expect(
+      tier(
+        batch,
+        'sandbox',
+        {
+          step: 3,
+          actions: [
+            { action: 'scroll', x: 640, y: 400, amount: 5 },
+            { action: 'scroll', x: 640, y: 400, amount: -3 },
+            { action: 'click', x: 10, y: 10 },
+          ],
+        },
+        [unvouched('actions[0].amount'), unvouched('actions[1].amount')],
+      ),
+    ).toMatchObject({ tier: 'sandbox', actionClass: 'sandbox' });
+  });
+
+  test('through the same steps the broker takes, a scroll in the agent’s own computer is its own work', async () => {
+    const resolver = createTableTrustResolver({});
+    const decide = async (t: Tool, payload: JsonObject) => {
+      const doubts = await resolveOriginWarnings({} as Query, resolver, {
+        space_id: 'sp_1',
+        job_id: 'job_1',
+        connection_id: 'conn_1',
+        kind: t.name,
+        effect_class: t.effect_class,
+        canonical_payload: payload,
+        fields: deciding(payload, t.name),
+      });
+      return reviewTier({ tool: t, provider: 'sandbox', payload, doubts });
+    };
+    const scroll = { step: 1, x: 640, y: 400, amount: 15 };
+    expect(deciding(scroll, 'computer.scroll')).toHaveLength(1);
+    expect((await decide(tool('computer.scroll', 'write_reversible'), scroll)).tier).toBe(
+      'sandbox',
+    );
+    const steps = {
+      step: 2,
+      actions: [
+        { action: 'scroll', x: 1, y: 1, amount: 4 },
+        { action: 'scroll', x: 1, y: 1, amount: 4 },
+      ],
+    };
+    expect((await decide(batch, steps)).tier).toBe('sandbox');
+    // A private address in the same batch still asks.
+    expect(
+      (
+        await decide(batch, {
+          step: 3,
+          actions: [
+            { action: 'open', url: 'http://10.0.0.5/admin' },
+            { action: 'scroll', x: 1, y: 1, amount: 4 },
+          ],
+        })
+      ).tier,
+    ).toBe('person');
+  });
+
+  test('a credential typed in a scrolling batch still asks', () => {
+    expect(
+      tier(
+        batch,
+        'sandbox',
+        { step: 1, actions: [{ action: 'scroll', x: 1, y: 1, amount: 3 }], password: 'x' },
+        [unvouched('actions[0].amount')],
+      ).tier,
+    ).toBe('person');
+  });
+
+  test('an amount outside the agent’s own workspace is still money to vouch for', () => {
+    // A connected app's amount, and a spend, ask when nobody can say where the number came from.
+    expect(
+      tier(tool('refunds.create', 'write_reversible', true), 'mcp', { amount: 15 }, [
+        unvouched('amount'),
+      ]).tier,
+    ).toBe('person');
+    expect(
+      tier(tool('payments.pay', 'spend', true), 'sandbox', { amount: 15 }, [unvouched('amount')])
+        .tier,
+    ).toBe('person');
+    // A command that changes something with the person's account asks whatever its numbers.
+    expect(
+      tier(tool('egress.test_write', 'write_reversible'), 'exec', { amount: 15 }, [
+        unvouched('amount'),
+      ]).tier,
+    ).toBe('person');
+    // Only amount fields are let through: a recipient doubt in the sandbox still asks.
+    expect(
+      tier(
+        tool('computer.scroll', 'write_reversible'),
+        'sandbox',
+        { x: 1, y: 1, amount: 3, to: 'a@example.com' },
+        [unvouched('amount'), unvouched('to')],
+      ).tier,
+    ).toBe('person');
+  });
+
   test('a public page is an http or https address on the open internet', () => {
     expect(publicPage('https://example.com')).toBe(true);
     expect(publicPage('https://example.com./')).toBe(true);
@@ -378,6 +485,77 @@ describe('publishing apps', () => {
 
   test('a doubt about a value still keeps it with the person', () => {
     expect(tier(publish, 'apps', { risks: [] }, [doubt])).toMatchObject({ tier: 'person' });
+  });
+
+  test('an app reaches only the person when nobody else is bound as able to open it', () => {
+    for (const payload of [
+      { audience: { kind: 'only_me' } },
+      { audience: { kind: 'unchanged', now: 'only you' } },
+    ] as JsonObject[])
+      expect(reachesOnlyPublisher('apps.publish', payload)).toBe(true);
+    expect(reachesOnlyPublisher('apps.rollback', { viewers_now: 'only you' })).toBe(true);
+    for (const payload of [
+      {},
+      { audience: { kind: 'only_me', also: 'owner@example.test' } },
+      { audience: { kind: 'unchanged', now: 'you and bo@example.test' } },
+      { audience: { kind: 'unchanged', now: 'everyone with an account here' } },
+      { audience: { kind: 'people', emails: ['bo@example.test'] } },
+      { audience: { kind: 'everyone' } },
+      { audience: 'only_me' },
+    ] as JsonObject[])
+      expect(reachesOnlyPublisher('apps.publish', payload)).toBe(false);
+    expect(reachesOnlyPublisher('apps.rollback', { viewers_now: 'you and bo@example.test' })).toBe(
+      false,
+    );
+    // Only Melete's own publishing tools are read this way.
+    expect(reachesOnlyPublisher('apps.delete', { audience: { kind: 'only_me' } })).toBe(false);
+  });
+
+  test('a private publish says why it goes ahead; a public one asks', () => {
+    expect(tier(publish, 'apps', { risks: [], audience: { kind: 'only_me' } })).toEqual({
+      tier: 'apps',
+      actionClass: 'apps',
+      reason: 'Only you can open it, and its code opens no direct connections.',
+    });
+    const everyone = 'Everyone with an account here could open it.';
+    expect(tier(publish, 'apps', { risks: [everyone], audience: { kind: 'everyone' } })).toEqual({
+      tier: 'person',
+      actionClass: null,
+      reason: everyone,
+    });
+  });
+});
+
+describe('real risk still asks', () => {
+  test('a password typed in the agent’s browser', () => {
+    expect(
+      tier(tool('browser.fill', 'write_reversible'), 'web', { label: 'Password', value: 'x' }).tier,
+    ).toBe('person');
+  });
+
+  test('a payment form submitted from the agent’s browser', () => {
+    const payload = {
+      intent: {
+        url: 'https://shop.example.com/checkout',
+        name: 'Pay now',
+        fields: { amount: '15', card_number: '4111111111111111' },
+      },
+    } as JsonObject;
+    expect(submitRisk(payload)).toMatchObject({ risk: 'credentials' });
+    expect(submitRisk({ intent: { name: 'Pay now', fields: { amount: '15' } } })).toMatchObject({
+      risk: 'spend',
+    });
+    expect(
+      tier(tool('browser.submit', 'write_external'), 'web', payload, [
+        { ...doubt, field: 'intent.fields.amount' },
+      ]).tier,
+    ).toBe('person');
+  });
+
+  test('a message sent to someone outside', () => {
+    expect(
+      tier(tool('email.send', 'write_external', true), 'imap', { to: 'stranger@example.com' }).tier,
+    ).toBe('person');
   });
 });
 
