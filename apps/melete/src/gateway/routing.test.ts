@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import { loadEnv } from '../env.ts';
-import { acceptsEffort, turnEffort, withEffort } from './effort.ts';
+import {
+  acceptsEffort,
+  asksForDepth,
+  failedResult,
+  MULTI_STEP_ROUNDS,
+  toolLoop,
+  turnEffort,
+  withEffort,
+} from './effort.ts';
 import { createModelGateway, type GatewayOptions, providersFromEnv } from './index.ts';
 import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
@@ -27,6 +35,21 @@ const VISION = { provider: 'fireworks', model: 'accounts/fireworks/models/qwen-v
 const BACKUP = { provider: 'openai-compatible', model: 'backup-chat' };
 const PICTURE =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+/** One round of a tool loop as the engine writes it: the call, then its result. */
+const round = (id: string, result: unknown) => [
+  {
+    role: 'assistant',
+    content: null,
+    tool_calls: [{ id, type: 'function', function: { name: 'web.fetch', arguments: '{}' } }],
+  },
+  { role: 'tool', tool_call_id: id, content: JSON.stringify(result) },
+];
+const FAILED = { status: 'failed', error: { code: 'unreachable_host', message: 'no answer' } };
+const SUCCEEDED = { status: 'succeeded', action_id: 'act_routing' };
+const loopBody = (...after: unknown[]) => ({
+  messages: [{ role: 'user', content: 'go' }, ...after],
+});
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -90,7 +113,8 @@ async function start(
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('expected a TCP listener');
-  const post = (content: unknown) =>
+  // `after` follows the person's message: the tool loop so far, when a test needs one.
+  const post = (content: unknown, after: unknown[] = []) =>
     fetch(`http://127.0.0.1:${address.port}/providers/fireworks/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -101,7 +125,7 @@ async function start(
       body: JSON.stringify({
         model: STRONG.model,
         max_tokens: 64,
-        messages: [{ role: 'user', content }],
+        messages: [{ role: 'user', content }, ...after],
       }),
     });
   return { post, sent, reservations, settlements };
@@ -323,6 +347,91 @@ describe('reasoning effort per role', () => {
       ),
     ).toEqual(['medium', 'low', 'low', 'none', 'off', undefined]);
     expect(turnEffort('medium', false)).toBe('medium');
+  });
+
+  test('a turn thinks more when asked for depth or when its tools keep failing, and multi-step work at the agent’s effort', () => {
+    expect(turnEffort('medium', { deep: true })).toBe('high');
+    expect(turnEffort('medium', { brief: true, deep: true })).toBe('high');
+    expect(turnEffort('medium', { brief: true, rounds: MULTI_STEP_ROUNDS - 1 })).toBe('low');
+    expect(turnEffort('medium', { brief: true, rounds: MULTI_STEP_ROUNDS })).toBe('medium');
+    expect(turnEffort('medium', { brief: true, failing: true })).toBe('medium');
+    expect(turnEffort('medium', { failing: true })).toBe('high');
+    expect(turnEffort('high', { deep: true, failing: true })).toBe('high');
+    expect(turnEffort('none', { deep: true })).toBe('low');
+    expect(turnEffort('off', { deep: true, failing: true })).toBe('off');
+    expect(turnEffort(undefined, { deep: true })).toBeUndefined();
+    expect(asksForDepth('Think it through before you answer')).toBe(true);
+    expect(asksForDepth('Give me an in-depth comparison of the two plans')).toBe(true);
+    expect(asksForDepth('Draft a carefully worded note to my landlord')).toBe(false);
+    expect(asksForDepth('hi')).toBe(false);
+  });
+
+  test('the tool loop is read from the request itself', () => {
+    expect(toolLoop(loopBody(), 'chat/completions')).toEqual({ rounds: 0, failing: false });
+    expect(toolLoop(loopBody(...round('a', FAILED)), 'chat/completions')).toEqual({
+      rounds: 1,
+      failing: false,
+    });
+    expect(
+      toolLoop(loopBody(...round('a', FAILED), ...round('b', FAILED)), 'chat/completions'),
+    ).toEqual({ rounds: 2, failing: true });
+    expect(
+      toolLoop(loopBody(...round('a', FAILED), ...round('b', SUCCEEDED)), 'chat/completions')
+        .failing,
+    ).toBe(false);
+    // A command that exited non-zero failed; a result whose error is null did not.
+    expect(failedResult(JSON.stringify({ output: 'x', exit_code: 2 }))).toBe(true);
+    expect(failedResult(JSON.stringify({ output: 'x', exit_code: 0, error: null }))).toBe(false);
+    expect(failedResult('plain text')).toBe(false);
+    expect(failedResult([{ type: 'text', text: JSON.stringify(FAILED) }])).toBe(true);
+    // Over responses, calls made together are one round.
+    expect(
+      toolLoop(
+        {
+          input: [
+            { type: 'message', role: 'user', content: 'go' },
+            { type: 'function_call', call_id: 'a', name: 'web.search', arguments: '{}' },
+            { type: 'function_call', call_id: 'b', name: 'web.fetch', arguments: '{}' },
+            { type: 'function_call_output', call_id: 'a', output: JSON.stringify(FAILED) },
+            { type: 'function_call_output', call_id: 'b', output: JSON.stringify(FAILED) },
+          ],
+        },
+        'responses',
+      ),
+    ).toEqual({ rounds: 1, failing: true });
+  });
+
+  test("the gateway raises a turn's effort for a failing loop, a depth ask and multi-step work", async () => {
+    const brief = async () => ({ ...principal(), briefTurn: true });
+    const failing = await start(undefined, ok, { reasoningEffort: 'medium', authenticate: brief });
+    await failing.post('go', [...round('a', FAILED), ...round('b', FAILED)]);
+    expect(failing.sent[0]?.body.reasoning_effort).toBe('medium');
+    const steps = await start(undefined, ok, { reasoningEffort: 'medium', authenticate: brief });
+    await steps.post(
+      'go',
+      ['a', 'b', 'c'].flatMap((id) => round(id, SUCCEEDED)),
+    );
+    await steps.post(
+      'go',
+      ['a', 'b', 'c', 'd'].flatMap((id) => round(id, SUCCEEDED)),
+    );
+    expect(steps.sent.map((request) => request.body.reasoning_effort)).toEqual(['low', 'medium']);
+    const deep = await start(undefined, ok, {
+      reasoningEffort: 'medium',
+      authenticate: async () => ({ ...principal(), briefTurn: true, deepTurn: true }),
+    });
+    await deep.post('Think hard: which plan is cheaper?');
+    expect(deep.sent[0]?.body.reasoning_effort).toBe('high');
+    // A service call's messages are never read as a tool loop.
+    const service = await start(undefined, ok, {
+      reasoningEffort: 'low',
+      authenticate: async () => ({
+        ...principal(),
+        privacy: { kind: 'service', purpose: 'memory', spaceId: 'spc_routing', sourceJobId: null },
+      }),
+    });
+    await service.post('x', [...round('a', FAILED), ...round('b', FAILED)]);
+    expect(service.sent[0]?.body.reasoning_effort).toBe('low');
   });
 
   test('a model that refuses the added effort is asked once more without it', async () => {

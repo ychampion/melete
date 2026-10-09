@@ -149,6 +149,7 @@ server.serve_forever()
         max_turns: 150,
         environment_probe: false,
         host_prompt: false,
+        execution_guidance: false,
         image_input_mode: 'text',
       });
       expect(config.platform_hints.api_server.replace).toBe(API_SERVER_HINT);

@@ -493,6 +493,27 @@ def test_memory_flags_are_read_from_the_real_keys(
         f"{config_case} config resolved the wrong store flags")
 
 
+# agent/agent_init.py:1318 reads `agent.execution_guidance` (default "auto"), and
+# agent/system_prompt.py:519 adds the coding-agent execution brief when
+# `_model_gate` passes for the attempt's model.
+@pytest.mark.parametrize(
+    ("config_case", "setting", "expected"),
+    [
+        ("engine-default", "auto", True),
+        ("shipped", shipped_config()["agent"].get("execution_guidance", "auto"), False),
+    ],
+)
+def test_the_execution_brief_is_left_out_for_the_default_model(config_case, setting, expected):
+    """Left on "auto", the default model gets the coding brief that sends every
+    sum, date and claim to a tool; the shipped setting leaves it out."""
+    from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+    from agent.system_prompt import _model_gate
+
+    model = shipped_config()["model"]["default"]
+    assert _model_gate(setting, model, EXECUTION_GUIDANCE_MODELS) is expected, (
+        f"{config_case} setting resolved the wrong gate for {model}")
+
+
 def test_the_store_loads_home_files_exactly_when_a_flag_is_on(hermes_home):
     """The flags decide whether a store exists at all; the store itself reads
     both files from the engine home unconditionally, which is why the gate has

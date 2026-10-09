@@ -1,6 +1,6 @@
 import { type CapabilityClaims, inputTokenAllowance, inputTokenCeiling } from '@melete/contracts';
 import type { Sql } from 'postgres';
-import { BRIEF_TURN_CHARS } from '../gateway/effort.ts';
+import { asksForDepth, BRIEF_TURN_CHARS } from '../gateway/effort.ts';
 import type { PriceTable } from '../gateway/prices.ts';
 import { allowedWithRoutes } from '../gateway/routing.ts';
 import { settledCost } from '../gateway/spending.ts';
@@ -65,6 +65,8 @@ export class PostgresGatewayBudget implements GatewayBudget {
           typeof attempt.turn_text === 'string' &&
           attempt.turn_text.trim().length > 0 &&
           attempt.turn_text.length <= BRIEF_TURN_CHARS;
+        // One who asks for depth gets a step more, however short the message.
+        const deepTurn = typeof attempt.turn_text === 'string' && asksForDepth(attempt.turn_text);
         const routes = await this.options.routes?.({
           ...primary,
           usageClass: attempt.class === 'background' ? 'background' : 'interactive',
@@ -86,6 +88,9 @@ export class PostgresGatewayBudget implements GatewayBudget {
           allowedModels,
           ...(routes ? { routes } : {}),
           ...(briefTurn ? { briefTurn } : {}),
+          ...(deepTurn ? { deepTurn } : {}),
+          // Every conversation of one person in one space shares a provider cache.
+          cacheScope: [job.space_id, job.principal_id ?? ''].join('\u0000'),
         };
       });
       this.claims.set(principal, claims);

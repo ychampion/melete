@@ -493,7 +493,31 @@ describe('context assembly', () => {
     expect(renderSoul()).toBe(`${IDENTITY}\n`);
     const system = client.renderSystem(bundle);
     expect(system).not.toContain(IDENTITY);
-    expect(system).toContain('draft-follow-up');
+    expect(system).toContain('# This task');
+  });
+
+  test('the skills chosen for a turn are in its input, so the instructions and tools stay cached', () => {
+    // Skills are ranked by the latest message. In the system prompt a different
+    // choice would end the cached prefix before the tool definitions, which a
+    // chat template renders after it.
+    const turn = structuredClone(bundle);
+    turn.skill_index = [{ name: 'summarize-a-source', description: 'Summarise a page.' }];
+    const other = structuredClone(bundle);
+    other.skills = [{ name: 'research-with-sources', body: 'Fetch a page before citing it.' }];
+    other.skill_index = [{ name: 'draft-follow-up', description: 'Draft a follow-up.' }];
+    expect(client.renderSystem(other)).toBe(client.renderSystem(turn));
+    for (const rendered of [client.renderSystem(turn), client.renderSystem(other)]) {
+      expect(rendered).not.toContain('How to do this kind of work');
+      expect(rendered).not.toContain('Other skills you can read');
+    }
+    const input = renderInput(turn);
+    expect(input).toContain(
+      '## How to do this kind of work\n\nThese skills are given here in full: follow them without reading them again.\n\n### draft-follow-up\n\nFour sentences. Ask for a date.',
+    );
+    // After the prior conversation, before what is recalled and the new message.
+    expect(input.indexOf('### draft-follow-up')).toBeLessThan(input.indexOf('already knows'));
+    expect(input.indexOf('### draft-follow-up')).toBeLessThan(input.indexOf('## From the person'));
+    expect(renderInput(other)).toContain('### research-with-sources');
   });
 
   test('what is recalled per turn stays out of the cached instructions and follows the prior conversation', () => {
@@ -519,10 +543,10 @@ describe('context assembly', () => {
     indexed.skill_index = [
       { name: 'summarize-a-source', description: 'Summarise a file or a page.' },
     ];
-    const system = client.renderSystem(indexed);
-    expect(system).toContain('- summarize-a-source: Summarise a file or a page.');
-    expect(system).toContain('read it with skills.read');
-    expect(client.renderSystem(bundle)).not.toContain('Other skills you can read');
+    const input = renderInput(indexed);
+    expect(input).toContain('- summarize-a-source: Summarise a file or a page.');
+    expect(input).toContain('read it with skills.read');
+    expect(renderInput(bundle)).not.toContain('Other skills you can read');
   });
 
   test("a conversation's persona is layered first in the instructions, never in place of the identity", () => {
@@ -532,7 +556,7 @@ describe('context assembly', () => {
     expect(system.startsWith('# Who is speaking')).toBe(true);
     expect(system).toContain(persona);
     expect(system).toContain("Everything in Melete's identity above still holds.");
-    expect(system.indexOf(persona)).toBeLessThan(system.indexOf('draft-follow-up'));
+    expect(system.indexOf(persona)).toBeLessThan(system.indexOf('# This task'));
   });
 
   test('every knowledge excerpt carries where it came from', () => {
