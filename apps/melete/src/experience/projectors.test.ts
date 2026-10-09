@@ -660,20 +660,63 @@ test('a permission to save a file names the file and carries its exact text', ()
   expect(permission({ path: 'x.txt' }).file).toBeUndefined();
 });
 
-test('a saved file card opens text in the app and offers anything else as a download', () => {
+test('a saved file card opens a PDF, a picture or text in the app, and always downloads', () => {
   const row = (path: string, mime: string) =>
     ({ id: 'art_01ABC', path, mime, size: 12 }) as Parameters<typeof projectArtifact>[0];
-  expect(projectArtifact(row('plans/week.md', 'text/markdown')).primary_action).toEqual({
-    kind: 'open',
-    label: 'Open',
-    handle: 'art_01ABC',
-  });
-  expect(projectArtifact(row('data.json', 'application/json')).primary_action?.kind).toBe('open');
-  expect(projectArtifact(row('report.pdf', 'application/pdf')).primary_action).toEqual({
-    kind: 'download',
-    label: 'Download',
-    handle: 'art_01ABC',
-  });
+  const open = { kind: 'open', label: 'Open', handle: 'art_01ABC' } as const;
+  const download = { kind: 'download', label: 'Download', handle: 'art_01ABC' } as const;
+  for (const [path, mime] of [
+    ['plans/week.md', 'text/markdown'],
+    ['data.json', 'application/json'],
+    ['report.pdf', 'application/pdf'],
+    ['chart.png', 'image/png'],
+  ] as const) {
+    const card = projectArtifact(row(path, mime));
+    expect(card.primary_action).toEqual(open);
+    expect(card.secondary_actions).toEqual([download]);
+  }
+  // Anything the app cannot show only downloads.
+  const sheet = projectArtifact(row('budget.xlsx', 'application/octet-stream'));
+  expect(sheet.primary_action).toEqual(download);
+  expect(sheet.secondary_actions).toEqual([]);
+});
+
+test('a file a files action saved into Files opens and downloads from that action', () => {
+  const connection = {
+    id: 'conn_files',
+    provider: 'files',
+    label: 'Files',
+    configuration: null,
+  } as unknown as Parameters<typeof projectCards>[1];
+  const row = (kind: string, detail: Record<string, unknown>) =>
+    ({
+      id: 'act_01MOVE',
+      kind,
+      status: 'succeeded',
+      canonicalPayload: {},
+      receipt: { detail },
+    }) as unknown as Parameters<typeof projectCards>[0];
+  const [moved] = projectCards(
+    row('files.move', {
+      from: 'BeigeBook_20260902.pdf',
+      to: 'BeigeBook_20260902.pdf',
+      area: 'work',
+      to_area: 'artifacts',
+      content_hash: 'a'.repeat(64),
+    }),
+    connection,
+  );
+  expect(moved?.title).toBe('BeigeBook_20260902.pdf');
+  expect(moved?.primary_action).toEqual({ kind: 'open', label: 'Open', handle: 'act_01MOVE' });
+  expect(moved?.secondary_actions).toEqual([
+    { kind: 'download', label: 'Download', handle: 'act_01MOVE' },
+  ]);
+  // A read leaves no file of its own behind, so it has nothing to open.
+  const [read] = projectCards(
+    row('files.read', { path: 'notes.md', area: 'artifacts', content_hash: 'b'.repeat(64) }),
+    connection,
+  );
+  expect(read?.primary_action ?? null).toBeNull();
 });
 
 test('every step in a browser or on a computer is asked for by name, with its target', () => {

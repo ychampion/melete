@@ -22,6 +22,15 @@ export type BrowserArtifactSink = (
   observation: BrowserObservation,
 ) => Promise<JsonObject>;
 
+/** Whether an observation is of a page a site served, not a blank tab or an error page. */
+function webPage(url: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** Artifacts use service-chosen paths; a worker can provide bytes but never a destination. */
 export function browserArtifactSink(sql: Sql, spacesRoot: string): BrowserArtifactSink {
   return async (scope, observation) => {
@@ -42,9 +51,21 @@ export function browserArtifactSink(sql: Sql, spacesRoot: string): BrowserArtifa
       if ((await lstat(directory)).isSymbolicLink() || (await realpath(directory)) !== directory)
         throw new Error('artifact directory is outside its space');
     }
+    // Only a web page that loaded is kept: a blank tab or the browser's own error page shows
+    // nothing the person asked for, and an empty capture is not worth a file.
+    const loaded = webPage(observation.url);
     const contents = [
-      { key: 'tree', mime: 'text/plain', extension: 'txt', bytes: Buffer.from(observation.tree) },
-      ...(observation.screenshot
+      ...(loaded && observation.tree.trim()
+        ? [
+            {
+              key: 'tree',
+              mime: 'text/plain',
+              extension: 'txt',
+              bytes: Buffer.from(observation.tree),
+            },
+          ]
+        : []),
+      ...(loaded && observation.screenshot
         ? [
             {
               key: 'screenshot',

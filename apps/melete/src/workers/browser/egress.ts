@@ -16,6 +16,8 @@ import {
 export type BrowserNetworkPolicy = {
   public_compartment: boolean;
   allowed_domains: string[];
+  /** Any public address, for a job with no domain list whose space reads the public web. */
+  public_web?: boolean;
 };
 
 export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human';
@@ -422,6 +424,9 @@ export function createBrowserEgress(
   const domains = new Set(
     policy.allowed_domains.map((value) => value.toLowerCase().replace(/\.$/, '')),
   );
+  // Which addresses a page may reach. A domain list, when a job has one, is the whole of it; the
+  // compartment alone decides whose cookies go with a request.
+  const anyPublic = publicCompartment || (policy.public_web === true && domains.size === 0);
   const fixtures = new Set((options.fixtureOrigins ?? []).map(fixtureOrigin));
   const resolve =
     options.resolve ??
@@ -449,7 +454,7 @@ export function createBrowserEgress(
     const name = hostname(url);
     // A takeover's site scope starts from these domains and admits its hosts instead; the
     // public-address, DNS and pinning checks below apply to a person exactly as to automation.
-    if (!human && !publicCompartment && !domains.has(name)) {
+    if (!human && !anyPublic && !domains.has(name)) {
       networkError('domain_not_allowed', 'private-context browser cannot access this domain');
     }
     const family = isIP(name);

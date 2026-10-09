@@ -18,6 +18,16 @@ minutes (`MELETE_BROWSER_HUMAN_IDLE_MS`). A new lease after idle expiry gets a n
 session identity and a greater epoch. Public research uses a disposable context
 without the persistent profile's cookies.
 
+A job with no domain list of its own opens public pages under the rule `web.fetch`
+follows (`databasePublicReads`): the space's public-read setting, a private space or
+agent, and the private-address checks all apply, and a job with a list keeps to it.
+A space has one browser. Work that is stopped or fails, or long work that finishes,
+closes its session when its attempt settles; a conversation keeps its pages between
+turns. Another job takes over a session whose job is done with it, closing its pages,
+and otherwise waits briefly and is told in plain words. A session a person has taken
+over stays theirs. Looks at a blank tab or an error page, and empty captures, are not
+kept as artifacts.
+
 The worker's listener requires a service token and rejects browser Origin and
 Fetch Metadata headers. It exposes only health, lease, command, takeover,
 handback, release, and a person's live channel (`/live/open`, `/live/pull`,

@@ -20,7 +20,7 @@ import {
   Select,
   Status,
 } from '../design/primitives.tsx';
-import { adapter } from '../experience/adapter.ts';
+import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { webHref } from '../experience/markdown.ts';
@@ -216,8 +216,8 @@ function Paragraphs({ text }: { text: string }) {
 /* ---------- saved file ---------- */
 
 /**
- * A file the agent saved: a text file opens here, in a dialog that reads it
- * from the service; anything else downloads.
+ * A file the agent saved or downloaded: Open shows it here, in a dialog that
+ * reads it from the service (a PDF, a picture, or text); Download saves it.
  */
 function SavedFileAction({
   id,
@@ -237,9 +237,16 @@ function SavedFileAction({
   touch: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [shown, setShown] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [shown, setShown] = useState<SavedFilePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const href = adapter.artifactUrl(id);
+  const href = adapter.fileUrl(id);
+  // A picture or PDF is held at a local address while it is shown, and let go after.
+  useEffect(
+    () => () => {
+      if (shown && shown.kind !== 'text') URL.revokeObjectURL(shown.url);
+    },
+    [shown],
+  );
   if (!view)
     return (
       <a className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`} href={href} download>
@@ -249,7 +256,8 @@ function SavedFileAction({
   const show = async () => {
     setOpen(true);
     setError(null);
-    const result = await adapter.artifactText(id);
+    setShown(null);
+    const result = await adapter.filePreview(id);
     if (result.data !== null) setShown(result.data);
     else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
   };
@@ -283,6 +291,10 @@ function SavedFileAction({
           </p>
         ) : shown === null ? (
           <p className="permission-why">Opening…</p>
+        ) : shown.kind === 'image' ? (
+          <img className="file-preview-image" src={shown.url} alt={name} />
+        ) : shown.kind === 'pdf' ? (
+          <iframe className="file-preview-pdf" src={shown.url} title={name} />
         ) : (
           <>
             <pre className="permission-file-text">{shown.text || 'This file is empty.'}</pre>
@@ -329,10 +341,14 @@ export function ResultCard({
   const draftBody = draft?.body ?? card.facts.find((f) => f.label === 'Draft')?.value ?? null;
   const [broken, setBroken] = useState(false);
   const action = (a: NonNullable<ResultCardData['primary_action']>, primary: boolean) => {
-    if ((a.kind === 'open' || a.kind === 'download') && !a.url && a.handle.startsWith('art_'))
+    if (
+      (a.kind === 'open' || a.kind === 'download') &&
+      !a.url &&
+      (a.handle.startsWith('art_') || a.handle.startsWith('act_'))
+    )
       return (
         <SavedFileAction
-          key={a.handle}
+          key={`${a.kind}:${a.handle}`}
           id={a.handle}
           name={card.title}
           label={a.label}

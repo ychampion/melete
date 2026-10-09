@@ -89,6 +89,40 @@ suite('browser session lease', () => {
     }
   }, 20_000);
 
+  test("a finished job's session is replaced with its pages, and a person's is never", async () => {
+    const pool = new BrowserWorkerPool({ spacesRoot: await rootPromise, allowLocalProcess: true });
+    try {
+      const client = await pool.get('sp_turns');
+      const policy = { public_compartment: false, allowed_domains: [], public_web: true };
+      const first = await client.lease('job_first', policy);
+      expect(await client.holder()).toEqual({ job_id: 'job_first', control: 'automation' });
+      // Another job is refused while the first holds it, and naming a job that does not hold it
+      // changes nothing.
+      await expect(client.lease('job_second', policy)).rejects.toThrow('session_busy');
+      await expect(client.lease('job_second', policy, undefined, 'job_other')).rejects.toThrow(
+        'session_busy',
+      );
+      expect(await client.end('job_other')).toEqual({ ended: false });
+      const second = await client.lease('job_second', policy, undefined, 'job_first');
+      expect(second.id).not.toBe(first.id);
+      expect(second.control_epoch).toBeGreaterThan(first.control_epoch);
+      expect(await client.holder()).toEqual({ job_id: 'job_second', control: 'automation' });
+      // A person who took the browser over keeps it, whichever job it was for.
+      await client.takeover(second.id);
+      await expect(client.lease('job_third', policy, undefined, 'job_second')).rejects.toThrow(
+        'session_busy',
+      );
+      expect(await client.end('job_second')).toEqual({ ended: false });
+      const back = await client.handback(second.id);
+      expect(await client.end('job_second')).toEqual({ ended: true });
+      expect(await client.holder()).toBeNull();
+      const third = await client.lease('job_third', policy);
+      expect(third.control_epoch).toBeGreaterThan(back.control_epoch);
+    } finally {
+      await pool.close();
+    }
+  }, 30_000);
+
   test('private worker HTTP refuses missing token and arbitrary routes', async () => {
     const manager = new BrowserSessions({ spaceId: 'sp_http', spaceRoot: await rootPromise });
     sessions.push(manager);

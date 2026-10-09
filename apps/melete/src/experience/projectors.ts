@@ -17,6 +17,7 @@ import {
   resultCard,
   type TrailStep,
 } from '@melete/contracts';
+import { mimeForName, savedFile, shownInPlace } from '../artifact/shown.ts';
 import type { action, artifact, connection } from '../db/schema.ts';
 import { namesLocalNetwork } from '../devices/paths.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
@@ -969,17 +970,23 @@ export function projectCards(
         if (value) facts.push({ label, value });
       }
     if (source.kind === 'draft') facts.push({ label: 'To', value: recipientText(payload) });
+    // A file a files action saved or moved opens from that action's own route.
+    const saved = source.kind === 'file' ? savedFile(row.kind, row.receipt) : null;
     return resultCard.parse({
       id: `${row.id}:${index}`,
       title: source.title,
       meta: source.app,
       facts,
-      primary_action: source.url
-        ? { kind: 'open', label: 'Open', handle: `${row.id}:${index}`, url: source.url }
-        : source.kind === 'draft'
-          ? send
-          : null,
-      secondary_actions: [],
+      ...(saved
+        ? fileActions(row.id, mimeForName(saved.path))
+        : {
+            primary_action: source.url
+              ? { kind: 'open', label: 'Open', handle: `${row.id}:${index}`, url: source.url }
+              : source.kind === 'draft'
+                ? send
+                : null,
+            secondary_actions: [],
+          }),
       source_connection: connection.id,
     });
   });
@@ -988,8 +995,27 @@ export function recipientText(payload: Record<string, unknown>): string {
   const raw = payload.to ?? payload.recipient;
   return plainText(Array.isArray(raw) ? raw.join(', ') : raw, 'The selected recipient');
 }
-/** Files the app can show as text; anything else is offered as a download. */
-const readable = (mime: string) => mime.startsWith('text/') || mime === 'application/json';
+/**
+ * Files the app can open in place: a PDF, a picture, or anything read as text
+ * (a web page's source included, shown as text). Anything else downloads.
+ */
+const openable = (mime: string) =>
+  shownInPlace(mime) !== null || mime.startsWith('text/') || mime === 'application/json';
+
+/**
+ * A file's buttons: Open, where the app can show it, and always Download. The
+ * handle names the file to the app: an artifact id, or the files action that
+ * saved it, each read from its own authenticated route.
+ */
+export function fileActions(
+  handle: string,
+  mime: string,
+): Pick<ResultCard, 'primary_action' | 'secondary_actions'> {
+  const download = { kind: 'download' as const, label: 'Download', handle };
+  return openable(mime)
+    ? { primary_action: { kind: 'open', label: 'Open', handle }, secondary_actions: [download] }
+    : { primary_action: download, secondary_actions: [] };
+}
 
 export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
   return resultCard.parse({
@@ -998,10 +1024,7 @@ export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
     meta: 'File',
     facts: [{ label: 'Size', value: `${row.size} bytes` }],
     // The handle is the artifact id; the app reads it from the content route.
-    primary_action: readable(row.mime)
-      ? { kind: 'open', label: 'Open', handle: row.id }
-      : { kind: 'download', label: 'Download', handle: row.id },
-    secondary_actions: [],
+    ...fileActions(row.id, row.mime),
     source_connection: null,
   });
 }

@@ -1100,6 +1100,23 @@ a.log-line-link > .log-chevron {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* A saved picture or PDF, opened in the app. */
+.file-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
+  border-radius: var(--radius-block);
+  background: var(--soft);
+}
+.file-preview-pdf {
+  display: block;
+  width: 100%;
+  height: min(70vh, 720px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block);
+  background: var(--soft);
+}
 .permission-foot {
   display: flex;
   flex-direction: row;

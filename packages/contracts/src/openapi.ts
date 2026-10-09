@@ -423,6 +423,14 @@ const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
 });
 
+/** Whether a stored file is asked to be shown in place rather than downloaded. */
+const fileDisposition = z.object({
+  disposition: z
+    .enum(['inline'])
+    .optional()
+    .meta({ description: 'Show a PDF, a picture or text in place instead of downloading it' }),
+});
+
 const html = (description: string) => ({
   description,
   content: { 'text/html': { schema: z.string() } },
@@ -3148,10 +3156,11 @@ export function buildOpenApiDocument() {
             tags: ['artifacts'],
             summary: 'Retrieve an artifact in the authenticated space',
             description:
-              'Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking.',
+              'Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking. Every other file is sent as an attachment unless `disposition=inline` is asked for and it is a PDF, a PNG, JPEG, GIF or WebP picture, or text (sent as plain text); a web page or an SVG is never shown in place.',
             security: [{ session: [] }],
             requestParams: {
               ...idParam('id', 'Artifact id from the action receipt'),
+              query: fileDisposition,
               header: z.object({ Range: z.string().optional() }),
             },
             responses: {
@@ -3172,6 +3181,37 @@ export function buildOpenApiDocument() {
               '401': problem('A session is required'),
               '404': problem('No matching artifact in this space'),
               '416': { description: 'Requested range is outside the artifact' },
+            },
+          },
+        },
+        '/files/{id}/content': {
+          get: {
+            tags: ['artifacts'],
+            summary: 'Retrieve the file a files action saved or moved, for its own conversation',
+            description:
+              'The file a succeeded files.write, files.move or files.save_attachment left in the person’s Files or the conversation’s workspace, for the person whose conversation it was. Served only while it is the content the receipt recorded. Sent as an attachment unless `disposition=inline` is asked for and it is a PDF, a PNG, JPEG, GIF or WebP picture, or text (sent as plain text); a web page or an SVG is never shown in place.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'The files action, from a result card'),
+              query: fileDisposition,
+              header: z.object({ Range: z.string().optional() }),
+            },
+            responses: {
+              '200': {
+                description: 'File bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '206': {
+                description: 'Requested byte range',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person, or it has changed since it was saved'),
+              '416': { description: 'Requested range is outside the file' },
             },
           },
         },

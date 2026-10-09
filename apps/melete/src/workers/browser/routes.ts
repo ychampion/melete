@@ -10,6 +10,7 @@ import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import {
   BrowserFault,
+  type BrowserPolicy,
   type BrowserRegion,
   type BrowserSession,
   browserRegion,
@@ -42,13 +43,18 @@ export class BrowserSessionService {
   readonly live: BrowserLiveService;
   /** The sites these sessions have signed in to, recorded over the space's one profile. */
   readonly sites: BrowserSiteService;
+  /** How long a lease waits for another job's browser to come free, and how often it looks. */
+  private readonly busyWaitMs: number;
+  private readonly busyPollMs: number;
   constructor(
     readonly sql: Sql,
     readonly workers: BrowserWorkers,
-    options: { live?: BrowserLiveServiceOptions } = {},
+    options: { live?: BrowserLiveServiceOptions; busyWaitMs?: number; busyPollMs?: number } = {},
   ) {
     this.live = new BrowserLiveService(this, options.live);
     this.sites = new BrowserSiteService(sql, workers);
+    this.busyWaitMs = options.busyWaitMs ?? 20_000;
+    this.busyPollMs = options.busyPollMs ?? 500;
   }
 
   async record(session: BrowserSession, scope: { space_id: string; job_id: string }) {
@@ -64,22 +70,107 @@ export class BrowserSessionService {
         and browser_session_binding.control_epoch <= excluded.control_epoch`;
   }
 
-  async lease(ctx: ConnectorContext, sessionId?: string) {
+  /**
+   * The job's browser session, opened on first use. `publicWeb` says the job may open any public
+   * page, decided by the caller from the same public-read setting web reads follow; it applies
+   * only to a job with no domain list of its own.
+   *
+   * A space has one browser. A session held by a job that has finished is taken over, its pages
+   * closed; one held by work still going is waited for briefly, and then refused in plain words.
+   */
+  async lease(ctx: ConnectorContext, sessionId?: string, options: { publicWeb?: boolean } = {}) {
     if (sessionId) await this.authorize(sessionId, ctx);
     const worker = await this.workers.get(ctx.space_id);
-    const session = await worker.lease(
-      ctx.job_id,
-      {
-        public_compartment: ctx.constraints.public_compartment,
-        allowed_domains: [...ctx.constraints.allowed_domains],
-      },
-      await this.region(ctx.space_id),
-    );
+    const policy: BrowserPolicy = {
+      public_compartment: ctx.constraints.public_compartment,
+      allowed_domains: [...ctx.constraints.allowed_domains],
+      // Sent only when it applies, so the policy a list or a compartment gives is unchanged.
+      ...(options.publicWeb &&
+      !ctx.constraints.public_compartment &&
+      !ctx.constraints.allowed_domains.length
+        ? { public_web: true }
+        : {}),
+    };
+    const region = await this.region(ctx.space_id);
+    const deadline = Date.now() + this.busyWaitMs;
+    let replace: string | undefined;
+    let session: BrowserSession;
+    for (;;) {
+      try {
+        session = await worker.lease(ctx.job_id, policy, region, replace);
+        break;
+      } catch (error) {
+        if (!(error instanceof BrowserFault && error.reason === 'session_busy')) throw error;
+        // A named session belongs to this job; another job's browser is never it.
+        if (sessionId) throw new BrowserFault('session_not_found');
+        const late = Date.now() >= deadline || ctx.signal?.aborted === true;
+        const holder = await worker.holder();
+        if (!holder && !late) {
+          replace = undefined;
+          continue;
+        }
+        if (
+          holder?.control === 'automation' &&
+          holder.job_id &&
+          holder.job_id !== ctx.job_id &&
+          replace !== holder.job_id &&
+          (await this.finished(ctx.space_id, holder.job_id))
+        ) {
+          replace = holder.job_id;
+          continue;
+        }
+        if (late)
+          throw new BrowserFault(holder?.control === 'human' ? BROWSER_WITH_PERSON : BROWSER_BUSY);
+        replace = undefined;
+        await Bun.sleep(this.busyPollMs);
+      }
+    }
     if (sessionId && session.id !== sessionId) throw new BrowserFault('session_not_found');
     // A session with no binding yet was started by this lease, for this job.
     const [known] = await this.sql`select 1 from browser_session_binding where id = ${session.id}`;
     await this.record(session, ctx);
     return { session, worker, opened: !known };
+  }
+
+  /**
+   * Whether a job is done with the browser, so another job may take it: the job is gone or has
+   * ended, or nothing of it is running and it waits on nothing the browser holds (a person
+   * handed the page, a browser step awaiting approval or a check of what one did).
+   */
+  private async finished(spaceId: string, jobId: string): Promise<boolean> {
+    const [job] = await this.sql<
+      { state: string; wait: { question?: unknown; handoff?: unknown } | null; busy: boolean }[]
+    >`select j.state, j.wait,
+        exists (select 1 from attempt a where a.job_id = j.id and a.ended_at is null)
+        or exists (select 1 from action x where x.job_id = j.id and x.kind like 'browser.%'
+          and x.status in ('proposed', 'needs_approval', 'approved', 'admitted', 'dispatched',
+            'unknown')) as busy
+      from job j where j.id = ${jobId} and j.space_id = ${spaceId}`;
+    if (!job || ['completed', 'failed', 'cancelled'].includes(job.state)) return true;
+    if (job.busy || ['queued', 'running'].includes(job.state)) return false;
+    const question = typeof job.wait?.question === 'string' ? job.wait.question : '';
+    return !job.wait?.handoff && !question.startsWith('Browser control:');
+  }
+
+  /**
+   * After an attempt has ended, however it ended: a job that was stopped or failed, or long
+   * work that finished, closes its browser and its pages. A conversation that finished a turn
+   * keeps them for its next message, and other work may take the browser over meanwhile.
+   */
+  async afterAttempt(attemptId: string): Promise<void> {
+    const [row] = await this.sql<{ job_id: string; space_id: string; ended: boolean }[]>`
+      select j.id as job_id, j.space_id,
+        j.state in ('failed', 'cancelled')
+        or (j.state = 'completed' and j.kind <> 'chat')
+        or (j.kind = 'chat' and exists (select 1 from experience_turn t
+          where t.id = j.current_turn_id and t.status = 'stopped')) as ended
+      from attempt a join job j on j.id = a.job_id
+      where a.id = ${attemptId}
+        and exists (select 1 from browser_session_binding b
+          where b.job_id = j.id and b.space_id = j.space_id)`;
+    if (!row?.ended) return;
+    const worker = await this.workers.get(row.space_id);
+    await worker.end(row.job_id);
   }
 
   /**
@@ -407,6 +498,12 @@ export function mountBrowserSessions(app: Hono, sessions: BrowserSessionService)
     });
   }
 }
+
+/** Said to the agent when another job's browser did not come free in time. */
+export const BROWSER_BUSY =
+  'The browser is in use by other work in this space and did not come free in time. Read the page with web.fetch instead, or try the browser again in a few minutes.';
+export const BROWSER_WITH_PERSON =
+  'A person has taken over the browser for other work in this space. Read the page with web.fetch instead, or try the browser again once they hand it back.';
 
 /** What is left for the person, by why the work came to them. */
 const LEFT: Record<HandOffReason, string> = {

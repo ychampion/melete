@@ -1441,6 +1441,10 @@ export async function bootstrap(
         sessions.onHandedBack = async (scope, sessionId) => {
           await effectBoundary?.broker.handedBack(scope.job_id, sessionId);
         };
+        // Work that has stopped or ended gives the space's one browser up for the next job.
+        runner.onSettled.push((attemptId) => {
+          void sessions.afterAttempt(attemptId).catch(() => {});
+        });
       }
       if (sandboxComputers) {
         sandboxComputers.onPark = (jobId, attemptIds) => {

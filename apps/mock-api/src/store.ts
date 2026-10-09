@@ -75,6 +75,8 @@ export class Store {
   readonly actions = new Map<string, Action>();
   readonly approvals = new Map<string, Approval>();
   readonly artifacts = new Map<string, { artifact: Artifact; bytes: Uint8Array }>();
+  /** Files a scenario's files action saved, by that action's id, as `/files/{id}/content` serves them. */
+  readonly savedFiles = new Map<string, { name: string; bytes: Uint8Array }>();
   readonly knowledge = new Map<string, KnowledgeEntry>();
   readonly skills = new Map<string, SkillEntry>();
   readonly proposals = new Map<string, { path: string; diff: string }>();

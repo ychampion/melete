@@ -163,6 +163,22 @@ const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 const artifactUrl = (id: string): string =>
   `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
 
+/**
+ * Where a card's file is read: an artifact from its own route, a file a files
+ * action saved (`act_…`) from that action's. `inline` asks for it to be shown
+ * in place, which the service allows only for a PDF, a picture or text.
+ */
+const fileUrl = (handle: string, inline = false): string =>
+  `${client.options.baseUrl}/${handle.startsWith('act_') ? 'files' : 'artifacts'}/${encodeURIComponent(handle)}/content${inline ? '?disposition=inline' : ''}`;
+
+/** Pictures the app shows in place, by the type the service sent. Never an SVG. */
+const PICTURES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+export type SavedFilePreview =
+  | { kind: 'text'; text: string; truncated: boolean }
+  | { kind: 'image'; url: string }
+  | { kind: 'pdf'; url: string };
+
 /** The picture a screenshot took, for the person's own trail. */
 const screenshotUrl = (id: string): string =>
   `${client.options.baseUrl}/screenshots/${encodeURIComponent(id)}`;
@@ -339,20 +355,42 @@ export const adapter = {
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
 
-  /** A saved file read as text, for showing it in the app: its start, when it is very large. */
-  artifactText: async (id: string): Promise<Result<{ text: string; truncated: boolean }>> => {
+  /**
+   * A card's file, ready to show in the app: a PDF or a picture as a local
+   * object address of its exact type, anything else as text (its start, when
+   * it is very large). A page or an SVG is never given an address, so it is
+   * read as text, never run. The caller revokes an object address when done.
+   */
+  filePreview: async (handle: string): Promise<Result<SavedFilePreview>> => {
     try {
-      const response = await client.options.fetch(artifactUrl(id), {
+      const response = await client.options.fetch(fileUrl(handle, true), {
         headers: client.options.headers,
         credentials: client.options.credentials,
       });
       if (!response.ok)
         return {
           data: null,
-          error: response.status === 404 ? 'This file is no longer where it was saved.' : OFFLINE,
+          error:
+            response.status === 404 ? 'This file is no longer the one that was saved.' : OFFLINE,
           unavailable: null,
         };
-      return { data: await readTextPrefix(response), error: null, unavailable: null };
+      const type = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
+      if (PICTURES.has(type) || type === 'application/pdf') {
+        const blob = new Blob([await response.arrayBuffer()], { type });
+        return {
+          data: {
+            kind: type === 'application/pdf' ? 'pdf' : 'image',
+            url: URL.createObjectURL(blob),
+          },
+          error: null,
+          unavailable: null,
+        };
+      }
+      return {
+        data: { kind: 'text', ...(await readTextPrefix(response)) },
+        error: null,
+        unavailable: null,
+      };
     } catch {
       return { data: null, error: OFFLINE, unavailable: null };
     }
@@ -845,6 +883,7 @@ export const adapter = {
   previewSource: (preview: ProcessPreview) => `${API_BASE_URL}${preview.path}`,
   /** Where a file or picture the service keeps is served, with the session's cookie. */
   artifactUrl,
+  fileUrl,
   screenshotUrl,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
