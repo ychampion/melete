@@ -68,6 +68,22 @@ export type SandboxHandle = {
   readonly providerSandboxId: string;
   readonly imageDigest: string | null;
   readonly region: string | null;
+  /**
+   * Set only by a resume that made the sandbox again from the image it is
+   * configured with now, on the storage it kept: the image it ran before, or
+   * null when its container was already gone.
+   */
+  readonly recreatedFrom?: string | null;
+};
+
+/** What the caller of `resume` knows about the suspended workspace. */
+export type ResumeOptions = {
+  /**
+   * Nothing runs in it for anyone: no person holds it and none of its agent's
+   * background processes runs. Only then may a provider make it again from a
+   * newer image.
+   */
+  quiet?: boolean;
 };
 
 /** `argv` is already marker-wrapped by the service; `marker` is carried for reattach. */
@@ -173,9 +189,16 @@ export interface SandboxProvider {
    * Run a suspended workspace again under `spec`'s lease: a paused sandbox
    * comes back as itself, a snapshot as a new sandbox created from it. Throws
    * `SandboxGone` when the provider says the paused sandbox or the snapshot no
-   * longer exists.
+   * longer exists. A provider whose sandbox runs an image older than `spec`'s
+   * may make it again from `spec`'s, keeping its storage, but only when
+   * `options.quiet` says nothing runs in it.
    */
-  resume?(resumeRef: string, spec: SandboxSpec, s: AbortSignal): Promise<SandboxHandle>;
+  resume?(
+    resumeRef: string,
+    spec: SandboxSpec,
+    s: AbortSignal,
+    options?: ResumeOptions,
+  ): Promise<SandboxHandle>;
   /** Capture the filesystem. The sandbox keeps running; the caller destroys it. */
   snapshot?(h: SandboxHandle, s: AbortSignal): Promise<{ snapshotRef: string }>;
   /** Idempotent: a snapshot that is already gone is deleted. */

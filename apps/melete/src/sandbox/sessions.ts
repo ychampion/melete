@@ -108,7 +108,14 @@ export type OpenWorkspace = Omit<OpenSession, 'agentId' | 'persistence'> & {
   persistence: WorkspacePersistence;
 };
 
-export type WorkspaceSession = SessionRow & { resumed: boolean };
+export type WorkspaceSession = SessionRow & {
+  resumed: boolean;
+  /**
+   * Set when resuming made the computer again from the image it is configured
+   * with now, keeping its files: the image it ran before, or null when unknown.
+   */
+  recreatedFrom?: string | null;
+};
 
 export type SessionOptions = {
   leaseSeconds: number;
@@ -798,19 +805,33 @@ export class SandboxSessions {
     return awakeSecondsToday(this.sql, spaceId);
   }
 
+  /**
+   * Whether nothing runs in a suspended workspace for anyone: no person holds
+   * it and none of its agent's background processes runs. Only such a
+   * workspace may be made again from a newer image as it resumes.
+   */
+  private async quiet(from: SessionRow): Promise<boolean> {
+    const [row] = await this.sql`select exists (select 1 from sandbox_process p
+        where p.space_id = ${from.spaceId} and p.agent_id = ${from.agentId}
+          and p.connection_id = ${from.connectionId} and p.state in ('starting', 'running'))
+      as live`;
+    if (row?.live !== false) return false;
+    return !(await this.heldByPerson(from.providerSandboxId));
+  }
+
   private async resume(
     id: string,
     from: SessionRow,
     provider: SandboxProvider,
     spec: SandboxSpec,
     signal: AbortSignal,
-  ): Promise<SessionRow> {
+  ): Promise<SessionRow & { recreatedFrom?: string | null }> {
     const resumeRef = from.resumeRef as string;
     let handle: SandboxHandle;
     try {
       if (!provider.resume)
         throw new Error(`the ${provider.capabilities.adapter} adapter cannot resume a workspace`);
-      handle = await provider.resume(resumeRef, spec, signal);
+      handle = await provider.resume(resumeRef, spec, signal, { quiet: await this.quiet(from) });
     } catch (error) {
       if (error instanceof SandboxGone) {
         await this.sql`update sandbox_session set status = 'lost', closed_at = now(),
@@ -856,7 +877,9 @@ export class SandboxSessions {
       else await provider.destroy(handle, AbortSignal.timeout(30_000)).catch(() => {});
       throw new Error('the session ended while its workspace was being resumed');
     }
-    return toRow(row);
+    return handle.recreatedFrom !== undefined
+      ? { ...toRow(row), recreatedFrom: handle.recreatedFrom }
+      : toRow(row);
   }
 
   /** Put a resumed sandbox back the way a suspended workspace keeps it, as far as possible. */

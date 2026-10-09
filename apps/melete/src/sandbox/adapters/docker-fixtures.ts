@@ -25,6 +25,10 @@ export type FakeContainer = {
   running: boolean;
   networks: Record<string, string>;
   labels: Record<string, string>;
+  /** The id of the image it was made from. */
+  image: string;
+  /** Execs the engine says still run in it. */
+  execIds?: string[];
 };
 
 const encoder = new TextEncoder();
@@ -40,6 +44,8 @@ function frame(kind: 1 | 2, payload: Uint8Array): Uint8Array {
 export class FakeDocker implements DockerSandboxApi {
   readonly calls: { method: string; path: string; body?: unknown }[] = [];
   readonly images = new Set(['melete-sandbox:test']);
+  /** The id an image name stands for now; `sha256:image` for any name not set here. */
+  readonly imageIds = new Map<string, string>();
   readonly containers = new Map<string, FakeContainer>();
   readonly volumes = new Map<string, Record<string, string>>();
   readonly networks = new Map<string, { labels: Record<string, string>; members: Set<string> }>();
@@ -68,7 +74,7 @@ export class FakeDocker implements DockerSandboxApi {
     const image = /^\/images\/([^/]+)\/json$/.exec(route);
     if (image)
       return this.images.has(decodeURIComponent(image[1] ?? ''))
-        ? { Id: 'sha256:image' }
+        ? { Id: this.imageIds.get(decodeURIComponent(image[1] ?? '')) ?? 'sha256:image' }
         : this.fail(method, path, 404);
     if (method === 'POST' && route === '/volumes/create') {
       const request = body as { Name: string; Labels: Record<string, string> };
@@ -125,6 +131,7 @@ export class FakeDocker implements DockerSandboxApi {
         running: false,
         networks,
         labels: request.Labels,
+        image: this.imageIds.get(String(request.Image)) ?? 'sha256:image',
       });
       return { Id: `${name}-id` };
     }
@@ -160,7 +167,8 @@ export class FakeDocker implements DockerSandboxApi {
       if (method === 'GET' && action === '/json')
         return {
           Name: `/${container.name}`,
-          Image: 'sha256:image',
+          Image: container.image,
+          ExecIDs: container.execIds?.length ? container.execIds : null,
           State: {
             Running: container.running,
             Paused: false,
