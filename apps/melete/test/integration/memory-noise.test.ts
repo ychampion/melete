@@ -1,7 +1,7 @@
 /**
  * How much memory keeps from a realistic half hour of chat, and how it reads.
  *
- * The script follows a real tester's first thirty minutes: onboarding, a
+ * The script follows a person's first thirty minutes: onboarding, a
  * Tokyo trip and its rainy-day follow-up, a landlord email, an explanation, a
  * quick fact, three chats telling it about herself, a correction, a weekly
  * recap skill, a code word, a routine and a reminder. The extraction model is
