@@ -50,6 +50,31 @@ afterAll(() => {
 });
 
 describe('the read-only commands in the service image', () => {
+  // The tree above borrows the checkout's node_modules, devDependencies included, so a
+  // package the image's `bun install --production` leaves out is caught here instead.
+  test('a package the copied deploy scripts import is a production dependency at the root', () => {
+    const dockerfile = readFileSync(join(ROOT, 'deploy/Dockerfile.melete'), 'utf8');
+    const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const scripts = imageSources(dockerfile).filter(
+      (source) => source.startsWith('deploy/') && source.endsWith('.ts'),
+    );
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) {
+      const text = readFileSync(join(ROOT, script), 'utf8');
+      for (const [, name = ''] of text.matchAll(/(?:from|import\()\s*'([^'./][^']*)'/g)) {
+        if (name.startsWith('node:') || name.startsWith('bun')) continue;
+        const pkg = name.startsWith('@')
+          ? name.split('/').slice(0, 2).join('/')
+          : (name.split('/')[0] ?? '');
+        expect(`${script}: ${pkg} ${root.dependencies?.[pkg] ? 'declared' : 'missing'}`).toBe(
+          `${script}: ${pkg} declared`,
+        );
+      }
+    }
+  });
+
   test('the image tree holds no deployment files', () => {
     expect(existsSync(join(image, 'deploy/docker-compose.yml'))).toBe(false);
     expect(existsSync(join(image, 'deploy/scripts/upgrade.ts'))).toBe(false);
