@@ -281,6 +281,11 @@ function earlierStep({ kind, payload, receipt }: EarlierAction): {
         text: [clip(detail.answer, 600), listed].filter(Boolean).join(' '),
       };
     }
+    case 'web.weather':
+      return {
+        line: `- Checked the weather for ${clip(detail.place ?? input.place, 200) || "the person's city"}`,
+        text: clip(detail.summary),
+      };
     case 'terminal.run':
     case 'device.run': {
       const command = clip(detail.command ?? input.command, 300);

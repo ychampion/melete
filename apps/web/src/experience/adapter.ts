@@ -74,6 +74,8 @@ import type {
   MemoryRewind,
   MemoryTimeline,
   MessageAcceptance,
+  OwnSkill,
+  OwnSkillEdit,
   Permission,
   PermissionOutcome,
   Plan,
@@ -492,6 +494,23 @@ export const adapter = {
   stopSkill: (id: string, spaceId: string, reason: string) =>
     guard<{ skill: EngineSkill }>(() =>
       api.POST('/engine-skills/{id}/stop', { ...path(id), body: { space_id: spaceId, reason } }),
+    ),
+  /** The person's own skills, each read whole. */
+  ownSkills: (spaceId: string) =>
+    guard<{ skills: OwnSkill[] }>(() =>
+      api.GET('/own-skills', { params: { query: { space_id: spaceId } } }),
+    ),
+  /** Their words replace what changed, against the version they were shown. */
+  editOwnSkill: (name: string, body: OwnSkillEdit) =>
+    guard<{ skill: OwnSkill }>(() =>
+      api.POST('/own-skills/{name}/edit', { params: { path: { name } }, body }),
+    ),
+  deleteOwnSkill: (name: string, spaceId: string, version: string) =>
+    guard<{ deleted: string }>(() =>
+      api.POST('/own-skills/{name}/delete', {
+        params: { path: { name } },
+        body: { space_id: spaceId, version },
+      }),
     ),
 
   /* ---------- agents, memory ---------- */

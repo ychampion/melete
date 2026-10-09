@@ -6,7 +6,7 @@
  * tree is synced to or mounted in:
  *
  * - from a job's workspace: `<workRoot>/.trash/<job>/<trash id>/`
- * - from the person's Files: `<spacesRoot>/<space>/.trash/<job>/<trash id>/`
+ * - from the person's Files, and a deleted skill: `<spacesRoot>/<space>/.trash/<job>/<trash id>/`
  *
  * Each trash folder holds the files as `items/<n>` and a `manifest.json` that
  * says where each came from and until when it is kept. The manifest is
@@ -54,7 +54,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Where an area's files are and where its trash is, as trusted roots and the names under them. */
 export type TrashPlace = {
-  area: 'work' | 'artifacts';
+  area: 'work' | 'artifacts' | 'skills';
   /** The trusted root both trees are under. */
   base: string;
   /** The names from `base` to the area's own top (the job's workspace, the space's Files). */
@@ -76,7 +76,7 @@ export type TrashEntry = { path: string; hash: string | null };
 
 type Manifest = {
   version: 1;
-  area: 'work' | 'artifacts';
+  area: 'work' | 'artifacts' | 'skills';
   created_at: string;
   expires_at: string;
   items: { path: string; item: string }[];
@@ -357,9 +357,18 @@ async function readManifest(place: TrashPlace, id: string): Promise<Manifest | n
   }
 }
 
+/**
+ * A trash folder's manifest when it was made by a delete from this place's
+ * area. Files and skills share a space's trash, and neither restores the other's.
+ */
+async function manifestHere(place: TrashPlace, id: string): Promise<Manifest | null> {
+  const manifest = await readManifest(place, id);
+  return manifest && manifest.area === place.area ? manifest : null;
+}
+
 /** Whether this job's trash in this place holds `id`. */
 export async function hasTrash(place: TrashPlace, id: string): Promise<boolean> {
-  return (await readManifest(place, id).catch(() => null)) !== null;
+  return (await manifestHere(place, id).catch(() => null)) !== null;
 }
 
 /**
@@ -385,7 +394,7 @@ export async function latestTrash(
   }
   const wanted = path === undefined ? null : segmentsFor(path).join('/');
   for (const id of ids.sort((a, b) => madeAt(b) - madeAt(a))) {
-    const manifest = await readManifest(place, id).catch(() => null);
+    const manifest = await manifestHere(place, id).catch(() => null);
     if (!manifest || Date.parse(manifest.expires_at) <= Date.now()) continue;
     if (
       wanted === null ||
@@ -408,7 +417,7 @@ export type Restored = {
  * stays in the trash, with the reason, and can be restored again later.
  */
 export async function restoreFromTrash(place: TrashPlace, id: string): Promise<Restored> {
-  const manifest = await readManifest(place, id);
+  const manifest = await manifestHere(place, id);
   if (!manifest) throw new Error(`there is nothing in the trash under ${JSON.stringify(id)}`);
   if (Date.parse(manifest.expires_at) <= Date.now())
     throw new Error('the time to restore this has passed');
