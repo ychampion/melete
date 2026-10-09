@@ -70,20 +70,92 @@ export function resolveRefs(value: unknown, messages: readonly Message[]): unkno
   );
 }
 
+/** The objective of the separate check a piece of background work runs on its result. */
+const CHECK_OBJECTIVE = 'Check whether a result is really done';
+
+/**
+ * Whose turn this request is: the scenario's own conversation (`main`), a
+ * shift of background work it started (`run`), or that work's check of its
+ * result (`check`). Each plays its own plan.
+ */
+export function roleOf(
+  messages: readonly Message[],
+  tools: readonly string[] = [],
+): 'main' | 'run' | 'check' {
+  const text = messages.map((message) => String(message.content ?? '')).join('\n');
+  if (text.includes(CHECK_OBJECTIVE)) return 'check';
+  if (tools.includes('run.checkpoint') || tools.includes('run.finish')) return 'run';
+  const system = messages.find((message) => message.role === 'system');
+  if (system && /\brun\.checkpoint\b/.test(String(system.content ?? ''))) return 'run';
+  return 'main';
+}
+
+const resumingIn = (messages: readonly Message[]) =>
+  messages.some(
+    (message) =>
+      message.role === 'user' && String(message.content).includes('resume_action with action_id'),
+  );
+
+/** Whether a scenario's plan is divided between the messages of its conversation. */
+export const plannedByTurn = (scenario: Scenario) =>
+  (scenario.steps ?? []).some((step) => step.turn !== undefined);
+
+/**
+ * Which message of the conversation this request answers: 0 for the
+ * objective, then one per message of `history`, found by its words.
+ */
+export function turnOf(scenario: Scenario, messages: readonly Message[]): number {
+  const said = [scenario.objective, ...(scenario.history ?? [])];
+  let turn = 0;
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const content = String(message.content ?? '');
+    said.forEach((text, index) => {
+      if (index > turn && text.length && content.includes(text)) turn = index;
+    });
+  }
+  return turn;
+}
+
 /**
  * The next planned call, counted by the tool results this attempt has already
  * had. An attempt that was told to resume an approval follows the plan after it.
+ * A plan divided by turn is counted from the message that started this turn.
  */
 export function plannedStep(
   scenario: Scenario,
   messages: readonly Message[],
+  role: 'main' | 'run' | 'check' = 'main',
 ): ScriptedStep | undefined {
-  const resuming = messages.some(
-    (message) =>
-      message.role === 'user' && String(message.content).includes('resume_action with action_id'),
-  );
-  const plan = resuming ? (scenario.approve ? RESUME_PLAN : []) : (scenario.steps ?? []);
-  const done = messages.filter((message) => message.role === 'tool' && !isLoad(message)).length;
+  const resuming = resumingIn(messages);
+  const background = scenario.background ?? {};
+  let plan: ScriptedStep[];
+  let from = 0;
+  if (role === 'check') plan = background.check ?? [];
+  else if (role === 'run')
+    plan = resuming
+      ? [...RESUME_PLAN, ...(background.after_approval ?? [])]
+      : (background.steps ?? []);
+  else if (resuming) plan = scenario.approve ? RESUME_PLAN : [];
+  else if (plannedByTurn(scenario)) {
+    const turn = turnOf(scenario, messages);
+    const last = scenario.history?.length ?? 0;
+    plan = (scenario.steps ?? []).filter((step) => (step.turn ?? last) === turn);
+    const said = [scenario.objective, ...(scenario.history ?? [])][turn] ?? '';
+    for (const [index, message] of messages.entries())
+      if (message.role === 'user' && String(message.content ?? '').includes(said)) from = index;
+  } else plan = scenario.steps ?? [];
+  // In a shift that resumes, the plan restarts at the message that told it to.
+  if (role === 'run' && resuming)
+    for (const [index, message] of messages.entries())
+      if (
+        message.role === 'user' &&
+        String(message.content).includes('resume_action with action_id')
+      )
+        from = index;
+  const done = messages
+    .slice(from)
+    .filter((message) => message.role === 'tool' && !isLoad(message)).length;
   const step = plan[done];
   if (!step) return undefined;
   return {
@@ -123,7 +195,38 @@ export class ScriptedModel {
       | undefined;
     const history = scenario.history ?? [];
     const finalTurn = history.at(-1);
-    if (
+    const role = roleOf(
+      body.messages,
+      (body.tools ?? []).map((tool) => tool.function.name),
+    );
+    if (role !== 'main') {
+      const step = plannedStep(scenario, body.messages, role);
+      if (step)
+        toolCalls = [
+          {
+            id: `call_${randomUUID().replaceAll('-', '')}`,
+            type: 'function',
+            function: { name: step.tool, arguments: JSON.stringify(step.arguments) },
+          },
+        ];
+      else content = role === 'check' ? 'Checked.' : 'Shift over.';
+    } else if (plannedByTurn(scenario)) {
+      const step = plannedStep(scenario, body.messages);
+      const turn = turnOf(scenario, body.messages);
+      if (step)
+        toolCalls = [
+          {
+            id: `call_${randomUUID().replaceAll('-', '')}`,
+            type: 'function',
+            function: { name: step.tool, arguments: JSON.stringify(step.arguments) },
+          },
+        ];
+      else
+        content =
+          turn < history.length
+            ? (scenario.replies?.[turn] ?? 'Noted.')
+            : (scenario.script.reply ?? 'Done.');
+    } else if (
       finalTurn &&
       !body.messages.some((message) => String(message.content ?? '').includes(finalTurn))
     )

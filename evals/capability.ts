@@ -23,6 +23,7 @@ import type { Sql } from 'postgres';
 import { browserManifest, createBrowserConnector } from '../apps/melete/src/connectors/browser.ts';
 import { emailManifest } from '../apps/melete/src/connectors/email.ts';
 import { filesManifest } from '../apps/melete/src/connectors/files.ts';
+import { COMPUTER_TOOLS } from '../apps/melete/src/connectors/sandbox-computer.ts';
 import {
   sandboxDispatchBudgetMs,
   sandboxTerminalManifest,
@@ -41,10 +42,27 @@ const PRODUCT_TOOLS = new Map<string, ManifestTool>(
     ...filesManifest.tools,
     ...sandboxTerminalManifest.tools,
     ...browserManifest.tools,
+    ...COMPUTER_TOOLS,
   ].map((tool) => [tool.name, tool]),
 );
-/** Broker-owned tools every attempt can be offered. */
-const NATIVE_TOOLS = new Set(['ask_person', 'react', 'job.wait', 'resume_action', 'say']);
+/**
+ * Broker-owned tools an attempt can be offered: memory search and skill reads
+ * in any conversation, and the background-work tools by the kind of job.
+ */
+export const NATIVE_TOOLS = new Set([
+  'ask_person',
+  'react',
+  'job.wait',
+  'resume_action',
+  'say',
+  'memory.search',
+  'skills.read',
+  'run.start',
+  'run.list',
+  'run.log',
+  'run.checkpoint',
+  'run.finish',
+]);
 
 export const productHasTool = (name: string) => PRODUCT_TOOLS.has(name) || NATIVE_TOOLS.has(name);
 
@@ -169,7 +187,7 @@ export function capabilityConnector(sql: Sql, scenario: Scenario): Connector {
   const manifest: ConnectorManifest = {
     name: `eval-${scenario.id}`,
     version: '1.0.0',
-    provider: 'test',
+    provider: scenario.provider ?? 'test',
     description: `Synthetic destination for the ${scenario.title} evaluation; effects are recorded durably.`,
     credentials: [],
     health: true,
@@ -237,11 +255,27 @@ export function capabilityConnector(sql: Sql, scenario: Scenario): Connector {
         await sleep(tool.delay_ms, ctx.signal);
       }
       const result = fixtureResult(tool, payload);
-      if (entry.effect_class === 'read')
+      if (entry.effect_class === 'read') {
+        // A page read names its address and title, as the product's receipt does,
+        // so what a turn read can back the sources its answer cites.
+        const page: JsonObject =
+          tool.mirror === 'web.fetch' &&
+          typeof payload.url === 'string' &&
+          result &&
+          typeof result === 'object' &&
+          !Array.isArray(result) &&
+          (result as JsonObject).status !== 404
+            ? {
+                url: payload.url,
+                final_url: payload.url,
+                title: (result as JsonObject).title ?? null,
+              }
+            : {};
         return {
           outcome: 'succeeded',
-          receipt: receipt(action, { records: result, origin: 'external_content' }),
+          receipt: receipt(action, { records: result, origin: 'external_content', ...page }),
         };
+      }
       return {
         outcome: 'succeeded',
         receipt: receipt(

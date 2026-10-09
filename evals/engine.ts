@@ -137,6 +137,12 @@ export type LightEngineOptions = {
   maxTokens: number;
   /** Long enough for a sandbox command the broker runs before it answers. */
   toolTimeoutMs?: number;
+  /**
+   * Told of every tool call and what it returned, broker-owned ones (memory
+   * search, skill reads, background work) included, which leave no action on
+   * the ledger. Evidence for the grader; it changes nothing the model sees.
+   */
+  onTool?: (call: { tool: string; args: Json; result: Json }) => Promise<void> | void;
 };
 
 export class LightEngine {
@@ -337,8 +343,7 @@ export class LightEngine {
       }
       if (
         connection === null &&
-        (name.startsWith('skills.') ||
-          name.startsWith('run.') ||
+        (['skills.', 'run.', 'intent.', 'memory.'].some((prefix) => name.startsWith(prefix)) ||
           ['compose', 'chase.follow_up', 'ask_person'].includes(name))
       )
         return await this.broker('POST', '/tools/call', { name, arguments: args });
@@ -502,6 +507,7 @@ export class LightEngine {
               args,
             )
           : fromError('payload_invalid', 'The tool arguments were not a JSON object.');
+        await this.options.onTool?.({ tool: name, args, result: result as Json });
         if (result.status === 'tools_loaded') {
           const schema = this.loaded.get(String(result.name));
           if (schema && !tools.some((tool) => tool.name === schema.name)) tools.push(schema);

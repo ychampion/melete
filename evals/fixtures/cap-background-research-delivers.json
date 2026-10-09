@@ -1,0 +1,166 @@
+{
+  "id": "cap-background-research-delivers",
+  "domain": "web",
+  "title": "Background research reports back, and its approval waits visibly",
+  "objective": "In the background, find the three best robot vacuums for a flat with a cat, from proper review sites, and report back with which reviews you used. RTINGS shares its full pet-hair test data on request, so ask them for it with my email, eval-owner@example.test.",
+  "max_turns": 12,
+  "tools": [
+    {
+      "name": "web.search",
+      "mirror": "web.search",
+      "result": {
+        "results": [
+          {
+            "title": "The best robot vacuums for pet hair | RTINGS",
+            "url": "https://rtings.example/robot-vacuums/pet-hair",
+            "snippet": "Lab-tested on cat and dog hair."
+          },
+          {
+            "title": "Best robot vacuum for cats | Vacuum Wars",
+            "url": "https://vacuumwars.example/best-for-cats",
+            "snippet": "Hands-on picks for homes with a cat."
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.fetch",
+      "mirror": "web.fetch",
+      "results_by": {
+        "argument": "url",
+        "results": {
+          "https://rtings.example/robot-vacuums/pet-hair": {
+            "title": "The best robot vacuums for pet hair | RTINGS",
+            "text": "Tested on cat and dog hair. Best overall for pets: Roborock Q8 Max+. Best self-emptying mop combo: Ecovacs T30 Omni. Quietest: eufy X10 Pro Omni. Full test data is available on request."
+          },
+          "https://vacuumwars.example/best-for-cats": {
+            "title": "Best robot vacuum for cats | Vacuum Wars",
+            "text": "Our pick for homes with a cat is the Ecovacs T30 Omni; the Roborock Q8 Max+ is the value pick and tangles least with long fur."
+          }
+        }
+      }
+    },
+    {
+      "name": "reviews.request_access",
+      "description": "Ask a review site for its full test data, sending the person's email address so it can reply.",
+      "effect_class": "write_external",
+      "fields": {
+        "site": {
+          "description": "The review site to ask.",
+          "required": true
+        },
+        "email": {
+          "description": "The person's email address, for the reply.",
+          "required": true
+        }
+      },
+      "result": {
+        "requested": true,
+        "reply": "The full pet-hair test data: the Roborock Q8 Max+ picked up 98% of cat hair."
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "run.start",
+      "arguments": {
+        "goal": "Find the three best robot vacuums for a flat with a cat, from proper review sites, and report back with which reviews were used. Ask RTINGS for its full pet-hair test data with the email eval-owner@example.test.",
+        "title": "Robot vacuums for a flat with a cat"
+      }
+    }
+  ],
+  "background": {
+    "steps": [
+      {
+        "tool": "web.search",
+        "arguments": {
+          "query": "best robot vacuum for cat hair review"
+        }
+      },
+      {
+        "tool": "web.fetch",
+        "arguments": {
+          "url": "https://rtings.example/robot-vacuums/pet-hair"
+        }
+      },
+      {
+        "tool": "web.fetch",
+        "arguments": {
+          "url": "https://vacuumwars.example/best-for-cats"
+        }
+      },
+      {
+        "tool": "reviews.request_access",
+        "arguments": {
+          "site": "rtings.example",
+          "email": "eval-owner@example.test"
+        }
+      }
+    ],
+    "approve": {
+      "kind": "reviews.request_access",
+      "fields": {
+        "site": "rtings"
+      }
+    },
+    "after_approval": [
+      {
+        "tool": "run.finish",
+        "arguments": {
+          "summary": "The three best for a flat with a cat: Roborock Q8 Max+ (best for pet hair at RTINGS, 98% of cat hair in its full test data, and Vacuum Wars’ value pick), Ecovacs T30 Omni (Vacuum Wars’ pick for cats) and eufy X10 Pro Omni (the quietest at RTINGS). Reviews used: rtings.example and vacuumwars.example."
+        }
+      }
+    ],
+    "check": [
+      {
+        "tool": "run.finish",
+        "arguments": {
+          "summary": "The result matches the two reviews that were read.",
+          "verdict": "passes"
+        }
+      }
+    ]
+  },
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Started it in the background; it'll report back here with the picks and the reviews it used."
+  },
+  "source": {
+    "pages": "RTINGS and Vacuum Wars review pages for robot vacuums and cat hair."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "web.fetch",
+        "scope": "space",
+        "status": "succeeded",
+        "min": 1
+      },
+      {
+        "tool": "reviews.request_access",
+        "scope": "space",
+        "status": "succeeded",
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "background": {
+      "runs": 1,
+      "status": "done",
+      "result_words": ["Roborock", "rtings"],
+      "waited_for_ok": true
+    },
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the background work delivered a result to the conversation naming three robot vacuums suited to a home with a cat and the review sites it used, with no pick or site it did not read. Judge the background_work card and reports; the reply only has to say the work started.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

@@ -1,0 +1,115 @@
+{
+  "id": "cap-memory-search-before-denying",
+  "domain": "files",
+  "title": "Search memory before saying a detail is not known",
+  "objective": "When should I order my sister's present so it gets there in time?",
+  "chat": true,
+  "memory_facts": [
+    {
+      "key": "contact.lena.birthday",
+      "content": "Lena's birthday is March 3"
+    },
+    {
+      "key": "contact.lena.relation",
+      "content": "Lena is my sister"
+    },
+    {
+      "key": "contact.lena.city",
+      "content": "Sister Lena lives in Seattle"
+    },
+    {
+      "key": "contact.lena.likes",
+      "content": "Sister Lena likes ceramics and good coffee"
+    },
+    {
+      "key": "contact.lena.partner",
+      "content": "Sister Lena's partner is called Sam"
+    },
+    {
+      "key": "contact.lena.dog",
+      "content": "Sister Lena's dog is called Miso"
+    },
+    {
+      "key": "gifts.ordering.lead",
+      "content": "Orders presents two weeks ahead so they arrive in time"
+    },
+    {
+      "key": "gifts.ordering.shop",
+      "content": "Usually orders presents from small ceramics shops"
+    },
+    {
+      "key": "gifts.ordering.shipping",
+      "content": "Parcels to Seattle take about five days"
+    },
+    {
+      "key": "gifts.budget",
+      "content": "Spends about 60 dollars on a present for family"
+    },
+    {
+      "key": "contact.priya.relation",
+      "content": "Priya is my sister-in-law and likes candles"
+    },
+    {
+      "key": "contact.mum.present",
+      "content": "Sends mum flowers rather than a present"
+    },
+    {
+      "key": "preference.colour.favourite",
+      "content": "Favourite colour is teal"
+    },
+    {
+      "key": "person.work",
+      "content": "Works as a product designer"
+    }
+  ],
+  "tools": [],
+  "steps": [
+    {
+      "tool": "memory.search",
+      "arguments": {
+        "query": "Lena birthday"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Lena's birthday is March 3, and parcels to Seattle take about five days, so order it by about February 20 to be safe."
+  },
+  "source": {
+    "memory": "Lena's birthday is March 3; Lena is my sister; parcels to Seattle take about five days."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["March 3"],
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "memory.search",
+        "scope": "engine",
+        "result_contains": "March 3",
+        "min": 1
+      }
+    ],
+    "memory": {
+      "not_recalled": "March 3",
+      "reached": "March 3"
+    },
+    "reply_excludes": [
+      "don'?t have (that|it|any)",
+      "no record",
+      "can'?t find",
+      "not (saved|stored) anywhere",
+      "never (told|mentioned|said)"
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply uses Lena's saved birthday, March 3, to say when to order (about two weeks or at least five days ahead). Fail a reply that says the birthday is not known, asks for it, or invents another date.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

@@ -6,15 +6,26 @@ import { createInternalServer } from '../apps/melete/src/broker/internal-server.
 import { pendingRuntimeWait } from '../apps/melete/src/broker/runtime-wait.ts';
 import { browserManifest } from '../apps/melete/src/connectors/browser.ts';
 import { ConnectorRegistry } from '../apps/melete/src/connectors/registry.ts';
+import {
+  createSkillsConnector,
+  readOwnSkills,
+  skillsManifest,
+} from '../apps/melete/src/connectors/skills.ts';
+import { agent } from '../apps/melete/src/db/schema.ts';
 import { loadEnv } from '../apps/melete/src/env.ts';
+import { agentValues, MELETE_AGENT } from '../apps/melete/src/experience/agents.ts';
 import { newId } from '../apps/melete/src/ids.ts';
 import { bootstrap } from '../apps/melete/src/index.ts';
+import { captureChat } from '../apps/melete/src/memory/capture.ts';
 import { commitExtraction } from '../apps/melete/src/memory/commit.ts';
-import type { MemoryScope } from '../apps/melete/src/memory/db.ts';
+import { MemoryError, type MemoryScope } from '../apps/melete/src/memory/db.ts';
+import { type ExtractionGateway, proposeExtraction } from '../apps/melete/src/memory/extract.ts';
 import { FileRestrictionJournal, restoreMemory } from '../apps/melete/src/memory/restore.ts';
+import { searchMemory } from '../apps/melete/src/memory/search.ts';
 import { buildViews } from '../apps/melete/src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE } from '../apps/melete/src/memory/work.ts';
 import { defaultPrivacyRouter } from '../apps/melete/src/privacy/index.ts';
+import { loadSkills } from '../packages/skills/src/index.ts';
 import {
   type BrowserFixture,
   capabilityConnector,
@@ -23,7 +34,7 @@ import {
   usesBrowser,
 } from './capability.ts';
 import { fixtureConnector, initializeDestination, SCOPES } from './destination.ts';
-import type { GradeContext, Snapshot } from './grading.ts';
+import type { BackgroundEvidence, GradeContext, RunCardEvidence, Snapshot } from './grading.ts';
 import { ScriptedModel } from './scripted.ts';
 import {
   API_PORT,
@@ -110,6 +121,9 @@ export async function openLab(
     ...SCOPES,
     ...capabilityScopes(corpus),
     ...(corpus.some(usesBrowser) ? browserManifest.tools.map((tool) => tool.name) : []),
+    ...(corpus.some((scenario) => scenario.builtin?.includes('skills'))
+      ? skillsManifest.tools.map((tool) => tool.name)
+      : []),
   ];
   let browser: BrowserFixture | undefined;
   const browserFixture = async () => {
@@ -127,6 +141,14 @@ export async function openLab(
     await sql`INSERT INTO eval_runtime_event(attempt_id,local_seq,payload)
       VALUES(${event.attempt_id},${event.local_seq},${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING`;
   };
+  await sql`CREATE TABLE IF NOT EXISTS eval_tool_call (
+    seq bigserial PRIMARY KEY, job_id text NOT NULL, attempt_id text NOT NULL, tool text NOT NULL,
+    args jsonb NOT NULL, result jsonb NOT NULL)`;
+  if (runtime instanceof LightRuntime)
+    runtime.traceTool = async (bundle, call) => {
+      await sql`INSERT INTO eval_tool_call(job_id,attempt_id,tool,args,result)
+        VALUES(${bundle.attempt.job_id},${bundle.attempt.id},${call.tool},${JSON.stringify(call.args)}::jsonb,${JSON.stringify(call.result)}::jsonb)`;
+    };
   const journal = new FileRestrictionJournal(resolve(PRIVATE, 'spaces/.memory/restrictions.jsonl'));
   try {
     await readFile(journal.path);
@@ -136,6 +158,14 @@ export async function openLab(
   }
   await restoreMemory(sql, journal);
   let ownerId = '';
+  const spacesRoot = resolve(PRIVATE, 'spaces');
+  const memoryScopeForJob = async (jobId: string) => {
+    if (!core.memory) throw new MemoryError('scope_denied');
+    return core.memory.scopeForJob(jobId);
+  };
+  // The broker the service builds: the approval policy's auto-review (with no
+  // reviewer, so a change only a reviewer could pass still asks), memory search,
+  // background work and the space's own skills, as the effect boundary has them.
   const boundary = createInternalServer({
     privacy: defaultPrivacyRouter(),
     sql,
@@ -143,6 +173,14 @@ export async function openLab(
     capabilityKey: stack.secrets.capability,
     approvalKey: stack.secrets.approval,
     boss: queue.boss,
+    autoReview: { reviewer: null },
+    memorySearch: (claims, input) =>
+      searchMemory({ sql, scopeForJob: memoryScopeForJob }, claims, input),
+    ...(core.runs ? { runs: core.runs } : {}),
+    catalog: {
+      skills: async (spaceId) =>
+        loadSkills({ spaceSkillsDirectory: resolve(spacesRoot, spaceId, 'skills') }).skills,
+    },
     defaultProvider: 'fireworks',
     providers: [
       {
@@ -208,9 +246,14 @@ export async function openLab(
       fixtureConnector(sql, String(row.label).slice(5) as Domain),
     );
   const capabilityRows =
-    await sql`SELECT id, label, space_id FROM connection WHERE (provider='test' AND label LIKE 'eval-cap:%') OR (provider='web' AND label LIKE 'eval-browser:%')`;
+    await sql`SELECT id, label, space_id FROM connection WHERE label LIKE 'eval-cap:%' OR (provider='web' AND label LIKE 'eval-browser:%') OR (provider='skills' AND label LIKE 'eval-skills:%')`;
+  const skillsConnector = () => createSkillsConnector({ sql, spacesRoot });
   for (const row of capabilityRows) {
     const label = String(row.label);
+    if (label.startsWith('eval-skills:')) {
+      connectors.register(String(row.id), skillsConnector());
+      continue;
+    }
     if (label.startsWith('eval-browser:')) {
       connectors.register(String(row.id), (await browserFixture()).connector(String(row.space_id)));
       continue;
@@ -236,6 +279,15 @@ export async function openLab(
       await sql`SELECT payload FROM event WHERE job_id=${jobId} AND payload->>'phase'='model_receipt' ORDER BY seq`;
     const reactions =
       await sql`SELECT payload FROM event WHERE job_id=${jobId} AND type='reaction' AND payload->>'by'='assistant' ORDER BY seq`;
+    const [ended] =
+      await sql`SELECT payload->'outcome' AS outcome FROM event WHERE job_id=${jobId} AND type='attempt_ended' ORDER BY seq DESC LIMIT 1`;
+    const endedOutcome = (ended?.outcome ?? {}) as { summary?: string; draft?: string };
+    const toolCalls =
+      await sql`SELECT tool,args,result FROM eval_tool_call WHERE job_id=${jobId} ORDER BY seq`;
+    const spaceActions =
+      await sql`SELECT a.id,a.kind,a.effect_class,a.status,a.payload_hash,a.canonical_payload,a.receipt
+        FROM action a JOIN job j ON j.id=a.job_id
+        WHERE j.space_id=(SELECT space_id FROM job WHERE id=${jobId}) ORDER BY a.created_at,a.id`;
     const questions =
       await sql`SELECT payload FROM event WHERE job_id=${jobId} AND payload->>'kind'='person_question_requested' ORDER BY seq`;
     const attempts =
@@ -271,6 +323,9 @@ export async function openLab(
       attempts: attempts.length,
       delivered_memory: delivered?.knowledge ?? [],
       reactions: reactions.map((entry) => entry.payload),
+      kept_reply: endedOutcome.summary ?? endedOutcome.draft ?? '',
+      tool_calls: toolCalls,
+      space_actions: spaceActions,
       questions: questions.map((entry) => {
         const question = (
           entry.payload as { question?: { text?: string; options?: { label: string }[] } }
@@ -419,6 +474,268 @@ export async function openLab(
       },
     };
   }
+  const ownerScope = (spaceId: string): MemoryScope => ({
+    ownerId,
+    spaceId,
+    publisher: 'authenticated-owner',
+    audience: 'private',
+    role: 'owner',
+  });
+  /** One message the person said, kept as memory's evidence the way chat capture keeps it. */
+  async function ingest(spaceId: string, identity: string, text: string) {
+    const ingested = await api(
+      '/memory/sources',
+      'POST',
+      {
+        stream: 'evals',
+        source_identity: identity,
+        source_version: '1',
+        source_type: 'message',
+        event_at: '2026-09-01T09:00:00Z',
+        author: 'owner',
+        text,
+      },
+      undefined,
+      spaceId,
+    );
+    if (ingested.status !== 201) throw new Error(`Memory ingest returned HTTP ${ingested.status}`);
+  }
+  /** Details the person told memory in earlier chats, each one current and recallable. */
+  async function seedFacts(spaceId: string, scenario: Scenario, key: string) {
+    const scope = ownerScope(spaceId);
+    for (const [index, fact] of (scenario.memory_facts ?? []).entries()) {
+      const [held] =
+        await sql`SELECT id FROM memory_claims WHERE space_id=${spaceId} AND domain_key=${fact.key}`;
+      if (held) continue;
+      await ingest(spaceId, `${key}:fact:${index}`, fact.content);
+      const batch = await claimWork(sql, scope);
+      if (!batch) throw new Error('Memory extraction work was not available');
+      const result = await commitExtraction(sql, scope, batch, {
+        proposals: [
+          {
+            op: 'add',
+            expected_revision: null,
+            // No registry key: a detail in the person's own words keeps the plain path.
+            domain_key: fact.key,
+            content: fact.content,
+            kind: 'user_statement',
+            factual_status: 'attributed',
+            valid_from: '2026-09-01T09:00:00Z',
+            valid_until: null,
+            sources: [
+              {
+                source_id: batch.source.source_id,
+                source_version: batch.source.source_version,
+                start: 0,
+                end: fact.content.length,
+                quote: fact.content,
+              },
+            ],
+          },
+        ],
+      });
+      if (!result.claim_ids.length)
+        throw new Error(`The detail ${fact.key} produced no claim: ${JSON.stringify(result)}`);
+    }
+    if (scenario.memory_facts?.length) await buildViews(sql, scope);
+  }
+  /**
+   * Offer this job's new messages to memory, as the service's capture does, so
+   * a request to forget is acted on before the turn that reads its answer.
+   * Another cell's messages are left to it.
+   */
+  async function capture(jobId: string) {
+    if (!core.memory) throw new Error('This scenario needs memory');
+    await captureChat({
+      sql,
+      journal: core.memory.journal,
+      scopeForJob: async (candidate) => {
+        if (candidate !== jobId) throw new MemoryError('scope_denied');
+        return memoryScopeForJob(candidate);
+      },
+      privacyOrigin: async () => null,
+    });
+  }
+  /**
+   * What memory makes of what the person said, as its background extraction
+   * does: the product's own instructions and gates, with the scripted answer or
+   * the evaluated model reading the words.
+   */
+  async function extract(spaceId: string, scenario: Scenario, key: string) {
+    if (!scenario.extract) return;
+    const scope = ownerScope(spaceId);
+    const said = [scenario.objective, ...(scenario.history ?? [])].join('\n\n');
+    await ingest(spaceId, `${key}:said`, said);
+    const batch = await claimWork(sql, scope);
+    if (!batch) throw new Error('Memory extraction work was not available');
+    const scripted = JSON.stringify(scenario.extract.reply);
+    const gateway: ExtractionGateway = {
+      async chat({ signal, format, ...body }) {
+        if (provider !== 'fireworks') return scripted;
+        const response = await meteredTransport(
+          state,
+          'agent',
+        )(
+          new Request('https://api.fireworks.ai/inference/v1/chat/completions', {
+            method: 'POST',
+            signal,
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model,
+              ...body,
+              ...(format
+                ? {
+                    response_format: {
+                      type: 'json_schema',
+                      json_schema: { name: format.name, schema: format.schema, strict: true },
+                    },
+                  }
+                : {}),
+            }),
+          }),
+        );
+        if (!response.ok) throw new MemoryError('extraction_gateway_failure');
+        const answer = (await response.json()) as {
+          choices?: { message?: { content?: string } }[];
+        };
+        return answer.choices?.[0]?.message?.content ?? '';
+      },
+    };
+    const proposals = await proposeExtraction(sql, scope, batch, gateway);
+    await commitExtraction(sql, scope, batch, { proposals });
+    await buildViews(sql, scope);
+  }
+  /** What memory holds now, and what a recall the person could run returns. */
+  async function memoryAfter(spaceId: string, scenario: Scenario) {
+    const rows =
+      await sql`SELECT b.content FROM memory_claims c JOIN memory_revision_content b ON b.claim_id=c.id AND b.revision=c.head_revision
+        WHERE c.space_id=${spaceId} AND NOT c.hidden`;
+    const query = scenario.checks?.memory?.recall_none?.query;
+    const recalled = query
+      ? await api('/memory/recall', 'POST', { query, max_tokens: 1800 }, undefined, spaceId)
+      : null;
+    const items = (recalled?.value.items ?? []) as { content?: string }[];
+    return {
+      details: rows.map((row) => String(row.content ?? '')),
+      recall: items.map((item) => String(item.content ?? JSON.stringify(item))),
+    };
+  }
+  const cardOf = (view: Record<string, unknown>, conversation: string): RunCardEvidence => ({
+    id: String(view.id),
+    status: String(view.status),
+    started_here: view.conversation_id === conversation,
+    question: typeof view.question === 'string' ? view.question : null,
+    result: typeof view.result === 'string' ? view.result : null,
+    latest_report:
+      view.latest_report && typeof view.latest_report === 'object'
+        ? `${String((view.latest_report as { title?: string }).title ?? '')}\n${String((view.latest_report as { body?: string }).body ?? '')}`
+        : null,
+  });
+  /** The conversation's background work as its cards show it, read the way its route reads it. */
+  async function cards(spaceId: string, conversation: string) {
+    if (!core.runs) return [];
+    const { runs } = await core.runs.list(spaceId, conversation);
+    return runs.map((view) => cardOf(view as unknown as Record<string, unknown>, conversation));
+  }
+  /**
+   * Background work in the scenario's space, driven as the service's workers
+   * would: each job that is due is woken, a schedule is fired when its time
+   * comes round, a pending permission is surfaced the way the watchdog does and
+   * then answered as the person, until nothing is left to start.
+   */
+  async function driveBackground(
+    spaceId: string,
+    conversation: string,
+    scenario: Scenario,
+    data: Record<string, unknown>,
+  ): Promise<BackgroundEvidence> {
+    const plan = scenario.background ?? {};
+    const since = String(data.first_turn_at ?? new Date(0).toISOString());
+    let fired = false;
+    let firedShiftRan = false;
+    let whileWaiting: RunCardEvidence | null = null;
+    let approved = false;
+    const workIn = async () =>
+      sql`SELECT id, kind, state, wait, paused FROM job WHERE space_id=${spaceId} AND kind IN ('run','run_step') ORDER BY created_at`;
+    if (plan.fire_schedule) {
+      for (const work of await workIn()) {
+        if (work.kind !== 'run') continue;
+        const [registration] =
+          await sql`SELECT id FROM trigger WHERE job_id=${work.id} AND kind='schedule' AND enabled ORDER BY created_at LIMIT 1`;
+        if (!registration) continue;
+        const [before] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${work.id}`;
+        await core.triggers?.fireSchedule(String(registration.id), newId('op'));
+        fired = true;
+        data.fired_attempts_before = Number(before?.n ?? 0);
+        data.fired_run = String(work.id);
+      }
+    }
+    for (let round = 0; round < 24; round++) {
+      let moved = false;
+      for (const work of await workIn()) {
+        const id = String(work.id);
+        if (['completed', 'failed', 'cancelled'].includes(String(work.state)) || work.paused)
+          continue;
+        if (work.state === 'waiting_for_approval') {
+          await core.runs?.surfacePermissions();
+          if (work.kind === 'run' && !whileWaiting)
+            whileWaiting =
+              (await cards(spaceId, conversation)).find((card) => card.id === id) ?? null;
+          const wanted = plan.approve;
+          if (!wanted || approved) continue;
+          const [parked] =
+            await sql`SELECT a.id, a.canonical_payload, p.id AS approval_id, p.payload_hash FROM action a
+              JOIN approval p ON p.action_id=a.id
+              WHERE a.job_id=${id} AND a.status='needs_approval' AND a.kind=${wanted.kind} AND p.decision IS NULL
+              ORDER BY a.created_at LIMIT 1`;
+          if (!parked) continue;
+          const text = JSON.stringify(parked.canonical_payload ?? {}).toLowerCase();
+          if (
+            !Object.values(wanted.fields ?? {}).every((value) => text.includes(value.toLowerCase()))
+          )
+            continue;
+          const decided = await api(`/approvals/${String(parked.approval_id)}`, 'POST', {
+            decision: 'approved',
+            payload_hash: String(parked.payload_hash),
+          });
+          approved = decided.status === 200;
+          moved = approved;
+          continue;
+        }
+        const wait = (work.wait ?? {}) as { kind?: string };
+        const resting = work.state === 'waiting_for_event_or_time' && wait.kind === 'event';
+        if (!['queued', 'waiting_for_event_or_time'].includes(String(work.state)) || resting)
+          continue;
+        const [count] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
+        // Time passes: what is due later is due now.
+        await sql`UPDATE job SET next_wake_at = now() - interval '1 second' WHERE id=${id} AND state='waiting_for_event_or_time'`;
+        await wake(id, Number(count?.n ?? 0) + 1);
+        const [after] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
+        if (Number(after?.n ?? 0) > Number(count?.n ?? 0)) moved = true;
+      }
+      if (!moved) break;
+    }
+    if (fired && typeof data.fired_run === 'string') {
+      const [after] =
+        await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${data.fired_run}`;
+      firedShiftRan = Number(after?.n ?? 0) > Number(data.fired_attempts_before ?? 0);
+    }
+    const written =
+      await sql`SELECT e.kind, e.title, coalesce(e.body,'') AS body FROM run_entry e JOIN job j ON j.id=e.run_job_id
+        WHERE j.space_id=${spaceId} AND e.kind IN ('report','finished') AND e.created_at > ${since}::timestamptz
+          AND coalesce(e.data->>'automatic','false') <> 'true' ORDER BY e.seq`;
+    return {
+      runs: await cards(spaceId, conversation),
+      while_waiting: whileWaiting,
+      written: written.map((entry) => ({
+        kind: String(entry.kind),
+        title: String(entry.title ?? ''),
+        body: String(entry.body ?? ''),
+      })),
+      fired,
+      fired_shift_ran: firedShiftRan,
+    };
+  }
   /** A PDF uploaded through the service's own attachment store, as the person's, for a message. */
   async function attachFile(spaceId: string, file: NonNullable<Scenario['attach']>) {
     if (!core.blobs) throw new Error('The service has no blob store for attachments');
@@ -444,11 +761,11 @@ export async function openLab(
     const connectionless = capability && !scenario.tools?.length;
     let [connection] = connectionless
       ? [{ id: '' }]
-      : await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND provider='test' AND label=${label}`;
+      : await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND label=${label}`;
     if (!connection) {
       const id = newId(ID_PREFIXES.connection);
       const scopes = capability ? capabilityScopes([scenario]) : SCOPES;
-      await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${'test'},${label},${JSON.stringify(scopes)}::jsonb)`;
+      await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${scenario.provider ?? 'test'},${label},${JSON.stringify(scopes)}::jsonb)`;
       connectors.register(
         id,
         capability ? capabilityConnector(sql, scenario) : fixtureConnector(sql, scenario.domain),
@@ -470,6 +787,17 @@ export async function openLab(
         connectors.register(id, fixture.connector(spaceId));
       }
     }
+    if (scenario.builtin?.includes('skills')) {
+      const skillsLabel = `eval-skills:${scenario.id}`;
+      const [existingSkills] =
+        await sql`SELECT id FROM connection WHERE space_id=${spaceId} AND provider='skills' AND label=${skillsLabel}`;
+      if (!existingSkills) {
+        const id = newId(ID_PREFIXES.connection);
+        await sql`INSERT INTO connection(id,space_id,provider,label,scopes) VALUES(${id},${spaceId},${skillsManifest.provider},${skillsLabel},${JSON.stringify(skillsManifest.tools.map((tool) => tool.name))}::jsonb)`;
+        connectors.register(id, skillsConnector());
+      }
+    }
+    await seedFacts(spaceId, scenario, cellKey);
     const objective = withFixtureAddress(scenario.objective, formUrl);
     let memory = await seedMemory(
       spaceId,
@@ -508,7 +836,20 @@ export async function openLab(
       // A long conversation goes on after each reply, which only a chat does. The
       // conversation route needs a personal-space session this lab does not make,
       // so the job it created is marked as one before its first turn.
-      if (scenario.history?.length) await sql`UPDATE job SET kind='chat' WHERE id=${jobId}`;
+      if (scenario.history?.length || scenario.background || scenario.chat)
+        await sql`UPDATE job SET kind='chat' WHERE id=${jobId}`;
+      // The space's own agent, as a conversation is answered by.
+      if (scenario.agent) {
+        const agentId = newId('agent');
+        await handle.db.insert(agent).values({
+          id: agentId,
+          spaceId,
+          ...agentValues(MELETE_AGENT, true),
+          isDefault: true,
+          asksBeforeActing: scenario.agent.asks_before_acting,
+        });
+        await sql`UPDATE job SET agent_id=${agentId} WHERE id=${jobId}`;
+      }
       if (process.env.EVALS_CRASH_AT === 'after_submission') process.exit(77);
       state.identities(cellKey, spaceId, jobId);
     }
@@ -564,6 +905,7 @@ export async function openLab(
         throw new Error(
           `Posting an earlier message returned HTTP ${posted.status} with the job ${(await snapshot(jobId)).state}: ${JSON.stringify(posted.value.error ?? null).slice(0, 300)}`,
         );
+      if (scenario.capture) await capture(jobId);
       data = { ...data, history_posted: index + 1 };
       state.update(cellKey, 'history', data);
     }
@@ -580,11 +922,21 @@ export async function openLab(
       data = {
         ...data,
         initial: await snapshot(jobId),
+        first_turn_at: new Date().toISOString(),
         ...(memory ? { memory: memory.evidence } : {}),
       };
       state.update(cellKey, 'first', data);
     }
     const initial = data.initial as Snapshot;
+    if ((scenario.background || scenario.checks?.background) && !data.background) {
+      data.background = await driveBackground(spaceId, jobId, scenario, data);
+      state.update(cellKey, 'background', data);
+    }
+    if (scenario.extract && !data.extracted) {
+      await extract(spaceId, scenario, cellKey);
+      data.extracted = true;
+      state.update(cellKey, 'extracted', data);
+    }
     if (scenario.memory?.correct_when === 'waiting') {
       memory = await seedMemory(spaceId, scenario, cellKey);
       data = {
@@ -726,6 +1078,13 @@ export async function openLab(
     const context: GradeContext = {
       initial,
       final,
+      ...(scenario.checks?.memory ? { memory_after: await memoryAfter(spaceId, scenario) } : {}),
+      ...(scenario.checks?.skills
+        ? {
+            skills_after: (await readOwnSkills(spacesRoot, spaceId)).map((skill) => skill.name),
+          }
+        : {}),
+      ...(data.background ? { background: data.background as BackgroundEvidence } : {}),
       ...(typeof data.decision_status === 'number'
         ? { decision_status: data.decision_status }
         : {}),

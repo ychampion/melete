@@ -1,0 +1,137 @@
+{
+  "id": "cap-own-computer-no-ask",
+  "domain": "web",
+  "title": "Scroll on the agent's own computer without asking",
+  "objective": "On your computer, open https://harbour-news.example/longread and scroll down to the section about the ferry pier, then tell me what it says.",
+  "provider": "sandbox",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "max_turns": 10,
+  "tools": [
+    {
+      "name": "computer.open",
+      "mirror": "computer.open",
+      "result": {
+        "navigated": true,
+        "title": "The harbour, a year on",
+        "url": "https://harbour-news.example/longread"
+      }
+    },
+    {
+      "name": "computer.scroll",
+      "mirror": "computer.scroll",
+      "result": {
+        "done": true,
+        "screen_text": [
+          {
+            "role": "heading",
+            "name": "The harbour, a year on"
+          },
+          {
+            "role": "text",
+            "name": "Part two: the fish market"
+          }
+        ]
+      }
+    },
+    {
+      "name": "computer.batch",
+      "mirror": "computer.batch",
+      "result": {
+        "done": true,
+        "screen_text": [
+          {
+            "role": "heading",
+            "name": "Part three: the ferry pier"
+          },
+          {
+            "role": "text",
+            "name": "The old ferry pier reopens on 1 November after a two-year rebuild, with a new stop for the night boat."
+          }
+        ]
+      }
+    },
+    {
+      "name": "computer.screenshot",
+      "mirror": "computer.screenshot",
+      "result": {
+        "title": "The harbour, a year on",
+        "screen_text": [
+          {
+            "role": "heading",
+            "name": "Part three: the ferry pier"
+          },
+          {
+            "role": "text",
+            "name": "The old ferry pier reopens on 1 November after a two-year rebuild, with a new stop for the night boat."
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "computer.open",
+      "arguments": {
+        "step": 1,
+        "url": "https://harbour-news.example/longread"
+      }
+    },
+    {
+      "tool": "computer.scroll",
+      "arguments": {
+        "step": 2,
+        "x": 640,
+        "y": 400,
+        "amount": 15
+      }
+    },
+    {
+      "tool": "computer.batch",
+      "arguments": {
+        "step": 3,
+        "actions": [
+          {
+            "action": "scroll",
+            "x": 640,
+            "y": 400,
+            "amount": 10
+          },
+          {
+            "action": "scroll",
+            "x": 640,
+            "y": 400,
+            "amount": 5
+          }
+        ]
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "The ferry pier section says the old pier reopens on 1 November after a two-year rebuild, with a new stop for the night boat."
+  },
+  "source": {
+    "page": "Part three: the ferry pier. The old ferry pier reopens on 1 November after a two-year rebuild."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["1 November"],
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "computer.scroll",
+        "status": "succeeded",
+        "min": 1
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the agent scrolled its own computer's page without asking permission and reports that the ferry pier reopens on 1 November.",
+  "suite": "capability"
+}
