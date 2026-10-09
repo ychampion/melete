@@ -23799,7 +23799,7 @@ export interface components {
         __schema301: string;
         __schema302: string;
         /** @enum {string} */
-        __schema303: "idle" | "queued" | "working" | "streaming" | "needs_you" | "paused" | "done" | "failed" | "stopped";
+        __schema303: "idle" | "queued" | "working" | "streaming" | "stalled" | "needs_you" | "paused" | "done" | "failed" | "stopped";
         /** @enum {string} */
         __schema304: "send" | "pause" | "resume" | "stop";
         /** Format: date-time */
@@ -26412,6 +26412,15 @@ export interface components {
             /** @constant */
             type: "attempt_outcome";
             usage?: components["schemas"]["__schema510"];
+        } | {
+            at: components["schemas"]["__schema214"];
+            attempt_id: components["schemas"]["__schema757"];
+            dedup_key: components["schemas"]["__schema759"];
+            local_seq: components["schemas"]["__schema758"];
+            silent_ms: number;
+            tool?: string;
+            /** @constant */
+            type: "stalled";
         } | {
             after_seq: number;
             at: components["schemas"]["__schema214"];

@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { LONG_TURN_NOTE, LONG_TURN_ROUNDS, withLongTurnNote } from './long-turn.ts';
+import {
+  LONG_TURN_NOTE,
+  LONG_TURN_ROUNDS,
+  PROGRESS_NOTE,
+  PROGRESS_ROUNDS,
+  withLongTurnNote,
+} from './long-turn.ts';
 
 const tool = (name: string) => ({ type: 'function', function: { name, parameters: {} } });
 const round = (name = 'web.fetch') => [
@@ -56,5 +62,64 @@ describe('a conversation turn that runs long', () => {
     const started = request(LONG_TURN_ROUNDS + 2, undefined, round('run.start'));
     expect(noted(withLongTurnNote(started, 'chat/completions'))).toBe(false);
     expect(noted(withLongTurnNote(request(LONG_TURN_ROUNDS + 2), 'messages'))).toBe(false);
+  });
+});
+
+describe('a conversation turn that goes quiet', () => {
+  const chat = [tool('say'), tool('web.fetch')];
+  const last = (body: Record<string, unknown>) =>
+    (body.messages as { content?: unknown }[]).at(-1)?.content;
+  const nudged = (body: Record<string, unknown>) => last(body) === PROGRESS_NOTE;
+
+  test('is asked for one specific update after several silent rounds', () => {
+    expect(PROGRESS_ROUNDS).toBe(5);
+    expect(nudged(withLongTurnNote(request(PROGRESS_ROUNDS - 1, chat), 'chat/completions'))).toBe(
+      false,
+    );
+    expect(nudged(withLongTurnNote(request(PROGRESS_ROUNDS, chat), 'chat/completions'))).toBe(true);
+    // It stays asked until it speaks: the notes are never recorded, so one at most is in view.
+    const later = withLongTurnNote(request(PROGRESS_ROUNDS + 3, chat), 'chat/completions');
+    expect(nudged(later)).toBe(true);
+    expect(
+      (later.messages as { content?: unknown }[]).filter((m) => m.content === PROGRESS_NOTE),
+    ).toHaveLength(1);
+  });
+
+  test('is not asked after it tells the person something, in words or with say', () => {
+    const spoken = (message: Record<string, unknown>) =>
+      request(2, chat, [message, ...Array.from({ length: 3 }, () => round()).flat()]);
+    const words = {
+      role: 'assistant',
+      content: 'Google Flights shows three non-stops so far.',
+      tool_calls: [{ id: 'c', type: 'function', function: { name: 'web.fetch', arguments: '{}' } }],
+    };
+    expect(nudged(withLongTurnNote(spoken(words), 'chat/completions'))).toBe(false);
+    const parts = { ...words, content: [{ type: 'text', text: 'Checking the fares now.' }] };
+    expect(nudged(withLongTurnNote(spoken(parts), 'chat/completions'))).toBe(false);
+    const said = request(2, chat, [
+      ...round('say'),
+      ...Array.from({ length: 3 }, () => round()).flat(),
+    ]);
+    expect(nudged(withLongTurnNote(said, 'chat/completions'))).toBe(false);
+    // Blank words are not an update.
+    const blank = { ...words, content: '   ' };
+    expect(nudged(withLongTurnNote(spoken(blank), 'chat/completions'))).toBe(true);
+  });
+
+  test('never doubles up with the closing note, and is not given where say is not offered', () => {
+    const both = withLongTurnNote(
+      request(LONG_TURN_ROUNDS, [tool('run.start'), ...chat]),
+      'chat/completions',
+    );
+    expect(last(both)).toBe(LONG_TURN_NOTE);
+    expect(
+      (both.messages as { content?: unknown }[]).filter((m) => m.content === PROGRESS_NOTE),
+    ).toHaveLength(0);
+    // A helper or background work is offered no say, and is never asked.
+    expect(
+      nudged(
+        withLongTurnNote(request(PROGRESS_ROUNDS + 3, [tool('web.fetch')]), 'chat/completions'),
+      ),
+    ).toBe(false);
   });
 });

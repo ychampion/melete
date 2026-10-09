@@ -22,6 +22,7 @@ const STATUS_WORDS: Record<Conversation['status'], string> = {
   queued: 'Starting',
   working: 'Working',
   streaming: 'Answering',
+  stalled: 'Stalled',
   needs_you: 'Waiting for you',
   paused: 'Paused',
   done: 'Done',

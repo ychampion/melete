@@ -35911,6 +35911,7 @@
           "queued",
           "working",
           "streaming",
+          "stalled",
           "needs_you",
           "paused",
           "done",
@@ -46760,6 +46761,45 @@
               "at",
               "type",
               "outcome"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "attempt_id": {
+                "$ref": "#/components/schemas/__schema757"
+              },
+              "local_seq": {
+                "$ref": "#/components/schemas/__schema758"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema759"
+              },
+              "at": {
+                "$ref": "#/components/schemas/__schema214"
+              },
+              "type": {
+                "type": "string",
+                "const": "stalled"
+              },
+              "silent_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "tool": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "attempt_id",
+              "local_seq",
+              "dedup_key",
+              "at",
+              "type",
+              "silent_ms"
             ],
             "additionalProperties": false
           },

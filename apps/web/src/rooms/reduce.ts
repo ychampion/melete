@@ -150,7 +150,7 @@ export function needsRead(view: ThreadView, frame: RoomFrame): boolean {
  */
 export type Streams = Map<string, string>;
 
-const WRITING = new Set<Turn['status']>(['queued', 'working', 'streaming']);
+const WRITING = new Set<Turn['status']>(['queued', 'working', 'streaming', 'stalled']);
 
 /**
  * Add a frame's words to what its turn has streamed. Called once per frame,
@@ -241,7 +241,14 @@ export function applyFrame(view: ThreadView, frame: RoomFrame, streams: Streams)
     : applyRequestEvent(view, frame.request_job_id, frame.event, streams);
 }
 
-const ACTIVE = new Set<Turn['status']>(['queued', 'working', 'streaming', 'needs_you', 'paused']);
+const ACTIVE = new Set<Turn['status']>([
+  'queued',
+  'working',
+  'streaming',
+  'stalled',
+  'needs_you',
+  'paused',
+]);
 
 /** A request under way can be stopped by the person who asked it, or by an owner of the room. */
 export function canStop(request: RoomRequest, me: string | null, role: string | null): boolean {

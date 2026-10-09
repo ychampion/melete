@@ -31,7 +31,7 @@ import type { roomMessage, roomThread } from './schema.ts';
 import { namesOf } from './transcript.ts';
 
 /** Turn statuses whose answer may still grow. */
-const STILL_WRITING = new Set(['queued', 'working', 'streaming']);
+const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
 
 const author = (names: ReadonlyMap<string, string>, id: string) => ({
   principal_id: id,
