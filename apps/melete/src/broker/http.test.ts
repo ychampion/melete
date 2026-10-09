@@ -229,3 +229,55 @@ test("a runtime reads its own screenshot's picture through the broker, under its
     404,
   );
 });
+
+test('memory.search answers only an attempt whose catalog offers it', async () => {
+  const searched: { job: string; input: unknown }[] = [];
+  const search: ToolSpec = {
+    name: 'memory.search',
+    description: 'search',
+    input_schema: {},
+    effect_class: 'read',
+    connection_id: null,
+  };
+  const searching = createBrokerApp({
+    broker: {
+      ...broker,
+      // Every native tool is served beside discovery, as the real broker's are.
+      discovery: {} as NonNullable<BrokerOperations['discovery']>,
+      // Offered only where the agent may read memory; here, while files.read is granted.
+      async catalog(c) {
+        return c.scopes.includes('files.read') ? [...tools, search] : [...tools];
+      },
+      async memorySearch(c, input) {
+        searched.push({ job: c.job_id, input });
+        return { status: 'found', details: [{ detail: 'Sister Lena was born March 3' }] };
+      },
+    },
+    capabilityKey: key,
+    approvalKey,
+  });
+  const call = (c = claims) =>
+    searching.request('/tools/call', {
+      method: 'POST',
+      headers: auth(c),
+      body: JSON.stringify({ name: 'memory.search', arguments: { query: "Lena's birthday" } }),
+    });
+  const found = await call();
+  expect(found.status).toBe(200);
+  expect(await found.json()).toEqual({
+    status: 'found',
+    details: [{ detail: 'Sister Lena was born March 3' }],
+  });
+  expect(searched).toEqual([{ job: claims.job_id, input: { query: "Lena's birthday" } }]);
+  // Not in this attempt's catalog: refused before memory is asked.
+  const refused = await call({ ...claims, scopes: [] });
+  expect(((await refused.json()) as { error: { code: string } }).error.code).toBe('unknown_tool');
+  expect(searched).toHaveLength(1);
+  // A broker with no memory to search refuses it too.
+  const without = await app.request('/tools/call', {
+    method: 'POST',
+    headers: auth(),
+    body: JSON.stringify({ name: 'memory.search', arguments: { query: 'x' } }),
+  });
+  expect(((await without.json()) as { error: { code: string } }).error.code).toBe('unknown_tool');
+});

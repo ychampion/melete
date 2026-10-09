@@ -76,6 +76,22 @@ export type SkillIndexEntry = z.infer<typeof skillIndexEntry>;
 /** The broker-owned tool an attempt reads a skill's body with, by the name its index gives. */
 export const SKILL_READ_TOOL_NAME = 'skills.read';
 
+/** The broker-owned tool an attempt searches everything memory keeps about the person with. */
+export const MEMORY_SEARCH_TOOL_NAME = 'memory.search';
+export const MEMORY_SEARCH_TOOL: ToolSpec = {
+  name: MEMORY_SEARCH_TOOL_NAME,
+  description:
+    "Search all Melete remembers about the person and their people, not only what came with this message. Search before saying you don't know or never had something, or taking back an answer.",
+  input_schema: {
+    type: 'object',
+    properties: { query: { type: 'string', minLength: 1, maxLength: 200 } },
+    required: ['query'],
+    additionalProperties: false,
+  },
+  effect_class: 'read',
+  connection_id: null,
+};
+
 export const knowledgeExcerpt = z.object({
   path: z.string().min(1),
   excerpt: z.string(),

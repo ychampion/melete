@@ -4,6 +4,8 @@ import {
   type AttemptBundle,
   CONTEXT_LIMITS,
   EMPTY_SINCE_LAST,
+  MEMORY_SEARCH_TOOL,
+  MEMORY_SEARCH_TOOL_NAME,
 } from '@melete/contracts';
 import { estimateTokens, indexLine } from '@melete/skills';
 import {
@@ -18,6 +20,7 @@ import {
   DONE_WORDS,
   DUE_NOW_WORDS,
   instructionTokens,
+  MEMORY_WORDS,
   measureRenderedInput,
   OUTSIDE_WORDS,
   PLAIN_WORDS,
@@ -466,6 +469,22 @@ describe('context assembly', () => {
     expect(text).toContain(DONE_WORDS.join('\n'));
     expect(text).toContain('never say it');
     expect(text).toContain('that is not you saving it');
+  });
+
+  test('an agent that can search memory is told to search before it says it does not know', () => {
+    expect(renderInstructions(bundle)).not.toContain(MEMORY_SEARCH_TOOL_NAME);
+    const searching = { ...bundle, tools: [MEMORY_SEARCH_TOOL] };
+    const text = renderInstructions(searching);
+    expect(text).toContain(MEMORY_WORDS.join('\n'));
+    expect(text).toContain(`search with ${MEMORY_SEARCH_TOOL_NAME}`);
+    expect(text).toContain('Take back an answer only when the person corrects it.');
+    // Still a cached prefix: nothing recalled per turn is named in it.
+    expect(client.renderSystem(searching)).not.toContain('already knows');
+    // The recalled list says it is not the whole of memory.
+    expect(renderInput(searching)).toContain('not everything Melete remembers');
+    const rest = text.replace(PLAIN_WORDS.join('\n'), '');
+    for (const word of ['sandbox', 'broker', 'capability', 'attempt'])
+      expect(rest.toLowerCase()).not.toContain(word);
   });
 
   test('the model is told the plain words to use for how it works', () => {

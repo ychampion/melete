@@ -10,6 +10,7 @@ import { adapter } from '../experience/adapter.ts';
 import type { Run } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { usePoll } from './poll.ts';
+import { RunPermissions } from './RunPermissions.tsx';
 import { ago, excerpt, isOpen, lastActivity, standingLine, statusOf, workOrder } from './words.ts';
 import './runs.css';
 
@@ -33,7 +34,7 @@ function useRuns(conversationId: string | null | undefined, refresh: unknown) {
     30_000,
     runs.some((run) => isOpen(run.status)),
   );
-  return runs;
+  return { runs, read };
 }
 
 export function RunChatCards({
@@ -44,7 +45,7 @@ export function RunChatCards({
   /** Changes when the conversation settles, so new work shows without waiting. */
   refresh: unknown;
 }) {
-  const runs = useRuns(conversationId, refresh);
+  const { runs, read } = useRuns(conversationId, refresh);
   if (!conversationId || runs.length === 0) return null;
   return (
     <div className="col" style={{ gap: 8 }}>
@@ -52,29 +53,32 @@ export function RunChatCards({
         const status = statusOf(run);
         const update = run.result ?? run.latest_report?.body ?? null;
         return (
-          <a
-            key={run.id}
-            className="run-chat-card"
-            href={href(`/runs/${run.id}`)}
-            data-needs={run.status === 'needs_you' ? 'true' : undefined}
-          >
-            <span className="run-chat-icon" aria-hidden="true">
-              <Icon name="progress" size={18} />
-            </span>
-            <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
-              <span className="run-chat-top">
-                <span className="run-chat-kicker">In the background</span>
-                <Status tone={status.tone} quiet>
-                  {status.word}
-                </Status>
+          <div key={run.id} className="run-chat-item">
+            <a
+              className="run-chat-card"
+              href={href(`/runs/${run.id}`)}
+              data-needs={run.status === 'needs_you' ? 'true' : undefined}
+            >
+              <span className="run-chat-icon" aria-hidden="true">
+                <Icon name="progress" size={18} />
               </span>
-              <span className="run-chat-title">{run.title}</span>
-              <span className="run-chat-line">{run.status_line}</span>
-              {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
-              {update ? <span className="run-chat-update clamp2">{excerpt(update)}</span> : null}
-            </span>
-            <Icon name="chevronRight" size={16} style={{ color: 'var(--muted)' }} />
-          </a>
+              <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span className="run-chat-top">
+                  <span className="run-chat-kicker">In the background</span>
+                  <Status tone={status.tone} quiet>
+                    {status.word}
+                  </Status>
+                </span>
+                <span className="run-chat-title">{run.title}</span>
+                <span className="run-chat-line">{run.status_line}</span>
+                {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
+                {update ? <span className="run-chat-update clamp2">{excerpt(update)}</span> : null}
+              </span>
+              <Icon name="chevronRight" size={16} style={{ color: 'var(--muted)' }} />
+            </a>
+            {/* What it waits for the person's OK on is answered here, in the chat. */}
+            <RunPermissions run={run} compact onDecided={read} />
+          </div>
         );
       })}
     </div>
@@ -82,7 +86,7 @@ export function RunChatCards({
 }
 
 export function InProgress({ now }: { now: number }) {
-  const runs = useRuns(undefined, null);
+  const { runs } = useRuns(undefined, null);
   const open = workOrder(runs.filter((run) => isOpen(run.status))).slice(0, 3);
   if (open.length === 0) return null;
   return (

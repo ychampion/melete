@@ -29,8 +29,39 @@ mail and tool output are never read as facts about them. The memory model then
 reads the message through the model gateway (see
 [DEPLOYMENT](DEPLOYMENT.md#memory-model)) and proposes claims, which pass the
 same validation, precedence and correction rules as every other extraction. It
-keeps preferences, standing instructions and facts about people, places,
-projects and dates, and supersedes a claim the message corrects.
+keeps lasting facts about the person, their preferences, the people in their
+life and standing instructions, and supersedes a claim the message corrects.
+
+What it proposes is held to that bar before it is kept:
+
+- A detail of one moment or one task is not kept: content tied to today,
+  tonight or this week ("shipped the redesign this week") unless it is a
+  standing instruction, a subject that names a task's working state
+  (`home.heating_issue`, `work.weekly_recap`), and anything the model marks
+  `about: "this_task_only"`.
+- Something memory already holds is not added again. The claims this
+  conversation already taught are always in the snapshot the model reads. An
+  add that says what a held detail says, in other words ("Has a shellfish
+  allergy" beside "Allergic to shellfish"), is filed under that detail's
+  subject, so it attaches as more evidence or becomes that detail's update; one
+  that repeats a registry-keyed detail, or a detail the same message already
+  changes, is not added. Two wordings are the same when nearly all their
+  meaningful words match and neither negates the other; a different name,
+  number or value is a different detail. A list's items are never merged.
+- A detail is worded for the person it is about: one short sentence ("Sister
+  Lena lives in Seattle"), never "the user". A model's third-person wording is
+  rewritten ("Lena, the user's sister" reads "Lena, your sister"; "The user is
+  vegetarian" reads "Vegetarian"). The memory page shows such a sentence as the
+  belief's own line, and a bare value under its subject's name.
+
+`mergeIntoHeld` and `readExtractionReply` in
+[extract.ts](../apps/melete/src/memory/extract.ts) hold these rules
+([extract-quality.test.ts](../apps/melete/src/memory/extract-quality.test.ts)).
+On a scripted half hour of chat that follows a real first session, they are
+measured with the same model answers once with the rules off and once with
+them on ([memory-noise.test.ts](../apps/melete/test/integration/memory-noise.test.ts));
+the test prints the counts of beliefs, one-off beliefs, duplicates, lasting
+facts kept, third-person wording and key-like labels.
 
 Messages are kept from personal spaces, and in a shared space only from its
 owner. A member's messages in a shared space are not kept in any memory, theirs
@@ -405,6 +436,20 @@ database`). Each attempt assembles and records its own context at start rather
 than reusing one prepared earlier. Procedure promotion is a separate, scoped
 loop with its own tests ([LEARNING](LEARNING.md)); the memory runner records its
 procedure-transfer scenario as a todo rather than executing it.
+
+An attempt is handed only the details recalled for its latest message. To
+look further, an agent that reads memory has the broker's `memory.search`
+tool, in its first catalog whenever it answers a person, and its instructions
+tell it to search before it says it doesn't know or never had something about
+the person, and to take back an answer only when the person corrects it. A
+search runs the same recall as the attempt's own context, without the profile,
+so a forgotten or blocked detail, a removed source, a public compartment and an
+agent set not to read memory return nothing, and it never returns what was
+learned in a private conversation. The answer says whether anything matched and
+how to speak about either outcome ([memory-search.test.ts](../apps/melete/test/integration/memory-search.test.ts)).
+A request to forget in the turn is settled before the turn recalls anything,
+and the agent is told to say it forgot the detail as asked, never that it
+never had it.
 
 ## Verify
 

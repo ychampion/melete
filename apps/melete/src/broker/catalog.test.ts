@@ -254,6 +254,20 @@ test('the skill reader is pinned when the attempt has skills to read', () => {
   ]);
 });
 
+test('the memory search is pinned when the turn answers a person', () => {
+  const files = Array.from({ length: 12 }, (_, i) =>
+    item(`files.t${String(i).padStart(2, '0')}`, { core: true }),
+  );
+  const search = item('memory.search', { core: true });
+  const budget = toolTokens([...META_TOOLS, search.tool]);
+  expect(names(selectCore([...files, search], budget, {}, 0))).not.toContain('memory.search');
+  expect(names(selectCore([...files, search], budget, { conversational: true }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'memory.search',
+  ]);
+});
+
 test('a skill is readable only within scope, and a space skill only by its audience', () => {
   const skill = (
     name: string,

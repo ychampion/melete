@@ -29,6 +29,12 @@ export type MemorySeams = {
   acceptForeignCitation?: boolean;
   /** Return from restore without replaying the independently retained journal. */
   skipRestrictionReplay?: boolean;
+  /**
+   * Keep what extraction proposes as it was read: no merge into what memory
+   * holds, no drop of one moment's details, no rewording. The noise
+   * measurement's other arm, and its proof that the rules carry its numbers.
+   */
+  keepNoisyProposals?: boolean;
 };
 
 const seams: MemorySeams = {};

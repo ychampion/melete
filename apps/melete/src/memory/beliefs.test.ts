@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   beliefCategoryOf,
+  beliefLabel,
   beliefTrustOf,
   describeSource,
   type SourceFacts,
@@ -159,6 +160,31 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.maya.birthday')).toBe("Maya's birthday");
     expect(subjectLabel(null, 'fact.home_city')).toBe('Home city');
     expect(subjectLabel(null, 'work.employer')).toBe('Work employer');
-    expect(subjectLabel(null, 'pref.tea:exception:2026-01-01:2026-01-02')).toBe('Pref tea');
+    expect(subjectLabel(null, 'pref.tea:exception:2026-01-01:2026-01-02')).toBe('Tea');
+  });
+  test('a relation and a name read as one person, never as a key', () => {
+    // Labels a memory page showed in real use: "Sister's lena city", "Landlord's patel",
+    // "Pref diet shellfish allergy".
+    expect(subjectLabel(null, 'person.sister.lena.city')).toBe("Sister Lena's city");
+    expect(subjectLabel(null, 'person.landlord.patel')).toBe('Landlord Patel');
+    expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
+    expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
+  });
+  test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {
+    expect(beliefLabel(null, 'person.sister.lena.city', 'Sister Lena lives in Seattle.')).toBe(
+      'Sister Lena lives in Seattle',
+    );
+    expect(beliefLabel(null, 'person.lena', "Lena, the user's sister, lives in Seattle")).toBe(
+      'Lena, your sister, lives in Seattle',
+    );
+    expect(beliefLabel(null, 'person.lena.birthday', "The user's sister was born March 3")).toBe(
+      'Your sister was born March 3',
+    );
+    // A keyed value and a short value keep their subject.
+    expect(beliefLabel('pref.travel.seat', 'pref.travel.seat', 'aisle seat on long flights')).toBe(
+      'Travel: seat',
+    );
+    expect(beliefLabel(null, 'person.lena.birthday', 'March 3')).toBe("Lena's birthday");
+    expect(beliefLabel(null, 'notes.long', 'word '.repeat(40))).toBe('Notes long');
   });
 });

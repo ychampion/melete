@@ -6,6 +6,7 @@ import {
   type EffectProposalResponse,
   type ExecutionSettlement,
   executionSettlement,
+  MEMORY_SEARCH_TOOL_NAME,
   type ProposeActionRequest,
   proposeActionRequest,
   type ReactRequest,
@@ -32,6 +33,8 @@ export interface BrokerOperations {
   /** Long work's own tools: its record, helpers, handoffs and finish. */
   runTool?(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
   intentTool?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
+  /** Search what memory keeps about the person, under the attempt's own rules. */
+  memorySearch?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
@@ -240,6 +243,16 @@ export function createBrokerApp(options: {
       )
         throw new BrokerFault('unknown_tool');
       return Response.json(await options.broker.intentTool(claims, body.arguments));
+    }
+    if (body.name === MEMORY_SEARCH_TOOL_NAME) {
+      const claims = c.get('claims');
+      const catalog = await options.broker.catalog(claims);
+      if (
+        !options.broker.memorySearch ||
+        !catalog.some((tool) => tool.name === body.name && tool.connection_id === null)
+      )
+        throw new BrokerFault('unknown_tool');
+      return Response.json(await options.broker.memorySearch(claims, body.arguments));
     }
     if (body.name === 'compose') {
       const claims = c.get('claims');

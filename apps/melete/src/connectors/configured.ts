@@ -37,6 +37,7 @@ import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
 import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
+import { ManagedCallMeter } from '../signals/managed-calls.ts';
 import { type BlobStore, configuredBlobStore } from '../storage/blob.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
@@ -47,8 +48,19 @@ import { createArtifactsConnector } from './artifacts.ts';
 import { createBrowserConnector } from './browser.ts';
 import { builtinEnvironment } from './builtin.ts';
 import { CalendarConnector } from './calendar.ts';
+import { ComposioClient } from './composio.ts';
+import {
+  composioProxyFetch,
+  MANAGED_GOOGLE_BASES,
+  MANAGED_READS,
+  MANAGED_WRITES,
+  managedAccess,
+  namesManagedAuthority,
+  type ProxyRule,
+} from './composio-fetch.ts';
 import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
+import { ConnectorFaultError } from './faults.ts';
 import { createFilesConnector, type SentFiles } from './files.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { GOOGLE_ENDPOINTS, type GoogleEndpoints, googleIssuer } from './google.ts';
@@ -269,6 +281,11 @@ export type ConnectorOptions = {
    * endpoints.
    */
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
+  /**
+   * Composio, for Google accounts signed in through it (`COMPOSIO_API_KEY`).
+   * Without it, such a connection offers nothing. `meter` counts each call.
+   */
+  composio?: { client: ComposioClient; meter?: ManagedCallMeter };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
@@ -310,14 +327,27 @@ export type ConnectionSource = {
   configuration: Record<string, unknown> | null;
 };
 
+/**
+ * A Google account signed in through Composio keeps the same kind as one
+ * signed in natively, so everything that reads a Gmail, a Google calendar or
+ * a Drive reads it the same way. Only how its requests travel differs.
+ */
+const managedFields = {
+  via: z.literal('composio').optional(),
+  connected_account_id: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,128}$/)
+    .optional(),
+};
+
 /** What `POST /connections` stores for the kinds that carry their own configuration. */
 const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mail'), mail: mailConnectionConfig }),
   z.object({ kind: z.literal('caldav'), caldav: caldavConnectionConfig }),
   z.object({ kind: z.literal('ics') }),
-  z.object({ kind: z.literal('gmail'), account: z.email() }),
-  z.object({ kind: z.literal('google_calendar'), account: z.email() }),
-  z.object({ kind: z.literal('google_drive'), account: z.email() }),
+  z.object({ kind: z.literal('gmail'), account: z.email(), ...managedFields }),
+  z.object({ kind: z.literal('google_calendar'), account: z.email(), ...managedFields }),
+  z.object({ kind: z.literal('google_drive'), account: z.email(), ...managedFields }),
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
@@ -617,6 +647,7 @@ export class ConnectorFactory {
       (stored?.kind === 'google_calendar' && row.provider === 'caldav') ||
       (stored?.kind === 'google_drive' && row.provider === 'drive')
     ) {
+      if (stored.via === 'composio') return this.openManagedGoogle(row, stored);
       const google = options.google;
       if (!google || !row.secretRef) return undefined;
       const endpoints = google.endpoints ?? GOOGLE_ENDPOINTS;
@@ -795,6 +826,100 @@ export class ConnectorFactory {
         this.secrets,
       );
     return undefined;
+  }
+
+  /**
+   * A Google account signed in through Composio: the same connector as a
+   * native one, its requests sent through Composio for the row's own
+   * connected account. The agent's tools and the signal poller each get a
+   * fetcher of their own, and the poller's can only read.
+   */
+  private openManagedGoogle(
+    row: ConnectionSource,
+    stored: {
+      kind: 'gmail' | 'google_calendar' | 'google_drive';
+      account: string;
+      connected_account_id?: string | undefined;
+    },
+  ): Connector | undefined {
+    const composio = this.options.composio;
+    const accountId = stored.connected_account_id;
+    if (!composio || !accountId) return undefined;
+    const part =
+      stored.kind === 'gmail'
+        ? 'mail'
+        : stored.kind === 'google_calendar'
+          ? 'calendar'
+          : 'documents';
+    const meter = composio.meter;
+    const fetcher = (rules: readonly ProxyRule[]) =>
+      composioProxyFetch({
+        client: composio.client,
+        connectedAccountId: accountId,
+        rules,
+        ...(meter ? { charge: () => meter.charge(row.spaceId) } : {}),
+      });
+    const access = managedAccess(composio.client, accountId);
+    const build = (rules: readonly ProxyRule[]): Connector => {
+      const config = { id: row.id, spaceId: row.spaceId, access, fetcher: fetcher(rules) };
+      if (stored.kind === 'google_drive')
+        return new GoogleDriveConnector({ ...config, base: MANAGED_GOOGLE_BASES.drive });
+      if (stored.kind === 'google_calendar')
+        return new GoogleCalendarConnector({ ...config, base: MANAGED_GOOGLE_BASES.calendar });
+      const transport = new GmailApiTransport({
+        base: MANAGED_GOOGLE_BASES.gmail,
+        from: stored.account,
+        access,
+        fetcher: config.fetcher,
+      });
+      return new EmailConnector({
+        kind: 'api',
+        id: row.id,
+        spaceId: row.spaceId,
+        from: stored.account,
+        session: (work) => work(transport),
+      });
+    };
+    const main = build(MANAGED_WRITES[part]);
+    const reader = build(MANAGED_READS[part]);
+    const execute = main.execute.bind(main);
+    const verify = main.verify.bind(main);
+    // A receipt says the call went through Composio; never which account, nor the key.
+    const throughComposio = <R extends { detail: Record<string, unknown> }>(receipt: R): R => ({
+      ...receipt,
+      detail: { ...receipt.detail, via: 'composio' },
+    });
+    return ownerOnly(
+      Object.assign(main, {
+        // What the poller reads goes through the fetcher that cannot write.
+        signals: (reader as { signals?: unknown }).signals,
+        // Which account a call acts for comes from the row alone.
+        execute: async (
+          action: Parameters<Connector['execute']>[0],
+          ctx: Parameters<Connector['execute']>[1],
+        ): ReturnType<Connector['execute']> => {
+          if (namesManagedAuthority(action.canonical_payload))
+            throw new ConnectorFaultError({
+              kind: 'unsupported_route',
+              detail:
+                'A tool call cannot name the account it acts for; the connection decides that.',
+            });
+          const result = await execute(action, ctx);
+          return result.outcome === 'succeeded'
+            ? { ...result, receipt: throughComposio(result.receipt) }
+            : result;
+        },
+        verify: async (
+          action: Parameters<Connector['verify']>[0],
+          ctx: Parameters<Connector['verify']>[1],
+        ): ReturnType<Connector['verify']> => {
+          const result = await verify(action, ctx);
+          return result.decision === 'succeeded' && result.receipt
+            ? { ...result, receipt: throughComposio(result.receipt) }
+            : result;
+        },
+      }),
+    );
   }
 
   /** Publishing by email uses whichever mailbox connectors are registered, whenever they arrive. */
@@ -999,6 +1124,17 @@ export function connectorOptionsFromEnv(
               clientId: env.GOOGLE_OAUTH_CLIENT_ID,
               clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
             },
+          },
+        }
+      : {}),
+    ...(env.COMPOSIO_API_KEY
+      ? {
+          composio: {
+            client: new ComposioClient({
+              apiKey: env.COMPOSIO_API_KEY,
+              baseUrl: env.COMPOSIO_BASE_URL,
+            }),
+            meter: new ManagedCallMeter(sql, env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null),
           },
         }
       : {}),

@@ -111,14 +111,23 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
       .orderBy(desc(runEntry.seq))
       .limit(1);
     const data = object(last?.data);
-    if (last?.kind === 'check' && data.verdict === 'gaps' && data.settle !== true)
+    if (last?.kind === 'check' && data.verdict === 'gaps' && data.settle !== true) {
+      // The work never disowns what its own record shows: a gap that calls
+      // recorded reads unread is answered from the record, not believed.
+      const read = await sourcesRead(tx, run);
       lines.push(
         [
           'A separate check of the result you gave found it is not done yet:',
           ...gapsOf(data).map((gap) => `- ${clip(gap, 500)}`),
-          'Close these gaps, then call run.finish again.',
-        ].join('\n'),
+          read.succeeded
+            ? `Your own record shows what you read: ${readsText(read, 15)}\nThose reads happened. Where a gap says a source was not read and the record shows it was, the gap is wrong: keep the findings the record supports and do not take them back.`
+            : null,
+          'Close the gaps that stand, then call run.finish again with the result. If one cannot be closed, say so plainly in the result, with what the record does support.',
+        ]
+          .filter(Boolean)
+          .join('\n'),
       );
+    }
     // A shift runs on a checked result only when the person wrote since a shift last read them.
     if (last?.kind === 'check' && data.settle === true && typeof data.result === 'string')
       lines.push(
@@ -336,6 +345,105 @@ export function gapsOf(data: Record<string, unknown>): string[] {
   return Array.isArray(data.gaps) ? data.gaps.map(String) : [];
 }
 
+/** Actions that read a page: what a source being read rests on. */
+const READ_KINDS = [
+  'web.fetch',
+  'browser.open',
+  'browser.read',
+  'browser.observe',
+  'computer.open',
+];
+/** Pages a brief lists one by one; the rest are counted. */
+const READS_SHOWN = 40;
+
+export type SourcesRead = {
+  /** Distinct pages read, oldest first: each read that went through, once per address. */
+  pages: { url: string; title: string; excerpt: string }[];
+  /** Reads that went through, every one counted. */
+  succeeded: number;
+  /** Reads that did not go through. */
+  failed: number;
+  /** Web searches that went through. */
+  searches: number;
+};
+
+const oneLine = (value: unknown) =>
+  typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+
+/**
+ * What the work's own record shows it read: the reads Melete carried out and
+ * recorded for the run and its helpers, with their receipts. Never what a
+ * result says about itself. `except` leaves out a job's own reads (a check's).
+ */
+export async function sourcesRead(
+  tx: Transaction,
+  run: string,
+  except?: string,
+): Promise<SourcesRead> {
+  const helpers = tx
+    .select({ id: runState.jobId })
+    .from(runState)
+    .where(eq(runState.parentRunId, run));
+  const rows = await tx
+    .select({
+      kind: action.kind,
+      status: action.status,
+      payload: action.canonicalPayload,
+      receipt: action.receipt,
+    })
+    .from(action)
+    .where(
+      and(
+        inArray(action.kind, [...READ_KINDS, 'web.search']),
+        sql`(${action.jobId} = ${run} or ${action.jobId} in ${helpers})`,
+        except ? sql`${action.jobId} <> ${except}` : undefined,
+      ),
+    )
+    .orderBy(asc(action.createdAt));
+  const found: SourcesRead = { pages: [], succeeded: 0, failed: 0, searches: 0 };
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const ok = row.status === 'succeeded';
+    if (row.kind === 'web.search') {
+      if (ok) found.searches++;
+      continue;
+    }
+    if (!ok) {
+      if (row.status === 'failed') found.failed++;
+      continue;
+    }
+    found.succeeded++;
+    const detail = object(object(row.receipt).detail);
+    const url =
+      oneLine(detail.final_url) || oneLine(detail.url) || oneLine(object(row.payload).url);
+    const key = url || `${row.kind}:${found.succeeded}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.pages.push({
+      url: url || 'a page in its browser',
+      title: clip(oneLine(detail.title), 120),
+      excerpt: clip(oneLine(detail.body) || oneLine(detail.text), 160),
+    });
+  }
+  return found;
+}
+
+/** The reads in words, for a brief: counts, then each page read. */
+export function readsText(read: SourcesRead, limit = READS_SHOWN): string {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const head = `${count(read.succeeded, 'page read that went through', 'page reads that went through')} (${count(read.pages.length, 'distinct page', 'distinct pages')})${read.failed ? `, ${count(read.failed, 'read', 'reads')} that did not` : ''}, and ${count(read.searches, 'web search', 'web searches')}.`;
+  const shown = read.pages.slice(-limit);
+  const lines = shown.map(
+    (page) =>
+      `- ${page.url}${page.title ? ` — ${page.title}` : ''}${page.excerpt ? `: ${page.excerpt}` : ''}`,
+  );
+  const more =
+    read.pages.length > shown.length
+      ? [`(${read.pages.length - shown.length} earlier pages read are not listed.)`]
+      : [];
+  return [head, ...more, ...lines].join('\n');
+}
+
 /**
  * What a helper checking a result is given: the goal, what done means, the
  * result offered and the evidence in the record. Not the work's own
@@ -420,10 +528,19 @@ async function checkBrief(tx: Transaction, state: State, run: string, step: stri
         ),
       ].join('\n'),
     );
+  // What was read is judged from what Melete recorded doing, not from the
+  // result's own words or the few actions it happened to cite.
+  lines.push(
+    [
+      'What the work’s own record shows it read (reads Melete carried out and recorded for this work and its helpers, with what each page said):',
+      readsText(await sourcesRead(tx, run, step)),
+      'Judge whether a source was read from this record, not from what the result’s text cites or the evidence it names. A page listed here was read: do not call it unread, unfetched or unsupported. Name a gap about sources only for a claim that no page read here supports, and say which claim.',
+    ].join('\n'),
+  );
   lines.push(
     actions.length
       ? [
-          'Actions the result rests on, with their output:',
+          'Actions the result names as its evidence, with their output:',
           ...actions.map(
             (entry) =>
               `- ${entry.id} (${entry.kind}, ${entry.status}): ${clip(textOf(entry.receipt), 1500)}`,

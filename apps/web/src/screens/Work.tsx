@@ -9,11 +9,12 @@ import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Button, Dialog, Field, Input, Status } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
-import { useLoad, useNow } from '../experience/hooks.ts';
+import { useApp, useLoad, useNow } from '../experience/hooks.ts';
 import type { Run, RunEntry } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { usePoll } from '../runs/poll.ts';
 import { RecordTimeline } from '../runs/Record.tsx';
+import { permissionsFor, RunPermissions } from '../runs/RunPermissions.tsx';
 import { useRun } from '../runs/useRun.ts';
 import {
   ago,
@@ -437,6 +438,7 @@ function useRecord(id: string, open: boolean) {
 }
 
 function WorkDetail({ id }: { id: string }) {
+  const { decisions } = useApp();
   const data = useRun(id);
   const run = data.run;
   const now = useNow(true, 60_000);
@@ -473,6 +475,7 @@ function WorkDetail({ id }: { id: string }) {
   const finished = isFinished(run.status);
   const paused = isPaused(run);
   const helpers = new Map(run.steps.map((step) => [step.id, step.title]));
+  const asksOk = permissionsFor(run, decisions.permissions).length > 0;
 
   const act = (
     kind: 'pause' | 'stop',
@@ -604,9 +607,10 @@ function WorkDetail({ id }: { id: string }) {
               <p className="run-question-text voice">
                 {run.question ?? 'It’s waiting to hear from you before it carries on.'}
               </p>
+              <RunPermissions run={run} onDecided={data.reload} />
               <MessageBox
                 label="Your reply"
-                placeholder="Your answer"
+                placeholder={asksOk ? 'Or tell it what to do instead of asking' : 'Your answer'}
                 action="Reply"
                 onSend={message}
               />
