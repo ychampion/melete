@@ -5,6 +5,8 @@
  * retained for standalone tools and fixtures that have no database catalog.
  */
 import {
+  accessSync,
+  constants,
   type Dirent,
   existsSync,
   lstatSync,
@@ -13,7 +15,7 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { ID_PREFIXES, prefixedId, spaceAudience } from '@melete/contracts';
 import { initSpace, isGitRepo, type SpacePaths, spacePaths } from '@melete/knowledge';
 import { eq } from 'drizzle-orm';
@@ -74,23 +76,40 @@ export function filesystemSpaces(spacesRoot: string): SpaceResolver {
 }
 
 /** A catalog repository cannot redirect either Git or derived storage elsewhere. */
+/** The browser worker's own directory in a space, which another account owns. */
+const WORKER_DIRECTORY = 'browser';
+
+const traversable = (directory: string) => {
+  try {
+    accessSync(directory, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Whether a link sits anywhere under a space's directory. A subdirectory this
- * service cannot read, such as the browser worker's own profile, is one it
- * cannot follow a path through either, so it is passed over; the space's own
- * directory must still be readable.
+ * Whether a link sits anywhere under a space's directory, or a directory hides
+ * what is in it while still letting a path through. The browser worker's own
+ * directory, which another account owns, is passed over only when this service
+ * can neither list it nor pass through it, so nothing in it can be reached from
+ * here. Any other directory this service cannot read stops the check.
  */
-export function hasSymlink(directory: string, top = true): boolean {
+export function hasSymlink(directory: string, depth = 0): boolean {
   let entries: Dirent[];
   try {
     entries = readdirSync(directory, { withFileTypes: true });
   } catch (error) {
-    if (!top && error instanceof Error && 'code' in error && error.code === 'EACCES') return false;
+    if (depth > 0 && error instanceof Error && 'code' in error && error.code === 'EACCES') {
+      // Searchable but not listable: a link in it could be followed unseen.
+      if (traversable(directory)) return true;
+      if (depth === 1 && basename(directory) === WORKER_DIRECTORY) return false;
+    }
     throw error;
   }
   for (const entry of entries) {
     if (entry.isSymbolicLink()) return true;
-    if (entry.isDirectory() && hasSymlink(join(directory, entry.name), false)) return true;
+    if (entry.isDirectory() && hasSymlink(join(directory, entry.name), depth + 1)) return true;
   }
   return false;
 }
