@@ -64,6 +64,7 @@ import { databaseNow } from '../db/clock.ts';
 import {
   action,
   agent,
+  approval,
   attempt,
   budgetLedger,
   event,
@@ -76,6 +77,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { SUPERSEDED_NOTE } from '../experience/projectors.ts';
 import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
@@ -175,6 +177,13 @@ const WATCH_EVERY_MS = 60_000;
 const STALLED = 'stalled';
 /** What the person is told and asked when the watchdog stops their work. */
 export const STALLED_QUESTION = `It stopped making progress: its next step has not started for ${RUN_STALL_MS / 60_000} minutes, so it is paused. Reply "continue" to try again, or say what to change. Stop ends it.`;
+
+/**
+ * What a run waiting on the person's OK for one of its actions says, on its
+ * card, its page and in the conversation's list of work. The permission
+ * itself is answered beside it, with Approve or Decline.
+ */
+export const WAITING_FOR_OK = 'Waiting for your OK before it goes on';
 
 const missing = () => new ServiceError('not_found', 'That piece of work was not found.', 404);
 const ENDED_STATES = ['completed', 'failed', 'cancelled'];
@@ -1347,6 +1356,22 @@ export class RunService {
       return outcome;
     }
 
+    // Shifts that came back from a check's gaps without moving: the result is
+    // given as it stands, with the gaps the check named, rather than held
+    // back behind a question while the person hears nothing.
+    if (idle >= RUN_IDLE_SHIFT_LIMIT && !step) {
+      const given = await this.giveWithGaps(tx, row, attemptId);
+      if (given) {
+        if (await this.stillOut(tx, row.id, attemptId)) {
+          const now = (await databaseNow(tx)).getTime();
+          return {
+            kind: 'waiting_for_event_or_time',
+            wait: { kind: 'timer', wake_at: new Date(now + CLOSE_RETRY_MS).toISOString() },
+          };
+        }
+        return { kind: 'completed', summary: given, evidence: [] };
+      }
+    }
     if (idle >= RUN_IDLE_SHIFT_LIMIT)
       return ask(
         `I haven't made progress in my last ${RUN_IDLE_SHIFT_LIMIT} tries at this. What should I change, or should I stop?`,
@@ -1616,6 +1641,39 @@ export class RunService {
         ...(settle ? { result: final } : {}),
       },
     });
+  }
+
+  /**
+   * The result a check sent back with gaps, given to the person as it stands
+   * with each gap named, when the work cannot close them. The text given, or
+   * null when the newest word on the result is not such a check.
+   */
+  private async giveWithGaps(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+  ): Promise<string | null> {
+    const last = await this.lastResult(tx, row.id);
+    const data = object(last?.data);
+    if (last?.kind !== 'check' || data.verdict !== 'gaps' || data.settle === true) return null;
+    const [proposal] =
+      typeof data.proposal === 'string'
+        ? await tx.select().from(runEntry).where(eq(runEntry.id, data.proposal))
+        : [];
+    if (!proposal) return null;
+    const gaps = gapsOf(data);
+    const result = `${proposal.body}\n\nWhat a separate check could not confirm:\n${gaps.map((gap) => `- ${gap}`).join('\n')}`;
+    await this.write(tx, {
+      run: row.id,
+      attemptId,
+      kind: 'finished',
+      title: clip(result.split('\n')[0] ?? result, 200),
+      body: result,
+      data: { ...object(proposal.data), check: 'not_confirmed', gaps },
+    });
+    await tx.update(runState).set({ finishedAt: new Date() }).where(eq(runState.jobId, row.id));
+    await this.reported(tx, row.id, row, 'Done', result, { spaced: false });
+    return result;
   }
 
   /** The newest entry that says where the run's result stands, if any. */
@@ -1950,6 +2008,10 @@ export class RunService {
         tx,
         rows.filter((entry) => entry.paused).map((entry) => entry.id),
       );
+      const permissions = await waitingForOk(
+        tx,
+        rows.filter((entry) => !isTerminal(entry.state as JobState)).map((entry) => entry.id),
+      );
       const views: RunView[] = [];
       for (const row of rows) {
         const state = states.get(row.id);
@@ -1966,7 +2028,10 @@ export class RunService {
         // Stopped by the watchdog, it waits for the person, who is asked.
         const stalled =
           row.paused && !isTerminal(row.state as JobState) && pauses.get(row.id) === STALLED;
-        const status = stalled ? 'needs_you' : runStatusOf(row.state, row.paused);
+        // A permission it or a helper asked for and nobody has answered: it
+        // cannot go on without the person, whatever else it is doing.
+        const waitsForOk = (permissions.get(row.id)?.length ?? 0) > 0;
+        const status = stalled || waitsForOk ? 'needs_you' : runStatusOf(row.state, row.paused);
         const metric = state.metric ?? null;
         const check = checkOf(
           state,
@@ -1977,9 +2042,11 @@ export class RunService {
         const question_ = stalled
           ? STALLED_QUESTION
           : (asked ??
-            (wait.kind === 'user_input' && typeof wait.question === 'string'
-              ? wait.question
-              : null));
+            (waitsForOk
+              ? WAITING_FOR_OK
+              : wait.kind === 'user_input' && typeof wait.question === 'string'
+                ? wait.question
+                : null));
         const report = newest('report');
         const handoff = newest('checkpoint');
         const finished = newest('finished');
@@ -2290,6 +2357,17 @@ export class RunService {
         .where(and(eq(runState.jobId, row.id), isNotNull(runState.finishedAt)));
       if (locked.paused) {
         resume = (await pausedFor(tx, [row.id])).get(row.id) === STALLED;
+      } else if (locked.state === 'waiting_for_approval') {
+        // Words written while it waits for an OK take the place of that
+        // request, as a new message does in a conversation: the request is
+        // withdrawn, and the next shift reads what the person said instead.
+        await withdrawPermissions(tx, eq(action.jobId, row.id), SUPERSEDED_NOTE);
+        await this.jobs.move(
+          tx,
+          locked,
+          { kind: 'approval_decided', decision: 'denied' },
+          { reason: 'input' },
+        );
       } else if (locked.state === 'waiting_for_event_or_time') {
         await tx.update(runState).set({ waitingOnSteps: false }).where(eq(runState.jobId, row.id));
         await this.jobs.move(tx, locked, { kind: 'timer_fired' }, { reason: 'input' });
@@ -2332,8 +2410,14 @@ export class RunService {
    * does not sit "working" with nothing happening; their reply or Resume
    * tries again. A helper is stopped, and its run hears why.
    */
-  async watch(capacity: number): Promise<{ paused: string[]; stopped: string[] }> {
-    const done = { paused: [] as string[], stopped: [] as string[] };
+  async watch(capacity: number): Promise<{ paused: string[]; stopped: string[]; asked: string[] }> {
+    // Waiting on the person's OK is no stall: it is shown and sent to them,
+    // however busy the attempt slots are.
+    const done = {
+      paused: [] as string[],
+      stopped: [] as string[],
+      asked: await this.surfacePermissions(),
+    };
     const [busy] = await this.db
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
@@ -2406,6 +2490,80 @@ export class RunService {
       if (triggers) await this.syncSchedules();
     }
     return done;
+  }
+
+  /**
+   * A permission a run or one of its helpers asked for reaches the person
+   * once: an update in the run's record, which its card and page show, and a
+   * notification that opens the run, under the same key the decision
+   * notifications use, so the person is told once whichever writes it first.
+   * The permission is answered on the run's page, on its card in the
+   * conversation, or on Home. Returns the permissions told of now.
+   */
+  async surfacePermissions(): Promise<string[]> {
+    const open = await this.db
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(
+          eq(job.kind, 'run'),
+          notInArray(job.state, ENDED_STATES),
+          // One not told of yet; `waitingForOk` decides again which can still be answered.
+          sql`exists (select 1 from approval p join action a on a.id = p.action_id
+            join run_state s on s.job_id = a.job_id
+            where p.decision is null and a.status = 'needs_approval' and s.checking is null
+              and (s.job_id = ${job.id} or s.parent_run_id = ${job.id})
+              and not exists (select 1 from run_entry e where e.run_job_id = ${job.id}
+                and e.kind = 'report' and e.data->>'approval_id' = p.id))`,
+        ),
+      )
+      .limit(100);
+    const told: string[] = [];
+    for (const { id } of open) {
+      const surfaced = await this.jobs.transaction(async (tx) => {
+        const waiting = (await waitingForOk(tx, [id])).get(id) ?? [];
+        const [root] = await tx.select().from(job).where(eq(job.id, id));
+        if (!root || !waiting.length) return [];
+        const already = new Set(
+          (
+            await tx
+              .select({ approval: sql<string>`${runEntry.data}->>'approval_id'` })
+              .from(runEntry)
+              .where(
+                and(
+                  eq(runEntry.runJobId, id),
+                  eq(runEntry.kind, 'report'),
+                  sql`${runEntry.data}->>'approval_id' is not null`,
+                ),
+              )
+          ).map((entry) => entry.approval),
+        );
+        const fresh = waiting.filter((entry) => !already.has(entry.approvalId));
+        for (const entry of fresh) {
+          await this.write(tx, {
+            run: id,
+            kind: 'report',
+            title: 'It needs your OK to go on',
+            body: 'It asked for your permission before its next step. Approve or decline it here; until then it waits.',
+            data: { automatic: true, approval_id: entry.approvalId, action_id: entry.actionId },
+          });
+          const principal = root.principalId;
+          if (principal)
+            await tx.execute(sql`insert into push_intent
+                (id, principal_id, kind, title, body, because, url, dedup_key)
+              select ${newId('pint')}, ${principal}, 'decision', 'One decision is waiting',
+                ${clip(root.title, 300)}, 'Because it can’t go on until you decide.',
+                ${`/#/runs/${id}`}, ${`decision:approval:${entry.approvalId}`}
+              where coalesce((select s.decisions from push_setting s
+                where s.principal_id = ${principal}), true)
+              on conflict (dedup_key) do nothing`);
+          await tx.update(runState).set({ lastReportAt: new Date() }).where(eq(runState.jobId, id));
+        }
+        return fresh.map((entry) => entry.approvalId);
+      });
+      told.push(...surfaced);
+    }
+    return told;
   }
 
   /** The person's settings for the work: a limit (null clears it) and whether results are checked. */
@@ -2495,6 +2653,56 @@ async function pausedFor(tx: Transaction, ids: string[]): Promise<Map<string, st
     reasons.set(row.job, typeof payload.reason === 'string' ? payload.reason : null);
   }
   return reasons;
+}
+
+type WaitingPermission = {
+  approvalId: string;
+  actionId: string;
+  /** The job that asked: the run itself or one of its helpers. */
+  jobId: string;
+  kind: string;
+  requestedAt: Date;
+};
+
+/**
+ * The permissions each run waits on: asked by the run or by one of its
+ * helpers, still unanswered and still answerable, the same ones the person's
+ * list of permissions shows. A check of a result is left out: it has nobody to
+ * ask, and is given up on instead.
+ */
+async function waitingForOk(
+  tx: Transaction,
+  runs: string[],
+): Promise<Map<string, WaitingPermission[]>> {
+  const found = new Map<string, WaitingPermission[]>();
+  if (!runs.length) return found;
+  const rows = await tx
+    .select({
+      run: sql<string>`coalesce(${runState.parentRunId}, ${runState.jobId})`,
+      approvalId: approval.id,
+      actionId: action.id,
+      jobId: action.jobId,
+      kind: action.kind,
+      requestedAt: approval.requestedAt,
+    })
+    .from(approval)
+    .innerJoin(action, eq(action.id, approval.actionId))
+    .innerJoin(job, eq(job.id, action.jobId))
+    .innerJoin(runState, eq(runState.jobId, job.id))
+    .where(
+      and(
+        or(inArray(runState.jobId, runs), inArray(runState.parentRunId, runs)),
+        isNull(runState.checking),
+        isNull(approval.decision),
+        eq(action.status, 'needs_approval'),
+        eq(approval.jobRevision, job.revision),
+        notInArray(job.state, ENDED_STATES),
+        or(isNull(approval.expiresAt), sql`${approval.expiresAt} > now()`),
+      ),
+    )
+    .orderBy(asc(approval.requestedAt));
+  for (const { run, ...entry } of rows) found.set(run, [...(found.get(run) ?? []), entry]);
+  return found;
 }
 
 /** Whether the newest entry about the run's result is a check that gives it. */
