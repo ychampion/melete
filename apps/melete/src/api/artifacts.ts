@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { type FileHandle, realpath } from 'node:fs/promises';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -52,11 +52,18 @@ export function artifactLocation(
     : { root: roots.spacesRoot, segments: [spaceId, 'artifacts', ...segments] };
 }
 
-async function readArtifact(
-  roots: ArtifactRoots,
-  spaceId: string,
-  row: Stored,
-): Promise<Uint8Array> {
+/**
+ * The most the files route serves. A file the agent's computer could rewrite
+ * after its receipt is refused above this before a byte of it is read, so a
+ * file swapped for a huge or sparse one costs nothing.
+ */
+export const MAX_SERVED_BYTES = 256 * 1024 * 1024;
+const CHUNK = 64 * 1024;
+
+/** A stored file opened for reading, with the size it had when opened. */
+type Opened = { handle: FileHandle; size: number };
+
+async function openArtifact(roots: ArtifactRoots, spaceId: string, row: Stored): Promise<Opened> {
   const location = artifactLocation(roots, spaceId, row);
   // Every component is checked, so a link anywhere on the way is refused.
   const { base, segments } =
@@ -67,11 +74,56 @@ async function readArtifact(
   // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
   const handle = await openBeneath(base, segments, constants.O_RDONLY);
   try {
-    if (!(await handle.stat()).isFile()) throw notFound();
-    return new Uint8Array(await handle.readFile());
-  } finally {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw notFound();
+    return { handle, size: stat.size };
+  } catch (error) {
     await handle.close();
+    throw error;
   }
+}
+
+/** What a stored file must still be: its size when known, its digest, and the most read. */
+type Expected = { size: number | null; hash: string; max: number };
+
+/**
+ * Whether the open file is still the one recorded. Its size is checked before
+ * any read; its digest is then taken a chunk at a time, never the whole file in
+ * memory, and reading stops once it passes the size it had when opened.
+ */
+async function matches(opened: Opened, expected: Expected): Promise<boolean> {
+  if (opened.size > expected.max || (expected.size !== null && opened.size !== expected.size))
+    return false;
+  const digest = createHash('sha256');
+  const buffer = new Uint8Array(CHUNK);
+  let read = 0;
+  while (read <= opened.size) {
+    const { bytesRead } = await opened.handle.read(buffer, 0, CHUNK, read);
+    if (!bytesRead) break;
+    digest.update(buffer.subarray(0, bytesRead));
+    read += bytesRead;
+  }
+  return read === opened.size && digest.digest('hex') === expected.hash;
+}
+
+/** Opens a stored file and checks it is still the recorded one, or closes it and refuses. */
+async function verified(
+  open: () => Promise<Opened>,
+  expected: Expected,
+  refuse: () => ServiceError,
+): Promise<Opened> {
+  let opened: Opened;
+  try {
+    opened = await open();
+  } catch {
+    throw refuse();
+  }
+  const ok = await matches(opened, expected).catch(() => false);
+  if (!ok) {
+    await opened.handle.close();
+    throw refuse();
+  }
+  return opened;
 }
 
 function rangeFor(value: string, size: number): { start: number; end: number } | null {
@@ -113,26 +165,54 @@ async function roomArtifact(db: Database, id: string, principalId: string) {
 const noFile = () =>
   new ServiceError('not_found', 'This file is no longer the one that was saved.', 404);
 
-function fileResponse(
-  bytes: Uint8Array,
+/** Bytes `start` to `end` of the open file, read as they are sent. The file closes after. */
+function streamOf(handle: FileHandle, start: number, end: number): ReadableStream<Uint8Array> {
+  let position = start;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const length = Math.min(CHUNK, end + 1 - position);
+        const buffer = new Uint8Array(Math.max(length, 0));
+        const { bytesRead } =
+          length > 0 ? await handle.read(buffer, 0, length, position) : { bytesRead: 0 };
+        if (!bytesRead) {
+          await handle.close();
+          controller.close();
+          return;
+        }
+        position += bytesRead;
+        controller.enqueue(buffer.subarray(0, bytesRead));
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      await handle.close();
+    },
+  });
+}
+
+/** Sends the open file, or the range asked for, without holding it in memory. Takes over the handle. */
+async function fileResponse(
+  opened: Opened,
   options: { mime: string; name: string; inline: boolean; range: string | undefined },
-): Response {
+): Promise<Response> {
+  const { handle, size } = opened;
   const headers = fileHeaders(options.mime, options.name, options.inline);
   if (options.range) {
-    const range = rangeFor(options.range, bytes.length);
+    const range = rangeFor(options.range, size);
     if (!range) {
-      headers.set('content-range', `bytes */${bytes.length}`);
+      await handle.close();
+      headers.set('content-range', `bytes */${size}`);
       return new Response(null, { status: 416, headers });
     }
-    headers.set('content-range', `bytes ${range.start}-${range.end}/${bytes.length}`);
+    headers.set('content-range', `bytes ${range.start}-${range.end}/${size}`);
     headers.set('content-length', String(range.end - range.start + 1));
-    return new Response(Uint8Array.from(bytes.subarray(range.start, range.end + 1)), {
-      status: 206,
-      headers,
-    });
+    return new Response(streamOf(handle, range.start, range.end), { status: 206, headers });
   }
-  headers.set('content-length', String(bytes.length));
-  return new Response(Uint8Array.from(bytes), { headers });
+  headers.set('content-length', String(size));
+  return new Response(streamOf(handle, 0, size - 1), { headers });
 }
 
 export function mountArtifacts(
@@ -176,18 +256,12 @@ export function mountArtifacts(
     // read it, checked now, and nobody else. Every other file follows its job.
     const found = row ?? (viewer ? await roomArtifact(db, id.data, viewer) : null);
     if (!found) throw notFound();
-    let bytes: Uint8Array;
-    try {
-      bytes = await readArtifact(roots, found.artifact.spaceId, found.artifact);
-    } catch {
-      throw notFound();
-    }
-    if (
-      bytes.length !== found.artifact.size ||
-      createHash('sha256').update(bytes).digest('hex') !== found.artifact.contentHash
-    )
-      throw notFound();
-    return fileResponse(bytes, {
+    const opened = await verified(
+      () => openArtifact(roots, found.artifact.spaceId, found.artifact),
+      { size: found.artifact.size, hash: found.artifact.contentHash, max: Number.MAX_SAFE_INTEGER },
+      notFound,
+    );
+    return fileResponse(opened, {
       mime: found.artifact.mime,
       name: found.artifact.path.split('/').at(-1) ?? 'artifact',
       inline: c.req.query('disposition') === 'inline',
@@ -221,20 +295,19 @@ export function mountArtifacts(
       );
     const saved = row ? savedFile(row.action.kind, row.action.receipt) : null;
     if (!row || !saved) throw noFile();
-    let bytes: Uint8Array;
-    try {
-      bytes = await readArtifact(roots, row.job.spaceId, {
-        area: saved.area,
-        path: saved.path,
-        jobId: row.job.id,
-        sourceJobId: row.job.id,
-      });
-    } catch {
-      throw noFile();
-    }
-    if (createHash('sha256').update(bytes).digest('hex') !== saved.contentHash) throw noFile();
+    const opened = await verified(
+      () =>
+        openArtifact(roots, row.job.spaceId, {
+          area: saved.area,
+          path: saved.path,
+          jobId: row.job.id,
+          sourceJobId: row.job.id,
+        }),
+      { size: null, hash: saved.contentHash, max: MAX_SERVED_BYTES },
+      noFile,
+    );
     const name = saved.path.split('/').at(-1) ?? 'file';
-    return fileResponse(bytes, {
+    return fileResponse(opened, {
       mime: mimeForName(name),
       name,
       inline: c.req.query('disposition') === 'inline',

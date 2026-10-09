@@ -88,14 +88,18 @@ function dispositionName(name: string): string {
  * The headers a stored file is sent with. A download is an attachment. Shown
  * in place (`inline`, asked for with `?disposition=inline`), only a type
  * `shownInPlace` allows is, and a picture or text also gets an opaque origin
- * with nothing it may load. Audio plays in place, as before. Every response
- * says `nosniff`, so the browser never reads one type as another.
+ * with nothing it may load. Audio plays in place, as before. Any other type,
+ * a web page or an SVG among them, is sent as plain bytes with an opaque
+ * origin, so no change to the disposition and no client that ignores it can
+ * run its script here. Every response says `nosniff`, so the browser never
+ * reads one type as another.
  */
 export function fileHeaders(mime: string, name: string, inline: boolean): Headers {
   const shown = inline ? shownInPlace(mime) : null;
   const audio = essence(mime).startsWith('audio/');
+  const known = audio || shownInPlace(mime) !== null;
   const headers = new Headers({
-    'content-type': shown ?? mime,
+    'content-type': shown ?? (known ? mime : 'application/octet-stream'),
     'cache-control': 'private, no-store',
     'x-content-type-options': 'nosniff',
     'accept-ranges': 'bytes',
@@ -106,5 +110,6 @@ export function fileHeaders(mime: string, name: string, inline: boolean): Header
       'content-security-policy',
       "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
     );
+  else if (!shown && !audio) headers.set('content-security-policy', "sandbox; default-src 'none'");
   return headers;
 }
