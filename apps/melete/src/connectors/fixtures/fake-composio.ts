@@ -38,6 +38,8 @@ export type FakeComposio = {
   decline: boolean;
   /** Accounts whose reads Composio answers with a server error, as in an outage. */
   unreadable: Set<string>;
+  /** Accounts whose revoking and deleting Composio answers with a server error. */
+  unremovable: Set<string>;
   stop(): Promise<void>;
 };
 
@@ -75,6 +77,7 @@ export async function startFakeComposio(
     next: options.upstream ?? null,
     decline: false,
     unreadable: new Set<string>(),
+    unremovable: new Set<string>(),
   };
   const error = (status: number, slug: string) =>
     Response.json(
@@ -164,6 +167,7 @@ export async function startFakeComposio(
       if (revoke && request.method === 'POST') {
         const account = accounts.get(revoke[1] ?? '');
         if (!account) return error(404, 'ConnectedAccount_NotFound');
+        if (state.unremovable.has(account.id)) return error(503, 'ServiceUnavailable');
         account.status = 'REVOKED';
         return Response.json({ success: true });
       }
@@ -174,6 +178,7 @@ export async function startFakeComposio(
         if (request.method === 'GET' && state.unreadable.has(account.id))
           return error(503, 'ServiceUnavailable');
         if (request.method === 'DELETE') {
+          if (state.unremovable.has(account.id)) return error(503, 'ServiceUnavailable');
           accounts.delete(account.id);
           state.removed.push(account.id);
           return Response.json({ success: true });
@@ -257,6 +262,7 @@ export async function startFakeComposio(
       state.decline = value;
     },
     unreadable: state.unreadable,
+    unremovable: state.unremovable,
     stop: async () => {
       await server.stop(true);
     },

@@ -73,7 +73,7 @@ import {
   readConnectionConfig,
 } from './connectors/configured.ts';
 import { startTrashSweep } from './connectors/files-trash.ts';
-import { managedRevocation } from './connectors/managed-accounts.ts';
+import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
@@ -777,6 +777,7 @@ export async function bootstrap(
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopManagedRemovals: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -826,6 +827,7 @@ export async function bootstrap(
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
+    stopManagedRemovals?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -1010,6 +1012,11 @@ export async function bootstrap(
       // A Google account signed in through Composio is revoked there when disconnected.
       const composio = connectors.options.composio;
       releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
+      // Accounts a removed space, a failed disconnection or an unfinished
+      // sign-in left at Composio are removed there, tried again until gone.
+      stopManagedRemovals = composio
+        ? startManagedRemovalSweep(handle.sql, composio.client)
+        : undefined;
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions) {
         releaseSandboxes = sandboxKeyChange({

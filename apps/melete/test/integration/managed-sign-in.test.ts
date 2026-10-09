@@ -22,7 +22,8 @@ import { googleUpstream, startFakeComposio } from '../../src/connectors/fixtures
 import { startFakeGoogle } from '../../src/connectors/fixtures/fake-google.ts';
 import { GoogleCalendarConnector } from '../../src/connectors/google-calendar.ts';
 import { mailAction, mailContext } from '../../src/connectors/mail-fixtures.ts';
-import { managedRevocation } from '../../src/connectors/managed-accounts.ts';
+import { managedRevocation, sweepManagedRemovals } from '../../src/connectors/managed-accounts.ts';
+import { UNUSED_ACCOUNT_GRACE_MS } from '../../src/connectors/managed-sign-in.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
@@ -39,6 +40,7 @@ import {
   monthOf,
 } from '../../src/signals/managed-calls.ts';
 import { MANAGED_WATCH_SECONDS, MAX_POLL_SECONDS, SignalPoller } from '../../src/signals/poller.ts';
+import { sweepPrincipals } from '../../src/spaces/plan.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const MASTER_KEY = '5c'.repeat(32);
@@ -545,5 +547,89 @@ withDb('signing in to Google through Composio', () => {
     expect(composio.accounts.get(String(calendar.configuration.connected_account_id))?.status).toBe(
       'ACTIVE',
     );
+  }, 60_000);
+
+  test('removing a space queues its Composio accounts, which are tried again until Composio confirms them gone', async () => {
+    const t = need();
+    // An account at Composio, connected in a space of its own.
+    composio.signInAs(googleUpstream(second));
+    const linked = await client.link({
+      authConfigId: await client.authConfig('gmail'),
+      userId: 'melete:removal:removal',
+      callbackUrl: `${PUBLIC_URL}/api/managed-sign-ins/callback?state=unused`,
+    });
+    expect((await fetch(linked.redirectUrl, { redirect: 'manual' })).status).toBe(302);
+    const ca = linked.connectedAccountId;
+    const spaceId = 'spc_managedremoval01';
+    await t.sql`insert into space (id, name, git_path) values (${spaceId}, 'Removed', ${`test/${spaceId}`})`;
+    await t.sql`insert into connection (id, space_id, provider, label, configuration)
+      values ('con_managedremoval01', ${spaceId}, 'imap', 'Gmail (room@example.test)',
+        ${JSON.stringify({ kind: 'gmail', account: 'room@example.test', via: 'composio', connected_account_id: ca })}::jsonb)`;
+    composio.unremovable.add(ca);
+    try {
+      await sweepPrincipals(t.sql, spaceId);
+      expect(await t.sql`select 1 from connection where space_id = ${spaceId}`).toHaveLength(0);
+      const [queued] = await t.sql`select attempts from managed_account_removal
+        where connected_account_id = ${ca}`;
+      expect(queued?.attempts).toBe(0);
+      // Composio cannot be reached: the account stays queued, with its reason and a later try.
+      const at = Date.now();
+      expect((await sweepManagedRemovals(t.sql, client, at)).failed).toContain(ca);
+      const [failed] = await t.sql`select attempts, last_error, next_attempt_at
+        from managed_account_removal where connected_account_id = ${ca}`;
+      expect(failed?.attempts).toBe(1);
+      expect(String(failed?.last_error)).toBe('composio_unavailable_503');
+      expect(new Date(failed?.next_attempt_at).getTime()).toBeGreaterThan(at);
+      expect(composio.accounts.has(ca)).toBe(true);
+      // Not due again yet, so not asked again.
+      expect((await sweepManagedRemovals(t.sql, client, at)).failed).not.toContain(ca);
+      // Once Composio answers, the next due try removes it and the queue lets it go.
+      composio.unremovable.delete(ca);
+      const later = await sweepManagedRemovals(t.sql, client, at + 2 * 60 * 60_000);
+      expect(later.removed).toContain(ca);
+      expect(composio.removed).toContain(ca);
+      expect(
+        await t.sql`select 1 from managed_account_removal where connected_account_id = ${ca}`,
+      ).toHaveLength(0);
+    } finally {
+      composio.unremovable.delete(ca);
+      await t.sql`delete from space where id = ${spaceId}`;
+    }
+  }, 60_000);
+
+  test('a sign-in left unfinished has its account removed once it expires, and a kept account never is', async () => {
+    const t = need();
+    composio.signInAs(googleUpstream(second));
+    const known = new Set(composio.accounts.keys());
+    const started = await t.start();
+    const made = [...composio.accounts.keys()].find((id) => !known.has(id));
+    if (!made) throw new Error('no account was made');
+    const [queued] = await t.sql`select next_attempt_at from managed_account_removal
+      where connected_account_id = ${made}`;
+    const due = new Date(queued?.next_attempt_at).getTime();
+    expect(due).toBe(Date.parse(started.expires_at) + UNUSED_ACCOUNT_GRACE_MS);
+    // Before then it is left alone: the person may still finish.
+    expect((await sweepManagedRemovals(t.sql, client, due - 1000)).removed).not.toContain(made);
+    expect(composio.accounts.has(made)).toBe(true);
+    expect((await sweepManagedRemovals(t.sql, client, due)).removed).toContain(made);
+    expect(composio.removed).toContain(made);
+
+    // Every account a finished sign-in kept is off the queue.
+    const kept = await t.sql<
+      { id: string }[]
+    >`select distinct configuration->>'connected_account_id' as id
+      from connection where status <> 'revoked' and configuration->>'via' = 'composio'`;
+    expect(kept.length).toBeGreaterThan(0);
+    expect(
+      await t.sql`select 1 from managed_account_removal
+        where connected_account_id in ${t.sql(kept.map((row) => row.id))}`,
+    ).toHaveLength(0);
+    // And one queued by mistake is let go, not removed, while a connection acts for it.
+    const live = String(kept[0]?.id);
+    await t.sql`insert into managed_account_removal (connected_account_id) values (${live})`;
+    const swept = await sweepManagedRemovals(t.sql, client, Date.now() + 1000);
+    expect(swept.kept).toContain(live);
+    expect(swept.removed).not.toContain(live);
+    expect(composio.accounts.get(live)?.status).toBe('ACTIVE');
   }, 60_000);
 });

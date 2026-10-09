@@ -64,7 +64,11 @@ import {
 import { asConnectorFault, ConnectorFaultError } from '../connectors/faults.ts';
 import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
-import { managedAccountInUse } from '../connectors/managed-accounts.ts';
+import {
+  managedAccountInUse,
+  queueManagedRemoval,
+  settleManagedRemoval,
+} from '../connectors/managed-accounts.ts';
 import { type ManagedGrant, ManagedSignIns } from '../connectors/managed-sign-in.ts';
 import { listMcpServerTools, mcpServerConfig } from '../connectors/mcp.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
@@ -991,15 +995,19 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const composio = factory.options.composio;
 
   /**
-   * Remove a Composio account no live connection acts for any more, best
-   * effort: the person is not kept waiting on it, and a failure is only noted.
+   * Remove a Composio account no live connection acts for any more. When
+   * Composio cannot be reached, the account is queued and tried again until
+   * it is gone; the person is not kept waiting on it.
    */
   const releaseManagedAccount = async (connectedAccountId: string) => {
     if (!composio) return;
     if (await managedAccountInUse(deps.sql, connectedAccountId)) return;
-    await composio.client.removeAccount(connectedAccountId).catch(() => {
-      process.stderr.write('connections: a Composio account could not be removed\n');
-    });
+    try {
+      await composio.client.removeAccount(connectedAccountId);
+    } catch {
+      process.stderr.write('connections: a Composio account was not removed yet\n');
+      await queueManagedRemoval(deps.sql, [connectedAccountId]);
+    }
   };
 
   /**
@@ -1249,6 +1257,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     install: installManaged,
     connectionId: (installed) => installed.connection.id,
     ...(meter ? { charge: (spaceId: string) => meter.charge(spaceId) } : {}),
+    queueRemoval: (connectedAccountId, due) =>
+      queueManagedRemoval(deps.sql, [connectedAccountId], new Date(due)),
+    settleRemoval: (connectedAccountId) => settleManagedRemoval(deps.sql, connectedAccountId),
   });
 
   app.post('/managed-sign-ins', async (c) => {

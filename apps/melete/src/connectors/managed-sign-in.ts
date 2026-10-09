@@ -117,12 +117,21 @@ export type ManagedSignInHooks<Installed> = {
   connectionId(installed: Installed): string;
   /** Counts a call made through Composio for a space. */
   charge?(spaceId: string): Promise<void>;
+  /**
+   * Queue an account a link made to be removed at Composio from `due` on,
+   * unless it is settled first: a sign-in left unfinished leaves nothing behind.
+   */
+  queueRemoval?(connectedAccountId: string, due: number): Promise<void>;
+  /** An account a sign-in kept, or removed itself: no longer to be removed. */
+  settleRemoval?(connectedAccountId: string): Promise<void>;
   now?: () => number;
   store?: SignInStore;
 };
 
 const PENDING_TTL_MS = 15 * 60_000;
 const FINISHED_TTL_MS = 10 * 60_000;
+/** How long after a step expires the account its link made is removed, unless kept. */
+export const UNUSED_ACCOUNT_GRACE_MS = 5 * 60_000;
 
 type Pending = {
   id: string;
@@ -195,6 +204,8 @@ export class ManagedSignIns<Installed> {
       throw error;
     }
     const until = this.now() + PENDING_TTL_MS;
+    // Removed once this step has expired, unless the step keeps it first.
+    await this.hooks.queueRemoval?.(linked.connectedAccountId, until + UNUSED_ACCOUNT_GRACE_MS);
     const pending: Pending = {
       ...entry,
       state,
@@ -266,11 +277,18 @@ export class ManagedSignIns<Installed> {
     return address.toLowerCase();
   }
 
-  /** An account this step made that is not kept: removed at Composio, best effort. */
+  /**
+   * An account this step made that is not kept: removed at Composio now, or
+   * queued to be tried again until it is.
+   */
   private async discard(accountId: string) {
-    await this.hooks.composio?.removeAccount(accountId).catch(() => {
-      process.stderr.write('managed sign-in: an unused account could not be removed\n');
-    });
+    try {
+      await this.hooks.composio?.removeAccount(accountId);
+      await this.hooks.settleRemoval?.(accountId);
+    } catch {
+      process.stderr.write('managed sign-in: an unused account was not removed yet\n');
+      await this.hooks.queueRemoval?.(accountId, this.now());
+    }
   }
 
   /**
@@ -325,6 +343,7 @@ export class ManagedSignIns<Installed> {
         scopes: part.grants,
       });
       kept = true;
+      await this.hooks.settleRemoval?.(account.id);
       connectionIds = [...connectionIds, ...installed.map((item) => this.hooks.connectionId(item))];
       if (entry.index + 1 < entry.parts.length) {
         const { redirectUrl } = await this.link({

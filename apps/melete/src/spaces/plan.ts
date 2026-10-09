@@ -237,11 +237,22 @@ const SPACE_KEYED_OPERATIONAL = [
  * by the one role that may touch them (connectors/secrets.ts), after the
  * connections; a pass interrupted between the two finds the connections gone
  * and removes the secrets on its next run.
+ *
+ * A connection signed in through Composio leaves an account there. It is
+ * queued for removal in the same transaction that deletes the connection, and
+ * the queue (connectors/managed-accounts.ts) revokes and deletes it at
+ * Composio, trying again until Composio confirms it is gone.
  */
 export async function sweepPrincipals(raw: Sql, spaceId: string, hold?: LeaseHold): Promise<void> {
   await raw.begin(async (tx) => {
     await hold?.(tx);
     await tx`delete from agent where space_id = ${spaceId}`;
+    await tx`insert into managed_account_removal (connected_account_id)
+      select distinct configuration->>'connected_account_id' from connection
+        where space_id = ${spaceId} and configuration->>'via' = 'composio'
+          and configuration->>'connected_account_id' is not null
+      on conflict (connected_account_id) do update
+        set next_attempt_at = least(managed_account_removal.next_attempt_at, excluded.next_attempt_at)`;
     await tx`delete from connection where space_id = ${spaceId}`;
   });
   await new PostgresSecretRepository(raw).forgetSpace(spaceId);

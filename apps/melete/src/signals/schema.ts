@@ -129,3 +129,28 @@ export const managedCall = pgTable(
     check('managed_call_calls_check', sql`${table.calls} >= 0`),
   ],
 );
+
+/**
+ * Composio accounts waiting to be revoked and deleted there: one whose space
+ * was removed, one whose disconnection could not reach Composio, and one made
+ * for a sign-in that was never finished, due once that sign-in has expired.
+ * A row stays until Composio confirms the account is gone, or until a live
+ * connection is found acting for it, so nothing is dropped on a failure. Only
+ * the account id is kept, never the key or anything the account holds.
+ */
+export const managedAccountRemoval = pgTable(
+  'managed_account_removal',
+  {
+    connectedAccountId: text('connected_account_id').primaryKey(),
+    /** Not tried before this. */
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    /** The last failure's fixed code, never a message from Composio. */
+    lastError: text('last_error'),
+    createdAt: created(),
+  },
+  (table) => [
+    index('managed_account_removal_due_idx').on(table.nextAttemptAt),
+    check('managed_account_removal_attempts_check', sql`${table.attempts} >= 0`),
+  ],
+);
