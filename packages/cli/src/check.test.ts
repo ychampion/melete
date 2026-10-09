@@ -29,7 +29,10 @@ describe('melete check', () => {
     const context = { ...base, machine: { ...base.machine, platform: process.platform } };
     expect(runCheck(context, true)).toBe(0);
     const value = reportSchema.parse(JSON.parse(base.printed()));
-    expect(value.results.filter((result) => result.level !== 'ok')).toEqual([]);
+    // Only the browser worker, which is turned on once the account exists, waits.
+    expect(
+      value.results.filter((result) => result.level !== 'ok').map((result) => result.id),
+    ).toEqual(['browser.worker']);
     expect(value.results.map((result) => result.id)).toEqual(
       expect.arrayContaining([
         'deploy.contract',

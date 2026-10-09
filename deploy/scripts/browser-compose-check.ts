@@ -348,19 +348,27 @@ export function loadBrowserCompose(path: string): BrowserComposeFile {
   return parse(readFileSync(path, 'utf8')) as BrowserComposeFile;
 }
 
-export const browserComposePaths = () => {
-  const deploy = join(dirname(fileURLToPath(import.meta.url)), '..');
-  return {
-    base: join(deploy, 'docker-compose.yml'),
-    override: join(deploy, 'docker-compose.browser.yml'),
-  };
-};
+export const browserComposePaths = (
+  deploy = join(dirname(fileURLToPath(import.meta.url)), '..'),
+) => ({
+  base: join(deploy, 'docker-compose.yml'),
+  override: join(deploy, 'docker-compose.browser.yml'),
+});
 
-if (import.meta.main) {
-  const paths = browserComposePaths();
+/**
+ * Every check, against the files of one deployment directory: the two Compose
+ * files, the worker image beside them, and the renderer sandbox profile the
+ * override names. `bun run melete browser enable` runs the same list before it
+ * changes anything.
+ */
+export function browserComposeResults(
+  deploy?: string,
+  files: { base?: string; override?: string } = {},
+): CheckResult[] {
+  const paths = browserComposePaths(deploy);
   const results = checkBrowserCompose(
-    loadBrowserCompose(process.argv[2] ?? paths.base),
-    loadBrowserCompose(process.argv[3] ?? paths.override),
+    loadBrowserCompose(files.base ?? paths.base),
+    loadBrowserCompose(files.override ?? paths.override),
   );
   results.push(
     checkBrowserImage(
@@ -378,6 +386,14 @@ if (import.meta.main) {
     profile = undefined;
   }
   results.push(checkBrowserSandbox(profile));
+  return results;
+}
+
+if (import.meta.main) {
+  const results = browserComposeResults(undefined, {
+    ...(process.argv[2] ? { base: process.argv[2] } : {}),
+    ...(process.argv[3] ? { override: process.argv[3] } : {}),
+  });
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);
     if (!result.ok) process.stdout.write(`     ${result.detail}\n`);
