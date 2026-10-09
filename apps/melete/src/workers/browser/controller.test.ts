@@ -4,7 +4,7 @@ import { chromiumAvailable, chromiumMissingReason } from './available.ts';
 
 if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
 (chromiumAvailable ? test : test.skip)(
-  'thousands of accessible buttons hit the schema cap before unbounded locator round trips',
+  'thousands of accessible buttons are listed up to the cap, fields first, without unbounded locator round trips',
   async () => {
     const child = Bun.spawn(
       [
@@ -24,12 +24,19 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       ]);
       expect({ code, stderr }).toEqual({ code: 0, stderr: '' });
       const result = JSON.parse(stdout);
-      expect(result.reason).toBe('schema_too_large');
-      expect(result.counts).toBeLessThanOrEqual(129);
-      expect(result.evaluations).toBeLessThanOrEqual(129);
-      expect(result.handles).toBe(0);
-      expect(result.snapshots).toBe(0);
-      expect(result.metrics.observations).toBe(0);
+      expect(result.reason).toBe('');
+      // The look lists the most it may, the field first, and says how many more there are.
+      expect(result.listed).toBe(128);
+      expect(result.first).toBe('textbox');
+      expect(result.unlisted).toBe(3001 - 128);
+      expect(result.note).toContain('up to 2873 more are not listed');
+      // One search per listed control, and one per listed button for its form, never one per
+      // control on the page.
+      expect(result.counts).toBeLessThanOrEqual(2 * 128);
+      expect(result.evaluations).toBeLessThanOrEqual(2 * 128);
+      expect(result.handles).toBeLessThanOrEqual(128);
+      expect(result.snapshots).toBe(1);
+      expect(result.metrics.observations).toBe(1);
       expect(result.metrics.dispatched_inputs).toBe(0);
     } finally {
       clearTimeout(timeout);

@@ -16,21 +16,32 @@ try {
   });
   const page = controller.sessions.page;
   if (!page) throw new Error('Chromium page unavailable');
+  // The search box comes last on the page, past every button.
   await page.setContent(
     `<form method="post">${Array.from(
       { length: 3000 },
       (_, index) => `<button name="choice" value="${index}">Choice ${index}</button>`,
-    ).join('')}</form>`,
+    ).join('')}<label>Search <input name="q"></label></form>`,
   );
   const prototype = Object.getPrototypeOf(page.locator('body')) as Locator;
   const count = prototype.count;
   const evaluate = prototype.evaluate;
   const elementHandle = prototype.elementHandle;
   const ariaSnapshot = prototype.ariaSnapshot;
-  const result = { reason: '', counts: 0, evaluations: 0, handles: 0, snapshots: 0 };
+  const result = {
+    reason: '',
+    counts: 0,
+    evaluations: 0,
+    handles: 0,
+    snapshots: 0,
+    listed: 0,
+    first: '',
+    unlisted: 0,
+    note: '',
+  };
   prototype.count = function (this: Locator) {
     // Stop a regression promptly rather than waiting for thousands of round trips.
-    if (++result.counts > 129) throw new Error('locator_round_trip_budget_exceeded');
+    if (++result.counts > 2 * 128 + 1) throw new Error('locator_round_trip_budget_exceeded');
     return count.call(this);
   };
   prototype.evaluate = function (this: Locator, ...args: Parameters<Locator['evaluate']>) {
@@ -46,12 +57,16 @@ try {
     return ariaSnapshot.apply(this, args);
   };
   try {
-    await controller.command({
+    const looked = await controller.command({
       session_id: session.id,
       job_id: session.job_id,
       control_epoch: session.control_epoch,
       operation: { kind: 'observe' },
     });
+    result.listed = looked.observation?.schema.length ?? 0;
+    result.first = looked.observation?.schema[0]?.role ?? '';
+    result.unlisted = Number(looked.result?.controls_unlisted ?? 0);
+    result.note = String(looked.result?.note ?? '');
   } catch (error) {
     result.reason = error instanceof Error ? error.message : String(error);
   } finally {
