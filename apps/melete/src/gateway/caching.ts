@@ -12,13 +12,15 @@
  *   three of the four breakpoints a request may carry.
  * - OpenAI, and the ChatGPT plan served over the same protocol, cache any long
  *   prefix on their own; `prompt_cache_key` routes requests that share one to
- *   the same cache, so every request of a conversation names the same key.
+ *   the same cache, so every request of a person's conversations names the
+ *   same key.
  * - Fireworks caches on its own too, per replica; the session-affinity header
- *   keeps a conversation's requests on the replica that holds its prefix.
+ *   keeps a person's requests on the replica that holds their prefix.
  *
  * Nothing here changes what the model reads. The key is an HMAC, under a secret
- * that never leaves this install, of the call's own scope: one conversation, or
- * one service call for one space and the conversation or call it works for. So
+ * that never leaves this install, of the call's own scope: one person in one
+ * space, one conversation when the person is not known, or one service call for
+ * one space and the conversation or call it works for. So
  * two people, two spaces or two installs never share a key, and nobody who
  * knows an id can compute one. A key the runtime set itself is replaced by this
  * one, never passed on.
@@ -43,13 +45,17 @@ const UNMARKABLE = new Set(['thinking', 'redacted_thinking']);
 const PROCESS_SECRET = randomBytes(32).toString('hex');
 
 /**
- * What one cache key covers. A conversation is its job. A service call is its
- * purpose, its space, and the conversation whose words it carries, or the call
- * itself when it carries none: a fixed job name such as a mailbox scan's is
- * shared by every space, so it is never the scope on its own.
+ * What one cache key covers. A conversation is its person in its space
+ * (`cacheScope`), so a new conversation is routed where that person's identity,
+ * instructions and tools are already cached: Fireworks shares no cache between
+ * replicas, and a key per conversation started every conversation cold. Without
+ * one it is its job. A service call is its purpose, its space, and the
+ * conversation whose words it carries, or the call itself when it carries none:
+ * a fixed job name such as a mailbox scan's is shared by every space, so it is
+ * never the scope on its own.
  */
 export function promptCacheScope(
-  principal: Pick<GatewayPrincipal, 'jobId' | 'attemptId' | 'privacy'>,
+  principal: Pick<GatewayPrincipal, 'jobId' | 'attemptId' | 'privacy' | 'cacheScope'>,
 ): string {
   const privacy = principal.privacy;
   if (privacy.kind === 'service')
@@ -59,6 +65,7 @@ export function promptCacheScope(
       privacy.spaceId,
       privacy.sourceJobId ?? `call:${principal.attemptId}`,
     ].join('\u0000');
+  if (principal.cacheScope) return ['person', principal.cacheScope].join('\u0000');
   return ['job', principal.jobId].join('\u0000');
 }
 

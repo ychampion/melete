@@ -265,7 +265,13 @@ sibling`). An MCP tool enters the core only when the job's words match it (`an
 MCP tool enters the core by relevance and never by default`). Every healthy
 tool left outside is named on `load_tool` with a gist of at most eight words,
 inside a separate allowance, 250 tokens at the baseline (`every unloaded tool is
-named in a bounded index on load_tool`). Whether this ranking improves a real model's tool
+named in a bounded index on load_tool`). Ranking decides which tools make the
+cut, not where they stand: the chosen tools are listed with discovery, the
+question and the web first, then the pinned tools, granted tools ahead of a
+server's own, then by name, and the names on `load_tool` in name order, so a
+turn whose message ranks the same tools differently sends the same definitions
+(`the core lists the same tools in the same order whatever the latest message
+says`). Whether this ranking improves a real model's tool
 choice is **not claimed** here; it is measured by the evaluation campaign. A schema loaded on demand
 is persisted for the attempt (`loaded schema persists across service restart
 without leaking to another attempt`). The pinned engine builds a run's tool list
@@ -281,20 +287,27 @@ pin it defers every plugin tool, the core catalog included. Transcript bounds
 are applied in `jobs/bundle.ts`, tested by `bounds escaped serialized content
 and marks abbreviation without mutating history`.
 
-A request is laid out for the provider's prompt cache. The identity, the tool
-definitions and the instructions (persona, skills, task notes) do not change
-between turns of a conversation; recalled knowledge, which is chosen for the
-latest message, follows the prior conversation in the input, with what changed
-and the new message last (`what is recalled per turn stays out of the cached
-instructions and follows the prior conversation`). The gateway adds the
+A request is laid out for the provider's prompt cache. The identity, the
+instructions (persona and task notes) and the tool definitions, which a chat
+template renders after the system prompt, do not change between turns of a
+conversation or between one person's conversations. The skills chosen for the
+latest message, the skill index and recalled knowledge are chosen per turn, so
+they follow the prior conversation in the input, with what changed and the new
+message last (`what is recalled per turn stays out of the cached instructions
+and follows the prior conversation`, `the skills chosen for a turn are in its
+input, so the instructions and tools stay cached`). The gateway adds the
 provider's caching controls on the way out: Anthropic breakpoints after the
 tools, the system prompt and the newest message when the engine placed none, a
-per-conversation `prompt_cache_key` for OpenAI and the ChatGPT plan, and a
-session-affinity header for Fireworks. The key is an HMAC under the install's
-capability key of the call's scope: the job for a conversation, and for a
-service call its purpose, space and the conversation it carries, or the call
-itself (`no two people, spaces or installs share a key, and an id alone does
-not give one`). A key the runtime set itself is replaced, never passed on.
+`prompt_cache_key` for OpenAI and the ChatGPT plan, and a session-affinity
+header for Fireworks, which shares no cache between its replicas. The key is an
+HMAC under the install's capability key of the call's scope: the person and
+space a conversation belongs to, so a new conversation is sent where that
+person's prefix is already cached (the job when the person is not known), and
+for a service call its purpose, space and the conversation it carries, or the
+call itself (`no two people, spaces or installs share a key, and an id alone
+does not give one`, `a person's conversations share one key, so a new one
+starts where their prefix is cached`). A key the runtime set itself is
+replaced, never passed on.
 On a 60-turn chat with a million-token model, at least 70% of every request
 from the second turn on is a prefix of the one before it
 (`apps/melete/src/jobs/context-room.test.ts`). Cached input is recorded at the

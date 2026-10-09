@@ -100,6 +100,11 @@ agent:
   # product pointer, its profile line and its host runtime block, which
   # describe the engine's install rather than the attempt.
   host_prompt: false
+  # Read under `agent:`. For DeepSeek, Qwen, GLM, Kimi and GPT models the engine
+  # otherwise adds a coding-agent brief: run a tool for every calculation, date
+  # and claim, and keep calling tools until the result is verified. Melete's own
+  # task notes say when a tool is worth its time.
+  execution_guidance: false
   # An attempt's input is text. Deciding how to pass images otherwise probes
   # the model endpoint, here the broker, for a local model server on every start.
   image_input_mode: text

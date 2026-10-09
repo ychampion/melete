@@ -323,6 +323,9 @@ export function selectCore(
     chosen.add(web);
     tools.push(web.tool);
   }
+  // The discovery tools, the question and the web lead in a fixed order; what
+  // relevance chooses after them is listed in a canonical one below.
+  const head = tools.length;
   const add = (...group: CatalogItem[]) => {
     const fresh = group.filter((item) => !chosen.has(item));
     if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > room) return false;
@@ -349,12 +352,34 @@ export function selectCore(
     if (siblings.length === 0 || siblings.some((other) => chosen.has(other))) add(item);
     else siblings.some((other) => add(item, other));
   }
+  // Relevance decides which tools make the cut, never where they stand. The
+  // tool definitions follow the system prompt in the provider's cached prefix,
+  // so the same tools are listed in the same order on every turn whatever the
+  // latest message says: pinned first, granted ahead of a server's own, then by
+  // name, which also keeps `browser.*` ahead of `computer.*` (`web-steer.ts`).
+  const rank = new Map(scored.map((entry) => [entry.item.tool, entry]));
+  const placed = (tool: ToolSpec) => {
+    const entry = rank.get(tool);
+    return { pinned: entry?.pinned ?? 0, granted: entry ? granted(entry.item) : 1 };
+  };
+  tools.splice(
+    head,
+    tools.length - head,
+    ...tools.slice(head).sort((a, b) => {
+      const left = placed(a);
+      const right = placed(b);
+      return right.pinned - left.pinned || right.granted - left.granted || compare(a.name, b.name);
+    }),
+  );
   const loader = tools.find((tool) => tool.name === 'load_tool');
   const rest = scored.map((entry) => entry.item).filter((item) => !chosen.has(item));
   if (loader && rest.length > 0 && indexBudget > 0) {
+    // The likeliest are kept when the index cannot name them all, and the ones
+    // kept are named in a fixed order, for the same reason as the tools.
     const listing = (shown: number) => {
       const named = rest
         .slice(0, shown)
+        .sort((a, b) => compare(a.entry.name, b.entry.name))
         .map((item) => `${item.entry.name} (${gist(item.entry.description)})`);
       const more = rest.length - shown;
       return ` Not loaded yet: ${named.join('; ')}${

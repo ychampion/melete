@@ -71,12 +71,14 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: '',
   });
   expect(config.skills).toBeUndefined();
-  // environment_probe is read under `agent:` (agent/agent_init.py);
-  // host_prompt is the checked prompt seam in patches/observer_bridge.py.
+  // environment_probe and execution_guidance are read under `agent:`
+  // (agent/agent_init.py); host_prompt is the checked prompt seam in
+  // patches/observer_bridge.py.
   expect(config.agent).toEqual({
     max_turns: DEFAULT_ENGINE_MAX_TURNS,
     environment_probe: false,
     host_prompt: false,
+    execution_guidance: false,
     image_input_mode: 'text',
   });
   // platform_hints is read at the top level (agent/agent_init.py).
