@@ -4,7 +4,15 @@
  * Deployments use the owner's Postgres catalog IDs. The filesystem resolver is
  * retained for standalone tools and fixtures that have no database catalog.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import {
+  type Dirent,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { ID_PREFIXES, prefixedId, spaceAudience } from '@melete/contracts';
 import { initSpace, isGitRepo, type SpacePaths, spacePaths } from '@melete/knowledge';
@@ -66,10 +74,23 @@ export function filesystemSpaces(spacesRoot: string): SpaceResolver {
 }
 
 /** A catalog repository cannot redirect either Git or derived storage elsewhere. */
-function hasSymlink(directory: string): boolean {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+/**
+ * Whether a link sits anywhere under a space's directory. A subdirectory this
+ * service cannot read, such as the browser worker's own profile, is one it
+ * cannot follow a path through either, so it is passed over; the space's own
+ * directory must still be readable.
+ */
+export function hasSymlink(directory: string, top = true): boolean {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    if (!top && error instanceof Error && 'code' in error && error.code === 'EACCES') return false;
+    throw error;
+  }
+  for (const entry of entries) {
     if (entry.isSymbolicLink()) return true;
-    if (entry.isDirectory() && hasSymlink(join(directory, entry.name))) return true;
+    if (entry.isDirectory() && hasSymlink(join(directory, entry.name), false)) return true;
   }
   return false;
 }

@@ -1,12 +1,20 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { git, initSpace, isGitRepo } from '@melete/knowledge';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { space } from '../db/schema.ts';
 import { newId } from '../ids.ts';
-import { databaseSpaces, filesystemSpaces, spaceIdFor } from './spaces.ts';
+import { databaseSpaces, filesystemSpaces, hasSymlink, spaceIdFor } from './spaces.ts';
 
 const handle = await testDatabase();
 const withDb = handle ? describe : describe.skip;
@@ -101,3 +109,25 @@ withDb('catalog knowledge spaces', () => {
     expect(isGitRepo(outside)).toBe(false);
   });
 });
+
+// Permission bits keep the service out only on a POSIX filesystem, and never root.
+const unreadable = process.platform !== 'win32' && process.getuid?.() !== 0;
+(unreadable ? test : test.skip)(
+  'a subdirectory another account owns is passed over, and a link anywhere else still counts',
+  () => {
+    const directory = join(root, 'space');
+    mkdirSync(join(directory, 'browser'), { recursive: true });
+    mkdirSync(join(directory, 'notes'));
+    chmodSync(join(directory, 'browser'), 0o000);
+    try {
+      expect(hasSymlink(directory)).toBe(false);
+      symlinkSync(tmpdir(), join(directory, 'notes', 'out'));
+      expect(hasSymlink(directory)).toBe(true);
+      chmodSync(directory, 0o000);
+      expect(() => hasSymlink(directory)).toThrow();
+    } finally {
+      chmodSync(directory, 0o700);
+      chmodSync(join(directory, 'browser'), 0o700);
+    }
+  },
+);
