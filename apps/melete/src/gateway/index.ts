@@ -508,7 +508,7 @@ export function createModelGateway(options: GatewayOptions): Server {
               brief: principal.briefTurn === true,
               deep: principal.deepTurn === true,
               // A conversation's own tool loop; a service call has none.
-              ...(principal.privacy.kind === 'job' ? toolLoop(callBody, protocol) : {}),
+              ...(principal.privacy?.kind === 'job' ? toolLoop(callBody, protocol) : {}),
             }),
           });
         const effortAdded = reasoningOf() !== before;
