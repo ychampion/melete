@@ -102,7 +102,7 @@ export const COMPUTER_TOOLS: ToolManifest[] = [
   ),
   tool(
     'computer.open',
-    `Open an http or https address in the sandbox browser, the one the person sees and can take over, starting it if needed; a later open reuses its window. Public HTTPS sites load when the sandbox may reach the internet. It succeeds only once the page in front shows the address (a site sending you on counts); otherwise it fails and says what the window shows.${AFTER}`,
+    `Open an http or https address in the sandbox browser, the one the person sees and can take over, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet. It succeeds only once the page in front shows the address (a redirect counts); otherwise it fails and says what the window shows.${AFTER}`,
     schema({ url }, ['url']),
     'write_reversible',
   ),

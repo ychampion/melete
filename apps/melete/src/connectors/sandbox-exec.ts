@@ -338,11 +338,11 @@ export const sandboxTerminalManifest: ConnectorManifest = {
 };
 
 /**
- * Said by the commands of a computer with a desktop: a web page belongs in a
+ * Said by the terminal of a computer with a desktop: a web page belongs in a
  * browser the person can see. Nothing is refused: a command may still start one.
  */
 export const VISIBLE_BROWSER_NOTE =
-  ' For a web page, use the browser tools or computer.open rather than a browser started by a command: those are the ones the person can watch and take over, while one a command starts is hidden from them and loses what it held when it stops.';
+  ' A web page goes in computer.open or the browser tools, which the person can watch and take over; a browser a command starts is hidden from them.';
 
 /** Every grant a sandbox connection offers: the terminal, and the desktop where there is one. */
 export const sandboxExecManifest: ConnectorManifest = {
@@ -350,7 +350,7 @@ export const sandboxExecManifest: ConnectorManifest = {
   description: 'Run commands and use the desktop in a sandbox this service owns.',
   tools: [
     ...sandboxTerminalManifest.tools.map((tool) =>
-      tool.name === 'terminal.run' || tool.name === 'process.start'
+      tool.name === 'terminal.run'
         ? { ...tool, description: `${tool.description}${VISIBLE_BROWSER_NOTE}` }
         : tool,
     ),

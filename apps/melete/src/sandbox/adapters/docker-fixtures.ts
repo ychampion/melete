@@ -25,8 +25,8 @@ export type FakeContainer = {
   running: boolean;
   networks: Record<string, string>;
   labels: Record<string, string>;
-  /** The id of the image it was made from. */
-  image: string;
+  /** The id of the image it was made from; `sha256:image` when not set. */
+  image?: string;
   /** Execs the engine says still run in it. */
   execIds?: string[];
 };
@@ -167,7 +167,7 @@ export class FakeDocker implements DockerSandboxApi {
       if (method === 'GET' && action === '/json')
         return {
           Name: `/${container.name}`,
-          Image: container.image,
+          Image: container.image ?? 'sha256:image',
           ExecIDs: container.execIds?.length ? container.execIds : null,
           State: {
             Running: container.running,

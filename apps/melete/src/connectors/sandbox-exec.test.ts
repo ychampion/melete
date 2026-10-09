@@ -526,10 +526,15 @@ withDb('a command in a remote sandbox', () => {
     const s = await setup({ persistence: 'pause', provider, workspaceWaitMs: 0 });
     const { sandbox, next } = await suspendedWorkspace(s);
     await s.sessions.controls.change(sandbox, 'human');
-    const after = await s.run({ command: 'printf next' }, next);
-    expect(after.result.outcome).toBe('failed');
-    expect(told).toEqual([]);
-    expect(provider.calls.resume).toBe(0);
+    try {
+      const after = await s.run({ command: 'printf next' }, next);
+      expect(after.result.outcome).toBe('failed');
+      expect(told).toEqual([]);
+      expect(provider.calls.resume).toBe(0);
+    } finally {
+      // Control is kept by sandbox id, which outlives the space: the next test's fake sandbox may share it.
+      await s.sessions.controls.change(sandbox, 'agent');
+    }
   }, 60_000);
 
   test('a sandbox beyond the concurrency limit is refused, and nothing is dispatched', async () => {
