@@ -520,6 +520,43 @@ withDb('background processes in the agent computer', () => {
     expect(await wiringFor(s).endStopped(s.scope.jobId, AbortSignal.timeout(10_000))).toEqual([]);
   }, 60_000);
 
+  test('stopping a turn that waits on the person ends what any of its steps started', async () => {
+    const s = await setup();
+    const turn = async (id: string, status: string) =>
+      db()`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+        values (${id}, ${s.scope.jobId}, ${s.scope.agentId}, ${`sub_${id}`}, 'Go', ${status})`;
+    // An earlier turn left a server running and finished.
+    await turn('turn_done', 'done');
+    await db()`update attempt set turn_id = 'turn_done' where id = ${s.firstAttempt}`;
+    const finished = String(
+      s.detail(await s.run('process.start', { command: 'serve' })).process_id,
+    );
+    await db()`update attempt set outcome = 'completed', ended_at = now(),
+      lease_expires_at = null, lease_status = 'ended' where id = ${s.firstAttempt}`;
+    await s.endFirst();
+    // The next turn launched a browser, then asked the person and waited: no
+    // step of it was running when Stop was pressed.
+    await turn('turn_waiting', 'running');
+    const asking = { jobId: s.scope.jobId, attemptId: await s.attempt(s.scope.jobId) };
+    await db()`update attempt set turn_id = 'turn_waiting' where id = ${asking.attemptId}`;
+    const browser = String(
+      s.detail(
+        await s.run('process.start', { command: 'chromium --remote-debugging-port=9222' }, asking),
+      ).process_id,
+    );
+    await db()`update attempt set outcome = 'waiting_for_approval', ended_at = now(),
+      lease_expires_at = null, lease_status = 'ended' where id = ${asking.attemptId}`;
+    await db()`update experience_turn set status = 'stopped', finished_at = now()
+      where id = 'turn_waiting'`;
+    expect(await wiringFor(s).endStopped(s.scope.jobId, AbortSignal.timeout(10_000))).toEqual([
+      browser,
+    ]);
+    const rows = await db()`select id, state from sandbox_process`;
+    const state = new Map(rows.map((row) => [String(row.id), String(row.state)]));
+    expect(state.get(browser)).toBe('stopped');
+    expect(state.get(finished)).toBe('running');
+  }, 60_000);
+
   test('the sweep ends a process a stopped turn started, should the stop have missed it', async () => {
     const { s, finished, takenOver, browser, states, inComputer } = await threeTurns();
     await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));

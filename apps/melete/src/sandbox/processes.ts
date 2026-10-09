@@ -164,11 +164,14 @@ export type AdmitRequest = {
 /**
  * Whether the attempt that started a process (`p`, with its action `a` and
  * attempt `t` joined) was stopped or cancelled: Stop and a cancellation end
- * the attempt in flight as fenced with a `cancelled` detail, and nothing else
- * does. A takeover fences too, with its own detail, and keeps its processes.
+ * the attempt in flight as fenced with a `cancelled` detail, and Stop marks
+ * the whole turn stopped, so a step of it that had already ended (one that
+ * then asked the person and waited) counts too. A takeover fences with its
+ * own detail and stops no turn, so it keeps its processes.
  */
 const startedByStopped = (sql: Sql) =>
-  sql`(t.outcome = 'fenced' and t.outcome_detail->>'kind' = 'cancelled')`;
+  sql`((t.outcome = 'fenced' and t.outcome_detail->>'kind' = 'cancelled')
+    or exists (select 1 from experience_turn u where u.id = t.turn_id and u.status = 'stopped'))`;
 
 /** How long a start may take to reach the computer before its missing directory means it never did. */
 const STARTING_GRACE_MS = 300_000;
