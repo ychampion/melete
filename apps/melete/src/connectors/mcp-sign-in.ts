@@ -11,7 +11,13 @@
  * instance and a restart does not end it. The state is found by its digest.
  */
 import { randomBytes } from 'node:crypto';
-import type { ConnectionResponse, McpConnectionConfig } from '@melete/contracts';
+import {
+  type ConnectionResponse,
+  type DiscoveredMcpTool,
+  type EffectClass,
+  type McpConnectionConfig,
+  mcpDiscoveredConfig,
+} from '@melete/contracts';
 import { MemorySignInStore, type SignInStore } from '../ops/signin-store.ts';
 import {
   type AuthorizationServer,
@@ -37,10 +43,27 @@ export type McpSignInRequest =
   /** Signing in again for a connection that exists: after its grant ended, or to grant more. */
   | { connection_id: string; client?: PreRegistered }
   /** Connecting an app from the catalog: its server and tools are the catalog's. */
-  | { catalog_id: string; space_id?: string };
+  | { catalog_id: string; space_id?: string }
+  /** A server added by its address, whose tools are read once the person has signed in. */
+  | {
+      space_id?: string;
+      label: string;
+      discover: { id: string; url: string };
+      client?: PreRegistered;
+    };
 
 type NewConnection = Extract<McpSignInRequest, { mcp: McpConnectionConfig }>;
 type CatalogConnection = Extract<McpSignInRequest, { catalog_id: string }>;
+type DiscoveredConnection = Extract<McpSignInRequest, { discover: unknown }>;
+
+/** A signed-in server's tools, waiting for the person to choose which to keep. */
+type Ready = {
+  actor: string;
+  spaceId: string;
+  request: DiscoveredConnection;
+  credentials: Record<string, string>;
+  tools: DiscoveredMcpTool[];
+};
 
 /** Where a catalog app's server is, and the client its sign-in needs when it takes no other. */
 export type CatalogServer = { url: string; client?: PreRegistered };
@@ -70,6 +93,7 @@ type Pending = {
 
 export type McpSignInStatus =
   | { state: 'pending'; expires_at: string }
+  | { state: 'ready'; tools: DiscoveredMcpTool[] }
   | { state: 'connected'; connection_id: string }
   | { state: 'failed'; error: string };
 
@@ -77,6 +101,8 @@ export type McpSignInStatus =
 const PENDING_TTL_MS = 15 * 60_000;
 /** How long a finished sign-in can still be asked about. */
 const FINISHED_TTL_MS = 10 * 60_000;
+/** How long a signed-in server's tools wait for the person to choose. */
+const READY_TTL_MS = 15 * 60_000;
 
 export type McpSignInHooks = {
   /** The service's public address, as the person's browser reaches it. */
@@ -99,6 +125,12 @@ export type McpSignInHooks = {
    * installation does not offer it. Runs before any address is fetched.
    */
   catalog?(id: string): CatalogServer;
+  /** Reads the tools of a server just signed in to, with the credential the sign-in earned. */
+  discover?(
+    spaceId: string,
+    url: string,
+    credentials: Record<string, string>,
+  ): Promise<DiscoveredMcpTool[]>;
   /** Installs a catalog app with the credential its sign-in earned. */
   installCatalog?(
     actor: string,
@@ -127,16 +159,21 @@ export class McpSignIns {
   }
 
   /**
-   * Where the authorization server sends the browser back. The specification
-   * allows only HTTPS or `localhost`, so any other public address has none.
+   * Where the authorization server sends the browser back: the service's
+   * public address, or, when none that can be returned to is set, the address
+   * the person's browser opened Melete at (`webOrigin`, as the trusted web
+   * proxy stated it). The specification allows only HTTPS or `localhost`, so
+   * any other address has none.
    */
-  redirectUri(): string | null {
-    const base = this.base();
-    if (!base) return null;
-    const url = new URL(base);
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) return null;
-    return `${base}/api/oauth/callback`;
+  redirectUri(webOrigin?: string): string | null {
+    for (const base of [this.base(), webOrigin ?? null]) {
+      if (!base) continue;
+      const url = new URL(base);
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if (url.protocol === 'https:' || (url.protocol === 'http:' && local))
+        return `${base.replace(/\/+$/, '')}/api/oauth/callback`;
+    }
+    return null;
   }
 
   /** Where this service's client metadata document is published: HTTPS only. */
@@ -161,6 +198,8 @@ export class McpSignIns {
   async start(
     actor: string,
     request: McpSignInRequest,
+    /** The address the person's browser opened Melete at, when the trusted proxy said. */
+    webOrigin?: string,
   ): Promise<{
     sign_in_id: string;
     authorize_url: string;
@@ -182,10 +221,13 @@ export class McpSignIns {
         'connection_id' in request ? undefined : request.space_id,
       ));
     const app = 'catalog_id' in request ? this.catalogServer(request.catalog_id) : undefined;
-    const redirectUri = this.redirectUri();
+    const redirectUri = this.redirectUri(webOrigin);
     if (!redirectUri) throw new McpSignInFailure('callback_unavailable');
     const fetcher = await this.hooks.fetcherFor(spaceId);
-    const serverUrl = existing?.url ?? app?.url ?? ('mcp' in request ? request.mcp.url : '');
+    const serverUrl =
+      existing?.url ??
+      app?.url ??
+      ('mcp' in request ? request.mcp.url : 'discover' in request ? request.discover.url : '');
     const protectedResource = await discoverProtectedResource(serverUrl, fetcher);
     if (!protectedResource) throw new McpSignInFailure('sign_in_not_needed');
     // The first listed server; the resource's metadata names them in its own preference.
@@ -239,7 +281,10 @@ export class McpSignIns {
    * Finishes the sign-in the browser came back for. It is spent whether it
    * succeeds or not, and only the person who started it can finish it.
    */
-  async complete(actor: string, query: URLSearchParams): Promise<ConnectionResponse> {
+  async complete(
+    actor: string,
+    query: URLSearchParams,
+  ): Promise<ConnectionResponse | { ready: DiscoveredMcpTool[] }> {
     const now = this.now();
     const id = await this.store.get<string>(`${KIND}:state`, query.get('state') ?? '', now);
     const entry = id ? await this.store.get<Pending>(KIND, id, now) : undefined;
@@ -281,6 +326,31 @@ export class McpSignIns {
           ? { scope: (tokens.scope ?? entry.requestedScope) as string }
           : {}),
       };
+      if ('discover' in entry.request) {
+        // Nothing is installed yet: the person chooses which tools to keep.
+        if (!this.hooks.discover) throw new McpSignInFailure('discovery_unavailable');
+        const tools = await this.hooks.discover(
+          entry.spaceId,
+          entry.request.discover.url,
+          credentials,
+        );
+        const ready: Ready = {
+          actor,
+          spaceId: entry.spaceId,
+          request: entry.request,
+          credentials,
+          tools,
+        };
+        const until = this.now() + READY_TTL_MS;
+        await this.store.put(`${KIND}:ready`, entry.id, ready, until);
+        await this.store.put(
+          `${KIND}:done`,
+          entry.id,
+          { actor, status: { state: 'ready', tools } },
+          until,
+        );
+        return { ready: tools };
+      }
       const installed =
         'connection_id' in entry.request
           ? await this.hooks.renew(actor, entry.request.connection_id, credentials)
@@ -299,6 +369,41 @@ export class McpSignIns {
     } catch (error) {
       const code = error instanceof McpSignInFailure ? error.code : 'install_failed';
       await this.finish(entry.id, actor, { state: 'failed', error: code });
+      throw error;
+    }
+  }
+
+  /**
+   * Installs a server signed in to by its address, with the tools the person
+   * kept and how far each may act. The credential the sign-in earned is spent
+   * here, once; a tool the server did not list is refused.
+   */
+  async installReady(
+    actor: string,
+    id: string,
+    choices: readonly { name: string; effect_class: EffectClass }[],
+  ): Promise<ConnectionResponse> {
+    const now = this.now();
+    const ready = await this.store.get<Ready>(`${KIND}:ready`, id, now);
+    if (!ready || ready.actor !== actor) throw new McpSignInFailure('sign_in_not_found');
+    const listed = new Set(ready.tools.map((tool) => tool.name));
+    if (!choices.length || choices.some((choice) => !listed.has(choice.name)))
+      throw new McpSignInFailure('tool_not_listed');
+    if (!(await this.store.take<Ready>(`${KIND}:ready`, id, now)))
+      throw new McpSignInFailure('sign_in_not_found');
+    const { discover, label } = ready.request;
+    try {
+      const installed = await this.hooks.install(actor, {
+        space_id: ready.spaceId,
+        label,
+        mcp: mcpDiscoveredConfig(discover.id, discover.url, choices),
+        credentials: ready.credentials,
+      });
+      await this.finish(id, actor, { state: 'connected', connection_id: installed.connection.id });
+      return installed;
+    } catch (error) {
+      const code = error instanceof McpSignInFailure ? error.code : 'install_failed';
+      await this.finish(id, actor, { state: 'failed', error: code });
       throw error;
     }
   }

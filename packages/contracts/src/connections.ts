@@ -11,7 +11,13 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './common.ts';
 import { connectionProvider, connectionView } from './entities.ts';
-import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
+import {
+  MCP_STDIO_RUNNERS,
+  mcpConnectionConfig,
+  mcpHttpUrl,
+  mcpStdioConnectionConfig,
+} from './mcp.ts';
+import { MAX_DISCOVERED_TOOLS } from './mcp-catalog.ts';
 
 export const CONNECTION_KINDS = [
   'mail',
@@ -540,6 +546,9 @@ export const CONNECTION_CHECK_CODES = [
   'needs_sign_in',
   'not_running',
   'revoked',
+  'unreachable',
+  'not_mcp',
+  'tool_missing',
 ] as const;
 export const connectionCheckCode = z.enum(CONNECTION_CHECK_CODES);
 export type ConnectionCheckCode = z.infer<typeof connectionCheckCode>;
@@ -558,6 +567,12 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
   not_running:
     'This connection has no running connector. Check the master key and the service log, then test again.',
   revoked: 'This connection was removed and can no longer be used.',
+  unreachable:
+    'Melete could not reach this server, or it did not answer in time. Check the address and that the server is running, then test again.',
+  not_mcp:
+    'Something answered at this address, but not as an MCP server. Check that it is the server’s MCP address, which often ends in /mcp.',
+  tool_missing:
+    'The server no longer has a tool this connection uses. Disconnect it and add it again to pick from the tools it has now.',
 };
 
 export const connectionCheck = z
@@ -595,6 +610,12 @@ const preRegisteredClient = z
   })
   .strict();
 
+/** An MCP installation's short name, which prefixes its grants. */
+const mcpServerShortName = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]*$/)
+  .max(40);
+
 export const mcpSignInRequest = z.union([
   z
     .object({
@@ -612,6 +633,20 @@ export const mcpSignInRequest = z.union([
        * needs more access. Everything granted before is asked for again.
        */
       connection_id: prefixedId(ID_PREFIXES.connection),
+      client: preRegisteredClient.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /** Left out, the space of the signed-in session. */
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+      label: z.string().min(1).max(120),
+      /**
+       * Sign in to a server added by its address before its tools are known.
+       * After the sign-in its tools are read and the sign-in waits, `ready`,
+       * until `POST /mcp-sign-ins/{id}/install` says which to keep.
+       */
+      discover: z.object({ id: mcpServerShortName, url: mcpHttpUrl }).strict(),
       client: preRegisteredClient.optional(),
     })
     .strict(),
@@ -651,8 +686,55 @@ export const mcpSignInStart = z.object({
   scopes: z.array(requestedScope),
 });
 
+/** One tool a server lists, with where Melete suggests it starts. */
+export const discoveredMcpTool = z
+  .object({
+    /** The tool's name on the server. */
+    name: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/),
+    /** The server's own words for it, shortened. */
+    description: z.string().max(400).optional(),
+    /** A suggestion only: the person chooses before anything is installed. */
+    effect_class: effectClass,
+  })
+  .meta({ id: 'DiscoveredMcpTool' });
+export type DiscoveredMcpTool = z.infer<typeof discoveredMcpTool>;
+
+/** Reading the tools of a server added by its address, before installing it. */
+export const mcpToolDiscoveryRequest = z
+  .object({
+    /** Left out, the space of the signed-in session. */
+    space_id: prefixedId(ID_PREFIXES.space).optional(),
+    url: mcpHttpUrl,
+    /** A token the server's owner issued, when it takes one instead of a sign-in. */
+    access_token: z.string().min(1).max(16_384).optional(),
+  })
+  .strict();
+
+export const mcpToolDiscovery = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('ready'), tools: z.array(discoveredMcpTool) }),
+  /** The server wants a sign-in first: start one with `discover` on `POST /mcp-sign-ins`. */
+  z.object({ state: z.literal('needs_sign_in') }),
+]);
+export type McpToolDiscovery = z.infer<typeof mcpToolDiscovery>;
+
+/** The tools a person kept from a `ready` sign-in, and how far each may act. */
+export const mcpSignInInstall = z
+  .object({
+    tools: z
+      .array(
+        z
+          .object({ name: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/), effect_class: effectClass })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_DISCOVERED_TOOLS),
+  })
+  .strict();
+
 export const mcpSignInStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('pending'), expires_at: timestamp }),
+  /** Signed in to a server added by its address; its tools wait for the person's choice. */
+  z.object({ state: z.literal('ready'), tools: z.array(discoveredMcpTool) }),
   z.object({ state: z.literal('connected'), connection_id: prefixedId(ID_PREFIXES.connection) }),
   z.object({ state: z.literal('failed'), error: z.string() }),
 ]);

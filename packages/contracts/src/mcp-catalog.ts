@@ -304,3 +304,85 @@ export function mcpCatalogConfig(
 /** Whether a tool's effect means the person is asked before every use. */
 export const asksFirst = (effect: EffectClass): boolean =>
   effect === 'write_external' || effect === 'spend';
+
+/**
+ * A tool a server listed when it was added by its address, as far as it
+ * describes itself. Its own hints only suggest where it starts; the person
+ * decides how far each tool may act before anything is installed.
+ */
+export type McpListedTool = {
+  name: string;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
+};
+
+/** Names that only look: `get_issue`, `list-pages`, `searchDocs`, `read_wiki_contents`. */
+const LOOKS =
+  /^(get|list|search|find|fetch|read|query|lookup|describe|show|view|count|retrieve)(?:$|[_.-]|[A-Z])/;
+/** Words for moving or committing money, anywhere in a name. */
+const MONEY =
+  /refund|payment|payout|charge|transfer|purchase|checkout|invoice|subscription|coupon|pay(?:$|[_.-]|[A-Z])/i;
+
+/**
+ * Where a listed tool starts: a read when it says it only reads or is named
+ * like a lookup (unless it says it destroys), spending when its name is about
+ * money, a change that can be undone when it says it destroys nothing, and
+ * otherwise asking first.
+ */
+export function suggestedEffect(tool: McpListedTool): EffectClass {
+  const hints = tool.annotations ?? {};
+  const looks = hints.readOnlyHint === true || LOOKS.test(tool.name);
+  if (looks && hints.destructiveHint !== true && hints.readOnlyHint !== false) return 'read';
+  if (MONEY.test(tool.name)) return 'spend';
+  if (hints.destructiveHint === false) return 'write_reversible';
+  return 'write_external';
+}
+
+/** A short name for a tool: lower-case letters, digits and underscores, starting with a letter. */
+export function mcpToolAlias(name: string): string {
+  const plain = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 72);
+  return /^[a-z]/.test(plain) ? plain : `t_${plain || 'tool'}`;
+}
+
+/** A server's short name from what the person called it, as an MCP installation names it. */
+export function mcpServerId(label: string): string {
+  return mcpToolAlias(label).slice(0, 40).replace(/_+$/, '');
+}
+
+/** The most tools one server added by its address installs: one grant each. */
+export const MAX_DISCOVERED_TOOLS = 64;
+
+/**
+ * The installation a server added by its address makes, for the tools the
+ * person kept and how far each may act: one grant per tool, as the catalog's.
+ */
+export function mcpDiscoveredConfig(
+  id: string,
+  url: string,
+  choices: readonly { name: string; effect_class: EffectClass }[],
+): McpConnectionConfig {
+  const taken = new Set<string>();
+  const tools = choices.map((choice) => {
+    const base = mcpToolAlias(choice.name);
+    let alias = base;
+    for (let n = 2; taken.has(alias); n++) alias = `${base}_${n}`;
+    taken.add(alias);
+    return {
+      name: choice.name,
+      alias,
+      required_scopes: [`mcp_${id}.${alias}`],
+      effect_class: choice.effect_class,
+    };
+  });
+  return {
+    id,
+    url,
+    audience: 'owner',
+    allowed_scopes: tools.flatMap((tool) => tool.required_scopes),
+    tools,
+  };
+}

@@ -12,8 +12,10 @@ export type ApiNetwork = {
 /**
  * `remoteAddress` is the socket peer. `clientAddress` is who the request is
  * from: the peer itself, or the browser the trusted web proxy says it carries.
+ * `webOrigin` is the address that browser opened Melete at, as the trusted web
+ * proxy saw it; nobody else can state it.
  */
-export type RequestSource = { remoteAddress?: string; clientAddress?: string };
+export type RequestSource = { remoteAddress?: string; clientAddress?: string; webOrigin?: string };
 type SocketSource = { requestIP: (request: Request) => { address: string } | null };
 
 /**
@@ -21,6 +23,20 @@ type SocketSource = { requestIP: (request: Request) => { address: string } | nul
  * Routes never read it; only this listener does, and only from the trusted proxy.
  */
 export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
+
+/**
+ * Written by the web proxy: the origin the browser opened Melete at. A sign-in
+ * returns the browser there when no public address is configured. Believed
+ * only from the trusted proxy, as the client address header is.
+ */
+export const WEB_ORIGIN_HEADER = 'x-melete-web-origin';
+
+/** An http(s) origin and nothing more, or null. */
+export function plainOrigin(value: string | null | undefined): string | null {
+  if (!value || !URL.canParse(value)) return null;
+  const url = new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) && url.origin === value ? value : null;
+}
 
 /** Whether a socket peer is the deployment's web proxy. */
 export type TrustedProxy = TrustedPeer;
@@ -88,13 +104,16 @@ export function apiFetch(
         { status: 403, headers: { 'Cache-Control': 'no-store' } },
       );
     const peer = plainAddress(remoteAddress) ?? remoteAddress;
-    const pass = (clientAddress: string | undefined) =>
-      app.fetch(request, { remoteAddress, clientAddress } satisfies RequestSource);
     const claimed = plainAddress(request.headers.get(CLIENT_ADDRESS_HEADER));
-    if (!claimed || !peer) return pass(peer);
+    const origin = plainOrigin(request.headers.get(WEB_ORIGIN_HEADER));
+    const pass = (believed: boolean) =>
+      app.fetch(request, {
+        remoteAddress,
+        clientAddress: believed && claimed ? claimed : peer,
+        ...(believed && origin ? { webOrigin: origin } : {}),
+      } satisfies RequestSource);
+    if ((!claimed && !origin) || !peer) return pass(false);
     const trusted = proxy(peer);
-    return trusted instanceof Promise
-      ? trusted.then((yes) => pass(yes ? claimed : peer))
-      : pass(trusted ? claimed : peer);
+    return trusted instanceof Promise ? trusted.then(pass) : pass(trusted);
   };
 }

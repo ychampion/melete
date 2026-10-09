@@ -39,7 +39,12 @@ export type FakeMcpAuthOptions = {
    */
   protocol?: string;
   /** The tools the endpoint lists; left out, one `read_file`. */
-  tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  tools?: Array<{
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+    annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
+  }>;
 };
 
 /** One request the MCP endpoint answered once signed in, as it arrived. */

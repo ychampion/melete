@@ -52,6 +52,29 @@ const API_ORIGIN = 'http://melete:8787';
 export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
 
 /**
+ * Tells the API the origin the browser opened Melete at: the configured
+ * `MELETE_WEB_ORIGIN`, or this request's own. A sign-in to a connected app
+ * returns the browser there when the service has no public address of its
+ * own. It replaces whatever the browser sent, and the API believes it only on
+ * a connection from the proxy it was told to trust.
+ */
+export const WEB_ORIGIN_HEADER = 'x-melete-web-origin';
+
+/**
+ * Where an app's or account's sign-in sends the browser back. That return is
+ * a top-level navigation from the app's own site, so it arrives marked
+ * cross-site; it carries a one-time code and a state only the sign-in that
+ * started it can spend, so it is let through as a page load and nothing else.
+ */
+export function signInReturn(request: Request, pathname: string): boolean {
+  return (
+    request.method === 'GET' &&
+    request.headers.get('sec-fetch-mode') === 'navigate' &&
+    /^\/api\/oauth\/(?:[a-z]+\/)?callback$/.test(pathname)
+  );
+}
+
+/**
  * Identity headers a Tailscale node writes on a request it proxies. They are
  * not a sign-in here: password and device cookie remain the sign-in, and the
  * API reads none of these. They are stripped from every request, whatever
@@ -173,6 +196,7 @@ async function proxyApi(
   const view = appViewPath(request.method, url.pathname);
   if (
     !view &&
+    !signInReturn(request, url.pathname) &&
     (request.headers.get('sec-fetch-site') === 'cross-site' ||
       (origin !== null && origin !== (publicOrigin ?? url.origin)))
   ) {
@@ -221,6 +245,7 @@ async function proxyApi(
   // way a browser cannot choose the address it is limited by.
   headers.delete(CLIENT_ADDRESS_HEADER);
   if (clientAddress) headers.set(CLIENT_ADDRESS_HEADER, clientAddress);
+  headers.set(WEB_ORIGIN_HEADER, publicOrigin ?? url.origin);
 
   try {
     const response = await fetch(target, {

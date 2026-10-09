@@ -10,6 +10,7 @@ import {
   Linked,
   type SignInEntry,
 } from './ConnectionInstall.tsx';
+import { ToolChoices } from './McpServerAdd.tsx';
 import { ConnectionCard } from './Settings.tsx';
 
 /** A kind this application has never heard of: the form has only the descriptor to go on. */
@@ -245,24 +246,54 @@ test('before connecting an app, the person sees what it looks up, what it change
   expect(html).toContain('Continue to Stripe');
 });
 
-test('an app this server is not set up for links the setup guide and never names settings', () => {
+test('an app that needs an app registered for it says what is missing, and only its operator sees the setting', () => {
+  const reason =
+    'GitHub only accepts apps registered with GitHub ahead of time, and this Melete does not have one yet. Whoever runs it can register one.';
+  const github = (extra: Partial<AppEntry>) =>
+    renderToStaticMarkup(
+      <AppConnect
+        entry={stripeEntry({
+          id: 'github',
+          title: 'GitHub',
+          available: false,
+          unavailable_reason: reason,
+          ...extra,
+        })}
+        onDone={() => {}}
+        onInstalled={() => {}}
+      />,
+    );
+  const person = github({});
+  expect(person).toContain('only accepts apps registered with GitHub');
+  expect(person).not.toContain('Available when your server is set up for it.');
+  expect(person).toContain('docs/CONNECTORS.md#connecting-github');
+  expect(person).not.toContain('GITHUB_MCP');
+  expect(person).not.toContain('Continue to GitHub');
+  // The service sends the setting to whoever runs this Melete, and no one else.
+  const operator = github({
+    setup_hint:
+      'Register an OAuth app, then set GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET.',
+  });
+  expect(operator).toContain('GITHUB_MCP_CLIENT_ID');
+});
+
+test('the tools a server listed are each kept or dropped, with how far each may act, and none is typed', () => {
   const html = renderToStaticMarkup(
-    <AppConnect
-      entry={stripeEntry({
-        id: 'github',
-        title: 'GitHub',
-        available: false,
-        unavailable_reason: 'Connecting GitHub is not set up on this Melete yet.',
-        setup_hint: 'Set GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET.',
-      })}
-      onDone={() => {}}
-      onInstalled={() => {}}
+    <ToolChoices
+      choices={[
+        { name: 'read_wiki_contents', effect_class: 'read', keep: true },
+        { name: 'post_update', effect_class: 'write_external', keep: true, description: 'Posts.' },
+        { name: 'create_refund', effect_class: 'spend', keep: false },
+      ]}
+      onChange={() => {}}
     />,
   );
-  expect(html).toContain('Available when your server is set up for it.');
-  expect(html).toContain('docs/CONNECTORS.md#connecting-github');
-  expect(html).not.toContain('GITHUB_MCP');
-  expect(html).not.toContain('Continue to GitHub');
+  expect(html).toContain('2 of 3 kept');
+  for (const name of ['read_wiki_contents', 'post_update', 'create_refund'])
+    expect(html).toContain(`How far ${name} may act`);
+  expect(html).toContain('Looks only');
+  expect(html).toContain('Spends money (asks you first)');
+  expect(html).not.toContain('<input type="text"');
 });
 
 test('a connected app shows whether it runs, and why not when it fails', () => {

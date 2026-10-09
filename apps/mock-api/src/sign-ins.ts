@@ -20,9 +20,14 @@ import {
   mcpCatalogConfig,
   mcpCatalogEntry,
   mcpConnectedClientList,
+  mcpDiscoveredConfig,
+  mcpSignInInstall,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
+  mcpToolDiscovery,
+  mcpToolDiscoveryRequest,
+  suggestedEffect,
 } from '@melete/contracts';
 import type { Hono } from 'hono';
 import { newId, type Store } from './store.ts';
@@ -73,7 +78,14 @@ export function mockCatalog(): ConnectionCatalogEntry[] {
             asks_first: asksFirst(tool.effect_class),
           })),
         },
-        available: true,
+        // As a server without the operator's own GitHub app answers: the apps
+        // that register their own clients are ready, and GitHub says why not.
+        ...(entry.client
+          ? {
+              available: false,
+              unavailable_reason: `${entry.title} only accepts apps registered with ${entry.title} ahead of time, and this Melete does not have one yet. Whoever runs it can register one.`,
+            }
+          : { available: true }),
         ...(entry.warning ? { warning: entry.warning } : {}),
       }),
     ),
@@ -117,10 +129,36 @@ export function addCatalogConnection(
   return id;
 }
 
+/**
+ * The tools the mock's stand-in server lists, whatever its address: a few that
+ * look, one that changes something, and one that spends.
+ */
+const MOCK_SERVER_TOOLS = [
+  { name: 'read_wiki_structure', description: 'List the topics a repository’s wiki covers.' },
+  { name: 'read_wiki_contents', description: 'Read a repository’s wiki.' },
+  {
+    name: 'ask_wiki_question',
+    description: 'Ask a question about a repository.',
+    annotations: { readOnlyHint: true },
+  },
+  { name: 'save_note', description: 'Save a note.', annotations: { destructiveHint: false } },
+  { name: 'post_update', description: 'Post an update to the team channel.' },
+  { name: 'create_refund', description: 'Refund a payment.' },
+];
+const mockServerTools = () =>
+  MOCK_SERVER_TOOLS.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    effect_class: suggestedEffect(tool),
+  }));
+
 type Pending = {
   spaceId: string;
-  /** A catalog app's id, or an account provider. */
-  what: { catalog: McpCatalogEntry } | { account: 'google' | 'microsoft' };
+  /** A catalog app's id, an account provider, or a server added by its address. */
+  what:
+    | { catalog: McpCatalogEntry }
+    | { account: 'google' | 'microsoft' }
+    | { discover: { id: string; url: string; label: string } };
   approved: boolean;
   connected?: string[];
   expiresAt: number;
@@ -149,6 +187,7 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
   /** Connects what an approved sign-in was for, once. */
   const finish = (entry: Pending): string[] => {
     if (entry.connected) return entry.connected;
+    if ('discover' in entry.what) return [];
     if ('catalog' in entry.what)
       entry.connected = [addCatalogConnection(store, entry.spaceId, entry.what.catalog)];
     else {
@@ -186,11 +225,27 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
     const entry = pending.get(id);
     if (!entry) return null;
     if (!entry.approved) return { state: 'pending' as const, entry };
+    if ('discover' in entry.what && !entry.connected) return { state: 'ready' as const, entry };
     return { state: 'connected' as const, entry, ids: finish(entry) };
   };
 
   app.post('/mcp-sign-ins', async (c) => {
     const parsed = mcpSignInRequest.safeParse(await c.req.json().catch(() => null));
+    if (parsed.success && 'discover' in parsed.data) {
+      const { discover, label } = parsed.data;
+      const started = begin({ discover: { ...discover, label } }, parsed.data.space_id ?? spaceId);
+      return Response.json(
+        mcpSignInStart.parse({
+          sign_in_id: started.id,
+          authorize_url: `${origin(c.req.url)}/mock-consent/${started.id}`,
+          redirect_uri: `${origin(c.req.url)}/oauth/callback`,
+          expires_at: started.expires_at,
+          issuer: origin(discover.url),
+          scopes: [],
+        }),
+        { status: 201 },
+      );
+    }
     if (!parsed.success || !('catalog_id' in parsed.data))
       return Response.json(
         { error: { code: 'invalid_request', message: 'The mock connects catalog apps only.' } },
@@ -227,7 +282,90 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
       mcpSignInStatus.parse(
         found.state === 'pending'
           ? { state: 'pending', expires_at: new Date(found.entry.expiresAt).toISOString() }
-          : { state: 'connected', connection_id: found.ids[0] },
+          : found.state === 'ready'
+            ? { state: 'ready', tools: mockServerTools() }
+            : { state: 'connected', connection_id: found.ids[0] },
+      ),
+    );
+  });
+
+  /** Installs a server signed in to by its address, with the tools the person kept. */
+  const addDiscovered = (
+    space: string,
+    label: string,
+    config: ReturnType<typeof mcpDiscoveredConfig>,
+  ) => {
+    const id = newId(ID_PREFIXES.connection);
+    const now = store.now().toISOString();
+    store.connections.set(id, {
+      id,
+      space_id: space,
+      provider: 'mcp',
+      label,
+      secret_ref: newId(ID_PREFIXES.secret),
+      scopes: config.allowed_scopes,
+      status: 'active',
+      health: 'ok',
+      setup_state: 'connected',
+      generation: 0,
+      last_checked_at: now,
+      created_at: now,
+    });
+    return id;
+  };
+
+  app.post('/mcp-sign-ins/:id/install', async (c) => {
+    const entry = pending.get(c.req.param('id'));
+    const parsed = mcpSignInInstall.safeParse(await c.req.json().catch(() => null));
+    if (!entry || !('discover' in entry.what) || !entry.approved || entry.connected)
+      return Response.json(
+        { error: { code: 'sign_in_not_found', message: 'That sign-in has expired. Start again.' } },
+        { status: 404 },
+      );
+    if (!parsed.success)
+      return Response.json(
+        { error: { code: 'invalid_request', message: 'Choose at least one tool.' } },
+        { status: 400 },
+      );
+    const { id, url, label } = entry.what.discover;
+    const connectionId = addDiscovered(
+      entry.spaceId,
+      label,
+      mcpDiscoveredConfig(id, url, parsed.data.tools),
+    );
+    entry.connected = [connectionId];
+    const created = store.connections.get(connectionId);
+    return Response.json(
+      { connection: created ? store.view(created) : null, check: undefined },
+      { status: 201 },
+    );
+  });
+
+  // A server added by its address: an address naming "sign-in" wants one first,
+  // one naming "offline" cannot be reached, and any other lists the stand-in tools.
+  app.post('/mcp-servers/discover', async (c) => {
+    const parsed = mcpToolDiscoveryRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      return Response.json(
+        { error: { code: 'invalid_request', message: 'Enter the server’s address.' } },
+        { status: 400 },
+      );
+    if (parsed.data.url.includes('offline'))
+      return Response.json(
+        {
+          error: {
+            code: 'mcp_unreachable',
+            message:
+              'Melete could not reach that address, or nothing answered in time. Check the address and that the server is running.',
+          },
+        },
+        { status: 502 },
+      );
+    return Response.json(
+      mcpToolDiscovery.parse(
+        parsed.data.url.includes('sign-in') && !parsed.data.access_token
+          ? { state: 'needs_sign_in' }
+          : { state: 'ready', tools: mockServerTools() },
       ),
     );
   });
@@ -276,9 +414,11 @@ export function mountMockSignIns(app: Hono, store: Store, spaceId: string) {
     const title = entry
       ? 'catalog' in entry.what
         ? entry.what.catalog.title
-        : entry.what.account === 'google'
-          ? 'Google'
-          : 'Microsoft'
+        : 'discover' in entry.what
+          ? entry.what.discover.label.replace(/[<>&"]/g, '')
+          : entry.what.account === 'google'
+            ? 'Google'
+            : 'Microsoft'
       : '';
     return c.html(
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${entry ? 'Connected' : 'Not found'}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-size:1.25rem">${entry ? `${title} is connected` : 'That sign-in has expired'}</h1><p>You can close this tab.</p></body></html>`,

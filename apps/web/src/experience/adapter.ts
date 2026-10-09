@@ -49,6 +49,7 @@ import type {
   Device,
   DeviceCapabilities,
   DevicePairing,
+  DiscoveredMcpTool,
   Draft,
   EngineSkill,
   ExperienceEvent,
@@ -66,6 +67,7 @@ import type {
   LocalModelCheckRequest,
   McpSignInStart,
   McpSignInStatus,
+  McpToolDiscovery,
   MemoryDigestResponse,
   MemoryExplanation,
   MemoryItem,
@@ -692,6 +694,32 @@ export const adapter = {
     ),
   mcpSignInStatus: (id: string) =>
     guard<McpSignInStatus>(() => api.GET('/mcp-sign-ins/{id}', path(id))),
+  /** Reads the tools of a server added by its address; nothing is installed. */
+  discoverMcpTools: (url: string, accessToken?: string, spaceId?: string) =>
+    guard<McpToolDiscovery>(() =>
+      api.POST('/mcp-servers/discover', {
+        body: {
+          url,
+          ...(accessToken ? { access_token: accessToken } : {}),
+          ...(spaceId ? { space_id: spaceId } : {}),
+        },
+      }),
+    ),
+  /** Signs in to a server added by its address; its tools are read once that is done. */
+  startDiscoverySignIn: (label: string, id: string, url: string, spaceId?: string) =>
+    guard<McpSignInStart>(() =>
+      api.POST('/mcp-sign-ins', {
+        body: { label, discover: { id, url }, ...(spaceId ? { space_id: spaceId } : {}) },
+      }),
+    ),
+  /** Installs a signed-in server with the tools the person kept. */
+  installSignedIn: (
+    id: string,
+    tools: { name: string; effect_class: DiscoveredMcpTool['effect_class'] }[],
+  ) =>
+    guard<ConnectionInstalled>(() =>
+      api.POST('/mcp-sign-ins/{id}/install', { ...path(id), body: { tools } }),
+    ),
   /** The body is built from a kind's descriptor; the service validates it per kind. */
   installConnection: (body: Record<string, unknown>) =>
     guard<ConnectionInstalled>(() =>

@@ -64,9 +64,12 @@ import {
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
+  mcpSignInInstall,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
+  mcpToolDiscovery,
+  mcpToolDiscoveryRequest,
 } from './connections.ts';
 import {
   deviceHelloRequest,
@@ -2807,6 +2810,44 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Pending, connected, or failed with a code', mcpSignInStatus),
               '404': problem('No sign-in by that id for this person'),
+            },
+          },
+        },
+
+        '/mcp-sign-ins/{id}/install': {
+          post: {
+            tags: ['connections'],
+            summary: 'Install a server signed in to by its address, with the tools the person kept',
+            description:
+              'For a sign-in started with `discover`, once its status is `ready`: installs the ' +
+              'server with the tools named here and how far each may act, one grant per tool, ' +
+              'with the credential the sign-in earned. A tool the server did not list is refused.',
+            requestParams: idParam('id', 'Sign-in id'),
+            requestBody: json(mcpSignInInstall),
+            responses: {
+              '201': jsonResponse('Installed', connectionResponse),
+              '400': problem('No tools, or a tool the server did not list'),
+              '403': problem('Space owner and matching audience required'),
+              '404': problem('No ready sign-in by that id for this person'),
+            },
+          },
+        },
+
+        '/mcp-servers/discover': {
+          post: {
+            tags: ['connections'],
+            summary: 'Read the tools of an MCP server added by its address',
+            description:
+              'Asks the server for its tools (`tools/list`) and answers with each one and where ' +
+              'Melete suggests it starts: a read, a change that can be undone, a change that asks ' +
+              'first, or spending. Nothing is installed. A server that wants a sign-in answers ' +
+              '`needs_sign_in`; start one with `discover` on `POST /mcp-sign-ins`.',
+            requestBody: json(mcpToolDiscoveryRequest),
+            responses: {
+              '200': jsonResponse('Its tools, or that it wants a sign-in', mcpToolDiscovery),
+              '400': problem('Not an MCP server, a refused token, or an address out of reach'),
+              '403': problem('Space owner and matching audience required'),
+              '502': problem('The server could not be reached'),
             },
           },
         },
