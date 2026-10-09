@@ -23,6 +23,7 @@ import { notesManifest } from './notes.ts';
 import { roomManifest } from './room.ts';
 import { sandboxExecManifest } from './sandbox-exec.ts';
 import { skillsManifest } from './skills.ts';
+import { smsManifest } from './sms.ts';
 import { webManifest } from './web.ts';
 
 const toolNames = (manifest: ConnectorManifest) => manifest.tools.map((tool) => tool.name).sort();
@@ -244,6 +245,7 @@ describe('installable kinds against the connectors they select', () => {
     expect(sorted(CONNECTION_KIND_SCOPES.caldav)).toEqual(toolNames(calendarManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.freebusy', 'calendar.list']);
     expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
+    expect(sorted(CONNECTION_KIND_SCOPES.sms)).toEqual(toolNames(smsManifest));
     // The read grant is checked by the egress relay itself; the write grant is the broker tool.
     expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual(
       sorted(
@@ -261,6 +263,7 @@ describe('installable kinds against the connectors they select', () => {
         ...emailManifest.tools,
         ...calendarManifest.tools,
         ...sandboxExecManifest.tools,
+        ...smsManifest.tools,
         ...COMMAND_LINE_ADAPTERS.flatMap(
           (adapter) => createCommandLineConnector(adapter).manifest.tools,
         ),

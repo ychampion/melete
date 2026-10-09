@@ -18,6 +18,7 @@ import {
   mcpStdioConnectionConfig,
 } from './mcp.ts';
 import { MAX_DISCOVERED_TOOLS } from './mcp-catalog.ts';
+import { e164Number } from './reach.ts';
 
 export const CONNECTION_KINDS = [
   'mail',
@@ -287,11 +288,6 @@ export const awsCommandLineCredentials = z
     secret_access_key: z.string().regex(/^[A-Za-z0-9/+=]{16,128}$/),
   })
   .strict();
-/** A phone number in E.164 form: a plus, the country code and the number, digits only. */
-export const e164Number = z
-  .string()
-  .regex(/^\+[1-9]\d{6,14}$/, 'Write the number with + and the country code, digits only');
-
 /**
  * Text messages through Twilio. The numbers here are the person's own phones:
  * a text from one of them is the person talking to Melete, and a text from any
