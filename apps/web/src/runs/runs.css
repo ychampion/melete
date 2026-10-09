@@ -458,3 +458,53 @@
     margin-top: 6px;
   }
 }
+
+/* ---------- what it asked the person's OK for ---------- */
+
+.run-permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.run-permission {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-block);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.run-permission-what {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.run-permission-why {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.run-permission-why code {
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.run-permission-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.run-chat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
