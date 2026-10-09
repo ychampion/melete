@@ -242,6 +242,8 @@ test('memory.search answers only an attempt whose catalog offers it', async () =
   const searching = createBrokerApp({
     broker: {
       ...broker,
+      // Every native tool is served beside discovery, as the real broker's are.
+      discovery: {} as NonNullable<BrokerOperations['discovery']>,
       // Offered only where the agent may read memory; here, while files.read is granted.
       async catalog(c) {
         return c.scopes.includes('files.read') ? [...tools, search] : [...tools];
