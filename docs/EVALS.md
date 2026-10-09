@@ -39,6 +39,9 @@ bun run evals -- --engine light --provider scripted --suite capability --runs 1 
 bun run evals -- --engine light --provider fireworks --model accounts/fireworks/models/deepseek-v4p1-flash --case <scenario> --runs 1 --workers 1 --budget 0.5 --campaign <campaign>
 ```
 
+
+After the two failures were fixed, both scenarios were run again on deepseek-v4p1-flash, one run each: `cap-reminder-fires-does-task` passed (rubric 5) and `cap-background-research-delivers` passed deterministically (rubric 2: the chat's own reply wrongly said the request could not be sent, though the work sent it after approval). A scheduled occurrence that ends without a report is now reported for it in its own words, the shift that runs when scheduled work is set up prepares and sends nothing, and long research is steered to background work by the `run.start` description, an instruction line, the research skill and a note on any turn that passes six rounds of tools without starting it. That second pass recorded $0.12 on its own ledger, under the $0.20 set for it. The reminder scenario no longer requires `web.fetch`, since the forecast can come from `web.weather`, and the lab now fires a schedule only after the work has settled from being set up.
+
 The per-cell artifacts stayed local; only these aggregate numbers are recorded here.
 
 ## Capability evaluations, 4 October 2026

@@ -231,7 +231,9 @@ export const CITING: readonly string[] = [
 export const BACKGROUND_WORDS: readonly string[] = [
   'When the person asks for something in the background or to report back, or for research',
   'that compares several options or reads many sources, start it with run.start before',
-  'reading anything, then tell them in one sentence that it has started and end your reply.',
+  'reading anything, as the only tool call in that step, then tell them in one sentence that it',
+  'has started and end your reply. Every step of that work, a request it needs sent included,',
+  'happens inside it, not here.',
   'Answer a question one or two reads can settle here, in your reply.',
 ];
 

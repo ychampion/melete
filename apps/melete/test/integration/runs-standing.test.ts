@@ -179,6 +179,8 @@ withDb('standing work', () => {
     expect(first.bundle.job.objective).toContain(
       'This work stands: it wakes every weekday at 9:00',
     );
+    // Set up now, it prepares; the scheduled times report.
+    expect(first.bundle.job.objective).toContain('because the work was just set up');
     await tool(first.claims, 'run.log', { kind: 'finding', title: 'Oak panels are $51' });
     await required(runner).commitOutcome(first.claims, done('Baseline recorded.'));
     await resting(run.id);
@@ -199,6 +201,7 @@ withDb('standing work', () => {
     expect(woke.bundle.job.objective).toContain(
       'Why this shift started: it is the scheduled time (every weekday at 9:00)',
     );
+    expect(woke.bundle.job.objective).not.toContain('because the work was just set up');
     // The shift is the occurrence itself, not the setting up of it.
     expect(woke.bundle.job.objective).toContain(
       'This shift is that occurrence: do the work for it now.',
