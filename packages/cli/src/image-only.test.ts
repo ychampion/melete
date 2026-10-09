@@ -73,4 +73,32 @@ describe('the read-only commands in the service image', () => {
       expect(report.command).toBe(command);
     }, 150_000);
   }
+
+  test('browser files, the installer’s half of turning on the browser worker, loads and answers', () => {
+    const line = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        join(image, 'packages/cli/src/main.ts'),
+        'browser',
+        'files',
+        '--connection',
+        'conn_browser1',
+      ],
+      {
+        cwd: image,
+        stdin: Buffer.from(`${line('MELETE_IMAGE_TAG=main\n')}\n-\n${line('[]\n')}\n`),
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 120_000,
+      },
+    );
+    expect(run.stderr.toString()).not.toMatch(/Cannot find (module|package)/);
+    expect(run.exitCode).toBe(0);
+    const [contract = '', connections = ''] = run.stdout.toString().trim().split('\n');
+    expect(JSON.parse(Buffer.from(contract, 'base64').toString()).overlays).toEqual(['browser']);
+    expect(JSON.parse(Buffer.from(connections, 'base64').toString())).toEqual([
+      { kind: 'browser', id: 'conn_browser1' },
+    ]);
+  }, 150_000);
 });
