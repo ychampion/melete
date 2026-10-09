@@ -65,6 +65,7 @@ import type {
   LiveUp,
   LocalModelCheck,
   LocalModelCheckRequest,
+  ManagedSignInStart,
   McpSignInStart,
   McpSignInStatus,
   McpToolDiscovery,
@@ -669,6 +670,15 @@ export const adapter = {
         ? api.POST('/google-sign-ins', { body })
         : api.POST('/microsoft-sign-ins', { body });
     }),
+  /** Starts signing in to Google through Composio; the answer is the first consent page to open. */
+  startManagedSignIn: (spaceId?: string) =>
+    guard<ManagedSignInStart>(() =>
+      api.POST('/managed-sign-ins', {
+        body: { provider: 'google', ...(spaceId ? { space_id: spaceId } : {}) },
+      }),
+    ),
+  managedSignInStatus: (id: string) =>
+    guard<AccountSignInStatus>(() => api.GET('/managed-sign-ins/{id}', path(id))),
   accountSignInStatus: (provider: 'google' | 'microsoft', id: string) =>
     guard<AccountSignInStatus>(() =>
       provider === 'google'

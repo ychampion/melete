@@ -43,6 +43,8 @@ export type MockOptions = {
   reach?: boolean;
   /** Rooms, shared spaces, guests and hand-offs; off unless asked for, as on the service. */
   multiplayer?: boolean;
+  /** Google signs in through Composio, as with a Composio key set on the service. */
+  composio?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -66,6 +68,7 @@ export function createMock(options: MockOptions = {}) {
     needsYou: options.needsYou !== 'none',
     reach: options.reach ?? true,
     multiplayer: options.multiplayer ?? false,
+    composio: options.composio ?? false,
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -85,6 +88,7 @@ if (import.meta.main) {
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
     reach: process.env.MELETE_MOCK_REACH !== 'off',
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
+    composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     connections:
       process.env.MELETE_MOCK_CONNECTIONS === 'none'

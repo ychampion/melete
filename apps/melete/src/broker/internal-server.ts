@@ -41,6 +41,7 @@ export function createInternalServer(options: {
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
   runs?: BrokerOptions['runs'];
   intents?: BrokerOptions['intents'];
+  memorySearch?: BrokerOptions['memorySearch'];
   autoReview?: BrokerOptions['autoReview'];
   sendHoldMs?: BrokerOptions['sendHoldMs'];
   /** A broker the service already built, shared with its own routes. */
@@ -98,6 +99,7 @@ export function createInternalServer(options: {
       chaseFollowUp: options.chaseFollowUp,
       runs: options.runs,
       intents: options.intents,
+      memorySearch: options.memorySearch,
       autoReview: options.autoReview,
       sendHoldMs: options.sendHoldMs,
     });

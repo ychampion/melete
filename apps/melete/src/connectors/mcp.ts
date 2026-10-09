@@ -249,6 +249,12 @@ export async function openMcpWorker(
   };
 }
 
+/**
+ * Composio's meta tools (`COMPOSIO_MULTI_EXECUTE_TOOL`, `COMPOSIO_SEARCH_TOOLS`,
+ * `COMPOSIO_MANAGE_CONNECTIONS` and the rest), whatever server lists them.
+ */
+export const COMPOSIO_META_TOOL = /^composio_/i;
+
 /** The broker's tools, built only from the policy's names and the server's schemas for them. */
 function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDefinition>) {
   const healthNotes: string[] = [];
@@ -333,6 +339,9 @@ async function introduce(transport: McpTransport) {
       if (listBytes > MAX_TOOL_LIST_BYTES) throw new Error('MCP tool list is too large');
       if (size > MAX_TOOL_DEFINITION_BYTES) continue;
       const tool = serverTool.parse(raw);
+      // A provider's meta tools run whichever action they are told to, under
+      // one name, so what a call does could not be known or approved. Never offered.
+      if (COMPOSIO_META_TOOL.test(tool.name)) continue;
       if (discovered.has(tool.name)) throw new Error('Duplicate MCP server tool');
       discovered.set(tool.name, tool);
     }

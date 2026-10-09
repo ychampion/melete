@@ -713,7 +713,8 @@ ${JSON.stringify({
     expect(errors).toEqual([]);
     const [kept] = await listBeliefs(db.sql, scope, 'UTC');
     expect(kept).toMatchObject({
-      label: 'Work time sink',
+      // The belief's own line is its sentence, not its subject key's words.
+      label: 'Email and admin take up most of the week',
       value: 'Email and admin take up most of the week',
       category: 'work',
     });

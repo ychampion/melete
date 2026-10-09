@@ -91,6 +91,70 @@ you publish the consent screen decides how long a sign-in lasts:
 For one person or a family on personal Gmail accounts, **Testing** works with a
 sign-in once a week. For a Workspace organisation, **Internal** is the simplest.
 
+### Signing in with Google through Composio
+
+With a [Composio](https://composio.dev) project key set, the Google card signs
+in through Composio's own verified Google app instead of a client of yours, so
+no Google Cloud project, consent screen or weekly sign-in is needed. Composio
+handles the sign-in and keeps the Google tokens; Melete keeps only which
+Composio account each connection acts for. Requests to Gmail, Google Calendar
+and Google Drive, and Google's answers, pass through Composio, and the connect
+screen says so. Microsoft keeps its own sign-in either way.
+
+The connections are the same as a native sign-in's: `email.*`, `calendar.*`
+and `documents.status`, with the same approvals, receipts, privacy routing,
+watching and noticing. Only how each request travels differs: it goes to
+Composio's proxy for the row's own connected account, and Google's answer comes
+back unchanged, so every parser, cursor and change feed is shared. The proxy
+used for watching an account only reads; sending and calendar changes go only
+through the agent's tools, each after its approval.
+
+Setting it up:
+
+1. Create a project at composio.dev and a project API key with **Proxy
+   execute** switched on.
+2. Set `COMPOSIO_API_KEY` and restart. `MELETE_PUBLIC_URL` must be an
+   `https://` address or a `localhost` one; Composio returns the browser to
+   `<MELETE_PUBLIC_URL>/api/managed-sign-ins/callback`.
+3. Optionally, set `COMPOSIO_AUTH_CONFIG_GMAIL`,
+   `COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR` and `COMPOSIO_AUTH_CONFIG_GOOGLEDRIVE`
+   to the auth configs to sign in with, such as ones using a Google client of
+   your own inside Composio. Left out, Melete uses the project's
+   Composio-managed config for each toolkit, and makes one when there is none.
+
+`POST /managed-sign-ins` with `{ "provider": "google" }` answers with the first
+consent page. Gmail and Google Calendar are separate toolkits at Composio, so
+the person sees one Google consent page for each, and the browser returns to
+Melete after each one. `{ "provider": "google", "documents": true }` connects
+Google Drive alone, as the Drive step above does. `GET /managed-sign-ins/{id}`
+reports `pending`, `connected` with the connection ids, or `failed` with a code.
+
+Each return is checked before anything is connected: its state is single use
+and belongs to the person who started it, the account it names must be the one
+that step created, and the account is read again from Composio, where it must
+belong to this person's Composio user, be of the toolkit asked for, and be
+active. The address is read through the account itself. A second Google
+account connects as its own set of connections. An address already connected in
+the space natively moves to Composio on its existing connections, which keep
+their ids and history, and signing in natively again moves it back; nothing
+already reported is reported again. An address already connected through
+another active Composio account is refused. Disconnecting a connection revokes
+and removes its Composio account.
+
+Each call through Composio counts toward the month, per person. Accounts
+watched through Composio are read every ten minutes in the day for mail and
+every fifteen for calendars, and hourly at night. With
+`MELETE_MANAGED_CALLS_MONTHLY_CAP` set, an account is read half as often once
+the month's calls reach 80% of it, and once an hour past it, and each account
+shows the reason (`reading_note` on `GET /connections` and
+`GET /experience/connections`). Sends and other approved actions always go
+ahead.
+
+Evidence: [managed-sign-in.test.ts](../apps/melete/test/integration/managed-sign-in.test.ts)
+and [composio.test.ts](../apps/melete/src/connectors/composio.test.ts), which
+also reads the same recorded Gmail, Calendar and Drive answers natively and
+through Composio and finds the same observations and dedup keys.
+
 ## Signing in with Microsoft
 
 One sign-in connects a Microsoft account's Outlook mail and its default

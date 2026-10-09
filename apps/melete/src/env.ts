@@ -199,6 +199,50 @@ const variables = z.object({
   GITHUB_MCP_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
   GITHUB_MCP_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
   /**
+   * A Composio project key. Set, the Google card on the connect screen signs
+   * in through Composio's own Google app, so no Google OAuth client of the
+   * operator's is needed (docs/mail-calendar.md). Microsoft stays on its own
+   * sign-in either way.
+   */
+  COMPOSIO_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  /** Composio's API address. Only a test, or a private Composio region, replaces it. */
+  COMPOSIO_BASE_URL: unsetWhenBlank(
+    z.url({ protocol: /^https?$/ }).default('https://backend.composio.dev'),
+  ),
+  /**
+   * The Composio auth config each toolkit signs in with. Left out, Melete uses
+   * the project's Composio-managed config for that toolkit, and makes one when
+   * there is none. Set one to sign in with a Google client of your own inside
+   * Composio.
+   */
+  COMPOSIO_AUTH_CONFIG_GMAIL: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/)
+      .optional(),
+  ),
+  COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/)
+      .optional(),
+  ),
+  COMPOSIO_AUTH_CONFIG_GOOGLEDRIVE: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/)
+      .optional(),
+  ),
+  /**
+   * The most calls through Composio this installation makes in a calendar
+   * month. Close to it, watched accounts are read less often; past it, once an
+   * hour, with the reason shown on each account. A send the person approved is
+   * never held back by it. Unset, there is no limit.
+   */
+  MELETE_MANAGED_CALLS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(1_000_000_000).optional(),
+  ),
+  /**
    * The operator's Microsoft Entra app, for signing in to Outlook mail and
    * calendar (docs/mail-calendar.md). Both, or neither. The tenant is `common`,
    * for personal and work accounts, unless a tenant id or domain is named.

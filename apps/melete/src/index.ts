@@ -73,6 +73,7 @@ import {
   readConnectionConfig,
 } from './connectors/configured.ts';
 import { startTrashSweep } from './connectors/files-trash.ts';
+import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
@@ -147,11 +148,13 @@ import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
+import { MemoryError } from './memory/db.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { embeddingFromEnv } from './memory/embedding.ts';
 import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
+import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
@@ -206,6 +209,7 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
+import { ManagedCallMeter } from './signals/managed-calls.ts';
 import { SignalPoller } from './signals/poller.ts';
 import { startObservationRetention } from './signals/retention.ts';
 import { mountSituations } from './situations/routes.ts';
@@ -775,6 +779,7 @@ export async function bootstrap(
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopManagedRemovals: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -800,6 +805,7 @@ export async function bootstrap(
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
+  let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -823,6 +829,7 @@ export async function bootstrap(
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
+    stopManagedRemovals?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -1004,6 +1011,14 @@ export async function bootstrap(
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
+      // A Google account signed in through Composio is revoked there when disconnected.
+      const composio = connectors.options.composio;
+      releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
+      // Accounts a removed space, a failed disconnection or an unfinished
+      // sign-in left at Composio are removed there, tried again until gone.
+      stopManagedRemovals = composio
+        ? startManagedRemovalSweep(handle.sql, composio.client)
+        : undefined;
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions) {
         releaseSandboxes = sandboxKeyChange({
@@ -1087,6 +1102,24 @@ export async function bootstrap(
       : null;
     memoryEmbedder = memoryEmbedding;
     const embedsQuery = (jobId: string, text: string) => privacy.cloudEmbedsRequest(jobId, text);
+    // `memory.search`: the agent looks in memory before it tells the person it
+    // doesn't know something, under the same rules as the attempt's own recall.
+    const memorySearch = handle
+      ? (claims: Parameters<typeof searchMemory>[1], input: unknown) =>
+          searchMemory(
+            {
+              sql: handle.sql,
+              scopeForJob: async (jobId) => {
+                const owner = memory ?? deploymentMemory;
+                if (!owner) throw new MemoryError('scope_denied');
+                return owner.scopeForJob(jobId);
+              },
+              ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
+            },
+            claims,
+            input,
+          )
+      : undefined;
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
     if (handle && voiceProvidersFromEnv(env).live)
@@ -1199,6 +1232,7 @@ export async function bootstrap(
           privacy,
           runs,
           intents,
+          memorySearch,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -1441,7 +1475,18 @@ export async function bootstrap(
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
       policy = new PolicyService(jobs, runner, {
-        beforeKeyChange: releaseSandboxes,
+        ...(releaseSandboxes || releaseManaged
+          ? {
+              beforeKeyChange: async (
+                connection: { id: string; provider: string },
+                change: 'revoke' | 'switch',
+                next?: { secretRef: string; spaceId: string },
+              ) => {
+                await releaseSandboxes?.(connection, change, next);
+                await releaseManaged?.(connection, change);
+              },
+            }
+          : {}),
         ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
       });
       // Revocations a stopped process left part way finish now, in the
@@ -1483,6 +1528,7 @@ export async function bootstrap(
           modelSettings,
           runs,
           intents,
+          memorySearch,
           spending,
           blobs: blobs?.store,
         });
@@ -1624,6 +1670,15 @@ export async function bootstrap(
             connectors,
             leads: () => leading(leases, 'signal-poller'),
             load,
+            // Reads through Composio count toward its monthly limit, and slow near it.
+            ...(env.COMPOSIO_API_KEY
+              ? {
+                  managedCalls: new ManagedCallMeter(
+                    sql,
+                    env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null,
+                  ),
+                }
+              : {}),
             ...(noticing
               ? {
                   detectorDemand: () => noticing.demand(),

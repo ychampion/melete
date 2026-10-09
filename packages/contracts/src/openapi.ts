@@ -64,6 +64,8 @@ import {
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
+  managedSignInRequest,
+  managedSignInStart,
   mcpSignInInstall,
   mcpSignInRequest,
   mcpSignInStart,
@@ -2911,6 +2913,78 @@ export function buildOpenApiDocument() {
         },
 
         ...assistantPaths,
+
+        '/managed-sign-ins': {
+          post: {
+            tags: ['connections'],
+            summary: 'Start connecting Google through Composio',
+            description:
+              "Offered when the operator has set a Composio key. Composio's own Google app asks for " +
+              'consent and keeps the tokens; Melete keeps which Composio account each connection acts ' +
+              'for. One sign-in connects Gmail and Google Calendar, one consent page each; with ' +
+              '`documents`, Google Drive alone. Each account comes back as connections with the same ' +
+              'tools, approvals and receipts as a native Google sign-in. An address already ' +
+              'connected in the space through Composio is refused; one connected natively moves to ' +
+              'Composio and keeps its connection.',
+            requestBody: json(managedSignInRequest),
+            responses: {
+              '201': jsonResponse('Open `authorize_url` in the browser', managedSignInStart),
+              '400': problem('Invalid request'),
+              '403': problem('Space owner and matching audience required'),
+              '409': problem('No Composio key, no public address to return to, or no master key'),
+              '502': problem('Composio did not answer'),
+            },
+          },
+        },
+
+        '/managed-sign-ins/{id}': {
+          get: {
+            tags: ['connections'],
+            summary: 'Read how a sign-in through Composio is going',
+            requestParams: idParam('id', 'Sign-in id'),
+            responses: {
+              '200': jsonResponse(
+                'Pending, connected with its connections, or failed with a code',
+                accountSignInStatus,
+              ),
+              '404': problem('No sign-in by that id for this person'),
+            },
+          },
+        },
+
+        '/managed-sign-ins/callback': {
+          get: {
+            tags: ['connections'],
+            summary: 'Where Composio returns the browser after each consent page',
+            description:
+              'Checks the single-use state, that the returned account is the one this step made, and ' +
+              "reads the account again from Composio: this person's, of the toolkit asked for, and " +
+              'active. Connects that part, then sends the browser on to the next consent page, or ' +
+              'answers with a short page when the sign-in is done.',
+            requestParams: {
+              query: z.object({
+                state: z.string().optional(),
+                status: z.string().optional(),
+                connected_account_id: z.string().optional(),
+              }),
+            },
+            responses: {
+              '200': {
+                description: 'Connected',
+                content: { 'text/html': { schema: z.string() } },
+              },
+              '302': { description: 'On to the next consent page' },
+              '400': {
+                description: 'The response was refused',
+                content: { 'text/html': { schema: z.string() } },
+              },
+              '404': {
+                description: 'No such sign-in for this person',
+                content: { 'text/html': { schema: z.string() } },
+              },
+            },
+          },
+        },
 
         ...accountSignInPaths('google', {
           title: 'Google',

@@ -201,6 +201,31 @@ test('an entry this server is not set up for says so, links the setup guide, and
   }
 });
 
+test('signing in to Google through Composio says who handles it, and lists no Google scopes of its own', () => {
+  const note =
+    'Composio handles this sign-in and keeps the Google access. Your mail, calendar and Drive reach Melete through Composio.';
+  const html = renderToStaticMarkup(
+    <AccountSignIn
+      entry={{
+        ...googleEntry({}),
+        connect: {
+          method: 'managed_sign_in',
+          provider: 'google',
+          via: 'composio',
+          start: '/managed-sign-ins',
+          note,
+        },
+      }}
+      onDone={() => {}}
+      onInstalled={() => {}}
+    />,
+  );
+  expect(html).toContain(note);
+  expect(html).not.toContain('accounts.google.com');
+  for (const scope of SCOPES) expect(html).not.toContain(scope.label);
+  expect(html).toContain('Continue to Google');
+});
+
 test('an address in help text is a link', () => {
   const html = renderToStaticMarkup(
     <Linked text="Open myaccount.google.com/apppasswords, create one named Melete." />,

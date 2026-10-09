@@ -775,6 +775,33 @@ export const accountSignInStart = z.object({
   reason: z.string().optional(),
 });
 
+/**
+ * Signing in with Google through Composio, whose own Google app asks for
+ * consent. One sign-in connects Gmail and Google Calendar, one consent page
+ * each; with `documents`, Google Drive alone.
+ */
+export const managedSignInRequest = z
+  .object({
+    provider: z.literal('google'),
+    /** Left out, the space of the signed-in session. */
+    space_id: prefixedId(ID_PREFIXES.space).optional(),
+    documents: z.boolean().optional(),
+  })
+  .strict();
+export type ManagedSignInRequest = z.infer<typeof managedSignInRequest>;
+
+export const managedSignInStart = z.object({
+  sign_in_id: z.string(),
+  /** Open this in the person's browser: the first consent page. */
+  authorize_url: z.url(),
+  expires_at: timestamp,
+  /** Where the person signs in. */
+  issuer: z.url(),
+  via: z.literal('composio'),
+  /** What the sign-in connects, one consent page each, in order. */
+  connects: z.array(z.enum(['mail', 'calendar', 'documents'])),
+});
+
 export const accountSignInStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('pending'), expires_at: timestamp }),
   z.object({
@@ -878,6 +905,16 @@ export const connectionCatalogEntry = z
         issuer: z.url(),
         /** Everything the sign-in asks the provider for, in plain words. */
         scopes: z.array(requestedScope),
+      }),
+      z.object({
+        method: z.literal('managed_sign_in'),
+        provider: z.enum(['google']),
+        /** Who handles the sign-in and keeps the account's tokens. */
+        via: z.literal('composio'),
+        /** `POST` here with `{ provider }` to start; the answer is the address to open. */
+        start: z.string(),
+        /** What the person reads about who signs them in, in plain words. */
+        note: z.string(),
       }),
       z.object({
         method: z.literal('mcp_sign_in'),

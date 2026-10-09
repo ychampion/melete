@@ -54,6 +54,19 @@ const CATEGORY_ORDER: BeliefCategory[] = [
   'work',
   'other',
 ];
+/**
+ * A belief whose line is its own sentence ("Sister Lena lives in Seattle")
+ * shows it once, not again as its value.
+ */
+const saysSame = (label: string, value: string) => {
+  const plain = (text: string) =>
+    text
+      .toLowerCase()
+      .replace(/[\s.!]+$/u, '')
+      .replace(/\s+/gu, ' ')
+      .trim();
+  return plain(label) === plain(value);
+};
 const TRUST_TONE: Record<Belief['trust'], BadgeTone> = {
   yours: 'success',
   connected: 'blue',
@@ -203,7 +216,7 @@ function BeliefRow({
               return true;
             }}
           />
-        ) : (
+        ) : saysSame(belief.label, belief.value) ? null : (
           <span className="belief-value">{belief.value}</span>
         )}
         <span className="belief-meta">
