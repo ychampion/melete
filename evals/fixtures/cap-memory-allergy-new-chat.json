@@ -1,0 +1,108 @@
+{
+  "id": "cap-memory-allergy-new-chat",
+  "domain": "web",
+  "title": "Account for an allergy told in an earlier chat",
+  "objective": "Can you suggest a seafood restaurant near me for dinner on Friday?",
+  "chat": true,
+  "memory_facts": [
+    {
+      "key": "person.home.neighbourhood",
+      "content": "Lives in the Mission in San Francisco"
+    },
+    {
+      "key": "person.diet.allergy",
+      "content": "Allergic to shellfish"
+    },
+    {
+      "key": "travel.seat",
+      "content": "Prefers aisle seats on flights"
+    },
+    {
+      "key": "contact.lena.city",
+      "content": "Sister Lena lives in Seattle"
+    }
+  ],
+  "tools": [
+    {
+      "name": "web.search",
+      "mirror": "web.search",
+      "result": {
+        "results": [
+          {
+            "title": "Anchor Oyster Bar | Castro",
+            "url": "https://anchor-oyster.example/",
+            "snippet": "Oysters, Dungeness crab, shrimp cocktail and cioppino. Open Friday until 10 pm."
+          },
+          {
+            "title": "Saltwater Grill | Valencia Street",
+            "url": "https://saltwater-grill.example/",
+            "snippet": "Wood-grilled fish: halibut, salmon, sea bass. Open Friday until 10:30 pm."
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.fetch",
+      "mirror": "web.fetch",
+      "results_by": {
+        "argument": "url",
+        "results": {
+          "https://anchor-oyster.example/": {
+            "title": "Anchor Oyster Bar",
+            "text": "Menu: raw oysters, Dungeness crab, shrimp cocktail, cioppino with clams and mussels, clam chowder. Friday 5 pm to 10 pm."
+          },
+          "https://saltwater-grill.example/": {
+            "title": "Saltwater Grill",
+            "text": "Menu: wood-grilled halibut, salmon, sea bass, fish tacos. No shellfish is cooked in our kitchen. Friday 5 pm to 10:30 pm. 900 Valencia Street."
+          }
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "memory.search",
+      "arguments": {
+        "query": "food allergies"
+      }
+    },
+    {
+      "tool": "web.search",
+      "arguments": {
+        "query": "seafood restaurant Mission San Francisco no shellfish"
+      }
+    },
+    {
+      "tool": "web.fetch",
+      "arguments": {
+        "url": "https://saltwater-grill.example/"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Saltwater Grill on Valencia Street is the one: wood-grilled fish, and no shellfish is cooked in its kitchen, which matters with your shellfish allergy. It is open until 10:30 pm on Friday."
+  },
+  "source": {
+    "memory": "Allergic to shellfish",
+    "pages": "Anchor Oyster Bar serves oysters, crab and shrimp; Saltwater Grill cooks no shellfish."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["shellfish"],
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "memory": {
+      "reached": "shellfish"
+    },
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the suggestion accounts for the person's shellfish allergy: it names the allergy and does not recommend a shellfish-focused place such as the oyster bar as the pick. Fail an answer that ignores the allergy or suggests oysters, crab or shrimp.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

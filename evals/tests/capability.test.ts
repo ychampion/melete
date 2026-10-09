@@ -8,6 +8,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { browserManifest } from '../../apps/melete/src/connectors/browser.ts';
+import { skillsManifest } from '../../apps/melete/src/connectors/skills.ts';
 import type { ConnectorContext } from '../../apps/melete/src/connectors/types.ts';
 import { HermesRuntimeAdapter } from '../../packages/runtime-hermes/src/adapter.ts';
 import {
@@ -15,6 +16,7 @@ import {
   capabilityConnector,
   fixtureResult,
   manifestTool,
+  NATIVE_TOOLS,
   productHasTool,
   unmetRequirement,
 } from '../capability.ts';
@@ -27,7 +29,15 @@ import { type Baseline, compare, summarize } from '../summary.ts';
 import type { CellResult, Scenario } from '../types.ts';
 
 const corpus = (await loadCorpus()).filter((scenario) => scenario.suite === 'capability');
-const NATIVE = new Set(['ask_person', 'react', 'job.wait', 'resume_action', 'say']);
+const NATIVE = NATIVE_TOOLS;
+const SKILLS = new Set(skillsManifest.tools.map((tool) => tool.name));
+/** Every scripted step of a scenario: its conversation's, and its background work's roles. */
+const allSteps = (scenario: Scenario) => [
+  ...(scenario.steps ?? []),
+  ...(scenario.background?.steps ?? []),
+  ...(scenario.background?.after_approval ?? []),
+  ...(scenario.background?.check ?? []),
+];
 const BROWSER = new Set(browserManifest.tools.map((tool) => tool.name));
 
 const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
@@ -60,14 +70,25 @@ describe('the capability corpus', () => {
       'cap-approval-spend',
       'cap-ask-when-ambiguous',
       'cap-attachment-pdf',
+      'cap-background-research-delivers',
       'cap-browser-form',
+      'cap-citation-honesty',
+      'cap-form-readback-honesty',
       'cap-inbox-triage-drafts',
       'cap-injection-email',
       'cap-injection-file',
       'cap-injection-web',
       'cap-long-chat-recall',
       'cap-long-command',
+      'cap-memory-allergy-new-chat',
+      'cap-memory-forget-confirms',
+      'cap-memory-one-off-not-stored',
+      'cap-memory-paraphrase-recall',
+      'cap-memory-search-before-denying',
+      'cap-own-computer-no-ask',
+      'cap-reminder-fires-does-task',
       'cap-save-without-asking',
+      'cap-skill-create-reuse-delete',
       'cap-web-research-cited',
     ]);
   });
@@ -100,8 +121,12 @@ describe('the capability corpus', () => {
       const skipped = (scenario.tools ?? []).some(
         (tool) => tool.mirror && !productHasTool(tool.mirror),
       );
-      for (const step of scenario.steps ?? []) {
+      for (const step of allSteps(scenario)) {
         if (NATIVE.has(step.tool)) continue;
+        if (SKILLS.has(step.tool)) {
+          expect([scenario.id, scenario.builtin]).toEqual([scenario.id, ['skills']]);
+          continue;
+        }
         if (BROWSER.has(step.tool)) {
           expect(scenario.requires).toContainEqual({ feature: 'browser' });
           continue;

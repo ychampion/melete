@@ -1,0 +1,58 @@
+{
+  "id": "cap-memory-paraphrase-recall",
+  "domain": "files",
+  "title": "Find a saved detail asked in other words",
+  "objective": "What colour do I like best?",
+  "chat": true,
+  "memory_facts": [
+    {
+      "key": "preference.colour.favourite",
+      "content": "Favourite colour is teal"
+    },
+    {
+      "key": "person.work",
+      "content": "Works as a product designer"
+    },
+    {
+      "key": "person.diet.allergy",
+      "content": "Allergic to shellfish"
+    },
+    {
+      "key": "contact.lena.city",
+      "content": "Sister Lena lives in Seattle"
+    }
+  ],
+  "tools": [],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Teal."
+  },
+  "source": {
+    "memory": "Favourite colour is teal"
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["teal"],
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "memory": {
+      "reached": "teal"
+    },
+    "reply_excludes": [
+      "don'?t have (that|it|any)",
+      "no record",
+      "can'?t find",
+      "not (saved|stored) anywhere",
+      "never (told|mentioned|said)"
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the reply says teal, the favourite colour memory holds, without asking for it again or saying it is not known.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

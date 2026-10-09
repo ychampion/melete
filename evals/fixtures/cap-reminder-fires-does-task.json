@@ -1,0 +1,139 @@
+{
+  "id": "cap-reminder-fires-does-task",
+  "domain": "watch",
+  "title": "A reminder that fires does the task",
+  "objective": "Every weekday at 5pm, remind me to text Sam about dinner plans, and tell me if it's going to rain tonight here in San Francisco so we know whether to eat outside.",
+  "memory_facts": [
+    {
+      "key": "person.home.city",
+      "content": "Lives in the Mission in San Francisco"
+    }
+  ],
+  "max_turns": 10,
+  "tools": [
+    {
+      "name": "web.search",
+      "mirror": "web.search",
+      "result": {
+        "results": [
+          {
+            "title": "San Francisco tonight: hourly forecast",
+            "url": "https://weather.example/san-francisco/tonight",
+            "snippet": "Hourly forecast for San Francisco tonight."
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.fetch",
+      "mirror": "web.fetch",
+      "results_by": {
+        "argument": "url",
+        "results": {
+          "https://weather.example/san-francisco/tonight": {
+            "title": "San Francisco tonight",
+            "text": "Tonight in San Francisco: light rain from 7 pm, easing after midnight. Low 13 C, wind 15 km/h from the west."
+          }
+        }
+      }
+    },
+    {
+      "name": "web.weather",
+      "mirror": "web.weather",
+      "result": {
+        "source": "Open-Meteo",
+        "source_url": "https://open-meteo.com/",
+        "place": "San Francisco",
+        "today": "Cloudy, high 17 C.",
+        "tonight": "Light rain from 7 pm, easing after midnight. Low 13 C."
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "run.start",
+      "arguments": {
+        "goal": "Every weekday at 5pm, remind the person to text Sam about dinner plans, and tell them whether it will rain tonight in San Francisco so they know whether to eat outside.",
+        "title": "Text Sam about dinner",
+        "repeat": {
+          "cron": "0 17 * * 1-5",
+          "timezone": "America/Los_Angeles"
+        }
+      }
+    }
+  ],
+  "background": {
+    "fire_schedule": true,
+    "steps": [
+      {
+        "tool": "web.search",
+        "arguments": {
+          "query": "San Francisco rain tonight"
+        }
+      },
+      {
+        "tool": "web.fetch",
+        "arguments": {
+          "url": "https://weather.example/san-francisco/tonight"
+        }
+      },
+      {
+        "tool": "run.log",
+        "arguments": {
+          "kind": "report",
+          "title": "Text Sam about dinner plans",
+          "body": "Time to text Sam about dinner plans. Light rain from 7 pm tonight, so plan to eat inside."
+        }
+      },
+      {
+        "tool": "run.checkpoint",
+        "arguments": {
+          "summary": "Reminded them to text Sam and checked tonight’s forecast.",
+          "next": "The next weekday at 5pm."
+        }
+      }
+    ]
+  },
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Done: every weekday at 5pm I'll remind you to text Sam about dinner, with tonight's rain outlook."
+  },
+  "source": {
+    "forecast": "Tonight in San Francisco: light rain from 7 pm."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "web.fetch",
+        "scope": "space",
+        "status": "succeeded",
+        "min": 1
+      }
+    ],
+    "background": {
+      "runs": 1,
+      "fired_report": true,
+      "result_words": ["Sam", "rain"],
+      "result_excludes": [
+        "\\bscheduled\\b",
+        "every weekday",
+        "i'?ll remind",
+        "will remind you",
+        "set up",
+        "routine is"
+      ]
+    },
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the report the fired reminder wrote reminds the person to text Sam about dinner and says whether it will rain tonight (light rain from 7 pm), instead of restating that a reminder is scheduled. Judge the background_work reports, not only the reply that set it up.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

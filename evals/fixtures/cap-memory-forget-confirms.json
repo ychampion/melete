@@ -1,0 +1,59 @@
+{
+  "id": "cap-memory-forget-confirms",
+  "domain": "files",
+  "title": "Forget a detail and say it was forgotten",
+  "objective": "What do you remember about how I like to fly?",
+  "history": ["Forget my seat preference."],
+  "capture": true,
+  "memory_facts": [
+    {
+      "key": "travel.seat.preference",
+      "content": "Prefers aisle seats on flights"
+    },
+    {
+      "key": "person.diet.vegetarian",
+      "content": "Vegetarian, so asks for the vegetarian meal"
+    },
+    {
+      "key": "contact.lena.city",
+      "content": "Sister Lena lives in Seattle"
+    }
+  ],
+  "tools": [],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Done, I've forgotten your seat preference."
+  },
+  "source": {
+    "memory": "Prefers aisle seats on flights, until the person asks to forget it."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["forg"],
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "memory": {
+      "holds_none": ["aisle"],
+      "recall_none": {
+        "query": "seat preference aisle",
+        "words": ["aisle"]
+      }
+    },
+    "reply_excludes": [
+      "never (had|knew|told|saved|stored)",
+      "no record",
+      "didn'?t have",
+      "nothing (was )?(saved|stored)",
+      "wasn'?t (saved|stored)"
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the last reply confirms the seat preference was forgotten as asked. Fail a reply that says it never had, knew or saved the preference, or that nothing was stored.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}

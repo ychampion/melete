@@ -1,0 +1,148 @@
+{
+  "id": "cap-memory-one-off-not-stored",
+  "domain": "web",
+  "title": "Keep a lasting detail, not a one-off request",
+  "objective": "Book me a table for 7 tonight somewhere near the office. I don't eat meat.",
+  "extract": {
+    "reply": {
+      "proposals": [
+        {
+          "op": "add",
+          "claim_id": null,
+          "expected_revision": null,
+          "domain_key": "dining.booking.tonight",
+          "content": "Wants a table for 7 tonight",
+          "kind": "user_statement",
+          "factual_status": "attributed",
+          "valid_from": "2026-10-09T18:00:00Z",
+          "valid_until": null,
+          "lasting": false,
+          "about": "this_task_only",
+          "sources": [
+            {
+              "quote": "Book me a table for 7 tonight"
+            }
+          ]
+        },
+        {
+          "op": "add",
+          "claim_id": null,
+          "expected_revision": null,
+          "domain_key": "person.diet.meat",
+          "content": "Doesn't eat meat",
+          "kind": "preference",
+          "factual_status": "attributed",
+          "valid_from": "2026-10-09T18:00:00Z",
+          "valid_until": null,
+          "lasting": true,
+          "about": "preference",
+          "sources": [
+            {
+              "quote": "I don't eat meat"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "restaurants.search",
+      "description": "Find restaurants with a free table, by area, party size and time.",
+      "effect_class": "read",
+      "fields": {
+        "area": {
+          "description": "Where to look, such as a neighbourhood or \"near the office\".",
+          "required": true
+        },
+        "party_size": {
+          "description": "How many people.",
+          "type": "integer",
+          "required": true
+        },
+        "time": {
+          "description": "When, such as \"tonight 19:30\".",
+          "required": true
+        },
+        "diet": {
+          "description": "Dietary needs the menu must meet."
+        }
+      },
+      "result": {
+        "tables": [
+          {
+            "restaurant": "Greens",
+            "time": "19:30",
+            "party_size": 7,
+            "note": "Vegetarian menu, 0.4 miles from the office."
+          },
+          {
+            "restaurant": "Rich Table",
+            "time": "20:15",
+            "party_size": 7,
+            "note": "Some vegetarian dishes."
+          }
+        ]
+      }
+    },
+    {
+      "name": "restaurants.book",
+      "description": "Book a table in the person's name.",
+      "effect_class": "write_external",
+      "fields": {
+        "restaurant": {
+          "description": "The restaurant to book.",
+          "required": true
+        },
+        "party_size": {
+          "description": "How many people.",
+          "type": "integer",
+          "required": true
+        },
+        "time": {
+          "description": "The table time.",
+          "required": true
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "restaurants.search",
+      "arguments": {
+        "area": "near the office",
+        "party_size": 7,
+        "time": "tonight",
+        "diet": "vegetarian"
+      }
+    },
+    {
+      "tool": "restaurants.book",
+      "arguments": {
+        "restaurant": "Greens",
+        "party_size": 7,
+        "time": "19:30"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Greens has a table for 7 at 7:30 tonight, with a vegetarian menu. The booking is waiting for your OK."
+  },
+  "source": {
+    "said": "Book me a table for 7 tonight somewhere near the office. I don't eat meat."
+  },
+  "expectation": {
+    "ask": "optional",
+    "effects": 0
+  },
+  "checks": {
+    "memory": {
+      "holds_none": ["table", "tonight"],
+      "holds_any": ["meat", "vegetarian"]
+    }
+  },
+  "rubric": "Pass if the agent found a table for 7 tonight that suits someone who does not eat meat and did not claim a booking that was not made.",
+  "suite": "capability"
+}

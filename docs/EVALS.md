@@ -1,5 +1,46 @@
 # Evaluation evidence
 
+## Regression scenarios, 9 October 2026
+
+Eleven capability scenarios guard behaviour that broke in everyday use: memory across chats, recall by paraphrase, searching memory before saying a detail is unknown, forgetting, keeping one-off requests out of memory, a reminder that fires, background work that reports back while an approval waits, citations, form honesty, skills, and steps on the agent's own computer that should not ask. What each checks is in [`evals/README.md`](../evals/README.md#capability-scenarios).
+
+They run on the product's own paths, not stand-ins: the lab's broker now has the approval policy, `memory.search`, background work and skills as the service builds them; memory details are committed through memory's extraction path; a request to forget goes through chat capture; a one-off request is read by memory's real extraction instructions and gates; a reminder's schedule is fired through the trigger service; and background work is driven shift by shift, with its permission surfaced the way the service's watchdog does. With the scripted provider all eleven pass, and every pull request runs them against `evals/baselines/scripted.json`. Undoing the product's rule that a scroll's wheel count is not money makes `cap-own-computer-no-ask` fail.
+
+One run each on deepseek-v4p1-flash, light engine, rubric graded by the same model:
+
+| Scenario | Deterministic | Rubric |
+|---|---|---|
+| cap-memory-allergy-new-chat | pass | 5 |
+| cap-memory-paraphrase-recall | pass | 5 |
+| cap-memory-search-before-denying | pass | 5 |
+| cap-memory-forget-confirms | pass | 5 |
+| cap-memory-one-off-not-stored | pass | 5 |
+| cap-reminder-fires-does-task | fail | 1 |
+| cap-background-research-delivers | fail | 0 |
+| cap-citation-honesty | pass | 5 |
+| cap-form-readback-honesty | pass | 5 |
+| cap-skill-create-reuse-delete | pass | 5 |
+| cap-own-computer-no-ask | pass | 5 |
+| **Pass rate** | **9/11** | **9/11** |
+| Recorded cost of these cells, agent and grader | $0.042 | |
+| Median time per cell | 39 s | |
+
+The two failures:
+
+| Scenario | What happened |
+|---|---|
+| cap-reminder-fires-does-task | The routine was set up and its schedule fired. The shift checked tonight's weather and wrote a plan, findings and a checkpoint saying the reminder was sent, but no report, so nothing reached the person. |
+| cap-background-research-delivers | Asked to work in the background, the model did the research in the conversation instead of starting background work, so the step that needed approval parked the conversation itself and no result reached a card. |
+
+Four scenarios were corrected after a first real-model run and run again, and the table has the second run: the reminder now names the city (the model had rightly asked where the forecast was for) and offers the product's `web.weather`; the form's computer steps return the screen reading every product step returns; the scroll scenario no longer requires one particular scroll tool; and the citation rubric judges which sources are credited rather than how much the one page read is trusted. The spend ledger recorded $0.08 across all of this work, under the $0.50 set for it.
+
+```sh
+bun run evals -- --engine light --provider scripted --suite capability --runs 1 --workers 3 --baseline evals/baselines/scripted.json
+bun run evals -- --engine light --provider fireworks --model accounts/fireworks/models/deepseek-v4p1-flash --case <scenario> --runs 1 --workers 1 --budget 0.5 --campaign <campaign>
+```
+
+The per-cell artifacts stayed local; only these aggregate numbers are recorded here.
+
 ## Capability evaluations, 4 October 2026
 
 The `capability` suite asks for what a person would ask Melete to do and checks the result on the broker's ledger: which tools ran and how often, what was parked for approval, what reached a destination, what was asked of the person, and what the reply says. A rubric grade sits beside each deterministic grade. The scenarios, their checks and how to run them are in [`evals/README.md`](../evals/README.md#capability-scenarios).

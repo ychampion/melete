@@ -1,0 +1,109 @@
+{
+  "id": "cap-skill-create-reuse-delete",
+  "domain": "files",
+  "title": "Make a skill, use it, then delete it",
+  "objective": "Make a skill called weekly-review: when I ask for my weekly review, read notes/week.md and list what I finished, what slipped, and one thing to drop next week.",
+  "history": [
+    "Run my weekly review now.",
+    "Thanks. Delete the weekly-review skill now, I won't need it again."
+  ],
+  "builtin": ["skills"],
+  "max_turns": 10,
+  "tools": [
+    {
+      "name": "files.read",
+      "mirror": "files.read",
+      "result": {
+        "path": "notes/week.md",
+        "content": "# This week\n\nDone: shipped the onboarding redesign; sent the Q4 budget.\nSlipped: the usability study write-up; the dentist booking.\nOngoing: weekly sync with the data team, which has had no agenda for a month.\n"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "turn": 0,
+      "tool": "skills.create",
+      "arguments": {
+        "name": "weekly-review",
+        "description": "The weekly review: what was finished, what slipped, and one thing to drop.",
+        "triggers": ["weekly review"],
+        "body": "1. Read notes/week.md.\n2. List what was finished.\n3. List what slipped.\n4. Suggest one thing to drop next week."
+      }
+    },
+    {
+      "turn": 1,
+      "tool": "skills.read",
+      "arguments": {
+        "name": "weekly-review"
+      }
+    },
+    {
+      "turn": 1,
+      "tool": "files.read",
+      "arguments": {
+        "path": "notes/week.md"
+      }
+    },
+    {
+      "turn": 2,
+      "tool": "skills.delete",
+      "arguments": {
+        "name": "weekly-review"
+      }
+    }
+  ],
+  "replies": [
+    "Saved the weekly-review skill.",
+    "Finished: the onboarding redesign and the Q4 budget. Slipped: the usability study write-up and the dentist booking. Drop: the weekly data-team sync, which has had no agenda for a month."
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Deleted the weekly-review skill. It's in the trash if you change your mind."
+  },
+  "source": {
+    "week": "# This week\n\nDone: shipped the onboarding redesign; sent the Q4 budget.\nSlipped: the usability study write-up; the dentist booking.\nOngoing: weekly sync with the data team, which has had no agenda for a month.\n"
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_input"
+  },
+  "checks": {
+    "calls": [
+      {
+        "tool": "skills.create",
+        "status": "succeeded",
+        "where": {
+          "name": "weekly-review"
+        },
+        "min": 1
+      },
+      {
+        "tool": "files.read",
+        "status": "succeeded",
+        "where": {
+          "path": "week.md"
+        },
+        "min": 1
+      },
+      {
+        "tool": "skills.delete",
+        "status": "succeeded",
+        "where": {
+          "name": "weekly-review"
+        },
+        "min": 1
+      }
+    ],
+    "skills": {
+      "absent": ["weekly-review"]
+    },
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if the last reply confirms the weekly-review skill was deleted, without asking permission first and without claiming anything else was removed.",
+  "agent": {
+    "asks_before_acting": true
+  },
+  "suite": "capability"
+}
