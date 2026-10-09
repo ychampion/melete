@@ -261,6 +261,7 @@ export const REQUEST_WORDS: Record<Turn['status'], string> = {
   queued: 'Starting',
   working: 'Working',
   streaming: 'Answering',
+  stalled: 'Stalled',
   needs_you: 'Waiting for a decision',
   paused: 'Paused',
   done: 'Done',

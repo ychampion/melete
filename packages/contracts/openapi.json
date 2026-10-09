@@ -30665,7 +30665,8 @@
             "reaction",
             "gap",
             "hook_event",
-            "hook_error"
+            "hook_error",
+            "stalled"
           ]
         }
       },
@@ -42284,7 +42285,8 @@
           "reaction",
           "gap",
           "hook_event",
-          "hook_error"
+          "hook_error",
+          "stalled"
         ]
       },
       "__schema520": {

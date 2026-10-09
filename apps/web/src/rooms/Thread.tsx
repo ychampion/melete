@@ -54,6 +54,7 @@ const TONES: Record<Turn['status'], StatusTone> = {
   queued: 'working',
   working: 'working',
   streaming: 'working',
+  stalled: 'late',
   needs_you: 'needs',
   paused: 'waiting',
   done: 'settled',
