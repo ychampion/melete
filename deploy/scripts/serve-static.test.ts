@@ -471,7 +471,7 @@ describe('same-origin API proxy', () => {
       expect(seen.cookie).toBe('melete_session=session-value');
     }
     const count = apiRequests;
-    for (const init of [
+    const refused: RequestInit[] = [
       { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' } },
       // Another site framing the callback navigates too, but not as a page of its own.
       {
@@ -487,7 +487,8 @@ describe('same-origin API proxy', () => {
         headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
         body: '{}',
       },
-    ]) {
+    ];
+    for (const init of refused) {
       const response = await fetch(`${webOrigin()}/api/oauth/callback?code=c&state=s`, init);
       expect(response.status).toBe(403);
     }
