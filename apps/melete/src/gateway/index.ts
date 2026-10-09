@@ -31,6 +31,7 @@ import {
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, isInlineImage, withoutImages, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
+import { withLongTurnNote } from './long-turn.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import { PriceTable } from './prices.ts';
 import {
@@ -460,6 +461,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           if (!reads) body = withoutImages(body, PICTURE_NOT_READ);
         }
       }
+      // A conversation's turn that has run long is pointed at background work.
+      if (principal.privacy?.kind === 'job') body = withLongTurnNote(body, protocol);
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;
       for (const [index, candidate] of candidates.entries()) {

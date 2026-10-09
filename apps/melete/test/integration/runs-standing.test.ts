@@ -601,6 +601,66 @@ withDb('standing work', () => {
     expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
   });
 
+  test('a scheduled occurrence that did its work but wrote no report is reported for it', async () => {
+    const run = await start({
+      goal: 'Remind me to text Sam about dinner and tell me if it will rain tonight',
+      repeat: { cron: '0 17 * * 1-5' },
+    });
+    await quietShift(run.id);
+    const reports = async () =>
+      required(handle)
+        .db.select()
+        .from(runEntry)
+        .where(and(eq(runEntry.runJobId, run.id), eq(runEntry.kind, 'report')));
+    const progress = async () =>
+      (await notices(run.id)).filter((push) => push.dedupKey.startsWith(`run-report:${run.id}:`));
+
+    // It logged a finding and checkpointed, then ended with one short line.
+    await fire(run.id);
+    const logged = await claim(run.id);
+    await tool(logged.claims, 'run.log', { kind: 'finding', title: 'Light rain from 7 pm' });
+    const saved = (await tool(logged.claims, 'run.checkpoint', {
+      summary: 'Time to text Sam about dinner. Light rain from 7 pm tonight, so eat inside.',
+      next: 'The next weekday at 5pm.',
+    })) as { instruction: string };
+    expect(saved.instruction).toContain('has not been told anything yet');
+    await required(runner).commitOutcome(logged.claims, done('Done.'));
+    let told = await reports();
+    expect(told).toHaveLength(1);
+    expect(told[0]?.body).toContain('text Sam');
+    expect(told[0]?.data).toMatchObject({ from_shift_end: true });
+    expect(await progress()).toHaveLength(1);
+    await resting(run.id);
+
+    // Its final words are what the person is sent when it said something.
+    await fire(run.id);
+    const spoke = await claim(run.id);
+    await required(runner).commitOutcome(
+      spoke.claims,
+      done('Time to text Sam about dinner. No rain tonight, so the patio works.'),
+    );
+    told = await reports();
+    expect(told).toHaveLength(2);
+    expect(told[1]?.body).toContain('patio');
+    expect(await progress()).toHaveLength(2);
+
+    // A shift that reported itself is not reported twice.
+    await fire(run.id);
+    const reported = await claim(run.id);
+    await tool(reported.claims, 'run.log', { kind: 'report', title: 'Text Sam about dinner' });
+    const plain = (await tool(reported.claims, 'run.checkpoint', {
+      summary: 'Reminded them.',
+      next: 'Tomorrow.',
+    })) as { instruction: string };
+    expect(plain.instruction).not.toContain('has not been told anything yet');
+    await required(runner).commitOutcome(
+      reported.claims,
+      done('Reminded them to text Sam about dinner.'),
+    );
+    expect(await reports()).toHaveLength(3);
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+  });
+
   test('a weekly routine started from a conversation stands on its schedule, in the person’s time zone', async () => {
     const broker = new BrokerService({
       sql: required(handle).sql,

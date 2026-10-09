@@ -223,6 +223,19 @@ export const CITING: readonly string[] = [
 ];
 
 /**
+ * When work belongs in the background. Asked for research "in the background",
+ * a model read the pages itself in the conversation, so the person waited, a
+ * step that needed their approval held the conversation, and nothing came back
+ * as a result. Shown only where `run.start` is offered.
+ */
+export const BACKGROUND_WORDS: readonly string[] = [
+  'When the person asks for something in the background or to report back, or for research',
+  'that compares several options or reads many sources, start it with run.start before',
+  'reading anything, then tell them in one sentence that it has started and end your reply.',
+  'Answer a question one or two reads can settle here, in your reply.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -247,6 +260,9 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
       (tool) => tool.name === MEMORY_SEARCH_TOOL_NAME && tool.connection_id === null,
     )
       ? MEMORY_WORDS
+      : []),
+    ...(bundle.tools.some((tool) => tool.name === 'run.start' && tool.connection_id === null)
+      ? BACKGROUND_WORDS
       : []),
     ...OUTSIDE_WORDS,
     ...ASKING,

@@ -6,6 +6,7 @@ import {
   EMPTY_SINCE_LAST,
   MEMORY_SEARCH_TOOL,
   MEMORY_SEARCH_TOOL_NAME,
+  RUN_START_TOOL,
 } from '@melete/contracts';
 import { estimateTokens, indexLine } from '@melete/skills';
 import {
@@ -17,6 +18,7 @@ import {
 } from './client.ts';
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
+  BACKGROUND_WORDS,
   DONE_WORDS,
   DUE_NOW_WORDS,
   instructionTokens,
@@ -469,6 +471,14 @@ describe('context assembly', () => {
     expect(text).toContain(DONE_WORDS.join('\n'));
     expect(text).toContain('never say it');
     expect(text).toContain('that is not you saving it');
+  });
+
+  test('a conversation offered background work is told when to start it, and others are not', () => {
+    expect(renderInstructions(bundle)).not.toContain(BACKGROUND_WORDS.join('\n'));
+    const text = renderInstructions({ ...bundle, tools: [RUN_START_TOOL] });
+    expect(text).toContain(BACKGROUND_WORDS.join('\n'));
+    expect(text).toContain('start it with run.start before');
+    expect(text).toContain('one or two reads can settle here');
   });
 
   test('an agent that can search memory is told to search before it says it does not know', () => {

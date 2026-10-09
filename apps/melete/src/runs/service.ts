@@ -1019,6 +1019,16 @@ export class RunService {
       body: input.summary,
       data: { next: input.next, next_shift: nextShift },
     });
+    if (
+      !state.parentRunId &&
+      !(await this.reportedIn(tx, row.id, attemptId)) &&
+      (await this.occurrence(tx, row.id))
+    )
+      return {
+        status: 'saved',
+        instruction:
+          "Saved. This shift is a scheduled occurrence and the person has not been told anything yet: end with one or two sentences addressed to them that say the thing itself (the reminder, the briefing, what you found). They are sent to them as this occurrence's report.",
+      };
     return { status: 'saved', instruction: 'Saved. End this shift now with one short line.' };
   }
 
@@ -1189,6 +1199,28 @@ export class RunService {
       streak++;
     }
     return Math.max(0, budget.max_attempts - streak);
+  }
+
+  /** Whether this shift of standing work was started by its schedule: an occurrence the person is owed a report for. */
+  private async occurrence(tx: Transaction, runId: string): Promise<boolean> {
+    const woke = await wokenBy(tx, runId);
+    return object(object(woke?.payload).event).kind === 'schedule_event';
+  }
+
+  /** Whether this attempt has already told the person something: a report or the result. */
+  private async reportedIn(tx: Transaction, runId: string, attemptId: string): Promise<boolean> {
+    const [told] = await tx
+      .select({ id: runEntry.id })
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, runId),
+          eq(runEntry.attemptId, attemptId),
+          inArray(runEntry.kind, ['report', 'finished']),
+        ),
+      )
+      .limit(1);
+    return Boolean(told);
   }
 
   /**
@@ -1405,6 +1437,36 @@ export class RunService {
           automatic: true,
         },
       });
+    }
+    // A scheduled occurrence (a reminder, a briefing) is owed to the person. One
+    // that ended without a report is reported for it in its own final words; one
+    // that did work but left only short or no final words (it logged what it
+    // found and checkpointed) in its own handoff or latest entry. A wake that did
+    // nothing and said nothing stays quiet, as a quiet day should.
+    if (
+      !step &&
+      stands &&
+      !mine.some((entry) => entry.kind === 'report' || entry.kind === 'finished') &&
+      (await this.occurrence(tx, row.id))
+    ) {
+      const said = 'summary' in outcome ? outcome.summary.trim() : '';
+      const own = [...mine]
+        .reverse()
+        .filter((entry) => !object(entry.data).automatic)
+        .map((entry) => (entry.body || entry.title || '').trim());
+      const words = said.length >= 20 ? said : progressed ? (own.find(Boolean) ?? said) : '';
+      if (words) {
+        const title = clip(words.split('\n')[0] ?? words, 200);
+        await this.write(tx, {
+          run,
+          attemptId,
+          kind: 'report',
+          title,
+          body: clip(words, 4000),
+          data: { from_shift_end: true },
+        });
+        await this.reported(tx, run, row, title, words, { spaced: false });
+      }
     }
     // Standing work tells the person only what it reports: no daily summary
     // of quiet wakes.
