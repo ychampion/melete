@@ -770,6 +770,68 @@ databaseTest(
 );
 
 databaseTest(
+  'an ask with a reason of its own is not answered with the ones it was made with',
+  async () => {
+    const s = await setup('calendar');
+    const spaceId = s.claims.space_id;
+    const ask = (summary: string, more: Record<string, unknown> = {}) =>
+      s.broker.propose(s.claims, {
+        connection_id: s.connectionId,
+        kind: 'calendar.create',
+        payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z', ...more },
+      });
+    const plain = await ask('One');
+    const guests = await ask('Two', { attendees: ['sam@outside.test'] });
+    const one = await s.permissions.card(spaceId, plain.approval_id ?? '');
+    const two = await s.permissions.card(spaceId, guests.approval_id ?? '');
+    expect(two.group).not.toBe(one.group);
+    // Named beside the first, it is still left to be read and answered on its own.
+    const outcome = await s.permissions.decide(spaceId, one.id, {
+      option: 'allow_once',
+      version: one.version,
+      together: [{ id: two.id, version: two.version }],
+    });
+    expect(permissionOutcome.parse(outcome).answered).toEqual([one.id]);
+    const [status] = await s.sql`select status from action where id = ${guests.action_id}`;
+    expect(status?.status).toBe('needs_approval');
+  },
+);
+
+databaseTest(
+  'an ask that runs out unanswered counts as answered, so the asks answered before it go on',
+  async () => {
+    const s = await setup('calendar');
+    const jobId = s.claims.job_id;
+    const spaceId = s.claims.space_id;
+    const ask = (summary: string) =>
+      s.broker.propose(s.claims, {
+        connection_id: s.connectionId,
+        kind: 'calendar.create',
+        payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+      });
+    const asked = [await ask('One'), await ask('Two')];
+    await s.sql`update attempt set outcome = 'waiting_for_approval', ended_at = now()
+      where id = ${s.claims.attempt_id}`;
+    await s.sql`update job set state = 'waiting_for_approval',
+      wait = ${JSON.stringify({ kind: 'approval', action_ids: asked.map((a) => a.action_id) })}::jsonb
+      where id = ${jobId}`;
+    const one = await s.permissions.card(spaceId, asked[0]?.approval_id ?? '');
+    await s.permissions.decide(spaceId, one.id, { option: 'allow_once', version: one.version });
+    const state = async () =>
+      (await s.sql`select state from job where id = ${jobId}`)[0]?.state as string;
+    // The second can still be answered, so the work waits for it.
+    expect(await s.broker.wakeAnswered()).toBe(0);
+    expect(await state()).toBe('waiting_for_approval');
+    // It runs out unanswered: nothing is left to wait for, and the work goes on, once.
+    await s.sql`update approval set expires_at = now() - interval '1 minute'
+      where id = ${asked[1]?.approval_id ?? ''}`;
+    expect(await s.broker.wakeAnswered()).toBe(1);
+    expect(await state()).toBe('queued');
+    expect(await s.broker.wakeAnswered()).toBe(0);
+  },
+);
+
+databaseTest(
   'identical requests deduplicate within a turn and remain distinct across turns',
   async () => {
     const s = await setup();
@@ -892,7 +954,8 @@ databaseTest(
       ),
     ).toMatchObject({ code: 'permission_withdrawn', status: 409 });
     const closed = await s.sql`select p.decision, p.decided_by, a.status from approval p
-      join action a on a.id = p.action_id where p.id in ${s.sql([first.id, second.id])}`;
+      join action a on a.id = p.action_id where p.id in ${s.sql([first.id, second.id])}
+      order by p.id = ${first.id} desc`;
     expect([...closed]).toEqual([
       { decision: 'denied', decided_by: 'owner', status: 'denied' },
       { decision: 'denied', decided_by: 'outdated', status: 'denied' },

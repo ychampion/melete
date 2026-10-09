@@ -2244,6 +2244,38 @@ export class BrokerService implements BrokerOperations {
     return Boolean(open);
   }
 
+  /**
+   * Wake the work whose asks have all been answered or have run out, when
+   * the last of them ran out rather than being answered: an answer wakes the
+   * work only once no other ask is waiting, and running out answers nothing,
+   * so without this the asks answered first would wait for good. Called by
+   * the recovery sweep. Only work the person answered something of is woken;
+   * work none of whose asks was answered stays as it was.
+   */
+  async wakeAnswered(): Promise<number> {
+    const waiting = await this.sql`select j.id from job j
+      where j.state = 'waiting_for_approval'
+        and exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is not null)
+        and exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is null
+            and a.status = 'needs_approval' and p.expires_at <= now())
+        and not exists (select 1 from approval p join action a on a.id = p.action_id
+          where a.job_id = j.id and p.job_revision = j.revision and p.decision is null
+            and a.status = 'needs_approval'
+            and (p.expires_at is null or p.expires_at > now()))
+      limit 50`;
+    let woken = 0;
+    for (const row of waiting)
+      woken += await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, String(row.id));
+        if (job.state !== 'waiting_for_approval' || (await this.stillAsking(tx, job, ''))) return 0;
+        await this.wake(tx, job, 'approval');
+        return 1;
+      });
+    return woken;
+  }
+
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
     return this.admitOnce(claims, id, expectedHash, false);
   }

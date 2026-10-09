@@ -215,6 +215,10 @@ export async function startEffectBoundary(
       void internal.broker
         .escalateStaleReviews(env.MELETE_REVIEW_TIMEOUT_MS * 2 + 15_000)
         .catch(() => process.stderr.write('stale review escalation failed\n'));
+      // Asks answered while another ran out go on once it has.
+      void internal.broker
+        .wakeAnswered()
+        .catch(() => process.stderr.write('answered approval wake failed\n'));
     }, 15_000);
     recovery.unref();
     return {
