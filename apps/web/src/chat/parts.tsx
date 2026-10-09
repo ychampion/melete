@@ -23,6 +23,7 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
+import { webHref } from '../experience/markdown.ts';
 import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
@@ -341,13 +342,15 @@ export function ResultCard({
         />
       );
     if (a.kind === 'open' || a.kind === 'download') {
-      return a.url ? (
+      // A card opens only a web address, in a new tab that cannot reach back to this one.
+      const url = a.url ? webHref(a.url) : null;
+      return url ? (
         <a
           key={a.handle}
           className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`}
-          href={a.url}
+          href={url}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
         >
           {a.label}
         </a>
