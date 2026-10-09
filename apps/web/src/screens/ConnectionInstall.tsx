@@ -394,8 +394,17 @@ export function KindForm({
   );
 }
 
-export type SignInEntry = CatalogEntry & { connect: { method: 'sign_in' } };
-const isSignIn = (entry: CatalogEntry): entry is SignInEntry => entry.connect.method === 'sign_in';
+export type SignInEntry = CatalogEntry & { connect: { method: 'sign_in' | 'managed_sign_in' } };
+const isSignIn = (entry: CatalogEntry): entry is SignInEntry =>
+  entry.connect.method === 'sign_in' || entry.connect.method === 'managed_sign_in';
+
+/** What starting either kind of sign-in hands back. */
+type SignInStarted = {
+  sign_in_id: string;
+  authorize_url: string;
+  expires_at: string;
+  issuer: string;
+};
 
 /**
  * Signing in to an account. Before the browser leaves for the provider, the
@@ -414,7 +423,11 @@ export function AccountSignIn({
   spaceId?: string;
 }) {
   const provider = entry.connect.provider;
-  const [started, setStarted] = useState<AccountSignInStart | null>(null);
+  // Signed in through Composio: its own Google app asks, one consent page per part.
+  const managed = entry.connect.method === 'managed_sign_in' ? entry.connect : null;
+  const [started, setStarted] = useState<(SignInStarted & Partial<AccountSignInStart>) | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(entry.available);
@@ -422,7 +435,10 @@ export function AccountSignIn({
   useEffect(() => {
     if (!entry.available) return;
     let live = true;
-    void adapter.startAccountSignIn(provider, spaceId).then((r) => {
+    const starting = managed
+      ? adapter.startManagedSignIn(spaceId)
+      : adapter.startAccountSignIn(provider, spaceId);
+    void starting.then((r) => {
       if (!live) return;
       setLoading(false);
       if (r.data) setStarted(r.data);
@@ -431,7 +447,7 @@ export function AccountSignIn({
     return () => {
       live = false;
     };
-  }, [entry.available, provider, spaceId]);
+  }, [entry.available, provider, spaceId, managed]);
 
   // Once the provider's page is open, wait for the sign-in to finish there.
   useEffect(() => {
@@ -443,7 +459,10 @@ export function AccountSignIn({
         setError('The sign-in expired. Start again.');
         return;
       }
-      void adapter.accountSignInStatus(provider, started.sign_in_id).then((r) => {
+      const asking = managed
+        ? adapter.managedSignInStatus(started.sign_in_id)
+        : adapter.accountSignInStatus(provider, started.sign_in_id);
+      void asking.then((r) => {
         if (!r.data || r.data.state === 'pending') return;
         window.clearInterval(timer);
         if (r.data.state === 'connected') {
@@ -454,23 +473,33 @@ export function AccountSignIn({
       });
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [opened, started, provider, entry.title, onInstalled, onDone]);
+  }, [opened, started, provider, entry.title, onInstalled, onDone, managed]);
 
-  const issuer = new URL(started?.issuer ?? entry.connect.issuer).host;
-  const scopes = started?.scopes ?? entry.connect.scopes;
+  const issuer =
+    entry.connect.method === 'sign_in'
+      ? new URL(started?.issuer ?? entry.connect.issuer).host
+      : null;
+  const scopes =
+    started?.scopes ?? (entry.connect.method === 'sign_in' ? entry.connect.scopes : []);
   return (
     <div className="col card-12" style={{ gap: 10, padding: 16, maxWidth: 560 }}>
       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
         Sign in with {entry.title}
       </span>
-      <span style={{ fontSize: 13, color: 'var(--text)' }}>
-        You sign in at <strong>{issuer}</strong>. Melete asks {entry.title} for:
-      </span>
-      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
-        {scopes.map((item) => (
-          <li key={item.scope}>{item.label ?? item.scope}</li>
-        ))}
-      </ul>
+      {managed ? (
+        <span style={{ fontSize: 13, color: 'var(--text)' }}>{managed.note}</span>
+      ) : (
+        <>
+          <span style={{ fontSize: 13, color: 'var(--text)' }}>
+            You sign in at <strong>{issuer}</strong>. Melete asks {entry.title} for:
+          </span>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
+            {scopes.map((item) => (
+              <li key={item.scope}>{item.label ?? item.scope}</li>
+            ))}
+          </ul>
+        </>
+      )}
       {!entry.available ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
           {NOT_SET_UP}{' '}
@@ -488,7 +517,9 @@ export function AccountSignIn({
       ) : null}
       {opened && !error ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          Finish signing in on the {entry.title} page. This updates when you are done.
+          {managed
+            ? `Finish signing in on the ${entry.title} pages: one for Gmail, one for Google Calendar. This updates when you are done.`
+            : `Finish signing in on the ${entry.title} page. This updates when you are done.`}
         </span>
       ) : null}
       <div className="row" style={{ gap: 8 }}>

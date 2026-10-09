@@ -8,7 +8,7 @@ import {
   taskInput,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, ilike, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { builtinLabel } from '../connectors/builtin.ts';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
@@ -16,6 +16,7 @@ import { action, agent, connection, experienceProfile, job, space, task } from '
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { watchedByDefault } from '../signals/poller.ts';
+import { sourceCursor } from '../signals/schema.ts';
 import { watchable } from '../signals/watching.ts';
 import type { ExperienceEffects } from './effects.ts';
 import {
@@ -223,6 +224,23 @@ export class ExperienceHome {
       .where(eq(space.id, spaceId));
     const settled = (row: typeof connection.$inferSelect) =>
       row.setupState !== 'connecting' && row.setupState !== 'available';
+    // Why a watched account is read less often, or could not be read, as its reads left it.
+    const notes = new Map<string, string>();
+    if (rows.length)
+      for (const note of await this.db
+        .select({ id: sourceCursor.connectionId, note: sourceCursor.lastError })
+        .from(sourceCursor)
+        .where(
+          and(
+            inArray(
+              sourceCursor.connectionId,
+              rows.map((row) => row.id),
+            ),
+            isNotNull(sourceCursor.lastError),
+          ),
+        )
+        .orderBy(sourceCursor.connectionId, sourceCursor.stream))
+        if (note.note && !notes.has(note.id)) notes.set(note.id, note.note.slice(0, 400));
     // A stored "active" says it was installed, not that it runs: each is asked, together.
     const live = await Promise.all(
       rows.map((row) =>
@@ -262,6 +280,8 @@ export class ExperienceHome {
             : {}),
           ...(problem ? { problem } : {}),
           ...(catalog ? { catalog_id: catalog } : {}),
+          ...(row.configuration.via === 'composio' ? { via: 'composio' } : {}),
+          ...(notes.has(row.id) ? { reading_note: notes.get(row.id) } : {}),
         });
       }),
     };

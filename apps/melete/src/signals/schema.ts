@@ -105,3 +105,52 @@ export const subjectState = pgTable(
     index('subject_state_space_idx').on(table.spaceId),
   ],
 );
+
+/**
+ * Calls made through a managed sign-in provider (Composio), counted per
+ * person and calendar month: a watched account's reads and the agent's own
+ * calls alike. The installation's monthly limit is read against the sum of a
+ * month's rows. Only counts are kept, never what a call asked or answered.
+ */
+export const managedCall = pgTable(
+  'managed_call',
+  {
+    /** The person whose space the connection is in. */
+    principalId: text('principal_id').notNull(),
+    /** The calendar month in UTC, `YYYY-MM`. */
+    month: text('month').notNull(),
+    calls: integer('calls').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.principalId, table.month] }),
+    index('managed_call_month_idx').on(table.month),
+    check('managed_call_month_check', sql`${table.month} ~ '^[0-9]{4}-[0-9]{2}$'`),
+    check('managed_call_calls_check', sql`${table.calls} >= 0`),
+  ],
+);
+
+/**
+ * Composio accounts waiting to be revoked and deleted there: one whose space
+ * was removed, one whose disconnection could not reach Composio, and one made
+ * for a sign-in that was never finished, due once that sign-in has expired.
+ * A row stays until Composio confirms the account is gone, or until a live
+ * connection is found acting for it, so nothing is dropped on a failure. Only
+ * the account id is kept, never the key or anything the account holds.
+ */
+export const managedAccountRemoval = pgTable(
+  'managed_account_removal',
+  {
+    connectedAccountId: text('connected_account_id').primaryKey(),
+    /** Not tried before this. */
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    /** The last failure's fixed code, never a message from Composio. */
+    lastError: text('last_error'),
+    createdAt: created(),
+  },
+  (table) => [
+    index('managed_account_removal_due_idx').on(table.nextAttemptAt),
+    check('managed_account_removal_attempts_check', sql`${table.attempts} >= 0`),
+  ],
+);

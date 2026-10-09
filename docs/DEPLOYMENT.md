@@ -1797,7 +1797,11 @@ own receipt.
 thinks on agent turns and on the service's side calls: `none`, `low`,
 `medium`, `high`, or `off` to send nothing and keep the provider's default.
 An agent turn that answers a person's message of 280 characters or fewer
-thinks one step less: `medium` becomes `low`, `high` becomes `medium`.
+thinks one step less: `medium` becomes `low`, `high` becomes `medium`; once
+its tool loop has run four rounds it is multi-step work and thinks at the
+agent's effort again. A turn whose message asks for depth ("think it through",
+"in depth", "thoroughly") thinks one step more, as does a call after two
+failed tool results in a row, up to `high`.
 `none` is sent as `none` to the models that take it, as `minimal` to GPT-5,
 and not at all to the o-series and Gemini Pro. A model that refuses the
 parameter is asked again without it, and is not sent it again until the

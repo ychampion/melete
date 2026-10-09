@@ -1145,6 +1145,13 @@ export const experienceConnection = z.strictObject({
   problem: z.strictObject({ kind: z.enum(['not_running', 'failing']), detail: text }).optional(),
   /** The catalog entry it was connected from, when it was (`GET /connection-kinds`). */
   catalog_id: z.string().optional(),
+  /** Signed in through Composio, which handles the sign-in and passes its requests on. */
+  via: z.literal('composio').optional(),
+  /**
+   * Why a watched account is read less often than usual, or could not be
+   * read, in plain words; left out when its reads are going as they should.
+   */
+  reading_note: z.string().max(400).optional(),
 });
 export type ExperienceConnectionProblem = NonNullable<
   z.infer<typeof experienceConnection>['problem']

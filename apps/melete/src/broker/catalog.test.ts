@@ -385,3 +385,52 @@ test('a web task is steered to the browser tools ahead of the desktop, by descri
   const alone = steerWebTools(desktop());
   expect(alone.map((each) => each.tool.description).join(' ')).not.toContain('browser tools');
 });
+
+test('the core lists the same tools in the same order whatever the latest message says', () => {
+  // The tool definitions sit in the provider's cached prefix: a turn that
+  // reorders them reprocesses everything after the system prompt.
+  const tools = [
+    effect('mail.search', 'read', 'Search the mailbox for messages'),
+    effect('calendar.list', 'read', 'List calendar events in a range'),
+    effect('notes.write', 'write_reversible', 'Write a note in the notes folder'),
+    effect('files.read', 'read', 'Read a file from the workspace'),
+    effect('weather.today', 'read', "Today's weather where the person is"),
+    effect('archive.old', 'read', 'Old records nobody reads'),
+  ];
+  const budget = toolTokens([...META_TOOLS, ...tools.slice(0, 5).map((entry) => entry.tool)]);
+  const asked = [
+    'What is on my calendar tomorrow?',
+    'Find the email from Dana about the lease',
+    'Write that down as a note',
+    'hi',
+  ].map((text) => selectCore(tools, budget, { text }));
+  for (const each of asked) expect(each).toEqual(asked[0] as ToolSpec[]);
+  const listed = names(asked[0] as ToolSpec[]);
+  expect(listed.slice(0, META_TOOLS.length)).toEqual(names(META_TOOLS));
+  const rest = listed.slice(META_TOOLS.length);
+  expect(rest).toEqual([...rest].sort());
+  // What relevance leaves out is still named on load_tool, the same way every turn.
+  const loader = (asked[0] as ToolSpec[]).find((tool) => tool.name === 'load_tool');
+  const left = tools.filter((entry) => !listed.includes(entry.tool.name));
+  expect(left.length).toBeGreaterThan(0);
+  for (const entry of left) expect(loader?.description).toContain(entry.tool.name);
+});
+
+test('relevance still decides which tools make the cut', () => {
+  const near = effect('calendar.create', 'write_external', 'Create a calendar event');
+  const far = effect('server.restart', 'write_external', 'Restart a managed service');
+  const one = Math.max(
+    toolTokens([...META_TOOLS, near.tool]),
+    toolTokens([...META_TOOLS, far.tool]),
+  );
+  expect(names(selectCore([far, near], one, { text: 'Create the Friday event' }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'calendar.create',
+  ]);
+  expect(names(selectCore([far, near], one, { text: 'Restart the billing service' }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'server.restart',
+  ]);
+});

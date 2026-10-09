@@ -2,7 +2,9 @@
  * How hard a reasoning model thinks before it answers, set per role.
  *
  * The agent's own turns default to `medium`, one step less on a brief turn
- * (`BRIEF_TURN_CHARS`); the service's side calls (memory
+ * (`BRIEF_TURN_CHARS`) until its tool loop is multi-step, and one step more when
+ * the person asks for depth or the loop's latest tools failed (`turnEffort`);
+ * the service's side calls (memory
  * reads, voice asides, the auto-review classifier, the companies scan,
  * learning proposals) default to `low`. MELETE_REASONING_EFFORT_AGENT and
  * MELETE_REASONING_EFFORT_SIDE change them; `off` sends nothing, leaving the
@@ -38,15 +40,137 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
  */
 export const BRIEF_TURN_CHARS = 280;
 
-/** The effort an agent call is made with: one step less on a brief turn. */
+/**
+ * Words a person uses to ask for depth. Such a turn thinks one step more than
+ * the agent's effort, however short the message.
+ */
+const DEPTH =
+  /\b(think (hard|harder|carefully|deeply|it through)|in[- ]depth|deep[- ]dive|thoroughly|take your time|detailed analysis)\b/i;
+
+export const asksForDepth = (text: string): boolean => DEPTH.test(text);
+
+/**
+ * Tool rounds after which a brief turn's work is multi-step and thinks at the
+ * agent's own effort again. A one-search answer (a search, a page or two, then
+ * the reply) stays under it.
+ */
+export const MULTI_STEP_ROUNDS = 4;
+
+/** Failed tool results in a row after which the next call thinks one step more. */
+export const FAILING_STREAK = 2;
+
+/** What the turn is, for its effort: its message and the tool loop so far. */
+export type TurnShape = {
+  /** The person's message is at most `BRIEF_TURN_CHARS`. */
+  brief?: boolean;
+  /** The person asked for depth (`asksForDepth`). */
+  deep?: boolean;
+  /** Tool rounds the request already carries. */
+  rounds?: number;
+  /** The latest tool results failed, `FAILING_STREAK` or more in a row. */
+  failing?: boolean;
+};
+
+const LADDER = ['none', 'low', 'medium', 'high'] as const;
+
+/**
+ * The effort an agent call is made with. Plain chat and writing, which come as
+ * brief messages, think one step less than the agent's effort; a brief turn
+ * whose tool loop has run `MULTI_STEP_ROUNDS` rounds is multi-step work and
+ * thinks at the agent's effort again. Asking for depth, or a loop whose latest
+ * tools failed, adds a step, to at most `high`. `off` and an unset effort are
+ * left alone.
+ */
 export function turnEffort(
   effort: ReasoningEffort | undefined,
-  brief: boolean,
+  turn: boolean | TurnShape,
 ): ReasoningEffort | undefined {
-  if (!brief) return effort;
-  if (effort === 'high') return 'medium';
-  if (effort === 'medium') return 'low';
-  return effort;
+  const shape = typeof turn === 'boolean' ? { brief: turn } : turn;
+  if (effort === undefined || effort === 'off') return effort;
+  let step: number = LADDER.indexOf(effort);
+  const multiStep = (shape.rounds ?? 0) >= MULTI_STEP_ROUNDS;
+  if (shape.deep) step += 1;
+  else if (shape.brief && !multiStep && step > 1) step -= 1;
+  if (shape.failing) step += 1;
+  return LADDER[Math.min(step, LADDER.length - 1)];
+}
+
+/** A message's text, written as a string or as text parts. */
+function textOf(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) =>
+      part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text
+        : '',
+    )
+    .join('');
+}
+
+/**
+ * Whether one tool result reports a failure: the broker's `failed` or
+ * `denied`, an error, or a command that exited non-zero. Anything that is not
+ * a JSON object is not counted as one.
+ */
+export function failedResult(content: unknown): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textOf(content));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const result = parsed as Record<string, unknown>;
+  return (
+    result.status === 'failed' ||
+    result.status === 'denied' ||
+    Boolean(result.error) ||
+    (typeof result.exit_code === 'number' && result.exit_code !== 0)
+  );
+}
+
+/**
+ * The tool loop a request carries: how many rounds of tool calls the model has
+ * made, and whether its latest results failed. Read from the request alone, so
+ * it needs no state between calls. Only the protocols effort is sent on.
+ */
+export function toolLoop(
+  body: Record<string, unknown>,
+  protocol: GatewayProtocol,
+): { rounds: number; failing: boolean } {
+  const results: unknown[] = [];
+  let rounds = 0;
+  if (protocol === 'chat/completions' && Array.isArray(body.messages)) {
+    for (const message of body.messages as Record<string, unknown>[]) {
+      if (!message || typeof message !== 'object') continue;
+      if (
+        message.role === 'assistant' &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.length > 0
+      )
+        rounds++;
+      if (message.role === 'tool') results.push(message.content);
+    }
+  } else if (protocol === 'responses' && Array.isArray(body.input)) {
+    let calling = false;
+    for (const item of body.input as Record<string, unknown>[]) {
+      if (!item || typeof item !== 'object') continue;
+      // Calls made together are one round: count the first of each run.
+      if (item.type === 'function_call') {
+        if (!calling) rounds++;
+        calling = true;
+        continue;
+      }
+      calling = false;
+      if (item.type === 'function_call_output') results.push(item.output);
+    }
+  }
+  const latest = results.slice(-FAILING_STREAK);
+  return {
+    rounds,
+    failing: latest.length === FAILING_STREAK && latest.every(failedResult),
+  };
 }
 
 /** Model families known to take a reasoning-effort parameter, by provider. */
