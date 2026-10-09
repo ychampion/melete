@@ -428,6 +428,90 @@ databaseTest(
 );
 
 databaseTest(
+  'with an agent that asks before acting, an app only the person can open goes ahead and one others can open asks',
+  async () => {
+    const ctx = await setup();
+    const agentId = recordId('agt');
+    await ctx.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+        standing_instruction, asks_before_acting)
+      values (${agentId}, ${ctx.claims.space_id}, 'Ada', 'Helper', 'blue', 'plain', 'dark', 'calm',
+        '', true)`;
+    await ctx.sql`update job set agent_id = ${agentId} where id = ${ctx.claims.job_id}`;
+    await ctx.write('index.html', 'mine');
+    const first = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine' });
+    expect(first.status).toBe('succeeded');
+    expect(first.canonical_payload).toMatchObject({ audience: { kind: 'only_me' }, risks: [] });
+    expect(await ctx.review(first.action_id)).toMatchObject({
+      tier: 'apps',
+      decided_by: 'policy',
+      outcome: 'approved',
+      reason: 'Only you can open it, and its code opens no direct connections.',
+    });
+    const v1 = await ctx.app();
+
+    // A new version, and going back, while only the person can open it.
+    await ctx.write('index.html', 'mine 2');
+    const second = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine', app_id: v1.id });
+    expect(second.canonical_payload).toMatchObject({
+      audience: { kind: 'unchanged', now: 'only you' },
+    });
+    expect(second.status).toBe('succeeded');
+    const back = await ctx.propose('apps.rollback', {
+      app_id: v1.id,
+      version_id: v1.current_version_id,
+    });
+    expect(back.canonical_payload).toMatchObject({ viewers_now: 'only you', risks: [] });
+    expect(back.status).toBe('succeeded');
+
+    // Once Bo can open it, a new version reaches someone else, and the agent asks.
+    await ctx.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role)
+      values (${recordId('apg')}, ${v1.id}, 'principal', ${ctx.bo}, 'view')`;
+    await ctx.write('index.html', 'mine 3');
+    const shared = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine', app_id: v1.id });
+    expect(shared.canonical_payload.risks).toEqual([]);
+    expect(shared.status).toBe('needs_approval');
+
+    // Making it public asks, with the reason.
+    await ctx.write('index.html', 'public');
+    const everyone = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Public',
+      audience: { kind: 'everyone' },
+    });
+    expect(everyone.status).toBe('needs_approval');
+    expect(everyone.canonical_payload.risks).toEqual([
+      'Everyone with an account here could open it.',
+    ]);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a publish decided as only the person’s is refused once someone else can open the app',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'mine');
+    const first = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine' });
+    expect(first.status).toBe('succeeded');
+    const { id } = await ctx.app();
+
+    await ctx.settings({ apps: false });
+    await ctx.write('index.html', 'mine 2');
+    const next = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine', app_id: id });
+    expect(next.canonical_payload).toMatchObject({
+      audience: { kind: 'unchanged', now: 'only you' },
+    });
+    await ctx.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role)
+      values (${recordId('apg')}, ${id}, 'principal', ${ctx.bo}, 'view')`;
+    const refusal = await rejectionOf(ctx.approveAndRun(next));
+    expect(String((refusal as Error).message)).toContain(
+      `Others can open it now: bo-${ctx.tag}@example.test.`,
+    );
+  },
+  SLOW,
+);
+
+databaseTest(
   'a tool with the same name on any other connection still asks',
   async () => {
     const ctx = await setup();

@@ -62,6 +62,7 @@ import {
   webrtcUse,
 } from '../apps/service.ts';
 import { listSubmissions } from '../apps/submissions.ts';
+import { ONLY_YOU, reachesOnlyPublisher } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import type { BlobStore } from '../storage/blob.ts';
@@ -459,7 +460,7 @@ const nameList = (names: readonly string[]) =>
 async function viewersNow(tx: Query, appId: string, actor: string): Promise<string> {
   const others = await othersWhoCanOpen(tx, appId, actor, true);
   if (others.includes('everyone with an account here')) return 'everyone with an account here';
-  return others.length ? `you and ${nameList(others)}` : 'only you';
+  return others.length ? `you and ${nameList(others)}` : ONLY_YOU;
 }
 
 /**
@@ -691,9 +692,10 @@ async function risksNow(
         where id = ${String(payload.version_id)} and app_id = ${appId}`
     : [];
   if (isRollback && !target) throw refused('That version is not one of this app.');
-  return risksOf(tx, ctx, {
+  const audience = isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject);
+  const risks = await risksOf(tx, ctx, {
     appId,
-    audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
+    audience,
     data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
     collections: (target?.manifest.collections ??
       collectionsOf(payload.collections)) as AppManifest['collections'],
@@ -704,6 +706,14 @@ async function risksNow(
         : [],
     publisher,
   });
+  // Bound as reaching only the publisher, which lets it go ahead where other
+  // people's would wait (see reachesOnlyPublisher): someone else who can open
+  // it now makes it a different action.
+  if (reachesOnlyPublisher(action.kind, payload)) {
+    const others = await othersAfter(tx, ctx, appId, audience, publisher);
+    if (others) risks.push(`Others can open it now: ${others}.`);
+  }
+  return risks;
 }
 
 /** A publish or rollback that gained a risk after it was decided. */
