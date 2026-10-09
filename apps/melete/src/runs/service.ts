@@ -144,7 +144,7 @@ export const RUN_SHIFT_BUDGET: JobBudget = {
 /** How long a run waiting on its helpers sleeps before it looks again by itself. */
 const HELPER_FALLBACK_MS = 30 * 60_000;
 /** The words a scheduled shift ends with when it has nothing to tell the person. */
-const QUIET_OCCURRENCE = /^nothing to report/i;
+const QUIET_OCCURRENCE = /^nothing to report\b/i;
 
 /** A run that has not reported for this long gets a short summary written for it. */
 const REPORT_EVERY_MS = 24 * 60 * 60_000;
