@@ -178,7 +178,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
       status: 'done',
       answer: 'Two meetings today, and the passport form is still open.',
     });
-    expect(turns[0]?.text).toContain('Summarize my upcoming events');
+    expect(turns[0]?.text).toContain('Write my morning brief');
     // A reply belongs in a chat of its own, not in the routine's schedule.
     const reply = await request(`/conversations/${thread}/messages`, 'POST', { text: 'More?' });
     expect(reply.status).toBe(409);
@@ -531,7 +531,11 @@ withDb('routines, time zone and setup as the person sees them', () => {
     ).toBe(200);
     const routine = automationResponse.parse(
       await (
-        await request('/automations/morning-brief', 'POST', { agent_id: persona.id, at: '07:30' })
+        await request('/automations/morning-brief', 'POST', {
+          agent_id: persona.id,
+          at: '07:30',
+          topics: ['Tech', 'Formula 1'],
+        })
       ).json(),
     ).automation;
     const objective = async (jobId: string) => {
@@ -550,6 +554,11 @@ withDb('routines, time zone and setup as the person sees them', () => {
     const brief = await objective(routine.conversation_id);
     expect(brief).toContain('- Renew the passport');
     expect(brief).not.toContain('Already sorted');
+    // The brief asks for the weather and the person's topics, and for nothing
+    // a connection is needed for unless one is there.
+    expect(brief).toContain('web.weather');
+    expect(brief).toContain('news on Tech and Formula 1');
+    expect(brief).toContain('when a calendar is connected');
 
     const plan = experienceOperations['POST /plans'].response.parse(
       await (

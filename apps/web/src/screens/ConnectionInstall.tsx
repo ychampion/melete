@@ -948,6 +948,94 @@ export function AddConnection({
   );
 }
 
+/** How many one-click apps first-run setup offers when Google is not set up here. */
+const TOP_APPS = 4;
+
+/**
+ * The few apps first-run setup offers: Google when this server can sign in to
+ * it, otherwise the one-click apps that are ready. Only what can connect now is
+ * offered; the rest of the catalog stays in Settings.
+ */
+export function topPicks(catalog: readonly CatalogEntry[]): {
+  accounts: SignInEntry[];
+  apps: AppEntry[];
+} {
+  const google = catalog
+    .filter(isSignIn)
+    .filter((entry) => entry.available && entry.connect.provider === 'google');
+  if (google.length) return { accounts: google, apps: [] };
+  return {
+    accounts: [],
+    apps: catalog
+      .filter(isApp)
+      .filter((entry) => entry.available)
+      .slice(0, TOP_APPS),
+  };
+}
+
+/**
+ * Connecting apps during first-run setup: the top picks as cards, each one
+ * optional, signed in to in place. Nothing is drawn when nothing can connect.
+ */
+export function TopPicks({
+  connected,
+  onInstalled,
+}: {
+  /** Catalog ids already connected here. */
+  connected: ReadonlySet<string>;
+  onInstalled: (catalogId: string) => void;
+}) {
+  const kinds = useLoad(() => adapter.connectionKinds(), []);
+  const [open, setOpen] = useState<string | null>(null);
+  const { accounts, apps } = topPicks(kinds.data?.catalog ?? []);
+  const account = accounts.find((entry) => entry.id === open);
+  const app = apps.find((entry) => entry.id === open);
+  if (kinds.loading) return null;
+  if (account)
+    return (
+      <AccountSignIn
+        key={account.id}
+        entry={account}
+        onDone={() => setOpen(null)}
+        onInstalled={() => onInstalled(account.id)}
+      />
+    );
+  if (app)
+    return (
+      <AppConnect
+        key={app.id}
+        entry={app}
+        onDone={() => setOpen(null)}
+        onInstalled={() => onInstalled(app.id)}
+      />
+    );
+  if (!accounts.length && !apps.length) return null;
+  return (
+    <div className="app-grid">
+      {accounts.map((entry) => (
+        <AppCard
+          key={entry.id}
+          title={entry.title}
+          description={ACCOUNT_NOTE[entry.id] ?? entry.description}
+          available
+          connected={connected.has(entry.id)}
+          onOpen={() => setOpen(entry.id)}
+        />
+      ))}
+      {apps.map((entry) => (
+        <AppCard
+          key={entry.id}
+          title={entry.title}
+          description={entry.description}
+          available
+          connected={connected.has(entry.id)}
+          onOpen={() => setOpen(entry.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
  * Signing in to a remote MCP server that asked for it. The sign-in is started
  * first, so the person sees where they will sign in before the browser leaves;

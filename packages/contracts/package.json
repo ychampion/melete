@@ -25,6 +25,10 @@
       "types": "./src/mention.ts",
       "default": "./src/mention.ts"
     },
+    "./morning-brief": {
+      "types": "./src/morning-brief.ts",
+      "default": "./src/morning-brief.ts"
+    },
     "./mcp-catalog": {
       "types": "./src/mcp-catalog.ts",
       "default": "./src/mcp-catalog.ts"

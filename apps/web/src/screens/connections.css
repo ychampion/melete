@@ -172,35 +172,6 @@
   color: var(--muted);
 }
 
-/* The first-run hint: what connecting does, once, until the person acts on it. */
-.connect-hint {
-  gap: 12px;
-  padding: 12px 16px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-}
-.connect-hint-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--blue-soft);
-  color: var(--blue-ink);
-  flex-shrink: 0;
-}
-.connect-hint-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--heading);
-}
-.connect-hint-note {
-  font-size: 13px;
-  line-height: 19px;
-  color: var(--muted);
-}
-
 /* A server added by its address: each tool it lists, kept or dropped, and how far it may act. */
 .mcp-tool-list {
   list-style: none;

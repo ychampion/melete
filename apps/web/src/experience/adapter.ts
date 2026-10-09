@@ -657,9 +657,10 @@ export const adapter = {
     guard<{ automation: Automation }>(() => api.POST('/automations/{id}/restart', path(id))),
   deleteAutomation: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/automations/{id}', path(id))),
-  morningBrief: (agent_id: string, at: string) =>
+  /** Sets up the daily brief at `at` (HH:MM, the person's time zone); left out, it runs as Melete. */
+  morningBrief: (brief: { at: string; topics?: string[]; agent_id?: string }) =>
     guard<{ automation: Automation }>(() =>
-      api.POST('/automations/morning-brief', { body: { agent_id, at } }),
+      api.POST('/automations/morning-brief', { body: brief }),
     ),
   connections: () =>
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
