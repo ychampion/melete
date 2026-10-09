@@ -183,6 +183,38 @@ withDb('the computer a person steers', () => {
     );
   });
 
+  test('a turn that has ended keeps its wait through a takeover, and a hand-back starts nothing again', async () => {
+    for (const ended of [
+      {
+        state: 'waiting_for_input',
+        wait: { kind: 'user_input', question: 'Which of the three should I book?' },
+      },
+      { state: 'waiting_for_approval', wait: { kind: 'approval' } },
+      { state: 'completed', wait: { kind: 'none' } },
+    ]) {
+      const s = await scene();
+      const broker = new BrokerService({ sql: s.sql, connectors: { get: () => undefined } });
+      s.service.onHandedBack = (jobId) => broker.resumeAfterControl(jobId, 'Computer control:');
+      await s.sql`update attempt set outcome = 'completed', ended_at = now(),
+        lease_expires_at = null, lease_status = 'ended' where id = ${s.attemptId}`;
+      await s.sql`update job set state = ${ended.state}, wait = ${JSON.stringify(ended.wait)}::jsonb
+        where id = ${s.scope.jobId}`;
+      const taken = await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+      expect(await taken.json()).toMatchObject({ control: 'human' });
+      const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+      expect(await back.json()).toMatchObject({ control: 'agent' });
+      const [job] =
+        await s.sql`select state, wait, next_wake_at from job where id = ${s.scope.jobId}`;
+      expect({ state: job?.state, wait: job?.wait, next_wake_at: job?.next_wake_at }).toEqual({
+        ...ended,
+        next_wake_at: null,
+      });
+      const [attempt] = await s.sql`select outcome from attempt where id = ${s.attemptId}`;
+      expect(attempt?.outcome).toBe('completed');
+      expect(s.parked).toEqual([]);
+    }
+  });
+
   test('the live view shows the desktop to its owner and takes input only while they hold it', async () => {
     const s = await scene();
     const opened = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);

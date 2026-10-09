@@ -328,13 +328,15 @@ export class SandboxComputerService {
       await lockEventOrderIn(tx);
       const [job] =
         await tx`select id, space_id, state, wait from job where id = ${binding.jobId} for update`;
+      // Only work that is on the computer, or about to be, is parked. A turn
+      // that has ended keeps its state and its wait (a question, an approval,
+      // a timer), so handing the computer back later wakes nothing: a finished
+      // task is never started again, and pending work goes on as it would have.
       if (
         !job ||
         job.space_id !== binding.spaceId ||
-        ['completed', 'cancelled', 'failed'].includes(job.state)
+        !['queued', 'running', 'needs_reconciliation'].includes(job.state)
       )
-        return [];
-      if (job.state === 'waiting_for_input' && job.wait?.question?.startsWith('Computer control:'))
         return [];
       const state =
         job.state === 'needs_reconciliation' ? 'needs_reconciliation' : 'waiting_for_input';
