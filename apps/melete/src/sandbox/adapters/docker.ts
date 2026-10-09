@@ -522,6 +522,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     if (address)
       this.guard.allow(address, name, {
         mode,
+        container: state.Id ?? null,
         session: labels[LABEL_SESSION] ?? null,
         space: labels['melete.space'] ?? null,
       });
@@ -887,13 +888,15 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       // Stopped and removed by the id read above, never by its name: an answer
       // that comes late can then never reach a container made since under the
       // same name by another opening of this computer.
-      const old = state.Id && CONTAINER_ID.test(state.Id) ? state.Id : name;
+      const owned = state.Id && CONTAINER_ID.test(state.Id) ? state.Id : undefined;
+      const old = owned ?? name;
       if (state.State?.Running)
         await this.api.request('POST', `/containers/${old}/stop?t=10`).catch((error) => {
           if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
             throw error;
         });
-      this.guard.revoke(name);
+      // Only the grants of the container read above end, for the same reason.
+      this.guard.revoke(name, owned);
       this.trusted.delete(name);
       this.started.delete(name);
       this.usage.delete(name);

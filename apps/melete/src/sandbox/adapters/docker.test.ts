@@ -215,7 +215,12 @@ describe('creating a sandbox', () => {
     expect(body.Labels['com.melete.sandbox.egress']).toBe('connected_hosts_only');
     expect([...(engine.networks.get(`${NAME}-net`)?.members ?? [])]).toEqual([SELF]);
     expect(granted).toEqual([
-      { mode: 'connected_hosts_only', session: 'sbx_one', space: 'sp_one' },
+      {
+        mode: 'connected_hosts_only',
+        container: `${NAME}-id`,
+        session: 'sbx_one',
+        space: 'sp_one',
+      },
     ]);
 
     const other = setup({ open: true });
@@ -226,7 +231,9 @@ describe('creating a sandbox', () => {
       allowOpen(address, sandbox, options);
     };
     await other.host.create(spec('sbx_one', { kind: 'open' }), signal());
-    expect(openGrants).toEqual([{ mode: 'open', session: 'sbx_one', space: 'sp_one' }]);
+    expect(openGrants).toEqual([
+      { mode: 'open', container: `${NAME}-id`, session: 'sbx_one', space: 'sp_one' },
+    ]);
   });
 
   test('connected-hosts-only egress is refused when the service cannot be the way out', async () => {
@@ -697,6 +704,37 @@ describe('the life of a sandbox', () => {
     expect(raced).toBe(true);
     // The other opening's container is still there, running.
     expect(engine.containers.get(NAME)).toMatchObject({ id: `${NAME}-id-2`, running: true });
+  });
+
+  test("a replacement that answers late ends only the old container's egress, never that of one made since", async () => {
+    const { engine, host, guard } = setup({ open: true });
+    const egress: EgressPolicy = { kind: 'open' };
+    engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+    await host.create(spec('sbx_one', egress), signal());
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+    // While this replacement stops the old container, another opening of the
+    // same computer replaces it first and is granted its egress.
+    const request = engine.request.bind(engine);
+    let raced = false;
+    engine.request = async (method, path, body) => {
+      if (!raced && method === 'POST' && path.endsWith('/stop?t=10')) {
+        raced = true;
+        const old = engine.containers.get(NAME);
+        engine.containers.delete(NAME);
+        await request('POST', `/containers/create?name=${NAME}`, old?.body);
+        await host.resume(resumeRef, spec('sbx_two', egress), signal());
+      }
+      return request(method, path, body);
+    };
+    await expect(
+      host.resume(resumeRef, spec('sbx_three', egress), signal(), { quiet: true }),
+    ).rejects.toThrow();
+    expect(raced).toBe(true);
+    const newer = engine.containers.get(NAME);
+    expect(newer).toMatchObject({ id: `${NAME}-id-2`, running: true });
+    // The other opening's container keeps its grant; the old one's is gone.
+    expect(guard.granted(NAME)).toEqual(Object.values(newer?.networks ?? {}));
   });
 
   test('a computer whose container went while it was being made again comes back on its kept volumes', async () => {
