@@ -62,6 +62,7 @@ import {
   webrtcUse,
 } from '../apps/service.ts';
 import { listSubmissions } from '../apps/submissions.ts';
+import { ONLY_YOU, reachesOnlyPublisher } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import type { BlobStore } from '../storage/blob.ts';
@@ -459,7 +460,7 @@ const nameList = (names: readonly string[]) =>
 async function viewersNow(tx: Query, appId: string, actor: string): Promise<string> {
   const others = await othersWhoCanOpen(tx, appId, actor, true);
   if (others.includes('everyone with an account here')) return 'everyone with an account here';
-  return others.length ? `you and ${nameList(others)}` : 'only you';
+  return others.length ? `you and ${nameList(others)}` : ONLY_YOU;
 }
 
 /**
@@ -587,6 +588,29 @@ async function wideningLine(
 }
 
 /**
+ * Who can open the app now and could not after this publish, by address: a
+ * line naming them, or null. A publish that sets its audience replaces who may
+ * view it, so narrowing a shared app takes access away from people, which is
+ * theirs to lose only when the person agrees. `unchanged` keeps every grant.
+ */
+async function narrowingLine(
+  tx: Query,
+  appId: string | null,
+  audience: JsonObject,
+  actor: string,
+): Promise<string | null> {
+  if (!appId || audience.kind === 'unchanged' || audience.kind === 'everyone') return null;
+  const key = (who: string) => who.toLowerCase();
+  const after = new Set((await othersWhoCanOpen(tx, appId, actor, false)).map(key));
+  if (audience.kind === 'people' && Array.isArray(audience.emails))
+    for (const email of audience.emails) after.add(key(String(email)));
+  const losing = (await othersWhoCanOpen(tx, appId, actor, true)).filter(
+    (who) => !after.has(key(who)),
+  );
+  return losing.length ? `It would take away access from ${nameList(losing)}.` : null;
+}
+
+/**
  * Who besides the person acting could open the app after this change, by
  * address: the people or everyone the audience names, and, for an app that
  * exists, anyone who can open it now and keeps that (see othersWhoCanOpen). A
@@ -618,8 +642,9 @@ async function othersAfter(
 
 /**
  * Why the person should decide this publish or rollback, one plain line per
- * reason, in a fixed order: new people could open the app; its code opens
- * direct connections; it shows data its viewers do not see now. Data in an app
+ * reason, in a fixed order: new people could open the app; people who can
+ * open it now could not; its code opens direct connections; it shows data its
+ * viewers do not see now. Data in an app
  * only its publisher can open is theirs already, so it is no reason to ask.
  */
 async function risksOf(
@@ -636,6 +661,9 @@ async function risksOf(
   },
 ): Promise<string[]> {
   const widening = input.audience ? await wideningLine(tx, input.appId, input.audience) : null;
+  const narrowing = input.audience
+    ? await narrowingLine(tx, input.appId, input.audience, input.publisher)
+    : null;
   const before = await currentVersion(tx, input.appId);
   const added = Object.entries(input.data)
     .filter(([, binding]) => !shownBefore(binding, before.data))
@@ -666,7 +694,7 @@ async function risksOf(
   const afterResponses = (await readResponses(tx, ctx.job_id))
     ? 'This conversation read responses viewers sent, which may have steered it.'
     : null;
-  return [widening, connecting, newData, newCollections, afterResponses].filter(
+  return [widening, narrowing, connecting, newData, newCollections, afterResponses].filter(
     (line): line is string => line !== null,
   );
 }
@@ -691,9 +719,10 @@ async function risksNow(
         where id = ${String(payload.version_id)} and app_id = ${appId}`
     : [];
   if (isRollback && !target) throw refused('That version is not one of this app.');
-  return risksOf(tx, ctx, {
+  const audience = isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject);
+  const risks = await risksOf(tx, ctx, {
     appId,
-    audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
+    audience,
     data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
     collections: (target?.manifest.collections ??
       collectionsOf(payload.collections)) as AppManifest['collections'],
@@ -704,6 +733,14 @@ async function risksNow(
         : [],
     publisher,
   });
+  // Bound as reaching only the publisher, which lets it go ahead where other
+  // people's would wait (see reachesOnlyPublisher): someone else who can open
+  // it now makes it a different action.
+  if (reachesOnlyPublisher(action.kind, payload)) {
+    const others = await othersAfter(tx, ctx, appId, audience, publisher);
+    if (others) risks.push(`Others can open it now: ${others}.`);
+  }
+  return risks;
 }
 
 /** A publish or rollback that gained a risk after it was decided. */

@@ -87,6 +87,7 @@ import {
   deciding,
   escalationReason,
   loadApprovalSettings,
+  reachesOnlyPublisher,
   recordReview,
   reviewerApproves,
   reviewInput,
@@ -1104,9 +1105,14 @@ export class BrokerService implements BrokerOperations {
             : tier.tier === 'sandbox' && allowed && !toolAsks
               ? 'policy_approved'
               : // Publishing an app that reaches nobody new. An agent set to ask before
-                // acting promises that publishes wait, and a conversation that read
-                // an app's responses asks before changing what an app shows.
-                tier.tier === 'apps' && allowed && !agentAsks && !afterResponses && !roomWork
+                // acting promises that publishes to other people wait; an app only the
+                // person can open reaches nobody, so it goes ahead. A conversation that
+                // read an app's responses asks before changing what an app shows.
+                tier.tier === 'apps' &&
+                  allowed &&
+                  (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
+                  !afterResponses &&
+                  !roomWork
                 ? 'policy_approved'
                 : // An event on the person's own calendar that touches nothing important
                   // and can be undone. An agent set to ask before acting still asks.
