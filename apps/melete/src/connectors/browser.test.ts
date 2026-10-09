@@ -25,6 +25,11 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
     control: 'automation',
     warm_until: Date.now() + 300000,
   };
+  // Who the worker says holds the browser: the agent, unless a test hands it to the person.
+  const state: { opened: boolean; holder: BrowserSession['control'] | 'unknown' } = {
+    opened: false,
+    holder: 'automation',
+  };
   let worker: BrowserWorkerClient;
   if (response instanceof BrowserWorkerClient) worker = response;
   else {
@@ -32,6 +37,10 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
       port: 0,
       async fetch(request) {
         const body = (await request.json()) as JsonObject;
+        if (new URL(request.url).pathname === '/holder')
+          return state.holder === 'unknown'
+            ? new Response('worker restarting', { status: 503 })
+            : Response.json({ holder: { job_id: session.job_id, control: state.holder } });
         commands.push(body);
         return response(body);
       },
@@ -39,7 +48,6 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
     servers.push(server);
     worker = new BrowserWorkerClient(server.url.href, 'x'.repeat(32));
   }
-  const state = { opened: false };
   const sessions: Pick<BrowserSessionService, 'lease' | 'park'> = {
     async lease() {
       return { session, worker, opened: state.opened };
@@ -154,8 +162,9 @@ test('observation persists captures and returns handles without screenshot or tr
   });
 });
 
-test('planned epoch is never refreshed at dispatch and controller refusal parks the job', async () => {
+test('planned epoch is never refreshed at dispatch and a refusal while the person holds the browser parks the job', async () => {
   const s = fixture(() => Response.json({ error: 'stale_control_epoch' }, { status: 409 }));
+  s.state.holder = 'human';
   const action = connectorAction('browser.fill', {
     session_id: 'brws_fixture',
     control_epoch: 3,
@@ -169,10 +178,40 @@ test('planned epoch is never refreshed at dispatch and controller refusal parks 
   expect(s.parks).toEqual(['stale_control_epoch']);
 });
 
+test.each(['stale_control_epoch', 'fresh_observation_required'])(
+  'a %s refusal while nobody holds the browser tells the agent to look again and parks nothing',
+  async (refusal) => {
+    // Parked here, the job would wait for a hand-back nobody is going to give,
+    // and its turn would sit on "working" until someone pressed Stop.
+    const s = fixture(() => Response.json({ error: refusal }, { status: 409 }));
+    const action = connectorAction('browser.click', {
+      session_id: 'brws_fixture',
+      control_epoch: 3,
+      after_observation: 'obs_prior',
+      label: 'Directions',
+    });
+    const result = await s.connector.execute(action, connectorContext(action));
+    expect(s.parks).toEqual([]);
+    expect(result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(result.outcome === 'failed' && result.reason).toStartWith(`${refusal}: `);
+    expect(result.outcome === 'failed' && result.reason).toContain('browser.observe');
+  },
+);
+
+test('a worker that cannot say who holds the browser parks nothing', async () => {
+  const s = fixture(() => Response.json({ error: 'stale_control_epoch' }, { status: 409 }));
+  s.state.holder = 'unknown';
+  const action = connectorAction('browser.fill', { label: 'Name', value: 'Alice' });
+  const result = await s.connector.execute(action, connectorContext(action));
+  expect(s.parks).toEqual([]);
+  expect(result.outcome).toBe('failed');
+});
+
 test.each(['fill', 'submit'])(
   'a park failure preserves the named %s refusal and records failed parking',
   async (kind) => {
     const s = fixture(() => Response.json({ error: 'stale_control_epoch' }, { status: 409 }));
+    s.state.holder = 'human';
     s.sessions.park = async (_ctx, _id, reason) => {
       s.parks.push(reason);
       throw new Error('database connection secret must not enter the result');
@@ -194,6 +233,7 @@ test.each(['fill', 'submit'])(
 
 test('read refresh keys stay inside the broker and observe failures park the leased session', async () => {
   const s = fixture(() => Response.json({ error: 'human_control' }, { status: 409 }));
+  s.state.holder = 'human';
   const action = connectorAction('browser.observe', { after_observation: 'obs_prior' });
   expect((await s.connector.execute(action, connectorContext(action))).outcome).toBe('failed');
   expect(s.commands[0]?.operation).toEqual({ kind: 'observe' });
