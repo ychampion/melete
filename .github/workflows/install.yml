@@ -1,0 +1,83 @@
+# Runs the one-line installer on a clean runner exactly as a person would:
+# downloaded from this commit's raw URL and piped to bash, with no checkout of
+# the repository beside it. It pulls the published images, starts them, checks
+# the web app and the API, then runs the installer again to show a second run
+# keeps deploy/.env and the data. No secret is read.
+name: Install
+
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/install.yml
+  workflow_run:
+    workflows: [Images]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Check install.sh with shellcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: shellcheck install.sh
+
+  install:
+    name: Install with the one-line command on a clean machine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    env:
+      # The commit under test, so the script and the files it downloads are this commit's.
+      REF: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Run the installer as a person would
+        run: |
+          set -euo pipefail
+          # No provider key is in this environment, so it starts with the practice model.
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
+      - name: The web app and the API answer
+        run: |
+          set -euo pipefail
+          curl -fsS -o /dev/null http://localhost:3101/
+          health="$(curl -fsS http://localhost:3101/api/health)"
+          echo "$health"
+          echo "$health" | jq -e '.status == "ok" and .database == "ok"'
+          grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$HOME/melete/deploy/.env"
+          test "$(stat -c %a "$HOME/melete/deploy/.env")" = 600
+      - name: Create the owner account, as the person does in the browser
+        run: |
+          password="$(openssl rand -hex 16)"
+          curl -fsS -X POST http://localhost:3101/api/setup \
+            -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" > /dev/null
+      - name: Running it again keeps deploy/.env and the data
+        run: |
+          set -euo pipefail
+          before="$(sha256sum < "$HOME/melete/deploy/.env")"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
+          test "$before" = "$(sha256sum < "$HOME/melete/deploy/.env")"
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          # The owner made before the second run is still there, so setup is refused.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3101/api/setup \
+            -H 'content-type: application/json' \
+            -d '{"email":"other@example.com","password":"another-password-1"}')"
+          echo "second setup answered $code"
+          test "$code" -ge 400
+      - name: Logs
+        if: failure()
+        run: docker compose -f "$HOME/melete/deploy/docker-compose.yml" logs --tail=100 || true
+      - name: Remove it
+        if: always()
+        run: docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true

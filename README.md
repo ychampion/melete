@@ -1,72 +1,84 @@
 # Melete
 
-The open-source, always-on agent with its own computer: any model, your machine, you approve what matters.
+**Personal superintelligence that runs as you.**
 
-> Melete is in early beta. You can run it yourself today, and hosted Melete is
-> coming soon.
+Melete lives on your own computers and works in every account you're signed
+into: work and personal mail, both calendars, your files, your browser, your
+servers. It keeps watch over all of it, day and night, notices what needs you,
+and takes care of it.
 
-![Melete chasing a £64 refund: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
+> Melete is in early beta. You can run it yourself today.
 
-Hand Melete a loose end, like a refund you were promised or a reply you're
-still waiting for. It writes from your own address, waits for the answer, and
-follows up until it's settled. You approve the first message, and it follows up
-within the limits you set.
+Learn more at [melete.si](https://melete.si). Hosted Melete: join the waitlist at
+[waitlist.melete.si](https://waitlist.melete.si).
 
-## What it does
+## Try it
 
-- **Keeps going while you're away.** A job can wait for a reply, a date or an
-  event, then wake up and take the next step.
-- **Has its own computer.** Code and commands run in a cloud sandbox on
+With Docker running, one command installs and starts Melete:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+```
+
+On Windows with Docker Desktop, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ychampion/melete/main/install.ps1 | iex
+```
+
+Then open **http://localhost:3101** and create your account. It starts with a
+practice model, so you can look around right away; add your own key in
+**Settings → Models**. Run the command again to update. [Run it yourself](#run-it-yourself) shows the longer
+manual path, and [Deployment](docs/DEPLOYMENT.md#one-line-install) lists the
+installer's options.
+
+## A day with Melete
+
+**2:10 a.m. It notices.** The card on your domain renewal was declined, and the
+notice went to an old personal address you rarely open. Melete watches every
+inbox you connect, so by the time you're up the renewal page is open in your
+browser, waiting for you to confirm the new card.
+
+**8:30 a.m. Two calendars, one life.** The dentist moved your appointment, and
+it now lands on a board call in your work calendar. Melete sees the overlap
+across both calendars and has a reschedule drafted from the right address.
+
+**11:00 a.m. Things only you are signed into.** Your accountant asks for last
+quarter's numbers. Melete opens your bank in your own browser, where you're
+already signed in, reads the statements and lines them up against the invoices
+in your Drive. Two-factor prompts and logins work the way they do for you,
+because it's your browser.
+
+**4:45 p.m. Say it once.** "Dinner for six on the 9th, somewhere the kids will
+like." Melete keeps hold of it until it's booked, and tells you plainly if time
+is running short.
+
+**On the drive home.** You talk, it answers out loud, and it keeps working while
+you speak.
+
+## Why it runs as you
+
+- **One agent across your whole world.** Google, Microsoft, iCloud and any
+  IMAP mailbox, your calendars and Drive, any app with an MCP server, and your
+  own computer, all in one place, for one agent that sees how they connect.
+- **Your sign-ins, your devices.** The [companion](docs/DEVICES.md) on your
+  computer lets Melete use your browser signed in as you, the folders you share
+  and the commands you approve, and it does only what both you and that computer
+  allow.
+- **It can afford to watch everything.** It runs on hardware you already have,
+  with the model you choose, including one on your own machine. When nothing
+  changes, nothing runs and nothing is spent.
+- **Its own computer too.** Code, commands and long jobs run in a sandbox on
   [E2B](https://e2b.dev), [Modal](https://modal.com) or
-  [Daytona](https://www.daytona.io), and a separate browser handles web forms.
-- **Works with your model.** Anthropic, OpenAI, Google, Fireworks, your ChatGPT
-  account, or a model on your own network.
-- **Connects to your accounts.** Gmail, Google Calendar and Outlook connect by
-  signing in with Google or Microsoft, any mailbox connects over IMAP, and any
-  remote MCP server adds new tools.
-- **Asks before it acts.** You see the exact text of every message before it
-  sends, and each action leaves a receipt you can undo while it still works.
-- **Remembers what you tell it, in the open.** You can see, correct or forget
-  anything it knows, and a correction can teach it a better way to do the job.
+  [Daytona](https://www.daytona.io), and a separate browser handles web forms,
+  so heavy work never ties up yours.
+- **You can check its work.** It asks before anything leaves your hands: a
+  message to someone, a payment, a delete. Everything else leaves a receipt, with
+  Undo while it still works. You can see, correct or forget anything it
+  remembers, and a [privacy router](docs/PRIVACY-ROUTER.md) keeps account
+  numbers and private conversations away from cloud models.
 
-## How it compares
-
-| | Melete | Closed always-on agents |
-| --- | --- | --- |
-| Source code | Open source, Apache-2.0 | Closed |
-| Where it runs | Your computer or your own server | The vendor's cloud |
-| Models | Anthropic, OpenAI, Google, Fireworks, a ChatGPT sign-in, or a local model | The vendor's models |
-| Where you can use it | Anywhere you can run Docker, including the EU and the UK | The countries the vendor serves |
-| Outgoing actions | You approve the exact text, with a receipt and Undo | Set by the vendor |
-| Price | Free. You pay your model provider, or run a model yourself | A paid plan |
-
-## See it work
-
-1. **Connect your inbox.** Gmail and iCloud take an app password, Gmail and
-   Outlook can also connect by signing in, and most other mailboxes connect over
-   IMAP.
-
-   ![The Gmail connection form in Settings, asking for an email address and an app password](docs/assets/readme/walkthrough/01-connect.png)
-
-2. **See what's open.** Melete reads your mail and lists what each company owes
-   you and what is overdue.
-
-   ![The Companies screen listing money owed, overdue invoices and a deposit five days late](docs/assets/readme/walkthrough/02-whats-open.png)
-
-3. **Hand it one.** Ask it to chase the refund, and it drafts an email that
-   quotes the date the company gave you.
-
-   ![A chat asking Melete to chase Tern & Co for a £64 refund, with the drafted email and a Review and send button](docs/assets/readme/walkthrough/03-hand-it-one.png)
-
-4. **Approve the exact email.** You see who it's from, who it's to and every
-   word, and it goes out when you allow it.
-
-   ![The approval card showing From, To and the full email, with Deny and Allow once](docs/assets/readme/walkthrough/04-approve.png)
-
-5. **It follows up until it's settled.** When the money doesn't arrive, it
-   writes again with the reference, and tells you when the refund is back.
-
-   ![The finished case: their reply, the follow-up, their confirmation, and Settled with £64 back on the card](docs/assets/readme/walkthrough/05-settled.png)
+![Melete following a job through: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
 
 ## Run it yourself
 
@@ -159,6 +171,9 @@ in with ChatGPT.
   command.
 - **A browser.** The [browser worker](docs/browser-worker.md) fills forms in its
   own isolated browser.
+- **Your own computer.** Pair it in **Settings → Devices** to share folders,
+  approve commands, and let Melete use your browser signed in as you
+  ([devices](docs/DEVICES.md)).
 
 ## Security
 
@@ -171,21 +186,23 @@ in with ChatGPT.
 
 ## More it can do
 
+- Talk to it: push-to-talk and a hands-free voice mode, with one ElevenLabs key ([voice](docs/VOICE.md)).
+- Give it long work, and it keeps going in shifts for as long as it takes ([long work](docs/RUNS.md)).
+- Use it from ChatGPT, Claude, Claude Code, Hermes or OpenClaw as a connector ([Melete as an MCP server](docs/MCP-SERVER.md)).
 - Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
-## Coming soon
-
-- Hosted Melete and our website, so you can try it in your browser.
-
 ## Documentation
 
+- [melete.si](https://melete.si): the website
 - [Deployment](docs/DEPLOYMENT.md): hosting, providers, sandboxes, Tailscale, backups and removal
 - [Upgrading](docs/UPGRADING.md): moving an installation to a later release
 - [Connectors](docs/CONNECTORS.md) and [mail and calendars](docs/mail-calendar.md)
 - [Melete in other assistants](docs/MCP-SERVER.md): adding Melete to ChatGPT, Claude or Hermes as a connector
 - [Browser worker](docs/browser-worker.md): the browser Melete drives, and taking over from it
+- [Your own computer](docs/DEVICES.md): the companion, and what it allows
+- [Noticing what changes](docs/SITUATIONAL-AWARENESS.md), [saying it once](docs/INTENTS.md) and [undo](docs/UNDO.md)
 - [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
 - [Architecture](docs/ARCHITECTURE.md), [privacy and isolation](docs/PRIVACY-AND-ISOLATION.md) and [threat model](docs/THREAT-MODEL.md)
 - [Building a client](docs/CLIENT.md): the API and how the app uses it

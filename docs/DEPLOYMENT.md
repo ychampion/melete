@@ -9,6 +9,57 @@ sizes, build and startup times, conformance results and clean-host timing from a
 measured installation. Timings depend on the host and network; the startup
 timeout does not bound image builds.
 
+## One-line install
+
+The quickest way to run Melete on a machine with Docker:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+```
+
+On Windows with Docker Desktop, the PowerShell line runs the same script in Git
+Bash, so it needs [Git for Windows](https://git-scm.com/download/win):
+
+```powershell
+irm https://raw.githubusercontent.com/ychampion/melete/main/install.ps1 | iex
+```
+
+The installer checks for Docker Engine 28.0 and Compose 2.33.1 or newer and a
+running daemon. It downloads the Compose file, `deploy/.env.example` and
+`deploy/config` from the same branch or tag into `~/melete`, writes
+`deploy/.env` with the same settings and fresh secrets `configure.ts` writes,
+pulls the [prebuilt images](#using-prebuilt-images) and starts them. It needs no
+clone, no Bun and no build. Melete then answers at http://localhost:3101.
+
+With no provider key in the environment it starts with the practice model, as
+`configure.ts --fake` does; a key added later in **Settings → Models** replaces
+it. With `FIREWORKS_API_KEY` exported it uses Fireworks and its default model.
+With `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GOOGLE_API_KEY`, set
+`MELETE_MODEL` to the model id as well. An `ELEVENLABS_API_KEY` turns voice on.
+Keys are written into `deploy/.env` and never printed.
+
+Running it again downloads the Compose file again, pulls the newer images and
+restarts the stack. `deploy/.env`, the files in `deploy/config` and every
+volume are kept.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MELETE_DIR` | `~/melete` | Where the files and `deploy/.env` go |
+| `MELETE_REF` | `main` | The branch, tag or commit the files are downloaded from |
+| `MELETE_IMAGE_TAG` | `main` | The image tag to run, such as a release's `v0.3.0`; set on a later run, it switches the installation to that tag |
+| `MELETE_MODEL` | | The model id, for an Anthropic, OpenAI or Google key |
+| `MELETE_NO_OPEN` | | `1` leaves the browser closed |
+
+Pass them on the `bash` side of the pipe:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=/srv/melete bash
+```
+
+Afterwards the stack is managed with Compose, for example
+`docker compose -f ~/melete/deploy/docker-compose.yml logs` or `down`. The
+`bun run melete` commands below need a clone of the repository.
+
 ## Docker Engine and Compose versions
 
 Melete requires **Docker Engine 28.0 or newer** and **Docker Compose 2.33.1 or
