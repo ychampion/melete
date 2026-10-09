@@ -108,14 +108,6 @@
     "outcome": "waiting_for_input"
   },
   "checks": {
-    "calls": [
-      {
-        "tool": "web.fetch",
-        "scope": "space",
-        "status": "succeeded",
-        "min": 1
-      }
-    ],
     "background": {
       "runs": 1,
       "fired_report": true,

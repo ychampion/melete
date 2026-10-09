@@ -392,6 +392,19 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
       );
     }
   }
+  if (registration && !woke && registration.kind === 'schedule') {
+    const [ended] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(event)
+      .where(and(eq(event.jobId, row.id), eq(event.type, 'attempt_ended')));
+    // Told nothing else, the shift that runs when the work is set up did the
+    // first occurrence's work at once (a 5pm reminder at 2pm), and the 5pm shift
+    // then had nothing left to say.
+    if (Number(ended?.n ?? 0) === 0)
+      lines.push(
+        'This shift runs because the work was just set up, not at one of its scheduled times. Prepare if you need to, but send the person no report now: each scheduled time does the work and reports it then. End with run.checkpoint.',
+      );
+  }
   if (registration) {
     const words = await describe(tx, row, triggerSpec.parse(registration.spec));
     lines.push(

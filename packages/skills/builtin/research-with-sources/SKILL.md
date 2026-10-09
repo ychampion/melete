@@ -14,6 +14,10 @@ tools:
 max_tokens: 400
 ---
 
+If the person asked for this in the background or to report back, or it
+compares several options across many sources, start it with run.start and do
+the reading there, not in this reply.
+
 Read what Melete already knows first. The person may have decided this
 already, and an old record may be why the question is being asked again.
 

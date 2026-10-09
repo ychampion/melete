@@ -305,7 +305,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) => ({
 export const RUN_START_TOOL: ToolSpec = {
   name: 'run.start',
   description:
-    'Start work that continues in the background for hours or days and reports back. Use it whenever the person asks for something to be done in the background, for helpers or parallel work, or for something to repeat or be watched, or when the work is too big for one reply: research across many sources, testing ideas, anything to keep at until done. Helpers working in parallel, measured tries in the sandbox and schedules are only available inside this work.',
+    'Start work that runs in the background and reports back here, then end your reply in one sentence. Use it whenever the person says "in the background", "report back" or "let me know when"; for research that compares several options or reads many sources; for helpers or parallel work; and for anything to repeat, schedule or watch. Call it on its own, before anything else; every step of the work, any request it needs sent included, happens there, not in this reply. A question one or two reads can answer stays in your reply. Helpers working in parallel, measured tries in the sandbox and schedules are only available inside this work.',
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: obj(

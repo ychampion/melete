@@ -653,10 +653,62 @@ export async function openLab(
     const since = String(data.first_turn_at ?? new Date(0).toISOString());
     let fired = false;
     let firedShiftRan = false;
+    let firedAt: string | null = null;
     let whileWaiting: RunCardEvidence | null = null;
     let approved = false;
     const workIn = async () =>
       sql`SELECT id, kind, state, wait, paused FROM job WHERE space_id=${spaceId} AND kind IN ('run','run_step') ORDER BY created_at`;
+    // Wakes each due job until nothing is left to start.
+    const drive = async () => {
+      for (let round = 0; round < 24; round++) {
+        let moved = false;
+        for (const work of await workIn()) {
+          const id = String(work.id);
+          if (['completed', 'failed', 'cancelled'].includes(String(work.state)) || work.paused)
+            continue;
+          if (work.state === 'waiting_for_approval') {
+            await core.runs?.surfacePermissions();
+            if (work.kind === 'run' && !whileWaiting)
+              whileWaiting =
+                (await cards(spaceId, conversation)).find((card) => card.id === id) ?? null;
+            const wanted = plan.approve;
+            if (!wanted || approved) continue;
+            const [parked] =
+              await sql`SELECT a.id, a.canonical_payload, p.id AS approval_id, p.payload_hash FROM action a
+                JOIN approval p ON p.action_id=a.id
+                WHERE a.job_id=${id} AND a.status='needs_approval' AND a.kind=${wanted.kind} AND p.decision IS NULL
+                ORDER BY a.created_at LIMIT 1`;
+            if (!parked) continue;
+            const text = JSON.stringify(parked.canonical_payload ?? {}).toLowerCase();
+            if (
+              !Object.values(wanted.fields ?? {}).every((value) =>
+                text.includes(value.toLowerCase()),
+              )
+            )
+              continue;
+            const decided = await api(`/approvals/${String(parked.approval_id)}`, 'POST', {
+              decision: 'approved',
+              payload_hash: String(parked.payload_hash),
+            });
+            approved = decided.status === 200;
+            moved = approved;
+            continue;
+          }
+          const wait = (work.wait ?? {}) as { kind?: string };
+          const resting = work.state === 'waiting_for_event_or_time' && wait.kind === 'event';
+          if (!['queued', 'waiting_for_event_or_time'].includes(String(work.state)) || resting)
+            continue;
+          const [count] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
+          // Time passes: what is due later is due now.
+          await sql`UPDATE job SET next_wake_at = now() - interval '1 second' WHERE id=${id} AND state='waiting_for_event_or_time'`;
+          await wake(id, Number(count?.n ?? 0) + 1);
+          const [after] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
+          if (Number(after?.n ?? 0) > Number(count?.n ?? 0)) moved = true;
+        }
+        if (!moved) break;
+      }
+    };
+    await drive();
     if (plan.fire_schedule) {
       for (const work of await workIn()) {
         if (work.kind !== 'run') continue;
@@ -664,56 +716,13 @@ export async function openLab(
           await sql`SELECT id FROM trigger WHERE job_id=${work.id} AND kind='schedule' AND enabled ORDER BY created_at LIMIT 1`;
         if (!registration) continue;
         const [before] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${work.id}`;
+        firedAt = new Date().toISOString();
         await core.triggers?.fireSchedule(String(registration.id), newId('op'));
         fired = true;
         data.fired_attempts_before = Number(before?.n ?? 0);
         data.fired_run = String(work.id);
       }
-    }
-    for (let round = 0; round < 24; round++) {
-      let moved = false;
-      for (const work of await workIn()) {
-        const id = String(work.id);
-        if (['completed', 'failed', 'cancelled'].includes(String(work.state)) || work.paused)
-          continue;
-        if (work.state === 'waiting_for_approval') {
-          await core.runs?.surfacePermissions();
-          if (work.kind === 'run' && !whileWaiting)
-            whileWaiting =
-              (await cards(spaceId, conversation)).find((card) => card.id === id) ?? null;
-          const wanted = plan.approve;
-          if (!wanted || approved) continue;
-          const [parked] =
-            await sql`SELECT a.id, a.canonical_payload, p.id AS approval_id, p.payload_hash FROM action a
-              JOIN approval p ON p.action_id=a.id
-              WHERE a.job_id=${id} AND a.status='needs_approval' AND a.kind=${wanted.kind} AND p.decision IS NULL
-              ORDER BY a.created_at LIMIT 1`;
-          if (!parked) continue;
-          const text = JSON.stringify(parked.canonical_payload ?? {}).toLowerCase();
-          if (
-            !Object.values(wanted.fields ?? {}).every((value) => text.includes(value.toLowerCase()))
-          )
-            continue;
-          const decided = await api(`/approvals/${String(parked.approval_id)}`, 'POST', {
-            decision: 'approved',
-            payload_hash: String(parked.payload_hash),
-          });
-          approved = decided.status === 200;
-          moved = approved;
-          continue;
-        }
-        const wait = (work.wait ?? {}) as { kind?: string };
-        const resting = work.state === 'waiting_for_event_or_time' && wait.kind === 'event';
-        if (!['queued', 'waiting_for_event_or_time'].includes(String(work.state)) || resting)
-          continue;
-        const [count] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
-        // Time passes: what is due later is due now.
-        await sql`UPDATE job SET next_wake_at = now() - interval '1 second' WHERE id=${id} AND state='waiting_for_event_or_time'`;
-        await wake(id, Number(count?.n ?? 0) + 1);
-        const [after] = await sql`SELECT count(*)::int AS n FROM attempt WHERE job_id=${id}`;
-        if (Number(after?.n ?? 0) > Number(count?.n ?? 0)) moved = true;
-      }
-      if (!moved) break;
+      await drive();
     }
     if (fired && typeof data.fired_run === 'string') {
       const [after] =
@@ -722,7 +731,7 @@ export async function openLab(
     }
     const written =
       await sql`SELECT e.kind, e.title, coalesce(e.body,'') AS body FROM run_entry e JOIN job j ON j.id=e.run_job_id
-        WHERE j.space_id=${spaceId} AND e.kind IN ('report','finished') AND e.created_at > ${since}::timestamptz
+        WHERE j.space_id=${spaceId} AND e.kind IN ('report','finished') AND e.created_at > ${firedAt ?? since}::timestamptz
           AND coalesce(e.data->>'automatic','false') <> 'true' ORDER BY e.seq`;
     return {
       runs: await cards(spaceId, conversation),

@@ -143,6 +143,9 @@ export const RUN_SHIFT_BUDGET: JobBudget = {
 
 /** How long a run waiting on its helpers sleeps before it looks again by itself. */
 const HELPER_FALLBACK_MS = 30 * 60_000;
+/** The words a scheduled shift ends with when it has nothing to tell the person. */
+const QUIET_OCCURRENCE = /^nothing to report\b/i;
+
 /** A run that has not reported for this long gets a short summary written for it. */
 const REPORT_EVERY_MS = 24 * 60 * 60_000;
 /** Runs one space may have going at once. */
@@ -1019,6 +1022,16 @@ export class RunService {
       body: input.summary,
       data: { next: input.next, next_shift: nextShift },
     });
+    if (
+      !state.parentRunId &&
+      !(await this.reportedIn(tx, row.id, attemptId)) &&
+      (await this.occurrence(tx, row.id))
+    )
+      return {
+        status: 'saved',
+        instruction:
+          'Saved. This shift is a scheduled occurrence and the person has not been told anything yet: if it owes them something (a reminder, a briefing, news), end with one or two sentences addressed to them that say the thing itself; they are sent to them as this occurrence\'s report. If there is nothing to tell them, end with exactly "Nothing to report."',
+      };
     return { status: 'saved', instruction: 'Saved. End this shift now with one short line.' };
   }
 
@@ -1189,6 +1202,28 @@ export class RunService {
       streak++;
     }
     return Math.max(0, budget.max_attempts - streak);
+  }
+
+  /** Whether this shift of standing work was started by its schedule: an occurrence the person is owed a report for. */
+  private async occurrence(tx: Transaction, runId: string): Promise<boolean> {
+    const woke = await wokenBy(tx, runId);
+    return object(object(woke?.payload).event).kind === 'schedule_event';
+  }
+
+  /** Whether this attempt has already told the person something: a report or the result. */
+  private async reportedIn(tx: Transaction, runId: string, attemptId: string): Promise<boolean> {
+    const [told] = await tx
+      .select({ id: runEntry.id })
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, runId),
+          eq(runEntry.attemptId, attemptId),
+          inArray(runEntry.kind, ['report', 'finished']),
+        ),
+      )
+      .limit(1);
+    return Boolean(told);
   }
 
   /**
@@ -1405,6 +1440,32 @@ export class RunService {
           automatic: true,
         },
       });
+    }
+    // A scheduled occurrence (a reminder, a briefing) that ended without a report
+    // is reported for it in its own final words, which its checkpoint was told go
+    // to the person. A wake with nothing to tell (no words, or "Nothing to
+    // report.") stays quiet, as a quiet day of watching should; what it only
+    // logged as notes or findings is not news the person asked for.
+    if (
+      !step &&
+      stands &&
+      !mine.some((entry) => entry.kind === 'report' || entry.kind === 'finished') &&
+      (await this.occurrence(tx, row.id))
+    ) {
+      const said = 'summary' in outcome ? outcome.summary.trim() : '';
+      const words = said.length >= 20 && !QUIET_OCCURRENCE.test(said) ? said : '';
+      if (words) {
+        const title = clip(words.split('\n')[0] ?? words, 200);
+        await this.write(tx, {
+          run,
+          attemptId,
+          kind: 'report',
+          title,
+          body: clip(words, 4000),
+          data: { from_shift_end: true },
+        });
+        await this.reported(tx, run, row, title, words, { spaced: false });
+      }
     }
     // Standing work tells the person only what it reports: no daily summary
     // of quiet wakes.
