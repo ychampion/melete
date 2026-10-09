@@ -3,11 +3,20 @@ import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
-import type { Action, ConnectorManifest, DispatchResult } from '@melete/contracts';
+import type { Action, ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { readableText } from './readable.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+import {
+  createWeatherReader,
+  placeForTimeZone,
+  unitsForTimeZone,
+  WEATHER_UNITS,
+  WeatherPlaceUnknown,
+  type WeatherReader,
+  type WeatherUnits,
+} from './weather.ts';
 // web-search.ts imports from this module too; only functions and classes
 // cross back, so neither module needs the other while it is first evaluated.
 import {
@@ -350,8 +359,31 @@ export const webManifest: ConnectorManifest = {
       verify: false,
       requires_approval: false,
     },
+    {
+      name: 'web.weather',
+      description:
+        "The weather now and today's forecast (high, low, chance of rain, wind, sunrise) for one " +
+        "place, from Open-Meteo. Use it for a morning brief or any weather question. Give place as " +
+        "the person's city when you know it; left out, their time zone's city is used. Give units " +
+        "(metric or imperial) only when they said which they prefer. Credit Open-Meteo.",
+      input_schema: {
+        type: 'object',
+        properties: {
+          place: { type: 'string', minLength: 2, maxLength: 120 },
+          units: { type: 'string', enum: [...WEATHER_UNITS] },
+        },
+        additionalProperties: false,
+      },
+      effect_class: 'read',
+      required_scopes: ['web.weather'],
+      verify: false,
+      requires_approval: false,
+    },
   ],
 };
+
+/** The weather reader the service shares, so its caches and its limit hold across conversations. */
+let processWeather: WeatherReader | undefined;
 
 /**
  * Whether a space or an agent keeps everything on this machine. A private one
@@ -795,6 +827,10 @@ export function createWebConnector(
     extract?: PageExtractor;
     /** Charges paid search and reading calls to the job; without one, nothing is charged. */
     meter?: PaidApiMeter;
+    /** Where `web.weather` reads. Without one, Open-Meteo through this connector's own transport. */
+    weather?: WeatherReader;
+    /** The person's time zone, which gives the weather's place and units when none is named. */
+    profile?: (spaceId: string, tx?: Query) => Promise<{ timeZone: string | null } | null>;
   } = {},
 ): Connector {
   const resolve = options.resolve ?? resolveHost;
@@ -811,6 +847,68 @@ export function createWebConnector(
       { get: publicGetter({ resolve, transport, timeoutMs: Math.min(timeoutMs, 15_000) }) },
     );
   const searchPrivacy: SearchPrivacy = options.searchPrivacy ?? (async () => SEARCH_PRIVATE);
+  if (!options.weather && !options.resolve && !options.transport && !processWeather)
+    processWeather = createWeatherReader({ get: publicGetter({ timeoutMs: 10_000 }) });
+  const weather =
+    options.weather ??
+    (options.resolve || options.transport
+      ? createWeatherReader({ get: publicGetter({ resolve, transport, timeoutMs: 10_000 }) })
+      : (processWeather as WeatherReader));
+  /**
+   * Where and in which units to read the weather: what the agent named, else
+   * what the person's time zone says. Null when no place can be known.
+   */
+  const weatherRequest = async (
+    payload: JsonObject,
+    spaceId: string,
+    tx?: Query,
+  ): Promise<{ place: string; placeFrom: 'asked' | 'time_zone'; units: WeatherUnits } | null> => {
+    const named = typeof payload.place === 'string' ? payload.place.trim() : '';
+    const asked = WEATHER_UNITS.find((unit) => unit === payload.units);
+    const timeZone =
+      !named || !asked
+        ? ((await options.profile?.(spaceId, tx).catch(() => null))?.timeZone ?? null)
+        : null;
+    const place = named || placeForTimeZone(timeZone);
+    if (!place) return null;
+    return {
+      place,
+      placeFrom: named ? 'asked' : 'time_zone',
+      units: asked ?? unitsForTimeZone(timeZone),
+    };
+  };
+  const NO_PLACE = "The person's city is not known yet: ask them where they are, or give place.";
+  const executeWeather = async (action: Action, ctx: ConnectorContext): Promise<DispatchResult> => {
+    const request = await weatherRequest(action.canonical_payload, ctx.space_id);
+    if (!request) return refused(NO_PLACE);
+    // Asked again: a setting changed since admission applies to this read.
+    const refusal = await searchRefusal(request.place, ctx);
+    if (refusal) return refused(refusal);
+    let report: Awaited<ReturnType<WeatherReader['read']>>;
+    try {
+      report = await weather.read({ ...request, signal: ctx.signal });
+    } catch (error) {
+      ctx.signal?.throwIfAborted();
+      if (error instanceof WeatherPlaceUnknown)
+        return refused(`${error.message} Give a city name, such as "San Francisco".`);
+      return {
+        outcome: 'failed',
+        reason: (error as Error).message || 'The weather could not be read just now.',
+        retryable: true,
+      };
+    }
+    return {
+      outcome: 'succeeded',
+      receipt: {
+        action_id: action.id,
+        connection_id: action.connection_id,
+        external_ref: `web.weather:${report.latitude.toFixed(2)},${report.longitude.toFixed(2)}`,
+        received_at: new Date().toISOString(),
+        late: false,
+        detail: report as unknown as JsonObject,
+      },
+    };
+  };
   /** Why this search may not run, or null. Asked at admission and again at dispatch. */
   const searchRefusal = async (
     query: string,
@@ -957,7 +1055,18 @@ export function createWebConnector(
      * Refused at admission, so the model hears why at once and nothing is
      * recorded as tried. Dispatch checks all of it again, every redirect too.
      */
-    async prepare(payload, ctx, tx) {
+    async prepare(payload, ctx, tx, kind) {
+      if (kind === 'web.weather') {
+        if (payload.place !== undefined && typeof payload.place !== 'string')
+          throw new BrokerFault('payload_invalid', 'Give place as a city name.');
+        if (payload.units !== undefined && !WEATHER_UNITS.some((unit) => unit === payload.units))
+          throw new BrokerFault('payload_invalid', 'Give units as metric or imperial.');
+        const request = await weatherRequest(payload, ctx.space_id, tx);
+        if (!request) throw new BrokerFault('payload_invalid', NO_PLACE);
+        const refusal = await searchRefusal(request.place, ctx, tx);
+        if (refusal) throw new BrokerFault('scope_denied', refusal);
+        return payload;
+      }
       if (
         payload.query !== undefined ||
         payload.max_results !== undefined ||
@@ -994,7 +1103,11 @@ export function createWebConnector(
       return payload;
     },
     async execute(action: Action, ctx) {
-      if (action.kind !== 'web.fetch' && action.kind !== 'web.search')
+      if (
+        action.kind !== 'web.fetch' &&
+        action.kind !== 'web.search' &&
+        action.kind !== 'web.weather'
+      )
         throw new Error('unknown web tool');
       if (
         action.job_id !== ctx.job_id ||
@@ -1003,6 +1116,7 @@ export function createWebConnector(
       )
         throw new Error('connector action identity mismatch');
       if (action.kind === 'web.search') return executeSearch(action, ctx);
+      if (action.kind === 'web.weather') return executeWeather(action, ctx);
       const originalUrl = action.canonical_payload.url;
       if (typeof originalUrl !== 'string') return refused('The address is not a valid URL.');
       const method = action.canonical_payload.method ?? 'GET';
