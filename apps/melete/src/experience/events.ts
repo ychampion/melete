@@ -39,6 +39,7 @@ import {
   projectActionGroup,
   projectArtifact,
   projectCards,
+  projectHandOff,
   projectHeldReceipt,
   projectPermissionDecision,
   projectQuestionDecision,
@@ -791,6 +792,10 @@ export class ExperienceEvents {
             // The turn settles on the stream as its saved copy does, so a page
             // that followed it live reads what a reload would.
             if (settled) await emit(source, { type: 'status', status: settled, composer: 'send' });
+            // An attempt that handed the work to the person ends the turn's work for now: it
+            // waits on them, and the card that says so follows.
+            else if (payload.kind === 'handed_to_person' && source.jobId === id)
+              await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
           } else if (source.type === 'attempt_started' && source.jobId === id) {
             await emit(source, { type: 'status', status: 'working', composer: 'pause' });
           } else if (
@@ -842,6 +847,16 @@ export class ExperienceEvents {
               type: 'note',
               text: 'Part of the answer was interrupted. The saved progress is still here.',
             });
+          } else if (source.type === 'notice' && payload.kind === 'handed_to_person') {
+            // The work came to a check, a sign-in or a page only the person can get past: a
+            // card says what is left and lets them take the browser or computer over. The
+            // conversation waits on them, whether or not an attempt was running.
+            const card = projectHandOff(payload, source.seq);
+            if (card) {
+              await emit(source, { type: 'card', card }, `handoff:${source.seq}`);
+              if (source.jobId === id)
+                await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
+            }
           } else if (source.type === 'notice' && payload.kind === 'computer_busy') {
             const holder =
               typeof payload.held_by === 'string' && payload.held_by.trim()

@@ -445,6 +445,11 @@ export function createBrowserEgress(
   let commitDispatched = false;
   /** Hosts whose resources failed while a page loaded, until the controller takes them. */
   const unreachable = new Set<string>();
+  /**
+   * Requests that would change something which a page sent while it loaded, as `METHOD host`,
+   * each held back, until the controller takes them.
+   */
+  const dropped = new Set<string>();
 
   async function checkAddress(
     url: URL,
@@ -775,6 +780,15 @@ export function createBrowserEgress(
         error.code === 'network_idle'
       ) {
         // A resource asked for once the page had loaded is refused, and the load stands.
+      } else if (
+        pageResource &&
+        error instanceof BrowserNetworkError &&
+        error.code === 'mutation_requires_commit'
+      ) {
+        // Something the page sends as it loads (an analytics beacon, a log) is held back, as
+        // every change is outside an approved submit, and the page loads without it; the look
+        // after says what was held back.
+        if (url) dropped.add(`${route.request().method()} ${hostname(url)}`);
       } else if (operation && operation.mode !== 'human' && !operation.error) {
         // A person's refused request fails alone; it never ends the takeover's network window.
         operation.error =
@@ -815,6 +829,13 @@ export function createBrowserEgress(
       const hosts = [...unreachable].sort();
       unreachable.clear();
       return hosts;
+    },
+
+    /** The requests held back while a page loaded since the last call, then forgets them. */
+    takeDropped(): string[] {
+      const requests = [...dropped].sort();
+      dropped.clear();
+      return requests;
     },
 
     get idle(): boolean {

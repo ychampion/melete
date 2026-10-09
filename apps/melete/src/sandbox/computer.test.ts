@@ -10,6 +10,7 @@ import { ServiceError } from '../api/errors.ts';
 import { recordId } from '../broker/records.ts';
 import { BrokerService } from '../broker/service.ts';
 import { openDatabase } from '../db/client.ts';
+import { ExperienceEvents } from '../experience/events.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
 import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
@@ -290,6 +291,66 @@ withDb('the computer a person steers', () => {
       session_id: s.sessionId,
       fresh_observation_required: true,
     });
+  });
+
+  test('a check handed to the person shows in the chat as a card to take over, and the chat waits on them', async () => {
+    if (!database) throw new Error('Postgres unavailable');
+    const s = await scene();
+    // A chat whose turn is under way, as Melete was working on it when the check showed.
+    const turnId = recordId('turn');
+    await s.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+      values (${turnId}, ${s.scope.jobId}, ${s.scope.agentId}, ${recordId('sub')},
+        'Check out as a guest', 'streaming')`;
+    await s.sql`update job set kind = 'chat', current_turn_id = ${turnId} where id = ${s.scope.jobId}`;
+    await s.sql`update attempt set epoch = (select lease_epoch from job where id = ${s.scope.jobId}),
+      turn_id = ${turnId} where id = ${s.attemptId}`;
+    const card = await handComputerToPerson(s.sql, {
+      spaceId: s.scope.spaceId,
+      jobId: s.scope.jobId,
+      sessionId: s.sessionId,
+      attemptId: s.attemptId,
+      service: 'shop.example',
+      current: { kind: 'computer.open', payload: { url: 'https://shop.example/checkout' } },
+    });
+    expect(card).not.toBeNull();
+    // Read again, the chat waits on the person, as Home lists it.
+    const [turn] = await s.sql`select status from experience_turn where id = ${turnId}`;
+    expect(turn?.status).toBe('needs_you');
+    const other = openDatabase(database.url);
+    try {
+      const stream = new ExperienceEvents(other.db);
+      const { events } = await stream.page(s.scope.spaceId, 0, s.scope.jobId, 100, s.owner().id);
+      const items = events.map((event) => event.item);
+      // A card says where the work is stuck, what is left and what is done, with a Take over.
+      expect(items.filter((item) => item.type === 'card')).toEqual([
+        {
+          type: 'card',
+          card: {
+            id: expect.stringMatching(/^handoff_\d+$/),
+            title: 'Over to you at shop.example',
+            meta: 'Needs you',
+            facts: [
+              { label: 'About', value: COMPUTER_CHECK_LEFT },
+              { label: 'Done so far', value: 'Opened shop.example' },
+            ],
+            primary_action: {
+              label: 'Take over',
+              kind: 'take_over',
+              handle: s.sessionId,
+              surface: 'computer',
+            },
+            secondary_actions: [],
+            source_connection: null,
+          },
+        },
+      ]);
+      // The composer no longer says Melete is working: the turn waits on the person.
+      const statuses = items.flatMap((item) => (item.type === 'status' ? [item] : []));
+      expect(statuses.at(-1)).toEqual({ type: 'status', status: 'needs_you', composer: 'send' });
+      expect(statuses.some((item) => item.status === 'working')).toBe(false);
+    } finally {
+      await other.close();
+    }
   });
 
   test('the live view shows the desktop to its owner and takes input only while they hold it', async () => {

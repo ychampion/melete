@@ -17,6 +17,11 @@ export type ExecAnswer = {
   failStart?: boolean;
   /** Fail the stream after this many bytes. */
   breakAfter?: number;
+  /**
+   * Keep the stream open after the output, as a long-running command does,
+   * until the caller drops it or `end` is called.
+   */
+  hold?: { end?: (close: () => void) => void };
 };
 
 export type FakeContainer = {
@@ -250,6 +255,9 @@ export class FakeDocker implements DockerSandboxApi {
       at += part.byteLength;
     }
     const breakAfter = answer.breakAfter;
+    const hold = answer.hold;
+    // A held exec runs on until it is ended: the engine says so while it does.
+    if (hold) exec.exitCode = null;
     return new ReadableStream<Uint8Array>({
       start(controller) {
         if (signal.aborted) return controller.error(signal.reason);
@@ -258,7 +266,13 @@ export class FakeDocker implements DockerSandboxApi {
         for (let offset = 0; offset < cut; offset += 5)
           controller.enqueue(bytes.slice(offset, Math.min(cut, offset + 5)));
         if (breakAfter !== undefined) controller.error(new Error('connection reset'));
-        else controller.close();
+        else if (hold) {
+          signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+          hold.end?.(() => {
+            exec.exitCode = answer.exitCode === undefined ? 0 : answer.exitCode;
+            controller.close();
+          });
+        } else controller.close();
       },
     });
   }

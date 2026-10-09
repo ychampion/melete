@@ -36792,7 +36792,8 @@
               "open",
               "download",
               "send",
-              "undo"
+              "undo",
+              "take_over"
             ]
           },
           "handle": {
@@ -36800,6 +36801,13 @@
           },
           "url": {
             "$ref": "#/components/schemas/__schema312"
+          },
+          "surface": {
+            "type": "string",
+            "enum": [
+              "browser",
+              "computer"
+            ]
           }
         },
         "required": [

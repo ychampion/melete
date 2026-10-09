@@ -23978,8 +23978,10 @@ export interface components {
         __schema319: {
             handle: components["schemas"]["__schema301"];
             /** @enum {string} */
-            kind: "open" | "download" | "send" | "undo";
+            kind: "open" | "download" | "send" | "undo" | "take_over";
             label: components["schemas"]["__schema302"];
+            /** @enum {string} */
+            surface?: "browser" | "computer";
             url?: components["schemas"]["__schema312"];
         };
         __schema320: {

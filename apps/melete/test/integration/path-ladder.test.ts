@@ -10,6 +10,7 @@
  * scripted worker whose pages each test writes).
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { recordId } from '../../src/broker/records.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { deferred } from '../helpers/conformance.ts';
 import { createPathFixture, MESSAGE, OWNER, SERVICE, TABLE } from '../helpers/paths.ts';
@@ -189,11 +190,25 @@ describe('the path ladder', () => {
     'a captcha or 2FA hands to the person with a take-over link, and work resumes after hand-back',
     async () => {
       const s = await setup({ api: false });
+      // The work is a chat turn under way.
+      const agentId = recordId('agent');
+      const turnId = recordId('turn');
+      await s.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+          standing_instruction)
+        values (${agentId}, ${s.claims.space_id}, 'Agent', 'helper', 'blue', 'plain', 'black',
+          'calm', 'help')`;
+      await s.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+        values (${turnId}, ${s.claims.job_id}, ${agentId}, ${recordId('sub')}, 'Book a table',
+          'working')`;
+      await s.sql`update job set current_turn_id = ${turnId} where id = ${s.claims.job_id}`;
       s.pages.looks.push({ challenge: true });
       const looked = await s.browse('observe', { after_observation: 'obs_again' });
       expect(looked.status).toBe('succeeded');
       const held = await s.job();
       expect(held?.state).toBe('waiting_for_input');
+      // The chat waits on the person, as it reads after a reload and on Home.
+      const [turn] = await s.sql`select status from experience_turn where id = ${turnId}`;
+      expect(turn?.status).toBe('needs_you');
       expect(held?.wait.handoff).toMatchObject({
         reason: 'captcha',
         service: SERVICE,

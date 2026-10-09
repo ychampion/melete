@@ -85,9 +85,12 @@ export const experienceSource = z.strictObject({
 export type ExperienceSource = z.infer<typeof experienceSource>;
 export const cardAction = z.strictObject({
   label: text,
-  kind: z.enum(['open', 'download', 'send', 'undo']),
+  /** `take_over` gives the person the agent's browser or computer, by the session in `handle`. */
+  kind: z.enum(['open', 'download', 'send', 'undo', 'take_over']),
   handle: id,
   url: url.optional(),
+  /** For `take_over`: the agent's browser, or the desktop of the agent's computer. */
+  surface: z.enum(['browser', 'computer']).optional(),
 });
 export const resultCard = z.strictObject({
   id,
