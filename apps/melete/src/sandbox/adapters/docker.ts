@@ -870,6 +870,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     state: ContainerState | null,
     spec: SandboxSpec,
     quiet: boolean,
+    signal: AbortSignal,
   ): Promise<string | null | undefined> {
     if (state) {
       if (!quiet) return undefined;
@@ -878,6 +879,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       if (!current || !state.Image || state.Image === current) return undefined;
       // A command, a desktop step or a live view still running in it.
       if (state.ExecIDs?.length) return undefined;
+      // Out of time before anything changed: the computer is left as it is.
+      signal.throwIfAborted();
       if (state.State?.Running)
         await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
           if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
@@ -901,6 +904,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
         await this.createNetwork(network, this.labelsFor(name, spec));
       }
     }
+    // Out of time after the removal: the next resume makes it on its kept volumes.
+    signal.throwIfAborted();
     await this.createContainer(name, spec, this.labelsFor(name, spec));
     const before = state?.Image ?? null;
     process.stderr.write(
@@ -1257,7 +1262,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     const recorded = found?.Config?.Labels?.[EGRESS];
     if (recorded && recorded !== spec.egress.kind)
       throw new SandboxAdapterRefusal('this workspace was created under another egress policy');
-    const recreatedFrom = await this.refresh(name, found, spec, options.quiet === true);
+    const recreatedFrom = await this.refresh(name, found, spec, options.quiet === true, signal);
     const state = await this.ensureRunning(name);
     this.lifetimes.set(name, spec.lifetimeSeconds);
     return {

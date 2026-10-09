@@ -20,7 +20,7 @@ import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { sandboxSpecFor } from '../sandbox/connection.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
-import { SandboxSessions } from '../sandbox/sessions.ts';
+import { SandboxSessions, type SessionRow, sessionHandle } from '../sandbox/sessions.ts';
 import type { ResumeOptions, SandboxHandle } from '../sandbox/types.ts';
 import { ConnectorRegistry } from './registry.ts';
 import {
@@ -457,8 +457,8 @@ withDb('a command in a remote sandbox', () => {
    * A provider that makes a quiet workspace again from a newer image as it
    * resumes, as the docker adapter does, and records what it was told.
    */
-  const updating = () => {
-    const provider = new FakeSandboxProvider();
+  const updating = (engine?: FakeSandboxEngine) => {
+    const provider = new FakeSandboxProvider(engine ? { engine } : {});
     const told: (boolean | undefined)[] = [];
     const resume = provider.resume.bind(provider);
     provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
@@ -542,34 +542,136 @@ withDb('a command in a remote sandbox', () => {
     expect(notices.length).toBe(1);
   }, 60_000);
 
-  test('a takeover while a computer is being made again waits for the new one, then holds it', async () => {
+  /** A provider resume held at a gate until the test lets it go, on its first call only. */
+  const gated = (provider: FakeSandboxProvider) => {
+    const updated = provider.resume.bind(provider);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let calls = 0;
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      }
+      return updated(ref, spec, signal, options);
+    };
+    return { release, inside };
+  };
+
+  test('no transaction is open while the provider makes a computer again', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const sql = handle.sql;
+    const { provider, told } = updating();
+    const s = await setup({ persistence: 'pause', provider });
+    const { next } = await suspendedWorkspace(s);
+    const updated = provider.resume.bind(provider);
+    const open: number[] = [];
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      const [row] = await sql`select count(*)::int as open from pg_stat_activity
+        where datname = current_database() and state like 'idle in transaction%'`;
+      open.push(Number(row?.open));
+      return updated(ref, spec, signal, options);
+    };
+    const after = await s.run({ command: 'printf next' }, next);
+    expect(after.result.outcome).toBe('succeeded');
+    expect(told).toEqual([true]);
+    expect(open).toEqual([0]);
+  }, 60_000);
+
+  test('a takeover while a computer is being made again is recorded at once, and holds the new computer', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const { provider, told } = updating();
     const s = await setup({ persistence: 'pause', provider });
     const { sandbox, next } = await suspendedWorkspace(s);
-    const updated = provider.resume.bind(provider);
-    let landed = false;
-    const seen: { midway: boolean | null } = { midway: null };
-    let takeover: Promise<unknown> | null = null;
-    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
-      // A person takes the computer over between the check and the replacement.
-      takeover = s.sessions.controls.change(sandbox, 'human').then((state) => {
-        landed = true;
-        return state;
-      });
-      await Bun.sleep(1_000);
-      seen.midway = landed;
-      return updated(ref, spec, signal, options);
-    };
+    const { release, inside } = gated(provider);
+    const run = s.run({ command: 'printf next' }, next);
     try {
-      await s.run({ command: 'printf next' }, next);
+      await inside;
+      // A person takes the computer over between the check and the replacement.
+      const taken = await Promise.race([
+        s.sessions.controls.change(sandbox, 'human'),
+        Bun.sleep(5_000).then(() => null),
+      ]);
+      expect(taken).toMatchObject({ control: 'human' });
+      release();
+      await run;
       expect(told).toEqual([true]);
-      // It waited until the computer being made was up, and then took it.
-      expect(seen.midway).toBe(false);
-      expect(await takeover).toMatchObject({ control: 'human' });
-      expect(await s.sessions.heldByPerson(sandbox)).toBe(true);
+      // Kept on the computer's id, which the new computer has: the person holds
+      // it, and the finished replacement did not move the epoch past them.
+      expect(await s.sessions.controls.state(sandbox)).toEqual({
+        control: 'human',
+        epoch: (taken as { epoch: number }).epoch,
+      });
     } finally {
+      release();
+      await run.catch(() => {});
       await s.sessions.controls.change(sandbox, 'agent');
+    }
+  }, 60_000);
+
+  test("a hung replacement holds up neither another person's computer nor a takeover", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const engine = new FakeSandboxEngine();
+    const { provider } = updating(engine);
+    const s = await setup({ persistence: 'pause', provider });
+    const { sandbox, next } = await suspendedWorkspace(s);
+    const { release, inside } = gated(provider);
+    const hung = s.run({ command: 'printf late' }, next);
+    try {
+      await inside;
+      const b = await setup({ persistence: 'pause', engine });
+      await handle.sql`update job set agent_id = ${b.scope.agentId} where id = ${b.scope.jobId}`;
+      const other = await Promise.race([
+        b.run({ command: 'printf other' }),
+        Bun.sleep(20_000).then(() => null),
+      ]);
+      expect(other?.result.outcome).toBe('succeeded');
+      const taken = await Promise.race([
+        s.sessions.controls.change(sandbox, 'human'),
+        Bun.sleep(5_000).then(() => null),
+      ]);
+      expect(taken).toMatchObject({ control: 'human' });
+    } finally {
+      release();
+      await hung.catch(() => {});
+      await s.sessions.controls.change(sandbox, 'agent');
+    }
+  }, 60_000);
+
+  test('a claim left by a replacement that stopped answering is recovered, and its late answer leaves the computer alone', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider } = updating();
+    const s = await setup({ persistence: 'pause', provider, workspaceWaitMs: 0 });
+    const { sandbox, next } = await suspendedWorkspace(s);
+    const { release, inside } = gated(provider);
+    const hung = s.run({ command: 'printf late' }, next);
+    try {
+      await inside;
+      // The service running it stopped: its attempt is gone, so its claim is stale.
+      await handle.sql`update attempt set ended_at = now() where id = ${next}`;
+      const later = await s.scope.attempt();
+      const after = await s.run({ command: 'cat /work/notes.txt' }, later);
+      if (after.result.outcome !== 'succeeded') throw new Error(JSON.stringify(after.result));
+      expect(after.result.receipt.detail.output_digest).toBe(digest('kept'));
+      release();
+      await hung;
+      // The late answer neither removes nor pauses the computer the later attempt holds.
+      expect(provider.calls.destroy).toBe(0);
+      const row = await s.sessions.get(String(after.result.receipt.detail.session_id));
+      expect(row).toMatchObject({ status: 'ready', providerSandboxId: sandbox });
+      expect(
+        await provider.inspect(sessionHandle(row as SessionRow), AbortSignal.timeout(10_000)),
+      ).toBe('running');
+    } finally {
+      release();
+      await hung.catch(() => {});
     }
   }, 60_000);
 
