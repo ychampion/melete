@@ -13,6 +13,7 @@ import { recordingFetch } from '../feedback/diagnostics.ts';
 import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
+import type { Seen } from './together.ts';
 import type {
   AccountSignInStart,
   AccountSignInStatus,
@@ -320,9 +321,13 @@ export const adapter = {
     ),
 
   /* ---------- decisions ---------- */
-  decide: (id: string, option: 'allow_once' | 'deny', version: string) =>
+  /** With `together`, the other asks shown on the same card get the same answer. */
+  decide: (id: string, option: 'allow_once' | 'deny', version: string, together: Seen[] = []) =>
     guard<PermissionOutcome>(() =>
-      api.POST('/permissions/{id}', { ...path(id), body: { option, version } }),
+      api.POST('/permissions/{id}', {
+        ...path(id),
+        body: { option, version, ...(together.length ? { together } : {}) },
+      }),
     ).then(worthHearing),
   decideAlways: (id: string, version: string, bounds: RuleBounds) =>
     guard<PermissionOutcome>(() =>

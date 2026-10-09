@@ -37,6 +37,7 @@ import {
 } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import { shortTitle } from '../experience/title.ts';
+import { foldedOptions, foldTogether, seenTogether } from '../experience/together.ts';
 import { progressOf } from '../experience/trace.ts';
 import type {
   Agent,
@@ -234,7 +235,13 @@ function relative(iso: string, now: number): string {
 /* ---------- the queue ---------- */
 
 export type Decision =
-  | { kind: 'permission'; id: string; permission: Permission }
+  | {
+      kind: 'permission';
+      id: string;
+      permission: Permission;
+      /** The other asks of its kind made with it, answered by the same press. */
+      together?: Permission[];
+    }
   | { kind: 'question'; id: string; question: Question };
 
 const chatOf = (decision: Decision) =>
@@ -325,9 +332,11 @@ function DecisionCard({
     else if (chatId) navigate(`/chat/${chatId}`);
   };
   const permission = decision.kind === 'permission' ? decision.permission : null;
+  const together = decision.kind === 'permission' ? (decision.together ?? []) : [];
   const question = decision.kind === 'question' ? decision.question : null;
   const options = question?.options.slice(0, 4) ?? [];
-  const can = (option: 'allow_once' | 'deny') => permission?.options.includes(option) ?? false;
+  const can = (option: 'allow_once' | 'deny') =>
+    permission ? foldedOptions(permission, together).includes(option) : false;
 
   // The keys work only while this card has focus.
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -352,7 +361,9 @@ function DecisionCard({
   const title = permission
     ? permission.why[0] === FIRST_MESSAGE && linked
       ? `Send the first message to ${linked.company}?`
-      : permission.what
+      : together.length
+        ? `${permission.what}, and ${together.length} more like it`
+        : permission.what
     : (question?.text ?? '');
   const field = (label: string) =>
     permission?.why
@@ -436,6 +447,12 @@ function DecisionCard({
           ))}
         </div>
       ) : null}
+      {/* Everything this press answers is on the card, never only the first. */}
+      {together.map((other) => (
+        <span key={other.id} className="decision-meta">
+          {other.what}
+        </span>
+      ))}
       {permission && !permission.draft && permission.why.length > 0 && !from && !to ? (
         <span className="decision-meta">{permission.why[0]}</span>
       ) : null}
@@ -535,8 +552,17 @@ export function WaitingOnYou({
   const focusFront = useRef(false);
   const queue = queueOrder(
     [
-      ...permissions.map(
-        (permission): Decision => ({ kind: 'permission', id: permission.id, permission }),
+      // Asks of one kind made together are one decision, answered once.
+      ...foldTogether(
+        permissions.filter((permission) => !gone.has(permission.id)),
+        (permission) => permission,
+      ).map(
+        ({ item: permission, together }): Decision => ({
+          kind: 'permission',
+          id: permission.id,
+          permission,
+          together,
+        }),
       ),
       ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
     ].filter((decision) => !gone.has(decision.id)),
@@ -585,13 +611,24 @@ export function WaitingOnYou({
     refreshConversations();
   };
   // One request per decision: a second press while the first is in flight is refused.
-  const decide = (permission: Permission, option: 'allow_once' | 'deny') =>
+  const decide = (
+    permission: Permission,
+    option: 'allow_once' | 'deny',
+    together: readonly Permission[] = [],
+  ) =>
     void flight.run(permission.id, async () => {
-      const result = await adapter.decide(permission.id, option, permission.version);
+      const result = await adapter.decide(
+        permission.id,
+        option,
+        permission.version,
+        seenTogether(together),
+      );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
       }
+      // An ask the answer could not settle comes back on its own card.
+      for (const id of (result.data.answered ?? [permission.id]).slice(1)) settled(id);
       settled(permission.id);
     });
   const answer = (question: Question, reply: string | { text: string }) =>
@@ -638,7 +675,9 @@ export function WaitingOnYou({
             now={now}
             busy={flight.has(front.id)}
             cardRef={cardRef}
-            onDecide={decide}
+            onDecide={(permission, option) =>
+              decide(permission, option, front.kind === 'permission' ? front.together : [])
+            }
             onAnswer={answer}
           />
           {next ? (
