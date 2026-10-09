@@ -31,8 +31,8 @@ describe('the reversal registry', () => {
 
   test('every declared tool is a real tool, and an undeclared one has none', () => {
     const tools = new Set(
-      [calendarManifest, emailManifest, filesManifest, appsManifest, skillsManifest].flatMap((manifest) =>
-        manifest.tools.map((tool) => tool.name),
+      [calendarManifest, emailManifest, filesManifest, appsManifest, skillsManifest].flatMap(
+        (manifest) => manifest.tools.map((tool) => tool.name),
       ),
     );
     for (const kind of Object.keys(REVERSALS)) expect(tools.has(kind)).toBe(true);
