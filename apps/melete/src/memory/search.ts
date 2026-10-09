@@ -24,7 +24,7 @@ import type { EmbeddingProvider } from './views.ts';
 /** The most saved details one search returns. */
 export const SEARCH_LIMIT = 8;
 
-export const memorySearchInput = z.strictObject({ query: z.string().trim().min(1).max(500) });
+export const memorySearchInput = z.strictObject({ query: z.string().trim().min(1).max(200) });
 
 export type MemorySearchOptions = {
   sql: MemorySql;

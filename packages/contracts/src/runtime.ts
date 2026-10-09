@@ -81,10 +81,10 @@ export const MEMORY_SEARCH_TOOL_NAME = 'memory.search';
 export const MEMORY_SEARCH_TOOL: ToolSpec = {
   name: MEMORY_SEARCH_TOOL_NAME,
   description:
-    "Search everything Melete remembers about the person and the people in their life, not only the details shown with this message. Use it before you say you don't know, don't have or never had something about them, and before you take back something you told them. Ask in plain words, for example \"Lena's birthday\".",
+    "Search all Melete remembers about the person and their people, not only what came with this message. Search before saying you don't know or never had something, or taking back an answer.",
   input_schema: {
     type: 'object',
-    properties: { query: { type: 'string', minLength: 1, maxLength: 500 } },
+    properties: { query: { type: 'string', minLength: 1, maxLength: 200 } },
     required: ['query'],
     additionalProperties: false,
   },
