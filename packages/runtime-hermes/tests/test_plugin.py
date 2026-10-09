@@ -411,6 +411,13 @@ def test_keeping_what_the_person_wants_is_forwarded_to_the_broker_native_gate(cl
     assert broker.requests[0]["body"] == {"name": "intent.capture", "arguments": arguments}
 
 
+def test_a_memory_search_is_forwarded_to_the_broker_native_gate(client, broker):
+    arguments = {"query": "Lena's birthday"}
+    build_handler(client, {"name": "memory.search", "connection_id": None})(arguments)
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "memory.search", "arguments": arguments}
+
+
 def test_a_question_for_the_person_is_forwarded_to_the_broker_native_gate(client, broker):
     arguments = {"question": "Which day suits you?", "choices": ["Tuesday", "Thursday"]}
     build_handler(client, {"name": "ask_person", "connection_id": None})(arguments)

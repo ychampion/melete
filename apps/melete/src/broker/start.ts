@@ -67,6 +67,8 @@ export async function startEffectBoundary(
     runs?: BrokerOptions['runs'];
     /** Keeping hold of what the person wants done. */
     intents?: BrokerOptions['intents'];
+    /** Searching what memory keeps about the person, mid-turn. */
+    memorySearch?: BrokerOptions['memorySearch'];
     /** The installation's spending caps, shared by every gateway of the service. */
     spending?: SpendingGuard;
     /** Where the files people send in chat are kept, for the gateway to show the model. */
@@ -180,6 +182,7 @@ export async function startEffectBoundary(
       chaseFollowUp: chaseFollowUpPort,
       runs: dependencies.runs,
       intents: dependencies.intents,
+      memorySearch: dependencies.memorySearch,
       autoReview: {
         reviewer: review?.reviewer ?? null,
         timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,

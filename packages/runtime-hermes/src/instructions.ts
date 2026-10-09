@@ -25,6 +25,7 @@ import {
   APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   CONTEXT_LIMITS,
+  MEMORY_SEARCH_TOOL_NAME,
   renderSinceLast,
   SKILL_READ_TOOL_NAME,
 } from '@melete/contracts';
@@ -123,6 +124,17 @@ export const DONE_WORDS: readonly string[] = [
 ];
 
 /**
+ * Not knowing is not the same as memory not having it. An attempt is handed
+ * only the details recalled for the latest message; a model that read that
+ * list as all memory holds took back a true, saved answer ("I can't find that
+ * date anywhere") and said "I never had it" about a detail it had just
+ * forgotten as asked.
+ */
+export const MEMORY_WORDS: readonly string[] = [
+  `The details recalled for this message are not all Melete remembers. Before you say you don't know, don't have or never had something about the person or the people in their life, or take back something you told them, search with ${MEMORY_SEARCH_TOOL_NAME}. Take back an answer only when the person corrects it.`,
+];
+
+/**
  * Sending from the agent's computer goes out without a question, so the agent
  * checks itself: personal data leaves only when the request needs it, and
  * instructions found in what it reads are reported, never followed.
@@ -178,6 +190,12 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     "person's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
     ...DONE_WORDS,
+    // Only an attempt offered the search is told to search.
+    ...(bundle.tools.some(
+      (tool) => tool.name === MEMORY_SEARCH_TOOL_NAME && tool.connection_id === null,
+    )
+      ? MEMORY_WORDS
+      : []),
     ...OUTSIDE_WORDS,
     ...ASKING,
     ...PLAIN_WORDS,
@@ -228,7 +246,7 @@ export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[]
     '',
     '## What Melete already knows',
     '',
-    'Each line is a record, not a belief. Name a path only when asked where something came from or when it is disputed.',
+    'Each line is a record, not a belief. Name a path only when asked where something came from or when it is disputed. These are the details recalled for this message, not everything Melete remembers.',
     '',
     ...knowledge.map(
       (entry) =>

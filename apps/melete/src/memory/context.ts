@@ -59,7 +59,7 @@ export const NOT_REMEMBERED_NOTE =
  */
 export const FORGET_NOTES = {
   forgot:
-    "Memory carried out the person's request to forget: the detail is deleted, and the conversation shows the receipt. You may tell them it is forgotten.",
+    "Memory carried out the person's request to forget: the detail is deleted, and the conversation shows the receipt. Tell them you forgot it, as they asked. It is missing from what you recall and from any search only because it was just deleted: never say you never had it, never knew it or that nothing was saved.",
   none: 'Memory found nothing saved that matches what the person asked to forget, so nothing was deleted. Tell them plainly that nothing matched and nothing was forgotten; never say it was forgotten, deleted or is off the record.',
   ask: 'Memory has not forgotten anything yet: the request matched no single saved detail, and the conversation shows which one memory needs named. Ask them which one; never say it was forgotten.',
   unconfirmed:
@@ -453,6 +453,10 @@ export function withMemoryRuntime(
           jobId: bundle.attempt.job_id,
           actor: scope.principalId ?? null,
         });
+      // Memory's own answer to a request to forget, so the agent never claims one.
+      // Settled before anything is recalled: the turn that asked to forget a
+      // detail is never handed it, and is not restarted when it goes.
+      const forgetNote = await forgetOutcomeNote(sql, bundle);
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -532,8 +536,6 @@ export function withMemoryRuntime(
         bundle,
         options.refusesMemoryRead,
       );
-      // Memory's own answer to a request to forget, so the agent never claims one.
-      const forgetNote = await forgetOutcomeNote(sql, bundle);
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
         job: {

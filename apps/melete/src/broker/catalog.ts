@@ -6,6 +6,7 @@ import {
   INTENT_CAPTURE_TOOL,
   INTENT_TOOL_NAMES,
   type JsonObject,
+  MEMORY_SEARCH_TOOL_NAME,
   REACT_TOOL_NAME,
   RUN_TOOL_NAMES,
   RUN_TOOLS,
@@ -233,7 +234,9 @@ function pinOf(tool: ToolSpec, context: CoreSelectionContext): number {
   if (
     (context.waitable === true && tool.name === RUNTIME_WAIT_TOOL.name) ||
     (context.conversational === true && tool.name === REACT_TOOL_NAME) ||
-    (context.readable === true && tool.name === SKILL_READ_TOOL.name)
+    (context.readable === true && tool.name === SKILL_READ_TOOL.name) ||
+    // Answering a person, the agent searches memory before it says it doesn't know.
+    (context.conversational === true && tool.name === MEMORY_SEARCH_TOOL_NAME)
   )
     return 1;
   return 0;
@@ -609,6 +612,13 @@ export class ToolCatalog {
       if (INTENT_TOOL_NAMES.includes(tool.name) && !claims.scopes.includes(tool.name)) continue;
       // Offered only while there is a skill this attempt may read.
       if (tool.name === SKILL_READ_TOOL.name && skills.length === 0) continue;
+      // Offered only where memory may be read: never to an agent set not to read
+      // it, and never in public research, which loads no private knowledge.
+      if (
+        tool.name === MEMORY_SEARCH_TOOL_NAME &&
+        (!access.readsMemory || job.constraints.public_compartment === true)
+      )
+        continue;
       // Offered only while the owner's approval is waiting to be carried out.
       if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
       // Offered only while a chase's scope still covers a follow-up.

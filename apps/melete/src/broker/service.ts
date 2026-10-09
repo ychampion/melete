@@ -20,6 +20,7 @@ import {
   isTrustGatedEffect,
   type JsonObject,
   jobConstraints,
+  MEMORY_SEARCH_TOOL,
   type OriginWarning,
   originWarnings,
   type ProposeActionRequest,
@@ -198,6 +199,11 @@ export type BrokerOptions = {
   intents?: {
     capture(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   };
+  /**
+   * `memory.search`: everything memory keeps about the person, searched under
+   * the attempt's own memory rules. Left out, the tool is not offered.
+   */
+  memorySearch?: (claims: CapabilityClaims, input: unknown) => Promise<unknown>;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -471,6 +477,7 @@ export class BrokerService implements BrokerOperations {
         ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
         ...(options.runs ? RUN_TOOLS : []),
         ...(options.intents ? [INTENT_CAPTURE_TOOL] : []),
+        ...(options.memorySearch ? [MEMORY_SEARCH_TOOL] : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
@@ -699,6 +706,17 @@ export class BrokerService implements BrokerOperations {
             : 'payload_invalid',
           error.message,
         );
+      throw error;
+    }
+  }
+
+  /** `memory.search`. Memory decides what the attempt may read; bad arguments come back as a fault. */
+  async memorySearch(claims: CapabilityClaims, input: unknown): Promise<unknown> {
+    if (!this.options.memorySearch) throw new BrokerFault('unknown_tool');
+    try {
+      return await this.options.memorySearch(claims, input);
+    } catch (error) {
+      if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
       throw error;
     }
   }
