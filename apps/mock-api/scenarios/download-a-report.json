@@ -1,0 +1,98 @@
+{
+  "id": "download-a-report",
+  "title": "Download a report and summarise it",
+  "summary": "Melete opens the Federal Reserve's Beige Book page on its computer, downloads the latest PDF, puts it and a chart in the person's Files, writes a short summary, and answers with a link to the page it read. Each file card opens in the app and downloads.",
+  "match": ["beige book", "send me the pdf", "download the report"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "I'll find the latest Beige Book and get you the PDF."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 700,
+      "name": "computer.open",
+      "kind": "sandbox",
+      "title": "Opened federalreserve.gov/monetarypolicy/beige-book-default.htm in its computer",
+      "active_title": "Opening federalreserve.gov/monetarypolicy/beige-book-default.htm in its computer",
+      "arguments": {
+        "url": "https://www.federalreserve.gov/monetarypolicy/beige-book-default.htm"
+      },
+      "result": {
+        "computer": "open",
+        "navigated": true,
+        "address": "https://www.federalreserve.gov/monetarypolicy/beige-book-default.htm",
+        "window": "Beige Book - Federal Reserve Board - Chromium"
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 700,
+      "name": "terminal.run",
+      "kind": "sandbox",
+      "title": "Ran `curl -sLO …/BeigeBook_20260902.pdf` in its computer",
+      "active_title": "Running `curl -sLO …/BeigeBook_20260902.pdf` in its computer",
+      "output": { "text": "Downloaded 749 bytes" }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 500,
+      "name": "files.move",
+      "kind": "file",
+      "title": "Moved BeigeBook_20260902.pdf into your Files",
+      "active_title": "Moving BeigeBook_20260902.pdf into your Files",
+      "arguments": {
+        "from": "BeigeBook_20260902.pdf",
+        "to": "BeigeBook_20260902.pdf",
+        "area": "work",
+        "to_area": "artifacts"
+      },
+      "result": {
+        "from": "BeigeBook_20260902.pdf",
+        "to": "BeigeBook_20260902.pdf",
+        "area": "work",
+        "to_area": "artifacts",
+        "content_hash": "mock"
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 500,
+      "name": "files.move",
+      "kind": "file",
+      "title": "Moved districts-growth.png into your Files",
+      "active_title": "Moving districts-growth.png into your Files",
+      "result": {
+        "from": "districts-growth.png",
+        "to": "districts-growth.png",
+        "area": "work",
+        "to_area": "artifacts",
+        "content_hash": "mock"
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 500,
+      "name": "files.write",
+      "kind": "file",
+      "title": "Saved beige-book-summary.md",
+      "active_title": "Saving beige-book-summary.md",
+      "result": { "path": "beige-book-summary.md", "area": "artifacts", "content_hash": "mock" }
+    },
+    {
+      "step": "text",
+      "delay_ms": 600,
+      "text": "The latest Beige Book came out on September 2, 2026. The PDF, a chart of growth by District and a short summary are in your Files.\n\n- **Growth:** 10 of 12 Districts grew slightly or modestly; 2 were flat.\n- **Labor:** employment was flat to up slightly.\n- **Prices:** rose moderately in most Districts.\n\nThe next edition is due October 14."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "The latest Beige Book came out on September 2, 2026. The PDF, a chart of growth by District and a short summary are in your Files."
+    }
+  ]
+}

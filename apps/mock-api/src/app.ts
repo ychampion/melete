@@ -69,6 +69,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
+import { fileHeaders, mimeForName } from '../../melete/src/artifact/shown.ts';
 import { mountAppsMock } from './apps.ts';
 import { mountAttachmentsMock } from './attachments.ts';
 import { mountCompaniesMock } from './companies.ts';
@@ -442,14 +443,29 @@ export function createMockApp(deps: AppDeps) {
       createHash('sha256').update(entry.bytes).digest('hex') !== entry.artifact.content_hash
     )
       return c.json(fail('not_found', 'No such artifact.'), 404);
-    return new Response(Uint8Array.from(entry.bytes), {
-      headers: {
-        'content-type': entry.artifact.mime,
-        'content-length': String(entry.bytes.length),
-        'cache-control': 'private, no-store',
-        'x-content-type-options': 'nosniff',
-      },
-    });
+    const headers = fileHeaders(
+      entry.artifact.mime,
+      entry.artifact.path.split('/').at(-1) ?? 'artifact',
+      c.req.query('disposition') === 'inline',
+    );
+    headers.set('content-length', String(entry.bytes.length));
+    return new Response(Uint8Array.from(entry.bytes), { headers });
+  });
+
+  // A file a scenario's files action saved, served as the service serves it.
+  app.get('/files/:id/content', (c) => {
+    if (getCookie(c, 'melete_mock_session') !== mockSession)
+      return c.json(fail('unauthorized', 'A session is required.'), 401);
+    const entry = store.savedFiles.get(c.req.param('id'));
+    if (!entry)
+      return c.json(fail('not_found', 'This file is no longer the one that was saved.'), 404);
+    const headers = fileHeaders(
+      mimeForName(entry.name),
+      entry.name,
+      c.req.query('disposition') === 'inline',
+    );
+    headers.set('content-length', String(entry.bytes.length));
+    return new Response(Uint8Array.from(entry.bytes), { headers });
   });
 
   // ------------------------------------------------------------------

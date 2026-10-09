@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
+import { FILE_TOOLS, fileHeaders, mimeForName, savedFile } from '../artifact/shown.ts';
 import { noLinks, openBeneath, segmentsFor } from '../connectors/files.ts';
 import type { Database } from '../db/client.ts';
-import { artifact, job } from '../db/schema.ts';
+import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ServiceError } from './errors.ts';
@@ -109,6 +110,31 @@ async function roomArtifact(db: Database, id: string, principalId: string) {
   return access && access.space.kind === 'shared' && access.role !== 'agent' ? row : null;
 }
 
+const noFile = () =>
+  new ServiceError('not_found', 'This file is no longer the one that was saved.', 404);
+
+function fileResponse(
+  bytes: Uint8Array,
+  options: { mime: string; name: string; inline: boolean; range: string | undefined },
+): Response {
+  const headers = fileHeaders(options.mime, options.name, options.inline);
+  if (options.range) {
+    const range = rangeFor(options.range, bytes.length);
+    if (!range) {
+      headers.set('content-range', `bytes */${bytes.length}`);
+      return new Response(null, { status: 416, headers });
+    }
+    headers.set('content-range', `bytes ${range.start}-${range.end}/${bytes.length}`);
+    headers.set('content-length', String(range.end - range.start + 1));
+    return new Response(Uint8Array.from(bytes.subarray(range.start, range.end + 1)), {
+      status: 206,
+      headers,
+    });
+  }
+  headers.set('content-length', String(bytes.length));
+  return new Response(Uint8Array.from(bytes), { headers });
+}
+
 export function mountArtifacts(
   app: Hono,
   db: Database,
@@ -161,28 +187,58 @@ export function mountArtifacts(
       createHash('sha256').update(bytes).digest('hex') !== found.artifact.contentHash
     )
       throw notFound();
-    const headers = new Headers({
-      'content-type': found.artifact.mime,
-      'cache-control': 'private, no-store',
-      'x-content-type-options': 'nosniff',
-      'accept-ranges': 'bytes',
-      'content-disposition': `${found.artifact.mime.startsWith('audio/') ? 'inline' : 'attachment'}; filename="${encodeURIComponent(found.artifact.path.split('/').at(-1) ?? 'artifact')}"`,
+    return fileResponse(bytes, {
+      mime: found.artifact.mime,
+      name: found.artifact.path.split('/').at(-1) ?? 'artifact',
+      inline: c.req.query('disposition') === 'inline',
+      range: c.req.header('range'),
     });
-    const requested = c.req.header('range');
-    if (requested) {
-      const range = rangeFor(requested, bytes.length);
-      if (!range) {
-        headers.set('content-range', `bytes */${bytes.length}`);
-        return new Response(null, { status: 416, headers });
-      }
-      headers.set('content-range', `bytes ${range.start}-${range.end}/${bytes.length}`);
-      headers.set('content-length', String(range.end - range.start + 1));
-      return new Response(Uint8Array.from(bytes.subarray(range.start, range.end + 1)), {
-        status: 206,
-        headers,
+  });
+
+  /**
+   * A file one of the person's own conversations saved or moved with the
+   * files tools: into their Files, or into the conversation's workspace. Only
+   * the job's own principal, in the space the session names, gets it, and
+   * only while it is still the content the receipt recorded.
+   */
+  app.get('/files/:id/content', async (c) => {
+    const scope = await resolveSpace(c);
+    const id = prefixedId(ID_PREFIXES.action).safeParse(c.req.param('id'));
+    if (!scope || !id.success || !prefixedId(ID_PREFIXES.space).safeParse(scope.spaceId).success)
+      throw noFile();
+    const [row] = await db
+      .select({ action, job })
+      .from(action)
+      .innerJoin(job, eq(action.jobId, job.id))
+      .where(
+        and(
+          eq(action.id, id.data),
+          eq(action.status, 'succeeded'),
+          inArray(action.kind, [...FILE_TOOLS]),
+          eq(job.spaceId, scope.spaceId),
+          scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+        ),
+      );
+    const saved = row ? savedFile(row.action.kind, row.action.receipt) : null;
+    if (!row || !saved) throw noFile();
+    let bytes: Uint8Array;
+    try {
+      bytes = await readArtifact(roots, row.job.spaceId, {
+        area: saved.area,
+        path: saved.path,
+        jobId: row.job.id,
+        sourceJobId: row.job.id,
       });
+    } catch {
+      throw noFile();
     }
-    headers.set('content-length', String(bytes.length));
-    return new Response(Uint8Array.from(bytes), { headers });
+    if (createHash('sha256').update(bytes).digest('hex') !== saved.contentHash) throw noFile();
+    const name = saved.path.split('/').at(-1) ?? 'file';
+    return fileResponse(bytes, {
+      mime: mimeForName(name),
+      name,
+      inline: c.req.query('disposition') === 'inline',
+      range: c.req.header('range'),
+    });
   });
 }

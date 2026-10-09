@@ -33,6 +33,8 @@ let cookie = '';
 let spaceId = '';
 let jobId = '';
 let otherJobId = '';
+let attemptId = '';
+let connectionId = '';
 const sql = () => {
   if (!fixture) throw new Error('No database');
   return fixture.sql;
@@ -43,6 +45,8 @@ if (fixture) {
   const seed = await seedJob(fixture.sql, { provider: 'files', scopes: ['files.write'] });
   spaceId = seed.claims.space_id;
   jobId = seed.claims.job_id;
+  attemptId = seed.claims.attempt_id;
+  connectionId = seed.connectionId;
   otherJobId = (await seedJob(fixture.sql, { spaceId: recordId('sp') })).claims.job_id;
   const setup = await app.request('/setup', {
     method: 'POST',
@@ -159,6 +163,161 @@ databaseTest('no recorded path reaches outside the space’s own areas', async (
     (await app.request('/artifacts/..%2F..%2Fsecret.md/content', { headers: { cookie } })).status,
   ).toBe(404);
 });
+
+databaseTest(
+  'a download is an attachment; only a PDF, a picture or text is shown in place',
+  async () => {
+    const cases: Array<{ path: string; mime: string; inline: string | null }> = [
+      { path: 'shown/report.pdf', mime: 'application/pdf', inline: 'application/pdf' },
+      { path: 'shown/chart.png', mime: 'image/png', inline: 'image/png' },
+      { path: 'shown/notes.md', mime: 'text/markdown', inline: 'text/plain; charset=utf-8' },
+      { path: 'shown/page.html', mime: 'text/html', inline: null },
+      { path: 'shown/logo.svg', mime: 'image/svg+xml', inline: null },
+      { path: 'shown/data.bin', mime: 'application/octet-stream', inline: null },
+    ];
+    for (const entry of cases) {
+      const id = await saved({
+        file: join(spacesRoot, spaceId, 'artifacts', entry.path),
+        text: '<script>alert(1)</script>',
+        area: 'artifacts',
+        path: entry.path,
+        mime: entry.mime,
+      });
+      const download = await content(id);
+      expect(download.status).toBe(200);
+      expect(download.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(download.headers.get('content-disposition')).toStartWith('attachment;');
+      const shown = await app.request(`/artifacts/${id}/content?disposition=inline`, {
+        headers: { cookie },
+      });
+      expect(shown.headers.get('x-content-type-options')).toBe('nosniff');
+      if (entry.inline) {
+        expect(shown.headers.get('content-disposition')).toStartWith('inline;');
+        expect(shown.headers.get('content-type')).toBe(entry.inline);
+      } else {
+        // A page or an SVG asked for in place still only downloads.
+        expect({ path: entry.path, disposition: shown.headers.get('content-disposition') }).toEqual(
+          {
+            path: entry.path,
+            disposition: expect.stringMatching(/^attachment;/),
+          },
+        );
+        expect(shown.headers.get('content-type')).toBe(entry.mime);
+      }
+    }
+  },
+);
+
+/** A files action's row, as the broker keeps it once its receipt came back. */
+async function fileAction(input: {
+  kind: string;
+  receipt: Record<string, unknown>;
+  job?: string;
+  status?: string;
+}): Promise<string> {
+  const id = recordId('act');
+  const payload = JSON.stringify({});
+  await sql()`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+      canonical_payload, payload_hash, status, idempotency_key, receipt, resolved_at)
+    values (${id}, ${input.job ?? jobId}, ${attemptId}, ${connectionId}, ${input.kind}, 'write',
+      ${payload}::jsonb, ${hash(payload)}, ${input.status ?? 'succeeded'}, ${id},
+      ${JSON.stringify({ action_id: id, detail: input.receipt })}::jsonb, now())`;
+  return id;
+}
+const fileContent = (id: string, query = '', headers: Record<string, string> = { cookie }) =>
+  app.request(`/files/${id}/content${query}`, { headers });
+
+databaseTest('a file a files action moved into Files opens and downloads', async () => {
+  const pdf = '%PDF-1.4 the beige book\n';
+  await mkdir(join(spacesRoot, spaceId, 'artifacts'), { recursive: true });
+  await writeFile(join(spacesRoot, spaceId, 'artifacts', 'BeigeBook_20260902.pdf'), pdf);
+  const id = await fileAction({
+    kind: 'files.move',
+    receipt: {
+      from: 'BeigeBook_20260902.pdf',
+      to: 'BeigeBook_20260902.pdf',
+      area: 'work',
+      to_area: 'artifacts',
+      content_hash: hash(pdf),
+    },
+  });
+  const download = await fileContent(id);
+  expect(download.status).toBe(200);
+  expect(await download.text()).toBe(pdf);
+  expect(download.headers.get('content-type')).toBe('application/pdf');
+  expect(download.headers.get('content-disposition')).toBe(
+    `attachment; filename="BeigeBook_20260902.pdf"; filename*=UTF-8''BeigeBook_20260902.pdf`,
+  );
+  expect(download.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(download.headers.get('cache-control')).toBe('private, no-store');
+  const shown = await fileContent(id, '?disposition=inline');
+  expect(shown.status).toBe(200);
+  expect(shown.headers.get('content-disposition')).toStartWith('inline;');
+  expect(shown.headers.get('content-type')).toBe('application/pdf');
+});
+
+databaseTest(
+  'a file a files action wrote in its workspace opens; a page there only downloads',
+  async () => {
+    const page = '<html><script>fetch("/api/me")</script></html>';
+    await mkdir(join(workRoot, jobId, 'out'), { recursive: true });
+    await writeFile(join(workRoot, jobId, 'out', 'page.html'), page);
+    const id = await fileAction({
+      kind: 'files.write',
+      receipt: { path: 'out/page.html', area: 'work', content_hash: hash(page) },
+    });
+    const shown = await fileContent(id, '?disposition=inline');
+    expect(shown.status).toBe(200);
+    expect(shown.headers.get('content-disposition')).toStartWith('attachment;');
+    expect(shown.headers.get('content-type')).toBe('text/html');
+    expect(shown.headers.get('x-content-type-options')).toBe('nosniff');
+  },
+);
+
+databaseTest(
+  'the files route keeps to the person’s own succeeded files and their recorded content',
+  async () => {
+    const text = 'saved once\n';
+    await mkdir(join(spacesRoot, spaceId, 'artifacts'), { recursive: true });
+    await writeFile(join(spacesRoot, spaceId, 'artifacts', 'kept.md'), text);
+    const receipt = { path: 'kept.md', area: 'artifacts', content_hash: hash(text) };
+    const own = await fileAction({ kind: 'files.write', receipt });
+    expect((await fileContent(own)).status).toBe(200);
+    // No session, no file.
+    expect((await fileContent(own, '', {})).status).toBe(401);
+    // Another person's conversation in the same space.
+    const [someone] = await sql()`insert into principal (id, email, kind)
+    values (${recordId('prn')}, ${`someone-${recordId('x')}@example.test`}, 'person') returning id`;
+    const theirJob = recordId('job');
+    await sql()`insert into job (id, space_id, principal_id, title, objective, state, lease_epoch,
+        budget, constraints)
+      select ${theirJob}, space_id, ${someone?.id}, title, objective, state, lease_epoch, budget,
+        constraints
+      from job where id = ${jobId}`;
+    const theirFile = await fileAction({ kind: 'files.write', receipt, job: theirJob });
+    expect((await fileContent(theirFile)).status).toBe(404);
+    // A conversation in another space.
+    const elsewhere = await fileAction({ kind: 'files.write', receipt, job: otherJobId });
+    expect((await fileContent(elsewhere)).status).toBe(404);
+    // An action that did not succeed, and one that is not a files action.
+    expect(
+      (await fileContent(await fileAction({ kind: 'files.write', receipt, status: 'failed' })))
+        .status,
+    ).toBe(404);
+    expect((await fileContent(await fileAction({ kind: 'web.fetch', receipt }))).status).toBe(404);
+    // A receipt path that tries to walk out of the space's areas.
+    const walking = await fileAction({
+      kind: 'files.write',
+      receipt: { path: `../../${otherJobId}/kept.md`, area: 'work', content_hash: hash(text) },
+    });
+    expect((await fileContent(walking)).status).toBe(404);
+    // The file changed since it was saved: it is no longer the one the receipt names.
+    await writeFile(join(spacesRoot, spaceId, 'artifacts', 'kept.md'), 'changed\n');
+    expect((await fileContent(own)).status).toBe(404);
+    // An id that is not an action's.
+    expect((await fileContent('..%2Fkept.md')).status).toBe(404);
+  },
+);
 
 databaseTest('a link inside the workspace is not followed', async () => {
   const secret = 'outside the workspace\n';
