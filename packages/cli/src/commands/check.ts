@@ -9,7 +9,7 @@ import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
 import { judgeBrowser } from '../browser.ts';
-import type { Context } from '../context.ts';
+import { type Context, inServiceImage } from '../context.ts';
 import {
   BLOBS_S3_FILE,
   DEFAULT_REGISTRY,
@@ -28,7 +28,15 @@ import {
   serviceEnvironment,
   settingId,
 } from '../installation.ts';
-import { EXIT, type ExitCode, type Report, type Result, renderReport, report } from '../schema.ts';
+import {
+  EXIT,
+  type ExitCode,
+  hostOnly,
+  type Report,
+  type Result,
+  renderReport,
+  report,
+} from '../schema.ts';
 
 const ADOPT = 'Run bun run melete init --adopt to write it from the running stack.';
 
@@ -486,9 +494,35 @@ export function judgePorts(installation: Installation): Result {
   };
 }
 
+/** The rules that read the host's deploy file, deploy/.env and Compose files. */
+export const HOST_CHECK_RULES = [
+  'deploy.contract',
+  'env.file',
+  'compose.files',
+  'compose.boundaries',
+  'ports.loopback_only',
+] as const;
+
+/**
+ * Inside the service image the installation's files are on the host, so those
+ * rules are skipped; the browser worker is judged from the settings and
+ * connections file the service runs with.
+ */
+export function judgeCheckInImage(
+  installation: Installation,
+  environment: Context['environment'],
+): Result[] {
+  return [...HOST_CHECK_RULES.map(hostOnly), ...judgeBrowser(installation, environment)];
+}
+
 export function runCheck(context: Context, json: boolean): ExitCode {
   const installation = readInstallation(context.deployDir, context.machine.platform);
-  const value: Report = report('check', judgeCheck(installation));
+  const value: Report = report(
+    'check',
+    inServiceImage(context.environment)
+      ? judgeCheckInImage(installation, context.environment)
+      : judgeCheck(installation),
+  );
   context.out(json ? `${JSON.stringify(value, null, 2)}\n` : renderReport(value));
   return value.ok ? EXIT.ok : EXIT.failed;
 }

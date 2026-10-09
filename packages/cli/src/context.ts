@@ -74,6 +74,16 @@ export type Context = {
 
 export const DEFAULT_DEPLOY_DIR = resolve(import.meta.dir, '../../../deploy');
 
+/**
+ * Set by deploy/Dockerfile.melete. Inside the service image the host's Docker
+ * Engine, Compose files and deploy/.env are out of reach by design, so the
+ * read-only commands report those rules as skipped rather than failed.
+ */
+export const SERVICE_IMAGE_MARKER = 'MELETE_SERVICE_IMAGE';
+
+export const inServiceImage = (environment: Context['environment']): boolean =>
+  environment[SERVICE_IMAGE_MARKER] === '1';
+
 async function attach(command: readonly string[]): Promise<number> {
   try {
     const child = Bun.spawn([...command], {

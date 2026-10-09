@@ -251,10 +251,14 @@ docker compose -f deploy/docker-compose.yml exec melete bun run melete status
 ```
 
 There they judge what the container sees. The container holds no `deploy/.env`,
-no Compose files and no Docker socket, so the rules that read those report them
-as missing; run the command from a checkout with Bun for the whole report.
-`doctor` reports `browser.worker` from the settings and the connections file
-the service runs with, so with the worker on, add
+no Compose files and no Docker socket, so the rules that judge the host, such as
+`docker.engine`, `disk.free_mb`, the ports, the images and the Compose files,
+report `skip` with "Skipped: run on the host to check this." A skipped rule
+never fails the command, so its exit code is 0 unless a rule it can judge fails;
+run the command from a checkout with Bun for the host's rules. In the container
+`doctor` and `check` report `browser.worker` from the settings and the
+connections file the service runs with, and `status` asks the service itself for
+its health and whether the owner account exists. With the worker on, add
 `-f deploy/docker-compose.browser.yml` after the base file. On a host without
 Bun, the installer turns the worker on:
 `MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash`.
