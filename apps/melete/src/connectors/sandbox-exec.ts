@@ -337,25 +337,11 @@ export const sandboxTerminalManifest: ConnectorManifest = {
   ],
 };
 
-/**
- * Said by the terminal of a computer with a desktop: a web page belongs in a
- * browser the person can see. Nothing is refused: a command may still start one.
- */
-export const VISIBLE_BROWSER_NOTE =
-  ' A web page goes in computer.open or the browser tools, which the person can watch and take over; a browser a command starts is hidden from them.';
-
 /** Every grant a sandbox connection offers: the terminal, and the desktop where there is one. */
 export const sandboxExecManifest: ConnectorManifest = {
   ...sandboxTerminalManifest,
   description: 'Run commands and use the desktop in a sandbox this service owns.',
-  tools: [
-    ...sandboxTerminalManifest.tools.map((tool) =>
-      tool.name === 'terminal.run'
-        ? { ...tool, description: `${tool.description}${VISIBLE_BROWSER_NOTE}` }
-        : tool,
-    ),
-    ...COMPUTER_TOOLS,
-  ],
+  tools: [...sandboxTerminalManifest.tools, ...COMPUTER_TOOLS],
 };
 
 /** What one provider's sandboxes can do: a desktop only where the adapter has one. */

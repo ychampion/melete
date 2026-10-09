@@ -552,6 +552,8 @@ export class SandboxSessions {
     const { id, spec, cap } = this.prepare(input, provider, specFor, input.persistence);
     let suspended: SessionRow | null = null;
     let adopted: SessionRow | null = null;
+    /** The control epoch the computer was handed to this attempt at. */
+    let claimed: number | null = null;
     try {
       await this.sql.begin(async (tx) => {
         await this.checkConnection(tx, input);
@@ -593,7 +595,7 @@ export class SandboxSessions {
           // back: no attempt is given it meanwhile. Handing it over moves the
           // control epoch in this transaction, so a takeover read before it,
           // on any instance, fails rather than parking the job it no longer runs.
-          if (!(await claimForAttempt(tx, held.providerSandboxId)))
+          if ((await claimForAttempt(tx, held.providerSandboxId)) === null)
             throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Running, with its processes in it: taken over as it is, on a new
           // row, so nothing is paused or resumed under them.
@@ -603,8 +605,8 @@ export class SandboxSessions {
         const paused = kept;
         if (paused) {
           // A paused computer a person holds is theirs as much as a running one.
-          if (!(await claimForAttempt(tx, paused.providerSandboxId)))
-            throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
+          claimed = await claimForAttempt(tx, paused.providerSandboxId);
+          if (claimed === null) throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Closed first: the attempt that suspended it may be the one resuming it.
           await tx`update sandbox_session set status = 'closed', closed_at = now()
             where id = ${paused.id} and status = 'paused'`;
@@ -627,7 +629,7 @@ export class SandboxSessions {
     if (taken) return { ...taken, resumed: true };
     const from = suspended as SessionRow | null;
     if (!from) return { ...(await this.create(id, provider, spec, signal)), resumed: false };
-    return { ...(await this.resume(id, from, provider, spec, signal)), resumed: true };
+    return { ...(await this.resume(id, from, provider, spec, signal, claimed)), resumed: true };
   }
 
   /**
@@ -806,17 +808,39 @@ export class SandboxSessions {
   }
 
   /**
-   * Whether nothing runs in a suspended workspace for anyone: no person holds
-   * it and none of its agent's background processes runs. Only such a
-   * workspace may be made again from a newer image as it resumes.
+   * Run a provider's resume of a suspended workspace, telling it whether the
+   * workspace is quiet: still handed to this opening at the epoch it was
+   * claimed at, with control with the agent, and none of its agent's
+   * background processes running. Only a quiet workspace may be made again
+   * from a newer image. The check and the resume are one transaction that
+   * holds the computer's control row: a takeover, whatever path it comes by,
+   * waits until the resumed computer is up, and is then applied to it, never
+   * to a container being replaced. A second opening for the same agent is
+   * already refused while this row is `opening`.
    */
-  private async quiet(from: SessionRow): Promise<boolean> {
-    const [row] = await this.sql`select exists (select 1 from sandbox_process p
-        where p.space_id = ${from.spaceId} and p.agent_id = ${from.agentId}
-          and p.connection_id = ${from.connectionId} and p.state in ('starting', 'running'))
-      as live`;
-    if (row?.live !== false) return false;
-    return !(await this.heldByPerson(from.providerSandboxId));
+  private async resumeHeld(
+    id: string,
+    from: SessionRow,
+    resumeRef: string,
+    resume: NonNullable<SandboxProvider['resume']>,
+    spec: SandboxSpec,
+    signal: AbortSignal,
+    claimed: number | null,
+  ): Promise<SandboxHandle> {
+    if (claimed === null) return resume(resumeRef, spec, signal, { quiet: false });
+    return this.sql.begin(async (tx) => {
+      const [held] = await tx`select c.epoch from sandbox_control c
+        where c.provider_sandbox_id = ${from.providerSandboxId}
+          and c.control = 'agent' and c.epoch = ${claimed}
+          and exists (select 1 from sandbox_session s where s.id = ${id} and s.status = 'opening')
+        for update of c`;
+      const [running] = await tx`select exists (select 1 from sandbox_process p
+          where p.space_id = ${from.spaceId} and p.agent_id = ${from.agentId}
+            and p.connection_id = ${from.connectionId} and p.state in ('starting', 'running'))
+        as live`;
+      const quiet = Boolean(held) && running?.live === false;
+      return resume(resumeRef, spec, signal, { quiet });
+    });
   }
 
   private async resume(
@@ -825,13 +849,15 @@ export class SandboxSessions {
     provider: SandboxProvider,
     spec: SandboxSpec,
     signal: AbortSignal,
+    claimed: number | null = null,
   ): Promise<SessionRow & { recreatedFrom?: string | null }> {
     const resumeRef = from.resumeRef as string;
     let handle: SandboxHandle;
     try {
-      if (!provider.resume)
+      const resume = provider.resume?.bind(provider);
+      if (!resume)
         throw new Error(`the ${provider.capabilities.adapter} adapter cannot resume a workspace`);
-      handle = await provider.resume(resumeRef, spec, signal, { quiet: await this.quiet(from) });
+      handle = await this.resumeHeld(id, from, resumeRef, resume, spec, signal, claimed);
     } catch (error) {
       if (error instanceof SandboxGone) {
         await this.sql`update sandbox_session set status = 'lost', closed_at = now(),

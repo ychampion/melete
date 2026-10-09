@@ -520,6 +520,59 @@ withDb('a command in a remote sandbox', () => {
     expect(notice).toBeUndefined();
   }, 60_000);
 
+  test('two openings racing for a workspace being made again make it once', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider, told } = updating();
+    const updated = provider.resume.bind(provider);
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      await Bun.sleep(500);
+      return updated(ref, spec, signal, options);
+    };
+    const s = await setup({ persistence: 'pause', provider, workspaceWaitMs: 0 });
+    const { next } = await suspendedWorkspace(s);
+    const other = await s.scope.attempt();
+    const results = await Promise.all([
+      s.run({ command: 'printf one' }, next),
+      s.run({ command: 'printf two' }, other),
+    ]);
+    expect(results.map((each) => each.result.outcome).sort()).toEqual(['failed', 'succeeded']);
+    expect(told).toEqual([true]);
+    const notices = await handle.sql`select 1 from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_updated'`;
+    expect(notices.length).toBe(1);
+  }, 60_000);
+
+  test('a takeover while a computer is being made again waits for the new one, then holds it', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { provider, told } = updating();
+    const s = await setup({ persistence: 'pause', provider });
+    const { sandbox, next } = await suspendedWorkspace(s);
+    const updated = provider.resume.bind(provider);
+    let landed = false;
+    const seen: { midway: boolean | null } = { midway: null };
+    let takeover: Promise<unknown> | null = null;
+    provider.resume = async (ref, spec, signal, options?: ResumeOptions) => {
+      // A person takes the computer over between the check and the replacement.
+      takeover = s.sessions.controls.change(sandbox, 'human').then((state) => {
+        landed = true;
+        return state;
+      });
+      await Bun.sleep(1_000);
+      seen.midway = landed;
+      return updated(ref, spec, signal, options);
+    };
+    try {
+      await s.run({ command: 'printf next' }, next);
+      expect(told).toEqual([true]);
+      // It waited until the computer being made was up, and then took it.
+      expect(seen.midway).toBe(false);
+      expect(await takeover).toMatchObject({ control: 'human' });
+      expect(await s.sessions.heldByPerson(sandbox)).toBe(true);
+    } finally {
+      await s.sessions.controls.change(sandbox, 'agent');
+    }
+  }, 60_000);
+
   test('a workspace a person holds is not resumed, so never made again under them', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const { provider, told } = updating();
