@@ -6,7 +6,11 @@
  */
 import { z } from 'zod';
 
-export const LEVELS = ['ok', 'warn', 'fail'] as const;
+/**
+ * `skip` is neutral: a rule that cannot be judged where the command runs, such
+ * as a host check run inside the service container. It never fails a report.
+ */
+export const LEVELS = ['ok', 'warn', 'fail', 'skip'] as const;
 export type Level = (typeof LEVELS)[number];
 
 export const resultSchema = z.object({
@@ -63,6 +67,13 @@ export function report(command: Report['command'], results: Result[]): Report {
   return { command, ok: !results.some((result) => result.level === 'fail'), results };
 }
 
+/** A rule only the host can judge, reported from inside the service image without failing it. */
+export const hostOnly = (id: string): Result => ({
+  id,
+  level: 'skip',
+  detail: 'Skipped: run on the host to check this.',
+});
+
 /** The report as a person reads it: one line per rule, the fix under it, then a verdict. */
 export function renderReport(value: Report): string {
   const width = Math.max(0, ...value.results.map((result) => result.id.length));
@@ -72,12 +83,17 @@ export function renderReport(value: Report): string {
   ]);
   const failed = value.results.filter((result) => result.level === 'fail').length;
   const warned = value.results.filter((result) => result.level === 'warn').length;
-  lines.push(
+  const skipped = value.results.filter((result) => result.level === 'skip').length;
+  const verdict =
     failed > 0
       ? `${value.command}: ${failed} failed.`
       : warned > 0
         ? `${value.command}: passed, with ${warned} warning(s).`
-        : `${value.command}: passed.`,
+        : `${value.command}: passed.`;
+  lines.push(
+    skipped > 0
+      ? `${verdict} ${skipped} skipped here; run it on the host to check those.`
+      : verdict,
   );
   return `${lines.join('\n')}\n`;
 }

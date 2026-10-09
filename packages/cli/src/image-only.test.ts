@@ -24,6 +24,21 @@ function imageSources(dockerfile: string): string[] {
   return sources;
 }
 
+/** The `ENV NAME=value` settings of the Dockerfile's final stage, which every command there runs with. */
+function imageEnvironment(dockerfile: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const instruction of instructions(dockerfile)) {
+    const [keyword = '', ...rest] = instruction.split(/\s+/);
+    if (keyword.toUpperCase() === 'FROM') for (const name in environment) delete environment[name];
+    if (keyword.toUpperCase() !== 'ENV') continue;
+    for (const pair of rest) {
+      const at = pair.indexOf('=');
+      if (at > 0) environment[pair.slice(0, at)] = pair.slice(at + 1).replace(/^"(.*)"$/, '$1');
+    }
+  }
+  return environment;
+}
+
 let image = '';
 
 beforeAll(() => {
@@ -87,15 +102,27 @@ describe('the read-only commands in the service image', () => {
   ];
   for (const { command, flags } of commands) {
     test(`${command} loads and reports`, () => {
+      const dockerfile = readFileSync(join(ROOT, 'deploy/Dockerfile.melete'), 'utf8');
       const run = Bun.spawnSync(
         [process.execPath, join(image, 'packages/cli/src/main.ts'), command, ...flags, '--json'],
-        { cwd: image, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 },
+        {
+          cwd: image,
+          env: { ...process.env, ...imageEnvironment(dockerfile) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: 120_000,
+        },
       );
       const stderr = run.stderr.toString();
       expect(stderr).not.toMatch(/Cannot find (module|package)/);
-      expect([0, 1]).toContain(run.exitCode ?? -1);
       const report = reportSchema.parse(JSON.parse(run.stdout.toString()));
       expect(report.command).toBe(command);
+      // The host's rules are skipped there, so they never fail the command.
+      expect(report.results.find((result) => result.id === 'deploy.contract')?.level).toBe('skip');
+      if (command === 'status') expect([0, 1]).toContain(run.exitCode ?? -1);
+      else expect(`${command} exit ${run.exitCode}`).toBe(`${command} exit 0`);
+      if (command === 'doctor')
+        expect(report.results.find((result) => result.id === 'docker.engine')?.level).toBe('skip');
     }, 150_000);
   }
 

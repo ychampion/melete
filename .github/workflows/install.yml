@@ -134,9 +134,13 @@ jobs:
         run: |
           set -euo pipefail
           compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml" -f "$HOME/melete/deploy/docker-compose.browser.yml")
-          "${compose[@]}" exec -T melete bun run melete doctor --offline --json > "$RUNNER_TEMP/doctor.json" || true
-          jq '.results[] | select(.id | startswith("browser."))' "$RUNNER_TEMP/doctor.json"
+          # The container has no Docker socket, so the host's rules are skipped and doctor passes.
+          code=0
+          "${compose[@]}" exec -T melete bun run melete doctor --offline --json > "$RUNNER_TEMP/doctor.json" || code=$?
+          jq '.results[] | select(.id | startswith("browser.") or . == "docker.engine")' "$RUNNER_TEMP/doctor.json"
           jq -e '[.results[] | select(.id == "browser.worker")] | length == 1 and .[0].level == "ok"' "$RUNNER_TEMP/doctor.json"
+          jq -e '.ok and ([.results[] | select(.id == "docker.engine")] | length == 1 and .[0].level == "skip")' "$RUNNER_TEMP/doctor.json"
+          test "$code" = 0
           worker="$("${compose[@]}" ps -q browser)"
           test -n "$worker"
           state="$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$worker")"
