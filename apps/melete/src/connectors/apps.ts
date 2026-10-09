@@ -588,6 +588,29 @@ async function wideningLine(
 }
 
 /**
+ * Who can open the app now and could not after this publish, by address: a
+ * line naming them, or null. A publish that sets its audience replaces who may
+ * view it, so narrowing a shared app takes access away from people, which is
+ * theirs to lose only when the person agrees. `unchanged` keeps every grant.
+ */
+async function narrowingLine(
+  tx: Query,
+  appId: string | null,
+  audience: JsonObject,
+  actor: string,
+): Promise<string | null> {
+  if (!appId || audience.kind === 'unchanged' || audience.kind === 'everyone') return null;
+  const key = (who: string) => who.toLowerCase();
+  const after = new Set((await othersWhoCanOpen(tx, appId, actor, false)).map(key));
+  if (audience.kind === 'people' && Array.isArray(audience.emails))
+    for (const email of audience.emails) after.add(key(String(email)));
+  const losing = (await othersWhoCanOpen(tx, appId, actor, true)).filter(
+    (who) => !after.has(key(who)),
+  );
+  return losing.length ? `It would take away access from ${nameList(losing)}.` : null;
+}
+
+/**
  * Who besides the person acting could open the app after this change, by
  * address: the people or everyone the audience names, and, for an app that
  * exists, anyone who can open it now and keeps that (see othersWhoCanOpen). A
@@ -619,8 +642,9 @@ async function othersAfter(
 
 /**
  * Why the person should decide this publish or rollback, one plain line per
- * reason, in a fixed order: new people could open the app; its code opens
- * direct connections; it shows data its viewers do not see now. Data in an app
+ * reason, in a fixed order: new people could open the app; people who can
+ * open it now could not; its code opens direct connections; it shows data its
+ * viewers do not see now. Data in an app
  * only its publisher can open is theirs already, so it is no reason to ask.
  */
 async function risksOf(
@@ -637,6 +661,9 @@ async function risksOf(
   },
 ): Promise<string[]> {
   const widening = input.audience ? await wideningLine(tx, input.appId, input.audience) : null;
+  const narrowing = input.audience
+    ? await narrowingLine(tx, input.appId, input.audience, input.publisher)
+    : null;
   const before = await currentVersion(tx, input.appId);
   const added = Object.entries(input.data)
     .filter(([, binding]) => !shownBefore(binding, before.data))
@@ -667,7 +694,7 @@ async function risksOf(
   const afterResponses = (await readResponses(tx, ctx.job_id))
     ? 'This conversation read responses viewers sent, which may have steered it.'
     : null;
-  return [widening, connecting, newData, newCollections, afterResponses].filter(
+  return [widening, narrowing, connecting, newData, newCollections, afterResponses].filter(
     (line): line is string => line !== null,
   );
 }

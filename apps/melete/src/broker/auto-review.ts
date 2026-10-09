@@ -15,8 +15,9 @@
  *   puts it in the person's tier, with the reason.
  * - `apps`: publishing an app, a new version of one, or going back to an
  *   earlier version, through Melete's own Apps connection, when nobody new can
- *   open it, its code opens no direct connections and it shows no data its
- *   viewers do not see now. A fixed rule approves it when the person allows
+ *   open it, nobody who can open it now loses that, its code opens no direct
+ *   connections and it shows no data its viewers do not see now. A fixed rule
+ *   approves it when the person allows
  *   it; each is undone by going back to the version before. Any of those risks
  *   puts it in the person's tier, with the reason.
  * - `person`: anything that spends, sends or publishes beyond undo, deletes,
