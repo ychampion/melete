@@ -13,6 +13,7 @@ import type { SessionRow } from '../sandbox/sessions.ts';
 import {
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOLS,
+  ComputerOpenFailed,
   ComputerPayloadRefusal,
   desktopCommandFor,
   desktopCommandsFor,
@@ -329,6 +330,71 @@ test('every step ends with a screenshot kept in the job workspace, so the agent 
     path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CLICK1.png'),
   );
   expect(kept.byteLength).toBe(64);
+});
+
+test('an open that leaves an earlier page in front fails, says what the window shows, and stops a batch', async () => {
+  const answer = (navigated: boolean) =>
+    new TextEncoder().encode(
+      JSON.stringify({
+        opened: 'https://httpbin.org/forms/post',
+        navigated,
+        window: navigated ? 'httpbin - Chromium' : 'Google Flights - Chromium',
+        address: navigated
+          ? 'https://httpbin.org/forms/post'
+          : 'https://www.google.com/travel/flights',
+        browser: true,
+        checked: 'address',
+        ...(navigated ? {} : { reason: 'the page in front is still another one' }),
+      }),
+    );
+  const { provider, session, seen } = fixture({ screenshot: png(1024, 768), open: answer(false) });
+  const root = await workRoot();
+  const run = (kind: string, payload: Record<string, unknown>) =>
+    runComputerAction({
+      action: action(kind, payload),
+      jobId: 'job_COMPUTER',
+      workRoot: root,
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+      settleMs: 0,
+    });
+  const failed = run('computer.open', { url: 'https://httpbin.org/forms/post' });
+  await expect(failed).rejects.toBeInstanceOf(ComputerOpenFailed);
+  await expect(failed).rejects.toThrow(
+    'the browser did not open https://httpbin.org/forms/post: the page in front is still another one. The window in front shows https://www.google.com/travel/flights ("Google Flights - Chromium")',
+  );
+  expect(seen.map((command) => command.kind)).toEqual(['open']);
+  // In a batch, nothing after it acts on the page that was left in front.
+  seen.length = 0;
+  const batch = await run('computer.batch', {
+    actions: [
+      { action: 'key', keys: ['Escape'] },
+      { action: 'open', url: 'https://httpbin.org/forms/post' },
+      { action: 'click', x: 10, y: 20 },
+    ],
+  });
+  expect(seen.map((command) => command.kind)).toEqual(['key', 'open', 'screenshot', 'text']);
+  expect(batch).toMatchObject({ completed: 1, requested: 3 });
+  expect(batch.stopped).toStartWith('step 2 (open) failed: the browser did not open');
+  // An open that brought the address to the front is a step like any other.
+  const opened = fixture({ screenshot: png(1024, 768), open: answer(true) });
+  const done = await runComputerAction({
+    action: action('computer.open', { url: 'https://httpbin.org/forms/post' }, 'act_OPEN2'),
+    jobId: 'job_COMPUTER',
+    workRoot: root,
+    session: opened.session,
+    provider: opened.provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+  });
+  expect(done).toMatchObject({
+    computer: 'open',
+    navigated: true,
+    address: 'https://httpbin.org/forms/post',
+  });
 });
 
 test('a screenshot that fails after a step never turns the step that happened into a failure', async () => {

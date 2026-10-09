@@ -22,12 +22,12 @@ import {
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
 import { judgeBrowser } from '../browser.ts';
-import type { Context, PortProbe } from '../context.ts';
+import { type Context, inServiceImage, type PortProbe } from '../context.ts';
 import { databaseShell } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import { type Installation, publishedPorts, readInstallation } from '../installation.ts';
 import { databaseSecrets, redact } from '../redact.ts';
-import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
+import { EXIT, type ExitCode, hostOnly, type Result, renderReport, report } from '../schema.ts';
 import { judgeContract } from './check.ts';
 
 const MB = 1024 ** 2;
@@ -335,7 +335,7 @@ export async function gatherDoctor(
   const facts: DoctorFacts = {
     config,
     contract: judgeContract(installation),
-    browser: judgeBrowser(installation),
+    browser: judgeBrowser(installation, context.environment),
     docker,
     dockerVersions: `Engine ${outputs.engine.stdout.trim().split(' ')[1] ?? '?'}, Compose ${outputs.compose.stdout.trim() || '?'}`,
     dockerNotes: describeDockerHost(host),
@@ -431,13 +431,42 @@ export async function gatherDoctor(
   return facts;
 }
 
+/** The rules that judge the host: its engine, disk, memory, ports, images and registry. */
+export const HOST_DOCTOR_RULES = [
+  'docker.engine',
+  'disk.free_mb',
+  'memory.total_mb',
+  'ports.published',
+  'images.present',
+  'images.registry_reachable',
+] as const;
+
+/**
+ * Inside the service image the host's rules are skipped, and the browser
+ * worker is judged from the settings and connections file the service runs
+ * with. Docker is never asked: the container holds no socket.
+ */
+export function judgeDoctorInImage(
+  installation: Installation,
+  environment: Context['environment'],
+): Result[] {
+  return [
+    hostOnly('deploy.contract'),
+    ...judgeBrowser(installation, environment),
+    ...HOST_DOCTOR_RULES.map(hostOnly),
+  ];
+}
+
 export async function runDoctor(
   context: Context,
   json: boolean,
   offline: boolean,
 ): Promise<ExitCode> {
   const installation = readInstallation(context.deployDir, context.machine.platform);
-  const value = report('doctor', judgeDoctor(await gatherDoctor(context, installation, offline)));
+  const results = inServiceImage(context.environment)
+    ? judgeDoctorInImage(installation, context.environment)
+    : judgeDoctor(await gatherDoctor(context, installation, offline));
+  const value = report('doctor', results);
   context.out(json ? `${JSON.stringify(value, null, 2)}\n` : renderReport(value));
   return value.ok ? EXIT.ok : EXIT.failed;
 }

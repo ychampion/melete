@@ -116,9 +116,10 @@ export function mountCompaniesMock(
 ): { fixture: Fixture } {
   const principalId = newId('own');
   const fixture = buildFixture(deps.spaceId, principalId);
-  // The mailbox a company chase leaves from is the one the profile names.
-  experience.sendingAddress = fixture.from_address;
-  const startEmpty = process.env.MELETE_MOCK_COMPANIES === 'empty';
+  // The mailbox a company chase leaves from is the one the profile names. A
+  // first run has no mailbox yet, and nothing found.
+  if (!deps.firstRun) experience.sendingAddress = fixture.from_address;
+  const startEmpty = deps.firstRun === true || process.env.MELETE_MOCK_COMPANIES === 'empty';
   let found = !startEmpty;
   let scan: Scan | null = null;
 
@@ -308,7 +309,8 @@ export function mountCompaniesMock(
       top,
       scan: {
         space_id: deps.spaceId,
-        connected: true,
+        // A first run has no mailbox to read.
+        connected: deps.firstRun !== true,
         status: scanStatus,
         finished_at: found ? new Date().toISOString() : null,
         stale: false,

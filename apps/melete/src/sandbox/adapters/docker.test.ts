@@ -10,6 +10,7 @@ import {
   type EgressPolicy,
   SandboxAdapterRefusal,
   SandboxFileNotFound,
+  SandboxGone,
   type SandboxHandle,
   type SandboxSpec,
   SandboxStartRefused,
@@ -214,7 +215,12 @@ describe('creating a sandbox', () => {
     expect(body.Labels['com.melete.sandbox.egress']).toBe('connected_hosts_only');
     expect([...(engine.networks.get(`${NAME}-net`)?.members ?? [])]).toEqual([SELF]);
     expect(granted).toEqual([
-      { mode: 'connected_hosts_only', session: 'sbx_one', space: 'sp_one' },
+      {
+        mode: 'connected_hosts_only',
+        container: `${NAME}-id`,
+        session: 'sbx_one',
+        space: 'sp_one',
+      },
     ]);
 
     const other = setup({ open: true });
@@ -225,7 +231,9 @@ describe('creating a sandbox', () => {
       allowOpen(address, sandbox, options);
     };
     await other.host.create(spec('sbx_one', { kind: 'open' }), signal());
-    expect(openGrants).toEqual([{ mode: 'open', session: 'sbx_one', space: 'sp_one' }]);
+    expect(openGrants).toEqual([
+      { mode: 'open', container: `${NAME}-id`, session: 'sbx_one', space: 'sp_one' },
+    ]);
   });
 
   test('connected-hosts-only egress is refused when the service cannot be the way out', async () => {
@@ -587,6 +595,163 @@ describe('the life of a sandbox', () => {
     const resumed = await host.resume(resumeRef, spec(), signal());
     expect(resumed.providerSandboxId).toBe(NAME);
     expect(container?.running).toBe(true);
+  });
+
+  test('a quiet computer on an older image is made again from the current one at resume, keeping its volumes', async () => {
+    for (const open of [false, true]) {
+      const { engine, host, guard } = setup({ open });
+      const egress: EgressPolicy = open ? { kind: 'open' } : { kind: 'deny_all' };
+      engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+      await host.create(spec('sbx_one', egress), signal());
+      const volumes = structuredClone([...engine.volumes]);
+      const { resumeRef } = await host.pause(handleOf(NAME), signal());
+      // An update brings a newer image under the same name.
+      engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+      engine.calls.length = 0;
+      const resumed = await host.resume(resumeRef, spec('sbx_two', egress), signal(), {
+        quiet: true,
+      });
+      expect(resumed).toEqual({
+        providerSandboxId: NAME,
+        imageDigest: 'sha256:new',
+        region: null,
+        recreatedFrom: 'sha256:old',
+      });
+      const container = engine.containers.get(NAME);
+      if (!container) throw new Error('the computer is gone');
+      expect(container.image).toBe('sha256:new');
+      expect(container.running).toBe(true);
+      // The same two volumes hold its files and home: none removed, none made.
+      expect((container.body as EngineBody).HostConfig.Mounts).toEqual([
+        { Type: 'volume', Source: `${NAME}-work`, Target: '/work' },
+        { Type: 'volume', Source: `${NAME}-home`, Target: '/home/agent' },
+      ]);
+      expect([...engine.volumes]).toEqual(volumes);
+      const asked = engine.calls.map((call) => `${call.method} ${call.path}`);
+      expect(asked.filter((call) => /^(POST|DELETE) \/volumes/.test(call))).toEqual([]);
+      // Stopped, then removed without `v`, both by its id; no network made again.
+      expect(asked).toContain(`POST /containers/${NAME}-id/stop?t=10`);
+      expect(asked).toContain(`DELETE /containers/${NAME}-id?force=1`);
+      expect(asked.filter((call) => call.startsWith('POST /networks/create'))).toEqual([]);
+      if (open) {
+        expect((container.body as EngineBody).HostConfig.NetworkMode).toBe(`${NAME}-net`);
+        expect(guard.granted(NAME).length).toBe(1);
+      }
+      // Resumed again on the image it now runs, it is kept as it is.
+      await host.pause(handleOf(NAME), signal());
+      const again = await host.resume(resumeRef, spec('sbx_three', egress), signal(), {
+        quiet: true,
+      });
+      expect(again.recreatedFrom).toBeUndefined();
+      expect(engine.calls.filter((call) => call.method === 'DELETE').length).toBe(1);
+    }
+  });
+
+  test('a computer is not made again unless it is quiet, while anything runs in it, or without its image', async () => {
+    const { engine, host } = setup();
+    engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+    await host.create(spec(), signal());
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+    // A person holds it or its processes run: the caller does not call it quiet.
+    for (const options of [undefined, {}, { quiet: false }]) {
+      const resumed = await host.resume(resumeRef, spec(), signal(), options);
+      expect(resumed.recreatedFrom).toBeUndefined();
+      expect(resumed.imageDigest).toBe('sha256:old');
+    }
+    // A command, a desktop step or a live view still runs in it.
+    const container = engine.containers.get(NAME);
+    if (container) container.execIds = ['f'.repeat(64)];
+    const busy = await host.resume(resumeRef, spec(), signal(), { quiet: true });
+    expect(busy.recreatedFrom).toBeUndefined();
+    if (container) container.execIds = [];
+    // An image the engine does not have is never asked for.
+    const missing = await host.resume(
+      resumeRef,
+      spec('sbx_one', { kind: 'deny_all' }, { image: 'melete-sandbox:gone' }),
+      signal(),
+      { quiet: true },
+    );
+    expect(missing.recreatedFrom).toBeUndefined();
+    expect(
+      engine.calls.filter((call) => call.method === 'DELETE' || call.path.endsWith('/stop?t=10')),
+    ).toEqual([]);
+    expect(engine.containers.get(NAME)?.image).toBe('sha256:old');
+  });
+
+  test('a replacement that answers late removes only the container it read, never one made since under its name', async () => {
+    const { engine, host } = setup();
+    engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+    await host.create(spec(), signal());
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+    await host.resume(resumeRef, spec(), signal());
+    // While this replacement stops the old container, another opening of the
+    // same computer replaces it first and starts its own.
+    const request = engine.request.bind(engine);
+    let raced = false;
+    engine.request = async (method, path, body) => {
+      if (!raced && method === 'POST' && path.endsWith('/stop?t=10')) {
+        raced = true;
+        const old = engine.containers.get(NAME);
+        engine.containers.delete(NAME);
+        await request('POST', `/containers/create?name=${NAME}`, old?.body);
+        await request('POST', `/containers/${NAME}/start`);
+      }
+      return request(method, path, body);
+    };
+    await expect(host.resume(resumeRef, spec(), signal(), { quiet: true })).rejects.toThrow();
+    expect(raced).toBe(true);
+    // The other opening's container is still there, running.
+    expect(engine.containers.get(NAME)).toMatchObject({ id: `${NAME}-id-2`, running: true });
+  });
+
+  test("a replacement that answers late ends only the old container's egress, never that of one made since", async () => {
+    const { engine, host, guard } = setup({ open: true });
+    const egress: EgressPolicy = { kind: 'open' };
+    engine.imageIds.set('melete-sandbox:local', 'sha256:old');
+    await host.create(spec('sbx_one', egress), signal());
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.imageIds.set('melete-sandbox:local', 'sha256:new');
+    // While this replacement stops the old container, another opening of the
+    // same computer replaces it first and is granted its egress.
+    const request = engine.request.bind(engine);
+    let raced = false;
+    engine.request = async (method, path, body) => {
+      if (!raced && method === 'POST' && path.endsWith('/stop?t=10')) {
+        raced = true;
+        const old = engine.containers.get(NAME);
+        engine.containers.delete(NAME);
+        await request('POST', `/containers/create?name=${NAME}`, old?.body);
+        await host.resume(resumeRef, spec('sbx_two', egress), signal());
+      }
+      return request(method, path, body);
+    };
+    await expect(
+      host.resume(resumeRef, spec('sbx_three', egress), signal(), { quiet: true }),
+    ).rejects.toThrow();
+    expect(raced).toBe(true);
+    const newer = engine.containers.get(NAME);
+    expect(newer).toMatchObject({ id: `${NAME}-id-2`, running: true });
+    // The other opening's container keeps its grant; the old one's is gone.
+    expect(guard.granted(NAME)).toEqual(Object.values(newer?.networks ?? {}));
+  });
+
+  test('a computer whose container went while it was being made again comes back on its kept volumes', async () => {
+    const { engine, host } = setup();
+    await host.create(spec(), signal());
+    const volumes = structuredClone([...engine.volumes]);
+    const { resumeRef } = await host.pause(handleOf(NAME), signal());
+    engine.containers.delete(NAME);
+    const resumed = await host.resume(resumeRef, spec(), signal());
+    expect(resumed).toMatchObject({ providerSandboxId: NAME, recreatedFrom: null });
+    expect(engine.containers.get(NAME)?.running).toBe(true);
+    expect([...engine.volumes]).toEqual(volumes);
+    // Without both its volumes it is gone, as before, and nothing is made.
+    engine.containers.delete(NAME);
+    engine.volumes.delete(`${NAME}-home`);
+    await expect(host.resume(resumeRef, spec(), signal())).rejects.toBeInstanceOf(SandboxGone);
+    expect(engine.containers.has(NAME)).toBe(false);
   });
 
   test('destroying removes the container, its network and both volumes, and ends its grant', async () => {

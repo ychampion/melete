@@ -14,17 +14,18 @@ import { MeleteAvatar, MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import { zoneName } from '../experience/plain.ts';
+import { plainSchedule, zoneName } from '../experience/plain.ts';
 import { givenName, onboardedProfile, UNNAMED } from '../experience/profile.ts';
 import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
 import { browserTimeZone, setupTimeZone, timeZoneChoices } from '../experience/timezone.ts';
-import type { AgentTemplate, MemoryItem, TourStage } from '../experience/types.ts';
+import type { AgentTemplate, Automation, MemoryItem, TourStage } from '../experience/types.ts';
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { inputOf } from './Agents.tsx';
-import { ConnectionCard } from './Settings.tsx';
+import { TopPicks } from './ConnectionInstall.tsx';
+import { BRIEF_DEFAULT_AT, BriefChoices, BriefParts, clockWords } from './MorningBrief.tsx';
 
 const studio = {
   background: 'var(--studio)',
@@ -1037,7 +1038,12 @@ export function OnboardingScreen() {
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
-  const [brief, setBrief] = useState(true);
+  // The morning brief: offered on its own step, made the moment the person says yes.
+  const [briefAt, setBriefAt] = useState(BRIEF_DEFAULT_AT);
+  const [topics, setTopics] = useState<string[]>([]);
+  const [briefMade, setBriefMade] = useState<Automation | null>(null);
+  // Apps connected during setup, by catalog id, beside those already connected.
+  const [linked, setLinked] = useState<ReadonlySet<string>>(new Set());
   // The zone the person chose before, or this browser's: never the account's default.
   const [zone, setZone] = useState(() => setupTimeZone(profile, browserTimeZone()));
   const [zoneOpen, setZoneOpen] = useState(false);
@@ -1065,9 +1071,8 @@ export function OnboardingScreen() {
     made: [] as string[],
     chatId: '',
     messageKey: messageKey(),
-    brief: false,
   });
-  const total = 5;
+  const total = 6;
 
   const [typed, setTyped] = useState('');
   const skip = () => {
@@ -1118,15 +1123,42 @@ export function OnboardingScreen() {
     setAsked(asked + 1);
   };
 
-  const saveProfile = () =>
+  const saveProfile = (onboarded = true) =>
     adapter.saveProfile({
       // No name given stays unnamed, so the greeting never calls the person "You".
       name: name.trim() || profile?.name || UNNAMED,
       time_zone: zone,
       day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
       time_zone_confirmed: true,
-      onboarded: true,
+      ...(onboarded ? { onboarded: true } : {}),
     });
+
+  /** One tap: the brief is an ordinary routine, on Automations from now on. */
+  const setUpBrief = async () => {
+    if (busy || briefMade) return;
+    setBusy(true);
+    // The routine runs on the person's clock, so the zone they chose is kept first.
+    const savedProfile = await saveProfile(false);
+    if (!savedProfile.data) {
+      setBusy(false);
+      toast({
+        kind: 'err',
+        title: savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your time zone',
+      });
+      return;
+    }
+    const made = await adapter.morningBrief({ at: briefAt, topics });
+    setBusy(false);
+    if (made.data === null) {
+      toast({
+        kind: 'err',
+        title: 'Couldn’t set up the brief',
+        sub: made.error ?? made.unavailable ?? '',
+      });
+      return;
+    }
+    setBriefMade(made.data.automation);
+  };
 
   /** Setup put off: only the name and time zone are kept. No agent, routine or chat is made. */
   const later = async () => {
@@ -1181,16 +1213,6 @@ export function OnboardingScreen() {
       if (!made.data)
         return fail(made.error ?? made.unavailable ?? `Couldn’t add ${template.agent.name}`);
       completed.current.made.push(template.id);
-    }
-    if (brief && !completed.current.brief) {
-      const routine = await adapter.morningBrief(agentId, '08:30');
-      completed.current.brief = true;
-      if (routine.data === null)
-        toast({
-          kind: 'info',
-          title: 'The morning brief is not available here yet',
-          sub: routine.unavailable ?? routine.error ?? '',
-        });
     }
     // The first message names one thing the person just said, so the agent's
     // reply can show it was kept.
@@ -1384,41 +1406,6 @@ export function OnboardingScreen() {
               </span>
             )}
           </div>
-          <div
-            className="row"
-            style={{
-              gap: 12,
-              padding: '12px 14px',
-              borderRadius: 12,
-              background: 'var(--soft)',
-              border: '1px solid var(--line)',
-              width: 520,
-              maxWidth: '100%',
-            }}
-          >
-            <span
-              className="row"
-              style={{
-                justifyContent: 'center',
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: 'var(--blue-soft)',
-                color: 'var(--blue-ink)',
-              }}
-            >
-              <Icon name="automations" size={16} />
-            </span>
-            <div className="col grow" style={{ gap: 1 }}>
-              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-                Morning brief at 8:30
-              </span>
-              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                Today’s events, open tasks and the weather. Off any time.
-              </span>
-            </div>
-            <Toggle on={brief} label="Morning brief" onChange={setBrief} />
-          </div>
         </div>
       </Card>
     );
@@ -1487,44 +1474,89 @@ export function OnboardingScreen() {
       </Card>
     );
   } else if (step === 3) {
-    const list = connections.data?.connections ?? [];
+    const connected = new Set([
+      ...(connections.data?.connections ?? []).flatMap((item) =>
+        item.catalog_id ? [item.catalog_id] : [],
+      ),
+      ...linked,
+    ]);
     card = (
       <Card
-        title="What Melete may look at"
-        sub="These are the apps connected on this instance. Melete reads what is connected and asks before it writes anywhere."
+        title="Connect your apps"
+        sub="Each one is optional. Melete looks things up there, and asks you before it sends, posts or pays for anything."
         footer={
           <>
             {back}
             <div className="grow" />
             {stepLabel}
             <Button iconRight="chevronRight" onClick={() => setStep(4)}>
-              Continue
+              {linked.size ? 'Continue' : 'Skip for now'}
             </Button>
           </>
         }
       >
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-            gap: 10,
+        <TopPicks
+          connected={connected}
+          onInstalled={(id) => {
+            setLinked((previous) => new Set(previous).add(id));
+            connections.reload();
           }}
-        >
-          {list.map((connection) => (
-            <ConnectionCard key={connection.id} connection={connection} compact />
-          ))}
-        </div>
-        {connections.data && list.length === 0 ? (
-          <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
-        ) : null}
+        />
         <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--muted)' }}>
-          <Icon name="lock" size={14} />
-          Access is per agent. Anything that costs money or sends a message gets a confirmation card
-          first.
+          <Icon name="apps" size={14} />
+          Every app, including mail with an app password, is in Settings › Connections.
         </div>
       </Card>
     );
-  } else if (step === 5) {
+  } else if (step === 4) {
+    card = (
+      <Card
+        title="Want a morning brief?"
+        sub="Start each day with one short note from Melete. It works from today, and gets richer with each app you connect."
+        footer={
+          <>
+            {back}
+            <div className="grow" />
+            {stepLabel}
+            {briefMade ? (
+              <Button iconRight="chevronRight" onClick={() => setStep(5)}>
+                Continue
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" disabled={busy} onClick={() => setStep(5)}>
+                  Not now
+                </Button>
+                <Button icon="sun" loading={busy} disabled={busy} onClick={() => void setUpBrief()}>
+                  Send me one at {clockWords(briefAt)}
+                </Button>
+              </>
+            )}
+          </>
+        }
+      >
+        <BriefParts />
+        {briefMade ? (
+          <div className="brief-made" role="status">
+            <Icon name="circleCheck" size={16} />
+            <span>
+              <strong>Your morning brief is set.</strong> {plainSchedule(briefMade.schedule)}. It’s
+              on Automations, where you can pause it.
+            </span>
+          </div>
+        ) : (
+          <BriefChoices
+            at={briefAt}
+            topics={topics}
+            zone={zoneName(zone)}
+            disabled={busy}
+            onAt={setBriefAt}
+            onTopics={setTopics}
+          />
+        )}
+      </Card>
+    );
+  } else if (step === 6) {
     const question = QUESTIONS[asked];
     card = (
       <Card
@@ -1703,7 +1735,7 @@ export function OnboardingScreen() {
             {back}
             <div className="grow" />
             {stepLabel}
-            <Button iconRight="chevronRight" onClick={() => setStep(5)}>
+            <Button iconRight="chevronRight" onClick={() => setStep(6)}>
               Continue
             </Button>
           </>

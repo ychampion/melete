@@ -55,16 +55,18 @@ export function notHeldByPerson(sql: Sql | TransactionSql) {
 /**
  * Inside the transaction that hands a computer to another attempt: moves the
  * epoch on and keeps the row locked until that transaction ends, so a
- * takeover waits for it and then finds the epoch it read gone. False when a
- * person holds the computer; nothing changes then.
+ * takeover waits for it and then finds the epoch it read gone. Returns the
+ * epoch it moved to, or null when a person holds the computer; nothing
+ * changes then.
  */
-export async function claimForAttempt(tx: TransactionSql, sandbox: string): Promise<boolean> {
+export async function claimForAttempt(tx: TransactionSql, sandbox: string): Promise<number | null> {
   await tx`insert into sandbox_control (provider_sandbox_id, control, epoch)
     values (${sandbox}, 'agent', 0) on conflict (provider_sandbox_id) do nothing`;
   const [moved] = await tx`update sandbox_control set epoch = epoch + 1, changed_at = now()
     where provider_sandbox_id = ${sandbox} and control = 'agent'
     returning epoch`;
-  return Boolean(moved);
+  // The epoch the attempt was handed the computer at (always 1 or more), or null.
+  return moved ? Number(moved.epoch) : null;
 }
 
 export class PostgresComputerControls implements ComputerControls {

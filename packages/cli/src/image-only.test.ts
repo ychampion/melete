@@ -24,6 +24,21 @@ function imageSources(dockerfile: string): string[] {
   return sources;
 }
 
+/** The `ENV NAME=value` settings of the Dockerfile's final stage, which every command there runs with. */
+function imageEnvironment(dockerfile: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const instruction of instructions(dockerfile)) {
+    const [keyword = '', ...rest] = instruction.split(/\s+/);
+    if (keyword.toUpperCase() === 'FROM') for (const name in environment) delete environment[name];
+    if (keyword.toUpperCase() !== 'ENV') continue;
+    for (const pair of rest) {
+      const at = pair.indexOf('=');
+      if (at > 0) environment[pair.slice(0, at)] = pair.slice(at + 1).replace(/^"(.*)"$/, '$1');
+    }
+  }
+  return environment;
+}
+
 let image = '';
 
 beforeAll(() => {
@@ -50,6 +65,31 @@ afterAll(() => {
 });
 
 describe('the read-only commands in the service image', () => {
+  // The tree above borrows the checkout's node_modules, devDependencies included, so a
+  // package the image's `bun install --production` leaves out is caught here instead.
+  test('a package the copied deploy scripts import is a production dependency at the root', () => {
+    const dockerfile = readFileSync(join(ROOT, 'deploy/Dockerfile.melete'), 'utf8');
+    const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const scripts = imageSources(dockerfile).filter(
+      (source) => source.startsWith('deploy/') && source.endsWith('.ts'),
+    );
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) {
+      const text = readFileSync(join(ROOT, script), 'utf8');
+      for (const [, name = ''] of text.matchAll(/(?:from|import\()\s*'([^'./][^']*)'/g)) {
+        if (name.startsWith('node:') || name.startsWith('bun')) continue;
+        const pkg = name.startsWith('@')
+          ? name.split('/').slice(0, 2).join('/')
+          : (name.split('/')[0] ?? '');
+        expect(`${script}: ${pkg} ${root.dependencies?.[pkg] ? 'declared' : 'missing'}`).toBe(
+          `${script}: ${pkg} declared`,
+        );
+      }
+    }
+  });
+
   test('the image tree holds no deployment files', () => {
     expect(existsSync(join(image, 'deploy/docker-compose.yml'))).toBe(false);
     expect(existsSync(join(image, 'deploy/scripts/upgrade.ts'))).toBe(false);
@@ -62,15 +102,55 @@ describe('the read-only commands in the service image', () => {
   ];
   for (const { command, flags } of commands) {
     test(`${command} loads and reports`, () => {
+      const dockerfile = readFileSync(join(ROOT, 'deploy/Dockerfile.melete'), 'utf8');
       const run = Bun.spawnSync(
         [process.execPath, join(image, 'packages/cli/src/main.ts'), command, ...flags, '--json'],
-        { cwd: image, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 },
+        {
+          cwd: image,
+          env: { ...process.env, ...imageEnvironment(dockerfile) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: 120_000,
+        },
       );
       const stderr = run.stderr.toString();
       expect(stderr).not.toMatch(/Cannot find (module|package)/);
-      expect([0, 1]).toContain(run.exitCode ?? -1);
       const report = reportSchema.parse(JSON.parse(run.stdout.toString()));
       expect(report.command).toBe(command);
+      // The host's rules are skipped there, so they never fail the command.
+      expect(report.results.find((result) => result.id === 'deploy.contract')?.level).toBe('skip');
+      if (command === 'status') expect([0, 1]).toContain(run.exitCode ?? -1);
+      else expect(`${command} exit ${run.exitCode}`).toBe(`${command} exit 0`);
+      if (command === 'doctor')
+        expect(report.results.find((result) => result.id === 'docker.engine')?.level).toBe('skip');
     }, 150_000);
   }
+
+  test('browser files, the installer’s half of turning on the browser worker, loads and answers', () => {
+    const line = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        join(image, 'packages/cli/src/main.ts'),
+        'browser',
+        'files',
+        '--connection',
+        'conn_browser1',
+      ],
+      {
+        cwd: image,
+        stdin: Buffer.from(`${line('MELETE_IMAGE_TAG=main\n')}\n-\n${line('[]\n')}\n`),
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 120_000,
+      },
+    );
+    expect(run.stderr.toString()).not.toMatch(/Cannot find (module|package)/);
+    expect(run.exitCode).toBe(0);
+    const [contract = '', connections = ''] = run.stdout.toString().trim().split('\n');
+    expect(JSON.parse(Buffer.from(contract, 'base64').toString()).overlays).toEqual(['browser']);
+    expect(JSON.parse(Buffer.from(connections, 'base64').toString())).toEqual([
+      { kind: 'browser', id: 'conn_browser1' },
+    ]);
+  }, 150_000);
 });

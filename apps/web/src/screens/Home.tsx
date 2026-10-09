@@ -57,7 +57,7 @@ import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
-import { ConnectAppsHint } from './ConnectAppsHint.tsx';
+import { FirstSteps } from './FirstSteps.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 import { WhatImOnSection } from './WhatImOnSection.tsx';
@@ -854,7 +854,7 @@ function DayColumn({ now }: { now: number }) {
   const quiet = home.loading
     ? null
     : upcoming === null
-      ? 'Your calendar shows up here once it’s connected.'
+      ? 'Connect your calendar so I can watch for conflicts.'
       : todays.length === 0
         ? 'Nothing on your calendar today.'
         : null;
@@ -1108,7 +1108,7 @@ export function HomeScreen() {
               </nav>
             ) : null}
           </div>
-          <ConnectAppsHint />
+          <FirstSteps calendar={data ? Array.isArray(data.upcoming) : null} />
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />

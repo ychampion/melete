@@ -130,6 +130,8 @@ export type AppDeps = {
   multiplayer?: boolean;
   /** Google signs in through Composio, as with `COMPOSIO_API_KEY` (`MELETE_MOCK_COMPOSIO=on`). */
   composio?: boolean;
+  /** A person's very first visit: Melete is the only agent (`MELETE_MOCK_FIRST_RUN=on`). */
+  firstRun?: boolean;
 };
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */

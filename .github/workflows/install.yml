@@ -1,12 +1,14 @@
 # Runs the one-line installer on a clean runner exactly as a person would:
 # downloaded from this commit's raw URL and piped to bash, into a directory with
-# no checkout of the repository in it. It pulls the published images, starts
-# them, checks the web app and the API, turns on the browser worker with
-# `bun run melete --deploy-dir`, then runs the installer again to show a second
-# run keeps deploy/.env, the data and the worker. On a pull request the
-# published images are main's, so this pull request's images are built and
-# served under the same names from a registry on the runner, as the setup-guide
-# workflow does. No secret is read.
+# no checkout of the repository in it and no Bun on its PATH. It pulls the
+# published images, starts them, checks the web app and the API, creates the
+# first account, turns on the browser worker by running the installer again with
+# MELETE_BROWSER=1, asks `doctor` in the service container for the worker's
+# state, then runs the plain installer once more to show a later run keeps
+# deploy/.env, the data and the worker. On a pull request the published images
+# are main's, so this pull request's images are built and served under the same
+# names from a registry on the runner, as the setup-guide workflow does. No
+# secret is read.
 name: Install
 
 on:
@@ -16,7 +18,10 @@ on:
       - install.ps1
       - .github/workflows/install.yml
       - deploy/docker-compose.browser.yml
+      - packages/cli/src/browser.ts
       - packages/cli/src/commands/browser.ts
+      - packages/cli/src/commands/browser-files.ts
+      - packages/cli/src/commands/doctor.ts
       - apps/melete/src/workers/browser/enable.ts
   workflow_run:
     workflows: [Images]
@@ -51,14 +56,11 @@ jobs:
       # Compose reads this before deploy/.env, so a pull request's install pulls its own images.
       MELETE_IMAGE_REGISTRY: ${{ github.event_name == 'pull_request' && 'localhost:5000' || '' }}
     steps:
-      # The checkout is only for the melete command and the image builds; the
-      # installer runs from its URL into ~/melete, away from it.
+      # The checkout is only for the image builds; the installer runs from its
+      # URL into ~/melete, away from it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.REF }}
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
       - name: Build this pull request's images and serve them as main's
         if: github.event_name == 'pull_request'
         run: |
@@ -73,11 +75,35 @@ jobs:
             # Removed here, so the installer's own pull is what puts them back.
             docker image rm "localhost:5000/melete-$image:main"
           done
+      # The published worker image may not be readable without signing in yet. The
+      # installer then runs the copy already on the machine, so one is built here
+      # under the published name, from the commit the images were built from.
+      - name: Have the published browser worker image, or build it under that name
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          image=ghcr.io/ychampion/melete-browser:main
+          if docker pull "$image"; then
+            echo "pulled $image"
+          else
+            echo "::notice::$image could not be pulled; building it here under that name"
+            docker build -f deploy/Dockerfile.browser -t "$image" .
+          fi
+      - name: Hide Bun from the installer
+        run: |
+          set -euo pipefail
+          # Every later step runs with a PATH that holds no bun, as on a host that never installed it.
+          nobun="$(printf '%s' "$PATH" | tr ':' '\n' | while read -r dir; do [ -x "$dir/bun" ] || printf '%s:' "$dir"; done)"
+          echo "PATH=${nobun%:}" >> "$GITHUB_ENV"
+          (PATH="${nobun%:}" && command -v docker curl jq openssl)
       - name: Run the installer as a person would
         run: |
           set -euo pipefail
+          if command -v bun; then echo "bun is on the PATH"; exit 1; fi
           # No provider key is in this environment, so it starts with the practice model.
-          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/first.log"
+          # The worker is off, so the closing lines name the command that turns it on.
+          grep -F 'MELETE_BROWSER=1 curl -fsSL' "$RUNNER_TEMP/first.log"
       - name: The web app and the API answer
         run: |
           set -euo pipefail
@@ -93,30 +119,55 @@ jobs:
           curl -fsS -X POST http://localhost:3101/api/setup \
             -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" > /dev/null
-      - name: Turn on the browser worker in the installed directory
+      - name: Turn on the browser worker with the installer, without Bun
         run: |
           set -euo pipefail
-          bun install --frozen-lockfile
-          bun run melete --deploy-dir "$HOME/melete/deploy" browser enable
-          grep -q '^MELETE_BROWSER_SPACE=sp_' "$HOME/melete/deploy/.env"
-          test "$(stat -c %a "$HOME/melete/deploy/.env")" = 600
-      - name: Running it again keeps deploy/.env, the data and the browser worker
+          if command -v bun; then echo "bun is on the PATH"; exit 1; fi
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" MELETE_BROWSER=1 bash
+          deploy="$HOME/melete/deploy"
+          grep -q '^MELETE_BROWSER_SPACE=sp_' "$deploy/.env"
+          grep -Eq '^MELETE_BROWSER_TOKEN=[0-9a-f]{64}$' "$deploy/.env"
+          test "$(stat -c %a "$deploy/.env")" = 600
+          jq -e '.overlays == ["browser"]' "$deploy/melete.deploy.json"
+          jq -e 'map(select(.kind == "browser" and (.id | startswith("conn_")))) | length == 1' "$deploy/config/connections.json"
+      - name: Doctor in the service container reports the worker, and the worker is healthy
         run: |
           set -euo pipefail
-          before="$(sha256sum < "$HOME/melete/deploy/.env")"
-          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
-          test "$before" = "$(sha256sum < "$HOME/melete/deploy/.env")"
-          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
-          # The worker survived --remove-orphans, and is healthy beside the service.
           compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml" -f "$HOME/melete/deploy/docker-compose.browser.yml")
+          # The container has no Docker socket, so the host's rules are skipped and doctor passes.
+          code=0
+          "${compose[@]}" exec -T melete bun run melete doctor --offline --json > "$RUNNER_TEMP/doctor.json" || code=$?
+          jq '.results[] | select(.id | startswith("browser.") or . == "docker.engine")' "$RUNNER_TEMP/doctor.json"
+          jq -e '[.results[] | select(.id == "browser.worker")] | length == 1 and .[0].level == "ok"' "$RUNNER_TEMP/doctor.json"
+          jq -e '.ok and ([.results[] | select(.id == "docker.engine")] | length == 1 and .[0].level == "skip")' "$RUNNER_TEMP/doctor.json"
+          test "$code" = 0
           worker="$("${compose[@]}" ps -q browser)"
           test -n "$worker"
           state="$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$worker")"
           echo "browser worker: $state"
           test "$state" = 'running healthy'
-          bun run melete --deploy-dir "$HOME/melete/deploy" check --json > "$RUNNER_TEMP/check.json" || true
-          jq -e '.results[] | select(.id == "browser.worker") | .level == "ok"' "$RUNNER_TEMP/check.json"
-          # The owner made before the second run is still there, so setup is refused.
+      - name: Running it again keeps deploy/.env, the data and the browser worker
+        run: |
+          set -euo pipefail
+          deploy="$HOME/melete/deploy"
+          before="$(cat "$deploy/.env" "$deploy/melete.deploy.json" "$deploy/config/connections.json" | sha256sum)"
+          # Turning it on again changes nothing.
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" MELETE_BROWSER=1 bash
+          test "$before" = "$(cat "$deploy/.env" "$deploy/melete.deploy.json" "$deploy/config/connections.json" | sha256sum)"
+          # A plain run keeps the worker.
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
+          test "$before" = "$(cat "$deploy/.env" "$deploy/melete.deploy.json" "$deploy/config/connections.json" | sha256sum)"
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          # The worker survived --remove-orphans, and is healthy beside the service.
+          compose=(docker compose -f "$deploy/docker-compose.yml" -f "$deploy/docker-compose.browser.yml")
+          worker="$("${compose[@]}" ps -q browser)"
+          test -n "$worker"
+          state="$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$worker")"
+          echo "browser worker: $state"
+          test "$state" = 'running healthy'
+          "${compose[@]}" exec -T melete bun run melete doctor --offline --json > "$RUNNER_TEMP/doctor.json" || true
+          jq -e '.results[] | select(.id == "browser.worker") | .level == "ok"' "$RUNNER_TEMP/doctor.json"
+          # The owner made before the later runs is still there, so setup is refused.
           code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3101/api/setup \
             -H 'content-type: application/json' \
             -d '{"email":"other@example.com","password":"another-password-1"}')"

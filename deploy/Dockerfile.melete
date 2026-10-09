@@ -15,6 +15,9 @@ COPY --from=promoter-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=docker:27.5.1-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c /usr/local/bin/docker /usr/local/bin/docker
 
 ENV NODE_ENV=production
+# Tells melete check, doctor and status they run inside this image, where the
+# host's Docker, Compose files and deploy/.env are out of reach.
+ENV MELETE_SERVICE_IMAGE=1
 
 WORKDIR /app
 
@@ -55,7 +58,7 @@ COPY packages/ packages/
 # client's sources are for development and their own images.
 COPY apps/melete/ apps/melete/
 COPY deploy/scripts/memory-restore-proof.ts deploy/scripts/memory-restore-proof.ts
-# What bun run melete check, doctor and status read, so they run inside this image.
+# What bun run melete check, doctor, status and browser files read, so they run inside this image.
 COPY deploy/scripts/status.ts deploy/scripts/provider-settings.ts deploy/scripts/compose-check.ts \
      deploy/scripts/dockerfile-check.ts deploy/scripts/plugin-pin-check.ts \
      deploy/scripts/removal-digest-check.ts deploy/scripts/
