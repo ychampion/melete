@@ -17,6 +17,27 @@ import { lockEventOrderIn } from '../db/transaction.ts';
 export const COMPUTER_CHECK_LEFT =
   'The page on the computer wants to check a person is there. Take over the computer, pass the check, then hand it back, and the work goes on from there.';
 
+/**
+ * How many times one turn of the work hands the computer to the person at a
+ * check. A check still shown after that many hand-backs is one the person
+ * could not pass, or a page that only says it checks; handing it over again
+ * would stop the work at the same page each time it looked.
+ */
+export const MAX_CHECK_HAND_OFFS = 2;
+
+/**
+ * How many times the job's current turn (the whole job, for work that has no
+ * turns) has handed the computer to the person at a check.
+ */
+export async function checkHandOffs(sql: Sql, jobId: string): Promise<number> {
+  const [row] = await sql`select count(*)::int as n from attempt t join job j on j.id = t.job_id
+    where t.job_id = ${jobId} and t.outcome = 'fenced'
+      and t.outcome_detail->>'kind' = 'handed_to_person'
+      and t.outcome_detail->>'reason' = 'captcha'
+      and t.turn_id is not distinct from j.current_turn_id`;
+  return Number(row?.n ?? 0);
+}
+
 /** The card in one paragraph, for anywhere that shows the question alone. */
 export function computerHandOffWords(card: HandOff): string {
   const done = card.done.length ? ` Done so far: ${card.done.join('; ')}.` : '';

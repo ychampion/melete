@@ -12,9 +12,14 @@ import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '
 import { testDatabase } from '../../test/helpers/database.ts';
 import type { DesktopCommand } from '../sandbox/adapters/docker.ts';
 import { FakeSandboxProvider } from '../sandbox/fake.ts';
+import { MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
-import { CHECK_HANDED_OVER, createSandboxExecConnector } from './sandbox-exec.ts';
+import {
+  CHECK_HANDED_OVER,
+  CHECK_STILL_THERE,
+  createSandboxExecConnector,
+} from './sandbox-exec.ts';
 import type { ConnectorContext } from './types.ts';
 
 const handle = await testDatabase();
@@ -70,7 +75,7 @@ const PLAIN_PAGE = encode({
 });
 
 withDb('a check that a person is there, on the computer', () => {
-  const setup = async (screen: Uint8Array) => {
+  const scene = async (screen: Uint8Array) => {
     if (!handle) throw new Error('Postgres is unavailable');
     const sql = handle.sql;
     const scope = await seedSessionScope(sql);
@@ -79,7 +84,6 @@ withDb('a check that a person is there, on the computer', () => {
       where id = ${scope.connectionId}`;
     await sql`update job set agent_id = ${scope.agentId}, state = 'running', lease_epoch = 1
       where id = ${scope.jobId}`;
-    const attemptId = await scope.attempt();
     // A desktop that shows the given page after any step.
     const provider = Object.assign(new FakeSandboxProvider(), {
       desktop: true,
@@ -106,53 +110,60 @@ withDb('a check that a person is there, on the computer', () => {
       challengeWaitMs: 1,
     });
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
-    const id = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
-    const canonical = canonicalizePayload({ step: 1, url: 'https://demo.shop.example/checkout' });
-    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+    /** One step on the computer, by a new attempt of the work, as the job runs again. */
+    const step = async () => {
+      const attemptId = await scope.attempt();
+      await sql`update job set state = 'running' where id = ${scope.jobId}`;
+      const id = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      const canonical = canonicalizePayload({ step: 1, url: 'https://demo.shop.example/checkout' });
+      await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
         canonical_payload, payload_hash, idempotency_key)
       values (${id}, ${scope.jobId}, ${attemptId}, ${scope.connectionId}, 'computer.open',
         'write_reversible', ${canonical.json}::jsonb, ${canonical.hash}, ${id})`;
-    const action = {
-      id,
-      job_id: scope.jobId,
-      attempt_id: attemptId,
-      connection_id: scope.connectionId,
-      kind: 'computer.open',
-      effect_class: 'write_reversible',
-      canonical_payload: canonical.canonical,
-      payload_hash: canonical.hash,
-      intent_key: null,
-      status: 'dispatched',
-      authorization_ref: null,
-      budget_reservation: null,
-      idempotency_key: id,
-      dispatched_at: new Date().toISOString(),
-      receipt: null,
-      resolved_at: null,
-      reconciliation: null,
-      repair_trace: [],
-      repair_counters: {},
-      repair_disposition: null,
-      retry_after_at: null,
-      created_at: new Date().toISOString(),
-    } as Action;
-    const ctx: ConnectorContext = {
-      job_id: scope.jobId,
-      space_id: scope.spaceId,
-      idempotency_key: id,
-      constraints: {
-        deliverable: { kind: 'none' },
-        allowed_domains: [],
-        public_compartment: false,
-      },
+      const action = {
+        id,
+        job_id: scope.jobId,
+        attempt_id: attemptId,
+        connection_id: scope.connectionId,
+        kind: 'computer.open',
+        effect_class: 'write_reversible',
+        canonical_payload: canonical.canonical,
+        payload_hash: canonical.hash,
+        intent_key: null,
+        status: 'dispatched',
+        authorization_ref: null,
+        budget_reservation: null,
+        idempotency_key: id,
+        dispatched_at: new Date().toISOString(),
+        receipt: null,
+        resolved_at: null,
+        reconciliation: null,
+        repair_trace: [],
+        repair_counters: {},
+        repair_disposition: null,
+        retry_after_at: null,
+        created_at: new Date().toISOString(),
+      } as Action;
+      const ctx: ConnectorContext = {
+        job_id: scope.jobId,
+        space_id: scope.spaceId,
+        idempotency_key: id,
+        constraints: {
+          deliverable: { kind: 'none' },
+          allowed_domains: [],
+          public_compartment: false,
+        },
+      };
+      const result = await connector.execute(action, ctx);
+      if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+      const detail = result.receipt.detail as Record<string, unknown>;
+      const [job] = await sql`select state, wait from job where id = ${scope.jobId}`;
+      const [attempt] = await sql`select outcome from attempt where id = ${attemptId}`;
+      return { detail, job, attempt };
     };
-    const result = await connector.execute(action, ctx);
-    if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
-    const detail = result.receipt.detail as Record<string, unknown>;
-    const [job] = await sql`select state, wait from job where id = ${scope.jobId}`;
-    const [attempt] = await sql`select outcome from attempt where id = ${attemptId}`;
-    return { detail, job, attempt };
+    return { step };
   };
+  const setup = async (screen: Uint8Array) => (await scene(screen)).step();
 
   test('the step stops at the check, tells the agent not to get past it, and hands the computer over', async () => {
     const { detail, job, attempt } = await setup(CHECK_PAGE);
@@ -170,6 +181,18 @@ withDb('a check that a person is there, on the computer', () => {
       take_over: { surface: 'computer', session_id: detail.session_id },
     });
     expect(attempt?.outcome).toBe('fenced');
+  }, 60_000);
+
+  test('a check still there after the person handed it back twice is not handed over again', async () => {
+    const { step } = await scene(CHECK_PAGE);
+    for (let time = 0; time < MAX_CHECK_HAND_OFFS; time += 1)
+      expect((await step()).detail.handed_to).toBe('person');
+    // The third look at the same check: the agent is told, and the work is not held there.
+    const { detail, job, attempt } = await step();
+    expect(detail).toMatchObject({ challenge: 'cloudflare', next_step: CHECK_STILL_THERE });
+    expect(detail.handed_to).toBeUndefined();
+    expect(job?.state).toBe('running');
+    expect(attempt?.outcome).toBeNull();
   }, 60_000);
 
   test('a page with no check goes on as before', async () => {
