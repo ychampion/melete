@@ -358,6 +358,29 @@ withDb('signing in to Google through Composio', () => {
     expect(await t.rows('second@example.test')).toEqual(before);
   }, 60_000);
 
+  test('while Composio cannot say how the first account stands, the same address is refused and the first kept', async () => {
+    const t = need();
+    const before = await t.rows('second@example.test');
+    const mail = before.find((row) => row.provider === 'imap');
+    const first = String(mail?.configuration.connected_account_id);
+    composio.unreadable.add(first);
+    try {
+      composio.signInAs(googleUpstream(second));
+      const started = await t.start();
+      const back = await t.consent(started.authorize_url);
+      const made = String(back.searchParams.get('connected_account_id'));
+      const landed = await t.land(back);
+      expect(landed.status).toBe(502);
+      // Not knowing is not the same as gone: the working account stays, the new one goes.
+      expect(composio.removed).not.toContain(first);
+      expect(composio.accounts.get(first)?.status).toBe('ACTIVE');
+      expect(composio.removed).toContain(made);
+      expect(await t.rows('second@example.test')).toEqual(before);
+    } finally {
+      composio.unreadable.delete(first);
+    }
+  }, 60_000);
+
   test('moving an account from its own sign-in to Composio and back keeps its connection, and reports nothing twice', async () => {
     const t = need();
     // Natively first, with the operator's own Google client.

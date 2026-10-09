@@ -36,6 +36,8 @@ export type FakeComposio = {
   signInAs(upstream: Upstream): void;
   /** Answer the next consent pages as declined. */
   decline: boolean;
+  /** Accounts whose reads Composio answers with a server error, as in an outage. */
+  unreadable: Set<string>;
   stop(): Promise<void>;
 };
 
@@ -72,6 +74,7 @@ export async function startFakeComposio(
     removed: [] as string[],
     next: options.upstream ?? null,
     decline: false,
+    unreadable: new Set<string>(),
   };
   const error = (status: number, slug: string) =>
     Response.json(
@@ -168,6 +171,8 @@ export async function startFakeComposio(
       if (one) {
         const account = accounts.get(one[1] ?? '');
         if (!account) return error(404, 'ConnectedAccount_NotFound');
+        if (request.method === 'GET' && state.unreadable.has(account.id))
+          return error(503, 'ServiceUnavailable');
         if (request.method === 'DELETE') {
           accounts.delete(account.id);
           state.removed.push(account.id);
@@ -251,6 +256,7 @@ export async function startFakeComposio(
     set decline(value) {
       state.decline = value;
     },
+    unreadable: state.unreadable,
     stop: async () => {
       await server.stop(true);
     },

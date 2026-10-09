@@ -50,7 +50,11 @@ import {
 } from '../connectors/account-sign-in.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
 import { CalendarDiscoveryError, discoverCalendar } from '../connectors/caldav-discovery.ts';
-import type { ComposioToolkit } from '../connectors/composio.ts';
+import {
+  type ComposioAccount,
+  ComposioFault,
+  type ComposioToolkit,
+} from '../connectors/composio.ts';
 import {
   type ConnectionSource,
   type ConnectorFactory,
@@ -1190,7 +1194,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       ];
     }
     // The same address through another Composio account: refused while that one still works.
-    const standing = composio ? await composio.client.account(previous).catch(() => null) : null;
+    // Only an account Composio says is gone is replaced; not hearing back is not that.
+    let standing: ComposioAccount | null = null;
+    try {
+      standing = composio ? await composio.client.account(previous) : null;
+    } catch (error) {
+      if (!(error instanceof ComposioFault && error.kind === 'account_unavailable'))
+        throw new SignInFailure('provider_unreachable');
+    }
     if (standing && standing.status === 'ACTIVE' && !standing.disabled)
       throw new SignInFailure('account_already_connected');
     const switched = await switchTransport(actor, existing, {
