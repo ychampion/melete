@@ -46,11 +46,13 @@ import type {
   LedgerItem,
   Permission,
   Question,
+  Run,
 } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { RoomHandoffs } from '../rooms/Handoffs.tsx';
 import { href, navigate } from '../router.ts';
 import { InProgress } from '../runs/RunCards.tsx';
+import { runOfPermission } from '../runs/RunPermissions.tsx';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
@@ -289,6 +291,7 @@ function Face({ agent, size, state }: { agent: Agent | null; size: number; state
 function DecisionCard({
   decision,
   conversation,
+  run,
   agent,
   linked,
   now,
@@ -300,6 +303,8 @@ function DecisionCard({
   cardRef?: Ref<HTMLDivElement>;
   decision: Decision;
   conversation: Conversation | undefined;
+  /** The long work that asked, when it was long work rather than a conversation. */
+  run?: Pick<Run, 'id' | 'title'> | null;
   agent: Agent | null;
   linked: { item: LedgerItem; company: string } | null;
   now: number;
@@ -315,7 +320,9 @@ function DecisionCard({
       ? decision.permission.conversation_id
       : decision.question.conversation_id;
   const open = () => {
-    if (chatId) navigate(`/chat/${chatId}`);
+    // Long work's ask is answered on its own page, where the work is shown.
+    if (run && !conversation) navigate(`/runs/${run.id}`);
+    else if (chatId) navigate(`/chat/${chatId}`);
   };
   const permission = decision.kind === 'permission' ? decision.permission : null;
   const question = decision.kind === 'question' ? decision.question : null;
@@ -379,6 +386,8 @@ function DecisionCard({
         <span className="decision-agent">{agent?.name ?? 'Melete'}</span>
         {conversation ? (
           <span className="decision-for clamp1">for {conversation.title}</span>
+        ) : run ? (
+          <span className="decision-for clamp1">for {run.title}</span>
         ) : null}
         <div className="grow" />
         {amount && state ? (
@@ -535,6 +544,23 @@ export function WaitingOnYou({
   const { front, next } = frontOf(queue, frontId);
   const frontKey = front?.id ?? null;
   const failed = decisions.error;
+  // A permission long work asked for belongs to no conversation: the work is
+  // read so its card can say which work asks, and open it.
+  const [runs, setRuns] = useState<Run[]>([]);
+  const fromWork = queue
+    .filter(
+      (decision) =>
+        decision.kind === 'permission' &&
+        !conversations.some((conversation) => conversation.id === chatOf(decision)),
+    )
+    .map((decision) => decision.id)
+    .join(' ');
+  useEffect(() => {
+    if (!fromWork) return;
+    void adapter.runs().then((result) => {
+      if (result.data) setRuns(result.data.runs);
+    });
+  }, [fromWork]);
   useEffect(() => {
     if (!focusFront.current) return;
     focusFront.current = false;
@@ -606,6 +632,7 @@ export function WaitingOnYou({
             key={front.id}
             decision={front}
             conversation={conversationOf(front)}
+            run={front.kind === 'permission' ? runOfPermission(runs, front.permission) : null}
             agent={agentOf(front)}
             linked={linkedOf(front)}
             now={now}

@@ -172,6 +172,18 @@ function roomDecisions(principalId: string, since: Date) {
       and a.requested_at >= ${since.toISOString()}::timestamptz`;
 }
 
+/**
+ * Where a decision is answered: long work's own page (a helper's is its
+ * run's), otherwise the conversation.
+ */
+function pageOf(alias: ReturnType<typeof sql>) {
+  return sql`case ${alias}.kind
+      when 'run' then '/#/runs/' || ${alias}.id
+      when 'run_step' then '/#/runs/' || coalesce((select r.parent_run_id from run_state r
+        where r.job_id = ${alias}.id), ${alias}.id)
+      else '/#/chat/' || ${alias}.id end`;
+}
+
 export class PushService {
   constructor(
     readonly db: Database,
@@ -343,7 +355,7 @@ export class PushService {
     const open = (await this.db.execute(sql`
       select 'approval:' || a.id as key, j.id as job_id, j.title as title,
              'Because it can’t go on until you decide.' as because, a.requested_at as at,
-             '/#/chat/' || j.id as url
+             ${pageOf(sql`j`)} as url
       from approval a
       join action ac on ac.id = a.action_id
       join job j on j.id = ac.job_id
@@ -358,7 +370,7 @@ export class PushService {
                       case when q.because->>0 !~ '^[a-z]+:[A-Za-z0-9]'
                         then 'Because ' || lower(left(q.because->>0, 1)) || substr(q.because->>0, 2) end,
                       'Because it asked you something only you can answer.'),
-             q.created_at, '/#/chat/' || j.id
+             q.created_at, ${pageOf(sql`j`)}
       from question q
       join job j on j.id = q.job_id
       where q.state = 'open' and j.principal_id = ${principalId} and q.created_at >= ${since.toISOString()}::timestamptz
