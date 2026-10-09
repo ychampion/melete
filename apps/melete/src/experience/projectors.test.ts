@@ -604,8 +604,8 @@ test('a permission to save a file names the file and carries its exact text', ()
 test('a saved file card opens a PDF, a picture or text in the app, and always downloads', () => {
   const row = (path: string, mime: string) =>
     ({ id: 'art_01ABC', path, mime, size: 12 }) as Parameters<typeof projectArtifact>[0];
-  const open = { kind: 'open', label: 'Open', handle: 'art_01ABC' };
-  const download = { kind: 'download', label: 'Download', handle: 'art_01ABC' };
+  const open = { kind: 'open', label: 'Open', handle: 'art_01ABC' } as const;
+  const download = { kind: 'download', label: 'Download', handle: 'art_01ABC' } as const;
   for (const [path, mime] of [
     ['plans/week.md', 'text/markdown'],
     ['data.json', 'application/json'],
