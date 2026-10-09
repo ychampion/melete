@@ -137,6 +137,7 @@ describe("the browser's own diagnostic files", () => {
     `cp /tmp/port ${profile}/DevToolsActivePort`,
     `sed -i s/1/2/ ${profile}/DevToolsActivePort`,
     `truncate -s 0 ${profile}/chrome_debug.log`,
+    `cat ${profile}/DevToolsActivePort > Default/Login\\ Data`,
     // A command that touches an allowed file and a guarded one.
     `cat ${profile}/DevToolsActivePort && cat "${profile}/Default/Login Data"`,
     `cat ${profile}/DevToolsActivePort ${profile}/Default/Cookies`,
@@ -150,6 +151,7 @@ describe("the browser's own diagnostic files", () => {
     `cat \`echo ${profile}/DevToolsActivePort\``,
     `cat <<EOF\n${profile}/DevToolsActivePort\nEOF`,
     `cat "${profile}/DevToolsActivePort`,
+    `echo ${'$('.repeat(100_000)}cat ${profile}/DevToolsActivePort${')'.repeat(100_000)}`,
   ])('anything else there still asks: %s', (command) => {
     expect(namesCredentialStore(command)).toBe(true);
     expect(seeksCredentials('terminal.run', { command })).toBe(true);

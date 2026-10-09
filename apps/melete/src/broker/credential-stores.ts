@@ -122,11 +122,16 @@ const SUBSTITUTION = '\u0000';
  */
 function simpleCommands(source: string): Simple[] | null {
   const out: Simple[] = [];
-  return scan(source, 0, false, out) === source.length ? out : null;
+  return scan(source, 0, 0, out) === source.length ? out : null;
 }
 
+/** How deep `$(...)` may nest before the command is judged as plain text. */
+const MAX_NESTING = 16;
+
 /** Reads from `from` to the end, or to the `)` closing a `$(` when nested; -1 when it cannot. */
-function scan(src: string, from: number, nested: boolean, out: Simple[]): number {
+function scan(src: string, from: number, level: number, out: Simple[]): number {
+  if (level > MAX_NESTING) return -1;
+  const nested = level > 0;
   let simple: Simple = { words: [], targets: [] };
   let word: Word | null = null;
   let quoted = false;
@@ -207,7 +212,7 @@ function scan(src: string, from: number, nested: boolean, out: Simple[]): number
           }
         } else if (d === '$' && src[i + 1] === '(') {
           if (src[i + 2] === '(') return -1;
-          i = scan(src, i + 2, true, out);
+          i = scan(src, i + 2, level + 1, out);
           if (i < 0) return -1;
           w.text += SUBSTITUTION;
         } else {
@@ -229,7 +234,7 @@ function scan(src: string, from: number, nested: boolean, out: Simple[]): number
     } else if (c === '$' && src[i + 1] === '(') {
       if (src[i + 2] === '(') return -1;
       const w = begin(i);
-      i = scan(src, i + 2, true, out);
+      i = scan(src, i + 2, level + 1, out);
       if (i < 0) return -1;
       w.text += SUBSTITUTION;
     } else {
