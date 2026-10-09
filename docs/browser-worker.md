@@ -89,9 +89,26 @@ Each file is written only when it changes, so running it again is safe and
 leaves everything as it is. `--space sp_...` names another space instead of the
 first person's own. The token is never printed.
 
-An installation made by the [one-line installer](DEPLOYMENT.md#one-line-install)
-has no checkout, so the command runs from a clone of the repository and names
-its directory:
+On a host without Bun, such as one set up by the
+[one-line installer](DEPLOYMENT.md#one-line-install), run the installer again
+with `MELETE_BROWSER=1`:
+
+```sh
+MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+```
+
+It takes the same steps with the shell, Docker and the published images: the
+service container creates the connection and the space's directory, the service
+image works out the deploy file and the connections entry, and the same
+one-shot root container creates the `browser` subdirectory. Add
+`MELETE_BROWSER_SPACE=sp_...` to name another space, and `MELETE_DIR` when the
+installation is somewhere other than `~/melete`. When the worker's image cannot
+be pulled, the installer uses a copy already on the machine, builds it when
+`MELETE_DIR` is a clone of the repository, and otherwise stops before changing
+any file and says the image is not available yet.
+
+From a clone of the repository, the command also works on an installer's
+directory:
 
 ```sh
 bun run melete --deploy-dir ~/melete/deploy browser enable
@@ -105,7 +122,13 @@ Without it, a command that recreates the service starts it without the worker's
 address, and the service refuses to start while
 `deploy/config/connections.json` names the browser connection. `bun run melete check` and `bun run melete
 doctor` report `browser.worker`: off, or set up in a way the stack cannot start
-with, together with the command that fixes it.
+with, together with the command that fixes it. Without Bun, `doctor` in the
+service container reports it from the settings the service runs with:
+
+```sh
+docker compose -f ~/melete/deploy/docker-compose.yml -f ~/melete/deploy/docker-compose.browser.yml \
+  exec melete bun run melete doctor --offline
+```
 
 ### By hand
 

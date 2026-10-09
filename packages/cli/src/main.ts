@@ -116,7 +116,10 @@ export async function main(argv: readonly string[], make = realContext): Promise
     case 'set':
       return (await import('./commands/set.ts')).runSet(context, parsed.rest);
     case 'browser':
-      return (await import('./commands/browser.ts')).runBrowser(context, parsed.rest);
+      // `files` is the one-line installer's half, run inside the service image.
+      return parsed.rest[0] === 'files'
+        ? (await import('./commands/browser-files.ts')).runBrowserFiles(context, parsed.rest)
+        : (await import('./commands/browser.ts')).runBrowser(context, parsed.rest);
     case 'logs':
       return (await import('./commands/logs.ts')).runLogs(context, parsed.rest);
     case 'init':

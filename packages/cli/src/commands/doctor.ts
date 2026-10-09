@@ -335,7 +335,7 @@ export async function gatherDoctor(
   const facts: DoctorFacts = {
     config,
     contract: judgeContract(installation),
-    browser: judgeBrowser(installation),
+    browser: judgeBrowser(installation, context.environment),
     docker,
     dockerVersions: `Engine ${outputs.engine.stdout.trim().split(' ')[1] ?? '?'}, Compose ${outputs.compose.stdout.trim() || '?'}`,
     dockerNotes: describeDockerHost(host),
