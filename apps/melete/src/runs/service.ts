@@ -143,6 +143,9 @@ export const RUN_SHIFT_BUDGET: JobBudget = {
 
 /** How long a run waiting on its helpers sleeps before it looks again by itself. */
 const HELPER_FALLBACK_MS = 30 * 60_000;
+/** The words a scheduled shift ends with when it has nothing to tell the person. */
+const QUIET_OCCURRENCE = /^nothing to report/i;
+
 /** A run that has not reported for this long gets a short summary written for it. */
 const REPORT_EVERY_MS = 24 * 60 * 60_000;
 /** Runs one space may have going at once. */
@@ -1027,7 +1030,7 @@ export class RunService {
       return {
         status: 'saved',
         instruction:
-          "Saved. This shift is a scheduled occurrence and the person has not been told anything yet: end with one or two sentences addressed to them that say the thing itself (the reminder, the briefing, what you found). They are sent to them as this occurrence's report.",
+          'Saved. This shift is a scheduled occurrence and the person has not been told anything yet: if it owes them something (a reminder, a briefing, news), end with one or two sentences addressed to them that say the thing itself; they are sent to them as this occurrence\'s report. If there is nothing to tell them, end with exactly "Nothing to report."',
       };
     return { status: 'saved', instruction: 'Saved. End this shift now with one short line.' };
   }
@@ -1438,11 +1441,11 @@ export class RunService {
         },
       });
     }
-    // A scheduled occurrence (a reminder, a briefing) is owed to the person. One
-    // that ended without a report is reported for it in its own final words; one
-    // that did work but left only short or no final words (it logged what it
-    // found and checkpointed) in its own handoff or latest entry. A wake that did
-    // nothing and said nothing stays quiet, as a quiet day should.
+    // A scheduled occurrence (a reminder, a briefing) that ended without a report
+    // is reported for it in its own final words, which its checkpoint was told go
+    // to the person. A wake with nothing to tell (no words, or "Nothing to
+    // report.") stays quiet, as a quiet day of watching should; what it only
+    // logged as notes or findings is not news the person asked for.
     if (
       !step &&
       stands &&
@@ -1450,11 +1453,7 @@ export class RunService {
       (await this.occurrence(tx, row.id))
     ) {
       const said = 'summary' in outcome ? outcome.summary.trim() : '';
-      const own = [...mine]
-        .reverse()
-        .filter((entry) => !object(entry.data).automatic)
-        .map((entry) => (entry.body || entry.title || '').trim());
-      const words = said.length >= 20 ? said : progressed ? (own.find(Boolean) ?? said) : '';
+      const words = said.length >= 20 && !QUIET_OCCURRENCE.test(said) ? said : '';
       if (words) {
         const title = clip(words.split('\n')[0] ?? words, 200);
         await this.write(tx, {

@@ -618,7 +618,7 @@ withDb('standing work', () => {
     const progress = async () =>
       (await notices(run.id)).filter((push) => push.dedupKey.startsWith(`run-report:${run.id}:`));
 
-    // It logged a finding and checkpointed, then ended with one short line.
+    // It logged a finding and checkpointed, then ended with its words to the person.
     await fire(run.id);
     const logged = await claim(run.id);
     await tool(logged.claims, 'run.log', { kind: 'finding', title: 'Light rain from 7 pm' });
@@ -627,7 +627,10 @@ withDb('standing work', () => {
       next: 'The next weekday at 5pm.',
     })) as { instruction: string };
     expect(saved.instruction).toContain('has not been told anything yet');
-    await required(runner).commitOutcome(logged.claims, done('Done.'));
+    await required(runner).commitOutcome(
+      logged.claims,
+      done('Time to text Sam about dinner. Light rain from 7 pm tonight, so eat inside.'),
+    );
     let told = await reports();
     expect(told).toHaveLength(1);
     expect(told[0]?.body).toContain('text Sam');
@@ -645,6 +648,16 @@ withDb('standing work', () => {
     told = await reports();
     expect(told).toHaveLength(2);
     expect(told[1]?.body).toContain('patio');
+    expect(await progress()).toHaveLength(2);
+
+    // A quiet wake, and one that only logged a note, tell the person nothing.
+    await fire(run.id);
+    const quiet = await claim(run.id);
+    await tool(quiet.claims, 'run.log', { kind: 'note', title: 'Checked the forecast' });
+    await required(runner).commitOutcome(quiet.claims, done('Nothing to report.'));
+    await fire(run.id);
+    await quietShift(run.id);
+    expect(await reports()).toHaveLength(2);
     expect(await progress()).toHaveLength(2);
 
     // A shift that reported itself is not reported twice.
