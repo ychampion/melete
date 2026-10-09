@@ -430,7 +430,11 @@ export class ConnectorFactory {
             spacesRoot: options.spacesRoot,
           });
     if (row.provider === 'skills')
-      return createSkillsConnector({ sql: options.sql, spacesRoot: options.spacesRoot });
+      return createSkillsConnector({
+        sql: options.sql,
+        spacesRoot: options.spacesRoot,
+        ...(options.trashDays ? { trashDays: options.trashDays } : {}),
+      });
     if (row.provider === 'notes')
       return createNotesConnector({
         sql: options.sql,
@@ -472,6 +476,12 @@ export class ConnectorFactory {
         // Paid search and reading calls are charged to the job that made them.
         meter: jobPaidMeter(options.sql, options.spending),
         ...(options.searchPrivacy ? { searchPrivacy: options.searchPrivacy } : {}),
+        // The weather's place and units, when the agent names neither.
+        profile: async (spaceId, tx) => {
+          const [row] = await (tx ?? options.sql)`select time_zone from experience_profile
+            where space_id = ${spaceId}`;
+          return row ? { timeZone: String(row.time_zone) } : null;
+        },
       });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;

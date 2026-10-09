@@ -265,15 +265,22 @@ export async function captureCompletedEpisode(
   if (finished === 'completed') await askToKeep(tx, row, attemptId);
 }
 
-/** Owner authentication is supplied by the API. A requested space is checked, never trusted. */
+/**
+ * Owner authentication is supplied by the API. A requested space is checked, never trusted.
+ *
+ * The space's own record decides who owns it. Memory keeps every space under
+ * the installation's single owner, whoever the space belongs to, so its row
+ * says only whether that memory is open: a person added after setup owns
+ * their personal space while its memory row names the installation.
+ */
 export async function requireLearningSpace(tx: Transaction, ownerId: string, spaceId: string) {
   const access = await spaceAuthority(tx, spaceId, ownerId, true);
   if (access.role !== 'owner') throw new ServiceError('scope_denied', 'Space is unavailable.', 403);
   const state = await tx.execute(
-    sql`select owner_id, revoked, restore_ready from memory_spaces where space_id = ${spaceId}`,
+    sql`select revoked, restore_ready from memory_spaces where space_id = ${spaceId}`,
   );
   const memory = state[0];
-  if (memory && (memory.owner_id !== ownerId || memory.revoked || !memory.restore_ready))
+  if (memory && (memory.revoked || !memory.restore_ready))
     throw new ServiceError('scope_denied', 'Space is unavailable.', 403);
 }
 

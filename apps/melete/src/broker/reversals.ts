@@ -46,6 +46,7 @@ export const REVERSALS: Readonly<Record<string, Declaration>> = {
     says: 'Waits a few seconds before sending, and can be cancelled until then.',
   },
   'files.delete': { mode: 'reversal', says: 'Restores what it put in the trash.' },
+  'skills.delete': { mode: 'reversal', says: 'Puts the skill back from the trash.' },
   'apps.publish': { mode: 'reversal', says: 'Shows people the version they saw before.' },
   'apps.rollback': { mode: 'reversal', says: 'Shows people the version they saw before.' },
 };
@@ -112,6 +113,7 @@ const DECIDED_BY_UNDO = new Set([
   'calendar.delete',
   'email.discard',
   'files.restore',
+  'skills.restore',
   'apps.rollback',
 ]);
 export const undoDecides = (plan: Pick<ReversalPlan, 'kind' | 'declared'>) =>
@@ -229,6 +231,21 @@ export async function planReversal(
     return {
       mode: 'reversal',
       kind: 'files.restore',
+      payload: { trash_id: detail.trash_id },
+      ...(typeof detail.restorable_until === 'string'
+        ? { validUntil: detail.restorable_until }
+        : {}),
+    };
+  // A skill deleted into the space's trash comes back the same way, by the
+  // Skills connection that deleted it.
+  if (
+    source.kind === 'skills.delete' &&
+    provider === 'skills' &&
+    typeof detail.trash_id === 'string'
+  )
+    return {
+      mode: 'reversal',
+      kind: 'skills.restore',
       payload: { trash_id: detail.trash_id },
       ...(typeof detail.restorable_until === 'string'
         ? { validUntil: detail.restorable_until }
