@@ -6,6 +6,8 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PermissionCard } from '../chat/parts.tsx';
+import { WaitingOnYou } from '../screens/Home.tsx';
+import { AppContext, type AppContextValue, NO_DECISIONS } from './hooks.ts';
 import { foldedOptions, foldTogether, seenTogether } from './together.ts';
 import type { Permission } from './types.ts';
 
@@ -75,4 +77,63 @@ test('the folded card names every ask it answers, and asks once', () => {
   expect(html.match(/Allow once/g)).toHaveLength(1);
   expect(html.match(/>Deny</g)).toHaveLength(1);
   expect(html).not.toContain('Always allow');
+});
+
+/** An ask whose title is the same for every one of them: only its facts say what it does. */
+const command = (n: number, line: string): Permission =>
+  ask(n, {
+    what: 'Run a command on your computer',
+    group: 'grp_run',
+    options: ['allow_once', 'deny'],
+    preview: {
+      id: `apr_${n}`,
+      title: 'Run a command on your computer',
+      meta: 'Test laptop',
+      facts: [
+        { label: 'Command', value: line },
+        { label: 'Runs in', value: 'Projects' },
+      ],
+      primary_action: null,
+      secondary_actions: [],
+      source_connection: 'device-connection',
+    },
+  });
+
+test('every folded ask shows what it does, not only its title', () => {
+  const html = renderToStaticMarkup(
+    <PermissionCard
+      permission={command(1, 'ls')}
+      decided={null}
+      together={[command(2, 'rm -rf ~/Projects')]}
+      onDecide={() => {}}
+    />,
+  );
+  expect(html).toContain('ls');
+  expect(html).toContain('rm -rf ~/Projects');
+});
+
+test('on Home, every folded ask shows what it runs, not only its title', () => {
+  const app = {
+    agents: [],
+    conversations: [],
+    decisions: NO_DECISIONS,
+    refreshConversations: () => {},
+  } as unknown as AppContextValue;
+  const html = renderToStaticMarkup(
+    <AppContext.Provider value={app}>
+      <WaitingOnYou
+        decisions={{
+          ...NO_DECISIONS,
+          loaded: true,
+          permissions: [command(1, 'ls'), command(2, 'rm -rf ~/Projects')],
+          count: 2,
+        }}
+        map={null}
+        now={Date.parse(AT)}
+        onCleared={() => {}}
+      />
+    </AppContext.Provider>,
+  );
+  expect(html).toContain('and 1 more like it');
+  expect(html).toContain('rm -rf ~/Projects');
 });

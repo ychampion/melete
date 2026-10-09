@@ -1276,12 +1276,20 @@ function egressCard(
 
 /**
  * Which asks are answered as one: the same kind of change through the same
- * connection, proposed by one attempt of the work. An attempt stops at the
- * step that asked, so its asks were made together. Opaque to the reader.
+ * connection, proposed by one attempt of the work, for the same reasons. An
+ * attempt stops at the step that asked, so its asks were made together. The
+ * reasons are part of it because a folded card shows the first ask's reasons
+ * only: an ask with a doubt of its own (a destination nobody confirmed,
+ * guests from outside, a double booking) is read on its own. Opaque to the reader.
  */
-export const permissionGroup = (action: Pick<ActionRow, 'attemptId' | 'connectionId' | 'kind'>) =>
+export const permissionGroup = (
+  action: Pick<ActionRow, 'attemptId' | 'connectionId' | 'kind'>,
+  reasons: readonly string[],
+) =>
   `grp_${createHash('sha256')
-    .update(`${action.attemptId}\u0000${action.connectionId}\u0000${action.kind}`)
+    .update(
+      JSON.stringify([action.attemptId, action.connectionId, action.kind, [...reasons].sort()]),
+    )
     .digest('hex')
     .slice(0, 24)}`;
 
@@ -1391,9 +1399,12 @@ export function projectPermission(input: {
     created_at: input.requestedAt.toISOString(),
     ...(input.because?.length ? { because: input.because } : {}),
     // Asks of one kind made together, in one step of the work, are answered
-    // together. A card that shows a message or a file to read is not, so each
-    // of those is still read on its own.
-    ...(draft || file ? {} : { group: permissionGroup(input.action) }),
+    // together. A card that shows a message or a file to read is not, nor one
+    // auto-review sent to the person with a reason of its own, so each of
+    // those is still read on its own.
+    ...(draft || file || input.review?.outcome === 'escalated'
+      ? {}
+      : { group: permissionGroup(input.action, input.reasons) }),
     preview: {
       id: input.id,
       title: what,

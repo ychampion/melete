@@ -858,6 +858,12 @@ export function PermissionCard({
           {permission.preview && !draft ? (
             <ResultCard card={permission.preview} readOnly touch={touch} />
           ) : null}
+          {/* Each ask answered with it shows what it does, as its own card would. */}
+          {together.map((other) =>
+            other.preview ? (
+              <ResultCard key={other.id} card={other.preview} readOnly touch={touch} />
+            ) : null,
+          )}
           {permission.file ? <FilePreview file={permission.file} /> : null}
           {draft ? (
             <div className="permission-draft">

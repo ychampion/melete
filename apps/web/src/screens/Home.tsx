@@ -373,10 +373,35 @@ function DecisionCard({
   const from = field('From');
   const to = field('To') ?? permission?.draft?.recipient;
   /** What will run or change on a connected computer, exactly as it will be sent. */
-  const onComputer = (permission?.preview?.facts ?? []).filter((fact) =>
-    ['Command', 'Runs in', 'File', 'Page', 'Network', 'Title', 'Element', 'Text', 'Then'].includes(
-      fact.label,
-    ),
+  const onComputerOf = (asked: Permission | null) =>
+    (asked?.preview?.facts ?? []).filter((fact) =>
+      [
+        'Command',
+        'Runs in',
+        'File',
+        'Page',
+        'Network',
+        'Title',
+        'Element',
+        'Text',
+        'Then',
+      ].includes(fact.label),
+    );
+  const onComputer = onComputerOf(permission);
+  const factLine = (fact: { label: string; value: string }) => (
+    <span key={fact.label} className="decision-meta">
+      {fact.label}:{' '}
+      <code
+        style={{
+          fontSize: 12,
+          color: 'var(--text)',
+          overflowWrap: 'anywhere',
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {fact.value}
+      </code>
+    </span>
   );
   const amount = linked ? amountWords(linked.item) : null;
   const state = linked ? statusOf(linked.item, now) : null;
@@ -429,29 +454,15 @@ function DecisionCard({
         </div>
       ) : null}
       {onComputer.length ? (
-        <div className="decision-preview">
-          {onComputer.map((fact) => (
-            <span key={fact.label} className="decision-meta">
-              {fact.label}:{' '}
-              <code
-                style={{
-                  fontSize: 12,
-                  color: 'var(--text)',
-                  overflowWrap: 'anywhere',
-                  whiteSpace: 'pre-wrap',
-                }}
-              >
-                {fact.value}
-              </code>
-            </span>
-          ))}
-        </div>
+        <div className="decision-preview">{onComputer.map(factLine)}</div>
       ) : null}
-      {/* Everything this press answers is on the card, never only the first. */}
+      {/* Everything this press answers is on the card, never only the first,
+          each with what it runs or changes, as its own card would show. */}
       {together.map((other) => (
-        <span key={other.id} className="decision-meta">
-          {other.what}
-        </span>
+        <div key={other.id} className="decision-preview">
+          <span className="decision-meta">{other.what}</span>
+          {onComputerOf(other).map(factLine)}
+        </div>
       ))}
       {permission && !permission.draft && permission.why.length > 0 && !from && !to ? (
         <span className="decision-meta">{permission.why[0]}</span>
