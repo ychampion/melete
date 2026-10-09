@@ -42,8 +42,30 @@ export class BrowserWorkerClient {
       );
     return value as T;
   }
-  lease(jobId: string, policy: BrowserPolicy, region?: BrowserRegion): Promise<BrowserSession> {
-    return this.request('/lease', { job_id: jobId, policy, ...(region ? { region } : {}) });
+  lease(
+    jobId: string,
+    policy: BrowserPolicy,
+    region?: BrowserRegion,
+    replaceJob?: string,
+  ): Promise<BrowserSession> {
+    return this.request('/lease', {
+      job_id: jobId,
+      policy,
+      ...(region ? { region } : {}),
+      ...(replaceJob ? { replace_job: replaceJob } : {}),
+    });
+  }
+  /** Which job holds the space's warm session, and whether a person has it. */
+  async holder(): Promise<{ job_id: string | null; control: BrowserSession['control'] } | null> {
+    return (
+      await this.request<{
+        holder: { job_id: string | null; control: BrowserSession['control'] } | null;
+      }>('/holder', {})
+    ).holder;
+  }
+  /** Close the session a finished job holds, unless a person has taken it over. */
+  end(jobId: string): Promise<{ ended: boolean }> {
+    return this.request('/end', { job_id: jobId });
   }
   takeover(sessionId: string): Promise<BrowserSession> {
     return this.request('/takeover', { session_id: sessionId });

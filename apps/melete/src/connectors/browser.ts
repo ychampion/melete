@@ -20,6 +20,7 @@ import { type BrowserSessionService, browserInputReasons } from '../workers/brow
 import { BrowserFault } from '../workers/browser/sessions.ts';
 import { sensitiveName } from '../workers/browser/visible.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+import type { PublicReadPolicy } from './web.ts';
 
 const text = { type: 'string', minLength: 1, maxLength: 8000 };
 /**
@@ -301,7 +302,31 @@ export function createBrowserConnector(options: {
   spaceId?: string;
   /** How long a page that said nothing is given before it is read again. */
   secondLookMs?: number;
+  /**
+   * The rule `web.fetch` follows for a page outside a job's own list. A job with no list opens
+   * public pages when it says so; without one, a job opens only what its list allows.
+   */
+  publicReads?: PublicReadPolicy;
 }): Connector {
+  /**
+   * Whether this job's browser may open any public page, and if not, why not in plain words.
+   * Only a job with no list of its own and outside the public compartment is asked about.
+   */
+  const publicWeb = async (ctx: ConnectorContext) => {
+    if (ctx.constraints.public_compartment || ctx.constraints.allowed_domains.length)
+      return { open: false, refusal: null };
+    const refusal = options.publicReads
+      ? await options.publicReads(undefined, { jobId: ctx.job_id, spaceId: ctx.space_id })
+      : 'Only the sites this work was given can be opened.';
+    return { open: refusal === null, refusal };
+  };
+  const lease = async (ctx: ConnectorContext, sessionId?: string) => {
+    const reach = await publicWeb(ctx);
+    return {
+      ...(await options.sessions.lease(ctx, sessionId, { publicWeb: reach.open })),
+      refusal: reach.refusal,
+    };
+  };
   /**
    * Hand the work to the person with a card, or, where nothing can make a
    * card, park it for them as before.
@@ -330,7 +355,7 @@ export function createBrowserConnector(options: {
     sessionId?: string,
   ): Promise<{ page: PageSeen | null; sensitive: boolean; sessionId?: string }> => {
     try {
-      const { session, worker } = await options.sessions.lease(ctx, sessionId);
+      const { session, worker } = await lease(ctx, sessionId);
       const looked = output.parse(
         await worker.request('/command', {
           session_id: session.id,
@@ -468,12 +493,16 @@ export function createBrowserConnector(options: {
       const payload = action.canonical_payload;
       const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       let activeSessionId = sessionId;
+      // Why a page outside this job's reach is refused, said as web.fetch says it.
+      let refusal: string | null = null;
       // A commit is bound at proposal to the session and epoch it was planned under (see prepare).
       if (kind === 'submit' && (!sessionId || !Number.isSafeInteger(payload.control_epoch)))
         throw new Error('A planned browser session and control epoch are required');
       try {
         ctx.signal?.throwIfAborted();
-        const { session, worker, opened } = await options.sessions.lease(ctx, sessionId);
+        const leased = await lease(ctx, sessionId);
+        const { session, worker, opened } = leased;
+        refusal = leased.refusal;
         activeSessionId = session.id;
         // A browser this call just started shows a blank page. Looking at it once lets the first
         // step act; every later epoch still needs an observation the model asked for.
@@ -582,6 +611,11 @@ export function createBrowserConnector(options: {
           // A named session that has closed since: the job's current one is a call away.
           if (sessionId && error.reason === 'session_not_found')
             reason = `session_not_found: browser session ${sessionId} is no longer open. ${LEAVE_OUT}`;
+          if (error.reason === 'domain_not_allowed')
+            reason = `domain_not_allowed: ${
+              refusal ??
+              'This work may open only the sites it was given, and this page is not one of them.'
+            }`;
           return { outcome: 'failed', reason, retryable: false };
         }
         // A transport loss after an approved commit has an unknown effect and must never be
