@@ -104,6 +104,7 @@ jobs:
           // A page is observed before anything acts on it, as the agent's tools do.
           await step({ kind: 'observe' });
           const seen = (await step({ kind: 'open', url: 'https://example.com/' })).observation;
+          console.log(JSON.stringify({ url: seen?.url, title: seen?.title, tree: seen?.tree?.slice(0, 400) }));
           const read = (await step({ kind: 'read', selector: 'h1' })).result;
           console.log(JSON.stringify({ url: seen?.url, title: seen?.title, heading: read?.text }));
           await client.request('/release', {});
