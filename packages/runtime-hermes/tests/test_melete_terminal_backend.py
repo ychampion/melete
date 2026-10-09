@@ -590,3 +590,27 @@ def test_a_reviewer_refusal_names_what_it_refused():
         "dangerous. Do NOT retry.")})
     body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=smart))
     assert "(delete in root path)" in body["error"]
+
+
+def test_a_floor_refusal_is_never_called_the_persons():
+    hardline = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
+        "BLOCKED (hardline): recursive delete of system directory. This command is on the unconditional "
+        "blocklist and cannot be executed via the agent — not even with --yolo, /yolo, approvals.mode=off, "
+        "or cron approve mode. If you genuinely need to run it, run it yourself in a terminal outside the agent.")})
+    broker = SayingBroker()
+    body = json.loads(blocked_command_result(broker)(tool_name="terminal", result=hardline))
+    assert body["error"].startswith("NOT RUN.")
+    assert "(recursive delete of system directory)" in body["error"]
+    assert "The person did not refuse it" in body["error"]
+    assert "yolo" not in body["error"] and "approvals.mode" not in body["error"]
+    assert broker.said and "recursive delete of system directory" in broker.said[0]["text"]
+
+
+def test_a_floor_refusal_keeps_the_advice_on_how_to_run_a_long_command():
+    oversized = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
+        "BLOCKED (hardline): command too large to parse. This command is on the unconditional blocklist "
+        "and cannot be executed via the agent. RECOVERY: this block fires on oversized/unparseable inline "
+        "command payloads. Write the script to a file with write_file, then run it.")})
+    body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=oversized))
+    assert body["error"].startswith("NOT RUN.")
+    assert body["error"].endswith("Write the script to a file with write_file, then run it.")

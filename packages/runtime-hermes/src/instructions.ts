@@ -134,13 +134,21 @@ export const PLAIN_WORDS: readonly string[] = [
 /**
  * Saying something was done only when it was. A list kept for the person with
  * no tool to keep it in is not kept, and memory remembering what the person
- * said is not the agent saving it.
+ * said is not the agent saving it. A file the agent made on its computer is
+ * not in front of the person until a files tool puts it in their Files, and
+ * "attached" said before that was untrue. How the work was done is told only
+ * when it is true: "read it in my browser" was said of a page read by a command.
  */
 export const DONE_WORDS: readonly string[] = [
   'Say you saved, added, sent or changed something only when a tool call in this task did',
   'it and succeeded. If the tool it needs is not in your catalog, say plainly that you could',
   'not do it and what would let you (the person can give you that connection); never say it',
   'was done. Melete remembers what the person says on its own; that is not you saving it.',
+  'When the person asks for a file, put it in their Files (files.move or files.write, with',
+  'to_area or area artifacts) before you say it is attached or here; a file left on your',
+  'computer has not reached them.',
+  'Say how you did something (in your browser, on the desktop, with a command) only when',
+  'that is how you did it; otherwise leave the method out.',
 ];
 
 /**

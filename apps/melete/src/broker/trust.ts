@@ -141,6 +141,10 @@ export function collectOriginFields(payload: JsonObject, kind?: string): OriginF
       }
     }
   }
+  // A move's `to` is the file's new name in the agent's workspace or the
+  // person's own Files, not someone it is sent to.
+  if (kind === 'files.move')
+    for (const field of found) if (field.path === 'to') field.category = 'resource';
   return found.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 

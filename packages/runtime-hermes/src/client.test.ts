@@ -473,6 +473,15 @@ describe('context assembly', () => {
     expect(text).toContain('that is not you saving it');
   });
 
+  test('the model is told a file reaches the person only in their Files, and to claim a method only when true', () => {
+    const text = renderInstructions(bundle);
+    expect(text).toContain('before you say it is attached or here');
+    expect(text).toContain('has not reached them');
+    expect(text).toContain(
+      'Say how you did something (in your browser, on the desktop, with a command) only when\nthat is how you did it; otherwise leave the method out.',
+    );
+  });
+
   test('a conversation offered background work is told when to start it, and others are not', () => {
     expect(renderInstructions(bundle)).not.toContain(BACKGROUND_WORDS.join('\n'));
     const text = renderInstructions({ ...bundle, tools: [RUN_START_TOOL] });

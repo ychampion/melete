@@ -113,6 +113,7 @@ six tools and 377 tokens. This is the only non-obvious line in the thin config.
 | `tools.tool_search.enabled: "off"` | present the tools directly instead of behind a search bridge | `hermes_cli/config_defaults.py:1792` |
 | `approvals.timeout` | 300 by default; how long a shell-command approval blocks | `hermes_cli/config_defaults.py:1535` |
 | `approvals.unattended_mode` | `deny` by default, which is what an unanswered `api_server` approval does | `hermes_cli/config_defaults.py:1538` |
+| `approvals.mode` | `off` skips the engine's command guard (pattern, smart and unattended layers); its unconditional floors still apply. Set because the broker decides what in the agent's computer the person is asked about | `tools/approval.py:1008` |
 | `model.provider` / `model.base_url` / `model.api_key` | `custom` is the profile with no fixed key and a user-set endpoint | `plugins/model-providers/custom/__init__.py:65`, `hermes_cli/runtime_provider.py:73` |
 | `API_SERVER_HOST` / `API_SERVER_PORT` | bind; defaults `127.0.0.1` and `8642` | `gateway/platforms/api_server.py:1107`, `hermes_cli/config_defaults.py:2761` |
 | `API_SERVER_ENABLED` / `API_SERVER_KEY` | turn the platform on inside the gateway and require a bearer | `hermes_cli/web_server_messaging.py:191` |

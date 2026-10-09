@@ -35,6 +35,17 @@ export function runOfPermission<T extends Pick<Run, 'id' | 'steps'>>(
 
 /** The facts worth reading before answering: what will happen, exactly. */
 const FACTS = ['Command', 'Runs in', 'File', 'Page', 'Network', 'Title', 'Element', 'Text', 'Then'];
+/**
+ * What a chat card keeps of them: the command and where it runs, so an ask to
+ * run something is never answered blind. A long command is cut there; the
+ * work's own page shows it whole.
+ */
+const COMPACT_FACTS = ['Command', 'Runs in'];
+export const COMPACT_FACT_CHARS = 240;
+const compactFact = (fact: { label: string; value: string }) =>
+  fact.value.length > COMPACT_FACT_CHARS
+    ? { ...fact, value: `${fact.value.slice(0, COMPACT_FACT_CHARS)}…` }
+    : fact;
 
 export function RunPermissions({
   run,
@@ -42,7 +53,7 @@ export function RunPermissions({
   onDecided,
 }: {
   run: Pick<Run, 'id' | 'steps' | 'status'>;
-  /** In a chat card: the ask and its two buttons, without the details. */
+  /** In a chat card: the ask, the command it runs and where, and its two buttons. */
   compact?: boolean;
   onDecided?: () => void;
 }) {
@@ -72,9 +83,10 @@ export function RunPermissions({
   return (
     <ul className="run-permissions">
       {asked.map((permission) => {
-        const facts = compact
-          ? []
-          : (permission.preview?.facts ?? []).filter((fact) => FACTS.includes(fact.label));
+        const shown = (permission.preview?.facts ?? []).filter((fact) =>
+          (compact ? COMPACT_FACTS : FACTS).includes(fact.label),
+        );
+        const facts = compact ? shown.map(compactFact) : shown;
         const busy = flight.has(permission.id);
         return (
           <li key={permission.id} className="run-permission">

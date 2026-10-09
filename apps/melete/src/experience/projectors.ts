@@ -1017,6 +1017,18 @@ export function fileActions(
     : { primary_action: download, secondary_actions: [] };
 }
 
+/**
+ * The page tree and picture the agent's browser keeps of each step it looks
+ * at, at the names the browser's own store gives them
+ * (`workers/browser/artifacts.ts`). They are the agent's working notes, kept
+ * with the step's receipt, not files made for the person.
+ */
+const STEP_CAPTURE = /^browser\/art_[0-9A-Za-z]+\.(?:txt|png)$/;
+
+/** Whether a recorded file is one to put under an answer as a card. */
+export const meantForPerson = (row: Pick<typeof artifact.$inferSelect, 'path'>): boolean =>
+  !STEP_CAPTURE.test(row.path);
+
 export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
   return resultCard.parse({
     id: row.id,
