@@ -873,6 +873,12 @@ export class ConnectorFactory {
     const main = build(MANAGED_WRITES[part]);
     const reader = build(MANAGED_READS[part]);
     const execute = main.execute.bind(main);
+    const verify = main.verify.bind(main);
+    // A receipt says the call went through Composio; never which account, nor the key.
+    const throughComposio = <R extends { detail: Record<string, unknown> }>(receipt: R): R => ({
+      ...receipt,
+      detail: { ...receipt.detail, via: 'composio' },
+    });
     return ownerOnly(
       Object.assign(main, {
         // What the poller reads goes through the fetcher that cannot write.
@@ -881,14 +887,26 @@ export class ConnectorFactory {
         execute: async (
           action: Parameters<Connector['execute']>[0],
           ctx: Parameters<Connector['execute']>[1],
-        ) => {
+        ): ReturnType<Connector['execute']> => {
           if (namesManagedAuthority(action.canonical_payload))
             throw new ConnectorFaultError({
               kind: 'unsupported_route',
               detail:
                 'A tool call cannot name the account it acts for; the connection decides that.',
             });
-          return execute(action, ctx);
+          const result = await execute(action, ctx);
+          return result.outcome === 'succeeded'
+            ? { ...result, receipt: throughComposio(result.receipt) }
+            : result;
+        },
+        verify: async (
+          action: Parameters<Connector['verify']>[0],
+          ctx: Parameters<Connector['verify']>[1],
+        ): ReturnType<Connector['verify']> => {
+          const result = await verify(action, ctx);
+          return result.decision === 'succeeded' && result.receipt
+            ? { ...result, receipt: throughComposio(result.receipt) }
+            : result;
         },
       }),
     );

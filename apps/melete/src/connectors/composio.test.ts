@@ -453,6 +453,11 @@ describe('a connection signed in through Composio', () => {
     );
     expect(found.outcome).toBe('succeeded');
     expect(fake.proxyCalls.slice(before).every((call) => call.account === id)).toBe(true);
+    // Its receipt says it went through Composio, and never names the account or the key.
+    if (found.outcome !== 'succeeded') throw new Error('expected a receipt');
+    expect(found.receipt.detail.via).toBe('composio');
+    expect(JSON.stringify(found.receipt)).not.toContain(id);
+    expect(JSON.stringify(found.receipt)).not.toContain(fake.apiKey);
   });
 
   test('what the poller reads cannot send, while the agent’s tools can', async () => {
