@@ -36,6 +36,8 @@ export const EXTRACTION_LIMITS = {
   timeout_ms: 60_000,
 } as const;
 export const MEMORY_EXTRACT_QUEUE = 'melete.memory.extract';
+/** The details one conversation taught memory that every later read of it is shown first. */
+export const CONVERSATION_CLAIMS = 8;
 export type ExtractionBatch = {
   work: MemoryWork;
   source: SourceEvent;
@@ -116,7 +118,23 @@ export async function claimWork(
           where ref.claim_id = c.id and ref.revision = c.head_revision
             and p.private_origin is not null))
       order by c.id desc limit ${EXTRACTION_LIMITS.claims}`;
-    const candidates = [...new Set([...related, ...newest].map((row) => row.id as string))]
+    // What this conversation has already taught memory always comes along, so
+    // a detail said again in it is recognised and merged, never added twice.
+    const conversation = capture?.job_id
+      ? await tx`select distinct c.id from memory_capture cap
+          join memory_references ref on ref.source_id = cap.source_id
+          join memory_claims c on c.id = ref.claim_id and ref.revision = c.head_revision
+          where cap.job_id = ${capture.job_id} and cap.source_id <> ${row.source_id}
+            and c.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+            and (${snapshotPrivate} or not exists (select 1 from memory_references own
+              join memory_sources p on p.id = own.source_id
+              where own.claim_id = c.id and own.revision = c.head_revision
+                and p.private_origin is not null))
+          order by c.id desc limit ${CONVERSATION_CLAIMS}`
+      : [];
+    const candidates = [
+      ...new Set([...conversation, ...related, ...newest].map((row) => row.id as string)),
+    ]
       .slice(0, EXTRACTION_LIMITS.claims)
       .map((id) => ({ id }));
     const claims: ClaimHead[] = [];
