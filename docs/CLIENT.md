@@ -436,7 +436,7 @@ explanation as empty.
 | Home | `GET /home` returns the local greeting/date, calendar events when connected, and open tasks |
 | Tasks | `GET/POST /tasks`, `PATCH/DELETE /tasks/{id}` |
 | Routines | `GET/POST /automations`, `POST /automations/{id}/test`; sentences describe schedules and recent runs describe outcomes |
-| Morning brief | `POST /automations/morning-brief` accepts `agent_id` and `at` in the profile's time zone |
+| Morning brief | `POST /automations/morning-brief` accepts `agent_id`, `at` in the profile's time zone, and up to five news `topics`. The brief brings the weather, today's calendar, what needs the person and a news line, leaving out what nothing connected can answer. It is saved as `Your morning brief` (`MORNING_BRIEF_TITLE` in `@melete/contracts/morning-brief`) and pauses like any routine |
 | Connections | `GET /experience/connections` returns app names, labels, status, and readable access levels, without removed connections. Settings adds one from `GET /connection-kinds` and `POST /connections`, tests one with `POST /connections/{connectionId}/health`, and removes one with `POST /connections/{id}/lifecycle`; see [CONNECTORS](CONNECTORS.md#installing-a-connection) |
 | Search | `GET /search?q=` searches conversations, plans, tasks, connected apps, recent actions, and cached calendar events in the session's space |
 

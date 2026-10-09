@@ -175,6 +175,8 @@ export class ExperienceMock {
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   /** The agent each routine runs as, by routine id. */
   readonly routineAgents = new Map<string, string>();
+  /** Each morning brief's news topics, by routine, so a test run reads like one. */
+  readonly briefTopics = new Map<string, string[]>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
   /** What the mock believes about the person, with its history and rewinds. */
   readonly beliefs = new MockBeliefs(
@@ -217,9 +219,10 @@ export class ExperienceMock {
       this.now(),
     );
     // Melete first, as the service lists it, then the demo space's specialists.
+    // A first run has only Melete, as a new installation does.
     for (const [made, isDefault] of [
       [MELETE_AGENT, true],
-      ...DEMO_AGENTS.map((agent) => [agent, false] as const),
+      ...(deps.firstRun ? [] : DEMO_AGENTS.map((agent) => [agent, false] as const)),
     ] as const) {
       const agent = C.experienceAgent.parse({
         ...made,
@@ -1701,6 +1704,25 @@ export class ExperienceMock {
     this.routineAgents.set(value.id, input.agent_id);
     return { automation: value };
   }
+  /**
+   * A test run of the morning brief, from what this scenario has: the weather
+   * always, the calendar and open tasks when there are any, and the news line.
+   */
+  briefSummary(topics: readonly string[]) {
+    const today = new Date().toDateString();
+    const events = this.calendarEvents.filter(
+      (event) => new Date(event.starts_at).toDateString() === today,
+    );
+    const open = [...this.tasks.values()].filter((task) => !task.done);
+    return [
+      'Clear this morning, 18° rising to 23° by the afternoon.',
+      events.length ? `On your calendar: ${events.map((event) => event.title).join('; ')}.` : null,
+      open.length ? `Open tasks: ${open.map((task) => task.title).join('; ')}.` : null,
+      `News${topics.length ? ` on ${topics.join(', ')}` : ''}: the day’s headlines, each with its source.`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
   /** The label a key shows under, matching the service's own wording. */
   keyLabel(key: string) {
     const [kind, subject, field] = key.split('.');
@@ -2172,13 +2194,17 @@ export class ExperienceMock {
         return { automations: [...this.automations.values()] };
       case 'POST /automations':
         return this.automation(input);
-      case 'POST /automations/morning-brief':
-        return this.automation({
-          ...input,
-          title: 'Your morning brief',
-          instruction: 'Summarize today',
+      case 'POST /automations/morning-brief': {
+        const { topics, ...when } = C.morningBriefCreate.parse(input);
+        const made = this.automation({
+          ...when,
+          title: C.MORNING_BRIEF_TITLE,
+          instruction: C.morningBriefInstruction(topics),
           weekdays: [0, 1, 2, 3, 4, 5, 6],
         });
+        this.briefTopics.set(made.automation.id, topics ?? []);
+        return made;
+      }
       case 'POST /automations/{id}/test':
         required(this.automations, id).runs.unshift({
           ...NO_RESULT,
@@ -2186,7 +2212,9 @@ export class ExperienceMock {
           status: 'done',
           started_at: this.now(),
           finished_at: this.now(),
-          summary: 'Nothing new since the last run.',
+          summary: this.briefTopics.has(id)
+            ? this.briefSummary(this.briefTopics.get(id) ?? [])
+            : 'Nothing new since the last run.',
         });
         return { status: 'ok' };
       case 'POST /automations/{id}/pause':

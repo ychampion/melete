@@ -58,7 +58,10 @@ bun run dev:web
 ```
 
 Then open http://localhost:5180. Set `MELETE_MOCK_SETUP=needed` to start the
-mock as a fresh install that asks for its first account.
+mock as a fresh install that asks for its first account, or
+`MELETE_MOCK_FIRST_RUN=on` for a person's very first visit: a fresh install
+with nothing connected, seeded or waiting, so setup and Home's first steps show
+as a new person sees them.
 [Building a client](docs/CLIENT.md) describes the scenarios the mock plays.
 
 ### Run the agent runtime locally

@@ -1123,6 +1123,20 @@ export const automationCreate = z.strictObject({
 });
 export const automationResponse = z.strictObject({ automation: experienceAutomation });
 
+/** One news topic in the person's words: a few plain words, never a sentence of instructions. */
+export const morningBriefTopic = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .regex(/^[\p{L}\p{N}][\p{L}\p{N} &'.,+-]*$/u, 'A topic is a few plain words.');
+export const morningBriefCreate = z.strictObject({
+  agent_id: id.optional(),
+  at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  /** What the news line covers; left out, the news worth knowing today. */
+  topics: z.array(morningBriefTopic).max(5).optional(),
+});
+
 export const experienceConnection = z.strictObject({
   id,
   app: text,
@@ -1394,11 +1408,13 @@ export const experienceOperations = {
   'POST /automations/{id}/restart': { response: automationResponse },
   /** Stops the routine for good and takes it off the list. */
   'DELETE /automations/{id}': { response: experienceOk },
+  /**
+   * Sets up the morning brief: every day at `at` in the person's time zone,
+   * with the weather, today's calendar, what needs them and a news line on
+   * `topics`. It is an ordinary routine, paused and deleted like any other.
+   */
   'POST /automations/morning-brief': {
-    request: z.strictObject({
-      agent_id: id.optional(),
-      at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-    }),
+    request: morningBriefCreate,
     response: automationResponse,
   },
   /** Long work going on in the background, newest first; one conversation's when asked. */

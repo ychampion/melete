@@ -395,7 +395,7 @@ await surface(
     },
   },
 );
-await surface('onboarding-connect', 'Setup step 3: what Melete may look at.', '/setup', {
+await surface('onboarding-connect', 'Setup step 3: connect your apps, each one optional.', '/setup', {
   prepare: async (page) => {
     await page.getByRole('button', { name: 'Show me' }).click();
     for (let i = 0; i < 6; i += 1) {
@@ -403,7 +403,7 @@ await surface('onboarding-connect', 'Setup step 3: what Melete may look at.', '/
       if ((await next.count()) === 0) break;
       await next.first().click();
       await page.waitForTimeout(200);
-      if ((await page.getByText('What Melete may look at').count()) > 0) break;
+      if ((await page.getByText('Connect your apps').count()) > 0) break;
     }
     await page.waitForTimeout(500);
   },

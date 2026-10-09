@@ -4,6 +4,9 @@ import {
   type ExperienceDraft,
   experienceOperations,
   experienceResult,
+  MORNING_BRIEF_TITLE,
+  morningBriefCreate,
+  morningBriefInstruction,
   runLimitRequest,
   unavailable,
 } from '@melete/contracts';
@@ -326,14 +329,15 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       planning.restartAutomation(spaceId, c.req.param('id') ?? ''),
     'DELETE /automations/{id}': (spaceId, c) =>
       planning.deleteAutomation(spaceId, c.req.param('id') ?? '', deps.sql),
-    'POST /automations/morning-brief': (spaceId, _c, input) =>
-      planning.createAutomation(spaceId, {
-        ...input,
-        title: 'Your morning brief',
-        instruction:
-          'Summarize my upcoming events and open tasks for today. Ask before making changes.',
+    'POST /automations/morning-brief': (spaceId, _c, input) => {
+      const { topics, ...when } = morningBriefCreate.parse(input);
+      return planning.createAutomation(spaceId, {
+        ...when,
+        title: MORNING_BRIEF_TITLE,
+        instruction: morningBriefInstruction(topics),
         weekdays: [0, 1, 2, 3, 4, 5, 6],
-      }),
+      });
+    },
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', input),

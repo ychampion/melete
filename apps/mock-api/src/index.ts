@@ -45,10 +45,25 @@ export type MockOptions = {
   multiplayer?: boolean;
   /** Google signs in through Composio, as with a Composio key set on the service. */
   composio?: boolean;
+  /**
+   * A person's very first visit: a fresh install with no account, no seed,
+   * nothing connected and nothing waiting (`MELETE_MOCK_FIRST_RUN=on`). It
+   * overrides the seed, setup, connection and "Needs you" options.
+   */
+  firstRun?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
-export function createMock(options: MockOptions = {}) {
+export function createMock(given: MockOptions = {}) {
+  const options: MockOptions = given.firstRun
+    ? {
+        ...given,
+        experience: { seed: false },
+        setupNeeded: true,
+        connections: 'none',
+        needsYou: 'none',
+      }
+    : given;
   const store = new Store();
   if (options.now) store.now = options.now;
   const scenarios = loadScenarios();
@@ -69,6 +84,7 @@ export function createMock(options: MockOptions = {}) {
     reach: options.reach ?? true,
     multiplayer: options.multiplayer ?? false,
     composio: options.composio ?? false,
+    firstRun: options.firstRun ?? false,
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -89,6 +105,7 @@ if (import.meta.main) {
     reach: process.env.MELETE_MOCK_REACH !== 'off',
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
+    firstRun: process.env.MELETE_MOCK_FIRST_RUN === 'on',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     connections:
       process.env.MELETE_MOCK_CONNECTIONS === 'none'
