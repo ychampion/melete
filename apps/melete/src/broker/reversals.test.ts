@@ -4,6 +4,7 @@ import { appsManifest } from '../connectors/apps.ts';
 import { calendarManifest } from '../connectors/calendar.ts';
 import { emailManifest } from '../connectors/email.ts';
 import { filesManifest } from '../connectors/files.ts';
+import { skillsManifest } from '../connectors/skills.ts';
 import type { Query } from './records.ts';
 import {
   declarationOf,
@@ -30,7 +31,7 @@ describe('the reversal registry', () => {
 
   test('every declared tool is a real tool, and an undeclared one has none', () => {
     const tools = new Set(
-      [calendarManifest, emailManifest, filesManifest, appsManifest].flatMap((manifest) =>
+      [calendarManifest, emailManifest, filesManifest, appsManifest, skillsManifest].flatMap((manifest) =>
         manifest.tools.map((tool) => tool.name),
       ),
     );

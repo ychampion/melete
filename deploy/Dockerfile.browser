@@ -25,6 +25,7 @@ COPY apps/melete/src/workers/browser/ apps/melete/src/workers/browser/
 COPY apps/melete/src/connectors/web.ts apps/melete/src/connectors/web.ts
 COPY apps/melete/src/connectors/readable.ts apps/melete/src/connectors/readable.ts
 COPY apps/melete/src/connectors/web-search.ts apps/melete/src/connectors/web-search.ts
+COPY apps/melete/src/connectors/weather.ts apps/melete/src/connectors/weather.ts
 COPY apps/melete/src/connectors/types.ts apps/melete/src/connectors/types.ts
 COPY apps/melete/src/broker/errors.ts apps/melete/src/broker/errors.ts
 

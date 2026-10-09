@@ -14,7 +14,6 @@ import { ServiceError } from '../../src/api/errors.ts';
 import { skillFile } from '../../src/connectors/skills.ts';
 import { principal, space } from '../../src/db/schema.ts';
 import { EngineSkillService } from '../../src/learning/engine-skills.ts';
-import { requireLearningSpace } from '../../src/learning/episodes.ts';
 import { LearnedService } from '../../src/learning/learned.ts';
 import { EngineSource } from '../../src/learning/learned-engine.ts';
 import { mountOwnSkills } from '../../src/learning/own-skills-routes.ts';

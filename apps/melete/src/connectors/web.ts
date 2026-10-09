@@ -362,10 +362,10 @@ export const webManifest: ConnectorManifest = {
     {
       name: 'web.weather',
       description:
-        "The weather now and today's forecast (high, low, chance of rain, wind, sunrise) for one " +
-        "place, from Open-Meteo. Use it for a morning brief or any weather question. Give place as " +
-        "the person's city when you know it; left out, their time zone's city is used. Give units " +
-        "(metric or imperial) only when they said which they prefer. Credit Open-Meteo.",
+        "Current weather and today's forecast (high, low, chance of rain, wind, sunrise) for one " +
+        'place, from Open-Meteo, for a morning brief or a weather question. Give place as the ' +
+        "person's city when known; left out, their time zone's city is taken. Give units (metric " +
+        'or imperial) only when they said which they prefer. Credit Open-Meteo.',
       input_schema: {
         type: 'object',
         properties: {
