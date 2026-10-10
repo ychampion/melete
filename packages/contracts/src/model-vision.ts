@@ -170,6 +170,25 @@ export const VISION_IMAGE_MAX_EDGE = 1280;
 export const MAX_IMAGE_ENCODED_BYTES = 128 * 1024;
 
 /**
+ * The longest side of the copy of a picture the person attached that a model
+ * is shown. The small print of a phone photo of a receipt or a page is still
+ * legible at this size, and it is as much as providers read: OpenAI fits a
+ * picture within 2048 pixels, Anthropic scales anything over about 1,568 down.
+ */
+export const ATTACHED_IMAGE_MAX_EDGE = 2048;
+
+/**
+ * The largest copy of a picture the person attached, in bytes: a 2048-pixel
+ * photo at good quality. Three of them stay well inside every provider's
+ * request limit (Fireworks takes 10 MB of pictures in one request, Anthropic
+ * 5 MB per picture).
+ */
+export const MAX_ATTACHED_IMAGE_BYTES = 1024 * 1024;
+
+/** The same copy as base64 text, as it travels in a request. */
+export const MAX_ATTACHED_IMAGE_ENCODED_BYTES = Math.ceil(MAX_ATTACHED_IMAGE_BYTES / 3) * 4;
+
+/**
  * What a picture is charged as, in input tokens. It is the pinned engine's own
  * estimate (`DEFAULT_IMAGE_TOKEN_COST` in agent/image_token_cost.py), so the
  * gateway and the engine's compaction agree on how full a request is; a

@@ -64,6 +64,8 @@ describe('which catalog apps are ready', () => {
     );
     expect(missing?.reason).toContain('only accepts apps registered with GitHub');
     expect(missing?.reason).not.toContain('GITHUB_MCP');
+    // No dead end: the person is told the way in that needs nothing registered.
+    expect(missing?.reason).toContain('under For developers');
     // The setting is for whoever runs Melete, with the callback to register.
     expect(missing?.hint).toContain('GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET');
     expect(missing?.hint).toContain('https://melete.example.com/api/oauth/callback');

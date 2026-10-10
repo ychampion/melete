@@ -49,7 +49,7 @@ import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation, Home, Task } from '../experience/types.ts';
 import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { UsageNotice } from '../models/Usage.tsx';
-import { href, navigate, useRoute } from '../router.ts';
+import { href, navigate, newChat, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
 import { sidebarNav } from './nav.ts';
@@ -276,7 +276,7 @@ function Sidebar({
             label="New chat"
             onClick={() => {
               onClose();
-              navigate('/chat/new');
+              newChat();
             }}
           />
         )}

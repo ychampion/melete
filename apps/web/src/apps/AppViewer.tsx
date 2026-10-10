@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LoadError } from '../design/LoadError.tsx';
 import { Badge, Button, Dialog, Input, Skeleton } from '../design/primitives.tsx';
-import { useLoad } from '../experience/hooks.ts';
+import { useApp, useLoad } from '../experience/hooks.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { FramedView } from '../viewer/FramedView.tsx';
@@ -246,6 +246,7 @@ function ShareDialog({
 }
 
 export function AppViewer({ id }: { id: string }) {
+  const { capabilities } = useApp();
   const detail = useLoad(() => appsApi.get(id), [id]);
   const [frame, setFrame] = useState<Frame>({ kind: 'loading' });
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -384,9 +385,12 @@ export function AppViewer({ id }: { id: string }) {
               <Button variant="outline" icon="clock" onClick={() => setVersionsOpen(true)}>
                 Versions
               </Button>
-              <Button variant="outline" icon="share" onClick={() => setShareOpen(true)}>
-                Share
-              </Button>
+              {/* Only other accounts here can be given an app, and only rooms make them. */}
+              {capabilities.multiplayer ? (
+                <Button variant="outline" icon="share" onClick={() => setShareOpen(true)}>
+                  Share
+                </Button>
+              ) : null}
               {collects ? (
                 <Button variant="outline" icon="inbox" onClick={() => setResponsesOpen(true)}>
                   Responses

@@ -4,8 +4,9 @@
  * refusal is a plain sentence at once, then uploaded on its own. The limits
  * come from the service; where the operator limits uploads at once, the rest
  * wait their turn, and otherwise a few run together; the message
- * names the uploaded files when it is sent. A picture also gets a small copy,
- * made here, which is what a model that reads pictures is shown.
+ * names the uploaded files when it is sent. A picture also gets a copy made
+ * here, large enough to read its small print, which is what a model that reads
+ * pictures is shown.
  */
 import {
   ATTACHMENT_LIMITS,
@@ -33,9 +34,15 @@ export type PendingFile = {
   error: string | null;
 };
 
-/** The longest side of the copy of a picture a model is shown. */
-const MODEL_EDGE = 1280;
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const TRYING_AGAIN = 'Couldn’t reach Melete. Trying again…';
+
+/**
+ * How long an upload that could not reach the service waits before each new
+ * try, in milliseconds: long enough for the service to come back after a
+ * restart, and then it stops and says so.
+ */
+export const UPLOAD_RETRY_DELAYS = [2_000, 5_000, 10_000, 20_000, 30_000] as const;
 
 /**
  * Uploads run together when the service sets no limit: enough to keep a
@@ -66,41 +73,94 @@ export const attachmentUrl = (id: string, preview = false) =>
   `${API_BASE_URL}/attachments/${encodeURIComponent(id)}/content${preview ? '?variant=preview' : ''}`;
 
 /**
- * A JPEG of the picture at most MODEL_EDGE on its longest side, made smaller
- * until it fits what one model request may carry. Null when the browser cannot
- * draw the picture; the service then uses the picture itself if it is small.
+ * The qualities a copy is tried at, at each size, best first. Detail goes in
+ * quality before it goes in pixels: a smaller picture loses the small print of
+ * a receipt or a page first, and a model then reads it wrong.
+ */
+const COPY_QUALITIES = [0.85, 0.75, 0.65, 0.5, 0.4] as const;
+/** How much smaller each size tried is than the one before, when no quality fits. */
+const COPY_SHRINK = 0.8;
+
+/** Encodes the picture at a size; null when it cannot. */
+export type CopyEncoder = (
+  width: number,
+  height: number,
+  type: 'image/png' | 'image/jpeg',
+  quality: number,
+) => Promise<Blob | null>;
+
+/**
+ * The copy a model is shown: at most `model_image_edge` on its longest side and
+ * `model_image_bytes` in size. A screenshot or other PNG stays lossless when it
+ * fits; otherwise a JPEG, at the best quality that fits, at the full size before
+ * any smaller one. Null when no copy fits.
+ */
+export async function fitForModel(
+  width: number,
+  height: number,
+  encode: CopyEncoder,
+  options: { lossless?: boolean; maxBytes?: number; maxEdge?: number } = {},
+): Promise<Blob | null> {
+  const maxBytes = options.maxBytes ?? ATTACHMENT_LIMITS.model_image_bytes;
+  let scale = Math.min(
+    1,
+    (options.maxEdge ?? ATTACHMENT_LIMITS.model_image_edge) / Math.max(width, height),
+  );
+  for (let round = 0; round < 6; round++) {
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    if (round === 0 && options.lossless) {
+      const png = await encode(w, h, 'image/png', 1);
+      if (png && png.size <= maxBytes) return png;
+    }
+    for (const quality of COPY_QUALITIES) {
+      const blob = await encode(w, h, 'image/jpeg', quality);
+      if (blob && blob.size <= maxBytes) return blob;
+    }
+    scale *= COPY_SHRINK;
+  }
+  return null;
+}
+
+/**
+ * The copy of a picture a model is shown (see `fitForModel`). Null when the
+ * browser cannot draw the picture; the service then uses the picture itself if
+ * it is small enough.
  */
 export async function modelCopy(file: File): Promise<Blob | null> {
   if (typeof createImageBitmap !== 'function') return null;
   let bitmap: ImageBitmap;
   try {
-    bitmap = await createImageBitmap(file);
+    // The photo the right way up, as the camera recorded it.
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
     return null;
   }
+  let canvas: HTMLCanvasElement | null = null;
   try {
-    let scale = Math.min(1, MODEL_EDGE / Math.max(bitmap.width, bitmap.height));
-    for (let round = 0; round < 6; round++) {
-      const width = Math.max(1, Math.round(bitmap.width * scale));
-      const height = Math.max(1, Math.round(bitmap.height * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) return null;
-      // A transparent picture gets a white ground rather than black.
-      context.fillStyle = '#fff';
-      context.fillRect(0, 0, width, height);
-      context.drawImage(bitmap, 0, 0, width, height);
-      for (const quality of [0.85, 0.7, 0.55]) {
-        const blob = await new Promise<Blob | null>((done) =>
-          canvas.toBlob(done, 'image/jpeg', quality),
-        );
-        if (blob && blob.size <= ATTACHMENT_LIMITS.model_image_bytes) return blob;
-      }
-      scale *= 0.7;
-    }
-    return null;
+    return await fitForModel(
+      bitmap.width,
+      bitmap.height,
+      async (width, height, type, quality) => {
+        let drawn = canvas;
+        if (!drawn || drawn.width !== width || drawn.height !== height) {
+          drawn = document.createElement('canvas');
+          drawn.width = width;
+          drawn.height = height;
+          const context = drawn.getContext('2d');
+          if (!context) return null;
+          // A transparent picture gets a white ground rather than black.
+          context.fillStyle = '#fff';
+          context.fillRect(0, 0, width, height);
+          context.imageSmoothingQuality = 'high';
+          context.drawImage(bitmap, 0, 0, width, height);
+          canvas = drawn;
+        }
+        const ready = drawn;
+        return new Promise<Blob | null>((done) => ready.toBlob(done, type, quality));
+      },
+      { lossless: file.type === 'image/png' },
+    );
   } finally {
     bitmap.close();
   }
@@ -125,16 +185,31 @@ export async function uploadAttachment(
       credentials: client.options.credentials,
       body: form,
     });
-    const body = (await response.json().catch(() => null)) as {
-      attachment?: AttachmentView;
-      error?: { message?: string };
-    } | null;
-    if (!response.ok || !body?.attachment)
-      return { data: null, error: body?.error?.message ?? OFFLINE, unavailable: null };
-    return { data: body.attachment, error: null, unavailable: null };
+    const body = (await response.json().catch(() => null)) as UploadAnswer;
+    return uploadResult(response.status, body);
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return uploadResult(null, null);
   }
+}
+
+type UploadAnswer = { attachment?: AttachmentView; error?: { message?: string } } | null;
+
+/**
+ * What an upload's answer means: the file, a refusal that says why, or the
+ * service out of reach (no answer, or one from a service that is down), which
+ * is tried again.
+ */
+export function uploadResult(status: number | null, body: UploadAnswer): Result<AttachmentView> {
+  if (status !== null && status < 300 && body?.attachment)
+    return { data: body.attachment, error: null, unavailable: null };
+  if (status !== null && status < 500 && body?.error?.message)
+    return { data: null, error: body.error.message, unavailable: null };
+  return { data: null, error: null, unavailable: OFFLINE };
+}
+
+/** How long to wait before trying an upload again after `tried` tries; undefined to stop. */
+export function nextUploadTry(result: Result<AttachmentView>, tried: number): number | undefined {
+  return result.unavailable ? UPLOAD_RETRY_DELAYS[tried] : undefined;
 }
 
 /** Take back an uploaded file that was not sent. Failing quietly is fine: it is swept after a day. */
@@ -223,11 +298,14 @@ export function useAttachments() {
   live.current = files;
   /** Files taken out of the box; one still waiting or uploading is then let go. */
   const gone = useRef(new Set<string>());
+  /** Tries of uploads waiting for the service to come back, so they stop with the box. */
+  const retries = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
-  // Local pictures are let go when the box goes.
+  // Local pictures, and tries still waiting, are let go when the box goes.
   useEffect(
     () => () => {
       for (const file of live.current) if (file.thumb) URL.revokeObjectURL(file.thumb);
+      for (const timer of retries.current.values()) clearTimeout(timer);
     },
     [],
   );
@@ -274,18 +352,37 @@ export function useAttachments() {
       for (const { file, pending } of accepted)
         void (async () => {
           const preview = pending.kind === 'image' ? await modelCopy(file) : null;
-          // A file taken out while it waited is never sent.
-          const result = await queued(async () =>
-            kept(pending.key) ? uploadAttachment(file, preview) : null,
-          );
-          if (!result) return;
-          if (!kept(pending.key)) {
-            // Removed while it uploaded.
-            if (result.data) void removeAttachment(result.data.id);
-            return;
-          }
-          if (result.data) update(pending.key, { state: 'ready', view: result.data });
-          else update(pending.key, { state: 'failed', error: result.error });
+          const attempt = async (tried: number): Promise<void> => {
+            retries.current.delete(pending.key);
+            if (!kept(pending.key)) return;
+            if (tried > 0) update(pending.key, { state: 'uploading', error: null });
+            // A file taken out while it waited is never sent.
+            const result = await queued(async () =>
+              kept(pending.key) ? uploadAttachment(file, preview) : null,
+            );
+            if (!result) return;
+            if (!kept(pending.key)) {
+              // Removed while it uploaded.
+              if (result.data) void removeAttachment(result.data.id);
+              return;
+            }
+            if (result.data) {
+              update(pending.key, { state: 'ready', view: result.data });
+              return;
+            }
+            // The service could not be reached: tried again a few times on its own.
+            const wait = nextUploadTry(result, tried);
+            update(pending.key, {
+              state: 'failed',
+              error: wait === undefined ? (result.error ?? result.unavailable) : TRYING_AGAIN,
+            });
+            if (wait !== undefined)
+              retries.current.set(
+                pending.key,
+                setTimeout(() => void attempt(tried + 1), wait),
+              );
+          };
+          await attempt(0);
         })();
     },
     [update, limits],
@@ -295,9 +392,24 @@ export function useAttachments() {
     const file = live.current.find((entry) => entry.key === key);
     if (!file) return;
     gone.current.add(key);
+    clearTimeout(retries.current.get(key));
+    retries.current.delete(key);
     if (file.thumb) URL.revokeObjectURL(file.thumb);
     if (file.view) void removeAttachment(file.view.id);
     setFiles((current) => current.filter((entry) => entry.key !== key));
+    setProblem(null);
+  }, []);
+
+  /** Take out every file that did not upload, as a new chat starts without them. */
+  const dropFailed = useCallback(() => {
+    for (const file of live.current) {
+      if (file.state !== 'failed') continue;
+      gone.current.add(file.key);
+      clearTimeout(retries.current.get(file.key));
+      retries.current.delete(file.key);
+      if (file.thumb) URL.revokeObjectURL(file.thumb);
+    }
+    setFiles((current) => current.filter((entry) => entry.state !== 'failed'));
     setProblem(null);
   }, []);
 
@@ -326,7 +438,18 @@ export function useAttachments() {
 
   const uploading = files.some((file) => file.state === 'uploading');
   const ready = files.flatMap((file) => (file.state === 'ready' && file.view ? [file.view] : []));
-  return { files, problem, add, remove, clear, restore, uploading, ready, setProblem };
+  return {
+    files,
+    problem,
+    add,
+    remove,
+    dropFailed,
+    clear,
+    restore,
+    uploading,
+    ready,
+    setProblem,
+  };
 }
 
 export type AttachmentsControl = ReturnType<typeof useAttachments>;

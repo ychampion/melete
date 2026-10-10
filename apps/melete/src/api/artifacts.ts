@@ -16,7 +16,7 @@ import type { SpaceResolver } from './reactions.ts';
 
 const notFound = () => new ServiceError('not_found', 'No such artifact.', 404);
 
-type Stored = Pick<typeof artifact.$inferSelect, 'area' | 'path' | 'jobId' | 'sourceJobId'>;
+export type Stored = Pick<typeof artifact.$inferSelect, 'area' | 'path' | 'jobId' | 'sourceJobId'>;
 
 /**
  * Where a recorded file is, inside one of the space's own areas and nowhere
@@ -63,7 +63,11 @@ const CHUNK = 64 * 1024;
 /** A stored file opened for reading, with the size it had when opened. */
 type Opened = { handle: FileHandle; size: number };
 
-async function openArtifact(roots: ArtifactRoots, spaceId: string, row: Stored): Promise<Opened> {
+export async function openArtifact(
+  roots: ArtifactRoots,
+  spaceId: string,
+  row: Stored,
+): Promise<Opened> {
   const location = artifactLocation(roots, spaceId, row);
   // Every component is checked, so a link anywhere on the way is refused.
   const { base, segments } =
