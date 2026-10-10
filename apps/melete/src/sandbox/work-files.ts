@@ -257,7 +257,7 @@ export async function recordWorkFiles(
               !row.shared &&
               row.writers.length === 1 &&
               row.writers[0] === jobId));
-        if (own) writers = [jobId];
+        if (own) writers = Array.of(jobId);
         shared = !own;
       } else if (others) shared = true;
       else {
