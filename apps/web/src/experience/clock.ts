@@ -80,3 +80,10 @@ export const weekday = (date: Date, zone: string = displayZone(), long = false):
 /** "Oct 10". */
 export const monthDay = (date: Date, zone: string = displayZone()): string =>
   date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: zone });
+
+/** "Today", "Yesterday", or "Sat, Oct 3": the day something happened, said from now. */
+export function dayWords(date: Date, now: Date, zone: string = displayZone()): string {
+  if (sameDay(date, now, zone)) return 'Today';
+  if (isYesterday(date, now, zone)) return 'Yesterday';
+  return `${weekday(date, zone)}, ${monthDay(date, zone)}`;
+}

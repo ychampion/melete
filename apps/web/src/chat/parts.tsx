@@ -21,6 +21,7 @@ import {
   Status,
 } from '../design/primitives.tsx';
 import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
+import { clockTime } from '../experience/clock.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { webHref } from '../experience/markdown.ts';
@@ -49,8 +50,7 @@ import { href } from '../router.ts';
 import { MessageFiles } from './MessageFiles.tsx';
 import { longMessage } from './worklog.ts';
 
-export const timeOf = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+export const timeOf = (iso: string) => clockTime(new Date(iso));
 
 /**
  * The logo for an app the contract names in plain words. Only a named product

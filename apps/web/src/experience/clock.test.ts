@@ -5,6 +5,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import {
   clockTime,
+  dayWords,
   dayKey,
   displayZone,
   hourOfDay,
@@ -50,4 +51,11 @@ test('today and yesterday are the profile’s days', () => {
   expect(
     isYesterday(new Date('2026-10-31T12:00:00Z'), new Date('2026-11-01T12:00:00Z'), 'UTC'),
   ).toBe(true);
+});
+
+test('a chat started on another day says which day, on the profile’s calendar', () => {
+  const now = new Date('2026-10-10T14:56:00Z');
+  expect(dayWords(new Date('2026-10-10T02:00:00Z'), now, 'America/Los_Angeles')).toBe('Yesterday');
+  expect(dayWords(new Date('2026-10-10T02:00:00Z'), now, 'Asia/Kolkata')).toBe('Today');
+  expect(dayWords(new Date('2026-10-03T12:00:00Z'), now, 'UTC')).toBe('Sat, Oct 3');
 });
