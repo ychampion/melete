@@ -1148,6 +1148,11 @@ export const automationRun = z.strictObject({
    * command) failed or was refused, so it has nothing new to show.
    */
   empty: z.literal(true).optional(),
+  /**
+   * The run finished with something, but some of its steps were held back or
+   * refused; `reason` names them.
+   */
+  partial: z.literal(true).optional(),
 });
 /** The newest run of a routine, for the place the person looks first. */
 export const routineResult = z.strictObject({

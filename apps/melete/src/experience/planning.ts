@@ -31,6 +31,74 @@ import { answerText, object, plainText } from './projectors.ts';
 import { removeJobs } from './removal.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
+/** What one run tried, what of it worked, and the kinds of step held back or refused. */
+export type StepTally = { steps: number; worked: number; held: string[] };
+
+/** Statuses an action ends a run in without having happened, because someone or something said no. */
+const HELD_STATUSES = new Set(['denied', 'withdrawn', 'needs_approval', 'approved']);
+
+/**
+ * Counts one run's steps from what the broker recorded, and from what the engine
+ * said of the steps the broker never saw.
+ *
+ * Every broker step also ends in an engine result, and that result is `ok` even
+ * when the broker refused the step: the tool answered, with a refusal. So the
+ * engine's results count only beyond the broker's own steps. A broker step
+ * worked when its action succeeded or may yet have; it was held back when the
+ * person or a rule said no (denied, refused at proposal or at admission, still
+ * waiting on approval), and it failed when it ran and failed.
+ */
+export function tallySteps(input: {
+  results: boolean[];
+  effects: Array<{ kind: string; status: string; rejected: boolean }>;
+  notes: Array<Record<string, unknown>>;
+}): StepTally {
+  const held: string[] = [];
+  let worked = 0;
+  let broker = 0;
+  for (const effect of input.effects) {
+    broker++;
+    if (effect.rejected || HELD_STATUSES.has(effect.status) || effect.status === 'proposed')
+      held.push(effect.kind);
+    else if (effect.status !== 'failed') worked++;
+  }
+  const refused = input.notes.filter((note) => note.phase === 'proposal_refused');
+  for (const note of refused) {
+    broker++;
+    held.push(typeof note.kind === 'string' ? note.kind : 'a step');
+  }
+  // A search held back before this note existed left only its trace in the chat.
+  if (!refused.some((note) => note.kind === 'web.search'))
+    for (const note of input.notes) {
+      const call = object(note.call);
+      if (typeof call.id === 'string' && call.id.startsWith('held-search:')) {
+        broker++;
+        held.push('web.search');
+      }
+    }
+  const ok = input.results.filter(Boolean).length;
+  const engineSteps = Math.max(0, input.results.length - broker);
+  return {
+    steps: broker + engineSteps,
+    worked: worked + Math.min(engineSteps, Math.max(0, ok - broker)),
+    held,
+  };
+}
+
+/** The kinds of step, in words and in a steady order: `web.search` reads as web search. A few are named, the rest counted. */
+export function stepNames(kinds: string[]): string {
+  const names = [
+    ...new Set(kinds.map((kind) => kind.replace(/[._]+/g, ' ').trim() || 'a step')),
+  ].sort();
+  const shown = names.slice(0, 3);
+  const more = names.length - shown.length;
+  const list =
+    shown.length <= 1
+      ? (shown[0] ?? 'a step')
+      : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+  return more > 0 ? `${list}, and ${more} more` : list;
+}
+
 export const stateLabel = (
   state: string,
 ): 'idle' | 'queued' | 'working' | 'needs_you' | 'done' | 'failed' | 'stopped' => {
@@ -320,32 +388,78 @@ export class ExperiencePlanning {
         .map((entry) => entry.attemptId),
     );
     // What each run tried, and whether any of it worked.
-    const tried = new Map<string, { steps: number; worked: number }>();
-    const count = (attemptId: string | null, worked: boolean) => {
-      if (!attemptId) return;
-      const seen = tried.get(attemptId) ?? { steps: 0, worked: 0 };
-      seen.steps++;
-      if (worked) seen.worked++;
-      tried.set(attemptId, seen);
-    };
+    const tried = new Map<string, StepTally>();
     if (runs.length) {
       const ids = runs.map((run) => run.id);
-      const results = await this.db
-        .select({ attemptId: event.attemptId, payload: event.payload })
-        .from(event)
-        .where(and(inArray(event.attemptId, ids), eq(event.type, 'tool_result')));
-      for (const result of results) count(result.attemptId, object(result.payload).ok === true);
-      const effects = await this.db
-        .select({ attemptId: action.attemptId, status: action.status })
-        .from(action)
-        .where(inArray(action.attemptId, ids));
-      for (const effect of effects)
-        count(effect.attemptId, !['failed', 'denied', 'withdrawn'].includes(effect.status));
+      const [results, effects, notes] = await Promise.all([
+        this.db
+          .select({ attemptId: event.attemptId, payload: event.payload })
+          .from(event)
+          .where(and(inArray(event.attemptId, ids), eq(event.type, 'tool_result'))),
+        this.db
+          .select({
+            id: action.id,
+            attemptId: action.attemptId,
+            status: action.status,
+            kind: action.kind,
+          })
+          .from(action)
+          .where(inArray(action.attemptId, ids)),
+        this.db
+          .select({ attemptId: event.attemptId, payload: event.payload })
+          .from(event)
+          .where(
+            and(
+              inArray(event.attemptId, ids),
+              eq(event.type, 'notice'),
+              sql`(${event.payload}->>'phase' = 'proposal_refused'
+                or starts_with(${event.payload}->'call'->>'id', 'held-search:'))`,
+            ),
+          ),
+      ]);
+      const effectIds = effects.map((effect) => effect.id);
+      // An admission refusal is noted with no attempt; it names its action.
+      const rejected = effectIds.length
+        ? new Set(
+            (
+              await this.db
+                .select({ actionId: sql<string>`${event.payload}->>'action_id'` })
+                .from(event)
+                .where(
+                  and(
+                    eq(event.type, 'notice'),
+                    sql`${event.payload}->>'phase' = 'admission_rejected'`,
+                    inArray(sql`${event.payload}->>'action_id'`, effectIds),
+                  ),
+                )
+            ).map((row) => row.actionId),
+          )
+        : new Set<string>();
+      for (const run of runs)
+        tried.set(
+          run.id,
+          tallySteps({
+            results: results
+              .filter((row) => row.attemptId === run.id)
+              .map((row) => object(row.payload).ok === true),
+            effects: effects
+              .filter((effect) => effect.attemptId === run.id)
+              .map((effect) => ({
+                kind: effect.kind,
+                status: effect.status,
+                rejected: rejected.has(effect.id),
+              })),
+            notes: notes
+              .filter((row) => row.attemptId === run.id)
+              .map((row) => object(row.payload)),
+          }),
+        );
     }
     const cameUpEmpty = (attemptId: string) => {
       const seen = tried.get(attemptId);
       return Boolean(seen && seen.steps > 0 && seen.worked === 0);
     };
+    const heldIn = (attemptId: string) => tried.get(attemptId)?.held ?? [];
     return experienceAutomation.parse({
       id: row.id,
       title: plainText(title, 'Routine'),
@@ -375,6 +489,7 @@ export class ExperiencePlanning {
         const said = object(run.outcomeDetail).summary;
         const newest = !runs.slice(0, index).some((other) => other.turnId === run.turnId);
         const empty = status === 'done' && cameUpEmpty(run.id);
+        const held = status === 'done' && !empty ? heldIn(run.id) : [];
         return {
           id: run.id,
           status,
@@ -389,9 +504,14 @@ export class ExperiencePlanning {
                 ? excerpt(turn.answer)
                 : null,
           reason: empty
-            ? 'Everything it tried to read or use failed, so it has nothing new. Open the result to see what it said.'
-            : runReason(status, run.outcome, run.outcomeDetail),
+            ? heldIn(run.id).length
+              ? `Everything it tried to read or use failed or was held back (${stepNames(heldIn(run.id))}), so it has nothing new. Open the result to see what it said.`
+              : 'Everything it tried to read or use failed, so it has nothing new. Open the result to see what it said.'
+            : held.length
+              ? `Partly done: some steps worked, and ${stepNames(held)} ${held.length === 1 ? 'was' : 'were'} held back or refused.`
+              : runReason(status, run.outcome, run.outcomeDetail),
           ...(empty ? { empty: true as const } : {}),
+          ...(held.length ? { partial: true as const } : {}),
         };
       }),
     });

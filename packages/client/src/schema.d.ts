@@ -24708,6 +24708,8 @@ export interface components {
             empty?: true;
             finished_at: components["schemas"]["__schema306"] | null;
             id: components["schemas"]["__schema302"];
+            /** @constant */
+            partial?: true;
             reason: string | null;
             started_at: components["schemas"]["__schema306"];
             status: components["schemas"]["__schema304"];

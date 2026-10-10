@@ -43,7 +43,9 @@ export const runLabel = (run: AutomationRun) =>
   run.status === 'done'
     ? run.empty
       ? 'Finished with nothing'
-      : 'Succeeded'
+      : run.partial
+        ? 'Partly done'
+        : 'Succeeded'
     : run.status === 'failed'
       ? 'Failed'
       : run.status === 'stopped'
@@ -53,10 +55,11 @@ export const runLabel = (run: AutomationRun) =>
           : 'Running';
 
 export function RunRow({ run }: { run: AutomationRun }) {
-  const ok = run.status === 'done' && !run.empty;
+  const partial = run.status === 'done' && run.partial === true && !run.empty;
+  const ok = run.status === 'done' && !run.empty && !partial;
   const stopped = run.status === 'stopped' || (run.status === 'done' && run.empty === true);
   const failed = run.status === 'failed' || stopped;
-  const waiting = run.status === 'needs_you';
+  const waiting = run.status === 'needs_you' || partial;
   const color = ok
     ? 'var(--success)'
     : stopped

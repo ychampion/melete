@@ -19,6 +19,10 @@ test('a run with a result succeeded', () => {
   expect(runLabel(run())).toBe('Succeeded');
 });
 
+test('a run where some steps were held back is partly done, not a success', () => {
+  expect(runLabel(run({ partial: true }))).toBe('Partly done');
+});
+
 test('a run whose every step failed finished with nothing', () => {
   expect(runLabel(run({ empty: true }))).toBe('Finished with nothing');
 });

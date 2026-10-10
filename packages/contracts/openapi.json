@@ -39086,6 +39086,10 @@
           "empty": {
             "type": "boolean",
             "const": true
+          },
+          "partial": {
+            "type": "boolean",
+            "const": true
           }
         },
         "required": [
