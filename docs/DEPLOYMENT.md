@@ -2126,7 +2126,7 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | --- | --- |
 | `MELETE_ALERT_WEBHOOK_URL` | Receives a JSON POST: `text` (a sentence chat webhooks show), `status` (`unhealthy` or `recovered`), `service`, `version`, `checks` and `time` |
 | `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
-| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465` |
+| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
@@ -2138,6 +2138,13 @@ Alerts are off until a webhook or an email address is set. One alert is sent
 when the service turns unhealthy, again every repeat interval while it stays
 so, and one more when it is healthy again. With several instances on one
 database, the instance holding the `health-alerts` lease sends them.
+
+Alert email needs TLS unless the mail server is on this machine
+(`localhost`, `127.0.0.1` or `::1`). Releases up to v0.2.1 also sent it in
+plain text, so an installation upgraded from one that sends alerts through a
+relay on another host without TLS must add `?requireTLS=false` to
+`MELETE_ALERT_SMTP_URL`. Otherwise its alert email stops, and the service
+logs `alert not sent` each time.
 
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
 each check with what it found, `200` while all pass and `503` while any fails:

@@ -2,6 +2,18 @@
 
 What each version ships.
 
+## Unreleased
+
+### Upgrading from v0.2.1
+
+1. Alert email (`MELETE_ALERT_SMTP_URL`) now needs TLS unless the mail server
+   is on this machine (`localhost`, `127.0.0.1` or `::1`): an `smtps://` URL,
+   or a plain `smtp://` server that upgrades with STARTTLS. An installation
+   that sends alerts through a relay on another host without TLS must add
+   `?requireTLS=false` to that URL, or its alert email stops after the upgrade
+   and the service logs `alert not sent`. See
+   [Alerts](docs/DEPLOYMENT.md#alerts).
+
 ## v0.2.1 — 2026-10-05
 
 ### Ships
