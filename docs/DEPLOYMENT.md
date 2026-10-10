@@ -1174,8 +1174,9 @@ the addresses in `deploy/.env`:
   it prints. The service says so in its log at start, and `melete check` and
   `melete status` say so too.
 
-`MELETE_SETUP_OPEN=true` turns that refusal off: whoever opens the page first
-becomes the owner, without a code. You'd rarely want this. On an address other
+Set `MELETE_SETUP_OPEN=true` only if the first visitor should be allowed to
+create the owner without a code: it turns that refusal off, and whoever opens
+the page first becomes the owner. You'd rarely want this. On an address other
 people can reach, a scanner or a stranger can get there before you do, and
 they then own the installation and everything you connect to it. It is only
 for a page that is reachable but private in practice, such as one behind
