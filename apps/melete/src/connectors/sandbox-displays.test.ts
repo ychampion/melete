@@ -300,6 +300,39 @@ withDb('a display per chat on the agent computer', () => {
     expect(refused.reason).toContain('a person has taken control');
   }, 60_000);
 
+  test("the computer's session id reaches display 0 only for the chat on it", async () => {
+    const s = await setup();
+    const flights = await s.chat('Flights to Lisbon');
+    const groceries = await s.chat('Weekly groceries');
+    const a = await flights.open('https://flights.example/lisbon');
+    const b = await groceries.open('https://shop.example/basket');
+    expect(a.display).toBe(0);
+    // A shared space, where the groceries chat is another member's.
+    const otherId = recordId('prn');
+    await s.sql`insert into principal (id, email) values (${otherId}, ${`${otherId}@example.test`})`;
+    await s.sql`update space set kind = 'shared' where id = ${s.scope.spaceId}`;
+    await s.sql`insert into space_membership (principal_id, space_id, role)
+      values (${s.ownerId}, ${s.scope.spaceId}, 'owner'), (${otherId}, ${s.scope.spaceId}, 'member')`;
+    await s.sql`update job set principal_id = ${otherId} where id = ${groceries.jobId}`;
+    // The chat that opened the computer finishes its turn; the computer passes to the other.
+    await flights.endTurn();
+    await s.wiring.settleAttempt(flights.attempt(), AbortSignal.timeout(10_000));
+    const [session] = await s.sql`select id, job_id from sandbox_session
+      where space_id = ${s.scope.spaceId} and status = 'ready'`;
+    expect(session?.job_id).toBe(groceries.jobId);
+    const service = new SandboxComputerService(s.sql, s.providers);
+    expect((await service.steerable(String(b.computer_id), otherId)).sessionId).toBe(
+      String(b.computer_id),
+    );
+    // The session id names display 0, the flights chat's: not theirs to watch or take.
+    await expect(service.steerable(String(session?.id), otherId, 'watch')).rejects.toThrow();
+    await expect(service.control(String(session?.id), 'takeover', otherId)).rejects.toThrow();
+    // The person whose chat is on it reaches it so, as that display.
+    const zero = await service.steerable(String(session?.id), s.ownerId);
+    expect(zero.sessionId).toBe(String(a.computer_id));
+    expect(zero.jobId).toBe(flights.jobId);
+  }, 60_000);
+
   test("a chat's display ends with the chat, and a stop ends only that chat's", async () => {
     const s = await setup();
     const flights = await s.chat('Flights to Lisbon');
