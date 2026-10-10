@@ -1,16 +1,23 @@
 /**
- * `melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path]
- *                [--encrypt | --encrypt-to <age recipient>]`
+ * `melete backup [--estimate] [--database-only | --offline] [--dir <path>]
+ *                [--to ssh://host:/path] [--encrypt | --encrypt-to <age recipient>]`
  *
- * By default the backup is online and small: the database as a custom-format
+ * By default the backup is online and whole: the database as a custom-format
  * dump, checked with `pg_restore --list` while it is written, the restriction
  * journal on its own under a timestamped name, deploy/.env, deploy/config/ and
- * deploy/melete.deploy.json, and a SHA256SUMS list of all of them. Each backup
- * is a new directory, melete-<time>, readable only by the account that made it
- * (0700, files 0600).
+ * deploy/melete.deploy.json; then the people's files (files.ts): the spaces,
+ * the local blob store, the shared /work and each agent computer's two
+ * volumes, each as its own archive, with contents.json saying what they are;
+ * and a SHA256SUMS list of all of them. Each backup is a new directory,
+ * melete-<time>, readable only by the account that made it (0700, files 0600).
  *
- * `--with-volumes` also archives /data and /work, with the writers stopped so
- * the database and the files agree, and starts them again afterwards.
+ * The files are taken after the dump, so every file the database names is in
+ * the backup. A computer that is running is paused while its volumes are
+ * copied, so its files (a browser profile among them) are from one moment;
+ * the rest of the stack keeps running. `--offline` (or `--with-volumes`, its
+ * older name) stops the writers for the files instead, so the database and
+ * the files agree exactly, and starts them again afterwards.
+ * `--database-only` leaves the files out and says so.
  * `--to ssh://host:/path` streams every part to another machine over SSH and
  * keeps nothing on this disk, for a host short on space. `--estimate` measures
  * and compares with the free space at the destination, and changes nothing.
@@ -44,6 +51,25 @@ import { join, resolve } from 'node:path';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
+import {
+  archiveCommand,
+  CELLS_SERVICE,
+  CONTENTS_FILE,
+  type ComputerVolume,
+  type Contents,
+  composeVolume,
+  computerPaused,
+  computerRunning,
+  FILE_PARTS,
+  type FileSettings,
+  FilesRefusal,
+  fileSettings,
+  listComputerVolumes,
+  measureFiles,
+  PART_NAMES,
+  partFile,
+  stopCellsCommand,
+} from '../files.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
@@ -53,17 +79,31 @@ import { EXIT, type ExitCode, type Result, renderReport, report } from '../schem
 
 const MB = 1024 ** 2;
 
+/**
+ * `pg_restore --list` can stop reading a custom dump once it has its table of
+ * contents; the rest is drained so the stream never writes into a closed pipe.
+ * Its own exit code still decides.
+ */
+const DUMP_CHECK = 'pg_restore --list >/dev/null; s=$?; cat >/dev/null; exit $s';
+
 export const BACKUP_USAGE =
-  'Usage: bun run melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path] [--encrypt | --encrypt-to <age recipient>]';
+  'Usage: bun run melete backup [--estimate] [--database-only | --offline] [--dir <path>] [--to ssh://host:/path] [--encrypt | --encrypt-to <age recipient>]';
 
 export class BackupRefusal extends Error {}
 
 export type SshTarget = { host: string; path: string };
 export type Destination = { kind: 'dir'; dir: string } | { kind: 'ssh'; target: SshTarget };
 
+/**
+ * - `online`, the default: everything, with the stack running;
+ * - `offline`: everything, with the writers stopped while the files are archived;
+ * - `database`: the database, journal and settings only.
+ */
+export type BackupMode = 'online' | 'offline' | 'database';
+
 export type BackupOptions = {
   estimate: boolean;
-  withVolumes: boolean;
+  mode: BackupMode;
   destination: Destination | null;
   /** `passphrase` for --encrypt, a recipient for --encrypt-to; null for none. */
   encrypt: 'passphrase' | { recipient: string } | null;
@@ -132,7 +172,7 @@ export function parseSshTarget(value: string): SshTarget {
 export function backupOptions(args: readonly string[]): BackupOptions {
   const options: BackupOptions = {
     estimate: false,
-    withVolumes: false,
+    mode: 'online',
     destination: null,
     encrypt: null,
   };
@@ -145,8 +185,16 @@ export function backupOptions(args: readonly string[]): BackupOptions {
       index += 1;
       return next;
     };
+    const mode = (wanted: BackupMode) => {
+      if (options.mode !== 'online' && options.mode !== wanted)
+        throw new BackupRefusal(
+          `--database-only and --offline cannot be given together. ${BACKUP_USAGE}`,
+        );
+      options.mode = wanted;
+    };
     if (arg === '--estimate') options.estimate = true;
-    else if (arg === '--with-volumes') options.withVolumes = true;
+    else if (arg === '--offline' || arg === '--with-volumes') mode('offline');
+    else if (arg === '--database-only') mode('database');
     else if (arg === '--dir') options.destination = { kind: 'dir', dir: value() };
     else if (arg === '--to') options.destination = { kind: 'ssh', target: parseSshTarget(value()) };
     else if (arg === '--encrypt') options.encrypt = 'passphrase';
@@ -198,7 +246,7 @@ const number = (output: { code: number; stdout: string }) => {
 };
 
 /** `du -sk` lines summed, in bytes; null when the command failed. */
-const duBytes = (output: { code: number; stdout: string }) =>
+export const duBytes = (output: { code: number; stdout: string }) =>
   output.code === 0
     ? output.stdout
         .split('\n')
@@ -208,14 +256,16 @@ const duBytes = (output: { code: number; stdout: string }) =>
 export type Estimate = {
   databaseBytes: number | null;
   journalBytes: number | null;
-  volumeBytes: number | null;
+  /** The files and the computers' volumes; null when they could not be measured, or are left out. */
+  filesBytes: number | null;
 };
 
 export function measureBackup(
   context: Context,
   compose: readonly string[],
   config: DeployConfig,
-  withVolumes: boolean,
+  mode: BackupMode,
+  settings: FileSettings,
 ): Estimate {
   const run = context.run;
   return {
@@ -225,9 +275,7 @@ export function measureBackup(
     journalBytes: duBytes(
       run([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data/restrictions']),
     ),
-    volumeBytes: withVolumes
-      ? duBytes(run([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data', '/work']))
-      : null,
+    filesBytes: mode === 'database' ? null : measureFiles(context, config, settings, duBytes),
   };
 }
 
@@ -252,6 +300,210 @@ export const describeDestination = (destination: Destination) =>
 
 export type BackupRun = { ok: boolean; location: string; results: Result[] };
 
+/** Writes one part of the set and records its result; false when it failed. */
+type Part = (id: string, plainFile: string, source: Source, extra?: Endpoint[]) => Promise<boolean>;
+
+/**
+ * The files, after the database: each Compose volume, then each computer's two
+ * volumes. A running computer is paused while its volumes are copied and
+ * resumed straight after. Returns what was archived, or null when a part
+ * failed; its result says which.
+ */
+async function backupFiles(
+  context: Context,
+  config: DeployConfig,
+  compose: readonly string[],
+  mode: 'online' | 'offline',
+  settings: FileSettings,
+  part: Part,
+  results: Result[],
+): Promise<Contents | null> {
+  const fail = (id: string, detail: string, fix?: string) => {
+    results.push({ id, level: 'fail', detail, ...(fix ? { fix } : {}) });
+    return null;
+  };
+  const image = settings.image;
+  if (!image)
+    return fail(
+      'backup.files',
+      'The Compose files name no image for the melete service, so the files cannot be archived. Nothing was kept of them.',
+    );
+  let computers: ComputerVolume[];
+  try {
+    computers = listComputerVolumes(context, settings.sandboxProject);
+  } catch (error) {
+    if (!(error instanceof FilesRefusal)) throw error;
+    return fail(
+      'backup.computers',
+      error.message,
+      'Check that docker volume ls answers, then back up again.',
+    );
+  }
+  for (const each of FILE_PARTS) {
+    const volume = composeVolume(config.project, each);
+    if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
+      return fail(
+        `backup.${each}`,
+        `${volume}, which holds ${PART_NAMES[each]}, is not on this engine.`,
+        'Start the stack once (bun run melete deploy), then back up again.',
+      );
+  }
+
+  const archive = async (): Promise<boolean> => {
+    for (const each of FILE_PARTS)
+      if (
+        !(await part(`backup.${each}`, partFile(each), {
+          command: archiveCommand(image, composeVolume(config.project, each), mode === 'online'),
+        }))
+      )
+        return false;
+    const byComputer = new Map<string, ComputerVolume[]>();
+    for (const volume of computers)
+      byComputer.set(volume.computer, [...(byComputer.get(volume.computer) ?? []), volume]);
+    for (const [computer, volumes] of byComputer) {
+      let paused = false;
+      if (computerRunning(context, computer)) {
+        const pausing = context.run(['docker', 'pause', computer]);
+        paused = pausing.code === 0;
+        // It may have stopped on its own in between; one still running is not copied mid-change.
+        if (!paused && computerRunning(context, computer)) {
+          results.push({
+            id: 'backup.computer',
+            level: 'fail',
+            detail: `${computer} could not be paused for its copy: ${pausing.stderr.trim().split('\n').at(-1) || `exit ${pausing.code}`}`,
+          });
+          return false;
+        }
+      }
+      let copied = true;
+      let resumed = true;
+      try {
+        for (const volume of volumes) {
+          // Online, a computer the service resumes during its copy can change a file under
+          // tar, which exits 1 for it; the archive is still whole, and a warning below says
+          // so. Offline nothing resumes it, so a change is an error.
+          copied = await part('backup.computer', volume.file, {
+            command: archiveCommand(image, volume.volume, mode === 'online'),
+          });
+          if (!copied) break;
+        }
+      } finally {
+        if (paused) {
+          const held = computerPaused(context, computer);
+          const unpause = context.run(['docker', 'unpause', computer]);
+          if (unpause.code !== 0 && computerPaused(context, computer)) {
+            resumed = false;
+            results.push({
+              id: 'backup.computer_resumed',
+              level: 'fail',
+              detail: `${computer} stayed paused after its copy: ${unpause.stderr.trim().split('\n').at(-1) || `exit ${unpause.code}`}`,
+              fix: `Run docker unpause ${computer}.`,
+            });
+          } else if (!held)
+            results.push({
+              id: 'backup.computer_in_use',
+              level: 'warn',
+              detail: `${computer} was used while its files were copied, so a file it changed then may be from mid-change; the next backup copies it again.`,
+            });
+        }
+      }
+      if (!copied || !resumed) return false;
+    }
+    return true;
+  };
+
+  let ok: boolean;
+  if (mode === 'offline') {
+    // melete-cells too, and the attempt containers it started: they write into the shared /work.
+    const writers = [...writersOf(config), ...(settings.cells ? [CELLS_SERVICE] : [])];
+    const stopped = context.run([...compose, 'stop', ...writers], 300_000);
+    const cellsStopped = stopped.code === 0 ? context.run(stopCellsCommand(config.project)) : null;
+    if (stopped.code !== 0 || (cellsStopped && cellsStopped.code !== 0)) {
+      const failed = cellsStopped && cellsStopped.code !== 0 ? cellsStopped : stopped;
+      results.push({
+        id: 'backup.stop_writers',
+        level: 'fail',
+        detail: `Could not stop ${stopped.code !== 0 ? writers.join(', ') : "the runtime's attempt containers"}: ${failed.stderr.trim().split('\n').at(-1) || `exit ${failed.code}`}`,
+      });
+      ok = false;
+    } else ok = await archive();
+    // Only what was stopped: a one-shot service's normal exit would fail a bare `up --wait`.
+    const started = context.run(
+      [
+        ...compose,
+        'up',
+        '-d',
+        '--no-build',
+        '--pull',
+        'never',
+        '--wait',
+        '--wait-timeout',
+        '300',
+        ...writers,
+      ],
+      420_000,
+    );
+    results.push(
+      started.code === 0
+        ? {
+            id: 'backup.start_writers',
+            level: 'ok',
+            detail: `${writers.join(', ')} started again.`,
+          }
+        : {
+            id: 'backup.start_writers',
+            level: 'fail',
+            detail: `The stack did not come back after the volume archive: ${started.stderr.trim().split('\n').at(-1) || `exit ${started.code}`}`,
+            fix: `Run ${compose.join(' ')} up -d --no-build --wait ${writers.join(' ')}, then bun run melete status.`,
+          },
+    );
+    if (started.code !== 0) ok = false;
+  } else ok = await archive();
+  if (!ok) return null;
+  return {
+    format: 1,
+    taken: mode,
+    parts: FILE_PARTS.map((each) => ({ part: each, file: partFile(each) })),
+    computers,
+    blobs: settings.blobs.store,
+  };
+}
+
+/** What a finished backup covers, and what it leaves to something else, in plain words. */
+function coverage(contents: Contents | null, settings: FileSettings): Result[] {
+  const results: Result[] = [];
+  if (contents === null)
+    results.push({
+      id: 'backup.files_left_out',
+      level: 'warn',
+      detail:
+        "--database-only: the spaces' files, the files kept by their content (uploads, Files), the agents' /work and their computers are not in this backup.",
+      fix: 'Back up without --database-only to have everything a restore brings back.',
+    });
+  else {
+    const count = new Set(contents.computers.map((volume) => volume.computer)).size;
+    results.push({
+      id: 'backup.files',
+      level: 'ok',
+      detail: `Holds the spaces' files, the files kept by their content, the agents' shared /work and ${count} agent computer(s), taken ${contents.taken === 'offline' ? 'with the writers stopped' : 'with the stack running'}.`,
+    });
+  }
+  if (settings.blobs.store === 's3')
+    results.push({
+      id: 'backup.blobs_bucket',
+      level: 'warn',
+      detail: `Files kept by their content (uploads, Files) are in the bucket ${settings.blobs.bucket}; this backup holds the database's references to them, not the files.`,
+      fix: 'Turn on versioning for the bucket, or copy it on the same schedule as the backups (docs/DEPLOYMENT.md, "Backup and restore").',
+    });
+  if (settings.remoteSandboxes)
+    results.push({
+      id: 'backup.computers_elsewhere',
+      level: 'warn',
+      detail: `MELETE_SANDBOX_PROVIDER is ${settings.remoteSandboxes}: the agents' computers there are not in this backup.`,
+    });
+  return results;
+}
+
 /**
  * Takes one backup into a new directory at the destination. A part that fails
  * stops the run and removes the partial directory, so a backup that exists is
@@ -261,7 +513,7 @@ export async function takeBackup(
   context: Context,
   config: DeployConfig,
   destination: Destination,
-  withVolumes: boolean,
+  mode: BackupMode,
   encryption: Encryption | null = null,
 ): Promise<BackupRun> {
   const compose = composeCommand(context.deployDir, config);
@@ -304,7 +556,7 @@ export async function takeBackup(
           {
             id: 'backup.destination',
             level: 'fail',
-            detail: `Could not create ${location}: ${made.stderr.trim().split('\n').at(-1) ?? `exit ${made.code}`}`,
+            detail: `Could not create ${location}: ${made.stderr.trim().split('\n').at(-1) || `exit ${made.code}`}`,
           },
         ],
       };
@@ -322,12 +574,16 @@ export async function takeBackup(
   }
 
   const secrets = installationSecrets(context.deployDir);
+  const settings = fileSettings(readInstallation(context.deployDir, context.machine.platform));
   // The master key never enters the set: deploy.env is stored without it.
   const stripped = withoutMasterKey(readFileSync(join(context.deployDir, '.env'), 'utf8'));
   const part = async (id: string, plainFile: string, source: Source, extra: Endpoint[] = []) => {
-    // SHA256SUMS itself stays readable, so a backup is checked without its key.
+    // SHA256SUMS and the list of parts stay readable, so a backup is checked without its key.
     const encrypt =
-      encryption !== null && plainFile !== 'SHA256SUMS' && plainFile !== FINGERPRINT_FILE;
+      encryption !== null &&
+      plainFile !== 'SHA256SUMS' &&
+      plainFile !== FINGERPRINT_FILE &&
+      plainFile !== CONTENTS_FILE;
     const file = encrypt ? `${plainFile}${suffix}` : plainFile;
     const destination = encrypt && encryption ? encryptingSink(encryption, sink(file)) : sink(file);
     const outcome = await context.stream(source, [destination, ...extra]);
@@ -361,7 +617,7 @@ export async function takeBackup(
       'database.dump',
       { command: databaseShell(compose, config, (db) => `exec pg_dump ${db} --format=custom`) },
       // Read back as it is written: a dump pg_restore cannot list is no backup.
-      [{ command: [...compose, ...clientCommand(config), 'pg_restore', '--list'] }],
+      [{ command: [...compose, ...clientCommand(config), 'sh', '-c', DUMP_CHECK] }],
     )) &&
     (await part('backup.journal', `restrictions-${name.slice('melete-'.length)}.tar`, {
       command: [...compose, 'cp', 'melete:/data/restrictions', '-'],
@@ -378,44 +634,14 @@ export async function takeBackup(
   if (ok && existsSync(join(context.deployDir, DEPLOY_FILE)))
     ok = await part('backup.contract', DEPLOY_FILE, { file: join(context.deployDir, DEPLOY_FILE) });
 
-  if (ok && withVolumes) {
-    const writers = writersOf(config);
-    const stopped = context.run([...compose, 'stop', ...writers], 300_000);
-    if (stopped.code !== 0) {
-      results.push({
-        id: 'backup.stop_writers',
-        level: 'fail',
-        detail: `Could not stop ${writers.join(', ')}: ${stopped.stderr.trim().split('\n').at(-1) ?? ''}`,
+  let contents: Contents | null = null;
+  if (ok && mode !== 'database') {
+    contents = await backupFiles(context, config, compose, mode, settings, part, results);
+    ok = contents !== null;
+    if (ok)
+      ok = await part('backup.contents', CONTENTS_FILE, {
+        bytes: new TextEncoder().encode(`${JSON.stringify(contents, null, 2)}\n`),
       });
-      ok = false;
-    } else {
-      ok =
-        (await part('backup.data', 'data.tar', {
-          command: [...compose, 'cp', '-a', 'melete:/data', '-'],
-        })) &&
-        (await part('backup.work', 'work.tar', {
-          command: [...compose, 'cp', '-a', 'melete:/work', '-'],
-        }));
-    }
-    const started = context.run(
-      [...compose, 'up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '300'],
-      420_000,
-    );
-    results.push(
-      started.code === 0
-        ? {
-            id: 'backup.start_writers',
-            level: 'ok',
-            detail: `${writers.join(', ')} started again.`,
-          }
-        : {
-            id: 'backup.start_writers',
-            level: 'fail',
-            detail: `The stack did not come back after the volume archive: ${started.stderr.trim().split('\n').at(-1) ?? ''}`,
-            fix: `Run ${compose.join(' ')} up -d --no-build --wait, then bun run melete status.`,
-          },
-    );
-    if (started.code !== 0) ok = false;
   }
 
   if (ok)
@@ -447,7 +673,7 @@ export async function takeBackup(
           id: 'backup.plaintext',
           level: 'warn',
           detail:
-            "This backup holds the database and deploy/.env's service keys unencrypted. Only its file modes (0700, 0600) protect it: anyone who can read it, or a copy of it, can read the conversations and memory in the database.",
+            "This backup holds the database, deploy/.env's service keys and any files it took unencrypted. Only its file modes (0700, 0600) protect it: anyone who can read it, or a copy of it, can read the conversations, memory and files in it.",
           fix: 'Keep it on storage only you can read, or back up with --encrypt-to <age recipient> or --encrypt (with MELETE_BACKUP_PASSPHRASE set).',
         }
       : {
@@ -459,6 +685,8 @@ export async function takeBackup(
               : 'Every part is encrypted with gpg (AES-256) under the passphrase given.',
         },
   );
+
+  results.push(...coverage(contents, settings));
 
   if (destination.kind === 'dir') {
     // The backup the last deploy took is the one rollback restores from: it is never pruned.
@@ -551,7 +779,13 @@ export async function runBackup(
   };
 
   if (options.estimate) {
-    const estimate = measureBackup(context, compose, config, options.withVolumes);
+    const estimate = measureBackup(
+      context,
+      compose,
+      config,
+      options.mode,
+      fileSettings(installation),
+    );
     const free = destinationFree(context, destination);
     const results: Result[] = [];
     const size = (bytes: number) => `${Math.ceil(bytes / MB)} MB`;
@@ -581,24 +815,24 @@ export async function runBackup(
             detail: `The restriction journal is ${size(estimate.journalBytes)}.`,
           },
     );
-    if (options.withVolumes)
+    if (options.mode !== 'database')
       results.push(
-        estimate.volumeBytes === null
+        estimate.filesBytes === null
           ? {
-              id: 'backup.volumes_mb',
+              id: 'backup.files_mb',
               level: 'fail',
-              detail: '/data and /work could not be measured.',
+              detail: "The files and the agents' computers could not be measured.",
             }
           : {
-              id: 'backup.volumes_mb',
+              id: 'backup.files_mb',
               level: 'ok',
-              detail: `/data and /work hold ${size(estimate.volumeBytes)}.`,
+              detail: `The files and the agents' computers hold ${size(estimate.filesBytes)}.`,
             },
       );
     const total =
       (estimate.databaseBytes ?? 0) +
       (estimate.journalBytes ?? 0) +
-      (estimate.volumeBytes ?? 0) +
+      (estimate.filesBytes ?? 0) +
       64 * MB;
     const where = describeDestination(destination);
     results.push(
@@ -627,7 +861,7 @@ export async function runBackup(
   try {
     return await withLock(context.deployDir, 'backup', async () => {
       const outcome = await withEncryption(context, options.encrypt, (encryption) =>
-        takeBackup(context, config, destination, options.withVolumes, encryption),
+        takeBackup(context, config, destination, options.mode, encryption),
       );
       const results: Result[] = [
         ...outcome.results,

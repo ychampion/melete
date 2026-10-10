@@ -7,6 +7,14 @@
  */
 import { CLIENT_TLS, DATABASE_CLIENT } from './database.ts';
 import type { DeployConfig } from './deploy-config.ts';
+import {
+  type ComputerVolume,
+  composeVolume,
+  extractCommand,
+  type FilePart,
+  legacyExtractCommand,
+  stopCellsCommand,
+} from './files.ts';
 import { downloadBytes, type LocalImage, type RemoteImage, sameContent } from './images.ts';
 import type { Result } from './schema.ts';
 
@@ -57,6 +65,8 @@ export type DeployFacts = {
   freeBytes: number | null;
   migrations: MigrationFacts;
   databaseBytes: number | null;
+  /** The people's files and the agents' computers the backup also takes; null when unmeasured. */
+  filesBytes: number | null;
   backup: BackupTarget;
 };
 
@@ -295,7 +305,7 @@ export function judgeDeploy(facts: DeployFacts): DeployPlan {
     results.push({
       id: 'backup.database',
       level: 'ok',
-      detail: `The database is streamed to ${facts.backup.location} before the switch, with nothing kept on this disk.`,
+      detail: `The database and the files are streamed to ${facts.backup.location} before the switch, with nothing kept on this disk.`,
     });
   else if (facts.databaseBytes === null)
     fail(
@@ -303,20 +313,26 @@ export function judgeDeploy(facts: DeployFacts): DeployPlan {
       'The database size could not be measured, so the backup before the migrations cannot be planned.',
       'Start postgres, or pass --backup-to ssh://host:/path or --skip-backup.',
     );
+  else if (facts.filesBytes === null)
+    fail(
+      'backup.database',
+      "The people's files and the agents' computers could not be measured, so the backup before the migrations cannot be planned.",
+      'Run bun run melete backup --estimate to see why, or pass --backup-to ssh://host:/path or --skip-backup.',
+    );
   else {
-    const needed = facts.databaseBytes + BACKUP_MARGIN_BYTES;
+    const needed = facts.databaseBytes + facts.filesBytes + BACKUP_MARGIN_BYTES;
     if (facts.backup.sameDiskAsDocker !== false) backupOnDockerDisk = needed;
     if (facts.backup.sameDiskAsDocker === false && (facts.backup.freeBytes ?? 0) < needed)
       fail(
         'backup.database',
-        `${facts.backup.location} has ${mb(facts.backup.freeBytes ?? 0)} free; the dump needs about ${mb(needed)}.`,
+        `${facts.backup.location} has ${mb(facts.backup.freeBytes ?? 0)} free; the backup needs about ${mb(needed)}.`,
         'Free space there, set backup.dir in deploy/melete.deploy.json, or pass --backup-to ssh://host:/path.',
       );
     else
       results.push({
         id: 'backup.database',
         level: 'ok',
-        detail: `${target.tag} runs ${runs(delta)}; the database (about ${mb(facts.databaseBytes)}) is dumped to ${facts.backup.location} first.`,
+        detail: `${target.tag} runs ${runs(delta)}; the database (about ${mb(facts.databaseBytes)}) and the files (about ${mb(facts.filesBytes)}) are backed up to ${facts.backup.location} first.`,
       });
   }
 
@@ -358,6 +374,21 @@ const quote = (value: string) =>
   /^[A-Za-z0-9_./:=@%+,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 export const shellLine = (command: readonly string[]) => command.map(quote).join(' ');
 
+/** What a restore puts back besides the database, from the backup's contents.json. */
+export type FileRestore = {
+  /** The service's image, which runs the short-lived containers that unpack the archives. */
+  image: string;
+  /** One archive per Compose volume. */
+  parts: { part: FilePart; file: string }[];
+  computers: ComputerVolume[];
+  /** Archives an earlier `backup --with-volumes` made: data.tar (/data) and work.tar (/work). */
+  legacy: ('data.tar' | 'work.tar')[];
+  /** Computers whose containers are on this machine, in any state: stopped before their volumes are replaced. */
+  containers: string[];
+  /** Computer volumes this machine does not have: made first, with their labels. */
+  missing: string[];
+};
+
 export type RestoreContext = {
   root: string;
   project: string;
@@ -365,6 +396,13 @@ export type RestoreContext = {
   compose: readonly string[];
   /** The services that write, stopped before the database is replaced. */
   writers: readonly string[];
+  /**
+   * The services started and waited for at the end: the long-running ones. A
+   * bare `up --wait` counts a one-shot service's normal exit as a failure.
+   */
+  services: readonly string[];
+  /** The stack runs melete-cells: its attempt containers, which mount the shared /work, are stopped too. */
+  cells?: boolean;
   /** The backup set holding database.dump; null when none is known. */
   backupDir: string | null;
   /** Where to go back to: the image tag and, when known, the commit. */
@@ -377,6 +415,10 @@ export type RestoreContext = {
   externalDatabase?: boolean;
   /** How the backup set was encrypted; null or left out for a plain one. */
   encryption?: 'age' | 'gpg' | null;
+  /** The files the backup holds; null or left out to restore the database alone. */
+  files?: FileRestore | null;
+  /** Leave the database as it is: an external one that already holds the data. */
+  keepDatabase?: boolean;
 };
 
 export const encryptedSuffixOf = (encryption: 'age' | 'gpg' | null | undefined) =>
@@ -389,66 +431,285 @@ export const decryptCommand = (encryption: 'age' | 'gpg', file: string) =>
     : `gpg --quiet --decrypt ${quote(file)}`;
 
 /**
- * The commands that put the database back to a backup, as shell lines. Only the
- * database volume is replaced: the restriction journal stays the newest one, and
- * the service replays it at startup, so nothing forgotten after the backup
- * comes back.
+ * One step of a restore. `note` and `shell` lines are printed only; `run` is
+ * a command `restore --yes` runs, and prints as the same shell line.
  */
-export function restoreSteps(context: RestoreContext): string[] {
-  const compose = shellLine(context.compose);
+export type RestoreAction =
+  | { kind: 'note'; text: string }
+  | { kind: 'shell'; text: string }
+  | {
+      kind: 'run';
+      /** What the step does, for the report of a run. */
+      say: string;
+      command: string[];
+      /** A part of the backup streamed into the command, decrypted on the way when the set is encrypted. */
+      input?: string;
+      /** Run only when this volume is on the engine: removing one a new machine never had is no step. */
+      ifVolume?: string;
+      /** Run only when this volume is not on the engine yet. */
+      unlessVolume?: string;
+      /** Volumes no running container may use when the step runs: it empties them. */
+      unused?: string[];
+      /**
+       * `stop`: stops something and replaces nothing; `start`: the start at the
+       * end. Left out, the step changes the installation.
+       */
+      phase?: 'stop' | 'start';
+      timeoutMs?: number;
+    };
+
+/**
+ * The steps that put an installation back to a backup. The database volume is
+ * replaced, or the dump loaded into an empty external database; the
+ * restriction journal stays the newest one, and the service replays it at
+ * startup, so nothing forgotten after the backup comes back. When the backup
+ * holds files, each volume it holds is emptied and unpacked from its archive
+ * (owners and modes kept), and a computer's volume a new machine lacks is made
+ * first with the labels the sandbox adapter gave it. Everything that could
+ * write into a volume is stopped first, and a step that empties one refuses
+ * while a running container still uses it. Nothing starts until every part is back.
+ */
+export function restoreActions(context: RestoreContext): RestoreAction[] {
+  const compose = [...context.compose];
   const encryption = context.encryption ?? null;
   const suffix = encryptedSuffixOf(encryption);
-  const dump = context.backupDir
-    ? `${context.backupDir}/database.dump${suffix}`
-    : `<backup>/database.dump${suffix}`;
-  // A plain part is read from its file; an encrypted one is decrypted into the command.
-  const from = (file: string) => (encryption ? '' : ` < ${quote(file)}`);
-  const via = (file: string) => (encryption ? `${decryptCommand(encryption, file)} | ` : '');
-  return [
-    `cd ${quote(context.root)}`,
-    ...(encryption === 'age'
+  const inSet = (file: string) => `${context.backupDir ?? '<backup>'}/${file}${suffix}`;
+  const dump = inSet('database.dump');
+  const files = context.files ?? null;
+  const note = (text: string): RestoreAction => ({ kind: 'note', text });
+  const run = (
+    say: string,
+    command: string[],
+    extra: Partial<Extract<RestoreAction, { kind: 'run' }>> = {},
+  ): RestoreAction => ({ kind: 'run', say, command, ...extra });
+  const database: RestoreAction[] = context.keepDatabase
+    ? [note('The database stays as it is: it already holds the data.')]
+    : context.externalDatabase
       ? [
-          '# The backup is encrypted with age: export MELETE_BACKUP_IDENTITY=<the identity file that opens it>.',
-        ]
-      : encryption === 'gpg'
-        ? ['# The backup is encrypted with gpg: each decrypt asks for its passphrase.']
-        : []),
-    '# Stop everything that writes. Never add --volumes: the volumes are the installation.',
-    `${compose} stop ${context.writers.join(' ')}`,
-    ...(context.previous
-      ? [
-          `# Return the checkout and the images to ${context.previous.tag}.`,
-          ...(context.previous.revision
-            ? [`git -c advice.detachedHead=false checkout --detach ${context.previous.revision}`]
-            : []),
-          `bun run melete set MELETE_IMAGE_TAG=${context.previous.tag}`,
-        ]
-      : []),
-    `${compose} down`,
-    ...(context.externalDatabase
-      ? [
-          '# The database is the server DATABASE_URL names. Restore into a new, empty database there',
-          "# (create it at the provider, or use the provider's restore to a time before the backup),",
-          '# point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
-          '# Keep the restriction journal volume: the newer journal is replayed at startup.',
-          `${via(dump)}${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error'${from(dump)}`,
+          note(
+            'The database is the server DATABASE_URL names. Restore into a new, empty database there',
+          ),
+          note(
+            "(create it at the provider, or use the provider's restore to a time before the backup),",
+          ),
+          note(
+            'point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
+          ),
+          note('Keep the restriction journal volume: the newer journal is replayed at startup.'),
+          run(
+            'Loaded the database dump into the database DATABASE_URL names.',
+            [
+              ...compose,
+              'run',
+              '--rm',
+              '--no-deps',
+              '-T',
+              DATABASE_CLIENT,
+              'sh',
+              '-c',
+              `${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error`,
+            ],
+            { input: dump },
+          ),
         ]
       : [
-          `# Replace only the database volume. Keep ${context.project}_restrictions and every other volume:`,
-          '# the newer journal is replayed at startup, so nothing forgotten since the backup comes back.',
-          `docker volume rm ${context.project}_pgdata`,
-          `${compose} up -d --no-build --wait postgres`,
-          `${via(dump)}${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error'${from(dump)}`,
-        ]),
-    ...(context.freshHost && context.journalArchive
+          note(
+            `Replace the database volume. Keep ${context.project}_restrictions: the newer journal is`,
+          ),
+          note('replayed at startup, so nothing forgotten since the backup comes back.'),
+          run(
+            `Removed ${context.project}_pgdata.`,
+            ['docker', 'volume', 'rm', `${context.project}_pgdata`],
+            { ifVolume: `${context.project}_pgdata` },
+          ),
+          run(
+            'Started an empty database.',
+            [...compose, 'up', '-d', '--no-build', '--wait', 'postgres'],
+            { timeoutMs: 420_000 },
+          ),
+          run(
+            'Loaded the database dump.',
+            [
+              ...compose,
+              'exec',
+              '-T',
+              'postgres',
+              'sh',
+              '-c',
+              'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error',
+            ],
+            { input: dump },
+          ),
+        ];
+  const journal =
+    context.freshHost && context.journalArchive
       ? [
-          '# A new machine has no journal yet: put back the newest one before the service starts.',
-          `${compose} create melete`,
-          `${via(context.journalArchive)}${compose} cp -a - melete:/data${from(context.journalArchive)}`,
+          note(
+            'A new machine has no journal yet: put back the newest one before the service starts.',
+          ),
+          run(
+            'Put back the newest restriction journal.',
+            [...compose, 'cp', '-a', '-', 'melete:/data'],
+            { input: context.journalArchive },
+          ),
+        ]
+      : [];
+  const fileSteps: RestoreAction[] = files
+    ? [
+        note("Put back the people's files: each archive empties its volume and unpacks into it."),
+        note(
+          'No running container may use a volume while it is put back: docker ps --filter volume=<name> shows none.',
+        ),
+        ...files.parts.map((part) =>
+          run(
+            `Put back ${part.file} into ${composeVolume(context.project, part.part)}.`,
+            extractCommand(files.image, composeVolume(context.project, part.part)),
+            {
+              input: inSet(part.file),
+              unused: [composeVolume(context.project, part.part)],
+            },
+          ),
+        ),
+        ...files.legacy.map((file) =>
+          run(
+            `Put back ${file === 'data.tar' ? 'the spaces and the files kept by their content' : '/work'} from ${file}.`,
+            legacyExtractCommand(files.image, context.project, file),
+            {
+              input: inSet(file),
+              unused: (file === 'data.tar'
+                ? (['spaces', 'artifacts'] as const)
+                : (['work'] as const)
+              ).map((part) => composeVolume(context.project, part)),
+            },
+          ),
+        ),
+        ...(files.computers.length > 0
+          ? [
+              note(
+                "Put back the agents' computers' volumes; a computer whose container is still here starts on them when it is next used.",
+              ),
+            ]
+          : []),
+        ...files.computers
+          .filter((computer) => files.missing.includes(computer.volume))
+          .map((computer) =>
+            run(
+              `Made ${computer.volume} with its labels.`,
+              [
+                'docker',
+                'volume',
+                'create',
+                ...Object.entries(computer.labels).flatMap(([key, value]) => [
+                  '--label',
+                  `${key}=${value}`,
+                ]),
+                computer.volume,
+              ],
+              { unlessVolume: computer.volume },
+            ),
+          ),
+        ...files.computers.map((computer) =>
+          run(
+            `Put back ${computer.file} into ${computer.volume}.`,
+            extractCommand(files.image, computer.volume),
+            { input: inSet(computer.file), unused: [computer.volume] },
+          ),
+        ),
+      ]
+    : [];
+  return [
+    { kind: 'shell', text: `cd ${quote(context.root)}` },
+    ...(encryption === 'age'
+      ? [
+          note(
+            'The backup is encrypted with age: export MELETE_BACKUP_IDENTITY=<the identity file that opens it>.',
+          ),
+        ]
+      : encryption === 'gpg'
+        ? [note('The backup is encrypted with gpg: each decrypt asks for its passphrase.')]
+        : []),
+    note('Stop everything that writes. Never add --volumes: the volumes are the installation.'),
+    run(`Stopped ${context.writers.join(', ')}.`, [...compose, 'stop', ...context.writers], {
+      timeoutMs: 300_000,
+      phase: 'stop',
+    }),
+    ...(files && context.cells
+      ? [
+          note(
+            "Stop the runtime's attempt containers, which use the shared /work; melete-cells removes them when it starts.",
+          ),
+          run("Stopped the runtime's attempt containers.", stopCellsCommand(context.project), {
+            timeoutMs: 300_000,
+            phase: 'stop',
+          }),
         ]
       : []),
-    '# Start only after the restore has finished.',
-    `${compose} up -d --no-build --wait`,
-    'bun run melete status',
+    ...(files && files.containers.length > 0
+      ? [
+          note(
+            "Stop the agents' computers whose files are put back; each starts again when it is next used.",
+          ),
+          run(`Stopped ${files.containers.join(', ')}.`, ['docker', 'stop', ...files.containers], {
+            timeoutMs: 300_000,
+            phase: 'stop',
+          }),
+        ]
+      : []),
+    ...(context.previous
+      ? [
+          note(`Return the checkout and the images to ${context.previous.tag}.`),
+          ...(context.previous.revision
+            ? [
+                {
+                  kind: 'shell' as const,
+                  text: `git -c advice.detachedHead=false checkout --detach ${context.previous.revision}`,
+                },
+              ]
+            : []),
+          {
+            kind: 'shell' as const,
+            text: `bun run melete set MELETE_IMAGE_TAG=${context.previous.tag}`,
+          },
+        ]
+      : []),
+    run('Took the stack down; its volumes stay.', [...compose, 'down'], {
+      timeoutMs: 300_000,
+      phase: 'stop',
+    }),
+    ...database,
+    ...(journal.length > 0 || files
+      ? [
+          run(
+            "Made the service's container and volumes, without starting them.",
+            [...compose, 'create', 'melete'],
+            { timeoutMs: 600_000 },
+          ),
+        ]
+      : []),
+    ...journal,
+    ...fileSteps,
+    note('Start only after the restore has finished.'),
+    run(
+      'Started the stack.',
+      [...compose, 'up', '-d', '--no-build', '--wait', ...context.services],
+      { timeoutMs: 600_000, phase: 'start' },
+    ),
+    { kind: 'shell', text: 'bun run melete status' },
   ];
+}
+
+/** One action as a shell line: a part is read from its file, or decrypted into the command. */
+export function actionLine(action: RestoreAction, encryption: 'age' | 'gpg' | null): string {
+  if (action.kind === 'note') return `# ${action.text}`;
+  if (action.kind === 'shell') return action.text;
+  const command = shellLine(action.command);
+  if (!action.input) return command;
+  return encryption
+    ? `${decryptCommand(encryption, action.input)} | ${command}`
+    : `${command} < ${quote(action.input)}`;
+}
+
+/** The restore as shell lines, for the operator to read or run by hand. */
+export function restoreSteps(context: RestoreContext): string[] {
+  return restoreActions(context).map((action) => actionLine(action, context.encryption ?? null));
 }
