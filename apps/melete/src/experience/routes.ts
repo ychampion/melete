@@ -49,7 +49,13 @@ import { listMembers, removeMember } from './members.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
 import { ExperiencePlanning } from './planning.ts';
-import { draftForReview, projectArtifact, projectCards, projectReceipt } from './projectors.ts';
+import {
+  draftForReview,
+  meantForPerson,
+  projectArtifact,
+  projectCards,
+  projectReceipt,
+} from './projectors.ts';
 import { ExperienceQuestions } from './questions.ts';
 import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
@@ -480,7 +486,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         }
         cards.push(...projectCards(action, connection, status));
       }
-      return { cards: [...cards, ...artifacts.map(projectArtifact)] };
+      return { cards: [...cards, ...artifacts.filter(meantForPerson).map(projectArtifact)] };
     },
     'GET /conversations/{id}/receipts': async (spaceId, c) => {
       const receipts = [];

@@ -34,6 +34,7 @@ import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
 import type { ExperienceEffects } from './effects.ts';
 import {
+  meantForPerson,
   object,
   plainText,
   projectActionGroup,
@@ -772,7 +773,8 @@ export class ExperienceEvents {
                 .select()
                 .from(artifact)
                 .where(and(eq(artifact.jobId, id), eq(artifact.spaceId, spaceId)));
-              for (const file of files)
+              // A browser step's own captures stay with that step's receipt.
+              for (const file of files.filter(meantForPerson))
                 await emit(
                   source,
                   { type: 'card', card: projectArtifact(file) },

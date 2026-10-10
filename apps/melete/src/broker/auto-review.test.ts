@@ -69,6 +69,15 @@ describe('reviewTier', () => {
     expect(changesPersonFiles('files.read', { path: 'a.md', area: 'artifacts' })).toBe(false);
   });
 
+  test("a move's new name is not a recipient, so nothing about it is in doubt", () => {
+    // Where the agent named the file says nothing about where it goes: it
+    // stays in the agent's workspace or the person's own Files.
+    expect(
+      deciding({ from: 'list.pdf', to: 'list.pdf', to_area: 'artifacts' }, 'files.move'),
+    ).toEqual([]);
+    expect(deciding({ to: 'a@example.com', body: 'hi' }, 'email.send')).toHaveLength(1);
+  });
+
   test('a reversible change in a connected app is reviewable as an app change', () => {
     expect(tier(tool('tasks.create', 'write_reversible', true), 'mcp')).toMatchObject({
       tier: 'reviewable',

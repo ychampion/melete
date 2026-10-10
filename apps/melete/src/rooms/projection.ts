@@ -20,6 +20,7 @@ import { action, approval, artifact, connection, experienceTurn, job } from '../
 import { answerStream } from '../experience/answer-filter.ts';
 import {
   answerText,
+  meantForPerson,
   projectArtifact,
   projectCards,
   projectReceipt,
@@ -175,7 +176,7 @@ export async function requestView(
             : card,
         ),
       ),
-      ...files.map(projectArtifact),
+      ...files.filter(meantForPerson).map(projectArtifact),
     ],
     receipts,
     permissions,

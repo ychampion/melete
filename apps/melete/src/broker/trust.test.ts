@@ -56,6 +56,21 @@ describe('the fields an effect is gated on', () => {
       { path: 'intent.url', category: 'destination', value: 'https://example.com/save' },
     ]);
   });
+  test("a move's new name is a resource, not a recipient", () => {
+    const payload = canonicalizePayload({
+      from: 'report.pdf',
+      to: 'report.pdf',
+      to_area: 'artifacts',
+    }).canonical;
+    expect(collectOriginFields(payload, 'files.move')).toEqual([
+      { path: 'to', category: 'resource', value: 'report.pdf' },
+      { path: 'to_area', category: 'resource', value: 'artifacts' },
+    ]);
+    // A `to` elsewhere is still someone a message goes to.
+    expect(collectOriginFields(payload, 'email.send').find((field) => field.path === 'to')).toEqual(
+      { path: 'to', category: 'recipient', value: 'report.pdf' },
+    );
+  });
   test('a message body chooses nothing and is not gated', () => {
     expect(fields({ body: 'Meet at 3pm.', subject: 'Lunch' })).toEqual([]);
   });
