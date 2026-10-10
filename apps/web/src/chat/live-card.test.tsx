@@ -7,9 +7,9 @@
 import { expect, test } from 'bun:test';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { Result } from '../experience/adapter.ts';
 import { applyEvents, fromTurns, type TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
-import type { Result } from '../experience/adapter.ts';
 import type {
   AgentComputer,
   CardAction,
