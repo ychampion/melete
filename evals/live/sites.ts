@@ -151,7 +151,10 @@ export const github = {
 export async function reachable(url: string, tries = 3): Promise<boolean> {
   for (let attempt = 0; attempt < tries; attempt++) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000), redirect: 'follow' });
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(30_000),
+        redirect: 'follow',
+      });
       // A bot check answers 403 but the site is up; the agent meets the check, not an outage.
       if (response.status < 500) return true;
     } catch {
