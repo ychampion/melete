@@ -226,6 +226,7 @@ export async function runJob(
           handoffs.push({
             at: event.created_at,
             title: item.card.title,
+            about: item.card.facts.find((fact) => fact.label === 'About')?.value ?? null,
             ...handOffLatency(
               { at: event.created_at },
               [...tools.values()],

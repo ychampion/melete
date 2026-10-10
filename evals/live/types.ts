@@ -67,6 +67,8 @@ export type Env = Record<string, string | undefined>;
 export type HandOff = {
   at: string;
   title: string;
+  /** What the card says is left for the person. */
+  about?: string | null;
   /** Seconds from the first step that reached the checked page to the card, when it could be told. */
   latency_s: number | null;
   /** What the latency was measured from. */
