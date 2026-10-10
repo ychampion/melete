@@ -26,7 +26,13 @@ import { JobService } from '../../src/jobs/service.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { seedSessionScope } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../../src/sandbox/sessions.ts';
-import { cleanRunningComputers, removeQueuedWork } from '../../src/sandbox/work-files.ts';
+import {
+  cleanRunningComputers,
+  readStart,
+  recordWorkFiles,
+  removeQueuedWork,
+  type WorkComputer,
+} from '../../src/sandbox/work-files.ts';
 import { createTestDatabase } from './postgres.ts';
 
 const db = await createTestDatabase();
@@ -220,7 +226,19 @@ withDb('deleting a chat and the files it made in /work', () => {
     const made = await s.run(first.id, await first.attempt(), 'printf draft > /work/draft.md');
     await s.suspend(made.sessionId);
     const turn = await second.attempt();
-    await s.run(second.id, turn, 'printf edited > /work/draft.md');
+    // The turn's first read-back counts the computer being handed over, so
+    // the edit comes in a second command, read back with nobody else at work.
+    await s.run(second.id, turn, 'true');
+    await s.run(second.id, turn, 'printf edited > /work/draft.md; printf own > /work/own.md');
+    const recorded = async (file: string) => {
+      const [row] = await s.sql`select writers, shared from sandbox_work_file
+        where space_id = ${s.scope.spaceId} and path = ${file}`;
+      return row ? { writers: row.writers, shared: row.shared } : null;
+    };
+    // That read-back was clean: the new file is the second chat's alone, and
+    // the edited one is shared because both chats wrote it.
+    expect(await recorded('own.md')).toEqual({ writers: [second.id], shared: false });
+    expect(await recorded('draft.md')).toEqual({ writers: [first.id, second.id], shared: true });
     const removal = await s.remove(first.id);
     // Two chats wrote it: it is shared, so it is not queued at all.
     expect(removal.computer_files).toEqual({ removed: 0, kept: 1 });
@@ -342,4 +360,114 @@ withDb('deleting a chat and the files it made in /work', () => {
     expect(left?.n).toBe(0);
     await rm(root, { recursive: true, force: true });
   }, 60_000);
+});
+
+withDb('who made a file in /work', () => {
+  async function scope() {
+    if (!db) throw new Error('Postgres is unavailable');
+    const { sql } = db;
+    const seeded = await seedSessionScope(sql);
+    const computer: WorkComputer = {
+      spaceId: seeded.spaceId,
+      agentId: seeded.agentId,
+      connectionId: seeded.connectionId,
+      providerSandboxId: recordId('sbx'),
+    };
+    const chat = async () => {
+      const id = recordId('job');
+      await sql`insert into job (id, space_id, agent_id, title, objective)
+        values (${id}, ${seeded.spaceId}, ${seeded.agentId}, 'Chat', 'Work')`;
+      return id;
+    };
+    // Records start with an empty /work.
+    await sql`insert into sandbox_work_read (space_id, agent_id, connection_id)
+      values (${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId})`;
+    /** One command's read-back: what /work holds, and what the chat's own copy sent. */
+    const readBack = async (
+      jobId: string,
+      files: Record<string, string>,
+      sent: Record<string, string> = {},
+    ) => {
+      const from = await readStart(sql);
+      if (!from) throw new Error('the database gave no time');
+      const hashes = new Map(Object.entries(files).map(([file, body]) => [file, digest(body)]));
+      const copy = new Map(
+        Object.entries(sent).map(([file, body]) => [
+          file,
+          { size: body.length, hash: digest(body) },
+        ]),
+      );
+      await recordWorkFiles(sql, computer, jobId, from, hashes, copy, () => true);
+    };
+    const recorded = async (file: string) => {
+      const [row] = await sql`select writers, shared from sandbox_work_file
+        where space_id = ${seeded.spaceId} and path = ${file}`;
+      return row ? { writers: row.writers as string[], shared: row.shared as boolean } : null;
+    };
+    /** Another chat's command on the computer, under way until settled. */
+    const command = async (jobId: string) => {
+      const id = recordId('act');
+      const attemptId = recordId('att');
+      await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+      await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+        values (${id}, ${jobId}, ${attemptId}, ${seeded.connectionId}, 'terminal.run',
+          'write_reversible', '{}'::jsonb, 'hash', ${id}, 'dispatched', now())`;
+      return async () => {
+        await sql`update action set status = 'succeeded', resolved_at = now() where id = ${id}`;
+      };
+    };
+    return { sql, seeded, computer, chat, readBack, recorded, command };
+  }
+
+  test("after another chat's command overlapped, the next clean read-back is the chat's again", async () => {
+    const s = await scope();
+    const mine = await s.chat();
+    const other = await s.chat();
+    const settle = await s.command(other);
+    await s.readBack(mine, { 'a.txt': 'a' });
+    expect(await s.recorded('a.txt')).toEqual({ writers: [], shared: true });
+    await settle();
+    // It ended after the last read-back began: still counted once.
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b' });
+    expect((await s.recorded('b.txt'))?.shared).toBe(true);
+    // Nothing else has been at work since: the chat's alone.
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+    expect(await s.recorded('c.txt')).toEqual({ writers: [mine], shared: false });
+  }, 30_000);
+
+  test('a person holding a display keeps every change shared until they hand it back', async () => {
+    const s = await scope();
+    const mine = await s.chat();
+    const display = `${s.computer.providerSandboxId}#1`;
+    // Taken over before records started, and still held.
+    await s.sql`insert into sandbox_control (provider_sandbox_id, control, epoch, changed_at)
+      values (${display}, 'human', 1, now() - interval '1 hour')`;
+    await s.readBack(mine, { 'a.txt': 'a' });
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b' });
+    expect((await s.recorded('a.txt'))?.shared).toBe(true);
+    expect((await s.recorded('b.txt'))?.shared).toBe(true);
+    await s.sql`update sandbox_control set control = 'agent', epoch = 2, changed_at = now()
+      where provider_sandbox_id = ${display}`;
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+    expect((await s.recorded('c.txt'))?.shared).toBe(true);
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c', 'd.txt': 'd' });
+    expect(await s.recorded('d.txt')).toEqual({ writers: [mine], shared: false });
+  }, 30_000);
+
+  test('a takeover of the sandbox the computer was before it was made again counts', async () => {
+    const s = await scope();
+    const mine = await s.chat();
+    const before = recordId('sbx');
+    await s.sql`insert into sandbox_session (id, connection_id, space_id, agent_id, adapter,
+        provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at, closed_at)
+      values (${recordId('sbs')}, ${s.seeded.connectionId}, ${s.seeded.spaceId}, ${s.seeded.agentId},
+        'fake', ${before}, 'base', '{"kind":"deny_all"}'::jsonb, 'pause', 'closed', now(), now())`;
+    // The person took the old sandbox over and handed it back since the last read-back.
+    await s.sql`insert into sandbox_control (provider_sandbox_id, control, epoch, changed_at)
+      values (${before}, 'agent', 2, now())`;
+    await s.readBack(mine, { 'notes.md': 'theirs' });
+    expect((await s.recorded('notes.md'))?.shared).toBe(true);
+  }, 30_000);
 });

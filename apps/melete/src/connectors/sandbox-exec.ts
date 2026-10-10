@@ -66,6 +66,7 @@ import {
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
 import {
+  readStart,
   recordWorkFiles,
   removeQueuedWork,
   startWorkRecords,
@@ -1215,6 +1216,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       if (result.outcome === 'unknown') return outcome;
       const records = await loadFileRecords(sql, ctx.job_id).catch(() => null);
       const othersRunning = await othersRunningOn(sql, session, ctx.job_id);
+      const readFrom = workComputer ? await readStart(sql) : null;
       const report = await syncOut({
         provider,
         handle: sessionHandle(session),
@@ -1234,11 +1236,12 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
       // Who made what in the shared /work, for when a chat is deleted.
       const recorded = workComputer;
-      if (recorded && !(report instanceof Error))
+      if (recorded && readFrom && !(report instanceof Error))
         await recordWorkFiles(
           sql,
           recorded,
           ctx.job_id,
+          readFrom,
           report.hashes,
           sent,
           records ? (relative) => personGivenReason(records, relative) === null : null,

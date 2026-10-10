@@ -115,6 +115,9 @@ export async function startWorkRecords(
     where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
       and connection_id = ${computer.connectionId}`;
   if (known) return;
+  // Counted from before the listing, so nothing made while it lists is missed.
+  const from = await readStart(sql);
+  if (!from) return;
   const { files } = await listWork(provider, handle, signal);
   await sql.begin(async (tx) => {
     await lockComputer(tx, computer);
@@ -128,43 +131,50 @@ export async function startWorkRecords(
     for (let at = 0; at < rows.length; at += 500)
       await tx`insert into sandbox_work_file ${tx(rows.slice(at, at + 500), 'space_id', 'agent_id', 'connection_id', 'path', 'shared')}
         on conflict do nothing`;
-    await tx`insert into sandbox_work_read (space_id, agent_id, connection_id)
-      values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId})
+    await tx`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at)
+      values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId}, ${from})
       on conflict do nothing`;
   });
 }
 
 /**
- * Whether anything but this chat could have changed `/work` since `since`:
- * another chat's command or computer action on this connection begun since
- * or still under way, a background process another chat started that ran
- * since, or the person taking the computer, or one of its displays, over.
- * When it cannot be asked, the answer is yes. `since` only moves on at a
- * read-back that found nobody else at work, so an action under way then is
- * still counted at the next.
+ * Whether anything but this chat could have changed `/work` between `since`
+ * and now (null: whether anything is at work now): another chat's command or
+ * computer action on this connection under way at any point since, a
+ * background process another chat started that ran since, or the person
+ * holding the computer, or one of its displays, at any point since. Every
+ * sandbox the computer has been counts, since a computer made again keeps its
+ * `/work` under a new id. When it cannot be asked, the answer is yes.
  */
 export async function othersAtWork(
   tx: Query,
   computer: WorkComputer,
   jobId: string,
-  since: Date,
+  since: DbTime | null,
 ): Promise<boolean> {
+  const from = () => since ?? tx`now()`;
   try {
     const [row] = await tx`select
       exists (select 1 from sandbox_process
         where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
           and connection_id = ${computer.connectionId}
           and job_id is distinct from ${jobId}
-          and (state in ('starting', 'running') or ended_at is null or ended_at > ${since}))
+          and (state in ('starting', 'running') or ended_at is null or ended_at > ${from()}))
       or exists (select 1 from action a join job j on j.id = a.job_id
         where a.connection_id = ${computer.connectionId} and j.space_id = ${computer.spaceId}
           and j.agent_id = ${computer.agentId} and a.job_id <> ${jobId}
-          and (a.dispatched_at > ${since}
+          and a.dispatched_at is not null
+          and (a.dispatched_at > ${from()} or a.resolved_at > ${from()}
             or (a.resolved_at is null and a.dispatched_at > now() - interval '1 day')))
-      or exists (select 1 from sandbox_control
-        where (provider_sandbox_id = ${computer.providerSandboxId}
-            or left(provider_sandbox_id, ${computer.providerSandboxId.length + 1}) = ${`${computer.providerSandboxId}#`})
-          and changed_at > ${since}) as busy`;
+      or exists (select 1 from sandbox_control c
+        where (c.control = 'human' or c.changed_at > ${from()})
+          and (c.provider_sandbox_id = ${computer.providerSandboxId}
+            or starts_with(c.provider_sandbox_id, ${`${computer.providerSandboxId}#`})
+            or exists (select 1 from sandbox_session s
+              where s.space_id = ${computer.spaceId} and s.agent_id = ${computer.agentId}
+                and s.connection_id = ${computer.connectionId}
+                and (c.provider_sandbox_id = s.provider_sandbox_id
+                  or starts_with(c.provider_sandbox_id, s.provider_sandbox_id || '#'))))) as busy`;
     return row?.busy !== false;
   } catch {
     return true;
@@ -173,17 +183,33 @@ export async function othersAtWork(
 
 type FileRow = { path: string; hash: string | null; writers: string[]; shared: boolean };
 
+/** A database time, as the driver gives it back. */
+export type DbTime = Date | string;
+
+/** The database's time now, which a read-back counts from; null when it cannot be had. */
+export async function readStart(sql: Sql): Promise<DbTime | null> {
+  try {
+    const [row] = await sql`select now() as at`;
+    const at: unknown = row?.at;
+    return at instanceof Date || typeof at === 'string' ? at : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Record `/work` as one command's read-back found it: `files` is every
- * regular file there with its content hash, and `sent` what this chat's own
- * copy put there before the command ran. `chatMade` says whether a file of
- * that copy is the chat's own rather than one the person gave it; null when
- * that is not known.
+ * regular file there with its content hash, listed from `readFrom` on (taken
+ * with `readStart` before the listing), and `sent` what this chat's own copy
+ * put there before the command ran. `chatMade` says whether a file of that
+ * copy is the chat's own rather than one the person gave it; null when that
+ * is not known.
  */
 export async function recordWorkFiles(
   sql: Sql,
   computer: WorkComputer,
   jobId: string,
+  readFrom: DbTime,
   files: ReadonlyMap<string, string>,
   sent: ReadonlyMap<string, SentFile> | null,
   chatMade: ((path: string) => boolean) | null,
@@ -194,7 +220,7 @@ export async function recordWorkFiles(
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
         and connection_id = ${computer.connectionId}`;
     // With no starting point, what changed cannot be told from what was there.
-    const others = read ? await othersAtWork(tx, computer, jobId, read.read_at as Date) : true;
+    const others = read ? await othersAtWork(tx, computer, jobId, read.read_at as DbTime) : true;
     const rows = await tx<FileRow[]>`select path, hash, writers, shared from sandbox_work_file
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
         and connection_id = ${computer.connectionId}`;
@@ -238,11 +264,12 @@ export async function recordWorkFiles(
     await tx`delete from sandbox_work_file
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
         and connection_id = ${computer.connectionId} and path <> all(${[...files.keys()]}::text[])`;
-    // The next read-back counts from here only when nobody else was at work.
-    if (!read || !others)
-      await tx`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at)
-        values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId}, now())
-        on conflict (space_id, agent_id, connection_id) do update set read_at = now()`;
+    // The next read-back counts from when this one began listing, so what
+    // changed while it read is looked at again. Anything under way then is
+    // counted at the next, as running, unresolved or held, or as ended since.
+    await tx`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at)
+      values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId}, ${readFrom})
+      on conflict (space_id, agent_id, connection_id) do update set read_at = excluded.read_at`;
   });
 }
 
