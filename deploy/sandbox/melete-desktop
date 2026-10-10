@@ -184,15 +184,20 @@ def end_display():
         pass
 
 
+def display_owner():
+    """The chat this display was last claimed for, or None when nobody has claimed it."""
+    try:
+        with open(display_file("owner"), encoding="ascii") as handle:
+            return handle.read().strip() or None
+    except OSError:
+        return None
+
+
 def claim_display(owner):
     """A display given to another chat starts clean: what the one before left is ended."""
     if not owner:
         return
-    try:
-        with open(display_file("owner"), encoding="ascii") as handle:
-            before = handle.read().strip()
-    except OSError:
-        before = None
+    before = display_owner()
     if before == owner:
         return
     end_display()
@@ -1183,6 +1188,10 @@ def main(argv):
     choose(number, owner)
     command, rest = argv[0], argv[1:]
     if command == "stop" and not rest:
+        # A stop that arrives after the display was given to another chat is
+        # for a display that no longer exists: the one now on it is left alone.
+        if owner and display_owner() not in (None, owner):
+            return None
         return end_display()
     claim_display(owner)
     ensure_display()
