@@ -90,6 +90,7 @@ import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
 import { AgentLine, EarlierMessages, LogEntries, WorkLog } from './WorkLog.tsx';
+import { WorkPill } from './WorkPill.tsx';
 import type { WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
@@ -305,6 +306,7 @@ function TurnView({
   onSendDraft,
   onUndo,
   onTakeOver,
+  onOpenComputer,
   onAnswer,
   onOwn,
   unknown,
@@ -330,6 +332,8 @@ function TurnView({
   onUndo: (id: string) => void;
   /** Take the agent's browser or computer over, from a card that hands the work over. */
   onTakeOver: (action: CardAction) => void;
+  /** Show the agent's computer, from the picture of it in the turn. */
+  onOpenComputer?: () => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
   onAnswer: (questionId: string, answer: string | { text: string }) => void;
   onOwn: (text: string) => void;
@@ -460,6 +464,9 @@ function TurnView({
               items={layout.log}
               finished={layout.finished}
               renderBlock={renderBlock}
+              computer={
+                onOpenComputer && { agentName: agent?.name ?? 'Melete', open: onOpenComputer }
+              }
             />
             {layout.answer ? <Answer text={layout.answer} /> : null}
             {layout.after.length ? (
@@ -1079,6 +1086,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
   const showComputer = computerOpen && Boolean(conversationId);
   const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const openComputer = () => setComputerOpen(true);
   const computerToggle = (size?: number) =>
     conversationId ? (
       <IconButton
@@ -1252,6 +1260,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                       onSendDraft={sendDraft}
                       onUndo={undo}
                       onTakeOver={takeOver}
+                      onOpenComputer={openComputer}
                       onAnswer={answer}
                       onOwn={(own) => void send(own)}
                       unknown={turn.id === lastId ? unknown : undefined}
@@ -1396,6 +1405,16 @@ ${words}`
                   ))}
                 </div>
               ) : null}
+              <WorkPill
+                turn={last}
+                conversationId={conversationId}
+                agentName={agent?.name ?? 'Melete'}
+                onStop={() =>
+                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                }
+                onTakeOver={takeOver}
+                onOpen={openComputer}
+              />
               {conversation?.automation_id ? (
                 <RoutineThreadNote />
               ) : (
