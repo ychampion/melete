@@ -96,3 +96,10 @@ export const unwrap = <T, E>(r: Result<T, E>): T => {
 };
 
 export const SCHEMA_VERSION = 1;
+
+/**
+ * A password someone chooses: for a new account, a change or a reset. Signing
+ * in still takes the 8 characters older accounts were allowed.
+ */
+export const NEW_PASSWORD_MIN = 10;
+export const newPasswordInput = z.string().min(NEW_PASSWORD_MIN).max(1024);

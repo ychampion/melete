@@ -53,6 +53,11 @@ export const principal = pgTable(
     /** The name other people in a room see. Null shows the part of the email before the @. */
     displayName: text('display_name'),
     createdAt: created(),
+    /**
+     * Set by the person who runs the installation (`melete account disable`):
+     * the account cannot sign in, and nothing it had signed in still works.
+     */
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );

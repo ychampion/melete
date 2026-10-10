@@ -93,6 +93,8 @@ export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
 export type PushSubscriptionInput = Body<paths['/push/subscriptions'], 'post'>;
+/** Where the account is signed in, and the computers, browsers and assistants that reach it. */
+export type AccountAccess = Success<Ok<paths['/account/sessions'], 'get'>>;
 /** The person's own number, their agreement to texts and calls, and what Melete sent. */
 export type ReachState = Ok<paths['/reach'], 'get'>['reach'];
 /** Another assistant the person let use Melete over MCP. */
@@ -218,9 +220,6 @@ export type ActionResolution = Body<paths['/actions/{actionId}/resolve'], 'post'
 export type Capabilities = {
   calendar: boolean;
   browser: boolean;
-  google_sign_in: boolean;
-  apple_sign_in: boolean;
-  magic_link: boolean;
   /** Rooms, shared spaces, guests and hand-offs, as the server's switch has them. */
   multiplayer: boolean;
 };

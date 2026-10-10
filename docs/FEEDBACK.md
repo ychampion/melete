@@ -47,6 +47,29 @@ details.
   fix`) and write a note.
 - Anyone else sees only their own reports and where each one stands.
 
+## Sending reports on
+
+Set `MELETE_FEEDBACK_WEBHOOK_URL` and every new report is also POSTed there as
+JSON, after the person who sent it has their id:
+
+```json
+{
+  "text": "New Melete problem report FB-7K3Q on https://melete.example.com: The plan list is empty",
+  "service": "melete",
+  "installation": "https://melete.example.com",
+  "report": { "id": "FB-7K3Q", "summary": "…", "status": "open", "…": "…" },
+  "markdown": "# FB-7K3Q …"
+}
+```
+
+`text` is what a chat webhook shows; `report` is the report as `GET
+/feedback/{id}` returns it, and `markdown` what `melete feedback show` prints.
+`installation` is `MELETE_PUBLIC_URL`, so one endpoint can collect reports from
+many installations. A failed delivery is logged and not retried; the report is
+kept in the installation either way. The webhook gets what the person sent and
+the page details, redacted as above, so point it only at somewhere the people
+running the installation control.
+
 ## Fixing a report with a coding agent
 
 Give the agent the id: "Fix FB-7K3Q". The agent reads the report from the
@@ -65,6 +88,9 @@ service container, where `DATABASE_URL` is already set:
 
 ```sh
 docker compose exec melete bun run feedback show FB-7K3Q
+# or, from the checkout, for this or a remote installation:
+bun run melete feedback show FB-7K3Q
+bun run melete remote my-vm feedback
 ```
 
 `show` prints the status, who sent the report and when, the page, the service

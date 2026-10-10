@@ -213,6 +213,8 @@ bun run melete backup --estimate && bun run melete backup
 bun run melete deploy --checkout --dry-run
 bun run melete rollback --dry-run
 bun run melete history
+bun run melete account list    # every account, and whether it is signed in anywhere
+bun run melete feedback        # problem reports people sent from the app
 ```
 
 | Command | What it does |
@@ -231,6 +233,8 @@ bun run melete history
 | `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
 | `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
+| `account <command>` | The accounts on the installation, run in the service container; [Accounts](#accounts) lists the commands. `--json` prints each answer as one JSON object. |
+| `feedback [list\|show <id>]` | The [problem reports](FEEDBACK.md) people sent, as `bun run feedback` prints them, run in the service container. |
 | `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
 
 `--deploy-dir <checkout>/deploy` runs a command against another checkout's
@@ -1040,6 +1044,88 @@ docker compose -f deploy/docker-compose.yml \
   -f deploy/docker-compose.tailscale.yml exec tailscale tailscale funnel status
 ```
 
+## Claiming a new installation
+
+Until its first account exists, an installation belongs to whoever creates
+that account. `bun run melete init` (and `deploy/scripts/configure.ts`, which it
+runs) therefore makes a one-time setup code, prints it once with a link that
+fills it in, and writes only its SHA-256 digest to `deploy/.env` as
+`MELETE_SETUP_CODE_HASH`:
+
+```text
+Create the first account with this one-time setup code. It is shown only now; keep it until the account exists:
+
+  K7QM-2XRT-9WPC-HV4N-ZD6B
+
+Once Melete is running, open http://127.0.0.1:3101/#/welcome?code=K7QM-2XRT-9WPC-HV4N-ZD6B
+```
+
+While the code is configured, the sign-in page asks for it beside the email and
+password (the link fills it in), and `POST /setup` answers 403
+`setup_code_required` without it and 403 `invalid_setup_code` for a wrong one.
+Case, spaces and dashes don't matter. The password is checked first, so a weak
+one does not use up an issued code. Once the account exists the code has
+nothing left to open. `GET /setup` says `code_required` while it matters.
+
+Lost it, or setting up installations for other people without `init`?
+
+```bash
+bun run melete account setup-code
+```
+
+prints a new code and link that last 72 hours; each new one cancels the one
+before. An operator who provisions an installation for someone else can also
+skip the code and create that person's account directly with
+`bun run melete account create <email>` (see [Accounts](#accounts)).
+
+An installation with no code configured and none issued, such as one set up
+before codes existed or a local install whose `deploy/.env` has an empty
+`MELETE_SETUP_CODE_HASH`, keeps the old behaviour: the first visitor creates
+the account. That is fine on the default loopback ports, where only this
+machine reaches the page; give an installation a code before it is reachable
+from anywhere else.
+
+## Accounts
+
+The person who runs an installation manages its accounts from the checkout, or
+from another machine with `bun run melete remote <host> account …`. Each
+command runs in the service container and prints a link where one is needed;
+links use `MELETE_PUBLIC_URL`, or the web port on this machine.
+
+| Command | What it does |
+|---|---|
+| `account list` | Every account: email, owner, person or guest, created, disabled, whether it has a password yet, how many browsers are signed in, and the last sign-in. |
+| `account create <email>` | A new account with a one-time link, valid for seven days, to choose its password. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
+| `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
+| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
+| `account enable <email>` | Lets a disabled account sign in again. |
+| `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
+
+The exit code is 0 when it was done, 2 when it was refused (no such account,
+an email already in use, a setup code once the owner exists) and 1 when it
+failed.
+
+## Signing out everywhere
+
+Settings › Account › Where you're signed in lists every browser signed in to the
+account, with the system and browser each signed in from, and the paired
+computers, browsers that receive notifications, and connected assistants. Any
+browser or computer can be signed out on its own. "Sign out everywhere else"
+ends all of them except the browser that asked: other browser sessions, unused
+sign-in and reset links, connected assistants and their unused codes, unused
+computer pairing codes, paired computers (their connections are revoked as a
+revoke in Settings › Devices revokes them), notification subscriptions, and
+linked chat accounts. Changing the password does the same. A reset link
+does it for every browser, the one that used the link included. Signing out of
+one browser also stops that browser's notifications.
+
+Expired sessions, and links and codes that expired or were used more than a
+day ago, are deleted every six hours.
+
+New passwords need at least 10 characters, and the most common passwords, one
+character repeated, a straight run of keys and the account's own email address
+are refused (400 `weak_password`). Existing passwords keep working.
+
 ## Sign-in limits
 
 Every limit below is counted in Postgres, in `rate_limit_window`, so it holds
@@ -1072,6 +1158,16 @@ With the default loopback ports, the SSH tunnel, or a TLS reverse proxy
 on the host, the web server's socket peer is the Docker gateway, so all browsers
 still arrive as one address and the per-address limit below is shared between
 them. The known-device rule is what keeps a sign-in available in that case.
+
+A reverse proxy on the host can state each browser's address instead. Set
+`MELETE_WEB_TRUSTED_UPSTREAM=gateway` and have the proxy set `X-Forwarded-For`
+to the one address it accepted the connection from, replacing any value the
+browser sent (Caddy's `reverse_proxy` and nginx's
+`proxy_set_header X-Forwarded-For $remote_addr` do). The web server reads the
+container's default gateway from its routing table and believes the header
+only on a connection from that address, and only when it holds one
+well-formed address; anything else is attributed to the socket as before. A
+proxy on another machine is named by its address instead of `gateway`.
 
 **Per client address.** A burst of five attempts, then 1, 2, 4, up to 60
 seconds between attempts. A refusal is 429 `login_rate_limited` with
@@ -1120,15 +1216,22 @@ connected apps lose their access and have to be connected again. Wrong current
 passwords are limited per account with the same backoff as sign-in.
 
 Someone who has forgotten theirs chooses "Forgot your password?" on the sign-in
-page. When the owner's own mailbox is connected, the page can mail a reset link
-(30 minutes, at most three an hour). Without one, the person who runs the
-install prints a link on the host:
+page. With [account mail](#account-mail) set up, the page mails any account a
+reset link (30 minutes, at most three an hour). Without it, only the owner can
+get one, and only when their own mailbox is connected. The page also takes a
+reset code, or a whole link, pasted in, and checks it before asking for a new
+password. Otherwise the person who runs the install prints a link:
 
 ```bash
+bun run melete account reset you@example.com
+# Without the melete command:
 docker compose exec melete bun run reset-password you@example.com
 # Outside Docker, from the checkout, with DATABASE_URL set:
 bun run reset-password you@example.com
 ```
+
+The page never shows these commands: the person who forgot their password is
+told only what they can do.
 
 The link uses `MELETE_PUBLIC_URL`; without it the command prints a code to paste
 on the reset page instead. A link or code works once, expires after 60 minutes,
@@ -1137,7 +1240,31 @@ leaves a printed one working. Choosing a new password signs the account out
 everywhere, connected apps included. Only a digest of each token is stored, and
 attempts to use one are limited per client address.
 
-Room invites work the same way. A guest's invite link uses `MELETE_PUBLIC_URL`
+### Account mail
+
+Sign-in links and password reset links go out through the installation's own
+mail sender when one is configured:
+
+```bash
+bun run melete set MELETE_SMTP_URL=smtps://user:password@smtp.example.com:465 \
+  MELETE_MAIL_FROM='Melete <melete@example.com>' MELETE_PUBLIC_URL=https://melete.example.com
+```
+
+Both are needed, or neither; the service refuses to start with one alone. The
+links point at `MELETE_PUBLIC_URL`, so email sign-in and mailed resets are
+offered only once it is set. `smtp://` uses STARTTLS when the server offers it.
+This sender carries nothing but these two kinds of mail, for any account;
+what Melete sends for a person still leaves from their own connected
+accounts, after their approval. The answer to a request is the same whether or
+not the address has an account, and the mail is sent after the answer.
+
+Without a sender, account mail goes out from the owner's own connected mailbox,
+to the owner only, as before. The sign-in page shows "Email me a link instead"
+only when one of the two can send (`email_sign_in` in `GET /setup`).
+
+### Room invites
+
+Room invite links work like reset links. A guest's invite link uses `MELETE_PUBLIC_URL`
 when it is set; without it, the owner is given a path to open on the address
 people use for this installation. Only a digest of each invite's token is
 stored, and the token rides in the link's fragment, which no server log sees.

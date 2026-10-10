@@ -762,6 +762,31 @@ const variables = z.object({
   ),
   /** A bearer token that opens GET /health/detail to the operator. */
   MELETE_OPERATOR_TOKEN: unsetWhenBlank(z.string().min(24).max(512).optional()),
+  /**
+   * Where each problem report is also sent, as a JSON POST, for the people
+   * running the installation. docs/FEEDBACK.md.
+   */
+  MELETE_FEEDBACK_WEBHOOK_URL: unsetWhenBlank(z.url({ protocol: /^https?$/ }).optional()),
+
+  /**
+   * The installation's own mail sender, for sign-in and password reset links
+   * to every account: smtp:// or smtps://user:password@host:port, and the From
+   * address. Unset, account mail goes only to the owner, from their own
+   * connected mailbox. docs/DEPLOYMENT.md, "Account mail".
+   */
+  MELETE_SMTP_URL: unsetWhenBlank(z.string().max(2000).optional()),
+  MELETE_MAIL_FROM: unsetWhenBlank(z.string().max(320).optional()),
+  /**
+   * The SHA-256, in hex, of the one-time setup code `melete init` printed.
+   * Set, creating the first account needs that code. docs/DEPLOYMENT.md,
+   * "Claiming a new installation".
+   */
+  MELETE_SETUP_CODE_HASH: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/, 'the SHA-256 of the setup code, in hex')
+      .optional(),
+  ),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
@@ -1058,6 +1083,12 @@ export const envSchema = variables.transform((value, context) => {
         message: (error as Error).message,
       });
     }
+  if (Boolean(value.MELETE_SMTP_URL) !== Boolean(value.MELETE_MAIL_FROM))
+    context.addIssue({
+      code: 'custom',
+      path: [value.MELETE_SMTP_URL ? 'MELETE_MAIL_FROM' : 'MELETE_SMTP_URL'],
+      message: 'set both MELETE_SMTP_URL and MELETE_MAIL_FROM, or neither',
+    });
   if (value.MELETE_ALERT_EMAIL_TO && !value.MELETE_ALERT_SMTP_URL)
     context.addIssue({
       code: 'custom',

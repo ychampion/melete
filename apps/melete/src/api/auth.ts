@@ -6,10 +6,11 @@ import {
   ID_PREFIXES,
   magicLinkConsume,
   magicLinkRequest,
+  newPasswordInput,
   spaceListResponse,
   unavailable,
 } from '@melete/contracts';
-import { and, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -21,6 +22,7 @@ import { session } from '../db/auth-schema.ts';
 import type { Database } from '../db/client.ts';
 import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
+import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
@@ -36,11 +38,14 @@ import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
+import { mountAccountAccess, sessionLabel } from './account-access.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
 import { mountPassword } from './password.ts';
+import { requireStrongPassword } from './password-policy.ts';
+import { setupCodeRequired, spendSetupCode } from './setup-code.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -84,6 +89,11 @@ export const credentials = z.object({
     .transform((value) => value.toLowerCase()),
   password: z.string().min(8).max(1024),
 });
+/** The first account: a new password, and the setup code when the installation has one. */
+export const setupCredentials = credentials.extend({
+  password: newPasswordInput,
+  setup_code: z.string().min(1).max(200).optional(),
+});
 
 export type SessionOwner = {
   id: string;
@@ -124,7 +134,7 @@ const publicOwner = (row: typeof owner.$inferSelect): SessionOwner => ({
 
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
-function newSession(ownerId: string, principalId = ownerId, spaceId?: string) {
+function newSession(ownerId: string, principalId = ownerId, spaceId?: string, label?: string) {
   const token = randomBytes(32).toString('base64url');
   return {
     token,
@@ -133,10 +143,14 @@ function newSession(ownerId: string, principalId = ownerId, spaceId?: string) {
       ownerId,
       principalId,
       ...(spaceId ? { spaceId } : {}),
+      ...(label ? { label } : {}),
       expiresAt: new Date(Date.now() + SESSION_TTL_SECONDS * 1000),
     },
   };
 }
+
+/** What the person's list calls the browser this request came from. */
+const browserOf = (c: Context) => sessionLabel(c.req.header('User-Agent'));
 
 function sessionCookie(c: Context, token: string, env: Env) {
   setCookie(c, SESSION_COOKIE, token, {
@@ -156,7 +170,7 @@ function sessionCookie(c: Context, token: string, env: Env) {
 export async function startSession(c: Context, db: Database, env: Env, principalId: string) {
   const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
   if (!installation) throw new Error('No installation to sign in to');
-  const authenticated = newSession(installation.id, principalId);
+  const authenticated = newSession(installation.id, principalId, undefined, browserOf(c));
   await db.insert(session).values(authenticated.row);
   sessionCookie(c, authenticated.token, env);
 }
@@ -231,9 +245,12 @@ function unknownAccountHash(): Promise<string> {
   return placeholderHash;
 }
 
-async function readCredentials(c: Context) {
+async function readCredentials<T extends z.ZodType>(
+  c: Context,
+  schema: T,
+): Promise<z.infer<T> | null> {
   if (c.req.header('Content-Type')?.split(';')[0]?.trim() !== 'application/json') return null;
-  const parsed = credentials.safeParse(await c.req.json().catch(() => null));
+  const parsed = schema.safeParse(await c.req.json().catch(() => null));
   return parsed.success ? parsed.data : null;
 }
 
@@ -257,6 +274,8 @@ export async function activeSession(db: Database, token: string) {
         gt(session.expiresAt, new Date()),
         // A room's own principal holds no session, however one came to be written.
         inArray(principal.kind, SIGN_IN_KINDS),
+        // Nor does an account the operator disabled.
+        isNull(principal.disabledAt),
       ),
     )
     .limit(1);
@@ -273,10 +292,15 @@ export function mountAuth(
     limits?: LimitStore;
     sql?: Sql;
     registry?: ConnectorRegistry;
+    /** The installation's account mail sender; left out, the owner's own mailbox alone. */
+    accountMail?: AccountMailer;
+    /** Closes the connections of paired computers that ending an account's access disconnected. */
+    devicesEnded?: (principalId: string, deviceIds: string[]) => Promise<void>;
   },
 ): void {
   const { db, env, registry } = deps;
   const handle = deps.sql;
+  const setupCodeHash = env.MELETE_SETUP_CODE_HASH;
   const multiplayer = multiplayerEnabled(env);
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
@@ -331,8 +355,14 @@ export function mountAuth(
         .select()
         .from(principal)
         // An assistant acts only for a person: a guest never holds a grant, and a
-        // grant somehow written for one is refused here.
-        .where(and(eq(principal.id, actor.principalId), eq(principal.kind, 'person')))
+        // grant somehow written for one is refused here, as is a disabled account's.
+        .where(
+          and(
+            eq(principal.id, actor.principalId),
+            eq(principal.kind, 'person'),
+            isNull(principal.disabledAt),
+          ),
+        )
         .limit(1);
       if (!person) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
@@ -373,6 +403,7 @@ export function mountAuth(
           '/signin/apple',
           '/signin/chatgpt',
           '/password-reset',
+          '/password-reset/check',
           '/password-reset/consume',
           // A room invite is opened and accepted before its guest has an account.
           ...INVITE_PUBLIC_PATHS,
@@ -450,9 +481,10 @@ export function mountAuth(
 
   const signIn =
     deps.sql && deps.registry
-      ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL)
+      ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL, deps.accountMail)
       : undefined;
-  if (deps.sql)
+  if (deps.sql) {
+    const devicesEnded = deps.devicesEnded ? { devicesEnded: deps.devicesEnded } : {};
     mountPassword(app, {
       sql: deps.sql,
       sessionCookie: SESSION_COOKIE,
@@ -460,7 +492,10 @@ export function mountAuth(
       publicUrl: env.MELETE_PUBLIC_URL,
       clock,
       limits,
+      ...devicesEnded,
     });
+    mountAccountAccess(app, { sql: deps.sql, sessionCookie: SESSION_COOKIE, ...devicesEnded });
+  }
   app.post('/signin/magic-link', async (c) => {
     const input = magicLinkRequest.parse(await c.req.json());
     return c.json(
@@ -472,7 +507,11 @@ export function mountAuth(
   app.post('/signin/magic-link/consume', async (c) => {
     const input = magicLinkConsume.parse(await c.req.json());
     if (!signIn) return c.json(unavailable('Email sign-in is not connected yet.'));
-    sessionCookie(c, await signIn.consume(input.token, newSession), env);
+    const label = browserOf(c);
+    const token = await signIn.consume(input.token, (ownerId, principalId, spaceId) =>
+      newSession(ownerId, principalId, spaceId, label),
+    );
+    sessionCookie(c, token, env);
     return c.json({ status: 'ok' });
   });
   for (const provider of ['google', 'apple'])
@@ -499,7 +538,8 @@ export function mountAuth(
   /**
    * Whether the first account still needs to be created. Public, so a browser
    * with no session can show "Create your account" on a fresh install and
-   * sign-in everywhere else. It says only whether an owner exists.
+   * sign-in everywhere else. It says whether an owner exists, whether setup
+   * needs the installation's code, and whether email sign-in can work here.
    */
   app.get('/setup', async (c) => {
     if (!db) {
@@ -509,7 +549,13 @@ export function mountAuth(
       );
     }
     const [installed] = await db.select({ id: owner.id }).from(owner).limit(1);
-    return c.json({ needed: !installed, multiplayer });
+    const needed = !installed;
+    return c.json({
+      needed,
+      multiplayer,
+      code_required: needed && handle ? await setupCodeRequired(handle, setupCodeHash) : false,
+      email_sign_in: needed || !signIn ? false : await signIn.canSend(),
+    });
   });
 
   app.post('/setup', async (c) => {
@@ -531,17 +577,54 @@ export function mountAuth(
         409,
       );
     }
-    const input = await readCredentials(c);
+    const input = await readCredentials(c, setupCredentials);
     if (!input) {
       return c.json(
-        { error: { code: 'invalid_input', message: 'Provide an email and password.' } },
+        {
+          error: {
+            code: 'invalid_input',
+            message: 'Provide an email and a password of at least 10 characters.',
+          },
+        },
         400,
       );
+    }
+    requireStrongPassword(input.password, input.email);
+    // The code is checked before any work is done for whoever is asking.
+    const codeNeeded = handle ? await setupCodeRequired(handle, setupCodeHash) : false;
+    if (codeNeeded && !input.setup_code)
+      return c.json(
+        {
+          error: {
+            code: 'setup_code_required',
+            message:
+              'Enter the setup code for this installation. Whoever set it up has it, and the link they were given fills it in.',
+          },
+        },
+        403,
+      );
+    if (codeNeeded && handle) {
+      // Spent before the owner is made: a code that matched is used up even if
+      // another setup wins the race, and a wrong one changes nothing.
+      const spent = await handle.begin((tx) =>
+        spendSetupCode(tx, setupCodeHash, input.setup_code ?? ''),
+      );
+      if (!spent)
+        return c.json(
+          {
+            error: {
+              code: 'invalid_setup_code',
+              message:
+                'That setup code is not right, or has expired. Check it, or ask for a new one.',
+            },
+          },
+          403,
+        );
     }
     const passwordHash = await Bun.password.hash(input.password, { algorithm: 'argon2id' });
     const ownerId = newId(ID_PREFIXES.owner);
     const personalId = newId(ID_PREFIXES.space);
-    const authenticated = newSession(ownerId);
+    const authenticated = newSession(ownerId, ownerId, undefined, browserOf(c));
     const created = await db.transaction(async (tx) => {
       // ON CONFLICT also covers the singleton index, so concurrent setup has one winner.
       const [createdOwner] = await tx
@@ -598,7 +681,7 @@ export function mountAuth(
         503,
       );
     }
-    const input = await readCredentials(c);
+    const input = await readCredentials(c, credentials);
     if (!input) {
       return c.json(
         { error: { code: 'invalid_input', message: 'Provide an email and password.' } },
@@ -621,7 +704,13 @@ export function mountAuth(
     const [found] = await db
       .select()
       .from(principal)
-      .where(and(eq(principal.email, input.email), inArray(principal.kind, signInKinds)))
+      .where(
+        and(
+          eq(principal.email, input.email),
+          inArray(principal.kind, signInKinds),
+          isNull(principal.disabledAt),
+        ),
+      )
       .limit(1);
     const verified = await Bun.password.verify(
       input.password,
@@ -636,7 +725,7 @@ export function mountAuth(
     const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
     if (!installation)
       return c.json({ error: { code: 'unauthorized', message: 'Setup is required.' } }, 401);
-    const authenticated = newSession(installation.id, found.id);
+    const authenticated = newSession(installation.id, found.id, undefined, browserOf(c));
     await db.insert(session).values(authenticated.row);
     // Success clears only what this request paid into. The shared account
     // limiter gets this one attempt back and keeps every failure it has seen,
@@ -673,7 +762,6 @@ export function mountAuth(
           kind: row.kind,
           audience: row.audience,
           owner_principal_id: row.ownerPrincipalId,
-          git_path: row.gitPath,
           created_at: row.createdAt.toISOString(),
         })),
       }),
