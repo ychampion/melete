@@ -518,7 +518,15 @@ export const trailStep = z.discriminatedUnion('type', [
     /** Present when the step is one tool entry: the same copy the `tool` item carries. */
     tool: toolCall.optional(),
   }),
-  z.strictObject({ type: z.literal('note'), text }),
+  z.strictObject({
+    type: z.literal('note'),
+    text,
+    /**
+     * True for a line about the work in progress (waiting for a free slot, a
+     * break in the stream): shown while the turn runs, and not once it ended.
+     */
+    transient: z.literal(true).optional(),
+  }),
   z.strictObject({
     type: z.literal('done'),
     summary: text,

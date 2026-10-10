@@ -36479,6 +36479,10 @@
                       },
                       "text": {
                         "$ref": "#/components/schemas/__schema304"
+                      },
+                      "transient": {
+                        "type": "boolean",
+                        "const": true
                       }
                     },
                     "required": [

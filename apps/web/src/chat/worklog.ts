@@ -34,6 +34,15 @@ export type LogItem =
 
 export const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
+/**
+ * A line about the work under way: waiting for a free slot, a break in the
+ * stream. Lines projected before they were marked are known by their words.
+ */
+export const transientNote = (step: { text: string; transient?: true }): boolean =>
+  step.transient === true ||
+  step.text.startsWith('Waiting for a free slot') ||
+  step.text === 'Part of the answer was interrupted. The saved progress is still here.';
+
 /* ---------- edits ---------- */
 
 export type DiffLine = { kind: 'add' | 'del' | 'hunk' | 'meta' | 'same'; text: string };
@@ -322,6 +331,8 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
           close();
           items.push({ type: 'message', key: `say-${index}`, text: step.text });
         } else if (step.type === 'note') {
+          // A line about the work under way says nothing once the turn ended.
+          if (transientNote(step) && FINISHED.includes(turn.status)) return;
           close();
           items.push({ type: 'note', key: `note-${index}`, text: step.text });
         } else if (step.type === 'action' && !toldElsewhere(turn, step, hasTools))

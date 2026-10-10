@@ -24040,6 +24040,8 @@ export interface components {
             } | {
                 text: components["schemas"]["__schema304"];
                 /** @constant */
+                transient?: true;
+                /** @constant */
                 type: "note";
             } | {
                 apps: components["schemas"]["__schema304"][];

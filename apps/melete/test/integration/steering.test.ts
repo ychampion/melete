@@ -15,8 +15,10 @@ import {
 } from '@melete/contracts';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
-import { event, experienceTurn, owner, space } from '../../src/db/schema.ts';
+import { event, experienceTurn, job, owner, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { appendEvent } from '../../src/events/store.ts';
+import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -292,5 +294,36 @@ withDb('words sent while a turn runs', () => {
       sql`select count(*)::int as n from event where job_id = ${chat.id} and type = 'steer_delivered'`,
     );
     expect((raw as unknown as Array<{ n: number }>)[0]?.n).toBe(1);
+  });
+
+  test('a quiet thread whose run moved is kept up to date in the background', async () => {
+    const thread = await conversation();
+    const db = required(handle).db;
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await db.update(job).set({ updatedAt: old }).where(eq(job.id, thread.id));
+    const run = newId('job');
+    await db.insert(job).values({
+      id: run,
+      spaceId,
+      principalId: ownerId,
+      title: 'Morning brief',
+      objective: 'Morning brief',
+      experienceParentId: thread.id,
+    });
+    await db.transaction((tx) =>
+      appendEvent(tx, {
+        jobId: run,
+        type: 'notice',
+        payload: { kind: 'gap' },
+        dedupKey: `${run}:gap`,
+      }),
+    );
+    // The space-wide pass a live page runs, not a read of this thread.
+    await new ExperienceEvents(db).sync(spaceId, undefined, ownerId);
+    const [projected] = await db
+      .select()
+      .from(event)
+      .where(and(eq(event.jobId, thread.id), sql`${event.payload}->'item'->>'transient' = 'true'`));
+    expect(projected).toBeDefined();
   });
 });
