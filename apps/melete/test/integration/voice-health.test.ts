@@ -44,16 +44,27 @@ withDb('speech health as voice reads it', () => {
         configuration: { builtin: 'transcription' },
       },
     ]);
-    const health = speechHealthFrom(handle.db);
+    const started = new Date(Date.now() - 1000);
+    const health = speechHealthFrom(handle.db, started);
     expect(await health(here)).toEqual({ speech: true, transcription: true });
 
     // A refused key leaves both failing; a passing Test sets each back.
-    await handle.db.update(connection).set({ health: 'failing' }).where(eq(connection.id, speech));
+    await handle.db
+      .update(connection)
+      .set({ health: 'failing', lastCheckedAt: new Date() })
+      .where(eq(connection.id, speech));
     expect(await health(here)).toEqual({ speech: false, transcription: true });
-    await handle.db.update(connection).set({ health: 'failing' }).where(eq(connection.id, words));
+    await handle.db
+      .update(connection)
+      .set({ health: 'failing', lastCheckedAt: new Date() })
+      .where(eq(connection.id, words));
     expect(await health(here)).toEqual({ speech: false, transcription: false });
     // Another space's rows say nothing about this one.
     expect(await health(there)).toEqual({ speech: true, transcription: true });
+    // The key is read at start: a refusal recorded before this start says
+    // nothing about the key in use now, so a replaced key brings voice back.
+    const restarted = speechHealthFrom(handle.db, new Date(Date.now() + 60_000));
+    expect(await restarted(here)).toEqual({ speech: true, transcription: true });
     // A removed row is not a failing one.
     await handle.db.update(connection).set({ status: 'revoked' }).where(eq(connection.id, speech));
     expect((await health(here)).speech).toBe(true);

@@ -30,7 +30,7 @@ import {
   voiceTranscription,
   voiceTranscriptionQuery,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import {
@@ -206,6 +206,8 @@ const providerFailed = (what: string) =>
  * A refused key stops Speech and Transcription as surely as voice: the default
  * rows for both read the same key, so they are shown failing at once rather
  * than Connected until someone presses Test. A passing Test sets them back.
+ * Each refusal records its time again, so voice can tell that the key it runs
+ * with now is the one refused.
  */
 async function markSpeechFailing(db: Database) {
   try {
@@ -216,7 +218,6 @@ async function markSpeechFailing(db: Database) {
         and(
           eq(connection.provider, 'generation'),
           eq(connection.status, 'active'),
-          ne(connection.health, 'failing'),
           inArray(sql`${connection.configuration}->>'builtin'`, ['generation', 'transcription']),
         ),
       );
@@ -234,8 +235,12 @@ export type SpeechHealth = (
  * Read from the space's own Voice and Voice to text rows: one whose last check
  * failed, as a refused key leaves both, is not offered until a passing Test
  * sets it back. A space without the rows, or a read that fails, is not held back.
+ * The speech key is read from the settings when the service starts, so only a
+ * failure recorded since `since` (this start) speaks for the key in use: once
+ * a refused key is replaced and the service restarted, voice is offered again
+ * everywhere, and a key still refused is caught again at its first use.
  */
-export function speechHealthFrom(db: Database): SpeechHealth {
+export function speechHealthFrom(db: Database, since: Date = new Date()): SpeechHealth {
   return async (spaceId) => {
     const builtin = sql<string>`${connection.configuration}->>'builtin'`;
     const rows = await db
@@ -247,6 +252,7 @@ export function speechHealthFrom(db: Database): SpeechHealth {
           eq(connection.provider, 'generation'),
           eq(connection.status, 'active'),
           inArray(builtin, ['generation', 'transcription']),
+          gte(connection.lastCheckedAt, since),
         ),
       );
     const failing = (key: string) =>
