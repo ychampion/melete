@@ -428,7 +428,7 @@ withDb('tool entries in the conversation', () => {
       return tools(page.events).find((call) => call.kind === 'memory_recall');
     };
     const own = await recalled(false);
-    expect(own?.title).toBe('Used what you told me: food: diet');
+    expect(own?.title).toBe('Used what you told me: Food: diet');
     const theirs = await recalled(true);
     expect(theirs?.title).toBe('Used 1 thing you told me');
     // The value is never part of a recall entry, for anyone.
