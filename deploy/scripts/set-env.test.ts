@@ -22,6 +22,8 @@ group('the settings set-env writes', () => {
       'DATABASE_URL',
       'MELETE_SMTP_URL',
       'MELETE_ALERT_SMTP_URL',
+      'MELETE_ALERT_WEBHOOK_URL',
+      'MELETE_FEEDBACK_WEBHOOK_URL',
     ])
       expect(isSecretName(name)).toBe(true);
     try {

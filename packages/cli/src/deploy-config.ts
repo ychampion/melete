@@ -113,6 +113,13 @@ export const deployConfigSchema = z
     backup: backup.default({ dir: '~/melete-backups', keep: 3 }),
     /** Whether a port may be published on an address other than loopback. */
     public_ports: z.boolean().default(false),
+    /**
+     * Whether people other than the operator reach this installation over the
+     * internet. `check` and `status` then fail without an https public address,
+     * the web origin that matches it, an alert target and an operator token.
+     * Left out, it is false and the same rules only warn.
+     */
+    hosted: z.boolean().optional(),
     database: z.strictObject({ external: z.boolean().default(false) }).default({ external: false }),
     blobs: blobs.default({ store: 'local' }),
     cells: z

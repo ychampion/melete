@@ -87,6 +87,15 @@ describe('melete init --adopt', () => {
     ]);
   });
 
+  test('the sandbox profile is adopted from COMPOSE_PROFILES, with no image holder container', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140', COMPOSE_PROFILES: 'other, sandbox' });
+    await runInit(testContext(deployDir, engine(running)), ['--adopt']);
+    expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).profiles).toEqual([
+      'sandbox',
+    ]);
+  });
+
   test('a one-off or stopped service container never decides the adopted image', async () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140' });
@@ -191,6 +200,21 @@ describe('melete init', () => {
       overlays: ['tailscale'],
       disk: { min_free_mb: 2048, pull_margin_mb: 512 },
     });
+  });
+
+  test('--hosted marks the new installation hosted, and --public-url reaches configure', async () => {
+    const deployDir = temporaryDeployDir();
+    const context = testContext(deployDir, [], {
+      attach: async (command) => {
+        context.attached.push([...command]);
+        writeEnv(deployDir, { MELETE_IMAGE_TAG: 'main' });
+        return 0;
+      },
+    });
+    const args = ['--connect-in-app', '--public-url', 'https://assistant.example.net', '--hosted'];
+    expect(await runInit(context, args)).toBe(0);
+    expect(context.attached[0]?.slice(2)).toEqual(args);
+    expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).hosted).toBe(true);
   });
 
   test('a configure refusal leaves no contract behind', async () => {

@@ -14,6 +14,8 @@ import {
   loadCompose,
   PUBLISHED_IMAGES,
   SANDBOX_SETTINGS,
+  SERVICE_SETTINGS,
+  SETTINGS_NOT_FROM_DEPLOY_ENV,
   VOICE_SETTINGS,
 } from './compose-check.ts';
 
@@ -261,6 +263,33 @@ describe('the check catches the mistakes that would matter', () => {
     const dropped: ComposeFile = structuredClone(compose);
     delete dropped.services?.melete?.environment?.ELEVENLABS_API_KEY;
     expect(failures(dropped)).toContain(name);
+  });
+
+  test('a long-running service without a memory cap', () => {
+    const name = 'every long-running service has a memory cap';
+    expect(failures(compose)).not.toContain(name);
+    const dropped: ComposeFile = structuredClone(compose);
+    delete dropped.services?.postgres?.mem_limit;
+    expect(failures(dropped)).toContain(name);
+  });
+
+  test('a one-shot service that up --wait would count as failed', () => {
+    const name = 'up --wait passes on a healthy stack';
+    expect(failures(compose)).not.toContain(name);
+    const started: ComposeFile = structuredClone(compose);
+    delete started.services?.['sandbox-image']?.deploy;
+    expect(failures(started)).toContain(name);
+  });
+
+  test('a setting the service reads but is not handed', () => {
+    const name = 'the service receives every setting it reads';
+    expect(failures(compose)).not.toContain(name);
+    const dropped: ComposeFile = structuredClone(compose);
+    delete dropped.services?.melete?.environment?.MELETE_LOCAL_MODEL_URL;
+    expect(failures(dropped)).toContain(name);
+    // Each exception is a setting the service really reads.
+    for (const setting of Object.keys(SETTINGS_NOT_FROM_DEPLOY_ENV))
+      expect(SERVICE_SETTINGS).toContain(setting);
   });
 
   test('dropping internal: true from the network', () => {

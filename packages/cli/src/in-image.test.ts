@@ -180,6 +180,18 @@ describe('status in the service image', () => {
     expect(level(parsed(context), 'status.api')).toBe('fail');
   });
 
+  test('a service whose database is down answers 503, and its report is still read', async () => {
+    const context = noEngine(imageDeployDir(), {
+      environment: IMAGE,
+      fetch: async () =>
+        Response.json({ status: 'degraded', database: 'unreachable' }, { status: 503 }),
+    });
+    expect(await runStatus(context, true)).toBe(1);
+    const api = parsed(context).results.find((result) => result.id === 'status.api');
+    expect(api?.level).toBe('fail');
+    expect(api?.detail).toContain('degraded (database unreachable)');
+  });
+
   test('on the host an engine that does not answer fails', async () => {
     const context = noEngine(imageDeployDir(), { fetch: healthy });
     expect(await runStatus(context, true)).toBe(1);

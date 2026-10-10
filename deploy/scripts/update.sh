@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Updates an installation that runs the published images (docs/DEPLOYMENT.md,
-# "Using prebuilt images"). Nothing is built on this machine.
+# "Using prebuilt images"). Nothing is built on this machine. Prefer
+# `bun run melete deploy`, which also backs the database up before migrations.
 #
 #   deploy/scripts/update.sh [compose options...]
 #
@@ -31,6 +32,11 @@ fail() {
   printf 'update: %s\n' "$*" >&2
   exit 1
 }
+
+# This script takes no backup. `bun run melete deploy` updates the same way,
+# with every overlay and profile from deploy/melete.deploy.json, and backs up
+# the database first when the release migrates it.
+printf 'update: bun run melete deploy is the recommended update; it backs up before a release that migrates the database.\n' >&2
 
 case "$min_free_gb" in
   '' | *[!0-9]*) fail "MELETE_UPDATE_MIN_FREE_GB must be a whole number of gigabytes, not '$min_free_gb'" ;;

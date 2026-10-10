@@ -2,10 +2,11 @@
  * The service's view of its own health, and the operator's alerts when it
  * goes bad.
  *
- * `healthDetail` checks the database, the runtime that runs attempts, the job
- * queue (work that is due but has not been picked up) and the recent error
- * rate (attempts that failed or were lost, and model calls providers
- * refused). Where the operator asks for them, two spending checks join it:
+ * `healthDetail` checks the database, the runtime that runs attempts,
+ * melete-cells and the container engine behind it, the free disk under the
+ * directories the service writes, the job queue (work that is due but has not
+ * been picked up) and the recent error rate (attempts that failed or were lost,
+ * and model calls providers refused). Where the operator asks for them, two spending checks join it:
  * the last hour's model spending against the installation's usual hour, and
  * one person's share of today's. `GET /health/detail` returns it to the
  * operator.
@@ -16,6 +17,7 @@
  * inside the service, so it cannot report the service being down: pair it
  * with an external uptime check on `/health` (docs/DEPLOYMENT.md, "Alerts").
  */
+import { statfsSync } from 'node:fs';
 import nodemailer from 'nodemailer';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
@@ -36,7 +38,83 @@ export type HealthProbes = {
   sql?: Sql;
   /** The spending checks to run; each is left out unless set. */
   spend?: SpendAlerts;
+  /** Free space under the directories the service writes; left out, disk is not checked. */
+  disk?: DiskProbe;
+  /**
+   * Resolves when melete-cells answers that the container engine does; left
+   * out where the service has no cell service (MELETE_CELLS_URL unset).
+   */
+  cells?: () => Promise<unknown>;
 };
+
+export type DiskProbe = {
+  /** The directories whose filesystems are measured, such as /data/spaces and /work. */
+  paths: string[];
+  /** Below this many free bytes on any of them, the check fails. */
+  minFreeBytes: number;
+  /** Free bytes on the filesystem holding a path; null when it cannot be measured. */
+  free: (path: string) => number | null;
+};
+
+const MB = 1024 ** 2;
+
+/** Free space on the filesystem that holds `path`, as an unprivileged writer sees it. */
+export function statfsFree(path: string): number | null {
+  try {
+    const stats = statfsSync(path);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    return null;
+  }
+}
+
+/** The disk check: the fullest of the paths, against the floor. */
+export function diskCheck(probe: DiskProbe): HealthCheck {
+  const measured = [...new Set(probe.paths)].map((path) => ({ path, free: probe.free(path) }));
+  const unknown = measured.filter((entry) => entry.free === null).map((entry) => entry.path);
+  const known = measured.filter((entry): entry is { path: string; free: number } =>
+    Number.isFinite(entry.free),
+  );
+  const fullest = known.sort((a, b) => a.free - b.free)[0];
+  const floor = `${Math.round(probe.minFreeBytes / MB)} MB`;
+  if (fullest && fullest.free < probe.minFreeBytes)
+    return {
+      name: 'disk',
+      ok: false,
+      detail: `${Math.round(fullest.free / MB)} MB free under ${fullest.path}, below the ${floor} floor (MELETE_ALERT_DISK_MIN_FREE_MB)`,
+    };
+  if (!fullest)
+    return {
+      name: 'disk',
+      ok: false,
+      detail: `free space could not be measured under ${unknown.join(', ')}`,
+    };
+  return {
+    name: 'disk',
+    ok: true,
+    detail: `${Math.round(fullest.free / MB)} MB free under ${fullest.path} (floor ${floor})`,
+  };
+}
+
+/** melete-cells' own /health, which answers 503 when the container engine does not. */
+export function cellsProbe(
+  cellsUrl: string,
+  transport: (url: string, init: RequestInit) => Promise<Response> = (url, init) =>
+    fetch(url, init),
+): () => Promise<void> {
+  return async () => {
+    const response = await transport(new URL('/health', cellsUrl).toString(), {
+      signal: AbortSignal.timeout(HEALTH_LIMITS.runtime_timeout_ms),
+    });
+    await response.body?.cancel().catch(() => {});
+    if (!response.ok)
+      throw new Error(
+        response.status === 503
+          ? 'the container engine does not answer'
+          : `melete-cells answered ${response.status}`,
+      );
+  };
+}
 
 export type SpendAlerts = {
   /** The last hour above this many times the median hour of the week before. */
@@ -146,6 +224,21 @@ export async function healthDetail(
       detail: answered === null ? 'ok' : `not answering (${answered.slice(0, 120)})`,
     });
   }
+  if (probes.cells) {
+    const cells = probes.cells;
+    const answered = await within(Promise.resolve().then(cells), limits.runtime_timeout_ms)
+      .then(() => null)
+      .catch((error: unknown) => (error instanceof Error ? error.message : 'unreachable'));
+    checks.push({
+      name: 'cells',
+      ok: answered === null,
+      detail:
+        answered === null
+          ? 'melete-cells and the container engine answer'
+          : `agents' computers and attempts cannot start: ${answered.slice(0, 120)}`,
+    });
+  }
+  if (probes.disk) checks.push(diskCheck(probes.disk));
   if (probes.sql && database === 'ok') {
     const sql = probes.sql;
     try {

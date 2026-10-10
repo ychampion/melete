@@ -14,14 +14,18 @@ import { EXIT, type ExitCode } from './schema.ts';
 export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [options]
 
   init [configure options]   Configure a new installation: deploy/.env, then deploy/melete.deploy.json
+       [--public-url https://your.domain [--hosted]]
+                             The public address and web origin together; --hosted for other people
   init --adopt               Describe a running installation in deploy/melete.deploy.json; nothing else changes
   check [--json]             Judge deploy/melete.deploy.json, deploy/.env and the Compose files, without Docker
   doctor [--json] [--offline]  Judge this machine: Docker, disk in MB, memory, ports, images, registry
   status [--json]            The installation's report: services, API, account and the optional parts
-  set NAME=value ...         Change settings in deploy/.env; --from-env NAME for a key
+  set NAME=value ...         Change settings in deploy/.env; --from-env NAME for a key, --clear NAME
+                             to empty one; says which services to recreate
   browser enable [--space <id>]
                              Turn on the browser worker for the first person's space, or the one named
   logs [service ...]         The stack's logs: --since, --tail, --follow, --timestamps
+  logs --attempts [id]       Attempt containers, or one's logs; --computers [name] for agents' computers
   deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
          [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
   rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
@@ -33,7 +37,7 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
           [--yes]            Restore it: stop the stack, put every part back, start it
           [--keep-database]  Leave an external database that already holds the data as it is
           [--replace-files]  With --keep-database, put back the files even where this machine has some
-  upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
+  upgrade <version>          Upgrade an installation that builds its images, with the release's own script
   history [--json]           The deploys, rollbacks and upgrades this installation has run
   account list|setup-code    The accounts, or a new one-time code for creating the first one
   account create|reset|disable|enable <email>

@@ -6,12 +6,15 @@ import { failureCode } from '../memory/gateway.ts';
 import {
   type Alert,
   alertSendersFromEnv,
+  cellsProbe,
+  diskCheck,
   type HealthDetail,
   HealthMonitor,
   healthDetail,
   spendAlertsFromEnv,
   spendRateCheck,
   spendShareCheck,
+  statfsFree,
   webhookSender,
 } from './monitor.ts';
 
@@ -207,6 +210,76 @@ describe('operator alerts', () => {
     );
     expect(detail.status).toBe('unhealthy');
     expect(detail.checks[1]).toMatchObject({ name: 'runtime', ok: false });
+  });
+});
+
+describe('disk and the container engine', () => {
+  const MB = 1024 ** 2;
+  const database = async () => 'ok' as const;
+
+  test('the fullest directory below the floor fails the disk check', async () => {
+    const free: Record<string, number> = { '/data/spaces': 9000 * MB, '/work': 900 * MB };
+    const detail = await healthDetail({
+      version: 'test',
+      database,
+      disk: {
+        paths: ['/data/spaces', '/work'],
+        minFreeBytes: 2048 * MB,
+        free: (path) => free[path] ?? null,
+      },
+    });
+    const disk = detail.checks.find((check) => check.name === 'disk');
+    expect(disk).toEqual({
+      name: 'disk',
+      ok: false,
+      detail: '900 MB free under /work, below the 2048 MB floor (MELETE_ALERT_DISK_MIN_FREE_MB)',
+    });
+    expect(detail.status).toBe('unhealthy');
+    free['/work'] = 5000 * MB;
+    const after = await healthDetail({
+      version: 'test',
+      database,
+      disk: {
+        paths: ['/data/spaces', '/work'],
+        minFreeBytes: 2048 * MB,
+        free: (p) => free[p] ?? null,
+      },
+    });
+    expect(after.status).toBe('ok');
+  });
+
+  test('disk that cannot be measured anywhere is reported, not passed', () => {
+    expect(diskCheck({ paths: ['/data'], minFreeBytes: MB, free: () => null }).ok).toBe(false);
+  });
+
+  test('a real directory is measured', () => {
+    expect(statfsFree(import.meta.dir)).toBeGreaterThan(0);
+    expect(statfsFree('/no/such/directory/here')).toBeNull();
+  });
+
+  test('melete-cells answering 503 means the engine is down, and fails the cells check', async () => {
+    const down = cellsProbe(
+      'http://melete-cells:8791',
+      async () => new Response('{}', { status: 503 }),
+    );
+    const detail = await healthDetail({ version: 'test', database, cells: down });
+    expect(detail.checks.find((check) => check.name === 'cells')).toMatchObject({
+      ok: false,
+      detail: "agents' computers and attempts cannot start: the container engine does not answer",
+    });
+    const asked: string[] = [];
+    const up = cellsProbe('http://melete-cells:8791', async (url) => {
+      asked.push(url);
+      return new Response('{}', { status: 200 });
+    });
+    expect((await healthDetail({ version: 'test', database, cells: up })).status).toBe('ok');
+    expect(asked).toEqual(['http://melete-cells:8791/health']);
+  });
+
+  test('the floor is a setting, 2048 MB unless set, and 0 turns it off', () => {
+    expect(loadEnv({}).MELETE_ALERT_DISK_MIN_FREE_MB).toBe(2048);
+    expect(loadEnv({ MELETE_ALERT_DISK_MIN_FREE_MB: '' }).MELETE_ALERT_DISK_MIN_FREE_MB).toBe(2048);
+    expect(loadEnv({ MELETE_ALERT_DISK_MIN_FREE_MB: '0' }).MELETE_ALERT_DISK_MIN_FREE_MB).toBe(0);
   });
 });
 
