@@ -66,7 +66,7 @@ const ASKED = 'I’ve asked you something. It’s on your screen.';
 const UNSENT = 'I couldn’t send what you added. It’s in the message box.';
 const KEPT_AFTER_STOP = 'What you added is in the message box, for when you want it.';
 
-const WORKING = new Set(['queued', 'working', 'streaming', 'paused']);
+const WORKING = new Set(['queued', 'working', 'streaming', 'stalled', 'paused']);
 
 type Message = { message_type?: string; text?: string; error?: string };
 

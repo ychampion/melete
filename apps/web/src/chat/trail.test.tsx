@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { applyEvent, fromTurns } from '../experience/reduce.ts';
 import type { ExperienceEvent, Turn } from '../experience/types.ts';
 import { stoppedLine } from './parts.tsx';
-import { WorkLog } from './WorkLog.tsx';
+import { headerWords, WorkLog } from './WorkLog.tsx';
 import { layoutTurn } from './worklog.ts';
 
 const AT = '2026-09-24T09:00:00.000Z';
@@ -226,7 +226,11 @@ test('a stopped turn counts its steps once in the line under its header', () => 
     step('call:a', 'done', 'Searched the web'),
     step('call:b', 'done', 'Read a listing'),
     step('call:c', 'running', 'Reading another listing'),
-    event({ type: 'status', status: 'stopped', composer: 'send' }),
+    // Stopped as the last step finished.
+    {
+      ...event({ type: 'status', status: 'stopped', composer: 'send' }),
+      created_at: '2026-09-24T09:00:04.000Z',
+    },
   ])
     transcript = applyEvent(transcript, item);
   const turn = transcript.turns[0];
@@ -245,4 +249,38 @@ test('a stopped turn counts its steps once in the line under its header', () => 
   expect(html).not.toContain('after 2 steps');
   expect(stoppedLine([])).toContain('before it got to work');
   expect(stoppedLine([{ title: 'Read a page' }])).toContain('after 1 step. Last: Read a page.');
+});
+
+test('a turn stopped long after its last step reports the time it really took', () => {
+  // The last step ended 4 seconds in; nothing came for 13 minutes, then the person pressed Stop.
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  for (const item of [
+    {
+      ...tool('done', 'Opened the map'),
+      created_at: '2026-09-24T09:00:04.000Z',
+    },
+    {
+      ...event({ type: 'status', status: 'stalled', composer: 'stop' }),
+      created_at: '2026-09-24T09:05:04.000Z',
+    },
+    {
+      ...event({ type: 'status', status: 'stopped', composer: 'send' }),
+      created_at: '2026-09-24T09:13:07.000Z',
+    },
+  ])
+    transcript = applyEvent(transcript, item);
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  expect(headerWords(turn, Date.parse(AT) + 3_600_000)).toBe('Stopped after 13m 7s');
+});
+
+test('a stalled turn says so, with how long it has been going', () => {
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  transcript = applyEvent(
+    transcript,
+    event({ type: 'status', status: 'stalled', composer: 'stop' }),
+  );
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  expect(headerWords(turn, Date.parse(AT) + 300_000)).toBe('Stalled · working for 5m');
 });

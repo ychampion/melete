@@ -421,7 +421,8 @@ const LEASE = pdfWith(['The lease starts in May.', 'Repairs are due within 14 da
 
   test('pictures go only where screenshots do: a provider list saying "reads images" never turns them on', async () => {
     if (!handle) return;
-    const model = 'accounts/fireworks/models/deepseek-v4p1-flash';
+    // A model Melete's list reads as text only.
+    const model = 'accounts/fireworks/models/deepseek-v4-pro-0813';
     const settings = new ModelSettingsService({
       db: handle.db,
       env: loadEnv({

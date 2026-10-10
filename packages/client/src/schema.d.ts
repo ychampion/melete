@@ -23467,7 +23467,7 @@ export interface components {
         __schema104: number;
         /** @default 200 */
         __schema105: number;
-        __schema106: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error")[];
+        __schema106: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error" | "stalled")[];
         __schema107: {
             allowed_scopes: components["schemas"]["__schema109"];
             audience: components["schemas"]["__schema111"];
@@ -24355,7 +24355,7 @@ export interface components {
         __schema305: string;
         __schema306: string;
         /** @enum {string} */
-        __schema307: "idle" | "queued" | "working" | "streaming" | "needs_you" | "paused" | "done" | "failed" | "stopped";
+        __schema307: "idle" | "queued" | "working" | "streaming" | "stalled" | "needs_you" | "paused" | "done" | "failed" | "stopped";
         /** @enum {string} */
         __schema308: "send" | "pause" | "resume" | "stop";
         /** Format: date-time */
@@ -25638,7 +25638,7 @@ export interface components {
         __schema521: string | null;
         __schema522: string | null;
         /** @enum {string} */
-        __schema523: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error";
+        __schema523: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error" | "stalled";
         __schema524: string;
         __schema525: string;
         __schema526: string;
@@ -26976,6 +26976,15 @@ export interface components {
             /** @constant */
             type: "attempt_outcome";
             usage?: components["schemas"]["__schema514"];
+        } | {
+            at: components["schemas"]["__schema215"];
+            attempt_id: components["schemas"]["__schema767"];
+            dedup_key: components["schemas"]["__schema769"];
+            local_seq: components["schemas"]["__schema768"];
+            silent_ms: number;
+            tool?: string;
+            /** @constant */
+            type: "stalled";
         } | {
             after_seq: number;
             at: components["schemas"]["__schema215"];

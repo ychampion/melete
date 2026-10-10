@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,16 +36,22 @@ ATTEMPT_TOKEN_ENV = "MELETE_ATTEMPT_TOKEN"
 
 #: Long enough for a connector round trip, short enough that a hung broker ends
 #: the turn instead of holding a socket until the run's wall clock expires.
-#: Waiting for a person happens on the ledger, never here.
+#: Waiting for a person happens on the ledger, never here. It mirrors the
+#: broker's own default dispatch budget (BROKER_TIMEOUT_MS in the contracts).
 DEFAULT_TIMEOUT_SECONDS = 30.0
+
+#: The longest the broker lets a connector take over one call
+#: (MAX_DISPATCH_BUDGET_MS in apps/melete/src/broker/catalog.ts).
+MAX_DISPATCH_SECONDS = 15 * 60.0
 
 
 class BrokerError(RuntimeError):
     """A broker call that produced no usable answer.
 
     Carries the broker's own error code when there was one. `unreachable` means
-    the request never got an answer, which is the only case where the caller
-    cannot tell whether anything happened.
+    the request never got an answer, and `timed_out` that its answer did not
+    come in the time allowed: the only cases where the caller cannot tell
+    whether anything happened.
     """
 
     def __init__(self, code: str, message: str, status: Optional[int] = None) -> None:
@@ -52,6 +59,10 @@ class BrokerError(RuntimeError):
         self.code = code
         self.message = message
         self.status = status
+
+
+def _waited(seconds: float) -> str:
+    return f"No answer came within {round(seconds)} seconds."
 
 
 class BrokerClient:
@@ -101,7 +112,11 @@ class BrokerClient:
         except urllib.error.HTTPError as error:
             raise BrokerError(*_error_from_body(error), status=error.code) from error
         except urllib.error.URLError as error:
+            if isinstance(error.reason, (TimeoutError, socket.timeout)):
+                raise BrokerError("timed_out", _waited(timeout or self.timeout)) from error
             raise BrokerError("unreachable", str(error.reason)) from error
+        except (TimeoutError, socket.timeout) as error:
+            raise BrokerError("timed_out", _waited(timeout or self.timeout)) from error
         except (ValueError, OSError) as error:
             # A 200 whose body is not JSON is as unusable as no answer at all.
             raise BrokerError("unreachable", str(error)) from error

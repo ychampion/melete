@@ -339,20 +339,24 @@ describeWithDb('the model, connected in the app', () => {
       provider: 'fireworks',
       model,
       source: 'operator',
-      vision: false,
+      vision: true,
       vision_source: 'catalog',
       updated_at: null,
     });
     const vision = (body: Json) => api.call('/model-settings/vision', cookie, put(body));
 
-    // Turned on for the server's default model: it stays the server's.
-    const on = await vision({ provider: 'fireworks', model, supports_vision: true });
-    expect(on.status).toBe(200);
-    expect(on.body.active).toEqual({ ...before.body.active, vision: true, vision_source: 'app' });
+    // Turned off for the server's default model: it stays the server's.
+    const textOnly = await vision({ provider: 'fireworks', model, supports_vision: false });
+    expect(textOnly.status).toBe(200);
+    expect(textOnly.body.active).toEqual({
+      ...before.body.active,
+      vision: false,
+      vision_source: 'app',
+    });
     expect(await api.settings.activeChoice()).toEqual({
       provider: 'fireworks',
       model,
-      vision: true,
+      vision: false,
     });
     const [chosen] = await database().sql`select count(*)::int as count from model_default`;
     expect(chosen?.count).toBe(0);

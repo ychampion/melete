@@ -16,6 +16,14 @@
  */
 
 /**
+ * The DeepSeek models that read images: V4.1 Flash (`deepseek-v4p1-flash` on
+ * Fireworks, `DeepSeek-V4.1-Flash` elsewhere) and the V4 Flash vision build.
+ * Every other DeepSeek model, V4 Pro and the earlier V4 Flash checkpoints
+ * among them, reads text only.
+ */
+const DEEPSEEK_VISION = [/deepseek-v4(?:p|\.)1-flash(?=$|[-_/:])/i, /deepseek-v4-flash-vision/i];
+
+/**
  * Model families known to read images, per provider. Matched against the model
  * id as the provider answers to it, case-insensitively. Providers that host
  * many families (Fireworks, an OpenAI-compatible server) are matched by the
@@ -30,7 +38,10 @@ const OPEN_WEIGHT_VISION = [
   /llama-?(v?4|3\.2-vision|3p2-[0-9]+b-vision)/i,
   /minicpm-?v/i,
   /internvl/i,
-  /kimi-?k2\.?5/i,
+  /kimi-?k2(?:\.|p)?5/i,
+  // Kimi K3 and its routers (`kimi-k3-fast`); not a later K3 point release.
+  /kimi-?k3(?=$|[-_/:])/i,
+  ...DEEPSEEK_VISION,
 ];
 
 const VISION_FAMILIES: Record<string, RegExp[]> = {
@@ -42,7 +53,10 @@ const VISION_FAMILIES: Record<string, RegExp[]> = {
   'openai-compatible': [...OPEN_WEIGHT_VISION, /^gpt-4o/i, /^gpt-[5-9]/i, /^claude-/i, /gemini-/i],
 };
 
-/** Families that carry a vision marker in their name but read only text. */
+/**
+ * Families that carry a vision marker in their name but read only text. The
+ * DeepSeek models named in `DEEPSEEK_VISION` are the exceptions.
+ */
 const TEXT_ONLY = [/deepseek/i, /embed/i, /whisper/i, /tts/i, /^gpt-3\.5/i, /-audio-/i];
 
 /**
@@ -51,7 +65,11 @@ const TEXT_ONLY = [/deepseek/i, /embed/i, /whisper/i, /tts/i, /^gpt-3\.5/i, /-au
  */
 export function modelSupportsVision(provider: string, model: string): boolean {
   if (!Object.hasOwn(VISION_FAMILIES, provider)) return false;
-  if (TEXT_ONLY.some((pattern) => pattern.test(model))) return false;
+  if (
+    TEXT_ONLY.some((pattern) => pattern.test(model)) &&
+    !DEEPSEEK_VISION.some((pattern) => pattern.test(model))
+  )
+    return false;
   return (VISION_FAMILIES[provider] ?? []).some((pattern) => pattern.test(model));
 }
 

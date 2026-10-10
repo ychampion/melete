@@ -54,6 +54,7 @@ const TONES: Record<Turn['status'], StatusTone> = {
   queued: 'working',
   working: 'working',
   streaming: 'working',
+  stalled: 'late',
   needs_you: 'needs',
   paused: 'waiting',
   done: 'settled',
@@ -445,7 +446,7 @@ function Answer({
   onAnswer: (permission: RoomPermission, option: 'allow_once' | 'deny') => void;
 }) {
   const status = last ? request.status : turn.status;
-  const streaming = status === 'streaming' || status === 'working' || status === 'queued';
+  const streaming = ['streaming', 'stalled', 'working', 'queued'].includes(status);
   const now = useNow(last && request.receipts.some((receipt) => receipt.undo), 30_000);
   return (
     <article

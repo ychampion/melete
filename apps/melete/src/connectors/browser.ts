@@ -13,6 +13,7 @@ import type { Query } from '../broker/records.ts';
 import { blockerOf, type PageSeen, readBack, type SentForm } from '../paths/read-back.ts';
 import { serviceOfUrl } from '../paths/services.ts';
 import type { BrowserArtifactSink } from '../workers/browser/artifacts.ts';
+import type { BrowserWorkerClient } from '../workers/browser/client.ts';
 import { planBrowserRecipe, recipePlanDetail } from '../workers/browser/planning.ts';
 import type { BrowserRecipeStore } from '../workers/browser/recipes.ts';
 import { REDACTED, redactSecretText } from '../workers/browser/redact.ts';
@@ -187,6 +188,23 @@ const output = z.strictObject({
 
 const LEAVE_OUT =
   "Leave session_id and control_epoch out to use this job's current browser session.";
+
+/** What the agent is told when the browser moved on under a step and nobody holds it. */
+const LOOK_AGAIN =
+  'The browser changed since this step was planned, and nobody is holding it now. Look at the page again with browser.observe, then carry on from what it shows.';
+
+/**
+ * Whether a person holds the space's browser now, as the worker says. Unknown
+ * reads as no: the controller refuses the agent's input while a person holds
+ * it, and their takeover parks the job itself.
+ */
+async function personHolds(worker: BrowserWorkerClient | undefined): Promise<boolean> {
+  try {
+    return (await worker?.holder())?.control === 'human';
+  } catch {
+    return false;
+  }
+}
 
 type Observed = z.infer<typeof output>;
 
@@ -493,6 +511,7 @@ export function createBrowserConnector(options: {
       const payload = action.canonical_payload;
       const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       let activeSessionId = sessionId;
+      let activeWorker: BrowserWorkerClient | undefined;
       // Why a page outside this job's reach is refused, said as web.fetch says it.
       let refusal: string | null = null;
       // A commit is bound at proposal to the session and epoch it was planned under (see prepare).
@@ -504,6 +523,7 @@ export function createBrowserConnector(options: {
         const { session, worker, opened } = leased;
         refusal = leased.refusal;
         activeSessionId = session.id;
+        activeWorker = worker;
         // A browser this call just started shows a blank page. Looking at it once lets the first
         // step act; every later epoch still needs an observation the model asked for.
         if (opened && kind !== 'observe') {
@@ -590,10 +610,19 @@ export function createBrowserConnector(options: {
       } catch (error) {
         if (error instanceof BrowserFault) {
           let reason = error.reason;
-          if (activeSessionId && browserInputReasons.has(error.reason)) {
+          const sensitive = error.reason === 'sensitive_input_require_takeover';
+          // The job waits for the person only while they hold the browser: their
+          // hand-back is what wakes it. A step that went stale while nobody holds
+          // it (handed back already, or moved on under another job) is the
+          // agent's to retry from a fresh look; parked, it would wait for ever.
+          const theirs =
+            activeSessionId && browserInputReasons.has(error.reason) && !sensitive
+              ? await personHolds(activeWorker)
+              : false;
+          if (activeSessionId && (sensitive || theirs)) {
             try {
               // A sign-in, code or card field is the person's to fill: they are handed it.
-              if (error.reason === 'sensitive_input_require_takeover' && options.sessions.handOff)
+              if (sensitive && options.sessions.handOff)
                 await handOff(
                   ctx,
                   activeSessionId,
@@ -607,7 +636,8 @@ export function createBrowserConnector(options: {
               // The durable failure records both outcomes without exposing a database error's contents.
               reason += '; browser_park_failed';
             }
-          }
+          } else if (activeSessionId && browserInputReasons.has(error.reason))
+            reason = `${error.reason}: ${LOOK_AGAIN}`;
           // A named session that has closed since: the job's current one is a call away.
           if (sessionId && error.reason === 'session_not_found')
             reason = `session_not_found: browser session ${sessionId} is no longer open. ${LEAVE_OUT}`;

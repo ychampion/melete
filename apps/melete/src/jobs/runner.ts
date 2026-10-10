@@ -153,6 +153,24 @@ export type RunnerOptions = {
  */
 export const DISPATCH_WAIT_MS = 16 * 60_000;
 
+/** Turn statuses that say work is under way. */
+const UNDER_WAY_TURNS = ['queued', 'working', 'streaming', 'stalled'];
+/** Job states in which only the person moves the work on. */
+const PERSON_WAITS = ['waiting_for_input', 'waiting_for_approval', 'needs_reconciliation'];
+/**
+ * How long a turn may read as under way while its job waits on the person and
+ * nothing runs, before it is settled: longer than any move between the two.
+ */
+export const ORPHAN_TURN_MS = 30_000;
+
+/** What the agent does that shows a stalled turn is moving again. */
+const PROGRESS_EVENTS = new Set<RuntimeEvent['type']>([
+  'text_delta',
+  'reasoning_delta',
+  'tool_call_proposed',
+  'tool_result',
+]);
+
 /** The question a turn rests on when something it started has not reported back. */
 export const STILL_RUNNING_NOTE =
   'Something this turn started has not reported back yet. Its result will show here once it does, so nothing was run again.';
@@ -578,6 +596,7 @@ export class AttemptRunner {
       )
         throw new AttemptBudgetExceeded('The attempt output-token budget is exhausted.');
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
+      if (current && row.currentTurnId) await this.liveness(tx, row, execution.id, value);
       if (current && row.currentTurnId && value.type === 'text_delta') {
         // A retried turn replaces the partial answer the lost attempt left; a
         // turn that carries on after a wait starts a new paragraph.
@@ -615,6 +634,47 @@ export class AttemptRunner {
         })
         .where(eq(attempt.id, execution.id));
     });
+  }
+
+  /**
+   * A turn whose agent went quiet reads as stalled, not working, until the
+   * agent shows progress again: words, reasoning or a step. The stream is told
+   * both ways, so a page following it live shows what a reload would.
+   */
+  private async liveness(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+    value: RuntimeEvent,
+  ): Promise<void> {
+    const turnId = row.currentTurnId;
+    if (!turnId) return;
+    if (value.type === 'stalled') {
+      await tx
+        .update(experienceTurn)
+        .set({ status: 'stalled' })
+        .where(
+          and(
+            eq(experienceTurn.id, turnId),
+            inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
+          ),
+        );
+      return;
+    }
+    if (!PROGRESS_EVENTS.has(value.type)) return;
+    const [resumed] = await tx
+      .update(experienceTurn)
+      .set({ status: value.type === 'text_delta' ? 'streaming' : 'working' })
+      .where(and(eq(experienceTurn.id, turnId), eq(experienceTurn.status, 'stalled')))
+      .returning({ id: experienceTurn.id });
+    if (resumed)
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId,
+        type: 'notice',
+        payload: { kind: 'turn_resumed', turn_id: turnId },
+        dedupKey: `${value.dedup_key}:resumed`,
+      });
   }
 
   private async gap(
@@ -1346,7 +1406,7 @@ export class AttemptRunner {
         .where(
           and(
             eq(experienceTurn.id, row.currentTurnId),
-            inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
+            inArray(experienceTurn.status, ['queued', 'working', 'streaming', 'stalled']),
           ),
         );
     if (moved.state === 'waiting_for_event_or_time') await this.onWait?.(tx, moved);
@@ -1450,7 +1510,61 @@ export class AttemptRunner {
         if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
       });
     }
+    await this.settleOrphanTurns();
     await this.afterRecovery?.();
+  }
+
+  /**
+   * A turn still reading as under way while its job waits on the person and
+   * nothing runs it. Its attempt was ended outside the runner (a takeover, a
+   * hand-off), so no outcome ever settled it, and the page would say
+   * "working" for as long as nobody looked. It settles as waiting for them.
+   */
+  async settleOrphanTurns(graceMs = ORPHAN_TURN_MS): Promise<number> {
+    const orphans = await this.jobs.db
+      .select({ jobId: job.id, turnId: experienceTurn.id })
+      .from(experienceTurn)
+      .innerJoin(job, eq(job.currentTurnId, experienceTurn.id))
+      .where(
+        and(
+          inArray(experienceTurn.status, UNDER_WAY_TURNS),
+          inArray(job.state, PERSON_WAITS),
+          sql`${job.updatedAt} <= now() - make_interval(secs => ${graceMs / 1000})`,
+          sql`not exists (select 1 from ${attempt} where ${attempt.jobId} = ${job.id} and ${attempt.endedAt} is null)`,
+        ),
+      );
+    let settled = 0;
+    for (const orphan of orphans)
+      await this.jobs.transaction(async (tx) => {
+        const row = await this.jobs.lock(tx, orphan.jobId);
+        if (!row || row.currentTurnId !== orphan.turnId || !PERSON_WAITS.includes(row.state))
+          return;
+        const [open] = await tx
+          .select({ id: attempt.id })
+          .from(attempt)
+          .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)))
+          .limit(1);
+        if (open) return;
+        const [turn] = await tx
+          .update(experienceTurn)
+          .set({ status: 'needs_you' })
+          .where(
+            and(
+              eq(experienceTurn.id, orphan.turnId),
+              inArray(experienceTurn.status, UNDER_WAY_TURNS),
+            ),
+          )
+          .returning({ id: experienceTurn.id });
+        if (!turn) return;
+        await appendEvent(tx, {
+          jobId: row.id,
+          type: 'notice',
+          payload: { kind: 'turn_settled', turn_id: turn.id, turn_status: 'needs_you' },
+          dedupKey: `${turn.id}:settled:${row.stateVersion}`,
+        });
+        settled++;
+      });
+    return settled;
   }
 
   /**

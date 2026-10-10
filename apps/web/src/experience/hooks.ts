@@ -184,6 +184,7 @@ export function faceOf(status: TurnStatus | undefined): FaceState {
     case 'queued':
     case 'working':
     case 'streaming':
+    case 'stalled':
       return 'working';
     case 'done':
       return 'done';

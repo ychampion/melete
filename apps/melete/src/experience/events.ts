@@ -75,6 +75,13 @@ export function awakeAllowanceNote(payload: Record<string, unknown>): string {
   return `Your computer's awake time for today is used up${amount}. Processes stopped${when}.`;
 }
 
+/** What the person reads when the agent went quiet, e.g. "Nothing has come back for 4 minutes." */
+export function stalledWords(silentMs: unknown): string {
+  const ms = typeof silentMs === 'number' && Number.isFinite(silentMs) ? silentMs : 0;
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  return `Nothing has come back for ${minutes === 1 ? '1 minute' : `${minutes} minutes`}. Asking for what is done so far.`;
+}
+
 type EventRow = typeof event.$inferSelect;
 /** Resolves privacy placeholders in a value against its conversation's vault. */
 export type Rehydrate = (jobId: string, attemptId: string, value: unknown) => Promise<unknown>;
@@ -800,6 +807,30 @@ export class ExperienceEvents {
               await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
           } else if (source.type === 'attempt_started' && source.jobId === id) {
             await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+          } else if (source.type === 'stalled' && source.jobId === id) {
+            // Nothing has come from the agent for longer than its step may take:
+            // the turn says so instead of reading as working.
+            await emit(source, { type: 'status', status: 'stalled', composer: 'stop' });
+            await emit(source, { type: 'note', text: stalledWords(payload.silent_ms) });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            payload.kind === 'turn_resumed'
+          ) {
+            await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            payload.kind === 'turn_settled' &&
+            TURN_ENDINGS.has(String(payload.turn_status))
+          ) {
+            // A turn whose work ended out of the runner's sight (handed to the
+            // person, parked on them) settles as its saved copy did.
+            await emit(source, {
+              type: 'status',
+              status: payload.turn_status as 'done' | 'failed' | 'needs_you',
+              composer: 'send',
+            });
           } else if (
             payload.kind === 'experience_stopped' ||
             payload.kind === 'experience_paused' ||
