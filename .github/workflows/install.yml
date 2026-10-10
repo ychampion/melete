@@ -162,6 +162,21 @@ jobs:
           test "$(printf '%s' "${code//-/}" | sha256sum | cut -d ' ' -f 1)" = "$hash"
           # From here on, this run's code is the installation's.
           cp "$RUNNER_TEMP/upgrade.log" "$RUNNER_TEMP/first.log"
+      - name: An empty setup code hash is kept, as the way to go without codes
+        run: |
+          set -euo pipefail
+          env_file="$HOME/melete/deploy/.env"
+          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          sed -i 's/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=/' "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/off.log"
+          grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/off.log"; then exit 1; fi
+          grep -F 'Setup codes are turned off for this installation. To turn them on, run:' "$RUNNER_TEMP/off.log" | grep -F 'melete account setup-code'
+          # Put back, and the next run keeps it and prints no code.
+          sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$hash/" "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/back.log"
+          test "$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")" = "$hash"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/back.log"; then exit 1; fi
       - name: Create the owner account with the setup code, as the person does in the browser
         run: |
           set -euo pipefail

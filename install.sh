@@ -567,22 +567,22 @@ main() {
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
 
-  SETUP_CODE=''
+  SETUP_CODE='' CODES_OFF=0
   if [ -f "$DEPLOY/.env" ]; then
     say 'Keeping deploy/.env and your data.'
     if [ -n "${MELETE_IMAGE_TAG:-}" ] || ! grep -q '^MELETE_IMAGE_TAG=.' "$DEPLOY/.env"; then
       set_env MELETE_IMAGE_TAG "$IMAGE_TAG"
     fi
-    # An installation made before setup codes has none: it gets one now, said
-    # once, as a first install does. A hash already there is kept.
-    local kept
-    kept="$(env_value MELETE_SETUP_CODE_HASH)"
-    kept="${kept//[[:space:]]/}"
-    if [ -z "$kept" ]; then
+    # An installation made before setup codes has no line for one: it gets a
+    # code now, said once, as a first install does. A line already there is
+    # kept, and an empty one is the person's choice to go without codes.
+    if ! grep -q '^MELETE_SETUP_CODE_HASH=' "$DEPLOY/.env"; then
       make_setup_code
       set_env MELETE_SETUP_CODE_HASH "$NEW_SETUP_HASH"
       SETUP_CODE="$NEW_SETUP_CODE"
       say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
+    elif [ -z "$(env_value MELETE_SETUP_CODE_HASH | tr -d '[:space:]')" ]; then
+      CODES_OFF=1
     fi
   else
     write_env
@@ -641,7 +641,11 @@ main() {
   if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
     say 'It starts with a practice model; add your own key in Settings → Models.'
   fi
-  say "For a new setup code: $shown exec melete bun run melete account setup-code"
+  if [ "$CODES_OFF" = 1 ]; then
+    say "Setup codes are turned off for this installation. To turn them on, run: $shown exec melete bun run melete account setup-code"
+  else
+    say "For a new setup code: $shown exec melete bun run melete account setup-code"
+  fi
   say "Run this command again to update. Stop it with: $shown down"
   if [ "$browser" = 0 ]; then
     say 'To give the agent a browser of its own once your account exists, run this again with MELETE_BROWSER=1:'
