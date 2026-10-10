@@ -34,6 +34,12 @@ import {
   isTerminalEvent,
   parseSse,
 } from './client.ts';
+import {
+  DELIVER_CONTINUATION,
+  quietAllowanceMs,
+  stalledContinuation,
+  stalledNote,
+} from './liveness.ts';
 import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
 import { RUNTIME_VERSION } from './version.ts';
 
@@ -64,6 +70,8 @@ type RunResult = {
   outputTokens: number;
   /** Tool names this run called, in order, including calls the broker refused. */
   called?: string[];
+  /** The engine sent nothing for longer than its step may take, and the run was stopped. */
+  stalled?: { silentMs: number; tool?: string };
 };
 
 type RunBudget = { turns: number; outputTokens: number; deadline: number };
@@ -81,10 +89,20 @@ export type HermesAdapterOptions = {
   fetch?: FetchLike;
   /** How long to wait for a frame before calling the stream dead. */
   streamIdleMs?: number;
+  /**
+   * How long the engine may send no event while these tools are in flight
+   * (keepalives do not count) before it is treated as stuck. Defaults to
+   * the longest the step may take plus a margin (`liveness.ts`).
+   */
+  quietMs?: (open: readonly string[], catalog: readonly ToolSpec[]) => number;
+  /** The clock silence is measured on, in milliseconds. Defaults to `Date.now`. */
+  now?: () => number;
 };
 
 /** Hermes writes a keepalive every 30s, so silence past 90s is a dead socket. */
 const DEFAULT_STREAM_IDLE_MS = 90_000;
+/** How long a stuck engine is given to take the request to stop its run. */
+const STOP_WAIT_MS = 5_000;
 
 export class HermesRuntimeAdapter implements RuntimeAdapter {
   private readonly client: HermesClient;
@@ -158,6 +176,16 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     // already had its one chance to propose what it asked the owner about.
     const called: string[] = [];
     let nudged = false;
+    // The engine has one chance to report after it went quiet, and one to
+    // speak to the person after it stopped without a word.
+    const started = this.now();
+    let stalled: RunResult['stalled'];
+    let delivered = false;
+    const stuck = (silentMs: number): AttemptOutcome => ({
+      kind: 'completed',
+      summary: stalledNote(silentMs, this.now() - started),
+      evidence: [],
+    });
     // The owner refused something in this wake. Telling the attempt to call the
     // tool now would be Melete's own idea to ask again for what was just
     // refused: the ledger would stop the same bytes, but a variation of them is
@@ -197,7 +225,8 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
               }),
               controller.signal,
             ),
-            deadline,
+            // An engine that went quiet once gets no longer to take the next run.
+            stalled ? Math.min(deadline, Date.now() + this.quiet([], catalog)) : deadline,
           ),
         );
         runId = accepted.run_id;
@@ -214,6 +243,23 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         called.push(...(result.called ?? []));
         if (result.live) catalog = result.live;
         final = result.outcome;
+        if (result.stalled) {
+          // Asked once to report what it has, in a fresh run of this attempt;
+          // quiet again, the turn ends with a note that says so.
+          if (signal.aborted || controller.signal.aborted) break;
+          if (stalled) {
+            final = stuck(result.stalled.silentMs);
+            break;
+          }
+          stalled = result.stalled;
+          await emitter.emit({
+            type: 'stalled',
+            silent_ms: Math.round(stalled.silentMs),
+            ...(stalled.tool ? { tool: stalled.tool.slice(0, 200) } : {}),
+          });
+          input = stalledContinuation(stalled.silentMs);
+          continue;
+        }
         if (
           budget.outputTokens > bundle.budget.max_output_tokens ||
           budget.turns > bundle.budget.max_turns
@@ -240,6 +286,23 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           input = UNPROPOSED_CONTINUATION;
           continue;
         }
+        // A run that ended on its tool calls with nothing said to the person
+        // is asked once, out of their sight, to say it now.
+        const wordless =
+          !result.loaded &&
+          final.kind === 'completed' &&
+          !final.summary.trim() &&
+          called.length > 0;
+        if (wordless && !delivered && !signal.aborted && !controller.signal.aborted) {
+          if (
+            (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+              .length > 0
+          )
+            break;
+          delivered = true;
+          input = DELIVER_CONTINUATION;
+          continue;
+        }
         if (!result.loaded || signal.aborted || controller.signal.aborted) break;
         // Approval wins even when a load and an external proposal shared a run.
         if (
@@ -256,11 +319,16 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       }
     } catch (error) {
       stop();
-      final = {
-        kind: 'failed',
-        reason: `the runtime refused the run: ${message(error)}`,
-        retryable: true,
-      };
+      // An engine that went quiet and then could not take the run asking it to
+      // report is stuck: the turn ends with a note rather than starting over.
+      final =
+        stalled && !signal.aborted
+          ? stuck(stalled.silentMs)
+          : {
+              kind: 'failed',
+              reason: `the runtime refused the run: ${message(error)}`,
+              retryable: true,
+            };
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
@@ -273,6 +341,15 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     if ((wallExpired || Date.now() >= deadline) && !signal.aborted)
       final = exhausted('The attempt reached its wall-time limit.');
     return await this.finish(bundle, emitter, final);
+  }
+
+  /** How long the engine may send no event while these tools are in flight. */
+  private quiet(open: readonly string[], catalog: readonly ToolSpec[]): number {
+    return (this.options.quietMs ?? quietAllowanceMs)(open, catalog);
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
   }
 
   /**
@@ -340,22 +417,38 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       }
     })();
 
+    // When the engine last sent an event (keepalives are not events), and the
+    // tools it is in the middle of: together they say whether it is stuck.
+    let lastEventAt = this.now();
+    const open: string[] = [];
+    let quiet = false;
     try {
       for (;;) {
-        if (!arrived.length && !ended)
-          await withTimeout(
-            new Promise<void>((resolve) => {
-              wake = resolve;
-            }),
-            Math.max(
-              1,
-              Math.min(
-                this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
-                budget.deadline - Date.now(),
-              ),
-            ),
+        if (!arrived.length && !ended) {
+          const idle = Math.min(
+            this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
+            budget.deadline - Date.now(),
           );
+          const quietLeft = lastEventAt + this.quiet(open, catalog) - this.now();
+          try {
+            await withTimeout(
+              new Promise<void>((resolve) => {
+                wake = resolve;
+              }),
+              Math.max(1, Math.min(idle, quietLeft)),
+            );
+          } catch (error) {
+            // Silence past the stream's own limit is a dead socket; silence past
+            // what the step may take, with the socket alive, is a stuck engine.
+            if (quietLeft > idle) throw error;
+            // A timer may fire a tick early, so the clock, not the timer, says
+            // whether the silence has really run its length.
+            if (this.now() - lastEventAt < this.quiet(open, catalog)) continue;
+            quiet = true;
+          }
+        }
         wake = undefined;
+        if (quiet) break;
         if (!arrived.length) {
           if (failure !== undefined) throw failure;
           break;
@@ -366,12 +459,18 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         const events = messages
           .map((sse) => safeParseEvent(sse.data))
           .filter((event): event is Record<string, unknown> => event !== null);
+        if (events.length) lastEventAt = this.now();
         for (const event of coalesceDeltas(events)) {
           const mapped = await this.handle(runId, event, emitter, calls);
           if (mapped) outcome = mapped;
           if (event.event === 'message.delta') text += String(event.delta ?? '');
-          if (event.event === 'tool.started') budget.turns++;
+          if (event.event === 'tool.started') {
+            budget.turns++;
+            open.push(String(event.tool ?? 'unknown'));
+          }
           if (event.event === 'tool.completed') {
+            const at = open.lastIndexOf(String(event.tool ?? 'unknown'));
+            if (at >= 0) open.splice(at, 1);
             completedTools.push(String(event.tool ?? 'unknown'));
             if (event.tool === 'load_tool' && this.options.catalogState) {
               // Whether a tool loaded is the broker's record, never the model's
@@ -417,6 +516,25 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           }
         }
         if (outcome) break;
+        // Keepalives alone keep the socket open, not the work going.
+        if (this.now() - lastEventAt >= this.quiet(open, catalog)) {
+          quiet = true;
+          break;
+        }
+      }
+      if (quiet && !signal.aborted) {
+        // The run is stopped so nothing it was doing carries on unseen. A stuck
+        // engine may not answer that either, so it is not waited on for long.
+        await withTimeout(this.send(this.client.stop(runId)), STOP_WAIT_MS).catch(() => undefined);
+        return {
+          outcome: gap('the engine stopped answering'),
+          outputTokens: Math.ceil(text.length / 4),
+          called: completedTools,
+          stalled: {
+            silentMs: this.now() - lastEventAt,
+            ...(open.length ? { tool: open[open.length - 1] } : {}),
+          },
+        };
       }
     } catch (error) {
       // A read that threw took whatever the engine had already queued with it.

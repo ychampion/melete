@@ -101,6 +101,25 @@ function stable(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/** The longest a connector may ask one dispatch to take. */
+export const MAX_DISPATCH_BUDGET_MS = 15 * 60_000;
+
+/**
+ * How long one call of a tool may take, where its connector asks for longer
+ * than the broker's default, read for a call that names nothing else. A call
+ * that names its own timeout may take longer; the runtime adds that itself.
+ */
+export function toolDeadline(connector: Connector, name: string): number | undefined {
+  try {
+    const asked = connector.dispatchBudgetMs?.({ kind: name, canonical_payload: {} });
+    return typeof asked === 'number' && Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.ceil(asked), MAX_DISPATCH_BUDGET_MS)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export const schemaFingerprint = (schema: ToolSpec['input_schema']): string =>
   createHash('sha256').update(stable(schema)).digest('hex');
 
@@ -565,12 +584,14 @@ export class ToolCatalog {
         )
           continue;
         const source = connector.catalog?.source ?? 'connector';
+        const deadline = toolDeadline(connector, declared.name);
         const tool: ToolSpec = {
           name: declared.name,
           description: routedDescription(declared.name, declared.description, personsBrowser),
           input_schema: declared.input_schema,
           effect_class: declared.effect_class,
           connection_id: row.id,
+          ...(deadline ? { deadline_ms: deadline } : {}),
           // The cell needs to know which tools it carries out itself, and
           // the shape of the record it owes the ledger afterwards.
           execution: declared.execution,

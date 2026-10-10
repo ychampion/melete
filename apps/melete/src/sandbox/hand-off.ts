@@ -146,7 +146,7 @@ export async function handComputerToPerson(
     // The conversation's turn waits on the person, as the conversation is read after a reload.
     await tx`update experience_turn set status = 'needs_you'
       where id = (select current_turn_id from job where id = ${input.jobId})
-        and status in ('queued', 'working', 'streaming')`;
+        and status in ('queued', 'working', 'streaming', 'stalled')`;
     const detail = { kind: 'handed_to_person', session_id: input.sessionId, reason: card.reason };
     const attempts = await tx`update attempt set outcome = 'fenced',
       outcome_detail = ${JSON.stringify(detail)}::jsonb,

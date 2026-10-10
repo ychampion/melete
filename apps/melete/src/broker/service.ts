@@ -104,7 +104,13 @@ import {
   spansOf,
   windowOf,
 } from './calendar-check.ts';
-import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
+import {
+  type CatalogOptions,
+  MAX_DISPATCH_BUDGET_MS,
+  resolveToolAlias,
+  SKILL_READ_TOOL,
+  ToolCatalog,
+} from './catalog.ts';
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
@@ -366,8 +372,6 @@ const changeKey = (connectionId: string, payload: unknown) => {
 /** One event of one calendar connection: the change's connection and the uid it rewrites. */
 const guestKey = (connectionId: string, payload: unknown) =>
   `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
-/** The longest a connector may ask one dispatch to take. */
-const MAX_DISPATCH_BUDGET_MS = 15 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
 const definedOnly = (options: AutoReviewOptions) => ({
   ...(options.hourlyLimit === undefined ? {} : { hourlyLimit: options.hourlyLimit }),

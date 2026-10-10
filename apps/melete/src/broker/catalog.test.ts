@@ -1,14 +1,17 @@
 import { expect, test } from 'bun:test';
 import type { ToolSpec } from '@melete/contracts';
+import type { Connector } from '../connectors/types.ts';
 import {
   CATALOG_INDEX_TOKENS,
   type CatalogItem,
+  MAX_DISPATCH_BUDGET_MS,
   META_TOOLS,
   manifestEntry,
   readableSkills,
   type SourcedSkill,
   schemaFingerprint,
   selectCore,
+  toolDeadline,
   toolTokens,
 } from './catalog.ts';
 import { relevance, terms } from './lexical.ts';
@@ -433,4 +436,29 @@ test('relevance still decides which tools make the cut', () => {
     'load_tool',
     'server.restart',
   ]);
+});
+
+test('a tool whose connector asks for longer than the default says how long, within the limit', () => {
+  const connector = (budget: (kind: string) => number) =>
+    ({
+      dispatchBudgetMs: (action: { kind: string }) => budget(action.kind),
+    }) as unknown as Connector;
+  const web = connector((kind) => (kind === 'web.search' ? 90_000 : 0));
+  expect(toolDeadline(web, 'web.search')).toBe(90_000);
+  expect(toolDeadline(web, 'web.fetch')).toBeUndefined();
+  expect(
+    toolDeadline(
+      connector(() => 10 ** 9),
+      'egress.upload',
+    ),
+  ).toBe(MAX_DISPATCH_BUDGET_MS);
+  expect(
+    toolDeadline(
+      connector(() => {
+        throw new Error('needs a payload');
+      }),
+      'device.run',
+    ),
+  ).toBeUndefined();
+  expect(toolDeadline({} as Connector, 'files.read')).toBeUndefined();
 });

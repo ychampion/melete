@@ -416,6 +416,11 @@ export function turnSeconds(turn: TranscriptTurn, now: number): number | null {
   const started = Date.parse(turn.turn.created_at);
   if (Number.isNaN(started)) return null;
   if (running) return Math.max(0, (now - started) / 1000);
+  // A turn stopped or cut short took until it ended, however quiet the end of it
+  // was: its last step can be long before the stop.
+  const ended = turn.ended_at ? Date.parse(turn.ended_at) : Number.NaN;
+  if ((turn.status === 'stopped' || turn.status === 'failed') && !Number.isNaN(ended))
+    return Math.max(1, (ended - started) / 1000);
   const done = turn.trail.filter(
     (step): step is Extract<TrailStep, { type: 'done' }> => step.type === 'done',
   );

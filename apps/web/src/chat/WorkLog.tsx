@@ -35,7 +35,7 @@ import {
   workKind,
 } from './worklog.ts';
 
-const RUNNING = new Set(['queued', 'working', 'streaming', 'paused']);
+const RUNNING = new Set(['queued', 'working', 'streaming', 'stalled', 'paused']);
 
 /* ---------- motion ---------- */
 
@@ -694,6 +694,9 @@ export function headerWords(turn: TranscriptTurn, now: number): string {
       return took ? `Paused after ${took}` : 'Paused';
     case 'needs_you':
       return 'Waiting for you';
+    case 'stalled':
+      // Nothing has come from the agent for longer than its step may take.
+      return took ? `Stalled · working for ${took}` : 'Stalled';
     case 'stopped':
       return took ? `Stopped after ${took}` : 'Stopped';
     case 'failed':

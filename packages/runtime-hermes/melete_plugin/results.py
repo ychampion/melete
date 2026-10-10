@@ -48,6 +48,21 @@ UNCERTAIN_INSTRUCTION = (
     "person will be asked."
 )
 
+#: For a read that got no answer in time. It changed nothing either way.
+NO_ANSWER_READ_INSTRUCTION = (
+    "This read got no answer in time. It changed nothing, so try it once more, "
+    "or get the same thing another way."
+)
+
+#: For a step with an effect that got no answer in time. The broker records it
+#: as unconfirmed once its own deadline passes, and it is checked from there.
+NO_ANSWER_INSTRUCTION = (
+    "This step got no answer in time, so whether it happened is not known yet. It "
+    "is recorded as unconfirmed and will be checked. Do NOT repeat it and do NOT "
+    "claim either outcome. Carry on with what does not depend on it, or end your "
+    "turn and say it is unconfirmed."
+)
+
 #: For a step on the agent's own computer: the agent checks, the owner is not asked.
 OWN_COMPUTER_INSTRUCTION = (
     "Whether this step happened on your own computer is not known. Do NOT repeat it "
@@ -99,11 +114,13 @@ def from_response(response: Dict[str, Any], receipt: Optional[Dict[str, Any]] = 
     }
 
 
-def from_error(code: str, message: str) -> Dict[str, Any]:
+def from_error(code: str, message: str, read: bool = False) -> Dict[str, Any]:
     """A broker refusal, or a broker that never answered.
 
-    `unreachable` is deliberately given the uncertain instruction rather than
-    the failure one: a request that got no answer may still have been received.
+    `unreachable` and `timed_out` are deliberately given an uncertain
+    instruction rather than the failure one: a request that got no answer may
+    still have been received. A read is the exception, because it changes
+    nothing whether or not it ran.
     """
     if code == "schema_invalid":
         return {
@@ -112,9 +129,22 @@ def from_error(code: str, message: str) -> Dict[str, Any]:
             "retryable": False,
             "instruction": "The tool schema needs operator repair. Stop now. Do not retry this tool.",
         }
-    uncertain = code == "unreachable"
+    uncertain = code in ("unreachable", "timed_out")
+    if uncertain and read:
+        return {
+            "status": FAILED,
+            "error": {"code": code, "message": message},
+            "retryable": True,
+            "instruction": NO_ANSWER_READ_INSTRUCTION,
+        }
     return {
         "status": UNKNOWN if uncertain else FAILED,
         "error": {"code": code, "message": message},
-        "instruction": UNCERTAIN_INSTRUCTION if uncertain else FAILURE_INSTRUCTION,
+        "instruction": (
+            NO_ANSWER_INSTRUCTION
+            if code == "timed_out"
+            else UNCERTAIN_INSTRUCTION
+            if uncertain
+            else FAILURE_INSTRUCTION
+        ),
     }

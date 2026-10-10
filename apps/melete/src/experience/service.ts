@@ -49,9 +49,9 @@ import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './pro
 import type { WorkspaceTrash } from './workspace-trash.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
-const UNDER_WAY = ['queued', 'working', 'streaming', 'needs_you', 'paused'];
+const UNDER_WAY = ['queued', 'working', 'streaming', 'stalled', 'needs_you', 'paused'];
 /** Turn statuses whose answer may still grow. */
-const STILL_WRITING = new Set(['queued', 'working', 'streaming']);
+const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
   row: JobRow,
@@ -70,7 +70,7 @@ export function conversationView(
     composer:
       status === 'paused'
         ? 'resume'
-        : status === 'streaming'
+        : status === 'streaming' || status === 'stalled'
           ? 'stop'
           : ['working', 'queued'].includes(status)
             ? 'pause'
@@ -528,7 +528,7 @@ export class ExperienceService {
     // A turn under way, or one that finished within the day, reports its steps.
     const stage = !turn
       ? 'ended'
-      : ['queued', 'working', 'streaming', 'paused'].includes(turn.status)
+      : ['queued', 'working', 'streaming', 'stalled', 'paused'].includes(turn.status)
         ? 'under_way'
         : turn.status === 'needs_you'
           ? 'waiting'
