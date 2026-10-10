@@ -778,6 +778,9 @@ describe('a turn never hangs silently and never ends without a word', () => {
     const inputs: string[] = [];
     const stopped: string[] = [];
     let started = 0;
+    // Silence is measured on this clock, which moves only when the stream
+    // ticks, so how fast the machine runs cannot change what the test sees.
+    let clock = 0;
     const encoder = new TextEncoder();
     const fetch: FetchLike = async (url, init) => {
       const path = new URL(url).pathname;
@@ -804,7 +807,10 @@ describe('a turn never hangs silently and never ends without a word', () => {
             controller.enqueue(
               encoder.encode(frame({ event: 'tool.started', tool: 'browser.open', preview: '' })),
             );
-            timer = setInterval(() => controller.enqueue(encoder.encode(': keepalive\n\n')), 10);
+            timer = setInterval(() => {
+              clock += 10;
+              controller.enqueue(encoder.encode(': keepalive\n\n'));
+            }, 10);
           },
           cancel() {
             clearInterval(timer);
@@ -821,6 +827,7 @@ describe('a turn never hangs silently and never ends without a word', () => {
       streamIdleMs: 2_000,
       // Keepalives every 10 ms keep the socket open; only an event counts as progress.
       quietMs: () => 120,
+      now: () => clock,
     });
     return { adapter, inputs, stopped };
   }

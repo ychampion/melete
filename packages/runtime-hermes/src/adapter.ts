@@ -95,6 +95,8 @@ export type HermesAdapterOptions = {
    * the longest the step may take plus a margin (`liveness.ts`).
    */
   quietMs?: (open: readonly string[], catalog: readonly ToolSpec[]) => number;
+  /** The clock silence is measured on, in milliseconds. Defaults to `Date.now`. */
+  now?: () => number;
 };
 
 /** Hermes writes a keepalive every 30s, so silence past 90s is a dead socket. */
@@ -176,12 +178,12 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     let nudged = false;
     // The engine has one chance to report after it went quiet, and one to
     // speak to the person after it stopped without a word.
-    const started = Date.now();
+    const started = this.now();
     let stalled: RunResult['stalled'];
     let delivered = false;
     const stuck = (silentMs: number): AttemptOutcome => ({
       kind: 'completed',
-      summary: stalledNote(silentMs, Date.now() - started),
+      summary: stalledNote(silentMs, this.now() - started),
       evidence: [],
     });
     // The owner refused something in this wake. Telling the attempt to call the
@@ -346,6 +348,10 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     return (this.options.quietMs ?? quietAllowanceMs)(open, catalog);
   }
 
+  private now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
   /**
    * Read the stream exactly once and map what comes off it.
    *
@@ -413,7 +419,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
 
     // When the engine last sent an event (keepalives are not events), and the
     // tools it is in the middle of: together they say whether it is stuck.
-    let lastEventAt = Date.now();
+    let lastEventAt = this.now();
     const open: string[] = [];
     let quiet = false;
     try {
@@ -423,7 +429,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
             budget.deadline - Date.now(),
           );
-          const quietLeft = lastEventAt + this.quiet(open, catalog) - Date.now();
+          const quietLeft = lastEventAt + this.quiet(open, catalog) - this.now();
           try {
             await withTimeout(
               new Promise<void>((resolve) => {
@@ -435,6 +441,9 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             // Silence past the stream's own limit is a dead socket; silence past
             // what the step may take, with the socket alive, is a stuck engine.
             if (quietLeft > idle) throw error;
+            // A timer may fire a tick early, so the clock, not the timer, says
+            // whether the silence has really run its length.
+            if (this.now() - lastEventAt < this.quiet(open, catalog)) continue;
             quiet = true;
           }
         }
@@ -450,7 +459,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         const events = messages
           .map((sse) => safeParseEvent(sse.data))
           .filter((event): event is Record<string, unknown> => event !== null);
-        if (events.length) lastEventAt = Date.now();
+        if (events.length) lastEventAt = this.now();
         for (const event of coalesceDeltas(events)) {
           const mapped = await this.handle(runId, event, emitter, calls);
           if (mapped) outcome = mapped;
@@ -508,7 +517,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         }
         if (outcome) break;
         // Keepalives alone keep the socket open, not the work going.
-        if (Date.now() - lastEventAt >= this.quiet(open, catalog)) {
+        if (this.now() - lastEventAt >= this.quiet(open, catalog)) {
           quiet = true;
           break;
         }
@@ -522,7 +531,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           outputTokens: Math.ceil(text.length / 4),
           called: completedTools,
           stalled: {
-            silentMs: Date.now() - lastEventAt,
+            silentMs: this.now() - lastEventAt,
             ...(open.length ? { tool: open[open.length - 1] } : {}),
           },
         };
