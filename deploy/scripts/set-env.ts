@@ -33,7 +33,9 @@ export const isSecretName = (name: string) =>
   /(KEY|TOKEN|SECRET|PASSWORD)$/.test(name) ||
   name === 'DATABASE_URL' ||
   // A mail server's address carries its sign-in, user and password.
-  name.endsWith('_SMTP_URL');
+  name.endsWith('_SMTP_URL') ||
+  // A chat webhook's address is all it takes to post to it.
+  name.endsWith('_WEBHOOK_URL');
 
 export class SetEnvRefusal extends Error {}
 
