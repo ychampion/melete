@@ -26552,9 +26552,9 @@ export interface components {
             usage?: components["schemas"]["__schema510"];
         } | {
             at: components["schemas"]["__schema214"];
-            attempt_id: components["schemas"]["__schema757"];
-            dedup_key: components["schemas"]["__schema759"];
-            local_seq: components["schemas"]["__schema758"];
+            attempt_id: components["schemas"]["__schema763"];
+            dedup_key: components["schemas"]["__schema765"];
+            local_seq: components["schemas"]["__schema764"];
             silent_ms: number;
             tool?: string;
             /** @constant */

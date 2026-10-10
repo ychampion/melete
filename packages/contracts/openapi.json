@@ -47037,13 +47037,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema757"
+                "$ref": "#/components/schemas/__schema763"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema758"
+                "$ref": "#/components/schemas/__schema764"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema759"
+                "$ref": "#/components/schemas/__schema765"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema214"
