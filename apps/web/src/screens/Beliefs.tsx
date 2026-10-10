@@ -68,16 +68,26 @@ const plain = (text: string) =>
     .trim();
 export const saysSame = (label: string, value: string) => plain(label) === plain(value);
 
+/** Who a row is about, read from its label: "Your", "Sister Lena", "Home". */
+const subjectOf = (label: string) =>
+  /^your\b/iu.test(label) ? 'your' : plain(label.replace(/(?:['’]s\s|:\s).*$/u, ''));
+
 /**
- * One row per detail. The same words saved twice under different subjects
- * ("Can be home Thursday afternoon" as both availability and Thursday's
- * availability) show once, the newest kept; correcting or forgetting that row
- * does the same to the copies behind it, so none comes back afterwards.
+ * One row per detail. The same sentence saved twice about the same person
+ * under different fields ("Can be home Thursday afternoon" as both your
+ * availability and your Thursday availability) shows once, the first kept;
+ * forgetting that row forgets the copies behind it, so none comes back
+ * afterwards. A short value ("Lisbon", "Vegetarian") is never taken for a
+ * copy: two people, or two of your details, can share it.
  */
 export function sameDetailOnce(beliefs: readonly Belief[]): { belief: Belief; twins: string[] }[] {
   const rows = new Map<string, { belief: Belief; twins: string[] }>();
   for (const belief of beliefs) {
-    const key = plain(belief.value);
+    const value = plain(belief.value);
+    const key =
+      value.split(' ').length >= 4
+        ? `${belief.category}\u0000${subjectOf(belief.label)}\u0000${value}`
+        : `id\u0000${belief.id}`;
     const kept = rows.get(key);
     if (kept) kept.twins.push(belief.id);
     else rows.set(key, { belief, twins: [] });
@@ -243,9 +253,8 @@ function BeliefRow({
                 failed(r, 'Couldn’t save the correction');
                 return false;
               }
-              // The copies said what was just corrected; left, they would show the old words.
-              const copies = await eachCopy(twins, adapter.deleteMemory);
-              if (copies) failed(copies, 'Couldn’t remove an older copy');
+              // A copy behind this row keeps its own words: it shows as its own row again,
+              // to forget or correct there, rather than being removed unasked.
               setMode('view');
               setHistoryOpen(false);
               toast({ kind: 'ok', title: 'Corrected', sub: 'Your words replace what I had.' });

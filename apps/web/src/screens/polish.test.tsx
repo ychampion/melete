@@ -37,15 +37,34 @@ test('a past day reads Today, Yesterday, a weekday this week, then a date', () =
 });
 
 test('the same words saved twice show once, the first kept and the copy behind it', () => {
-  const belief = (id: string, value: string) => ({ id, value }) as Belief;
+  const belief = (id: string, label: string, value: string, category = 'people') =>
+    ({ id, label, value, category }) as Belief;
   const rows = sameDetailOnce([
-    belief('b1', 'Can be home Thursday afternoon'),
-    belief('b2', 'can be home thursday afternoon.'),
-    belief('b3', 'Prefers aisle seats'),
+    belief('b1', 'Your availability', 'Can be home Thursday afternoon'),
+    belief('b2', 'Your availability thursday', 'can be home thursday afternoon.'),
+    belief('b3', 'Prefers aisle seats', 'Prefers aisle seats'),
   ]);
   expect(rows.map((row) => row.belief.id)).toEqual(['b1', 'b3']);
   expect(rows[0]?.twins).toEqual(['b2']);
   expect(rows[1]?.twins).toEqual([]);
+});
+
+test('details that only share a value are never taken for copies of each other', () => {
+  const belief = (id: string, label: string, value: string, category = 'people') =>
+    ({ id, label, value, category }) as Belief;
+  const rows = sameDetailOnce([
+    // Two people, one city.
+    belief('m', "Maya's city", 'Lisbon'),
+    belief('s', "Sam's city", 'Lisbon'),
+    // Two of your own details with one short value.
+    belief('c', 'Your city', 'Lisbon'),
+    belief('h', 'Your hometown', 'Lisbon'),
+    // The same sentence about two different people.
+    belief('l', "Sister Lena's allergy", 'Allergic to peanuts and tree nuts'),
+    belief('y', 'Your allergy', 'Allergic to peanuts and tree nuts'),
+  ]);
+  expect(rows.map((row) => row.belief.id)).toEqual(['m', 's', 'c', 'h', 'l', 'y']);
+  expect(rows.every((row) => row.twins.length === 0)).toBe(true);
 });
 
 test('two runs that ended the same way in the same minute read as one', () => {
