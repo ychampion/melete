@@ -5,8 +5,10 @@
 #
 # It downloads the Compose file and its configuration into ~/melete (or
 # MELETE_DIR), writes deploy/.env once with fresh secrets, pulls the images and
-# starts them. Running it again updates the files and images and keeps
-# deploy/.env and every volume. Options, all read from the environment:
+# starts them. The first run prints a one-time setup code, which creates the
+# first account; deploy/.env keeps only its SHA-256. Running it again updates
+# the files and images and keeps deploy/.env and every volume. Options, all
+# read from the environment:
 #
 #   MELETE_DIR        where the files go (default ~/melete)
 #   MELETE_REF        the branch, tag or commit the files come from (default main)
@@ -32,6 +34,11 @@ set -euo pipefail
 say() { printf '%s\n' "$*"; }
 fail() {
   printf 'Melete: %s\n' "$*" >&2
+  # A new deploy/.env keeps only the setup code's hash, so a run that stops
+  # after writing it says the code here, once, for the run that follows.
+  if [ -n "${SETUP_CODE:-}" ]; then
+    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it.\n' "$SETUP_CODE" >&2
+  fi
   exit 1
 }
 
@@ -90,6 +97,41 @@ download() {
 }
 
 hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
+
+# The one-time setup code that claims a new installation, as newSetupCode() in
+# apps/melete/src/api/setup-code.ts makes it: 20 characters nobody misreads, in
+# groups of four. Bytes from /dev/urandom at 240 or above are skipped, so each
+# of the 30 characters is equally likely.
+SETUP_ALPHABET=ABCDEFGHJKMNPQRSTVWXYZ23456789
+new_setup_code() {
+  local chars='' byte
+  local -a bytes
+  while [ "${#chars}" -lt 20 ]; do
+    read -r -a bytes <<<"$(od -An -tu1 -N32 /dev/urandom | tr '\n' ' ')"
+    for byte in "${bytes[@]}"; do
+      [ "$byte" -lt 240 ] || continue
+      chars="$chars${SETUP_ALPHABET:byte % 30:1}"
+      [ "${#chars}" -lt 20 ] || break
+    done
+  done
+  printf '%s-%s-%s-%s-%s\n' "${chars:0:4}" "${chars:4:4}" "${chars:8:4}" "${chars:12:4}" "${chars:16:4}"
+}
+
+# What deploy/.env keeps of a setup code, as setupCodeHash() works it out: the
+# SHA-256, in hex, of the code in capitals with everything but letters and
+# digits taken out. The code reaches the hash through a pipe, never a command line.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d ' ' -f 1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d ' ' -f 1
+  else
+    return 1
+  fi
+}
+setup_code_hash() {
+  printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]' | LC_ALL=C tr -cd 'A-Z0-9' | sha256_hex
+}
 base64_bytes() { head -c "$1" /dev/urandom | base64 | tr -d '\n'; }
 base64url() { base64 | tr -d '\n=' | tr '+/' '-_'; }
 
@@ -215,9 +257,17 @@ write_env() {
     fail 'ELEVENLABS_API_KEY contains a space or a line break, so it is not a key as written. Set it again and run this again.' ;;
   esac
 
+  # Shown once, at the end of this run; only its hash is written.
+  local setup_code setup_hash
+  setup_code="$(new_setup_code)"
+  setup_hash="$(setup_code_hash "$setup_code")" || setup_hash=''
+  [[ "$setup_hash" =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'sha256sum or shasum is needed to make the setup code. Install coreutils, then run this again.'
+
   # Passed to awk through its environment, never on a command line.
   local settings
-  settings="MELETE_VAPID_PUBLIC_KEY=$VAPID_PUBLIC
+  settings="MELETE_SETUP_CODE_HASH=$setup_hash
+MELETE_VAPID_PUBLIC_KEY=$VAPID_PUBLIC
 MELETE_VAPID_PRIVATE_KEY=$VAPID_PRIVATE
 MELETE_MASTER_KEY=$(base64_bytes 32)
 MELETE_CAPABILITY_KEY=$(hex 32)
@@ -259,9 +309,11 @@ ELEVENLABS_API_KEY=@VOICE"
       }
       match($0, /^[A-Z_]+=/) {
         name = substr($0, 1, RLENGTH - 1)
-        if (name in values) { print name "=" values[name]; next }
+        if (name in values) { print name "=" values[name]; written[name] = 1; next }
       }
       { print }
+      # A setting an older template has no line for goes at the end.
+      END { for (name in values) if (!(name in written)) print name "=" values[name] }
     ' "$template" >"$partial"
   )
   unset MELETE_INSTALL_PROVIDER_KEY MELETE_INSTALL_VOICE_KEY
@@ -271,6 +323,7 @@ ELEVENLABS_API_KEY=@VOICE"
     fail 'deploy/.env appeared while this ran. Run this again to keep it and start Melete.'
   fi
   rm -f "$partial"
+  SETUP_CODE="$setup_code"
   if [ "$PROVIDER" = fake ]; then
     say 'Created deploy/.env with the practice model.'
   else
@@ -510,6 +563,7 @@ main() {
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
 
+  SETUP_CODE=''
   if [ -f "$DEPLOY/.env" ]; then
     say 'Keeping deploy/.env and your data.'
     if [ -n "${MELETE_IMAGE_TAG:-}" ] || ! grep -q '^MELETE_IMAGE_TAG=.' "$DEPLOY/.env"; then
@@ -562,11 +616,17 @@ main() {
   local shown="${compose[*]}"
   say ''
   say "Melete is running at $url"
-  if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
-    say 'Open it and create your account. It starts with a practice model; add your own key in Settings → Models.'
+  if [ -n "$SETUP_CODE" ]; then
+    # Said once: deploy/.env keeps only its hash.
+    say "Open $url/#/welcome?code=$SETUP_CODE to create your account"
+    say "Your one-time setup code is $SETUP_CODE. It is shown only now; keep it until your account exists."
   else
     say 'Open it and create your account.'
   fi
+  if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
+    say 'It starts with a practice model; add your own key in Settings → Models.'
+  fi
+  say "For a new setup code: $shown exec melete bun run melete account setup-code"
   say "Run this command again to update. Stop it with: $shown down"
   if [ "$browser" = 0 ]; then
     say 'To give the agent a browser of its own once your account exists, run this again with MELETE_BROWSER=1:'

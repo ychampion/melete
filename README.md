@@ -26,11 +26,18 @@ On Windows with Docker Desktop, in PowerShell:
 irm https://raw.githubusercontent.com/ychampion/melete/main/install.ps1 | iex
 ```
 
-Then open **http://localhost:3101** and create your account. It starts with a
+The installer prints a one-time setup code and a link that fills it in; open the
+link to create your account. It starts with a
 practice model, so you can look around right away; add your own key in
 **Settings → Models**. Run the command again to update. [Run it yourself](#run-it-yourself) shows the longer
 manual path, and [Deployment](docs/DEPLOYMENT.md#one-line-install) lists the
 installer's options.
+
+- `melete account setup-code` gives you a new setup code, good for 72 hours.
+- `melete account` lists accounts and creates, resets or disables them.
+
+After the one-line install, run these in the service container, for example
+`docker compose -f ~/melete/deploy/docker-compose.yml exec melete bun run melete account setup-code`.
 
 ## A day with Melete
 
