@@ -455,7 +455,7 @@ async function configure(root: string) {
     );
   if (options.hosted)
     process.stdout.write(
-      'An operator token was written. Name where alerts go before people sign up: bun run melete set MELETE_ALERT_WEBHOOK_URL=https://... (docs/DEPLOYMENT.md, "Alerts").\n',
+      'An operator token was written. Name where alerts go before people sign up: export the webhook address as MELETE_ALERT_WEBHOOK_URL, then run bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL (docs/DEPLOYMENT.md, "Alerts").\n',
     );
   // A real provider is selected with its key still empty. Say so now, not at the first job,
   // unless the key is meant to be pasted into the app.

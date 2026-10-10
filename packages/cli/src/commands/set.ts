@@ -8,7 +8,7 @@
  * records (the image tag, the registry, the project), melete.deploy.json is
  * updated to match, so `check` keeps agreeing with what will run.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { envSchema } from '../../../../apps/melete/src/env.ts';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
@@ -44,8 +44,10 @@ export const CONTRACT_SETTINGS = [
 ];
 
 /**
- * Every name a setting may have: the template's, any Compose file's
- * substitutions, the service's own schema, and what deploy/.env already holds.
+ * Every name a setting may have: the template's, the substitutions of every
+ * Compose file in deploy/ (an overlay's setting is often written before the
+ * overlay is turned on), the service's own schema, and what deploy/.env
+ * already holds.
  */
 export function knownSettings(installation: Installation, template: string): Set<string> {
   const names = new Set<string>([
@@ -53,9 +55,16 @@ export function knownSettings(installation: Installation, template: string): Set
     ...Object.keys(envSchema.in.shape),
     ...Object.keys(installation.env ?? {}),
   ]);
-  for (const read of installation.compose)
-    for (const match of JSON.stringify(read.raw ?? {}).matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g))
-      if (match[1]) names.add(match[1]);
+  const texts = installation.compose.map((read) => JSON.stringify(read.raw ?? {}));
+  try {
+    for (const file of readdirSync(installation.deployDir))
+      if (/^docker-compose.*\.ya?ml$/.test(file))
+        texts.push(readFileSync(join(installation.deployDir, file), 'utf8'));
+  } catch {
+    // Without a readable deploy/, the files the installation reads are enough.
+  }
+  for (const text of texts)
+    for (const match of text.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)) if (match[1]) names.add(match[1]);
   return names;
 }
 

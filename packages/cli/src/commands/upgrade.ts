@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import type { Context } from '../context.ts';
-import type { DeployConfig } from '../deploy-config.ts';
+import { DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
 import { appendHistory } from '../history.ts';
 import { envImageTag, readInstallation } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
@@ -58,6 +58,16 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
     return EXIT.refused;
   }
   const installation = readInstallation(context.deployDir, context.machine.platform);
+  // Without the file, the overlay files and profiles would be guessed from deploy/.env,
+  // and an upgrade that leaves one out rebuilds the stack without it.
+  if (installation.loaded.kind !== 'found') {
+    context.err(
+      installation.loaded.kind === 'invalid'
+        ? `${DEPLOY_FILE} is not valid (${installation.loaded.issues.join('; ')}). The upgrade takes the overlay files and profiles from it; correct it, then run this again.\n`
+        : `upgrade needs ${DEPLOY_FILE} for the overlay files and profiles the installation runs with. Run bun run melete init --adopt to write it from the running stack.\n`,
+    );
+    return EXIT.refused;
+  }
   const { config } = installation;
   if (config.images.registry !== null) {
     context.err(

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type Check,
+  getJson,
   judgeModel,
   judgeStatus,
   parseComposePs,
@@ -178,4 +179,20 @@ describe('reading Compose and df', () => {
     expect(parseDfAvailable(df)).toBe(800 * 1024);
     expect(parseDfAvailable('nonsense')).toBeNull();
   });
+});
+
+test('/health answering 503 while the database is down still gives its report', async () => {
+  const server = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: () => Response.json({ status: 'degraded', database: 'unreachable' }, { status: 503 }),
+  });
+  try {
+    expect(await getJson(`http://127.0.0.1:${server.port}/health`)).toEqual({
+      status: 'degraded',
+      database: 'unreachable',
+    });
+  } finally {
+    server.stop(true);
+  }
 });

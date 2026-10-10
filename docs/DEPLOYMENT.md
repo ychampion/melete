@@ -365,7 +365,8 @@ target in one step:
 
 ```bash
 bun run melete init --connect-in-app --public-url https://assistant.example.net --hosted
-bun run melete set MELETE_ALERT_WEBHOOK_URL=https://hooks.example.net/melete
+read -rs MELETE_ALERT_WEBHOOK_URL && export MELETE_ALERT_WEBHOOK_URL   # its address works as its key
+bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL && unset MELETE_ALERT_WEBHOOK_URL
 ```
 
 For an installation that is already running, set the two addresses together,

@@ -95,6 +95,13 @@ describe('check and status judge it', () => {
     ]);
   });
 
+  test('the alert fix keeps a webhook address and a mail password off the command line', () => {
+    const alerts = judgeHosted(config(true), {}).find((result) => result.id === 'hosted.alerts');
+    expect(alerts?.fix).toContain('--from-env MELETE_ALERT_WEBHOOK_URL');
+    expect(alerts?.fix).toContain('--from-env MELETE_ALERT_SMTP_URL');
+    expect(alerts?.fix).not.toMatch(/MELETE_ALERT_(WEBHOOK|SMTP)_URL=/);
+  });
+
   test('status reports the same rules', async () => {
     const context = testContext(hostedInstall({}));
     await runStatus(context, true);

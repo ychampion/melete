@@ -112,6 +112,17 @@ describe('melete set', () => {
     expect(read(deployDir, '.env')).toContain('MY_OVERLAY_SETTING=1');
   });
 
+  test("an overlay's setting is accepted before the overlay is turned on", async () => {
+    // docs/DEPLOYMENT.md, "A managed Postgres database": the authority file comes before database.external.
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem'])).toBe(0);
+    expect(read(deployDir, '.env')).toContain(
+      'MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem',
+    );
+  });
+
   test('a setting no service reads says nothing needs to restart; an image tag says deploy', async () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir);

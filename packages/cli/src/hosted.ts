@@ -71,7 +71,9 @@ export function judgeHosted(config: DeployConfig, env: Record<string, string>): 
           id: 'hosted.alerts',
           level: missing,
           detail: `No alert target, so nobody hears when the database, disk or a service fails.${note}`,
-          fix: 'Run bun run melete set MELETE_ALERT_WEBHOOK_URL=https://..., or MELETE_ALERT_EMAIL_TO with MELETE_ALERT_SMTP_URL (docs/DEPLOYMENT.md, "Alerts").',
+          // A webhook's address works as its key and an SMTP URL holds a password, so
+          // both are taken from the environment, where they are never printed.
+          fix: 'Export the webhook address and run bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL; or set MELETE_ALERT_EMAIL_TO, export MELETE_ALERT_SMTP_URL and run bun run melete set --from-env MELETE_ALERT_SMTP_URL (docs/DEPLOYMENT.md, "Alerts").',
         },
   );
 

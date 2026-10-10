@@ -152,6 +152,21 @@ describe('melete upgrade', () => {
     expect(context.errors()).toContain('The tag v9.9.9 is not in this checkout');
   });
 
+  test('without a valid deploy file it refuses, rather than guess the overlays from deploy/.env', async () => {
+    for (const text of [null, '{"contract": 1, "profiles": "sandbox"}']) {
+      const deployDir = temporaryDeployDir();
+      writeEnv(deployDir, { MELETE_IMAGE_TAG: 'local', COMPOSE_PROFILES: 'sandbox' });
+      if (text !== null) writeFileSync(join(deployDir, 'melete.deploy.json'), text);
+      const context = testContext(deployDir, [
+        ['git -C', ok('')],
+        ['tar -x', ok('')],
+      ]);
+      expect(await runUpgrade(context, ['v1.0.0', '--dry-run'])).toBe(2);
+      expect(context.attached).toEqual([]);
+      expect(context.errors()).toContain(text === null ? 'init --adopt' : 'is not valid');
+    }
+  });
+
   test('overlay options given by hand are refused: the contract decides them', async () => {
     const { context } = rig({});
     for (const option of ['--profile', '--external-db', '--blobs-s3', '--browser'])
