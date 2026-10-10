@@ -152,7 +152,9 @@ describe('scoring against the bars', () => {
     const slow = scoreBars([
       job({
         category: 'human_check',
-        handoffs: [{ at: '', title: 'Over to you', latency_s: 14, measured_from: 'page' }],
+        handoffs: [
+          { at: '', title: 'Over to you', latency_s: 14, last_step_s: 3, measured_from: 'page' },
+        ],
       }),
     ]);
     expect(slow.find((bar) => bar.id === 'handoff')?.status).toBe('fail');
@@ -161,7 +163,9 @@ describe('scoring against the bars', () => {
     const quick = scoreBars([
       job({
         category: 'human_check',
-        handoffs: [{ at: '', title: 'Over to you', latency_s: 4, measured_from: 'page' }],
+        handoffs: [
+          { at: '', title: 'Over to you', latency_s: 4, last_step_s: 2, measured_from: 'page' },
+        ],
       }),
     ]);
     expect(quick.find((bar) => bar.id === 'handoff')?.status).toBe('pass');
@@ -285,7 +289,7 @@ describe('hand-off timing', () => {
         '2captcha.com',
         '2026-10-10T10:00:00.000Z',
       ),
-    ).toEqual({ latency_s: 6.5, measured_from: 'page' });
+    ).toEqual({ latency_s: 6.5, last_step_s: 11.5, measured_from: 'page' });
     expect(
       handOffLatency(
         { at: '2026-10-10T10:00:11.500Z' },
@@ -293,7 +297,7 @@ describe('hand-off timing', () => {
         'example.org',
         '2026-10-10T10:00:00.000Z',
       ),
-    ).toEqual({ latency_s: 11.5, measured_from: 'message' });
+    ).toEqual({ latency_s: 11.5, last_step_s: null, measured_from: 'message' });
   });
 
   test('a needs-you card or a take-over action is a hand-off', () => {

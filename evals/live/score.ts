@@ -157,12 +157,17 @@ export function renderReport(result: RunResult): string {
   lines.push('## Jobs');
   lines.push('');
   lines.push(
-    '| # | Task | Category | Outcome | Time | Steps | Approvals | Hand-off | Claims | Why |',
+    '| # | Task | Category | Outcome | Time | Steps | Approvals | Hand-off (from first reaching the page) | Claims | Why |',
   );
   lines.push('|---|---|---|---|---|---|---|---|---|---|');
   for (const job of result.jobs) {
     const handoff = job.handoffs.length
-      ? job.handoffs.map((handoff) => duration(handoff.latency_s)).join(', ')
+      ? job.handoffs
+          .map(
+            (handoff) =>
+              `${duration(handoff.latency_s)}${handoff.last_step_s === null ? '' : ` (${duration(handoff.last_step_s)} after the last step there)`}`,
+          )
+          .join(', ')
       : job.unshown_check
         ? 'not shown'
         : '—';

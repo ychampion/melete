@@ -70,6 +70,8 @@ export type HandOff = {
   /** Seconds from the first step that reached the checked page to the card, when it could be told. */
   latency_s: number | null;
   /** What the latency was measured from. */
+  /** Seconds from the start of the last step on that page (usually the one that saw the check) to the card. */
+  last_step_s: number | null;
   measured_from: 'page' | 'message';
 };
 

@@ -43,20 +43,37 @@ export function handOffLatency(
   tools: readonly ToolCall[],
   host: string | undefined,
   turnStart: string,
-): Pick<HandOff, 'latency_s' | 'measured_from'> {
+): Pick<HandOff, 'latency_s' | 'last_step_s' | 'measured_from'> {
   const needle = host?.toLowerCase();
+  // A page in front of the agent: its browser or its computer, not a plain fetch.
   const reached = needle
-    ? tools.find((tool) =>
-        stepText({ tools: [tool], receipts: [] })
-          .toLowerCase()
-          .includes(needle),
+    ? tools.filter(
+        (tool) =>
+          (tool.kind === 'browser' || tool.kind === 'sandbox') &&
+          Date.parse(tool.started_at) <= Date.parse(card.at) &&
+          stepText({ tools: [tool], receipts: [] })
+            .toLowerCase()
+            .includes(needle),
       )
-    : undefined;
-  if (reached) {
-    const at = reached.ended_at ?? reached.started_at;
-    return { latency_s: Math.max(0, seconds(at, card.at)), measured_from: 'page' };
+    : [];
+  const first = reached[0];
+  const last = reached.at(-1);
+  if (first && last) {
+    const at =
+      first.ended_at && Date.parse(first.ended_at) <= Date.parse(card.at)
+        ? first.ended_at
+        : first.started_at;
+    return {
+      latency_s: Math.max(0, seconds(at, card.at)),
+      last_step_s: Math.max(0, seconds(last.started_at, card.at)),
+      measured_from: 'page',
+    };
   }
-  return { latency_s: Math.max(0, seconds(turnStart, card.at)), measured_from: 'message' };
+  return {
+    latency_s: Math.max(0, seconds(turnStart, card.at)),
+    last_step_s: null,
+    measured_from: 'message',
+  };
 }
 
 export type JobOptions = {
