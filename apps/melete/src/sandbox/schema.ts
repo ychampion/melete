@@ -103,6 +103,51 @@ export const sandboxSession = pgTable(
   ],
 );
 
+/**
+ * The displays of a computer: each chat, and each background run, works on a
+ * screen of its own in the same container, with its own browser, while the
+ * files in `/work` and the person's sign-ins are the computer's. A display is
+ * keyed by the computer (`provider_sandbox_id`) and a number; display 0 is the
+ * screen the container starts with, and its control key is the computer's own
+ * id, as before displays. `owner_job_id` is the chat or run it belongs to, so
+ * every turn of a chat comes back to the same page; `attempt_id` is the
+ * attempt using it now, and empties when that attempt ends. A display is ended
+ * (`ended_at`) when its chat or run ends, when it has gone unused for a while,
+ * when the chat is stopped, or with its computer.
+ */
+export const sandboxDisplay = pgTable(
+  'sandbox_display',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id').notNull(),
+    adapter: text('adapter').notNull(),
+    providerSandboxId: text('provider_sandbox_id').notNull(),
+    display: integer('display').notNull(),
+    ownerJobId: text('owner_job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    attemptId: text('attempt_id').references(() => attempt.id, { onDelete: 'set null' }),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+    usedAt: timestamp('used_at', { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    endReason: text('end_reason'),
+  },
+  (t) => [
+    uniqueIndex('sandbox_display_number_idx')
+      .on(t.providerSandboxId, t.display)
+      .where(sql`${t.endedAt} is null`),
+    uniqueIndex('sandbox_display_owner_idx')
+      .on(t.providerSandboxId, t.ownerJobId)
+      .where(sql`${t.endedAt} is null`),
+    index('sandbox_display_attempt_idx').on(t.attemptId).where(sql`${t.endedAt} is null`),
+    check('sandbox_display_number_check', sql`${t.display} >= 0 and ${t.display} < 64`),
+  ],
+);
+
 export const sandboxCommand = pgTable('sandbox_command', {
   actionId: text('action_id')
     .primaryKey()

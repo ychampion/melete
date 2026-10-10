@@ -16,6 +16,9 @@
  * ends with one too, so the agent sees what its step did without asking again;
  * `computer.batch` runs a few steps in order and captures the screen once,
  * after the last.
+ *
+ * Each chat works on its own display of the computer (`sandbox/displays.ts`),
+ * so every step, every look and the control check address that display only.
  */
 import { createHash } from 'node:crypto';
 import type { Action, ConnectorManifest, JsonValue } from '@melete/contracts';
@@ -25,10 +28,12 @@ type ToolManifest = ConnectorManifest['tools'][number];
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import {
   type DesktopCommand,
+  type DesktopDisplay,
   DOCKER_DESKTOP,
   type DockerSandboxProvider,
 } from '../sandbox/adapters/docker.ts';
 import type { ComputerControls } from '../sandbox/computer-control.ts';
+import { displayKey } from '../sandbox/displays.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import { sessionHandle } from '../sandbox/sessions.ts';
 import { screenText } from './screen-text.ts';
@@ -331,14 +336,21 @@ const SETTLE_MS = 300;
  * Capture the screen, keep the PNG in the job workspace at a path named for
  * the action, and say where, how big and what it is.
  */
+type CaptureOptions = {
+  action: Action;
+  jobId: string;
+  workRoot: string;
+  display?: DesktopDisplay | null;
+};
+
 async function capture(
-  options: { action: Action; jobId: string; workRoot: string },
+  options: CaptureOptions,
   provider: DockerSandboxProvider,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
 ): Promise<Record<string, JsonValue>>;
 async function capture(
-  options: { action: Action; jobId: string; workRoot: string },
+  options: CaptureOptions,
   provider: DockerSandboxProvider,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
@@ -346,13 +358,18 @@ async function capture(
   takenOver: () => Promise<boolean>,
 ): Promise<Record<string, JsonValue> | null>;
 async function capture(
-  options: { action: Action; jobId: string; workRoot: string },
+  options: CaptureOptions,
   provider: DockerSandboxProvider,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
   takenOver?: () => Promise<boolean>,
 ): Promise<Record<string, JsonValue> | null> {
-  const answer = await provider.computer(handle, { kind: 'screenshot' }, signal);
+  const answer = await provider.computer(
+    handle,
+    { kind: 'screenshot' },
+    signal,
+    options.display ?? undefined,
+  );
   const size = pngSize(answer);
   if (!size) throw new Error('the desktop did not answer with an image');
   if (takenOver && (await takenOver())) return null;
@@ -374,9 +391,12 @@ async function readScreen(
   provider: DockerSandboxProvider,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
+  display?: DesktopDisplay | null,
 ): Promise<JsonValue> {
   try {
-    return screenText(await provider.computer(handle, { kind: 'text' }, signal));
+    return screenText(
+      await provider.computer(handle, { kind: 'text' }, signal, display ?? undefined),
+    );
   } catch (error) {
     return { unavailable: `the screen's text could not be read: ${said(error)}` };
   }
@@ -404,11 +424,12 @@ async function lookPastChallenge(
   signal: AbortSignal,
   waitMs: number,
   takenOver: () => Promise<boolean>,
+  display?: DesktopDisplay | null,
 ): Promise<JsonValue> {
   if (!challengeShown(screen) || waitMs <= 0) return screen;
   await Bun.sleep(waitMs);
   if (await takenOver()) return screen;
-  return readScreen(provider, handle, signal);
+  return readScreen(provider, handle, signal, display);
 }
 
 /**
@@ -431,11 +452,17 @@ export async function runComputerAction(options: {
   settleMs?: number;
   /** How long a bot check is given to pass by itself; `CHALLENGE_WAIT_MS` unless set. */
   challengeWaitMs?: number;
+  /** The chat's display of the computer; absent means display 0, as before displays. */
+  display?: DesktopDisplay | null;
 }): Promise<Record<string, JsonValue>> {
   const { action, session, provider, signal, controls } = options;
+  const display = options.display ?? null;
   const commands = desktopCommandsFor(action);
   const handle = sessionHandle(session);
-  const held = await controls.state(session.providerSandboxId);
+  // Who drives this display, not the computer: a person on another chat's
+  // display holds that one only.
+  const key = displayKey(session.providerSandboxId, display?.number ?? 0);
+  const held = await controls.state(key);
   if (held.control === 'human')
     throw new HumanControlRefusal(
       'a person has taken control of this computer; wait until they hand it back, then take a fresh screenshot',
@@ -447,29 +474,32 @@ export async function runComputerAction(options: {
     session_id: session.id,
     sandbox_id: session.providerSandboxId,
     control_epoch: held.epoch,
+    ...(display ? { display: display.number, computer_id: display.id } : {}),
   };
   if (first.kind === 'screenshot') {
     const picture = await capture(options, provider, handle, signal);
-    if ((await controls.state(session.providerSandboxId)).epoch !== held.epoch)
-      base.control_changed = true;
+    if ((await controls.state(key)).epoch !== held.epoch) base.control_changed = true;
     const info = infoOf(
-      await provider.computer(handle, { kind: 'info' }, signal).catch(() => new Uint8Array()),
+      await provider
+        .computer(handle, { kind: 'info' }, signal, display ?? undefined)
+        .catch(() => new Uint8Array()),
     );
     const moved = async () => {
-      const now = await controls.state(session.providerSandboxId);
+      const now = await controls.state(key);
       return now.control === 'human' || now.epoch !== held.epoch;
     };
     let screen = await lookPastChallenge(
-      await readScreen(provider, handle, signal),
+      await readScreen(provider, handle, signal, display),
       provider,
       handle,
       signal,
       options.challengeWaitMs ?? CHALLENGE_WAIT_MS,
       moved,
+      display,
     );
     // Read after the picture: what a person who took the computer meanwhile
     // has on the screen, what they type included, is never returned.
-    const after = await controls.state(session.providerSandboxId);
+    const after = await controls.state(key);
     if (after.control === 'human' || after.epoch !== held.epoch) {
       base.control_changed = true;
       screen = { unavailable: 'not read: a person took control of this computer' };
@@ -487,7 +517,7 @@ export async function runComputerAction(options: {
   for (const [index, command] of commands.entries()) {
     if (index > 0) {
       // A person who takes the computer between steps stops the rest.
-      const now = await controls.state(session.providerSandboxId);
+      const now = await controls.state(key);
       if (now.control === 'human' || now.epoch !== held.epoch) {
         stopped = `a person took control of this computer before step ${index + 1}; the rest did not run`;
         break;
@@ -495,7 +525,7 @@ export async function runComputerAction(options: {
     }
     let answer: Uint8Array;
     try {
-      answer = await provider.computer(handle, command, signal);
+      answer = await provider.computer(handle, command, signal, display ?? undefined);
     } catch (error) {
       // The first step failing is the action failing, as for a single step.
       if (index === 0) throw error;
@@ -514,8 +544,7 @@ export async function runComputerAction(options: {
     steps.push({ computer: command.kind, ...info });
   }
   // Checked again after the action: a takeover that landed while it ran is said so.
-  if ((await controls.state(session.providerSandboxId)).epoch !== held.epoch)
-    base.control_changed = true;
+  if ((await controls.state(key)).epoch !== held.epoch) base.control_changed = true;
   const done: Record<string, JsonValue> = batch
     ? {
         ...base,
@@ -537,7 +566,7 @@ export async function runComputerAction(options: {
   // captured, is never shown to the model: checked before the capture and
   // again before the picture is kept.
   const takenOver = async () => {
-    const now = await controls.state(session.providerSandboxId);
+    const now = await controls.state(key);
     return now.control === 'human' || now.epoch !== held.epoch;
   };
   if (await takenOver()) return notTaken;
@@ -545,12 +574,13 @@ export async function runComputerAction(options: {
     const picture = await capture(options, provider, handle, signal, takenOver);
     if (!picture) return notTaken;
     const screen = await lookPastChallenge(
-      await readScreen(provider, handle, signal),
+      await readScreen(provider, handle, signal, display),
       provider,
       handle,
       signal,
       options.challengeWaitMs ?? CHALLENGE_WAIT_MS,
       takenOver,
+      display,
     );
     // Read after the picture: a person who took the computer meanwhile is not shown either.
     if (await takenOver()) return notTaken;

@@ -12,8 +12,18 @@
     melete-desktop key KEY...            press keys, such as Return or ctrl+l
     melete-desktop scroll X Y STEPS      positive scrolls down, negative up
     melete-desktop input JSON            a person's live-view events, in order
+    melete-desktop stop                  end the display's browser, and the display itself
+                                         when it is not display 0
 
-Everything runs as the sandbox user against display :0. Nothing here reads a
+Before the command, `--display N --owner ID` picks a display of the computer
+and says whose it is. Each chat works on its own display, with its own
+browser: display 0 uses the computer's browser profile, and display N starts
+from a copy of it (`~/.config/melete-browser-dN`), since one profile cannot
+be open in two browsers at once. When a display's owner changes, whatever the
+one before left on it is ended first, so a chat never sees another's page.
+Without `--display`, everything is display 0, as before displays.
+
+Everything runs as the sandbox user against the chosen display. Nothing here reads a
 credential, and the only socket it opens is to the browser's DevTools endpoint
 on the loopback address inside this container; the browser reaches the
 internet only through the proxy the sandbox was given, when it was given one.
@@ -36,9 +46,21 @@ import time
 import urllib.parse
 
 DISPLAY = os.environ.get("DISPLAY", ":0")
+NUMBER = 0
 WIDTH, HEIGHT = 1024, 768
 BROWSER = shutil.which("chromium") or shutil.which("chromium-browser") or "chromium"
-PROFILE = os.path.join(os.environ.get("HOME", "/home/agent"), ".config", "melete-browser")
+BASE_PROFILE = os.path.join(os.environ.get("HOME", "/home/agent"), ".config", "melete-browser")
+PROFILE = BASE_PROFILE
+BROWSER_LOG = "/tmp/browser.log"
+#: The most displays a computer has; the service's cap is at most this.
+MAX_DISPLAY = 63
+#: What a display's copy of the profile leaves out: locks of a running
+#: browser, caches, and the tabs another chat had open.
+PROFILE_SKIP = (
+    "SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort",
+    "Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache", "Crashpad",
+    "Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs",
+)
 # Where a browser profile keeps saved passwords, cards and addresses.
 STORES = tuple(
     name + suffix
@@ -86,9 +108,125 @@ def grab():
     return ImageGrab.grab(xdisplay=DISPLAY)
 
 
+def profile_pattern(profile):
+    """The browser processes on one profile, as pgrep and pkill match their command lines."""
+    return "--user-data-dir=" + profile.replace(".", "\\.") + "( |$)"
+
+
 def browser_running():
     uid = str(os.getuid())
-    return subprocess.run(["pgrep", "-u", uid, "-x", "chromium"], capture_output=True).returncode == 0
+    found = subprocess.run(["pgrep", "-u", uid, "-f", "--", profile_pattern(PROFILE)], capture_output=True)
+    return found.returncode == 0
+
+
+def end_browser(profile):
+    """End the browser on one profile, and wait a moment for it to go."""
+    uid = str(os.getuid())
+    subprocess.run(["pkill", "-u", uid, "-f", "--", profile_pattern(profile)], capture_output=True)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        alive = subprocess.run(["pgrep", "-u", uid, "-f", "--", profile_pattern(profile)], capture_output=True)
+        if alive.returncode != 0:
+            return
+        time.sleep(0.1)
+    subprocess.run(["pkill", "-KILL", "-u", uid, "-f", "--", profile_pattern(profile)], capture_output=True)
+
+
+def display_file(name):
+    return f"/tmp/melete-display-{NUMBER}.{name}"
+
+
+def ensure_display():
+    """Start this display's screen and window manager when it is not display 0 and not running."""
+    if NUMBER == 0 or os.path.exists(f"/tmp/.X11-unix/X{NUMBER}"):
+        return
+    with open(f"/tmp/xvfb-{NUMBER}.log", "ab") as log:
+        screen = subprocess.Popen(
+            ["Xvfb", DISPLAY, "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-nolisten", "tcp",
+             "-nolisten", "local", "-noreset"],
+            stdout=log, stderr=log, start_new_session=True,
+        )
+    deadline = time.monotonic() + 10
+    while not os.path.exists(f"/tmp/.X11-unix/X{NUMBER}") and time.monotonic() < deadline:
+        time.sleep(0.1)
+    with open(f"/tmp/openbox-{NUMBER}.log", "ab") as log:
+        manager = subprocess.Popen(
+            ["openbox", "--sm-disable"], stdout=log, stderr=log, start_new_session=True,
+            env={**os.environ, "DISPLAY": DISPLAY},
+        )
+    with open(display_file("pids"), "w", encoding="ascii") as handle:
+        handle.write(f"{screen.pid} {manager.pid}\n")
+
+
+def end_display():
+    """End this display's browser, and its screen when it is not display 0."""
+    end_browser(PROFILE)
+    if NUMBER != 0:
+        try:
+            with open(display_file("pids"), encoding="ascii") as handle:
+                pids = [int(word) for word in handle.read().split()]
+        except (OSError, ValueError):
+            pids = []
+        for pid in reversed(pids):
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+        for path in (display_file("pids"), f"/tmp/.X11-unix/X{NUMBER}", f"/tmp/.X{NUMBER}-lock"):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        shutil.rmtree(PROFILE, ignore_errors=True)
+    try:
+        os.unlink(display_file("owner"))
+    except OSError:
+        pass
+
+
+def claim_display(owner):
+    """A display given to another chat starts clean: what the one before left is ended."""
+    if not owner:
+        return
+    try:
+        with open(display_file("owner"), encoding="ascii") as handle:
+            before = handle.read().strip()
+    except OSError:
+        before = None
+    if before == owner:
+        return
+    end_display()
+    with open(display_file("owner"), "w", encoding="ascii") as handle:
+        handle.write(owner + "\n")
+
+
+def copy_profile():
+    """A display other than 0 starts its browser from a copy of the computer's profile."""
+    if NUMBER == 0 or os.path.isdir(PROFILE):
+        return
+    if not os.path.isdir(BASE_PROFILE):
+        os.makedirs(PROFILE, exist_ok=True)
+        return
+    try:
+        shutil.copytree(
+            BASE_PROFILE, PROFILE, symlinks=True,
+            ignore=lambda _dir, names: [name for name in names if name in PROFILE_SKIP],
+        )
+    except shutil.Error:
+        # A file the running browser changed while it was copied is left out;
+        # the sign-ins that were copied still stand.
+        pass
+
+
+def choose(number, owner):
+    global DISPLAY, NUMBER, PROFILE, BROWSER_LOG
+    NUMBER = number
+    DISPLAY = f":{number}"
+    os.environ["DISPLAY"] = DISPLAY
+    if number:
+        PROFILE = f"{BASE_PROFILE}-d{number}"
+        BROWSER_LOG = f"/tmp/browser-{number}.log"
+    return owner
 
 
 def active_window():
@@ -146,7 +284,6 @@ def info():
 # What is printed is raw material: the service formats it, bounds it and marks
 # it as the page's words, never the person's.
 
-DEVTOOLS_PORT_FILE = os.path.join(PROFILE, "DevToolsActivePort")
 #: Elements looked at, in page order, before their boxes are asked for.
 MAX_CANDIDATES = 3000
 #: Elements printed, of those on screen.
@@ -291,7 +428,8 @@ class DevToolsSocket:
             pass
 
 
-def devtools_port(path=DEVTOOLS_PORT_FILE):
+def devtools_port(path=None):
+    path = path or os.path.join(PROFILE, "DevToolsActivePort")
     try:
         with open(path, encoding="ascii") as handle:
             port = int(handle.readline().strip())
@@ -867,6 +1005,7 @@ def open_url(url):
                 os.unlink(os.path.join(PROFILE, "Default", name))
             except FileNotFoundError:
                 pass
+        copy_profile()
         flags = [
             f"--user-data-dir={PROFILE}",
             # The container is the boundary: it already runs whatever the agent
@@ -896,7 +1035,7 @@ def open_url(url):
         if proxy:
             flags.append(f"--proxy-server={proxy}")
         os.makedirs(PROFILE, exist_ok=True)
-        with open("/tmp/browser.log", "ab") as log:
+        with open(BROWSER_LOG, "ab") as log:
             subprocess.Popen([BROWSER, *flags, url], stdout=log, stderr=log, start_new_session=True)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -1028,9 +1167,25 @@ def live_input(raw):
 
 
 def main(argv):
+    number, owner = 0, ""
+    while argv[:1] in (["--display"], ["--owner"]) and len(argv) >= 2:
+        if argv[0] == "--display":
+            number = int(argv[1]) if re.match(r"^[0-9]{1,2}$", argv[1]) else -1
+            if not 0 <= number <= MAX_DISPLAY:
+                fail(f"a display is a whole number from 0 to {MAX_DISPLAY}")
+        else:
+            if not re.match(r"^[A-Za-z0-9_]{1,64}$", argv[1]):
+                fail("a display's owner is named by its id")
+            owner = argv[1]
+        argv = argv[2:]
     if not argv:
         fail(__doc__.strip())
+    choose(number, owner)
     command, rest = argv[0], argv[1:]
+    if command == "stop" and not rest:
+        return end_display()
+    claim_display(owner)
+    ensure_display()
     wait_for_display()
     if command == "screenshot" and not rest:
         return screenshot()

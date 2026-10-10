@@ -100,6 +100,9 @@ export const DESKTOP_STREAM_MAX_SECONDS = 25 * 60;
  * is sent on to the stream.
  */
 const STREAM = 'exec -a "$1" timeout -s TERM "$2" melete-desktop stream --fps "$3"';
+/** The same on one display of the computer, named with the chat's display row. */
+const STREAM_ON =
+  'exec -a "$1" timeout -s TERM "$2" melete-desktop --display "$4" --owner "$5" stream --fps "$3"';
 /** Ends the frame stream that carries the tag, if it still runs. */
 const STREAM_END = 'pkill -TERM -f -- "^$1( |$)"; exit 0';
 /**
@@ -364,17 +367,32 @@ export type DesktopCommand =
   | { kind: 'scroll'; x: number; y: number; dy: number }
   | { kind: 'input'; events: readonly unknown[] };
 
+/**
+ * One display of the computer (`displays.ts`): its number, and the id of the
+ * chat's display row, which the desktop keeps so a number given to another
+ * chat starts clean. Absent means display 0 as it was before displays.
+ */
+export type DesktopDisplay = { number: number; id: string };
+
 /** The sandbox adapter, plus the desktop the computer tools and the live view use. */
 export interface DockerSandboxProvider extends SandboxProvider {
   readonly desktop: true;
-  /** Run one desktop command; a screenshot answers PNG bytes, everything else JSON. */
+  /** Run one desktop command on a display; a screenshot answers PNG bytes, everything else JSON. */
   computer(
     handle: SandboxHandle,
     command: DesktopCommand,
     signal: AbortSignal,
+    display?: DesktopDisplay,
   ): Promise<Uint8Array>;
-  /** JPEG frames of the whole desktop until the signal ends them. */
-  frames(handle: SandboxHandle, fps: number, signal: AbortSignal): AsyncIterable<Uint8Array>;
+  /** JPEG frames of one display until the signal ends them. */
+  frames(
+    handle: SandboxHandle,
+    fps: number,
+    signal: AbortSignal,
+    display?: DesktopDisplay,
+  ): AsyncIterable<Uint8Array>;
+  /** Stop one display's browser and screen, when the computer is running; never another's. */
+  endDisplay(handle: SandboxHandle, display: DesktopDisplay, signal: AbortSignal): Promise<void>;
   /** Whether the container is running now, without starting it. */
   running(handle: SandboxHandle, signal: AbortSignal): Promise<boolean>;
   /** Count as use, so the idle stop waits: a person watching is using it. */
@@ -383,6 +401,16 @@ export interface DockerSandboxProvider extends SandboxProvider {
 
 export const isDesktopProvider = (provider: SandboxProvider): provider is DockerSandboxProvider =>
   (provider as Partial<DockerSandboxProvider>).desktop === true;
+
+/** The words before a desktop command that pick its display, and say whose it is. */
+export function displayArgs(display: DesktopDisplay | undefined): string[] {
+  if (!display) return [];
+  if (!Number.isInteger(display.number) || display.number < 0 || display.number >= 64)
+    throw new SandboxAdapterRefusal('a display is a whole number from 0 to 63');
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(display.id))
+    throw new SandboxAdapterRefusal('a display is named by its own id');
+  return ['--display', String(display.number), '--owner', display.id];
+}
 
 function argvFor(command: DesktopCommand): string[] {
   const coordinate = (value: number, max: number) => {
@@ -1429,9 +1457,10 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     handle: SandboxHandle,
     command: DesktopCommand,
     signal: AbortSignal,
+    display?: DesktopDisplay,
   ): Promise<Uint8Array> {
     const name = DockerSandboxHost.checkName(handle);
-    const argv = ['melete-desktop', ...argvFor(command)];
+    const argv = ['melete-desktop', ...displayArgs(display), ...argvFor(command)];
     await this.ensureRunning(name);
     // A page's elements can take more room than any other answer but a picture.
     const max =
@@ -1460,8 +1489,10 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     handle: SandboxHandle,
     fps: number,
     signal: AbortSignal,
+    display?: DesktopDisplay,
   ): AsyncIterable<Uint8Array> {
     const name = DockerSandboxHost.checkName(handle);
+    const on = displayArgs(display);
     await this.ensureRunning(name);
     const queue: Uint8Array[] = [];
     const waiting: { wake: (() => void) | null } = { wake: null };
@@ -1494,11 +1525,12 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       [
         'bash',
         '-c',
-        STREAM,
+        on.length ? STREAM_ON : STREAM,
         'melete',
         tag,
         String(DESKTOP_STREAM_MAX_SECONDS),
         String(Math.max(1, Math.min(10, Math.round(fps)))),
+        ...(on.length ? [on[1] as string, on[3] as string] : []),
       ],
       { signal, maxStdout: 0, maxStderr: 2048, onStdout },
     )
@@ -1541,6 +1573,28 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       await Promise.race([running, delay(1000)]);
     }
     if (failure) throw failure;
+  }
+
+  async endDisplay(
+    handle: SandboxHandle,
+    display: DesktopDisplay,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const name = DockerSandboxHost.checkName(handle);
+    const argv = ['melete-desktop', ...displayArgs(display), 'stop'];
+    // A stopped computer runs no display; starting it to stop one would be waste.
+    const state = await this.inspectContainer(name);
+    if (!state?.State?.Running || state.State.Paused) return;
+    const result = await this.execute(name, argv, {
+      signal,
+      maxStdout: 4096,
+      maxStderr: 4096,
+      deadlineMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw new SandboxAdapterRefusal(
+        `display ${display.number} could not be stopped (exit ${result.exitCode})`,
+      );
   }
 
   // ---- idle stop and lifetime ----------------------------------------------
