@@ -687,16 +687,17 @@ function applySteer(
   turnId: string | null,
   item: { id: string; text?: string; state: 'queued' | 'delivered' | 'carried' },
 ): Transcript {
-  if (item.state === 'carried')
+  const state = item.state;
+  if (state === 'carried')
     return mapSteers(transcript, (entry) => (entry.id === item.id ? null : entry));
   if (transcript.turns.some((turn) => holdsSteer(turn, item.id)))
     return mapSteers(transcript, (entry) =>
-      entry.id === item.id && entry.state !== 'delivered' ? { ...entry, state: item.state } : entry,
+      entry.id === item.id && entry.state !== 'delivered' ? { ...entry, state } : entry,
     );
   // Read from history, or sent from another tab: drawn where it was said.
   return patchTurn(transcript, turnId, (turn) => ({
     ...turn,
-    flow: [...turn.flow, { type: 'steer', id: item.id, text: item.text ?? '', state: item.state }],
+    flow: [...turn.flow, { type: 'steer', id: item.id, text: item.text ?? '', state }],
   }));
 }
 

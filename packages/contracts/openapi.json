@@ -31184,7 +31184,9 @@
             "gap",
             "hook_event",
             "hook_error",
-            "stalled"
+            "stalled",
+            "steer_delivered",
+            "steer_carried"
           ]
         }
       },
@@ -42881,7 +42883,9 @@
           "gap",
           "hook_event",
           "hook_error",
-          "stalled"
+          "stalled",
+          "steer_delivered",
+          "steer_carried"
         ]
       },
       "__schema521": {
