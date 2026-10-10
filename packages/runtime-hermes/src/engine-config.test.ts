@@ -90,7 +90,8 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     enabled: true,
     in_place: true,
     abort_on_summary_failure: false,
-    threshold_tokens: 200_000,
+    // The default model reads images, so room for its pictures comes off the body first.
+    threshold_tokens: 131_072,
   });
   expect(config.auxiliary).toEqual({
     title_generation: { enabled: false },
@@ -101,7 +102,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: 'melete-gateway',
     default: base.model,
     context_length: 1_000_000,
-    supports_vision: false,
+    supports_vision: true,
   });
 });
 
@@ -157,6 +158,13 @@ test('the numbers handed to a container are the numbers the renderer computed', 
   expect(engineConfigEnvironment(base)).toEqual({
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '1000000',
+    MELETE_ENGINE_COMPACTION_THRESHOLD: '131072',
+    MELETE_ENGINE_SUPPORTS_VISION: '1',
+  });
+  // Read as text, the same window leaves the owner's cap on the trigger to decide.
+  expect(engineConfigEnvironment({ ...base, vision: false })).toEqual({
+    MELETE_ENGINE_MAX_TURNS: '150',
+    MELETE_ENGINE_CONTEXT_LENGTH: '1000000',
     MELETE_ENGINE_COMPACTION_THRESHOLD: '200000',
     MELETE_ENGINE_SUPPORTS_VISION: '0',
   });
@@ -190,9 +198,10 @@ test('a model that reads images is told so, and compacts with room left for its 
   expect(renderEngineConfig({ ...vision, vision: false }).model).toMatchObject({
     supports_vision: false,
   });
-  expect(engineConfigEnvironment({ ...base, vision: true }).MELETE_ENGINE_SUPPORTS_VISION).toBe(
-    '1',
-  );
+  expect(
+    engineConfigEnvironment({ ...base, model: 'a-model-nobody-listed', vision: true })
+      .MELETE_ENGINE_SUPPORTS_VISION,
+  ).toBe('1');
 });
 
 test('a window an operator states decides for a model the catalog cannot', () => {
