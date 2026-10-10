@@ -252,9 +252,9 @@ test('mock task, plan, profile and saved-detail changes conform to the experienc
     (await call(mock, '/tasks', 'POST', { title: 'No', due_at: null, space_id: 'foreign' }))
       .response.status,
   ).toBe(400);
-  expect(C.notAvailable.parse((await call(mock, '/browser/sessions/absent')).body).status).toBe(
-    'not_available',
-  );
+  expect(
+    C.notAvailable.parse((await call(mock, `/plans/${plan.id}/share`, 'POST')).body).status,
+  ).toBe('not_available');
   const cors = await mock.app.request('/conversations', {
     method: 'OPTIONS',
     headers: {

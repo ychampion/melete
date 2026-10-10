@@ -8,10 +8,16 @@
 import { useState } from 'react';
 import { ownSpaceId } from '../companies/api.ts';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Badge, type BadgeTone, Button } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
-import type { LearnedChange, LearnedItem, LearnedList } from '../experience/types.ts';
+import type {
+  LearnedChange,
+  LearnedItem,
+  LearnedList,
+  SkillProhibition,
+} from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { OwnSkills } from './OwnSkills.tsx';
 
@@ -253,6 +259,8 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
     return result;
   }, []);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Counts each stop, so the stopped list reads again. */
+  const [stopped, setStopped] = useState(0);
   const loaded = learned.data;
   const items = loaded?.list.items ?? [];
   const last = loaded?.list.last_change ?? null;
@@ -326,7 +334,12 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
       } else if (action === 'stop') {
         const r = await adapter.stopSkill(item.id, loaded.space, STOP_REASON);
         if (r.data === null) return failed(r, 'Couldn’t stop it');
-        toast({ kind: 'ok', title: `Melete won’t do “${item.name}”` });
+        toast({
+          kind: 'ok',
+          title: `Melete won’t do “${item.name}”`,
+          sub: 'You can allow it again under Stopped skills.',
+        });
+        setStopped((n) => n + 1);
       }
       learned.reload();
       return true;
@@ -392,7 +405,80 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
           ) : null}
         </div>
       ) : null}
+      {loaded ? <StoppedSkills key={stopped} space={loaded.space} /> : null}
       <OwnSkills />
     </div>
+  );
+}
+
+/**
+ * The skills the person told Melete not to do, which it won't write again in
+ * any space until they allow it. Allowing one lets Melete write it again when
+ * it is useful; the copy that was stopped stays stopped.
+ */
+export function StoppedSkills({ space }: { space: string }) {
+  const listed = useLoad(() => adapter.skillProhibitions(space), [space]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const items = listed.data?.prohibitions ?? [];
+  if (listed.error)
+    return <LoadError what="the skills you stopped" error={listed.error} onRetry={listed.reload} />;
+  if (!items.length) return null;
+  const allow = async (item: SkillProhibition) => {
+    setBusy(item.id);
+    const result = await adapter.liftProhibition(item.id, space);
+    setBusy(null);
+    if (result.data === null) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t allow it' });
+      return;
+    }
+    listed.set({ prohibitions: items.filter((entry) => entry.id !== item.id) });
+    toast({
+      kind: 'ok',
+      title: `Melete may write “${item.name}” again`,
+      sub: 'It asks for your OK before using it.',
+    });
+  };
+  return (
+    <section className="col" style={{ gap: 8 }} aria-label="Stopped skills">
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)', margin: 0 }}>
+        Stopped skills
+      </h3>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
+        You told Melete not to do these. It won’t write them again until you allow it.
+      </p>
+      <div className="card-12" style={{ overflow: 'hidden' }}>
+        {items.map((item, index) => (
+          <div
+            key={item.id}
+            className="row"
+            style={{
+              gap: 12,
+              padding: '12px 14px',
+              borderTop: index ? '1px solid var(--line)' : undefined,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--heading)' }}>
+                {item.name}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Stopped {dateOf(item.created_at)}
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              loading={busy === item.id}
+              disabled={busy !== null}
+              aria-label={`Allow again: ${item.name}`}
+              onClick={() => void allow(item)}
+            >
+              Allow again
+            </Button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

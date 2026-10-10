@@ -36,7 +36,7 @@ import type {
   BeliefImport,
   BeliefImportResult,
   BrowserControl,
-  BrowserSession,
+  BrowserSite,
   CatalogEntry,
   ConnectedAssistant,
   ConnectionChecked,
@@ -81,6 +81,8 @@ import type {
   OwnSkillEdit,
   Permission,
   PermissionOutcome,
+  PersonFile,
+  PersonFileDeleted,
   Plan,
   PlanCreate,
   PrivacyPreview,
@@ -115,6 +117,7 @@ import type {
   SearchResult,
   SendOutcome,
   SensitiveTopic,
+  SkillProhibition,
   SpaceMembers,
   StreamGap,
   Task,
@@ -133,7 +136,7 @@ type SignedInOwner = { id: string; email: string; created_at: string };
 
 export type Result<T> =
   | { data: T; error: null; unavailable: null }
-  | { data: null; error: string; unavailable: null; unauthorized?: boolean }
+  | { data: null; error: string; unavailable: null; unauthorized?: boolean; code?: string }
   | { data: null; error: null; unavailable: string };
 
 /**
@@ -165,11 +168,15 @@ const artifactUrl = (id: string): string =>
 
 /**
  * Where a card's file is read: an artifact from its own route, a file a files
- * action saved (`act_…`) from that action's. `inline` asks for it to be shown
- * in place, which the service allows only for a PDF, a picture or text.
+ * action saved (`act_…`) from that action's, and a file sent in chat
+ * (`file_…`) from the attachments route, which decides on its own how it is
+ * sent. `inline` asks for it to be shown in place, which the service allows
+ * only for a PDF, a picture or text.
  */
 const fileUrl = (handle: string, inline = false): string =>
-  `${client.options.baseUrl}/${handle.startsWith('act_') ? 'files' : 'artifacts'}/${encodeURIComponent(handle)}/content${inline ? '?disposition=inline' : ''}`;
+  handle.startsWith('file_')
+    ? `${client.options.baseUrl}/attachments/${encodeURIComponent(handle)}/content`
+    : `${client.options.baseUrl}/${handle.startsWith('act_') ? 'files' : 'artifacts'}/${encodeURIComponent(handle)}/content${inline ? '?disposition=inline' : ''}`;
 
 /** Pictures the app shows in place, by the type the service sent. Never an SVG. */
 const PICTURES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -190,11 +197,13 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
       return { data: null, error: null, unavailable: outcome.data.reason };
     return { data: outcome.data as T, error: null, unavailable: null };
   }
+  const code = (outcome.error as { error?: { code?: unknown } } | undefined)?.error?.code;
   return {
     data: null,
     error: plainError(errorMessage(outcome.error, OFFLINE)),
     unavailable: null,
     unauthorized: outcome.response?.status === 401,
+    ...(typeof code === 'string' ? { code } : {}),
   };
 }
 
@@ -540,6 +549,31 @@ export const adapter = {
     guard<{ skill: EngineSkill }>(() =>
       api.POST('/engine-skills/{id}/stop', { ...path(id), body: { space_id: spaceId, reason } }),
     ),
+  /** The standing "don't do this" the person placed on skills Melete wrote. */
+  skillProhibitions: (spaceId: string) =>
+    guard<{ prohibitions: SkillProhibition[] }>(() =>
+      api.GET('/engine-skills/prohibitions', { params: { query: { space_id: spaceId } } }),
+    ),
+  /** Lets Melete write that skill again; the stopped copy stays stopped. */
+  liftProhibition: (id: string, spaceId: string) =>
+    guard<{ prohibition: SkillProhibition }>(() =>
+      api.POST('/engine-skills/prohibitions/{id}/lift', {
+        ...path(id),
+        body: { space_id: spaceId },
+      }),
+    ),
+  /** Whether Melete learns from the person's chats. */
+  memorySettings: () => guard<{ capture: boolean }>(() => api.GET('/memory/settings')),
+  saveMemorySettings: (capture: boolean) =>
+    guard<{ capture: boolean }>(() => api.PUT('/memory/settings', { body: { capture } })),
+  /* ---------- the person's files ---------- */
+  files: () => guard<{ files: PersonFile[] }>(() => api.GET('/files')),
+  /** Into the trash; `trash_id` puts it back until `restorable_until`. */
+  deleteFile: (id: string) => guard<PersonFileDeleted>(() => api.DELETE('/files/{id}', path(id))),
+  restoreFile: (id: string, trashId: string) =>
+    guard<{ id: string; restored: true }>(() =>
+      api.POST('/files/{id}/restore', { ...path(id), body: { trash_id: trashId } }),
+    ),
   /** The person's own skills, each read whole. */
   ownSkills: (spaceId: string) =>
     guard<{ skills: OwnSkill[] }>(() =>
@@ -659,7 +693,6 @@ export const adapter = {
   /** The space's owner removes someone from a shared space. */
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
-  sharePlan: (id: string) => guard<never>(() => api.POST('/plans/{id}/share', path(id))),
 
   /* ---------- long work in the background ---------- */
   runs: (conversationId?: string) =>
@@ -817,11 +850,15 @@ export const adapter = {
       }),
     );
   },
-  browserSession: (id: string) =>
-    guard<{ session: BrowserSession }>(() => api.GET('/browser/sessions/{id}', path(id))),
-  browserControl: (id: string, control: 'take_control' | 'resume' | 'stop') =>
-    guard<{ session: BrowserSession }>(() =>
-      api.POST('/browser/sessions/{id}/control', { ...path(id), body: { control } }),
+  /**
+   * The sites the agent's browser is signed in to. Served only where the
+   * service has a browser, so it also says whether there is one.
+   */
+  browserSites: () => guard<{ sites: BrowserSite[] }>(() => api.GET('/browser/sites')),
+  /** Signs the agent's browser out of one site: its cookies and storage go. */
+  forgetBrowserSite: (domain: string) =>
+    guard<{ domain: string; forgotten: true }>(() =>
+      api.DELETE('/browser/sites/{domain}', { params: { path: { domain } } }),
     ),
   /* ---------- the agent's computer ---------- */
   computer: (id: string) =>

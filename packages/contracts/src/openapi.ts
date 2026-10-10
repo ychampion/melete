@@ -40,6 +40,12 @@ import {
   triggerResponse,
 } from './api.ts';
 import { appsPaths } from './apps-openapi.ts';
+import {
+  personFileDeleted,
+  personFileList,
+  personFileRestore,
+  personFileRestored,
+} from './artifacts.ts';
 import { attachmentContentQuery, attachmentLimits, attachmentResponse } from './attachments.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
@@ -3240,6 +3246,52 @@ export function buildOpenApiDocument() {
               '401': problem('A session is required'),
               '404': problem('No matching artifact in this space'),
               '416': { description: 'Requested range is outside the artifact' },
+            },
+          },
+        },
+        '/files': {
+          get: {
+            tags: ['artifacts'],
+            summary: 'List the person’s files',
+            description:
+              'Every file Melete holds for the person in the authenticated space, newest first: what was saved into their Files, what their own conversations made, and what they sent in chat. Each is listed once, at its newest record, and only while it is still there. Pages and screenshots the agent’s browser kept as it worked are left out. Each `id` reads the file from `/artifacts/{id}/content` (`art_…`), `/files/{id}/content` (`act_…`) or `/attachments/{id}/content` (`file_…`).',
+            security: [{ session: [] }],
+            responses: {
+              '200': jsonResponse('The person’s files', personFileList),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+        '/files/{id}': {
+          delete: {
+            tags: ['artifacts'],
+            summary: 'Delete one of the person’s files into the trash',
+            description:
+              'Moves the file into the trash, where it can be restored until `restorable_until`. Only a file from the person’s own list; a file sent in chat goes with its chat.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The file’s id from the list'),
+            responses: {
+              '200': jsonResponse('In the trash', personFileDeleted),
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person'),
+              '409': problem('The file could not be moved to the trash'),
+            },
+          },
+        },
+        '/files/{id}/restore': {
+          post: {
+            tags: ['artifacts'],
+            summary: 'Put a deleted file back',
+            description:
+              'Restores what a delete of this file put in the trash, to the place it was, never over a file that has taken its name since.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The file’s id from the list'),
+            requestBody: json(personFileRestore),
+            responses: {
+              '200': jsonResponse('Restored', personFileRestored),
+              '401': problem('A session is required'),
+              '404': problem('No such file, or nothing in the trash for it'),
+              '409': problem('The file could not be put back'),
             },
           },
         },

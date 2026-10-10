@@ -207,6 +207,8 @@ export type ConversationState = {
   live: boolean;
   error: string | null;
   loading: boolean;
+  /** Read the conversation again, after it could not be read. */
+  reload: () => void;
   /** Draw the message before the service confirms it; settle it when it answers. */
   local: (
     text: string,
@@ -234,7 +236,10 @@ export function useConversation(id: string | null): ConversationState {
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(id));
+  /** Counts each "try again", so the whole conversation is read again. */
+  const [attempt, setAttempt] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt is the reason to read again
   useEffect(() => {
     if (!id) {
       setConversation(null);
@@ -266,9 +271,15 @@ export function useConversation(id: string | null): ConversationState {
         setLoading(false);
         return;
       }
+      // Messages that could not be read are not an empty chat: say so, and offer to read again.
+      if (turns.data === null) {
+        setError(turns.error ?? turns.unavailable ?? 'Couldn’t read the messages.');
+        setLoading(false);
+        return;
+      }
       setConversation(head.data.conversation);
       let initial = fromTurns(
-        turns.data?.turns ?? [],
+        turns.data.turns,
         head.data.conversation.composer,
         head.data.conversation.status,
       );
@@ -387,7 +398,8 @@ export function useConversation(id: string | null): ConversationState {
       controller.abort();
       setLive(false);
     };
-  }, [id]);
+  }, [id, attempt]);
+  const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
   const setTranscript = useCallback(
     (update: (previous: Transcript) => Transcript) => setTranscriptState(update),
@@ -434,6 +446,7 @@ export function useConversation(id: string | null): ConversationState {
     live,
     error,
     loading,
+    reload,
     local,
     accepted,
     settle,

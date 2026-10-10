@@ -9,6 +9,7 @@ import { suggestedConnections } from '@melete/contracts/agent-library';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { MeleteAvatar, MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
@@ -1030,11 +1031,13 @@ export function OnboardingScreen() {
   const connections = useLoad(() => adapter.connections(), []);
   const model = useLoad(() => models.settings(), []);
   // Asked once, before the tour, when the owner has no model that can answer.
-  const [modelStep, setModelStep] = useState<'unknown' | 'ask' | 'done'>('unknown');
+  // Settings that could not be read are not a model that answers: the step says so, with a retry.
+  const [modelStep, setModelStep] = useState<'unknown' | 'ask' | 'failed' | 'done'>('unknown');
   useEffect(() => {
-    if (modelStep !== 'unknown' || model.loading) return;
-    setModelStep(model.data?.can_edit && !model.data.active.connected ? 'ask' : 'done');
-  }, [modelStep, model.loading, model.data]);
+    if ((modelStep !== 'unknown' && modelStep !== 'failed') || model.loading) return;
+    if (!model.data && model.error) setModelStep('failed');
+    else setModelStep(model.data?.can_edit && !model.data.active.connected ? 'ask' : 'done');
+  }, [modelStep, model.loading, model.data, model.error]);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
@@ -1267,7 +1270,24 @@ export function OnboardingScreen() {
   );
 
   let card: ReactNode;
-  if (modelStep === 'ask' && model.data) {
+  if (modelStep === 'failed' && model.error) {
+    card = (
+      <Card
+        title="Connect a model"
+        sub="Melete needs a model to answer with. It couldn’t check yours just now."
+        footer={
+          <>
+            <div className="grow" />
+            <Button variant="ghost" onClick={() => setModelStep('done')}>
+              Skip for now
+            </Button>
+          </>
+        }
+      >
+        <LoadError what="your model settings" error={model.error} onRetry={model.reload} />
+      </Card>
+    );
+  } else if (modelStep === 'ask' && model.data) {
     const connected = model.data.active.connected;
     card = (
       <Card

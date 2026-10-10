@@ -330,19 +330,6 @@ function PlanSheet({
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <Badge tone={CATEGORY[category].tone}>{plan.category}</Badge>
           <div className="row" style={{ gap: 2 }}>
-            <IconButton
-              name="share"
-              label="Share plan"
-              onClick={() =>
-                void adapter.sharePlan(plan.id).then((r) => {
-                  toast({
-                    kind: 'info',
-                    title: 'Sharing is not available yet',
-                    sub: r.unavailable ?? r.error ?? '',
-                  });
-                })
-              }
-            />
             <IconButton name="trash" label="Delete plan" onClick={() => setDeleting(true)} />
             <IconButton name="x" label="Close" onClick={onClose} />
           </div>

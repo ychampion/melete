@@ -12,6 +12,10 @@
   font-weight: 500;
   color: var(--heading);
 }
+.belief-learning {
+  gap: 16px;
+  padding: 14px 16px;
+}
 .belief-intro {
   font-size: 13px;
   line-height: 19px;

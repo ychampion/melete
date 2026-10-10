@@ -11,6 +11,7 @@ import { mentionedAgent } from '@melete/contracts/mention';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import {
   Button,
   Dialog,
@@ -91,6 +92,9 @@ import { AgentLine, EarlierMessages, LogEntries, WorkLog } from './WorkLog.tsx';
 import type { WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
+
+/** What the service says when a message takes no reaction at all, as opposed to a failed try. */
+export const UNREACTABLE: ReadonlySet<string> = new Set(['not_reactable', 'not_found']);
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
 const QUICK_EDITS = ['Make it firmer', 'Shorter'] as const;
@@ -713,7 +717,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     void adapter.react(messageSeq, emoji).then((result) => {
       if (result.data === null) {
         // Not a message the service lets anyone react to: the control goes away.
-        setUnreactable((previous) => new Set(previous).add(turn.id));
+        if (result.error !== null && UNREACTABLE.has(result.code ?? ''))
+          setUnreactable((previous) => new Set(previous).add(turn.id));
+        // Anything else, a dropped connection among them, may work on a second try.
+        else
+          toast({
+            kind: 'err',
+            title: 'Couldn’t add that reaction',
+            sub: result.error ?? result.unavailable ?? '',
+          });
         return;
       }
       const reaction = result.data.reaction;
@@ -961,11 +973,15 @@ export function ChatScreen({ id }: { id: string | null }) {
   );
 
   const setConversationAgent = (next: string) => {
+    const before = agentId;
     setAgentId(next);
     if (conversationId)
       void adapter.setAgent(conversationId, next).then((result) => {
-        if (result.data === null)
+        if (result.data === null) {
+          // The chat stays with the agent it had, and the picker says so.
+          setAgentId((current) => (current === next ? before : current));
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t switch' });
+        }
         refreshConversations();
       });
   };
@@ -1157,10 +1173,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
             <div className="chat-messages">
               {state.error ? (
-                <div className="marker">
-                  <Icon name="alert" size={14} />
-                  {state.error}
-                </div>
+                <LoadError what="this chat" error={state.error} onRetry={state.reload} />
               ) : null}
               {transcript.turns.length > 0 ? (
                 <div className="day-divider">
@@ -1168,7 +1181,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                 </div>
               ) : null}
               {welcome ? <WelcomeThread welcome={welcome} onTry={changeDraft} /> : null}
-              {transcript.turns.length === 0 && !state.loading && !welcome ? (
+              {transcript.turns.length === 0 && !state.loading && !state.error && !welcome ? (
                 <div
                   className="col"
                   style={{

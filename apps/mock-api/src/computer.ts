@@ -187,6 +187,27 @@ export class ComputerMock {
 
   mount(app: Hono): void {
     this.processes.mount(app);
+    // The sites the browser stays signed in to, served only where there is a browser.
+    if (this.enabled) {
+      const sites = new Map(
+        [
+          { domain: 'github.com', label: 'GitHub', last_used: this.now() },
+          { domain: 'united.com', label: 'United Airlines', last_used: this.now() },
+        ].map((site) => [site.domain, site]),
+      );
+      app.get('/browser/sites', (c) =>
+        c.json(C.browserSiteList.parse({ sites: [...sites.values()] })),
+      );
+      app.delete('/browser/sites/:domain', (c) => {
+        const domain = c.req.param('domain');
+        if (!sites.delete(domain))
+          return c.json(
+            { error: { code: 'invalid_domain', message: 'Not a signed-in site.' } },
+            400,
+          );
+        return c.json(C.browserSiteForgotten.parse({ domain, forgotten: true }));
+      });
+    }
     const refuse = (c: Context, status: 404 | 409 | 410, code: string) =>
       c.json({ error: { code, message: `The browser could not change: ${code}.` } }, status);
     const session = (c: Context) => this.sessions.get(c.req.param('id') ?? '');
