@@ -316,6 +316,57 @@ const MINUTE = 60_000;
     expect(await intents(who)).toHaveLength(0);
   });
 
+  test('a pass clears pushes that went out, were dropped or never went, once old', async () => {
+    const who = await person();
+    const { jobId } = await conversation(who, { state: 'running', status: 'running' });
+    const now = new Date();
+    const old = new Date(now.getTime() - 8 * 86_400_000);
+    const recent = new Date(now.getTime() - 2 * 86_400_000);
+    const openQuestion = newId('qst');
+    await db.insert(question).values({
+      id: openQuestion,
+      jobId,
+      text: 'Which day suits you?',
+      because: ['Your answer decides the next step.'],
+      ifIgnored: 'It waits for your answer.',
+    });
+    const intent = (
+      key: string,
+      at: Date,
+      shape: { sent?: boolean; dropped?: boolean; kind?: string },
+    ) =>
+      db.insert(pushIntent).values({
+        id: newId('pint'),
+        principalId: who.principalId,
+        kind: shape.kind ?? 'done',
+        title: 'Book the dentist',
+        body: 'Done.',
+        because: 'Because it finished while you were away.',
+        url: `/#/chat/${jobId}`,
+        dedupKey: key,
+        createdAt: at,
+        ...(shape.sent ? { sentAt: at, batchId: newId('pbat') } : {}),
+        ...(shape.dropped ? { droppedAt: at } : {}),
+      });
+    const tag = who.principalId;
+    await intent(`sweep:${tag}:sent-old`, old, { sent: true });
+    await intent(`sweep:${tag}:dropped-old`, old, { dropped: true });
+    await intent(`sweep:${tag}:waiting-old`, old, {});
+    await intent(`sweep:${tag}:sent-recent`, recent, { sent: true });
+    // Still open: its row is what keeps it from being told again.
+    await intent(`decision:question:${openQuestion}`, old, { sent: true, kind: 'decision' });
+
+    await new PushService(db, { keys: null, subject: null, extraOrigins: [] }).runOnce(now);
+
+    const left = await db
+      .select({ key: pushIntent.dedupKey })
+      .from(pushIntent)
+      .where(eq(pushIntent.principalId, who.principalId));
+    expect(left.map((row) => row.key).sort()).toEqual(
+      [`decision:question:${openQuestion}`, `sweep:${tag}:sent-recent`].sort(),
+    );
+  });
+
   test('a preview is plain words, clipped for a lock screen', () => {
     expect(answerPreview('# Plan\n\n- **one**\n- `two`\n```\ncode\n```')).toBe('Plan - one - two');
     expect(answerPreview('x'.repeat(500))).toHaveLength(200);

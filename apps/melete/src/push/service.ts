@@ -119,6 +119,14 @@ export const STATUS_LOOKBACK_MS = 60 * 60_000;
 export const STATUS_THROTTLE_MINUTES = 10;
 /** A client focused this close to an answer, or after it, means the person saw it. */
 export const FOCUS_GRACE_MINUTES = 2;
+/**
+ * How long a push that went out, was dropped or never went is kept. Longer than
+ * every window that reads them back: the lookback, the throttle, a day's count,
+ * a run's spacing and the weekly summary's day.
+ */
+export const INTENT_KEEP_MS = 7 * 86_400_000;
+/** The clearing of old pushes rides on the dispatch pass at most this often. */
+export const INTENT_SWEEP_EVERY_MS = 60 * 60_000;
 
 /** The answer's first words, as plain text, for a lock screen. */
 export function answerPreview(answer: string): string {
@@ -208,6 +216,9 @@ function pageOf(alias: ReturnType<typeof sql>) {
 }
 
 export class PushService {
+  /** When old pushes were last cleared; the first pass of a process clears them. */
+  private sweptAt = 0;
+
   constructor(
     readonly db: Database,
     readonly config: PushConfig,
@@ -771,9 +782,42 @@ export class PushService {
     return `mailto:${row?.email ?? 'owner@localhost'}`;
   }
 
+  /**
+   * Clears pushes that went out, were dropped, or never went, once they are
+   * older than the keeping period. A decision still open, or a situation still
+   * open, keeps its row: that row is what says it was already told, and without
+   * it the same news would be told again.
+   */
+  async sweep(now: Date = new Date()): Promise<number> {
+    const before = new Date(now.getTime() - INTENT_KEEP_MS).toISOString();
+    const gone = (await this.db.execute(sql`delete from push_intent p
+      where coalesce(p.sent_at, p.dropped_at, p.created_at) < ${before}::timestamptz
+        and not (p.kind = 'decision' and split_part(p.dedup_key, ':', 2) = 'approval'
+          and exists (select 1 from approval a where a.id = split_part(p.dedup_key, ':', 3)
+            and a.decided_at is null and (a.expires_at is null or a.expires_at > now())))
+        and not (p.kind = 'decision' and split_part(p.dedup_key, ':', 2) = 'question'
+          and exists (select 1 from question q where q.id = split_part(p.dedup_key, ':', 3)
+            and q.state = 'open'))
+        and not (p.situation_id is not null and exists (select 1 from situation x
+          where x.id = p.situation_id and x.state in ('open', 'routed')))
+      returning p.id`)) as unknown as Array<{ id: string }>;
+    return gone.length;
+  }
+
   /** One pass for everyone with a device. One person's failure is theirs alone. */
   async runOnce(now: Date = new Date()): Promise<Record<string, string>> {
     const results: Record<string, string> = {};
+    // Rides on this pass rather than a timer of its own, at most once an hour.
+    if (now.getTime() - this.sweptAt >= INTENT_SWEEP_EVERY_MS) {
+      this.sweptAt = now.getTime();
+      try {
+        await this.sweep(now);
+      } catch (error) {
+        process.stderr.write(
+          `push: sweep_failed ${error instanceof Error ? error.name : 'error'}\n`,
+        );
+      }
+    }
     for (const { principalId, since } of await this.subscribers()) {
       try {
         await this.collectDecisions(principalId, since);
