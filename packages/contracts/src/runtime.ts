@@ -49,6 +49,13 @@ export const toolSpec = z.object({
   input_schema: jsonSchema,
   effect_class: effectClass,
   connection_id: prefixedId(ID_PREFIXES.connection).nullable(),
+  /**
+   * How long the broker may take to carry out one call of this tool, when its
+   * connector asks for longer than the broker's default. The runtime waits
+   * this long for the answer, plus a little, so the broker's own recorded
+   * outcome is what the agent is told.
+   */
+  deadline_ms: z.number().int().positive().optional(),
   /** `in_cell` tells the runtime to do the work itself and propose the record. */
   execution: executionMode.optional(),
   /** The shape of that record, for an `in_cell` tool. Null otherwise. */
@@ -470,6 +477,11 @@ export const RUNTIME_EVENT_TYPES = [
   'gap',
   'hook_event',
   'hook_error',
+  /**
+   * The engine went quiet for longer than the step it was on may take. The
+   * runtime has asked it, without the person seeing, to report what it has.
+   */
+  'stalled',
 ] as const;
 export const runtimeEventType = z.enum(RUNTIME_EVENT_TYPES);
 export type RuntimeEventType = z.infer<typeof runtimeEventType>;
@@ -525,6 +537,14 @@ export const runtimeEvent = z.discriminatedUnion('type', [
     type: z.literal('attempt_outcome'),
     outcome: attemptOutcome,
     usage: attemptUsage.optional(),
+  }),
+  z.object({
+    ...runtimeEventBase,
+    type: z.literal('stalled'),
+    /** How long nothing came from the engine. */
+    silent_ms: z.number().int().nonnegative(),
+    /** The step it was on, when it was on one. */
+    tool: z.string().max(200).optional(),
   }),
   z.object({
     ...runtimeEventBase,

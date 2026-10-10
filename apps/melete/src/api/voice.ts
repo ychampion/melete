@@ -532,7 +532,7 @@ async function conversationContext(
     asking: open !== undefined,
     turns: rows.reverse().map((row) => ({
       said: row.text,
-      answer: (['queued', 'working', 'streaming'].includes(row.status)
+      answer: (['queued', 'working', 'streaming', 'stalled'].includes(row.status)
         ? answerStream(row.answer)
         : answerText(row.answer)
       ).trim(),

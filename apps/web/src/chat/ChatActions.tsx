@@ -24,6 +24,7 @@ const BUSY: ReadonlySet<Conversation['status']> = new Set([
   'queued',
   'working',
   'streaming',
+  'stalled',
   'needs_you',
   'paused',
 ]);

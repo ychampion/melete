@@ -85,6 +85,8 @@ async function setup() {
       const body = (await request.json()) as JsonObject;
       const path = new URL(request.url).pathname;
       if (path === '/lease') return Response.json(session);
+      if (path === '/holder')
+        return Response.json({ holder: { job_id: session.job_id, control: session.control } });
       if (path === '/takeover' || path === '/handback') {
         session.control_epoch++;
         session.control = path === '/takeover' ? 'human' : 'automation';
@@ -550,6 +552,49 @@ describe('browser broker authority and durable control', () => {
           }),
         ),
       ).toMatchObject({ reason: 'fresh_observation_required' });
+    },
+  );
+
+  databaseTest(
+    'a step that went stale after the browser was handed back keeps the turn going instead of parking it',
+    async () => {
+      // A person took the browser and gave it back while this job's step was
+      // planned against the old epoch. Parking the job here waits for a
+      // hand-back that already happened, and the turn sits on "working" with
+      // no events until someone presses Stop.
+      const s = await setup();
+      const interrupted: string[] = [];
+      s.sessions.onPark = (_jobId, attemptIds) => {
+        interrupted.push(...attemptIds);
+      };
+      await s.client.takeover(s.session.id);
+      await s.client.handback(s.session.id);
+      const stale = await s.propose('fill', {
+        ...s.planned,
+        after_observation: 'obs_1',
+        label: 'Name',
+        value: 'Alice',
+      });
+      expect(stale.status).toBe('failed');
+      const [job] = await s.sql`select state, wait from job where id = ${s.claims.job_id}`;
+      expect(job?.state).toBe('running');
+      const [attempt] =
+        await s.sql`select outcome, ended_at from attempt where id = ${s.claims.attempt_id}`;
+      expect(attempt).toEqual({ outcome: null, ended_at: null });
+      expect(interrupted).toEqual([]);
+      // The agent is told why, and how to go on.
+      expect(stale.message).toContain('browser.observe');
+      // The agent carries on from a fresh look, in the same attempt.
+      expect((await s.propose('observe', { after_observation: 'obs_1' })).status).toBe('succeeded');
+      const again = await s.propose('fill', {
+        session_id: s.session.id,
+        control_epoch: s.session.control_epoch,
+        after_observation: 'obs_fresh',
+        label: 'Name',
+        value: 'Alice',
+      });
+      expect(again.status).toBe('succeeded');
+      expect(s.effects()).toBe(0);
     },
   );
 

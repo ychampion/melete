@@ -8,6 +8,7 @@ import {
   type FetchLike,
   HermesRuntimeAdapter,
 } from './adapter.ts';
+import { MODEL_SILENCE_MS, quietAllowanceMs, STALL_MARGIN_MS, stepDeadlineMs } from './liveness.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const ATTEMPT = `att_${SUFFIX}`;
@@ -759,4 +760,167 @@ test('the actual Hermes run request carries the since-last receipt and pending q
   } finally {
     await server.stop(true);
   }
+});
+
+describe('a turn never hangs silently and never ends without a word', () => {
+  const frame = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
+  const said = (output: string, called: string[] = []) =>
+    called
+      .flatMap((tool) => [
+        frame({ event: 'tool.started', tool, preview: '' }),
+        frame({ event: 'tool.completed', tool, duration: 0.1, error: false }),
+      ])
+      .join('') + frame({ event: 'run.completed', output });
+  /** A run whose step never answers: the socket stays open, with keepalives only. */
+  const HANGS = Symbol('hangs');
+
+  function script(runs: Array<string | typeof HANGS>, options: { refuseAfter?: number } = {}) {
+    const inputs: string[] = [];
+    const stopped: string[] = [];
+    let started = 0;
+    // Silence is measured on this clock, which moves only when the stream
+    // ticks, so how fast the machine runs cannot change what the test sees.
+    let clock = 0;
+    const encoder = new TextEncoder();
+    const fetch: FetchLike = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1/runs' && init?.method === 'POST') {
+        if (options.refuseAfter !== undefined && started >= options.refuseAfter)
+          return new Response('engine busy', { status: 503 });
+        inputs.push((JSON.parse(String(init.body)) as { input: string }).input);
+        started++;
+        return Response.json({ run_id: `run_${started}`, status: 'started' }, { status: 202 });
+      }
+      if (path.endsWith('/stop')) {
+        stopped.push(path.split('/')[3] ?? '');
+        return Response.json({ ok: true });
+      }
+      if (path.endsWith('/events')) {
+        const scripted = runs[Number(path.split('/')[3]?.replace('run_', '')) - 1] ?? '';
+        if (scripted !== HANGS)
+          return new Response(streamOf(scripted), {
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        let timer: ReturnType<typeof setInterval> | undefined;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(frame({ event: 'tool.started', tool: 'browser.open', preview: '' })),
+            );
+            timer = setInterval(() => {
+              clock += 10;
+              controller.enqueue(encoder.encode(': keepalive\n\n'));
+            }, 10);
+          },
+          cancel() {
+            clearInterval(timer);
+          },
+        });
+        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return Response.json({ ok: true });
+    };
+    const adapter = new HermesRuntimeAdapter({
+      baseUrl: 'http://runtime:8790',
+      parkedActions: async () => [],
+      fetch,
+      streamIdleMs: 2_000,
+      // Keepalives every 10 ms keep the socket open; only an event counts as progress.
+      quietMs: () => 120,
+      now: () => clock,
+    });
+    return { adapter, inputs, stopped };
+  }
+
+  test('a step that never answers is stopped, and the agent is asked once to report what it has', async () => {
+    const { adapter, inputs, stopped } = script([
+      HANGS,
+      said('I found two routes so far: BART from Powell St, about 35 minutes.'),
+    ]);
+    const sink = new Collector();
+    const outcome = await adapter.start(bundle, sink, new AbortController().signal);
+    expect(outcome).toEqual({
+      kind: 'completed',
+      summary: 'I found two routes so far: BART from Powell St, about 35 minutes.',
+      evidence: [],
+    });
+    expect(stopped).toEqual(['run_1']);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toContain('Nothing came back from your last step');
+    expect(inputs[1]).toContain('Do not repeat it');
+    const quiet = sink.events.find((event) => event.type === 'stalled');
+    expect(quiet).toMatchObject({ type: 'stalled', tool: 'browser.open' });
+    expect(quiet?.type === 'stalled' ? quiet.silent_ms : 0).toBeGreaterThanOrEqual(120);
+  });
+
+  test('an engine that stays stuck after being asked ends the turn with a plain note', async () => {
+    const { adapter, inputs, stopped } = script([HANGS, HANGS, said('never started')]);
+    const sink = new Collector();
+    const outcome = await adapter.start(bundle, sink, new AbortController().signal);
+    if (outcome.kind !== 'completed') throw new Error(`expected a note, got ${outcome.kind}`);
+    expect(outcome.summary).toStartWith('I stopped here: my work stopped responding');
+    expect(outcome.summary).toContain('Send a message');
+    expect(stopped).toEqual(['run_1', 'run_2']);
+    expect(inputs).toHaveLength(2);
+    // The person is shown the stuck state once, not once per run.
+    expect(sink.events.filter((event) => event.type === 'stalled')).toHaveLength(1);
+  });
+
+  test('an engine that will not take the run asking it to report ends the turn the same way', async () => {
+    const { adapter, inputs } = script([HANGS], { refuseAfter: 1 });
+    const outcome = await adapter.start(bundle, new Collector(), new AbortController().signal);
+    if (outcome.kind !== 'completed') throw new Error(`expected a note, got ${outcome.kind}`);
+    expect(outcome.summary).toStartWith('I stopped here');
+    expect(inputs).toHaveLength(1);
+  });
+
+  test('a run that ends on its tool calls without a word is asked once to deliver the result', async () => {
+    const { adapter, inputs } = script([
+      said('', ['web.fetch']),
+      said('The cheapest non-stop is American at $370, departing 3:28 PM.'),
+    ]);
+    const outcome = await adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(outcome).toEqual({
+      kind: 'completed',
+      summary: 'The cheapest non-stop is American at $370, departing 3:28 PM.',
+      evidence: [],
+    });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toContain('You stopped without telling the person anything');
+  });
+
+  test('the nudge to deliver is given once, and a turn with no tool calls is left alone', async () => {
+    const twice = script([said('', ['web.fetch']), said(''), said('never started')]);
+    await twice.adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(twice.inputs).toHaveLength(2);
+    const plain = script([said(''), said('never started')]);
+    await plain.adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(plain.inputs).toHaveLength(1);
+  });
+
+  test('the time a step may take follows its deadline, and silence with no step is short', () => {
+    const catalog: AttemptBundle['tools'] = [
+      {
+        name: 'web.search',
+        description: 'Search',
+        input_schema: { type: 'object' },
+        effect_class: 'read',
+        connection_id: `conn_${SUFFIX}`,
+        deadline_ms: 90_000,
+      },
+      {
+        name: 'device.run',
+        description: 'Run a command',
+        input_schema: { type: 'object', properties: { timeout_ms: { type: 'integer' } } },
+        effect_class: 'write_reversible',
+        connection_id: `conn_${SUFFIX}`,
+      },
+    ];
+    expect(quietAllowanceMs([], catalog)).toBe(MODEL_SILENCE_MS + STALL_MARGIN_MS);
+    expect(stepDeadlineMs('web.search', catalog)).toBe(120_000);
+    expect(stepDeadlineMs('email.search', catalog)).toBe(60_000);
+    expect(stepDeadlineMs('device.run', catalog)).toBe(15 * 60_000 + 30_000);
+    expect(stepDeadlineMs('terminal', catalog)).toBe(810_000);
+    expect(quietAllowanceMs(['web.search', 'terminal'], catalog)).toBe(810_000 + STALL_MARGIN_MS);
+  });
 });

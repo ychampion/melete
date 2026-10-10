@@ -57,6 +57,8 @@ export const turnStatus = z.enum([
   'queued',
   'working',
   'streaming',
+  /** Under way, but nothing has come from the agent for longer than its step may take. */
+  'stalled',
   'needs_you',
   'paused',
   'done',

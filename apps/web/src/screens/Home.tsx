@@ -712,12 +712,19 @@ export function WaitingOnYou({
 
 /* ---------- in motion ---------- */
 
-const MOVING = new Set<Conversation['status']>(['queued', 'working', 'streaming', 'paused']);
+const MOVING = new Set<Conversation['status']>([
+  'queued',
+  'working',
+  'streaming',
+  'stalled',
+  'paused',
+]);
 
 const STATUS_LINE: Partial<Record<Conversation['status'], string>> = {
   queued: 'Starting',
   working: 'Working',
   streaming: 'Answering',
+  stalled: 'Stalled',
   paused: 'Paused',
   done: 'Done',
 };

@@ -385,6 +385,8 @@ export const EVENT_TYPES = [
   'gap',
   'hook_event',
   'hook_error',
+  /** The agent went quiet for longer than its step may take, and was asked to report. */
+  'stalled',
 ] as const;
 export const eventType = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof eventType>;

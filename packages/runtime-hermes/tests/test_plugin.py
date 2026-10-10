@@ -819,7 +819,70 @@ def test_a_sandbox_command_waits_for_the_brokers_whole_budget():
 
     other = Recording()
     build_handler(other, {"name": "email.send", "connection_id": "con_mail"})({"to": "a"})  # type: ignore[arg-type]
-    assert other.calls[0]["timeout"] is None
+    # Past the broker's own default deadline, so its recorded outcome comes back.
+    assert other.calls[0]["timeout"] == 30 + ANSWER_SLACK_SECONDS
+
+
+def test_every_call_waits_for_its_tools_deadline_and_no_longer_than_the_brokers_limit():
+    from melete_plugin import action_wait_seconds
+    from melete_plugin.terminal_backend import ANSWER_SLACK_SECONDS
+
+    search = {"name": "web.search", "connection_id": "con_web", "deadline_ms": 90_000}
+    assert action_wait_seconds(search, {}) == 90 + ANSWER_SLACK_SECONDS
+    # A call that names its own timeout may take that long as well.
+    run = {"name": "device.run", "connection_id": "con_pc", "deadline_ms": 50_000}
+    assert action_wait_seconds(run, {"timeout_ms": 120_000}) == 120 + ANSWER_SLACK_SECONDS
+    # Nonsense never shortens the wait below the broker's default, nor stretches it past its limit.
+    assert action_wait_seconds({"deadline_ms": True}, {"timeout_ms": -5}) == 30 + ANSWER_SLACK_SECONDS
+    assert action_wait_seconds({"deadline_ms": 10**9}, {}) == 15 * 60 + ANSWER_SLACK_SECONDS
+
+
+class _NoAnswer:
+    """A broker that never answered in time."""
+
+    def __init__(self, code: str = "timed_out") -> None:
+        self.code = code
+
+    def propose(self, **_call: Any) -> Dict[str, Any]:
+        raise BrokerError(self.code, "No answer came within 60 seconds.")
+
+
+@pytest.mark.parametrize("code", ["timed_out", "unreachable"])
+def test_a_read_with_no_answer_changed_nothing_and_may_be_tried_again(code):
+    from melete_plugin.results import NO_ANSWER_READ_INSTRUCTION
+
+    result = build_handler(_NoAnswer(code), CATALOG[1])({"query": "x"})  # type: ignore[arg-type]
+    assert result["status"] == "failed"
+    assert result["retryable"] is True
+    assert result["error"]["code"] == code
+    assert result["instruction"] == NO_ANSWER_READ_INSTRUCTION
+
+
+def test_a_step_with_an_effect_that_timed_out_is_unconfirmed_and_not_repeated():
+    from melete_plugin.results import NO_ANSWER_INSTRUCTION
+
+    handler = build_handler(_NoAnswer(), CATALOG[0])  # type: ignore[arg-type]
+    result = handler({"to": ["a@example.com"], "subject": "s", "body": "b"})
+    assert result["status"] == "unknown"
+    assert result["error"]["code"] == "timed_out"
+    assert result["instruction"] == NO_ANSWER_INSTRUCTION
+    assert "Do NOT repeat it" in NO_ANSWER_INSTRUCTION
+
+
+def test_a_broker_slower_than_the_wait_is_reported_as_timed_out(broker):
+    import time
+
+    original = broker.handle
+
+    def slow(*args: Any):
+        time.sleep(1.0)
+        return original(*args)
+
+    broker.handle = slow
+    client = BrokerClient(base_url=broker.base_url, token="t", timeout=0.2)
+    with pytest.raises(BrokerError) as raised:
+        client.tools()
+    assert raised.value.code == "timed_out"
 
 
 def test_what_the_model_is_told_calls_them_the_person_never_the_owner():
@@ -830,6 +893,8 @@ def test_what_the_model_is_told_calls_them_the_person_never_the_owner():
         results.FAILURE_INSTRUCTION,
         results.UNCERTAIN_INSTRUCTION,
         results.OWN_COMPUTER_INSTRUCTION,
+        results.NO_ANSWER_INSTRUCTION,
+        results.NO_ANSWER_READ_INSTRUCTION,
     ]
     for text in told:
         assert "owner" not in text.lower()

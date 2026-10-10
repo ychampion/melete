@@ -95,7 +95,7 @@ import './chat.css';
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
 const QUICK_EDITS = ['Make it firmer', 'Shorter'] as const;
 
-const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
+const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'stalled', 'paused'];
 
 function titleFor(text: string): string {
   return shortTitle(text) || 'New chat';

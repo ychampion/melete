@@ -86,6 +86,8 @@ export type TranscriptTurn = {
   finished?: boolean;
   /** The agent's copy of the conversation before this turn was summarised during it. */
   compacted?: true;
+  /** When the stream said the turn ended, so a stopped turn reports the time it really took. */
+  ended_at?: string;
 };
 
 export type ReactionMessage = {
@@ -366,7 +368,7 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
 }
 
 /** The turn statuses in which a tool entry can still be under way. */
-const UNDER_WAY = new Set<TurnStatus>(['queued', 'working', 'streaming', 'paused']);
+const UNDER_WAY = new Set<TurnStatus>(['queued', 'working', 'streaming', 'stalled', 'paused']);
 
 type ToolStep = Extract<TrailStep, { type: 'action' }> & { tool: ToolEntry };
 const ENDED = new Set(['done', 'failed', 'unknown']);
@@ -528,6 +530,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       return patchTurn(next, event.turn_id, (turn) => ({
         ...turn,
         status: item.status,
+        ...(FINAL.has(item.status) ? { ended_at: event.created_at } : {}),
         streaming: item.status === 'streaming' ? turn.streaming : false,
         // Nothing is under way once the turn stops running, whatever the last entry said.
         live: UNDER_WAY.has(item.status) ? turn.live : null,

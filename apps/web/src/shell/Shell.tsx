@@ -105,7 +105,7 @@ function ToastStack() {
   );
 }
 
-const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
+const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming', 'stalled']);
 
 /** How many chats the sidebar lists; the rest are a click away under "All chats". */
 const RECENT_CHATS = 8;

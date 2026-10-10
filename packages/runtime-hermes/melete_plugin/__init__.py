@@ -25,7 +25,14 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
 
-from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
+from .broker import (
+    ATTEMPT_TOKEN_ENV,
+    BROKER_URL_ENV,
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_DISPATCH_SECONDS,
+    BrokerClient,
+    BrokerError,
+)
 from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
 from .terminal_backend import (
@@ -122,6 +129,29 @@ IN_CELL = "in_cell"
 IN_CELL_LANGUAGES = {"exec.run": "shell", "exec.python": "python"}
 
 
+def action_wait_seconds(tool: Dict[str, Any], arguments: Dict[str, Any]) -> float:
+    """How long one proposal of this tool waits for the broker's answer.
+
+    The broker carries a call out within its deadline for the tool (the
+    catalog's `deadline_ms`, or its default) and then records the outcome
+    itself: a read that ran out failed and changed nothing, anything else is
+    unconfirmed. Waiting a little past that means the model is told what the
+    broker recorded. A call that names its own timeout may take that long too.
+    """
+
+    def seconds(value: Any) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return 0.0
+        return float(value) / 1000
+
+    deadline = max(
+        DEFAULT_TIMEOUT_SECONDS,
+        seconds(tool.get("deadline_ms")),
+        seconds(arguments.get("timeout_ms")),
+    )
+    return min(deadline, MAX_DISPATCH_SECONDS) + ANSWER_SLACK_SECONDS
+
+
 def build_handler(
     client: BrokerClient,
     tool: Dict[str, Any],
@@ -141,11 +171,12 @@ def build_handler(
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
     language = IN_CELL_LANGUAGES.get(name) if tool.get("execution") == IN_CELL else None
+    read = tool.get("effect_class") == "read"
     terminal_error: Optional[Dict[str, Any]] = None
 
     def refuse(error: BrokerError) -> Dict[str, Any]:
         nonlocal terminal_error
-        result = from_error(error.code, error.message)
+        result = from_error(error.code, error.message, read=read)
         if error.code == "schema_invalid":
             # Arguments cannot fix the operator's schema; prevent another request.
             terminal_error = result
@@ -269,9 +300,14 @@ def build_handler(
         payload = {"intent": arguments} if language is not None else arguments
 
         # A sandbox command is run by the broker before it answers, for as long
-        # as the command's own timeout and the sandbox's setup allow. The
-        # ordinary round-trip timeout would stop waiting while it still runs.
-        wait = command_wait_seconds(arguments.get("timeout_ms")) if name == TERMINAL_TOOL else None
+        # as the command's own timeout and the sandbox's setup allow. Any other
+        # call waits for the broker's own deadline for its tool: past that the
+        # broker records the outcome itself, so its answer is what the model reads.
+        wait = (
+            command_wait_seconds(arguments.get("timeout_ms"))
+            if name == TERMINAL_TOOL
+            else action_wait_seconds(tool, arguments)
+        )
         try:
             response = client.propose(
                 kind=name,

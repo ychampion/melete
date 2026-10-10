@@ -16,7 +16,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { companyMap, ledgerItem as ledgerItemContract } from '@melete/contracts';
-import { fixtureMessages } from '../../src/companies/fixtures.ts';
+import { FIXTURE_REFERENCE, fixtureMessages } from '../../src/companies/fixtures.ts';
 import type { HandleRequest } from '../../src/companies/handler.ts';
 import { fixtureMailbox } from '../../src/companies/mailbox.ts';
 import { PostgresCompanyStore } from '../../src/companies/repository.ts';
@@ -44,6 +44,9 @@ const app = handle
         // The scan runs to completion before the route answers, so the test
         // never has to wait on a detached promise.
         schedule: (work) => work(),
+        // The demonstration mail is dated back from a fixed day, so the scan's
+        // window is read from that day too, not from whenever the test runs.
+        now: () => new Date(FIXTURE_REFERENCE),
         handler: {
           async handleLedgerItem(request) {
             handled.push(request);

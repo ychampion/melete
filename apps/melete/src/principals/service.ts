@@ -301,7 +301,7 @@ export class PrincipalService {
           .where(
             and(
               eq(experienceTurn.id, row.currentTurnId),
-              inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
+              inArray(experienceTurn.status, ['queued', 'working', 'streaming', 'stalled']),
             ),
           );
       cancelled.push(row.id);
