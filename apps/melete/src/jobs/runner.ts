@@ -40,6 +40,7 @@ import {
   action,
   attempt,
   budgetLedger,
+  connection,
   event,
   experienceTurn,
   job,
@@ -84,7 +85,7 @@ import {
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
-import { UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
+import { namingSteps, stepName, UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
 import {
   attemptCause,
   emptyWakes,
@@ -928,7 +929,13 @@ export class AttemptRunner {
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
-        const facts = await completionFacts(tx, row, outcome, this.options.artifactRoots);
+        const facts = await completionFacts(
+          tx,
+          row,
+          outcome,
+          this.options.artifactRoots,
+          attemptId,
+        );
         artifactFailures = facts.artifact_failures;
         input = {
           kind: 'attempt_completed',
@@ -983,8 +990,9 @@ export class AttemptRunner {
         !brokerParked) ||
       (brokerParked && row.state === 'needs_reconciliation');
     if (unconfirmed) {
-      if (!brokerParked) wait = { kind: 'user_input', question: UNCONFIRMED_NOTE };
-      carried = [unsettledQuestion(attemptId, UNCONFIRMED_NOTE), ...carried];
+      const asked = namingSteps(UNCONFIRMED_NOTE, await this.openSteps(tx, attemptId));
+      if (!brokerParked) wait = { kind: 'user_input', question: asked };
+      carried = [unsettledQuestion(attemptId, asked), ...carried];
     }
     const completionVerified =
       outcome.kind === 'completed' &&
@@ -1731,13 +1739,17 @@ export class AttemptRunner {
         // the turn rests on its answer until that action reports back.
         // The person is asked what to do about it, with answers to press.
         const draft = completed.summary;
+        const asked = namingSteps(
+          STILL_RUNNING_NOTE,
+          await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
+        );
         await this.commitOutcome(claims, {
           outcome: {
             kind: 'waiting_for_input',
-            question: STILL_RUNNING_NOTE,
+            question: asked,
             ...(draft.trim() ? { draft } : {}),
           },
-          questions: [unsettledQuestion(claims.attempt_id, STILL_RUNNING_NOTE)],
+          questions: [unsettledQuestion(claims.attempt_id, asked)],
         }).catch(async (failure: unknown) => {
           await this.loseAttempt(
             claims.attempt_id,
@@ -1797,6 +1809,21 @@ export class AttemptRunner {
     return earlier ? 'none' : answerJoin(tx, attemptId);
   }
 
+  /** What this attempt's steps that have not settled are, in the person's words. */
+  private async openSteps(tx: Transaction, attemptId: string): Promise<string[]> {
+    const rows = await tx
+      .select({ action, connection })
+      .from(action)
+      .leftJoin(connection, eq(connection.id, action.connectionId))
+      .where(
+        and(
+          eq(action.attemptId, attemptId),
+          inArray(action.status, ['dispatched', 'unknown', 'unresolved']),
+        ),
+      );
+    return rows.map((row) => stepName(row.action, row.connection ?? undefined));
+  }
+
   /**
    * Before a finished attempt commits, the actions it dispatched settle. One
    * whose tool call already returned has no sender left and is settled now;
@@ -1819,7 +1846,15 @@ export class AttemptRunner {
       const [pending] = await this.jobs.db
         .select({ id: action.id })
         .from(action)
-        .where(and(eq(action.jobId, claims.job_id), eq(action.status, 'dispatched')))
+        // Only this attempt's own: a step an earlier one left out is already a
+        // question to the person, and waiting on it held every later turn.
+        .where(
+          and(
+            eq(action.jobId, claims.job_id),
+            eq(action.attemptId, claims.attempt_id),
+            eq(action.status, 'dispatched'),
+          ),
+        )
         .limit(1);
       const left = deadline - Date.now();
       if (!pending || signal.aborted || left <= 0) return;

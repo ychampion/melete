@@ -83,6 +83,7 @@ import {
 import { localNow } from './local-now.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
+import { UNSETTLED_WAIT } from './unsettled.ts';
 
 /**
  * The transcript bound at the baseline window. A model with a larger window
@@ -1383,7 +1384,16 @@ export async function completionFacts(
   row: JobRow,
   outcomeCompleted: CompletedOutcome,
   artifactRoots?: ArtifactRoots,
+  /** The attempt finishing; an earlier one's open step already asked about is not its to hold. */
+  attemptId?: string,
 ): Promise<CompletionFacts> {
+  // A step an earlier attempt left open, that the person was already asked
+  // about, is theirs to settle from that question. It neither holds a later
+  // turn open nor asks again: one lost result once became the same question
+  // after every turn, each turn held at its end waiting for it.
+  const askedAbout = sql`exists (select 1 from ${question} q
+    where q.job_id = ${action.jobId} and q.attempt_id = ${action.attemptId}
+      and q.options @> ${JSON.stringify([{ id: UNSETTLED_WAIT }])}::jsonb)`;
   const actions = await tx
     .select({
       id: action.id,
@@ -1399,7 +1409,12 @@ export async function completionFacts(
     })
     .from(action)
     .leftJoin(connection, eq(connection.id, action.connectionId))
-    .where(eq(action.jobId, row.id));
+    .where(
+      and(
+        eq(action.jobId, row.id),
+        attemptId ? sql`(${action.attemptId} = ${attemptId} or not ${askedAbout})` : undefined,
+      ),
+    );
   const artifactIds = outcomeCompleted.evidence.flatMap((ref) =>
     ref.kind === 'artifact' ? [ref.artifact_id] : [],
   );
