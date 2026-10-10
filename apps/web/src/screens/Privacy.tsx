@@ -5,11 +5,22 @@
  */
 import { type ReactNode, useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
-import { Badge, Button, Field, IconButton, Input, Select, Toggle } from '../design/primitives.tsx';
+import { LoadError } from '../design/LoadError.tsx';
+import {
+  Badge,
+  Button,
+  Dialog,
+  Field,
+  IconButton,
+  Input,
+  Select,
+  Toggle,
+} from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { CATEGORY_NAMES, kindOf } from '../experience/privacy.ts';
 import type {
+  BrowserSite,
   PrivacyCategory,
   PrivacyPreview,
   PrivacySettings,
@@ -572,5 +583,138 @@ export function PrivacyTab() {
         </form>
       </Section>
     </div>
+  );
+}
+
+/** "Last used today", "Last used Oct 9". */
+export function lastUsed(iso: string, now = Date.now()): string {
+  const date = new Date(iso);
+  if (date.toDateString() === new Date(now).toDateString()) return 'Last used today';
+  return `Last used ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+}
+
+/**
+ * The sites the agent's browser stays signed in to, after the person signed it
+ * in during a take-over, and a way to sign it out of each. Shown only where
+ * the service has a browser.
+ */
+export function SignedInSites() {
+  const { capabilities } = useApp();
+  const sites = useLoad(
+    () =>
+      capabilities.browser
+        ? adapter.browserSites()
+        : Promise.resolve({ data: { sites: [] }, error: null, unavailable: null }),
+    [capabilities.browser],
+  );
+  const [leaving, setLeaving] = useState<BrowserSite | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!capabilities.browser) return null;
+
+  const signOut = async (site: BrowserSite) => {
+    setBusy(true);
+    const result = await adapter.forgetBrowserSite(site.domain);
+    setBusy(false);
+    setLeaving(null);
+    if (result.data === null) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t sign out' });
+      return;
+    }
+    sites.set({ sites: (sites.data?.sites ?? []).filter((s) => s.domain !== site.domain) });
+    toast({ kind: 'ok', title: `Signed out of ${site.label}` });
+  };
+
+  const list = sites.data?.sites ?? [];
+  return (
+    <Section
+      title="Sites Melete’s browser is signed in to"
+      sub="When you sign Melete’s browser in to a site, it stays signed in so it can carry on next time. Sign it out of any you no longer want it to use."
+    >
+      {sites.error ? (
+        <LoadError what="the signed-in sites" error={sites.error} onRetry={sites.reload} />
+      ) : sites.loading && !sites.data ? (
+        <div className="shimmer" style={{ height: 52, borderRadius: 10 }} aria-hidden="true" />
+      ) : list.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>
+          It isn’t signed in anywhere.
+        </p>
+      ) : (
+        <ul className="col" style={{ gap: 0, margin: 0, padding: 0, listStyle: 'none' }}>
+          {list.map((site, index) => (
+            <li
+              key={site.domain}
+              className="row"
+              style={{
+                gap: 12,
+                minHeight: 52,
+                borderTop: index ? '1px solid var(--line)' : undefined,
+              }}
+            >
+              <span
+                aria-hidden="true"
+                className="row"
+                style={{
+                  width: 32,
+                  height: 32,
+                  flexShrink: 0,
+                  justifyContent: 'center',
+                  borderRadius: 8,
+                  background: 'var(--soft)',
+                  color: 'var(--secondary)',
+                }}
+              >
+                <Icon name="globe" size={16} />
+              </span>
+              <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span
+                  className="clamp1"
+                  style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                >
+                  {site.label}
+                </span>
+                <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  {site.domain} · {lastUsed(site.last_used)}
+                </span>
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label={`Sign out of ${site.label}`}
+                onClick={() => setLeaving(site)}
+              >
+                Sign out
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Dialog
+        open={leaving !== null}
+        onClose={() => setLeaving(null)}
+        icon="logout"
+        tone="danger"
+        title={leaving ? `Sign out of ${leaving.label}?` : 'Sign out?'}
+        sub={
+          leaving
+            ? `Melete’s browser forgets its sign-in and saved data for ${leaving.domain}. You can sign it in again when it next needs the site.`
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="outline" disabled={busy} onClick={() => setLeaving(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              loading={busy}
+              disabled={busy}
+              onClick={() => leaving && void signOut(leaving)}
+            >
+              Sign out
+            </Button>
+          </>
+        }
+      />
+    </Section>
   );
 }
