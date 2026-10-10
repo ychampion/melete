@@ -25,6 +25,7 @@ import type {
   ConnectionItemField,
   ConnectionKind,
   McpSignInStart,
+  ProviderAccess,
 } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { APP_PASSWORD } from './app-passwords.ts';
@@ -581,6 +582,18 @@ function accessOf<T extends { label: string; effect_class: string; asks_first: b
 }
 
 /** Why a catalog sign-in did not finish, by the code the service gave. */
+/** What a disconnection did at the provider, said after it. */
+const DISCONNECTED: Record<ProviderAccess | 'none', string | null> = {
+  withdrawn: 'Its saved sign-in is deleted, and the provider has withdrawn Melete’s access too.',
+  kept_for_other_connections:
+    'Its saved sign-in is deleted. Your other connections to the same account still use that sign-in, so the account keeps Melete’s access until you disconnect them too.',
+  not_offered:
+    'Its saved sign-in is deleted. To be sure Melete has no access left, remove it in that account’s own security settings.',
+  not_confirmed:
+    'Its saved sign-in is deleted, but the provider didn’t confirm withdrawing Melete’s access. You can remove it in that account’s own security settings.',
+  none: null,
+};
+
 const SIGN_IN_ENDED: Record<string, string> = {
   catalog_tools_unavailable: 'You signed in, but the app offers none of the tools Melete uses.',
   catalog_tools_unreadable: 'You signed in, but the app did not say what it can do. Try again.',
@@ -1176,7 +1189,8 @@ export function ConnectionActions({
           });
           return;
         }
-        toast({ kind: 'ok', title: `${label} was disconnected` });
+        const sub = DISCONNECTED[result.data.provider_access ?? 'none'];
+        toast({ kind: 'ok', title: `${label} was disconnected`, ...(sub ? { sub } : {}) });
         onChanged();
       })
       .finally(() => {

@@ -9,6 +9,8 @@ import type { SpacePaths } from './layout.ts';
 import {
   commitRecord,
   commitRemoval,
+  dropPaths,
+  eraseFromHistory,
   headSha,
   history,
   initSpace,
@@ -274,5 +276,78 @@ describe('two writes to one space at the same time', () => {
     expect(results[0]?.status).toBe('rejected');
     expect(results[1]?.status).toBe('fulfilled');
     expect(existsSync(join(paths.knowledge, 'after.md'))).toBe(true);
+  });
+});
+
+describe('erasing files from history', () => {
+  const VIEW = 'knowledge/k_01HZZZZZZZZZZZZZZZZZZZZZZZ.md';
+  const isView = (path: string) => /^knowledge\/k_[0-9A-Z]{26}\.md$/.test(path);
+  const everyObject = async () =>
+    (await runGit(paths.root, ['cat-file', '--batch-all-objects', '--batch'])).stdout;
+
+  test('takes every version of the files out of every commit and the object store', async () => {
+    await commitRecord(paths, 'knowledge/kept.md', write('a record the person keeps'), {
+      proposedBy: 'user',
+      now,
+    });
+    for (const value of ['Sister lives in Lisbon', 'Sister lives in Porto']) {
+      await Bun.write(join(paths.root, VIEW), `${value}\n`);
+      await git(paths.root, ['add', '--', VIEW]);
+      await git(paths.root, ['commit', '--quiet', '-m', 'Refresh memory inspection records']);
+    }
+    const kept = await history(paths, 'knowledge/kept.md');
+    expect(await everyObject()).toContain('Lisbon');
+
+    expect(await eraseFromHistory(paths, 'knowledge/k_*.md', isView)).toBe(true);
+
+    const objects = await everyObject();
+    expect(objects).not.toContain('Lisbon');
+    expect(objects).not.toContain('Porto');
+    expect(await git(paths.root, ['log', '--all', '--format=%H', '--', VIEW])).toBe('');
+    expect(await git(paths.root, ['ls-files', '--', VIEW])).toBe('');
+    // The person's own record keeps its history, message and contents.
+    const after = await history(paths, 'knowledge/kept.md');
+    expect(after.map((entry) => [entry.subject, entry.at, entry.proposedBy])).toEqual(
+      kept.map((entry) => [entry.subject, entry.at, entry.proposedBy]),
+    );
+    expect(await readAtHead(paths, 'knowledge/kept.md')).toContain('a record the person keeps');
+    // The file itself stays where it was; only its history went.
+    expect(readFileSync(join(paths.root, VIEW), 'utf8')).toContain('Porto');
+    // Nothing was left half-done for the next commit to sweep up.
+    expect((await git(paths.root, ['diff', '--cached', '--name-only'])).trim()).toBe('');
+  });
+
+  test('leaves something staged by the person staged, and does nothing twice', async () => {
+    await Bun.write(join(paths.root, VIEW), 'Allergic to penicillin\n');
+    await git(paths.root, ['add', '--', VIEW]);
+    await git(paths.root, ['commit', '--quiet', '-m', 'Refresh memory inspection records']);
+    await Bun.write(join(paths.root, 'notes.txt'), 'staged by hand');
+    await git(paths.root, ['add', '--', 'notes.txt']);
+
+    expect(await eraseFromHistory(paths, 'knowledge/k_*.md', isView)).toBe(true);
+    expect(await everyObject()).not.toContain('penicillin');
+    expect((await git(paths.root, ['diff', '--cached', '--name-only'])).trim()).toBe('notes.txt');
+    expect(await eraseFromHistory(paths, 'knowledge/k_*.md', isView)).toBe(false);
+  });
+
+  test('a message that only looks like a file change is kept as written', () => {
+    const message = `M 100644 0000000000000000000000000000000000000000 ${VIEW}\n`;
+    const stream = Buffer.from(
+      [
+        'commit refs/heads/main',
+        'mark :1',
+        'committer melete <melete@localhost> 0 +0000',
+        `data ${Buffer.byteLength(message)}`,
+        `${message}M 100644 1111111111111111111111111111111111111111 ${VIEW}`,
+        'M 100644 2222222222222222222222222222222222222222 knowledge/kept.md',
+        `D ${VIEW}`,
+        '',
+      ].join('\n'),
+    );
+    const kept = Buffer.from(dropPaths(stream, isView)).toString();
+    expect(kept).toContain(message);
+    expect(kept).toContain('knowledge/kept.md');
+    expect(kept).not.toContain('1111111111');
+    expect(kept).not.toContain(`D ${VIEW}`);
   });
 });

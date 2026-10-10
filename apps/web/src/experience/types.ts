@@ -177,6 +177,18 @@ export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[nu
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;
 export type ConnectionInstalled = Ok<paths['/connections'], 'post'>;
 export type ConnectionChecked = Ok<paths['/connections/{connectionId}/health'], 'post'>;
+/** A disconnection, and whether the provider also withdrew Melete's access. */
+export type ConnectionLifecycle = Ok<paths['/connections/{id}/lifecycle'], 'post'>;
+export type ProviderAccess = NonNullable<ConnectionLifecycle['provider_access']>;
+
+/** Taking everything along, emptying one's space, and deleting an account. */
+export type AccountRemovalPreview = Ok<paths['/account/removal/preview'], 'get'>['preview'];
+export type AccountRemoval = Ok<paths['/principals/{id}/removal'], 'get'>['removal'];
+export type AccountSummary = Ok<paths['/principals'], 'get'>['accounts'][number];
+export type SpaceRemovalPreview = Ok<paths['/spaces/{id}/removal/preview'], 'get'>['preview'];
+export type SpaceRemovalReport = Ok<paths['/removals/{id}'], 'get'>;
+/** A removal as it started; the same record its progress reports. */
+export type SpaceRemovalStarted = SpaceRemovalReport['removal'];
 export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
 /** What a conversation's agent is doing on its computer: its browser and its terminal. */
 export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;

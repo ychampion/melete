@@ -170,6 +170,25 @@ describeWithDb('problem reports against Postgres', () => {
     ).toBe(404);
   });
 
+  test('a report can be deleted by the person who sent it, or by the owner, and no one else', async () => {
+    const api = app();
+    const { owner, member } = await people(api);
+    const sent = async (cookie: string, message: string) =>
+      feedbackResponse.parse(await (await send(api, cookie, message)).json()).report.id;
+    const mine = await sent(member, 'My page was blank');
+    const owners = await sent(owner, 'The owner saw this');
+    const other = await sent(member, 'A second one');
+    // Someone else's report is not theirs to delete, and they are not told it exists.
+    expect((await api.request(`/feedback/${owners}`, json('DELETE', member))).status).toBe(404);
+    expect((await api.request(`/feedback/${mine}`, json('DELETE', member))).status).toBe(200);
+    expect((await api.request(`/feedback/${mine}`, json('GET', member))).status).toBe(404);
+    expect((await api.request(`/feedback/${mine}`, json('DELETE', member))).status).toBe(404);
+    // The person who runs the installation may delete any report.
+    expect((await api.request(`/feedback/${other}`, json('DELETE', owner))).status).toBe(200);
+    const [left] = await database().sql`select count(*)::int as n from feedback`;
+    expect(left?.n).toBe(1);
+  });
+
   test('each person may send only a few reports in a short time', async () => {
     let now = 0;
     const api = app(new FeedbackLimiter(() => now, 2, 60_000));

@@ -73,10 +73,7 @@ export async function startServiceMemory(
       );
     await journal.initializeNew();
   }
-  const markdown = new MarkdownViews(sql, spacesRoot, {
-    name: 'Owner',
-    email: 'owner@localhost',
-  });
+  const markdown = new MarkdownViews(sql, spacesRoot);
   const existingSpaces = await sql`select space_id from memory_spaces where not revoked`;
   for (const row of existingSpaces)
     await prepareSpaceRepository(spacesRoot, row.space_id as string);

@@ -7,6 +7,7 @@ import {
   DOCUMENT_EVENT_NAMES,
   jobBudget,
   MAIL_EVENT_NAMES,
+  type ProviderAccess,
   policyGeneration,
   waitSpec,
 } from '@melete/contracts';
@@ -62,6 +63,19 @@ export class PolicyService {
         connection: { provider: string; spaceId: string; configuration: unknown },
         secretRef: string,
       ) => Promise<string | null>;
+      /**
+       * Runs once a revocation has committed, with the connection as it was:
+       * withdraws the access at the provider where that is possible and
+       * deletes the sealed tokens. Answers what happened at the provider. It
+       * never undoes the revocation.
+       */
+      afterRevoke?: (connection: {
+        id: string;
+        spaceId: string;
+        provider: string;
+        configuration: unknown;
+        secretRef: string | null;
+      }) => Promise<ProviderAccess | undefined>;
     } = {},
   ) {}
 
@@ -400,6 +414,17 @@ export class PolicyService {
             status: updated.status,
           }),
           controls,
+          // What the revocation let go of, for the provider and the sealed store.
+          released:
+            request.kind === 'revoke'
+              ? {
+                  id,
+                  spaceId: source.spaceId,
+                  provider: source.provider,
+                  configuration: source.configuration,
+                  secretRef: source.secretRef,
+                }
+              : null,
         };
       });
     let result: Awaited<ReturnType<typeof changed>>;
@@ -432,6 +457,10 @@ export class PolicyService {
       throw error;
     }
     await this.signal(result.controls);
+    if (result.released && this.options.afterRevoke) {
+      const access = await this.options.afterRevoke(result.released).catch(() => undefined);
+      if (access) return { ...result.response, provider_access: access };
+    }
     return result.response;
   }
 
