@@ -234,7 +234,7 @@ function heldCredential(credential: Record<string, unknown>) {
     if (values.length > 2) {
       updates.push(values);
       row.secret_ref = String(values[0]);
-      return [];
+      return [{ id: 'conn_1' }];
     }
     return [row];
   }) as unknown as Sql;
@@ -246,6 +246,9 @@ function heldCredential(credential: Record<string, unknown>) {
       const id = `sealed-${++serial}`;
       stored.set(id, value);
       return id;
+    },
+    forget: async (id: string) => {
+      stored.delete(id);
     },
   } as unknown as SealedSecretStore;
   return { sql, secrets, updates, stored, row };
@@ -279,6 +282,8 @@ describe('a Google connection keeps its access current', () => {
     expect(held.row.secret_ref).toBe('sealed-2');
     const sealed = JSON.parse(held.stored.get('sealed-2') ?? '{}');
     expect(sealed).toMatchObject({ access_token: first, refresh_token: refreshToken });
+    // The copy it replaced is gone: a refresh never leaves a second refresh token behind.
+    expect([...held.stored.keys()]).toEqual(['sealed-2']);
   });
 
   test('a refused refresh ends the sign-in, and a 401 is answered once with a renewed token', async () => {

@@ -228,7 +228,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   const storageScope = resolveStorageScope(options.sql, journal);
   let stopCapture: (() => Promise<void>) | undefined;
   const markdown = options.spacesDir
-    ? new MarkdownViews(options.sql, options.spacesDir, { name: 'Owner', email: 'owner@localhost' })
+    ? new MarkdownViews(options.sql, options.spacesDir)
     : undefined;
   if (options.workers === false) await restoreMemory(options.sql, journal);
   else {

@@ -1223,6 +1223,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         .returning();
       return next;
     });
+    // Only one sealed copy of a sign-in is kept: the one the connection points at.
+    const unused = updated ? row.secretRef : secretRef;
+    if (unused && unused !== updated?.secretRef)
+      await new PostgresSecretRepository(deps.sql).forget(unused, row.spaceId).catch(() => {
+        process.stderr.write('connections: a replaced sign-in could not be removed\n');
+      });
     if (!updated)
       throw new ServiceError('generation_conflict', 'Connection changed during sign-in.', 409);
     const tested = await retest(updated);

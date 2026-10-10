@@ -1,8 +1,8 @@
 /**
  * Problem reports over HTTP. Every route already required a session before it
- * got here. Anyone signed in may send a report and read their own; the person
- * who runs the installation reads all of them and moves them through
- * open, fixing, fixed and won't fix.
+ * got here. Anyone signed in may send a report, read their own and delete
+ * their own; the person who runs the installation reads all of them, moves
+ * them through open, fixing, fixed and won't fix, and may delete any.
  */
 import {
   createFeedbackRequest,
@@ -106,5 +106,11 @@ export function mountFeedback(
     const report = await store.update(scope, c.req.param('id'), change);
     if (!report) throw NOT_FOUND();
     return c.json(feedbackResponse.parse({ report }));
+  });
+
+  // A report carries what the person wrote and what their page showed, so it is theirs to take back.
+  app.delete('/feedback/:id', async (c) => {
+    if (!(await store.remove(await scopeOf(c), c.req.param('id')))) throw NOT_FOUND();
+    return c.json({ status: 'ok' as const });
   });
 }

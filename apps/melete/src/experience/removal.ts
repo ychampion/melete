@@ -11,7 +11,8 @@
  *
  * What goes is what the job owns: its turns, events, attempts, actions and
  * approvals, which the schema cascades from the job. Its workspace goes too,
- * into its trash, restorable for the trash period (see `workspace-trash.ts`).
+ * into its trash, restorable for the trash period, and the pages the browser
+ * captured in it are deleted (see `workspace-trash.ts`).
  * What stays is what was never only the job's: files it saved to the person's
  * Files or the space stay (their `job_id` is cleared), a computer it used
  * stays, and memory stays. Memory is the person's,
@@ -32,7 +33,12 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import { roomAuthorityOf } from '../rooms/approvals.ts';
 import type { BlobKey, BlobStore } from '../storage/blob.ts';
-import { trashWorkspace, type WorkspaceTrash } from './workspace-trash.ts';
+import {
+  CAPTURED_PAGE,
+  removeCapturedPages,
+  trashWorkspace,
+  type WorkspaceTrash,
+} from './workspace-trash.ts';
 
 export type JobRemovalDeps = {
   jobs: JobService;
@@ -290,6 +296,7 @@ export async function removeJobs(
   for (const id of ended.cancelled) jobs.onCancelled?.(id);
   await deps.runner?.stopJobs(list);
   let fileKeys: BlobKey[] = [];
+  let captured: { space_id: unknown; path: unknown }[] = [];
   await deps.sql.begin(async (tx) => {
     await tx`select id from job where id = any(${list}) order by id for update`;
     await abandonUnsettled(tx, list);
@@ -319,6 +326,13 @@ export async function removeJobs(
       await tx`delete from artifact where job_id = any(${list}) and area = 'work'
         and source_job_id = job_id`;
     await tx`update artifact set source_job_id = null where source_job_id = any(${list})`;
+    // The pages the browser captured in these chats; their files go once this commits.
+    if (deps.workspaces?.spacesRoot)
+      captured = [
+        ...(await tx<{ space_id: string; path: string }[]>`delete from artifact
+          where job_id = any(${list}) and source_job_id is null
+          and area = 'work' and path ~ ${CAPTURED_PAGE} returning space_id, path`),
+      ];
     // The privacy router's per-conversation records hold sealed private
     // values; they mean nothing without the conversation.
     await tx`delete from privacy_vault where conversation_id = any(${list})`;
@@ -353,6 +367,14 @@ export async function removeJobs(
   // that cannot go now is moved at the next start.
   if (deps.workspaces) {
     const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+    // A file left by a failure here names no chat, and the next start deletes it.
+    const spacesRoot = deps.workspaces.spacesRoot;
+    if (spacesRoot && captured.length)
+      await removeCapturedPages(spacesRoot, captured).catch((error: unknown) =>
+        log(
+          `the captured pages of a deleted chat could not be deleted yet: ${error instanceof Error ? error.message : 'unknown error'}`,
+        ),
+      );
     for (const id of list)
       await trashWorkspace(deps.workspaces, id).catch((error: unknown) =>
         log(

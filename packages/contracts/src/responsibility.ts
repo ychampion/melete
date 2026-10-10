@@ -355,11 +355,28 @@ export const connectionLifecycle = z.discriminatedUnion('kind', [
   }),
 ]);
 export type ConnectionLifecycle = z.infer<typeof connectionLifecycle>;
+/**
+ * What a disconnection did to Melete's access at the provider: `withdrawn`
+ * (the provider confirmed the token no longer works), `kept_for_other_connections`
+ * (another connection signed in to the same account still uses the grant),
+ * `not_offered` (the provider gives apps no way to do it, so the person does it
+ * there) or `not_confirmed` (asked, and not confirmed). The sealed tokens are
+ * deleted in every case.
+ */
+export const providerAccess = z.enum([
+  'withdrawn',
+  'kept_for_other_connections',
+  'not_offered',
+  'not_confirmed',
+]);
+export type ProviderAccess = z.infer<typeof providerAccess>;
 export const connectionGeneration = z.object({
   connection_id: prefixedId(ID_PREFIXES.connection),
   generation: z.number().int().nonnegative(),
   policy_generation: z.number().int().nonnegative(),
   status: z.string(),
+  /** Present after a disconnection that held a credential. */
+  provider_access: providerAccess.optional(),
 });
 export const policyChange = z.object({ expected_generation: z.number().int().nonnegative() });
 export const policyGeneration = z.object({

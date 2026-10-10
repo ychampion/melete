@@ -28,6 +28,8 @@ import {
   APPROVED_BY_TRAILER,
   commitMessage,
   git,
+  gitBytes,
+  hasCommits,
   isGitRepo,
   PROPOSED_BY_TRAILER,
   runGit,
@@ -356,6 +358,95 @@ export async function history(paths: SpacePaths, relativePath: string): Promise<
         approvedBy: approvedBy.trim() || null,
       };
     });
+}
+
+/**
+ * Take every version of the files `match` names out of the space's history,
+ * as if they had never been committed, and out of the index, leaving the
+ * files themselves where they are. This is the one place history is
+ * rewritten, and it exists for one reason: a value a person asked to have
+ * erased must not stay readable in an old commit. Every other commit keeps
+ * its tree, author, date and message; commits that touched only these files
+ * stay, empty. The old commits and their objects are then pruned, so nothing
+ * still reachable or still in the object store holds the files' bytes.
+ *
+ * `glob` is the same set as a git pathspec, used to ask cheaply whether there
+ * is anything to do. Answers whether the history was rewritten.
+ */
+export function eraseFromHistory(
+  paths: SpacePaths,
+  glob: string,
+  match: (path: string) => boolean,
+): Promise<boolean> {
+  return withSpaceLock(paths, () => eraseFromHistoryAlone(paths, glob, match));
+}
+
+async function eraseFromHistoryAlone(
+  paths: SpacePaths,
+  glob: string,
+  match: (path: string) => boolean,
+): Promise<boolean> {
+  const spec = `:(glob)${glob}`;
+  const tracked = (await git(paths.root, ['ls-files', '-z', '--', spec]))
+    .split('\0')
+    .filter((path) => path.length > 0 && match(path));
+  const committed = (await hasCommits(paths.root))
+    ? (await git(paths.root, ['log', '--all', '-n', '1', '--format=%H', '--', spec])).trim()
+    : '';
+  if (!committed && tracked.length === 0) return false;
+  if (committed) {
+    const exported = await gitBytes(paths.root, [
+      'fast-export',
+      '--all',
+      '--no-data',
+      '--signed-tags=strip',
+    ]);
+    await gitBytes(paths.root, ['fast-import', '--force', '--quiet'], dropPaths(exported, match));
+  }
+  // The index still names the files' old contents; it has to let go of them
+  // too, or they stay reachable and survive the prune below.
+  if (tracked.length)
+    await git(paths.root, ['rm', '--cached', '--quiet', '--ignore-unmatch', '--', ...tracked]);
+  rmSync(resolve(paths.root, '.git', 'ORIG_HEAD'), { force: true });
+  await git(paths.root, ['reflog', 'expire', '--expire=now', '--all']);
+  await git(paths.root, ['gc', '--prune=now', '--quiet']);
+  return true;
+}
+
+/**
+ * A `git fast-export --no-data` stream without the file changes `match`
+ * names. Commands are lines; a `data <n>` command is followed by exactly n
+ * bytes (a commit or tag message), which pass through untouched. Only
+ * `M <mode> <ref> <path>` and `D <path>` lines name a file, and a path git
+ * had to quote is never one of ours, so it is left as it is.
+ */
+export function dropPaths(stream: Uint8Array, match: (path: string) => boolean): Uint8Array {
+  const bytes = Buffer.from(stream.buffer, stream.byteOffset, stream.byteLength);
+  const kept: Buffer[] = [];
+  let at = 0;
+  while (at < bytes.length) {
+    const newline = bytes.indexOf(0x0a, at);
+    const end = newline < 0 ? bytes.length : newline;
+    const next = newline < 0 ? bytes.length : newline + 1;
+    const line = bytes.subarray(at, end).toString('latin1');
+    if (line.startsWith('data ')) {
+      const size = Number(line.slice(5));
+      if (!Number.isSafeInteger(size) || size < 0)
+        throw new Error('the history export used a data form this does not read');
+      kept.push(bytes.subarray(at, next + size));
+      at = next + size;
+      continue;
+    }
+    const path = line.startsWith('M ')
+      ? line.split(' ').slice(3).join(' ')
+      : line.startsWith('D ')
+        ? line.slice(2)
+        : null;
+    if (path === null || path.startsWith('"') || !match(Buffer.from(path, 'latin1').toString()))
+      kept.push(bytes.subarray(at, next));
+    at = next;
+  }
+  return Buffer.concat(kept);
 }
 
 /** The current commit. */

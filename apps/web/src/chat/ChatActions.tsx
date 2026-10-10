@@ -3,7 +3,9 @@
  * plainly what happens before it happens: work under way stops, anything
  * waiting for the person's OK is withdrawn, the messages go, files on the
  * computer stay, and what Melete learned stays unless they choose to have it
- * forgotten too.
+ * forgotten too. What it learned is kept with the words of each message it
+ * learned it from, so the dialog says so: those messages are not gone until
+ * that is forgotten too.
  */
 import { type FormEvent, useState } from 'react';
 import {
@@ -163,7 +165,7 @@ export function DeleteChatsDialog({
         ? forgotten
           ? `Melete also forgot ${forgotten === 1 ? 'one thing' : `${forgotten} things`} it learned there.`
           : 'Melete had nothing saved from there to forget.'
-        : 'What Melete learned there is still in Memory.',
+        : 'What Melete learned there is still in Memory, with the messages it learned it from.',
     });
   };
   if (failed)
@@ -226,8 +228,9 @@ export function DeleteChatsDialog({
           {busy
             ? 'Melete stops what it is doing there first, and anything waiting for your OK is withdrawn. '
             : ''}
-          The messages in {name} are deleted for good. Files on the computer stay, and anything it
-          sent or changed stays listed in Settings, Activity.
+          The messages in {name} are deleted for good, apart from any Melete learned something from,
+          which stay with what it learned unless you choose below to forget that too. Files on the
+          computer stay, and anything it sent or changed stays listed in Settings, Activity.
         </>
       }
       footer={
@@ -259,8 +262,8 @@ export function DeleteChatsDialog({
           </span>
           <span style={{ fontSize: 13, color: 'var(--muted)' }}>
             {forget
-              ? 'Details that came only from here are forgotten too.'
-              : 'Left unticked, what Melete learned stays, and you can change it in Memory.'}
+              ? 'Details that came only from here are forgotten too, and no message from here is kept.'
+              : 'Left unticked, what Melete learned stays in Memory, with the words of the messages it learned it from.'}
           </span>
         </span>
       </label>

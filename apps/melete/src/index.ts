@@ -16,6 +16,8 @@ import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
+import { AccountRemovalService } from './account/removal.ts';
+import { mountAccount } from './account/routes.ts';
 import { mountActions } from './api/actions.ts';
 import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
@@ -76,6 +78,11 @@ import { startTrashSweep } from './connectors/files-trash.ts';
 import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
+import {
+  connectionRevocation,
+  mcpIssuerFetch,
+  sweepUnreferencedSecrets,
+} from './connectors/revocation.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
@@ -88,7 +95,9 @@ import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { ExperienceBeliefs } from './experience/beliefs.ts';
 import { ExperienceEffects } from './experience/effects.ts';
+import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
@@ -281,6 +290,8 @@ export type AppDeps = {
   /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
   sandboxPreviews?: SandboxPreviews;
   removals?: SpaceRemovalService;
+  /** Accounts being deleted; started with the service so a deletion finishes after a restart. */
+  accountRemovals?: AccountRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
   broker?: BrokerService;
@@ -463,6 +474,40 @@ export function createApp(deps: AppDeps) {
   if (noticing) mountSituations(app, noticing);
   const longWork =
     deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined);
+  // Taking everything along, and deleting an account.
+  if (deps.sql) {
+    const sql = deps.sql;
+    mountAccount(app, {
+      sql,
+      spacesRoot: deps.env.MELETE_SPACES_DIR,
+      ...(longWork
+        ? {
+            runs: async (spaceId: string, runId: string) =>
+              longWork.markdown(await longWork.requireRun(spaceId, runId)),
+          }
+        : {}),
+      memory: async (spaceId, principalId) => {
+        const file = await new ExperienceBeliefs(new ExperienceMemory(sql)).export(
+          spaceId,
+          principalId,
+          { format: 'json' },
+        );
+        return 'content' in file ? file.content : null;
+      },
+      accounts:
+        deps.accountRemovals ??
+        (deps.removals && deps.db && deps.jobs
+          ? new AccountRemovalService({
+              sql,
+              spaces: deps.removals,
+              principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+              ...(deps.env.MELETE_BROWSER_SPACE
+                ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
+                : {}),
+            })
+          : undefined),
+    });
+  }
   const intents =
     deps.intents ??
     (deps.jobs && longWork
@@ -543,7 +588,11 @@ export function createApp(deps: AppDeps) {
       privacy,
       runs: longWork,
       attachments: deps.attachments,
-      workspaces: { workRoot: deps.env.MELETE_WORK_DIR, days: deps.env.MELETE_TRASH_DAYS },
+      workspaces: {
+        workRoot: deps.env.MELETE_WORK_DIR,
+        days: deps.env.MELETE_TRASH_DAYS,
+        spacesRoot: deps.env.MELETE_SPACES_DIR,
+      },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
     });
   // Rooms: shared spaces where several people talk to one agent. Switched
@@ -802,6 +851,7 @@ export async function bootstrap(
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
+  let accountRemovals: AccountRemovalService | undefined;
   let blobs: ReturnType<typeof startBlobs> | undefined;
   let attachments: AttachmentService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
@@ -824,6 +874,7 @@ export async function bootstrap(
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
+  let releaseCredential: ReturnType<typeof connectionRevocation> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -876,6 +927,7 @@ export async function bootstrap(
       () => supervisor?.close(),
       // A sweep in flight finishes, or resumes at its phase on the next boot.
       () => {
+        accountRemovals?.stop();
         removals?.stop();
         return removals?.drain();
       },
@@ -1039,6 +1091,13 @@ export async function bootstrap(
       // A Google account signed in through Composio is revoked there when disconnected.
       const composio = connectors.options.composio;
       releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
+      // A disconnection deletes the sealed tokens and withdraws them at the provider where it can.
+      releaseCredential = connectionRevocation({
+        sql: handle.sql,
+        secrets: connectors.secrets,
+        ...(connectors.options.google ? { google: connectors.options.google } : {}),
+        mcpFetch: mcpIssuerFetch(handle.sql),
+      });
       // Accounts a removed space, a failed disconnection or an unfinished
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
@@ -1522,7 +1581,19 @@ export async function bootstrap(
             }
           : {}),
         ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
+        ...(releaseCredential ? { afterRevoke: releaseCredential } : {}),
       });
+      // Sealed tokens an earlier version left behind on refreshes and disconnections go now.
+      if (handle)
+        void sweepUnreferencedSecrets(handle.sql)
+          .then((count) => {
+            if (count) console.error(`connections: deleted ${count} sealed tokens nothing used`);
+          })
+          .catch((error: unknown) =>
+            console.error(
+              `connections: unused sealed tokens were not checked (${error instanceof Error ? error.message : 'error'})`,
+            ),
+          );
       // Revocations a stopped process left part way finish now, in the
       // background: each can reach a provider, and its connection stays
       // inactive until it does.
@@ -1611,6 +1682,14 @@ export async function bootstrap(
         // Resumed in the background: a removal waiting on a provider or a held
         // file does not hold up the listener, and a shutdown waits for it.
         if (options.workers !== false) removals.start();
+        // An account being deleted carries on where it was, and finishes.
+        accountRemovals = new AccountRemovalService({
+          sql: handle.sql,
+          spaces: removals,
+          principals: new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
+          ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
+        });
+        if (options.workers !== false) accountRemovals.start();
       }
       if (options.workers !== false) {
         // A paired computer's screenshots an earlier version kept in job
@@ -1627,17 +1706,18 @@ export async function bootstrap(
         // Threads that deleted routines left behind before deleting a routine
         // took its thread go now, in the background.
         if (handle && jobs) {
-          const workspaces = { workRoot: env.MELETE_WORK_DIR, days: env.MELETE_TRASH_DAYS };
+          const workspaces = {
+            workRoot: env.MELETE_WORK_DIR,
+            days: env.MELETE_TRASH_DAYS,
+            spacesRoot: env.MELETE_SPACES_DIR,
+          };
           const removing = { jobs, sql: handle.sql, runner, workspaces };
           void removeDeletedRoutineThreads(removing).catch(() => {
             process.stderr.write('removing the threads of deleted routines failed\n');
           });
           // Workspaces that chats deleted before a deleted chat took its
           // workspace with it go to the trash now, in the background.
-          void trashOrphanedWorkspaces(handle.sql, {
-            ...workspaces,
-            spacesRoot: env.MELETE_SPACES_DIR,
-          }).catch(() => {
+          void trashOrphanedWorkspaces(handle.sql, workspaces).catch(() => {
             process.stderr.write('moving the workspaces of deleted chats to the trash failed\n');
           });
         }
@@ -1844,6 +1924,7 @@ export async function bootstrap(
     sandboxComputers,
     sandboxPreviews,
     removals,
+    ...(accountRemovals ? { accountRemovals } : {}),
     episodes,
     proposer: learning?.proposer,
     evaluator,
