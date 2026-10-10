@@ -10,8 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
-import type { DesktopCommand } from '../sandbox/adapters/docker.ts';
-import { CHECK_LEFT_BY_OTHER_WORK } from '../sandbox/check-screen.ts';
+import type { DesktopCommand, DesktopDisplay } from '../sandbox/adapters/docker.ts';
 import { FakeSandboxProvider } from '../sandbox/fake.ts';
 import { MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
@@ -74,6 +73,8 @@ const PLAIN_PAGE = encode({
   title: 'Shop',
   elements: [{ ref: 'n2', role: 'heading', name: 'Welcome', box: [40, 100, 400, 40] }],
 });
+/** A display nothing has been opened on yet. */
+const BLANK_PAGE = encode({ source: 'accessibility', url: 'about:blank', title: '', elements: [] });
 
 withDb('a check that a person is there, on the computer', () => {
   const scene = async (screen: Uint8Array) => {
@@ -85,12 +86,22 @@ withDb('a check that a person is there, on the computer', () => {
       where id = ${scope.connectionId}`;
     await sql`update job set agent_id = ${scope.agentId}, state = 'running', lease_epoch = 1
       where id = ${scope.jobId}`;
-    // A desktop that shows the given page after any step.
+    // A desktop where each chat's display shows the given page once a step
+    // there has opened something, and a blank page until then: a display
+    // starts clean for the chat it is given to.
+    const opened = new Set<number>();
     const provider = Object.assign(new FakeSandboxProvider(), {
       desktop: true,
-      async computer(_handle: unknown, command: DesktopCommand) {
+      async computer(
+        _handle: unknown,
+        command: DesktopCommand,
+        _signal?: AbortSignal,
+        display?: DesktopDisplay,
+      ) {
+        const number = display?.number ?? 0;
         if (command.kind === 'screenshot') return png(1024, 768);
-        if (command.kind === 'text') return screen;
+        if (command.kind === 'text') return opened.has(number) ? screen : BLANK_PAGE;
+        if (command.kind === 'open') opened.add(number);
         return encode({ navigated: true, window: 'Shop - Chromium' });
       },
     });
@@ -207,8 +218,10 @@ withDb('a check that a person is there, on the computer', () => {
       reason: 'captcha',
       service: 'shop.example',
       done: ['Opened demo.shop.example'],
-      take_over: { surface: 'computer', session_id: detail.session_id },
+      // The person takes over the chat's own display of the computer.
+      take_over: { surface: 'computer', session_id: detail.computer_id },
     });
+    expect(String(detail.computer_id)).toStartWith('sbd_');
     expect(attempt?.outcome).toBe('fenced');
   }, 60_000);
 
@@ -224,25 +237,30 @@ withDb('a check that a person is there, on the computer', () => {
     expect(attempt?.outcome).toBeNull();
   }, 60_000);
 
-  test('a check another chat left on the shared computer is not handed over, and one this work opens is', async () => {
+  test('a check another chat met on the shared computer is not handed over, and one this work opens is', async () => {
     const { step, otherWork } = await scene(CHECK_PAGE);
-    // The first chat met the check and left it on the screen.
-    expect((await step()).detail.handed_to).toBe('person');
-    // The next chat only looks, and sees that page: it was never there, so the check is not its.
+    // The first chat met the check on its display and left it there.
+    const first = await step();
+    expect(first.detail.handed_to).toBe('person');
+    // The next chat only looks, at a display of its own: the first chat's check is not on it.
     const other = await otherWork();
     const looked = await step({ kind: 'computer.screenshot', payload: { step: 1 }, work: other });
+    expect(String(looked.detail.computer_id)).toStartWith('sbd_');
+    expect(looked.detail.computer_id).not.toBe(first.detail.computer_id);
     expect(looked.detail.challenge).toBeUndefined();
     expect(looked.detail.handed_to).toBeUndefined();
-    expect(looked.detail.next_step).toBe(CHECK_LEFT_BY_OTHER_WORK);
+    expect(looked.detail.next_step).toBeUndefined();
     expect(looked.job?.state).toBe('running');
     expect(looked.attempt?.outcome).toBeNull();
-    // Once it opens that site itself, the check is its own and the person gets it.
+    // Once it opens that site itself, the check is its own and the person gets its display.
     const opened = await step({
       payload: { step: 2, url: 'https://demo.shop.example/checkout' },
       work: other,
     });
     expect(opened.detail).toMatchObject({ challenge: 'cloudflare', handed_to: 'person' });
+    expect(opened.detail.computer_id).toBe(looked.detail.computer_id);
     expect(opened.job?.state).toBe('waiting_for_input');
+    expect(opened.job?.wait.handoff.take_over.session_id).toBe(looked.detail.computer_id);
   }, 60_000);
 
   test('a page with no check goes on as before', async () => {

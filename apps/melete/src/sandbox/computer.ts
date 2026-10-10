@@ -14,7 +14,13 @@
  * Server-Sent Events stream of `LiveDown` frames, and `LiveUp` input. Its id is
  * held in memory only and bound to the principal, the computer, the epoch and
  * the address it was opened from; every request checks all four and the
- * person's authority over the job again. Frames are JPEGs of the whole desktop,
+ * person's authority over the job again.
+ *
+ * Each chat or run has its own display of the computer (`displays.ts`), and
+ * the id the routes take names that display: watching, taking over and
+ * handing back reach that display and the job working on it, never another
+ * chat's. A computer from before displays is reached by its session id, as
+ * display 0. Frames are JPEGs of the whole desktop,
  * paced, at most two unacknowledged, written through and never stored. Nothing
  * the person types is logged, recorded on the timeline or kept.
  */
@@ -43,12 +49,17 @@ import { ServiceError } from '../api/errors.ts';
 import { appendEvent } from '../broker/records.ts';
 import { lockEventOrderIn } from '../db/transaction.ts';
 import { liveFrame, requestPeer } from '../workers/browser/live-service.ts';
-import { type DockerSandboxProvider, isDesktopProvider } from './adapters/docker.ts';
+import {
+  type DesktopDisplay,
+  type DockerSandboxProvider,
+  isDesktopProvider,
+} from './adapters/docker.ts';
 import {
   type ComputerControlState,
   type ComputerControls,
   PostgresComputerControls,
 } from './computer-control.ts';
+import { displayKey, ownerJobOf } from './displays.ts';
 import type { SandboxProviders } from './wiring.ts';
 
 /** Frames a second from the desktop: enough to follow a pointer, within the live byte budget. */
@@ -85,8 +96,12 @@ const STATUS = {
 } as const;
 
 type Binding = {
+  /** What the routes call this computer: the chat's display, or a session without one. */
   sessionId: string;
   sandbox: string;
+  /** Who drives this display: `displays.ts`'s key for it. */
+  key: string;
+  display?: DesktopDisplay;
   spaceId: string;
   jobId: string;
   agentId: string | null;
@@ -201,12 +216,18 @@ export class SandboxComputerService {
   private bindingOf(row: Record<string, unknown>): Binding | null {
     const provider = this.providerOf(String(row.connection_id));
     const egress = (row.egress_policy as { kind?: string } | null)?.kind;
-    if (!provider || !row.job_id) return null;
+    const shown = typeof row.display_id === 'string';
+    const jobId = shown ? (row.display_job ?? row.owner_job_id) : row.job_id;
+    if (!provider || !jobId) return null;
+    const sandbox = String(row.provider_sandbox_id);
+    const number = shown ? Number(row.display) : 0;
     return {
-      sessionId: String(row.id),
-      sandbox: String(row.provider_sandbox_id),
+      sessionId: shown ? String(row.display_id) : String(row.id),
+      sandbox,
+      key: displayKey(sandbox, number),
+      ...(shown ? { display: { number, id: String(row.display_id) } } : {}),
       spaceId: String(row.space_id),
-      jobId: String(row.job_id),
+      jobId: String(jobId),
       agentId: (row.agent_id as string | null) ?? null,
       status: row.status === 'ready' ? 'ready' : 'paused',
       egress: egress === 'open' || egress === 'connected_hosts_only' ? egress : 'deny_all',
@@ -231,11 +252,35 @@ export class SandboxComputerService {
     return room?.role === 'member' || room?.role === 'guest' ? 'watch' : null;
   }
 
+  /** A chat's display, with the computer it is on, as a binding reads it. */
+  private async displayRow(id: string): Promise<Record<string, unknown> | undefined> {
+    const [row] = await this.sql`select d.id as display_id, d.display, d.job_id as display_job,
+        d.owner_job_id, s.id, s.connection_id, s.space_id, s.job_id, s.agent_id, s.status,
+        s.provider_sandbox_id, s.egress_policy
+      from sandbox_display d
+      join sandbox_session s on s.provider_sandbox_id = d.provider_sandbox_id
+        and s.connection_id = d.connection_id and s.status in ('ready', 'paused')
+      where d.id = ${id} and d.ended_at is null
+      limit 1`;
+    return row;
+  }
+
+  /** The control key an id the routes take names, read before anything else about it. */
+  private async keyOf(id: string): Promise<string | null> {
+    const [shown] = await this.sql`select provider_sandbox_id, display from sandbox_display
+      where id = ${id} and ended_at is null`;
+    if (shown) return displayKey(String(shown.provider_sandbox_id), Number(shown.display));
+    const [located] = await this.sql`select provider_sandbox_id from sandbox_session
+      where id = ${id}`;
+    return located ? String(located.provider_sandbox_id) : null;
+  }
+
   /** The computer a person may steer (or, with `watch`, look at), or a refusal that reads as an absent session. */
   async steerable(sessionId: string, principalId: string, need: Reach = 'steer'): Promise<Binding> {
-    const [row] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
+    const [legacy] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session where id = ${sessionId} and status in ('ready', 'paused')`;
+    const row = legacy ?? (await this.displayRow(sessionId));
     const binding = row ? this.bindingOf(row) : null;
     const reach = binding ? await this.reach(binding.jobId, principalId) : null;
     if (!binding || !reach || (need === 'steer' && reach !== 'steer'))
@@ -245,11 +290,25 @@ export class SandboxComputerService {
 
   async list(jobId: string, principalId: string): Promise<SandboxComputer[]> {
     if (!(await this.reach(jobId, principalId))) throw new ComputerFault('session_not_found');
-    const rows = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
+    // The displays of the job's chat or run; and a computer of the job's from
+    // before displays, which shows no other chat's screen.
+    const owner = await ownerJobOf(this.sql, jobId);
+    const shown = await this.sql`select d.id as display_id, d.display, d.job_id as display_job,
+        d.owner_job_id, s.id, s.connection_id, s.space_id, s.job_id, s.agent_id, s.status,
+        s.provider_sandbox_id, s.egress_policy
+      from sandbox_display d
+      join sandbox_session s on s.provider_sandbox_id = d.provider_sandbox_id
+        and s.connection_id = d.connection_id and s.status in ('ready', 'paused')
+      where d.owner_job_id = ${owner} and d.ended_at is null
+      order by d.opened_at desc limit 16`;
+    const legacy = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
-      from sandbox_session
+      from sandbox_session s
       where job_id = ${jobId} and status in ('ready', 'paused')
+        and not exists (select 1 from sandbox_display d
+          where d.provider_sandbox_id = s.provider_sandbox_id and d.ended_at is null)
       order by opened_at desc limit 16`;
+    const rows = [...shown, ...legacy].slice(0, 16);
     const computers: SandboxComputer[] = [];
     for (const row of rows) {
       const binding = this.bindingOf(row);
@@ -260,7 +319,7 @@ export class SandboxComputerService {
           AbortSignal.timeout(10_000),
         )
         .catch(() => false);
-      const held = await this.controls.state(binding.sandbox);
+      const held = await this.controls.state(binding.key);
       computers.push({
         session_id: binding.sessionId,
         job_id: binding.jobId,
@@ -290,15 +349,12 @@ export class SandboxComputerService {
     principalId: string,
     seenEpoch?: number,
   ) {
-    const [located] = await this.sql`select provider_sandbox_id from sandbox_session
-      where id = ${sessionId}`;
-    const before = located
-      ? await this.controls.state(String(located.provider_sandbox_id))
-      : undefined;
+    const located = await this.keyOf(sessionId);
+    const before = located ? await this.controls.state(located) : undefined;
     const binding = await this.steerable(sessionId, principalId);
-    const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.sandbox)).epoch;
+    const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.key)).epoch;
     const next = await this.controls.change(
-      binding.sandbox,
+      binding.key,
       operation === 'takeover' ? 'human' : 'agent',
       { from, principalId },
     );
@@ -383,8 +439,8 @@ export class SandboxComputerService {
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
     const binding = await this.steerable(sessionId, principalId, 'watch');
-    const held = await this.controls.state(binding.sandbox);
-    const current = this.bySandbox.get(binding.sandbox);
+    const held = await this.controls.state(binding.key);
+    const current = this.bySandbox.get(binding.key);
     if (current && !current.ended) {
       const recent =
         current.stream !== undefined ||
@@ -395,7 +451,7 @@ export class SandboxComputerService {
     const channel: Channel = {
       id: randomBytes(32).toString('base64url'),
       sessionId,
-      sandbox: binding.sandbox,
+      sandbox: binding.key,
       principalId,
       epoch: held.epoch,
       peer,
@@ -413,11 +469,11 @@ export class SandboxComputerService {
     // Opening the view counts as watching at once, so a hold reopened right at
     // its limit is not handed back before the first tick.
     if (held.control === 'human') {
-      await this.controls.seen(binding.sandbox);
+      await this.controls.seen(binding.key);
       channel.seenAt = this.now();
     }
     this.byId.set(channel.id, channel);
-    this.bySandbox.set(binding.sandbox, channel);
+    this.bySandbox.set(binding.key, channel);
     channel.timer = setInterval(() => void this.tick(channel), 1000);
     channel.timer.unref?.();
     return {
@@ -438,7 +494,7 @@ export class SandboxComputerService {
       throw new ComputerFault('live_closed');
     if (channel.principalId !== principalId || channel.peer !== requestPeer(c))
       throw new ComputerFault('not_you');
-    if ((await this.controls.state(binding.sandbox)).epoch !== channel.epoch) {
+    if ((await this.controls.state(binding.key)).epoch !== channel.epoch) {
       this.finish(channel, 'epoch_changed');
       throw new ComputerFault('epoch_changed');
     }
@@ -499,7 +555,12 @@ export class SandboxComputerService {
     const handle = { providerSandboxId: binding.sandbox, imageDigest: null, region: null };
     const keepalive = setInterval(() => stream.keepalive(), 15_000);
     try {
-      for await (const jpeg of binding.provider.frames(handle, this.fps, controller.signal)) {
+      for await (const jpeg of binding.provider.frames(
+        handle,
+        this.fps,
+        controller.signal,
+        binding.display,
+      )) {
         if (channel.stream !== stream || channel.ended) break;
         binding.provider.touch(handle);
         // At most two unacknowledged frames; a slow viewer is shown the newest when it catches up.
@@ -533,7 +594,7 @@ export class SandboxComputerService {
     const { channel, binding } = await this.bound(c, sessionId, request.live_id);
     channel.ack = Math.max(channel.ack, request.ack_through);
     if (!request.events.length) return { accepted: 0 };
-    if ((await this.controls.state(binding.sandbox)).control !== 'human')
+    if ((await this.controls.state(binding.key)).control !== 'human')
       throw new ComputerFault('agent_control');
     const now = this.now();
     channel.inputs = channel.inputs.filter((at) => now - at < 1000);
@@ -548,6 +609,7 @@ export class SandboxComputerService {
       { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
       { kind: 'input', events: request.events },
       AbortSignal.timeout(20_000),
+      binding.display,
     );
     return { accepted: request.events.length };
   }

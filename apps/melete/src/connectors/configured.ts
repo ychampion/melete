@@ -1076,6 +1076,7 @@ function sandboxOptions(sql: Sql, env: Env): NonNullable<ConnectorOptions['sandb
   const sessions = new SandboxSessions(sql, {
     leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
     workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
+    maxDisplays: env.MELETE_SANDBOX_MAX_DISPLAYS,
   });
   return {
     sessions,
