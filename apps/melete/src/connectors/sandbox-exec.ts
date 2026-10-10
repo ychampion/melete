@@ -621,9 +621,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
    * now that the computer runs, and its records start if they have not. A
    * failure here never stops the command; what is queued waits for the next.
    */
-  const prepareWork = async (session: SessionRow, computer: WorkComputer, signal: AbortSignal) => {
+  const prepareWork = async (
+    session: SessionRow,
+    computer: WorkComputer,
+    jobId: string,
+    signal: AbortSignal,
+  ) => {
     const handle = sessionHandle(session);
-    await removeQueuedWork(sql, provider, handle, computer, signal).catch((error: unknown) =>
+    await removeQueuedWork(sql, provider, handle, computer, signal, jobId).catch((error: unknown) =>
       workLog('of deleted chats were not removed yet', computer, error),
     );
     await startWorkRecords(sql, provider, handle, computer, signal).catch((error: unknown) =>
@@ -1118,7 +1123,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         if (!renewed) throw new Error('the sandbox session ended before the command was sent');
         session = renewed;
         workComputer = workComputerOf(session);
-        if (workComputer) await prepareWork(session, workComputer, signal);
+        if (workComputer) await prepareWork(session, workComputer, ctx.job_id, signal);
         sent = (
           await syncIn({
             provider,

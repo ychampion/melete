@@ -407,10 +407,13 @@ export type WorkCleanup = { removed: string[]; kept: { path: string; reason: str
 
 /**
  * Remove a computer's queued files from its `/work`. The computer must be
- * running; this never starts it. Each file goes only while it is still a
- * regular file inside `/work`, reached through no link, with the content
- * recorded when its chat was deleted. One that is not stays, recorded as
- * shared. The queue empties either way.
+ * running; this never starts it. Nothing is removed while another chat's
+ * command, action or process, or the person, is at work on it (`busyFor`
+ * is the chat whose command is about to run, whose own work does not
+ * count); the queue waits. Each file goes only while it is still a regular
+ * file inside `/work`, reached through no link, with the content recorded
+ * when its chat was deleted, checked a few at a time just before they go.
+ * One that is not stays, recorded as shared. The queue empties either way.
  */
 export async function removeQueuedWork(
   sql: Sql,
@@ -418,6 +421,7 @@ export async function removeQueuedWork(
   handle: SandboxHandle,
   computer: WorkComputer,
   signal: AbortSignal,
+  busyFor = '',
 ): Promise<WorkCleanup> {
   const queued = await sql`select id, path, hash from sandbox_work_removal
     where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
@@ -425,9 +429,27 @@ export async function removeQueuedWork(
     order by queued_at, id limit 2000`;
   const outcome: WorkCleanup = { removed: [], kept: [] };
   if (!queued.length) return outcome;
+  // A file someone is writing now could change between its check and its removal.
+  if (await othersAtWork(sql, computer, busyFor, null)) return outcome;
   const { files, other } = await listWork(provider, handle, signal);
-  const doomed: string[] = [];
   const keptPresent = new Map<string, string | null>();
+  const remove = async (batch: string[]) => {
+    if (!batch.length) return;
+    const ran = await provider.exec(
+      handle,
+      {
+        marker: recordId('act'),
+        argv: ['rm', '-f', '--', ...batch.map((relative) => `${SANDBOX_WORKDIR}/${relative}`)],
+        cwd: SANDBOX_WORKDIR,
+        timeoutMs: 30_000,
+        maxOutputBytes: 4096,
+      },
+      signal,
+    );
+    if (ran.exitCode !== 0) throw new Error('the files could not be removed from the computer');
+    outcome.removed.push(...batch);
+  };
+  let doomed: string[] = [];
   for (const row of queued) {
     const path = String(row.path);
     let relative: string;
@@ -453,12 +475,23 @@ export async function removeQueuedWork(
       keptPresent.set(relative, null);
       continue;
     }
-    const bytes = await provider.getFile(
-      handle,
-      `${SANDBOX_WORKDIR}/${relative}`,
-      SYNC_LIMITS.maxFileBytes + 1,
-      signal,
-    );
+    let bytes: Uint8Array;
+    try {
+      bytes = await provider.getFile(
+        handle,
+        `${SANDBOX_WORKDIR}/${relative}`,
+        SYNC_LIMITS.maxFileBytes + 1,
+        signal,
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      // Gone since the listing; or unreadable, and so not shown to be the chat's.
+      if (!(error instanceof SandboxFileNotFound)) {
+        outcome.kept.push({ path, reason: 'it could not be read' });
+        keptPresent.set(relative, null);
+      }
+      continue;
+    }
     const hash = digest(bytes);
     if (bytes.byteLength !== size || hash !== String(row.hash)) {
       outcome.kept.push({ path, reason: 'it changed since the chat wrote it' });
@@ -466,23 +499,12 @@ export async function removeQueuedWork(
       continue;
     }
     doomed.push(relative);
+    if (doomed.length >= 50) {
+      await remove(doomed);
+      doomed = [];
+    }
   }
-  for (let at = 0; at < doomed.length; at += 200) {
-    const batch = doomed.slice(at, at + 200);
-    const ran = await provider.exec(
-      handle,
-      {
-        marker: recordId('act'),
-        argv: ['rm', '-f', '--', ...batch.map((relative) => `${SANDBOX_WORKDIR}/${relative}`)],
-        cwd: SANDBOX_WORKDIR,
-        timeoutMs: 30_000,
-        maxOutputBytes: 4096,
-      },
-      signal,
-    );
-    if (ran.exitCode !== 0) throw new Error('the files could not be removed from the computer');
-    outcome.removed.push(...batch);
-  }
+  await remove(doomed);
   await sql.begin(async (tx) => {
     await lockComputer(tx, computer);
     // Someone changed it after the chat: it is theirs too now, and stays.

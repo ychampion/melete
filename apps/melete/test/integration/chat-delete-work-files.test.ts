@@ -512,4 +512,47 @@ withDb('who made a file in /work', () => {
     expect((await s.recorded('a.txt'))?.shared).toBe(true);
     expect((await s.recorded('b.txt'))?.shared).toBe(true);
   }, 30_000);
+
+  test('nothing is removed while another chat is at work on the computer', async () => {
+    const s = await scope();
+    const provider = new FakeSandboxProvider({ engine });
+    const sandbox = await provider.create(
+      {
+        image: 'base',
+        egress: { kind: 'deny_all' },
+        region: null,
+        lifetimeSeconds: 60,
+        idleSeconds: null,
+        workdir: '/work',
+        labels: {},
+        env: {},
+      },
+      AbortSignal.timeout(5_000),
+    );
+    await provider.exec(
+      sandbox,
+      {
+        marker: recordId('act'),
+        argv: ['sh', '-c', 'mkdir -p /work; printf gone > /work/gone.txt'],
+        cwd: '/',
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+      },
+      AbortSignal.timeout(5_000),
+    );
+    const computer = { ...s.computer, providerSandboxId: sandbox.providerSandboxId };
+    await s.sql`insert into sandbox_work_removal (id, space_id, agent_id, connection_id, job_id, path, hash)
+      values (${recordId('wrm')}, ${s.seeded.spaceId}, ${s.seeded.agentId}, ${s.seeded.connectionId},
+        ${recordId('job')}, 'gone.txt', ${digest('gone')})`;
+    const settle = await s.command(await s.chat());
+    const signal = () => AbortSignal.timeout(10_000);
+    const waiting = await removeQueuedWork(s.sql, provider, sandbox, computer, signal());
+    expect(waiting.removed).toEqual([]);
+    const [queued] = await s.sql`select count(*)::int as n from sandbox_work_removal
+      where space_id = ${s.seeded.spaceId}`;
+    expect(queued?.n).toBe(1);
+    await settle();
+    const done = await removeQueuedWork(s.sql, provider, sandbox, computer, signal());
+    expect(done.removed).toEqual(['gone.txt']);
+  }, 30_000);
 });
