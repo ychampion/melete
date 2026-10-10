@@ -448,7 +448,7 @@ function host(overrides: Record<string, Partial<CommandOutput>> = {}) {
   const commands: string[] = [];
   let migrationQueries = 0;
   const answers: Record<string, string> = {
-    'git status --porcelain': '',
+    'git status --porcelain --untracked-files=no': '',
     'git rev-parse --verify --quiet refs/tags/v0.2.0^{commit}': 'b'.repeat(40),
     'git rev-parse HEAD': 'a'.repeat(40),
     'git symbolic-ref -q --short HEAD': 'main',
@@ -543,13 +543,24 @@ describe('running the upgrade with an injected command runner', () => {
   });
 
   test('a dry run still prints the plan when the preflight finds problems', async () => {
-    const { run, commands } = host({ 'git status --porcelain': { stdout: ' M README.md\n' } });
+    const { run, commands } = host({
+      'git status --porcelain --untracked-files=no': { stdout: ' M README.md\n' },
+    });
     const output: string[] = [];
     const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
     expect(result.status).toBe('refused');
     expect(commands.filter((line) => mutating.test(line))).toEqual([]);
     expect(output.join('\n')).toContain('README.md');
     expect(output.join('\n')).toContain('checkout --detach refs/tags/v0.2.0');
+  });
+
+  test('untracked files, such as the deploy file melete init writes, leave the tree clean', async () => {
+    const { run, commands } = host();
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
+    expect(result.status).toBe('planned');
+    expect(commands).toContain('git status --porcelain --untracked-files=no');
+    expect(commands).not.toContain('git status --porcelain');
   });
 
   test('volumes that cannot be measured stop the upgrade before the backup', async () => {
