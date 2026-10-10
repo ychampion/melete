@@ -14,7 +14,7 @@
  * at their own rate again.
  */
 
-import type { PgBoss } from 'pg-boss';
+import type { PgBoss, WorkHandler, WorkOptions } from 'pg-boss';
 import { notifyChannelSql } from 'pg-boss/dist/plans.js';
 
 /** How long the waker waits, at most, before looking for due jobs again. */
@@ -26,6 +26,31 @@ const RECHECK_MS = 1_000;
 export async function quietQueue(boss: PgBoss, name: string): Promise<void> {
   await boss.createQueue(name);
   await boss.updateQueue(name, { notify: true });
+}
+
+/**
+ * Work a queue whose workers are woken by notices. A notice wakes a worker
+ * once, and otherwise it waits half a minute between looks; so after it handles
+ * a job, it and the queue's other workers here look again at once. Work that
+ * piled up, such as many jobs due at the same moment, is then done at the
+ * handler's pace, and a look that finds nothing sends the workers back to
+ * waiting.
+ */
+export async function workQuiet<ReqData>(
+  boss: PgBoss,
+  name: string,
+  options: WorkOptions,
+  handler: WorkHandler<ReqData>,
+): Promise<string> {
+  await quietQueue(boss, name);
+  return boss.work<ReqData>(name, options, async (jobs) => {
+    try {
+      return await handler(jobs);
+    } finally {
+      for (const worker of boss.getWipData())
+        if (worker.name === name) boss.notifyWorker(worker.id);
+    }
+  });
 }
 
 type DueRow = { name: string; wait_ms: number | string };

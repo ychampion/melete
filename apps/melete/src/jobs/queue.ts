@@ -43,7 +43,7 @@ export const QUEUES = {
 /**
  * Queues whose workers are woken by notices instead of polling (jobs/quiet.ts).
  * Their work arrives through the queue alone, so a notice or the due-job waker
- * always reaches it.
+ * always reaches it. Their workers start with `workQuiet`.
  */
 export const QUIET_QUEUES: readonly string[] = [
   QUEUES.triggerPoll,

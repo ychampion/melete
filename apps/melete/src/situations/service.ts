@@ -66,6 +66,7 @@ import { space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
@@ -2232,7 +2233,7 @@ export class SituationService {
   async start(queue: string): Promise<void> {
     if (this.started) return;
     const boss = this.deps.jobs.boss;
-    await boss.work(queue, { batchSize: 1, pollingIntervalSeconds: 1 }, async () => {
+    await workQuiet(boss, queue, { batchSize: 1, pollingIntervalSeconds: 1 }, async () => {
       try {
         await this.sweep();
       } catch {

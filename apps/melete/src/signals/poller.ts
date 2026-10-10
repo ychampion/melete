@@ -48,6 +48,7 @@ import {
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import {
   connectionServesJob,
   type JobConnectionAudience,
@@ -934,9 +935,14 @@ export class SignalPoller {
   async start(): Promise<void> {
     if (this.started) return;
     const boss = this.deps.triggers.jobs.boss;
-    await boss.work(QUEUES.triggerPoll, { batchSize: 1, pollingIntervalSeconds: 0.5 }, async () => {
-      await this.tick();
-    });
+    await workQuiet(
+      boss,
+      QUEUES.triggerPoll,
+      { batchSize: 1, pollingIntervalSeconds: 0.5 },
+      async () => {
+        await this.tick();
+      },
+    );
     await boss.schedule(QUEUES.triggerPoll, '* * * * *', {});
     this.started = true;
   }

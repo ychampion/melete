@@ -353,6 +353,27 @@ withDb('persisted event streams', () => {
     }
   });
 
+  test('a LISTEN reconnect tells subscribers to look, without waiting for the repair', async () => {
+    const { events } = stream({ pollIntervalMs: 20, repairMs: 60_000 });
+    await events.start();
+    let heard = 0;
+    const unsubscribe = events.subscribe(() => {
+      heard++;
+    });
+    try {
+      await Bun.sleep(100);
+      const before = heard;
+      const { handle } = database();
+      const terminated =
+        await handle.sql`select pg_terminate_backend(pid) as terminated from pg_stat_activity where datname = current_database() and application_name = 'melete-events'`;
+      expect(terminated.some((row) => row.terminated)).toBe(true);
+      // Nothing is written: a commit made while LISTEN was down would be heard only this way.
+      await eventually(() => heard > before);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test('a quiet stream sends its keepalive on time without polling ticks', async () => {
     const { app } = stream({ pollIntervalMs: 10, repairMs: 60_000, keepaliveMs: 300 });
     const subscribed = await reader(app.request('/events'));

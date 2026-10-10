@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { QUIET_QUEUES, startQueue } from './queue.ts';
-import { DUE_SCAN_MS, quietQueue } from './quiet.ts';
+import { DUE_SCAN_MS, workQuiet } from './quiet.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
@@ -19,20 +19,25 @@ function boss() {
 }
 
 /** A worker as the service starts them, recording when each job ran. */
-async function worker(name: string, quiet: boolean, handler: (data: unknown) => void = () => {}) {
-  if (quiet) await quietQueue(boss(), name);
-  else await boss().createQueue(name);
+async function worker(
+  name: string,
+  quiet: boolean,
+  handler: (data: unknown) => unknown = () => {},
+) {
   const ran: number[] = [];
-  const id = await boss().work(
-    name,
-    { batchSize: 1, pollingIntervalSeconds: 0.5 },
-    async (jobs) => {
-      for (const job of jobs) {
-        ran.push(Date.now());
-        handler(job.data);
-      }
-    },
-  );
+  const work = async (jobs: { data: unknown }[]) => {
+    for (const job of jobs) {
+      ran.push(Date.now());
+      await handler(job.data);
+    }
+  };
+  const options = { batchSize: 1, pollingIntervalSeconds: 0.5 };
+  let id: string;
+  if (quiet) id = await workQuiet(boss(), name, options, work);
+  else {
+    await boss().createQueue(name);
+    id = await boss().work(name, options, work);
+  }
   const lastFetch = () =>
     boss()
       .getWipData()
@@ -111,6 +116,36 @@ withDb('queues woken by notices', () => {
     }
   }, 20_000);
 
+  test('many jobs due at the same moment all run then, not one per look', async () => {
+    const quiet = await worker('test.quiet.together', true, () => sleep(20));
+    try {
+      await sleep(1500);
+      const due = Date.now() + DUE_SCAN_MS + 2000;
+      for (let n = 0; n < 10; n++)
+        await boss().send('test.quiet.together', { n }, { startAfter: new Date(due) });
+      expect(await until(() => quiet.ran.length === 10, DUE_SCAN_MS + 8000)).toBe(true);
+      expect((quiet.ran.at(-1) ?? Number.POSITIVE_INFINITY) - due).toBeLessThan(1500);
+    } finally {
+      await quiet.stop();
+    }
+  }, 25_000);
+
+  test('work sent while the worker is busy is done straight after', async () => {
+    const quiet = await worker('test.quiet.burst', true, () => sleep(100));
+    try {
+      await sleep(1500);
+      const sent = Date.now();
+      await boss().insert(
+        'test.quiet.burst',
+        Array.from({ length: 10 }, (_, n) => ({ data: { n } })),
+      );
+      expect(await until(() => quiet.ran.length === 10, 8000)).toBe(true);
+      expect((quiet.ran.at(-1) ?? Number.POSITIVE_INFINITY) - sent).toBeLessThan(3000);
+    } finally {
+      await quiet.stop();
+    }
+  }, 20_000);
+
   test('a retry after a failure runs within one look', async () => {
     let attempts = 0;
     const quiet = await worker('test.quiet.retry', true, () => {
@@ -119,12 +154,14 @@ withDb('queues woken by notices', () => {
     });
     try {
       await sleep(1500);
-      await boss().send('test.quiet.retry', { n: 1 }, { retryLimit: 1, retryDelay: 0 });
-      expect(await until(() => quiet.ran.length === 2, DUE_SCAN_MS + 4000)).toBe(true);
+      // A retry waits its delay, so the look straight after the failure finds nothing.
+      await boss().send('test.quiet.retry', { n: 1 }, { retryLimit: 1, retryDelay: 2 });
+      expect(await until(() => quiet.ran.length === 2, DUE_SCAN_MS + 6000)).toBe(true);
       const [first = 0, second = Number.POSITIVE_INFINITY] = quiet.ran;
-      expect(second - first).toBeLessThan(DUE_SCAN_MS + 1000);
+      expect(second - first).toBeGreaterThanOrEqual(1900);
+      expect(second - first).toBeLessThan(2000 + DUE_SCAN_MS + 1000);
     } finally {
       await quiet.stop();
     }
-  }, 20_000);
+  }, 25_000);
 });

@@ -1,5 +1,5 @@
 import type { PgBoss } from 'pg-boss';
-import { quietQueue } from '../jobs/quiet.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
 import { type CommitResult, commitExtraction } from './commit.ts';
@@ -214,10 +214,10 @@ export async function startMemoryService(options: MemoryServiceOptions) {
       options.onError?.('memory_embedding_backfill_failed'),
     );
   // Extraction is sent when evidence arrives, so its workers wait for that notice.
-  await quietQueue(options.boss, MEMORY_EXTRACT_QUEUE);
   // Structured observations use Tier 0 without a model. Other evidence has a
   // durable attempt cap when no extraction gateway is configured.
-  await options.boss.work<{ work_id: string }>(
+  await workQuiet<{ work_id: string }>(
+    options.boss,
     MEMORY_EXTRACT_QUEUE,
     { localConcurrency: 2, batchSize: 1 },
     async (jobs) => {
