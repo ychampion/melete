@@ -22,6 +22,7 @@ import {
   Select,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { clockTime, isYesterday, sameDay, weekday } from '../experience/clock.ts';
 import { defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
 import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun, Run } from '../experience/types.ts';
@@ -33,14 +34,9 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const when = (iso: string) => {
   const date = new Date(iso);
-  const today = new Date().toDateString();
-  const day =
-    date.toDateString() === today
-      ? 'Today'
-      : date.toDateString() === new Date(Date.now() - 86_400_000).toDateString()
-        ? 'Yesterday'
-        : date.toLocaleDateString('en-US', { weekday: 'short' });
-  return `${day} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  const now = new Date();
+  const day = sameDay(date, now) ? 'Today' : isYesterday(date, now) ? 'Yesterday' : weekday(date);
+  return `${day} at ${clockTime(date)}`;
 };
 
 export const runLabel = (run: AutomationRun) =>

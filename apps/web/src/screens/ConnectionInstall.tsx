@@ -38,8 +38,14 @@ export const SETUP_DOCS: Record<string, string> = {
   microsoft: `${SETUP_DOC}#signing-in-with-microsoft`,
   github: 'https://github.com/ychampion/melete/blob/main/docs/CONNECTORS.md#connecting-github',
 };
-/** Said wherever an option needs the server set up first. */
-export const NOT_SET_UP = 'Available when your server is set up for it.';
+/** Said wherever an option is not offered on this Melete. */
+export const NOT_SET_UP = 'Not offered on this Melete yet.';
+
+/**
+ * Whether the person looking is the one who runs this Melete: the service
+ * sends what to set only to them, so only they are shown how to set it up.
+ */
+const runsThis = (entry: CatalogEntry) => entry.setup_hint !== undefined;
 
 /** Kinds of connection a person uses day to day; the rest are for developers. */
 const EVERYDAY = new Set<ConnectionKind['kind']>(['mail', 'caldav', 'ics']);
@@ -270,16 +276,14 @@ export function KindForm({
             </Button>
           </div>
         </div>
-      ) : easier ? (
+      ) : easier && runsThis(easier) && SETUP_DOCS[easier.connect.provider] ? (
         <div className="col connect-easier" role="note">
           <span>
-            Signing in with {easier.title} needs your server set up for it, so {kind.title} connects
-            here with an app password instead.{' '}
-            {SETUP_DOCS[easier.connect.provider] ? (
-              <a href={SETUP_DOCS[easier.connect.provider]} target="_blank" rel="noreferrer">
-                How to set up {easier.title} sign-in
-              </a>
-            ) : null}
+            Signing in with {easier.title} isn’t set up on this Melete yet, so {kind.title} connects
+            here with an app password.{' '}
+            <a href={SETUP_DOCS[easier.connect.provider]} target="_blank" rel="noreferrer">
+              How to set up {easier.title} sign-in
+            </a>
           </span>
         </div>
       ) : null}
@@ -504,7 +508,7 @@ export function AccountSignIn({
       {!entry.available ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
           {NOT_SET_UP}{' '}
-          {SETUP_DOCS[provider] ? (
+          {runsThis(entry) && SETUP_DOCS[provider] ? (
             <a href={SETUP_DOCS[provider]} target="_blank" rel="noreferrer">
               How to set this up
             </a>
@@ -697,7 +701,7 @@ export function AppConnect({
         <div className="col" style={{ gap: 4 }}>
           <span className="app-connect-note">
             {entry.unavailable_reason ?? NOT_SET_UP}{' '}
-            {SETUP_DOCS[entry.id] ? (
+            {runsThis(entry) && SETUP_DOCS[entry.id] ? (
               <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
                 How to set this up
               </a>
@@ -744,18 +748,21 @@ export function AppConnect({
   );
 }
 
-/** One app in the grid: what it is, and connect, connected, or why it waits. */
+/** One app in the grid: what it is, and connect, connected, or that it is not offered here. */
 function AppCard({
   title,
   description,
   available,
   connected,
+  setup = false,
   onOpen,
 }: {
   title: string;
   description: string;
   available: boolean;
   connected: boolean;
+  /** Not offered yet, and the person looking can set it up. */
+  setup?: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -769,7 +776,7 @@ function AppCard({
         <Badge tone="success" dot>
           Connected
         </Badge>
-      ) : (
+      ) : available || setup ? (
         <Button
           size="sm"
           variant={available ? 'outline' : 'ghost'}
@@ -778,6 +785,8 @@ function AppCard({
         >
           {available ? 'Connect' : 'Set up'}
         </Button>
+      ) : (
+        <span className="app-card-later">Not offered here yet</span>
       )}
     </div>
   );
@@ -785,8 +794,9 @@ function AppCard({
 
 /** The one line an account's card says about it; the full words are on its sign-in. */
 const ACCOUNT_NOTE: Record<string, string> = {
-  google: 'Gmail, Google Calendar and Drive. Each message and change waits for you.',
-  microsoft: 'Outlook mail and calendar. Each message and change waits for you.',
+  google:
+    'Gmail, Google Calendar and Drive. Asks you before it sends mail or changes your calendar.',
+  microsoft: 'Outlook mail and calendar. Asks you before it sends mail or changes your calendar.',
 };
 
 export function AddConnection({
@@ -813,8 +823,6 @@ export function AddConnection({
   const apps = catalog.filter(isApp);
   const account = accounts.find((item) => item.id === signingIn);
   const app = apps.find((item) => item.id === connecting);
-  const everyday = list.filter((item) => EVERYDAY.has(item.kind));
-  const builders = list.filter((item) => !EVERYDAY.has(item.kind));
   const easier = (kindId: string) => accounts.find((item) => item.id === SIGN_IN_FOR[kindId]);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
   if (kinds.unavailable || (!kinds.loading && !kinds.error && list.length === 0)) return null;
@@ -864,86 +872,127 @@ export function AddConnection({
           }}
         />
       ) : (
-        <div className="col" style={{ gap: 14 }}>
-          {accounts.length || apps.length ? (
-            <div className="app-grid">
-              {accounts.map((item) => (
-                <AppCard
+        <Catalog
+          entries={catalog}
+          kinds={list}
+          {...(connected ? { connected } : {})}
+          onOpen={(item) => (isApp(item) ? setConnecting(item.id) : setSigningIn(item.id))}
+          onChoose={setChosen}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * What can be connected, in the order a person needs it: what connects now,
+ * then mail and calendars by app password or link, then what this Melete does
+ * not offer yet, each with one calm line, and last what developers add.
+ */
+export function Catalog({
+  entries,
+  kinds,
+  connected,
+  onOpen,
+  onChoose,
+}: {
+  entries: readonly CatalogEntry[];
+  kinds: readonly ConnectionKind[];
+  /** Catalog apps already connected here, by catalog id. */
+  connected?: ReadonlySet<string>;
+  onOpen: (entry: SignInEntry | AppEntry) => void;
+  onChoose: (kindId: string) => void;
+}) {
+  const offered: (SignInEntry | AppEntry)[] = [
+    ...entries.filter(isSignIn),
+    ...entries.filter(isApp),
+  ];
+  const ready = offered.filter((item) => item.available);
+  const later = offered.filter((item) => !item.available);
+  const everyday = kinds.filter((item) => EVERYDAY.has(item.kind));
+  const builders = kinds.filter((item) => !EVERYDAY.has(item.kind));
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      {ready.length ? (
+        <div className="app-grid">
+          {ready.map((item) => (
+            <AppCard
+              key={item.id}
+              title={item.title}
+              description={ACCOUNT_NOTE[item.id] ?? item.description}
+              available
+              connected={isApp(item) && connected?.has(item.id) === true}
+              onOpen={() => onOpen(item)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {everyday.length ? (
+        <div className="col" id="connect-mail-calendar" style={{ gap: 8 }}>
+          <span className="connect-group">Mail and calendar</span>
+          <span className="app-connect-note">
+            Gmail, iCloud and most other mailboxes and calendars connect here with an app password
+            or a calendar link.
+          </span>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            {everyday.map((item) => (
+              <Button
+                key={item.id}
+                variant="outline"
+                icon="plus"
+                title={item.description}
+                onClick={() => onChoose(item.id)}
+              >
+                {item.title}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {later.length ? (
+        <div className="app-grid">
+          {later.map((item) => (
+            <AppCard
+              key={item.id}
+              title={item.title}
+              description={ACCOUNT_NOTE[item.id] ?? item.description}
+              available={false}
+              connected={false}
+              setup={runsThis(item)}
+              onOpen={() => onOpen(item)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {builders.length ? (
+        <details className="connect-advanced">
+          <summary>
+            <span className="connect-advanced-title">For developers</span>
+            <span className="connect-advanced-note">
+              Any MCP server by its address, and your own OAuth apps
+            </span>
+          </summary>
+          <div className="col" style={{ gap: 8, paddingTop: 12 }}>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              {builders.map((item) => (
+                <Button
                   key={item.id}
-                  title={item.title}
-                  description={ACCOUNT_NOTE[item.id] ?? item.description}
-                  available={item.available}
-                  connected={false}
-                  onOpen={() => setSigningIn(item.id)}
-                />
-              ))}
-              {apps.map((item) => (
-                <AppCard
-                  key={item.id}
-                  title={item.title}
-                  description={item.description}
-                  available={item.available}
-                  connected={connected?.has(item.id) === true}
-                  onOpen={() => setConnecting(item.id)}
-                />
+                  variant="outline"
+                  icon="plus"
+                  title={item.description}
+                  onClick={() => onChoose(item.id)}
+                >
+                  {item.title}
+                </Button>
               ))}
             </div>
-          ) : null}
-          {everyday.length || builders.length ? (
-            <details className="connect-advanced">
-              <summary>
-                <span className="connect-advanced-title">Advanced</span>
-                <span className="connect-advanced-note">
-                  Mail with an app password, calendar feeds, any MCP server by its address, and your
-                  own OAuth apps
-                </span>
-              </summary>
-              <div className="col" style={{ gap: 14, paddingTop: 12 }}>
-                {everyday.length ? (
-                  <div className="col" style={{ gap: 8 }}>
-                    <span className="connect-group">Mail and calendars</span>
-                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                      {everyday.map((item) => (
-                        <Button
-                          key={item.id}
-                          variant="outline"
-                          icon="plus"
-                          title={item.description}
-                          onClick={() => setChosen(item.id)}
-                        >
-                          {item.title}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                {builders.length ? (
-                  <div className="col" style={{ gap: 8 }}>
-                    <span className="connect-group">For developers</span>
-                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                      {builders.map((item) => (
-                        <Button
-                          key={item.id}
-                          variant="outline"
-                          icon="plus"
-                          title={item.description}
-                          onClick={() => setChosen(item.id)}
-                        >
-                          {item.title}
-                        </Button>
-                      ))}
-                    </div>
-                    <span className="app-connect-note">
-                      Melete reads a server’s tools from its address, after you sign in when it
-                      asks, and you choose which to use.
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            </details>
-          ) : null}
-        </div>
-      )}
+            <span className="app-connect-note">
+              Melete reads a server’s tools from its address, after you sign in when it asks, and
+              you choose which to use.
+            </span>
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }

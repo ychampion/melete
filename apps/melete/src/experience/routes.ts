@@ -191,9 +191,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   > = {
     'GET /profile': (spaceId) => home.profile(spaceId),
     'PATCH /profile': async (spaceId, _c, input) => {
-      const { profile, moved } = await home.saveProfile(spaceId, input);
-      // Routines keep their local hour when the person's time zone changes.
-      if (moved) await planning.retimeSchedules(spaceId, moved);
+      const { profile } = await home.saveProfile(spaceId, input);
+      // Routines run on the person's clock: they keep their local hour when the
+      // zone changes, and one left on another zone is brought onto it.
+      await planning.retimeSchedules(spaceId, profile.time_zone);
       return { profile };
     },
     'GET /home': async (spaceId, c) => ({

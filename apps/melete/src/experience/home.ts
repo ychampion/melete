@@ -75,8 +75,7 @@ export type ConnectionLiveness = (
   row: typeof connection.$inferSelect,
 ) => Promise<'running' | 'not_running' | 'unknown'>;
 
-const NOT_RUNNING =
-  'Installed, but not running on this server, so Melete cannot use it. Whoever runs Melete can check its settings and service log.';
+const NOT_RUNNING = 'Installed, but not running right now, so Melete can’t use it yet.';
 const FAILING = 'Its last check failed. Press Test to check it again, or reconnect it.';
 const NEEDS_ACCESS =
   'It asked for more access than it was given. Sign in again to grant it, or Melete keeps going without that part.';

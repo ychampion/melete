@@ -268,6 +268,46 @@ withDb('routines, time zone and setup as the person sees them', () => {
     ]);
   });
 
+  test('a routine left on another clock is brought onto the person’s own when the profile is saved', async () => {
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations', 'POST', {
+          title: 'Evening check',
+          instruction: 'Check the evening',
+          weekdays: [1, 2, 3, 4, 5],
+          at: '19:00',
+        })
+      ).json(),
+    ).automation;
+    const specOf = async () => {
+      const [registration] = await required(handle)
+        .db.select()
+        .from(trigger)
+        .where(eq(trigger.id, routine.id));
+      const spec = triggerSpec.parse(required(registration).spec);
+      if (spec.kind !== 'schedule') throw new Error('not a schedule');
+      return spec;
+    };
+    await required(handle)
+      .db.update(trigger)
+      .set({ spec: triggerSpec.parse({ ...(await specOf()), timezone: 'Asia/Calcutta' }) })
+      .where(eq(trigger.id, routine.id));
+    const zone = (await profile()).time_zone;
+    expect(zone).not.toBe('Asia/Calcutta');
+    // Only the name changes; the clock stays where it was.
+    const saved = await request('/profile', 'PATCH', {
+      name: 'Sam Lee',
+      time_zone: zone,
+      day_hours: hours,
+    });
+    expect(saved.status).toBe(200);
+    expect((await specOf()).timezone).toBe(zone);
+    const listed = experienceOperations['GET /automations'].response
+      .parse(await (await request('/automations')).json())
+      .automations.find((row) => row.id === routine.id);
+    expect(listed?.schedule).toContain(`(${zone})`);
+  });
+
   test('a routine can be paused, resumed and deleted, and a failed or stopped one says so', async () => {
     const persona = agentResponse.parse(
       await (await request('/agents', 'POST', freshAgent())).json(),

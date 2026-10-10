@@ -133,7 +133,14 @@ type SignedInOwner = { id: string; email: string; created_at: string };
 
 export type Result<T> =
   | { data: T; error: null; unavailable: null }
-  | { data: null; error: string; unavailable: null; unauthorized?: boolean }
+  | {
+      data: null;
+      error: string;
+      unavailable: null;
+      unauthorized?: boolean;
+      /** The service's code for the refusal, where it gave one. */
+      code?: string;
+    }
   | { data: null; error: null; unavailable: string };
 
 /**
