@@ -617,6 +617,15 @@ export class SandboxSessions {
             egressKey(shared.egressPolicy) !== egressKey(spec.egress)
           )
             throw new SandboxRefusal('workspace_busy', BUSY);
+          // Only while a chat is still on it: once the attempt holding it has
+          // ended with no other on a display, the computer is being settled
+          // and may be suspending, so this attempt waits and then resumes it.
+          const [kept] = await tx`select 1 from attempt a
+            where a.ended_at is null and (a.lease_expires_at is null or a.lease_expires_at > now())
+              and (a.id = ${shared.attemptId} or a.id in (select d.attempt_id from sandbox_display d
+                where d.provider_sandbox_id = ${shared.providerSandboxId} and d.ended_at is null))
+            limit 1`;
+          if (!kept) throw new SandboxRefusal('workspace_busy', BUSY);
           const display = await this.displays.acquire(tx, {
             spaceId: input.spaceId,
             connectionId: input.connectionId,
@@ -1051,14 +1060,21 @@ export class SandboxSessions {
     await this.sql.begin((tx) => this.meterHeld(tx, id));
     // The lease is renewed first, so the sweep does not take the row meanwhile,
     // and the processes let go in the same statement: a row being suspended
-    // is busy, never handed to an attempt while its sandbox pauses.
-    const [claimed] = await this.sql`update sandbox_session
-      set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
-        held_by = case when held_by = 'processes' then null else held_by end
-      where id = ${id} and status = 'ready' and agent_id is not null
-        and persistence in ('pause', 'snapshot') and ${notHeldByPerson(this.sql)}
-        and not ${displayInUse(this.sql)}
-      returning *`;
+    // is busy, never handed to an attempt while its sandbox pauses. Under the
+    // workspace lock an opening takes, so a display another chat is taking on
+    // the computer meanwhile is seen here and the computer is kept for it.
+    const [claimed] = await this.sql.begin(async (tx) => {
+      const [scope] = await tx`select space_id, agent_id from sandbox_session where id = ${id}`;
+      if (scope?.agent_id)
+        await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${String(scope.space_id)}:${String(scope.agent_id)}`}))`;
+      return await tx`update sandbox_session
+        set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
+          held_by = case when held_by = 'processes' then null else held_by end
+        where id = ${id} and status = 'ready' and agent_id is not null
+          and persistence in ('pause', 'snapshot') and ${notHeldByPerson(tx)}
+          and not ${displayInUse(tx)}
+        returning *`;
+    });
     if (!claimed) {
       const current = await this.get(id);
       if (await this.heldByPerson(current?.providerSandboxId ?? ''))
