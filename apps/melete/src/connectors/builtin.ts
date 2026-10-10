@@ -271,6 +271,22 @@ export async function ensureBuiltinConnections(
           and c.status <> 'revoked'
           and (${spaceId ?? null}::text is null or c.space_id = ${spaceId ?? null})
           and not (c.scopes @> ${JSON.stringify(builtin.scopes)}::jsonb)`;
+      // The default computer runs the image the operator configures now. The
+      // row keeps the one it was made under, and every computer it opens, a
+      // new one or one made again on its kept volumes, is made from the row:
+      // after an update that named another image, or a restore onto a machine
+      // installed at another release, it would ask for an image the cell
+      // service refuses (it runs only the configured one) or the engine lacks.
+      const sandbox = builtin.key === 'sandbox' ? environment.sandbox : null;
+      if (sandbox)
+        await tx`update connection c
+          set configuration = jsonb_set(c.configuration, '{sandbox,image}', to_jsonb(${sandbox.image}::text))
+          where c.provider = ${builtin.provider}
+            and c.configuration->>'builtin' = ${builtin.key}
+            and c.configuration->'sandbox'->>'adapter' = ${sandbox.adapter}
+            and c.status <> 'revoked'
+            and (${spaceId ?? null}::text is null or c.space_id = ${spaceId ?? null})
+            and c.configuration->'sandbox'->>'image' is distinct from ${sandbox.image}`;
     }
     return created;
   });

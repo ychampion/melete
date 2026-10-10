@@ -880,9 +880,9 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
    * the browser's profile) and its network are kept; only the container is
    * replaced. Only for a computer the caller found quiet (no person holds it,
    * no background process of its agent runs), and never while a command or a
-   * view still runs in it. A computer whose container went missing after a
-   * replacement began, with both its volumes still there, is made again the
-   * same way. Returns the image it ran before (null when its container was
+   * view still runs in it. A computer whose container went missing, after a
+   * replacement began or in a restore onto a new machine, with both its
+   * volumes still there, is made again the same way. Returns the image it ran before (null when its container was
    * gone), or undefined when nothing was made.
    */
   private async refresh(
@@ -1269,10 +1269,13 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     signal.throwIfAborted();
     const name = DockerSandboxHost.checkName(handle);
     const state = await this.inspectContainer(name);
-    if (!state) throw new SandboxGone(`the engine has no sandbox ${name}`);
+    // Without its container but with both its volumes (a restore onto a new
+    // machine) it is already stopped; the resume makes the container again.
+    if (!state && !(await this.volumesKept(name)))
+      throw new SandboxGone(`the engine has no sandbox ${name}`);
     // Kept as it is; the idle clock stops it, so a person can still watch or
     // take over right after the attempt that used it has ended.
-    this.activity.set(name, this.now());
+    if (state) this.activity.set(name, this.now());
     return { resumeRef: name };
   }
 
@@ -1356,7 +1359,11 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       return 'gone';
     }
     const state = await this.inspectContainer(name);
-    if (!state) return 'gone';
+    // A computer is its two volumes as much as its container: with both kept
+    // (a restore onto a new machine brings back the volumes, never the
+    // container) it is stopped, and its next resume makes the container again
+    // on them. Only a computer without them is gone.
+    if (!state) return (await this.volumesKept(name)) ? 'paused' : 'gone';
     return state.State?.Running && !state.State.Paused ? 'running' : 'paused';
   }
 
