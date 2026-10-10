@@ -5,8 +5,8 @@
 import { afterEach, expect, test } from 'bun:test';
 import {
   clockTime,
-  dayWords,
   dayKey,
+  dayWords,
   displayZone,
   hourOfDay,
   isYesterday,
