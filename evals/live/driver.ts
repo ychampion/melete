@@ -378,7 +378,9 @@ export async function runJob(
   }
 
   const wall =
-    finishedAt === null ? (Date.now() - sentAt) / 1000 : (finishedAt - sentAt - waitingMs) / 1000;
+    finishedAt === null || timedOut
+      ? (Date.now() - sentAt) / 1000
+      : (finishedAt - sentAt - waitingMs) / 1000;
   const shownCheck = CHECK_WORDS.test(stepText(evidence)) || CHECK_WORDS.test(reply);
 
   const cleanup: string[] = [];
