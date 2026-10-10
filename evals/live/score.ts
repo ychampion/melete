@@ -41,7 +41,7 @@ export function scoreBars(jobs: readonly JobRecord[]): Bar[] {
   const checks = jobs
     .filter(ran)
     .flatMap((job) => [
-      ...job.handoffs.map((handoff) => handoff.latency_s),
+      ...(job.check_expected ? job.handoffs.map((handoff) => handoff.latency_s) : []),
       ...(job.unshown_check ||
       (job.category === 'human_check' && job.handoffs.length === 0 && job.outcome !== 'error')
         ? [null]

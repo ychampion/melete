@@ -116,6 +116,8 @@ const job = (over: Partial<JobRecord>): JobRecord => ({
   questions: 0,
   handoffs: [],
   unshown_check: false,
+  check_expected: false,
+  handed_back: 0,
   claims: [],
   stopped: false,
   rubric: null,
@@ -152,6 +154,7 @@ describe('scoring against the bars', () => {
     const slow = scoreBars([
       job({
         category: 'human_check',
+        check_expected: true,
         handoffs: [
           { at: '', title: 'Over to you', latency_s: 14, last_step_s: 3, measured_from: 'page' },
         ],
@@ -163,6 +166,7 @@ describe('scoring against the bars', () => {
     const quick = scoreBars([
       job({
         category: 'human_check',
+        check_expected: true,
         handoffs: [
           { at: '', title: 'Over to you', latency_s: 4, last_step_s: 2, measured_from: 'page' },
         ],
@@ -170,6 +174,15 @@ describe('scoring against the bars', () => {
     ]);
     expect(quick.find((bar) => bar.id === 'handoff')?.status).toBe('pass');
     expect(scoreBars([job({})]).find((bar) => bar.id === 'handoff')?.status).toBe('not_measured');
+    const unexpected = scoreBars([
+      job({
+        outcome: 'handed_off',
+        handoffs: [
+          { at: '', title: 'Over to you', latency_s: 30, last_step_s: 1, measured_from: 'page' },
+        ],
+      }),
+    ]);
+    expect(unexpected.find((bar) => bar.id === 'handoff')?.status).toBe('not_measured');
   });
 
   test('one unsupported claim fails the claims bar; approvals use the median of completed jobs', () => {

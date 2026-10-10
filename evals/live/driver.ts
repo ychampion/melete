@@ -80,6 +80,8 @@ export type JobOptions = {
   index: number;
   env: Env;
   keepChat?: boolean;
+  /** Hand an unexpected hand-off straight back this many times, to see what the agent does next. */
+  handBack?: number;
   rubric?: (
     task: Task,
     request: string,
@@ -107,6 +109,8 @@ export async function runJob(
     questions: 0,
     handoffs: [],
     unshown_check: false,
+    check_expected: task.category === 'human_check' || Boolean(task.challenge_host),
+    handed_back: 0,
     claims: [],
     stopped: false,
     rubric: null,
@@ -150,6 +154,8 @@ export async function runJob(
   let timedOut = false;
   let error: string | null = null;
   let waitingMs = 0;
+  let handBacks = 0;
+  let waitingOnPerson = false;
 
   /** Answers whatever this chat is waiting on; returns how many it answered. */
   const answerPending = async (): Promise<number> => {
@@ -227,8 +233,24 @@ export async function runJob(
               turnStart,
             ),
           });
+          const action = item.card.primary_action;
+          if (
+            task.category !== 'human_check' &&
+            handBacks < (options.handBack ?? 0) &&
+            action?.kind === 'take_over'
+          ) {
+            // A person who looks, finds nothing to do, and hands it straight back.
+            const surface = action.surface === 'computer' ? 'sandbox' : 'browser';
+            await client.takeOver(surface, action.handle).catch(() => undefined);
+            await Bun.sleep(2000);
+            await client.handBack(surface, action.handle).catch(() => undefined);
+            handBacks++;
+            needsYouSince = null;
+            continue;
+          }
           // Nobody is there to take over: the job ends here, as it would for a person away.
           finishedAt = Date.now();
+          waitingOnPerson = true;
           break;
         }
       } else if (item.type === 'permission' || item.type === 'question') {
@@ -253,7 +275,7 @@ export async function runJob(
 
   // Background work the turn started reports to the chat later; wait for it within the budget.
   let runs: RunView[] = [];
-  if (!timedOut && !handoffs.length && turnStatus === 'done') {
+  if (!timedOut && !waitingOnPerson && turnStatus === 'done') {
     try {
       runs = await client.runs(conversation);
       while (runs.some((run) => !TERMINAL_RUN.has(run.status)) && Date.now() < budgetEnd) {
@@ -271,12 +293,12 @@ export async function runJob(
     }
   }
 
-  if (timedOut || (!finishedAt && !handoffs.length)) {
+  if (timedOut || (!finishedAt && !waitingOnPerson)) {
     base.stopped = true;
     await client.stop(conversation).catch(() => undefined);
     for (const run of runs.filter((entry) => !TERMINAL_RUN.has(entry.status)))
       await client.stopRun(run.id).catch(() => undefined);
-  } else if (handoffs.length) {
+  } else if (waitingOnPerson) {
     // The hand-off waits on a person who is not coming; stopping releases what it holds.
     base.stopped = true;
     await client.stop(conversation).catch(() => undefined);
@@ -317,8 +339,11 @@ export async function runJob(
       outcome = verdict.pass ? 'pass' : timedOut ? 'timeout' : 'fail';
       reason = verdict.reason;
     } else if (handoffs.length) {
+      // Asked of a person is not done end to end, whatever happened after a hand-back.
       outcome = 'handed_off';
-      reason = `handed to the person: ${handoffs[0]?.title ?? ''}`;
+      reason = handBacks
+        ? `${handoffs[0]?.title ?? ''}; handed back ${handBacks}x with nothing solved, then ${verdict.pass ? 'done' : 'not done'}: ${verdict.reason}`
+        : `handed to the person: ${handoffs[0]?.title ?? ''}`;
     } else if (timedOut) {
       outcome = 'timeout';
       reason = `stopped at the ${task.budget_s} s budget (${verdict.reason})`;
@@ -368,6 +393,7 @@ export async function runJob(
     steps: allTools.filter((tool) => tool.kind !== 'model').length,
     handoffs,
     unshown_check: shownCheck && handoffs.length === 0,
+    handed_back: handBacks,
     claims: unsupportedClaims(reply, evidence),
     rubric:
       options.rubric && task.rubric && reply

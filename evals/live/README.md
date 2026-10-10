@@ -16,7 +16,7 @@ It is the automated form of a hand-run real-use round. Where the lab in `evals/`
 
 1. If the task needs it, reads the site first (ParaBank's accounts, the files a download page lists) and makes fresh values, so the job's effect can be told from anyone else's.
 2. Opens a new chat and sends the task the way a person types it.
-3. Follows the event stream. Permissions are answered with Allow once (or Deny, per task), questions with a short "go ahead" or the first option. A card that hands the work to the person (Needs you, Take over) ends the job, since nobody is there to take over; its delay is timed from the end of the first step that reached the checked page.
+3. Follows the event stream. Permissions are answered with Allow once (or Deny, per task), questions with a short "go ahead" or the first option. A card that hands the work to the person (Needs you, Take over) ends the job, since nobody is there to take over; its delay is timed from the end of the first browser or computer step that reached the checked page. Only hand-offs in tasks that meet a human check by design are timed against the bar; one anywhere else fails its errand.
 4. Waits for background work the turn started, within the same budget.
 5. Stops the chat when the task's time budget runs out. This is a hard limit: a turn that hangs is stopped, not waited on.
 6. Reads back the final answer, receipts and cards, runs the task's check, and deletes the chat with what it taught memory. Accounts or records the task made on a practice site are removed through that site's API. Files the jobs saved are removed at the end through one chat that asks Melete to delete them.
@@ -62,6 +62,7 @@ bun run evals/live/run.ts --task sauce-checkout,parabank-transfer  # chosen task
 | `--out-dir`, `--name` | Where `<name>.json` and `<name>.md` go; `.eval-state/live/` by default, which Git ignores |
 | `--rubric` | Model grade for tasks that define one |
 | `--keep-chats` | Leave the chats in place for inspection |
+| `--hand-back N` | Hand an unexpected hand-off (one in a task that meets no human check by design) straight back up to N times, to see what the agent does next. Such a job still counts as not done end to end |
 
 The run uses the account's own space. Jobs run one at a time, since an install has one agent computer per space. When the GitHub variables are set and the account has no GitHub connection, the run adds one for the run and removes it at the end. A site that does not answer is reported as down and left out of the bars, not counted as a failure. The JSON holds every job's answer, steps and receipts; the Markdown is the short report: the bars, a row per job, the claims, the worst failures and the clean-up.
 

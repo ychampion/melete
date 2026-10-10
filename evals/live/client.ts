@@ -226,6 +226,14 @@ export class LiveClient {
     ).runs;
   }
 
+  async takeOver(surface: 'browser' | 'sandbox', session: string) {
+    await this.request('POST', `/${surface}/sessions/${encodeURIComponent(session)}/takeover`);
+  }
+
+  async handBack(surface: 'browser' | 'sandbox', session: string) {
+    await this.request('POST', `/${surface}/sessions/${encodeURIComponent(session)}/handback`);
+  }
+
   async stopRun(run: string) {
     await this.request('POST', `/runs/${encodeURIComponent(run)}/stop`);
   }

@@ -121,6 +121,10 @@ export type JobRecord = {
   handoffs: HandOff[];
   /** True when the steps showed a human check (captcha words) and no hand-off card followed. */
   unshown_check: boolean;
+  /** The task meets a human check by design; only these hand-offs are timed against the bar. */
+  check_expected: boolean;
+  /** Hand-offs given straight back (`--hand-back`). */
+  handed_back: number;
   claims: Claim[];
   stopped: boolean;
   rubric: { score: number; reason: string } | null;

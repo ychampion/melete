@@ -66,6 +66,7 @@ async function main() {
       name: { type: 'string' },
       rubric: { type: 'boolean', default: false },
       'keep-chats': { type: 'boolean', default: false },
+      'hand-back': { type: 'string', default: '0' },
       list: { type: 'boolean', default: false },
     },
   });
@@ -193,6 +194,7 @@ async function main() {
             index: index + 1,
             env,
             keepChat: values['keep-chats'],
+            handBack: Number(values['hand-back']) || 0,
             ...(grader ? { rubric: grader } : {}),
             log,
           });
@@ -210,6 +212,8 @@ async function main() {
             questions: 0,
             handoffs: [],
             unshown_check: false,
+            check_expected: task.category === 'human_check' || Boolean(task.challenge_host),
+            handed_back: 0,
             claims: [],
             stopped: false,
             rubric: null,
