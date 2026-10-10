@@ -2,6 +2,8 @@
 
 These evaluations run the actual Melete API, broker, Postgres authority, model gateway, pinned Hermes engine, and Melete plugin. The external destinations are fixtures: no scenario sends a real email, changes a real calendar, or modifies a real server. The destination records every acceptance without deduplicating it, so duplicate dispatches remain observable.
 
+The live benchmark, which drives a running install over its HTTP API with real tasks on public practice sites, is described in [`live/README.md`](live/README.md).
+
 ## Run
 
 Install the repository's locked dependencies with `bun install --frozen-lockfile`. Docker must have the pinned runtime image available as `melete-runtime:local`, or set `EVALS_RUNTIME_IMAGE` to an existing image. The harness verifies the engine commit inside the image, then builds a small derivative with the current checked observer bridge and support module. Current plugin and entrypoint files are mounted read-only. To build an image on a machine with sufficient free disk:
