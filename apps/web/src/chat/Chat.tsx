@@ -59,7 +59,7 @@ import type {
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
-import { navigate, useRoute } from '../router.ts';
+import { NEW_CHAT_AGAIN, navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { useAttachments } from './attachments.ts';
@@ -614,7 +614,14 @@ export function ChatScreen({ id }: { id: string | null }) {
   }, []);
   // Files in the message box, uploaded as they are added and sent with the words.
   const files = useAttachments();
-  const { clear: clearFiles, restore: restoreFiles } = files;
+  const { clear: clearFiles, restore: restoreFiles, dropFailed } = files;
+  // Asked for a new chat while this new chat is open, a file that never
+  // uploaded is not carried into it; the words typed so far stay.
+  useEffect(() => {
+    if (conversationId) return;
+    window.addEventListener(NEW_CHAT_AGAIN, dropFailed);
+    return () => window.removeEventListener(NEW_CHAT_AGAIN, dropFailed);
+  }, [conversationId, dropFailed]);
   if (outbox.current === null) outbox.current = new Outbox();
   // A quick edit is sent once: its chips stay disabled until the conversation moves on.
   const quick = useTapOnce<string>();
