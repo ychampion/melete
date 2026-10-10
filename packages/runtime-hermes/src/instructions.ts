@@ -233,6 +233,21 @@ export const CITING: readonly string[] = [
 ];
 
 /**
+ * Which source to trust. A weather answer once credited a look-alike site with
+ * a misspelt name after reading the national weather service, and closed with
+ * a second link to the same page under a vague label. The service also takes a
+ * repeated link out of a closing links line (`experience/visited-links.ts`).
+ */
+export const SOURCE_QUALITY: readonly string[] = [
+  'Prefer the authoritative or original source: the official body (a national weather',
+  'service, a government agency, a court), the maker or seller itself, or the outlet that',
+  'first reported a story. Do not rely on look-alike, mirror, scraper or aggregator sites',
+  'when the original is reachable; if a search shows only those, open the original before',
+  'you answer. Give each page once: never repeat a link, and label a link by the site or',
+  'page it is (weather.gov, "Dell S2725QS on dell.com"), not by a vague word.',
+];
+
+/**
  * When work belongs in the background. Asked for research "in the background",
  * a model read the pages itself in the conversation, so the person waited, a
  * step that needed their approval held the conversation, and nothing came back
@@ -280,6 +295,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     ...ASKING,
     ...LOOKING_UP,
     ...CITING,
+    ...SOURCE_QUALITY,
     ...PLAIN_WORDS,
     ...PROGRESS_NOTES,
     'Reusable corrections from the person go through learning.propose when it is in the catalog.',

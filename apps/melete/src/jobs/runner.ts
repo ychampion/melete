@@ -51,7 +51,11 @@ import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { withDeliveryNote } from '../experience/delivery-claims.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
-import { pagesVisited, withVisitedLinks } from '../experience/visited-links.ts';
+import {
+  pagesVisited,
+  withoutRepeatedLinks,
+  withVisitedLinks,
+} from '../experience/visited-links.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
@@ -799,7 +803,11 @@ export class AttemptRunner {
     const checked = checkCitations(given.summary, sourcesRead(reads));
     // A result found on a page is linked to that page, when the answer links nothing.
     // A file said to be attached that no action in the turn delivered is named as missing.
-    const summary = withDeliveryNote(withVisitedLinks(checked.text, pagesVisited(reads)), reads);
+    // A closing links line names each page once.
+    const summary = withDeliveryNote(
+      withoutRepeatedLinks(withVisitedLinks(checked.text, pagesVisited(reads))),
+      reads,
+    );
     return summary !== given.summary ? { ...given, summary } : given;
   }
 

@@ -30,6 +30,7 @@ import {
   renderInput,
   renderInstructions,
   renderSoul,
+  SOURCE_QUALITY,
 } from './instructions.ts';
 import { UNPROPOSED_CONTINUATION } from './proposal.ts';
 
@@ -242,6 +243,13 @@ describe('context assembly', () => {
       { role: 'user', content: 'Can you book Friday?', at: '2026-09-11T00:00:00Z' },
     ];
     expect(renderInput(room)).toContain('## From the person\n\nCan you book Friday?');
+  });
+
+  test('the instructions ask for the original source and for each link once', () => {
+    const instructions = renderInstructions(bundle);
+    for (const line of SOURCE_QUALITY) expect(instructions).toContain(line);
+    expect(instructions).toContain('Prefer the authoritative or original source');
+    expect(instructions).toContain('never repeat a link');
   });
 
   test('earlier messages come summarised before the conversation, and a gap is never silent', () => {

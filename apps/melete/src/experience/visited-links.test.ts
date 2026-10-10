@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { checkCitations, sourcesRead } from './citations.ts';
-import { linkable, linksFor, pagesVisited, withVisitedLinks } from './visited-links.ts';
+import {
+  linkable,
+  linksFor,
+  pagesVisited,
+  withoutRepeatedLinks,
+  withVisitedLinks,
+} from './visited-links.ts';
 
 const FLIGHTS =
   'https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEwLTE2agcIARIDU0ZPcgcIARIDSkZL';
@@ -216,6 +222,48 @@ describe('addresses that may be linked', () => {
     );
     expect(out).toEndWith(
       'Links: [Mercury (planet)](https://en.wikipedia.org/wiki/Mercury_%28planet%29)',
+    );
+  });
+});
+
+describe('a closing links line names each page once', () => {
+  const NWS = 'https://forecast.weather.gov/MapClick.php?lat=37.77&lon=-122.42';
+  test('a link the answer already gave above is taken out, and an empty line goes', () => {
+    const answer = `Sunny tomorrow, high of 68°F ([weather.gov](${NWS})).\n\nLinks: [San Francisco](${NWS})`;
+    expect(withoutRepeatedLinks(answer)).toBe(
+      `Sunny tomorrow, high of 68°F ([weather.gov](${NWS})).`,
+    );
+  });
+
+  test('the same page twice on the line, spelt differently, is kept once', () => {
+    const answer =
+      'Two monitors fit.\n\nLinks: [Dell S2725QS](https://www.dell.com/en-us/shop/s2725qs/) · [S2725QS](https://dell.com/en-us/shop/s2725qs#specs) · [ProArt](https://www.asus.com/proart)';
+    expect(withoutRepeatedLinks(answer)).toBe(
+      'Two monitors fit.\n\nLinks: [Dell S2725QS](https://www.dell.com/en-us/shop/s2725qs/) · [ProArt](https://www.asus.com/proart)',
+    );
+  });
+
+  test('a bare address above counts, and a page only named on the line stays', () => {
+    const answer = `Read at ${NWS}.\nSources: [NWS](${NWS}), [AccuWeather](https://www.accuweather.com/sf)`;
+    expect(withoutRepeatedLinks(answer)).toBe(
+      `Read at ${NWS}.\n\nSources: [AccuWeather](https://www.accuweather.com/sf)`,
+    );
+  });
+
+  test('a line with its own words, no repeats, or no closing line is left alone', () => {
+    for (const answer of [
+      `See [it](${NWS}).\n\nLinks: the forecast at [NWS](${NWS}) is best`,
+      `Nothing repeated.\n\nLinks: [NWS](${NWS})`,
+      `[NWS](${NWS}) and [NWS again](${NWS}) in the body.`,
+    ])
+      expect(withoutRepeatedLinks(answer)).toBe(answer);
+  });
+
+  test('an address with parentheses is matched whole', () => {
+    const page = 'https://en.wikipedia.org/wiki/Mercury_%28planet%29';
+    const answer = `Mercury is closest ([Wikipedia](https://en.wikipedia.org/wiki/Mercury_(planet))).\n\nLinks: [Mercury (planet)](${page})`;
+    expect(withoutRepeatedLinks(answer)).toBe(
+      'Mercury is closest ([Wikipedia](https://en.wikipedia.org/wiki/Mercury_(planet))).',
     );
   });
 });
