@@ -4,6 +4,12 @@
 # arrive as execs; nothing here listens on a network.
 set -u
 
+# The copies of the browser profile that displays other than 0 run on. Which
+# chat held a display is kept in /tmp, which a stop empties, so each copy left
+# from before is cleared at its next use anyway; cleared here, the sign-ins in
+# it do not stay on the home volume until then.
+rm -rf -- "${HOME:-/home/agent}"/.config/melete-browser-d[0-9]*
+
 Xvfb :0 -screen 0 1024x768x24 -nolisten tcp -nolisten local -noreset >/tmp/xvfb.log 2>&1 &
 display=$!
 
