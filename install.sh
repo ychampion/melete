@@ -34,12 +34,17 @@ set -euo pipefail
 say() { printf '%s\n' "$*"; }
 fail() {
   printf 'Melete: %s\n' "$*" >&2
-  # A new deploy/.env keeps only the setup code's hash, so a run that stops
-  # after writing it says the code here, once, for the run that follows.
-  if [ -n "${SETUP_CODE:-}" ]; then
+  exit 1
+}
+
+# deploy/.env keeps only the setup code's hash, so a run that stops after
+# writing it, however it stops, says the code on its way out, once.
+SETUP_CODE='' SETUP_CODE_SHOWN=0
+say_unshown_code() {
+  if [ -n "$SETUP_CODE" ] && [ "$SETUP_CODE_SHOWN" = 0 ]; then
+    SETUP_CODE_SHOWN=1
     printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it.\n' "$SETUP_CODE" >&2
   fi
-  exit 1
 }
 
 # The versions deploy/scripts/configure.ts requires (apps/melete/src/runtime/docker-engine.ts).
@@ -108,6 +113,8 @@ new_setup_code() {
   local -a bytes
   while [ "${#chars}" -lt 20 ]; do
     read -r -a bytes <<<"$(od -An -tu1 -N32 /dev/urandom | tr '\n' ' ')"
+    # Nothing read from /dev/urandom would otherwise loop here for ever.
+    [ "${#bytes[@]}" -gt 0 ] || return 1
     for byte in "${bytes[@]}"; do
       [ "$byte" -lt 240 ] || continue
       chars="$chars${SETUP_ALPHABET:byte % 30:1}"
@@ -135,7 +142,9 @@ setup_code_hash() {
 
 # A new code in NEW_SETUP_CODE and its hash in NEW_SETUP_HASH.
 make_setup_code() {
-  NEW_SETUP_CODE="$(new_setup_code)"
+  NEW_SETUP_CODE="$(new_setup_code)" || NEW_SETUP_CODE=''
+  [[ "$NEW_SETUP_CODE" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]] ||
+    fail 'Could not read /dev/urandom to make the setup code.'
   NEW_SETUP_HASH="$(setup_code_hash "$NEW_SETUP_CODE")" || NEW_SETUP_HASH=''
   [[ "$NEW_SETUP_HASH" =~ ^[0-9a-f]{64}$ ]] ||
     fail 'sha256sum or shasum is needed to make the setup code. Install coreutils, then run this again.'
@@ -555,6 +564,12 @@ main() {
   DIR="$dir"
   DEPLOY="$dir/deploy"
 
+  # A run stopped by a signal leaves through the EXIT trap too.
+  trap say_unshown_code EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
   # Read once and taken out of the environment, where Compose would read it
   # before deploy/.env.
   local want_browser=0 requested="${MELETE_BROWSER_SPACE:-}"
@@ -583,7 +598,7 @@ main() {
   done
 
   local codes
-  SETUP_CODE='' CODES_OFF=0
+  CODES_OFF=0
   if [ -f "$DEPLOY/.env" ]; then
     say 'Keeping deploy/.env and your data.'
     if [ -n "${MELETE_IMAGE_TAG:-}" ] || ! grep -q '^MELETE_IMAGE_TAG=.' "$DEPLOY/.env"; then
@@ -652,6 +667,7 @@ main() {
     # Said once: deploy/.env keeps only its hash.
     say "Open $url/#/welcome?code=$SETUP_CODE to create your account"
     say "Your one-time setup code is $SETUP_CODE. It is shown only now; keep it until your account exists."
+    SETUP_CODE_SHOWN=1
   else
     say 'Open it and create your account.'
   fi
