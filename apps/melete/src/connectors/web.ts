@@ -411,7 +411,10 @@ export type PublicReadPolicy = (
 export const PUBLIC_READS_OFF =
   'Reading public web pages is turned off for this space. It can be turned on again in Settings.';
 const PUBLIC_READS_CHATS_ONLY =
-  'Only conversations read public web pages; this work may read only the sites it was given.';
+  'Only conversations, routines and the work a person started read public web pages; this work may read only the sites it was given.';
+
+/** Work that reads public pages the way the person's own chats do. */
+const READS_PUBLIC_PAGES = new Set(['chat', 'routine', 'run', 'run_step']);
 const PUBLIC_READS_PRIVATE = 'This space or agent is private, so it does not read the web.';
 
 /** Setting on the web connection row; a row that says nothing reads the public web. */
@@ -421,8 +424,8 @@ export const publicReadsEnabled = (configuration: unknown): boolean =>
 /**
  * The service's rule, read from the database on every request so a change in
  * Settings applies to the next page: conversations read public pages unless
- * the space turned that off or the space or agent is private. Long work a
- * person started reads them the same way.
+ * the space turned that off or the space or agent is private. A routine the
+ * person set up, and long work a person started, read them the same way.
  */
 export function databasePublicReads(options: {
   sql: Query;
@@ -436,9 +439,8 @@ export function databasePublicReads(options: {
       left join job p on p.id = j.experience_parent_id
       join connection c on c.id = ${options.connectionId} and c.space_id = j.space_id
       where j.id = ${scope.jobId} and j.space_id = ${scope.spaceId}`;
-    // A conversation, and the long work a person started, read public pages.
-    if (!row || !['chat', 'run', 'run_step'].includes(String(row.kind)))
-      return PUBLIC_READS_CHATS_ONLY;
+    // A conversation, a routine, and the long work a person started, read public pages.
+    if (!row || !READS_PUBLIC_PAGES.has(String(row.kind))) return PUBLIC_READS_CHATS_ONLY;
     if (!publicReadsEnabled(row.configuration)) return PUBLIC_READS_OFF;
     if (options.privateContext) {
       const agentId = row.agent_id ? String(row.agent_id) : null;

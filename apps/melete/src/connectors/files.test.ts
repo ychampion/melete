@@ -182,9 +182,10 @@ test('a write refuses a second name for a file outside the workspace and leaves 
   const outside = path.join(root, 'outside', 'secret.txt');
   await writeFile(outside, 'preserved');
   await link(outside, path.join(root, 'work', 'job_01', 'notes.txt'));
-  await expect(execute('files.write', { path: 'notes.txt', content: 'changed' })).rejects.toThrow(
-    'more than one name',
-  );
+  expect(await execute('files.write', { path: 'notes.txt', content: 'changed' })).toMatchObject({
+    outcome: 'failed',
+    reason: 'write target has more than one name',
+  });
   expect(await readFile(outside, 'utf8')).toBe('preserved');
 });
 

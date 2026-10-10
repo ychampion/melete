@@ -1204,6 +1204,16 @@ a.log-line-link > .log-chevron {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.raw-request > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.raw-request .field-row > span:last-child {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
 
 /* questionnaire */
 .question {

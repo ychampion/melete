@@ -345,6 +345,26 @@ export function SavedFileShown({
 
 /* ---------- result card ---------- */
 
+/**
+ * The parts of a card that are the exact request an account sends (its
+ * address, its text, its headers): bound to the decision and kept whole, but
+ * folded under the plain summary, for whoever wants to read them.
+ */
+const RAW_REQUEST = new Set(['Request', 'Details', 'Headers']);
+
+function FactRows({ facts }: { facts: readonly { label: string; value: string }[] }) {
+  return (
+    <>
+      {facts.map((fact) => (
+        <div key={`${fact.label}-${fact.value}`} className="field-row">
+          <span>{fact.label}</span>
+          <span>{fact.value}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function ResultCard({
   card,
   draft,
@@ -371,9 +391,13 @@ export function ResultCard({
   const size = touch ? 'xl' : 'sm';
   const about = card.facts.find((f) => f.label === 'About')?.value ?? null;
   const chips = card.facts.filter((f) => f.label === 'When').map((f) => f.value);
-  const rows = card.facts.filter(
+  const shown = card.facts.filter(
     (f) => f.label !== 'About' && f.label !== 'When' && f.label !== 'Draft',
   );
+  // A card for a request an account sends says what it does first; the request itself folds.
+  const sendsRequest = shown.some((f) => f.label === 'Request' || f.label === 'Headers');
+  const rows = sendsRequest ? shown.filter((f) => !RAW_REQUEST.has(f.label)) : shown;
+  const raw = sendsRequest ? shown.filter((f) => RAW_REQUEST.has(f.label)) : [];
   const draftBody = draft?.body ?? card.facts.find((f) => f.label === 'Draft')?.value ?? null;
   const [broken, setBroken] = useState(false);
   const action = (a: NonNullable<ResultCardData['primary_action']>, primary: boolean) => {
@@ -543,13 +567,16 @@ export function ResultCard({
           ) : null}
           {rows.length ? (
             <div className="col">
-              {rows.map((fact) => (
-                <div key={`${fact.label}-${fact.value}`} className="field-row">
-                  <span>{fact.label}</span>
-                  <span>{fact.value}</span>
-                </div>
-              ))}
+              <FactRows facts={rows} />
             </div>
+          ) : null}
+          {raw.length ? (
+            <details className="raw-request">
+              <summary>Details</summary>
+              <div className="col">
+                <FactRows facts={raw} />
+              </div>
+            </details>
           ) : null}
           {chips.length ? (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>

@@ -149,7 +149,8 @@ test.skipIf(!linux)(
       execute('files.move', { from: 'sub/notes.txt', to: 'kept.txt', to_area: 'artifacts' }),
     );
     expect(swapped()).toBe(1);
-    expect(result.error).not.toBeNull();
+    // Refused, and said so as a failure: nothing of it landed.
+    expect(result.value).toMatchObject({ outcome: 'failed', retryable: false });
     expect(await readdir(artifacts)).toEqual([]);
     expect(await readFile(path.join(outside, 'notes.txt'), 'utf8')).toBe('another job’s secret');
   },
@@ -299,7 +300,10 @@ test('a write into the person’s Files let through as new never replaces a file
   expect(connector().staysInSpace?.(action, 'sp_01')).toBe(true);
   const onlyNew = { ...connectorContext(action), only_new: true };
   await writeFile(path.join(artifacts, 'plan.md'), 'the person’s own plan');
-  await expect(connector().execute(action, onlyNew)).rejects.toThrow('needs the person to approve');
+  expect(await connector().execute(action, onlyNew)).toMatchObject({
+    outcome: 'failed',
+    reason: expect.stringContaining('needs the person to approve'),
+  });
   expect(await readFile(path.join(artifacts, 'plan.md'), 'utf8')).toBe('the person’s own plan');
   // A retry of a write that did land finds its own bytes and is done.
   await writeFile(path.join(artifacts, 'plan.md'), 'from the agent');

@@ -242,13 +242,31 @@ withDb('public web reads', () => {
   );
 
   test(
+    'a routine reads public pages as a chat does, and private addresses stay refused',
+    async () => {
+      const routine = await running('routine');
+      const before = requests.length;
+      const row = await fetchAs(routine, { url: 'https://example.com/morning' });
+      expect(row.status).toBe('succeeded');
+      expect(row.receipt?.detail).toMatchObject({ title: 'Example Domain', status: 200 });
+      expect(requests.slice(before)).toEqual(['https://example.com/morning']);
+      for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://127.0.0.1:3100/']) {
+        const refused = await refusedAs(routine, { url });
+        expect(refused.code).toBe('scope_denied');
+      }
+      expect(requests.length).toBe(before + 1);
+    },
+    SLOW,
+  );
+
+  test(
     'other work reads only the sites it was given',
     async () => {
-      for (const kind of ['routine', 'responsibility'] as const) {
-        const refused = await refusedAs(await running(kind), { url: 'https://example.com/' });
-        expect(refused.message).toContain('Only conversations');
-      }
-      const listed = await running('routine', { allowedDomains: ['example.com'] });
+      const refused = await refusedAs(await running('responsibility'), {
+        url: 'https://example.com/',
+      });
+      expect(refused.message).toContain('Only conversations, routines');
+      const listed = await running('responsibility', { allowedDomains: ['example.com'] });
       expect((await fetchAs(listed, { url: 'https://example.com/' })).status).toBe('succeeded');
     },
     SLOW,

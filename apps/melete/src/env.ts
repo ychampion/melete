@@ -1108,13 +1108,15 @@ export const envSchema = variables.transform((value, context) => {
       path: [
         value.GOOGLE_OAUTH_CLIENT_ID ? 'GOOGLE_OAUTH_CLIENT_SECRET' : 'GOOGLE_OAUTH_CLIENT_ID',
       ],
-      message: 'set both GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, or neither',
+      message:
+        'set both GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, or neither (a Google OAuth client whose redirect is <MELETE_PUBLIC_URL>/api/oauth/google/callback; see docs/mail-calendar.md)',
     });
   if (Boolean(value.GITHUB_MCP_CLIENT_ID) !== Boolean(value.GITHUB_MCP_CLIENT_SECRET))
     context.addIssue({
       code: 'custom',
       path: [value.GITHUB_MCP_CLIENT_ID ? 'GITHUB_MCP_CLIENT_SECRET' : 'GITHUB_MCP_CLIENT_ID'],
-      message: 'set both GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET, or neither',
+      message:
+        'set both GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET, or neither (a GitHub OAuth app whose callback is <MELETE_PUBLIC_URL>/api/oauth/callback; see docs/CONNECTORS.md)',
     });
   return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });

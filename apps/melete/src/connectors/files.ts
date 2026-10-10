@@ -33,7 +33,7 @@ import type { Query } from '../broker/records.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import { noLinks, segmentsFor } from '../paths.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
-import { ConnectorFaultError } from './faults.ts';
+import { ConnectorFaultError, describeFailure } from './faults.ts';
 import { beneath, loadFileRecords, personGivenReason } from './files-ownership.ts';
 import {
   DEFAULT_TRASH_DAYS,
@@ -184,6 +184,65 @@ function areaFor(value: JsonValue | undefined): Area {
   if (value === undefined || value === 'work') return 'work';
   if (value === 'artifacts') return value;
   throw new Error('area must be work or artifacts');
+}
+
+/** Where the agent's computer and its commands see the workspace. */
+const COMPUTER_WORKDIR = '/work';
+
+/**
+ * A workspace path as the agent's computer spells it (`/work/data.csv`) is the
+ * same file as `data.csv` here; any other path is returned as it came.
+ */
+export function workspaceRelative(value: string): string {
+  if (value === COMPUTER_WORKDIR || value === `${COMPUTER_WORKDIR}/`) return '.';
+  if (!value.startsWith(`${COMPUTER_WORKDIR}/`)) return value;
+  return value.slice(COMPUTER_WORKDIR.length + 1);
+}
+
+/** The path fields of a files step that name a place in the workspace. */
+function workspaceFields(payload: Record<string, JsonValue>, kind: string | undefined): string[] {
+  if (kind === 'files.save_attachment') return ['path'];
+  if (kind === 'files.move') {
+    const fields: string[] = [];
+    if (payload.area === undefined || payload.area === 'work') fields.push('from');
+    const toArea = payload.to_area ?? payload.area;
+    if (toArea === undefined || toArea === 'work') fields.push('to');
+    return fields;
+  }
+  if (kind === 'files.restore') return [];
+  return payload.area === undefined || payload.area === 'work' ? ['path'] : [];
+}
+
+/**
+ * The step with each workspace path written the one way receipts, checks and
+ * ownership compare it, and every path checked before anything is decided: a
+ * path that cannot be used is refused now, in words the agent can act on,
+ * rather than failing once the step has been sent.
+ */
+function canonicalPaths(
+  payload: Record<string, JsonValue>,
+  kind: string | undefined,
+): Record<string, JsonValue> {
+  const work = new Set(workspaceFields(payload, kind));
+  const next = { ...payload };
+  for (const key of ['path', 'from', 'to']) {
+    const value = next[key];
+    if (typeof value !== 'string') continue;
+    if (work.has(key)) next[key] = workspaceRelative(value);
+    try {
+      segmentsFor(next[key] as string);
+    } catch (error) {
+      throw new BrokerFault(
+        'payload_invalid',
+        `${key} ${JSON.stringify(value)}: ${(error as Error).message}. Give a path inside ${
+          work.has(key)
+            ? 'your workspace, like notes/plan.md'
+            : "the person's Files, like reports/plan.md"
+        }.`,
+      );
+    }
+  }
+  return next;
 }
 
 const missing = (error: unknown): boolean =>
@@ -853,7 +912,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) {
       throw new Error('invalid trusted file scope');
     }
-    const segments = segmentsFor(relative);
+    const segments = segmentsFor(area === 'work' ? workspaceRelative(relative) : relative);
     // A paired computer's screenshot an earlier version left here is not the
     // agent's to open, whatever that computer allows (devices/screen-paths.ts).
     if (area === 'work' && LEGACY_SCREEN_PATH.test(segments.join('/')))
@@ -977,7 +1036,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
     try {
       sent = await sentFile(ctx, requiredString(payload, 'attachment_id'));
     } catch {
-      return { decision: 'undecided', reason: 'the attachment is no longer there' };
+      return { decision: 'undecided', reason: NOT_LANDED.attachmentGone };
     }
     try {
       const located = await resolveFile(ctx, 'work', requiredString(payload, 'path'));
@@ -986,7 +1045,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const read = await readIfSized(directory, path.basename(located.target), sent.bytes.length);
         const there = read === 'different' ? '' : digest(read);
         if (there !== digest(Buffer.from(sent.bytes)))
-          return { decision: 'undecided', reason: 'the file at the path is not the attachment' };
+          return { decision: 'undecided', reason: NOT_LANDED.notTheAttachment };
         const evidence = {
           path: requiredString(payload, 'path'),
           area: 'work',
@@ -997,7 +1056,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         await directory.close();
       }
     } catch (error) {
-      if (missing(error)) return { decision: 'undecided', reason: 'no file was saved there' };
+      if (missing(error)) return { decision: 'undecided', reason: NOT_LANDED.nothingSaved };
       return { decision: 'undecided', reason: 'the saved file could not be checked' };
     }
   };
@@ -1372,23 +1431,24 @@ export function createFilesConnector(options: FilesOptions): Connector {
           );
         return { trash_id: found.id, ...(path ? { path } : {}) };
       }
+      const given = kind === 'files.restore' ? payload : canonicalPaths(payload, kind);
       if (kind === 'files.delete') {
         try {
           return {
-            path: payload.path ?? null,
-            ...(payload.area !== undefined ? { area: payload.area } : {}),
-            checked: await deleteCheck(ctx, tx, payload),
+            path: given.path ?? null,
+            ...(given.area !== undefined ? { area: given.area } : {}),
+            checked: await deleteCheck(ctx, tx, given),
           };
         } catch (error) {
           throw new BrokerFault('payload_invalid', (error as Error).message);
         }
       }
-      if (payload.expect !== undefined) {
-        const declaration = artifactExpectation.safeParse(payload.expect);
+      if (given.expect !== undefined) {
+        const declaration = artifactExpectation.safeParse(given.expect);
         if (!declaration.success)
           throw new BrokerFault('payload_invalid', declaration.error.message);
       }
-      return payload;
+      return given;
     },
     async execute(action, ctx) {
       checkIdentity(action, ctx);
@@ -1534,7 +1594,11 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const target = await resolveFile(ctx, toArea, to);
         // Both directories are walked and held from here to the move, so
         // neither can be swapped for a link anywhere else meanwhile.
-        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1));
+        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1)).catch(
+          (error: unknown) => {
+            throw notInWorkspace(error, area, from);
+          },
+        );
         try {
           const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
           try {
@@ -1542,7 +1606,9 @@ export function createFilesConnector(options: FilesOptions): Connector {
             const targetName = path.basename(target.target);
             const sourceAt = fromDirectory.at(sourceName);
             const targetAt = toDirectory.at(targetName);
-            const content = await readOpened(fromDirectory, sourceName);
+            const content = await readOpened(fromDirectory, sourceName).catch((error: unknown) => {
+              throw notInWorkspace(error, area, from);
+            });
             hash = digest(content);
             if (payload.content_hash !== undefined && payload.content_hash !== hash) {
               // Nothing was moved. The file on disk is not the content this action
@@ -1571,6 +1637,12 @@ export function createFilesConnector(options: FilesOptions): Connector {
               if (area === 'artifacts' && toArea === 'work')
                 await readableToAgent(toDirectory, targetName);
             }
+            // Done only when the file is at its new place with the bytes that were moved.
+            if (digest(await readOpened(toDirectory, targetName)) !== hash)
+              throw new ConnectorFaultError({
+                kind: 'bad_output',
+                detail: 'the file at the new place does not match the file that was moved',
+              });
           } finally {
             await toDirectory.close();
           }
@@ -1761,20 +1833,19 @@ export function createFilesConnector(options: FilesOptions): Connector {
         action.kind === 'files.write'
           ? digest(requiredString(payload, 'content'))
           : payload.content_hash;
-      if (typeof expected !== 'string') {
-        return {
-          decision: 'undecided',
-          reason: 'the move did not record an expected content hash',
-        };
-      }
       try {
         const area = areaFor(
           action.kind === 'files.write' ? payload.area : (payload.to_area ?? payload.area),
         );
         const relative = requiredString(payload, action.kind === 'files.write' ? 'path' : 'to');
+        // Read first: a destination with nothing there says the step did not land.
         const actual = digest(await read(await resolveFile(ctx, area, relative)));
-        if (actual !== expected)
-          return { decision: 'undecided', reason: 'current file content differs from the action' };
+        if (typeof expected !== 'string')
+          return {
+            decision: 'undecided',
+            reason: 'the move did not record an expected content hash',
+          };
+        if (actual !== expected) return { decision: 'undecided', reason: NOT_LANDED.differs };
         if (action.kind === 'files.move') {
           const source = await resolveFile(
             ctx,
@@ -1799,7 +1870,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         return { decision: 'succeeded', evidence, receipt: receiptFor(action, evidence, actual) };
       } catch (error) {
         if (!missing(error)) throw error;
-        return { decision: 'undecided', reason: 'the destination file is absent' };
+        return { decision: 'undecided', reason: NOT_LANDED.absent };
       }
     },
     async health() {
@@ -1822,8 +1893,33 @@ export function createFilesConnector(options: FilesOptions): Connector {
   return settledFromDisk(connector);
 }
 
+/**
+ * A move out of the workspace whose file is not there says where a file the
+ * agent's computer made comes from: it reaches the workspace only when a
+ * command's changes are read back, which a command's receipt reports.
+ */
+function notInWorkspace(error: unknown, area: Area, from: string): unknown {
+  if (area !== 'work' || !missing(error)) return error;
+  return new Error(
+    `there is no ${JSON.stringify(from)} in your workspace; a file made on your computer is there only once a command's changes were read back`,
+  );
+}
+
 /** The file steps whose result `verify` reads straight from what is on disk. */
 const SETTLED_FROM_DISK = new Set(['files.write', 'files.move', 'files.save_attachment']);
+
+/**
+ * What `verify` says when the place a file step writes does not hold what it
+ * was asked to put there: the step left nothing of what it was asked for.
+ */
+const NOT_LANDED = {
+  attachmentGone: 'the attachment is no longer there',
+  notTheAttachment: 'the file at the path is not the attachment',
+  nothingSaved: 'no file was saved there',
+  differs: 'current file content differs from the action',
+  absent: 'the destination file is absent',
+} as const;
+const NOT_LANDED_REASONS = new Set<string>(Object.values(NOT_LANDED));
 
 /**
  * A file step that threw after it began may still have done everything it was
@@ -1851,6 +1947,15 @@ export function settledFromDisk(connector: Connector): Connector {
         )
           throw error;
         const verdict = await connector.verify(action, ctx).catch(() => null);
+        // Nothing of the step is on disk, and nothing of it left Melete: it
+        // failed, for the reason it threw, and the agent is told so plainly.
+        if (verdict?.decision === 'undecided' && NOT_LANDED_REASONS.has(verdict.reason))
+          return {
+            outcome: 'failed',
+            reason: describeFailure(error, 'the step could not be done'),
+            retryable: false,
+            evidence: { checked: verdict.reason },
+          };
         if (verdict?.decision !== 'succeeded' || !verdict.receipt) throw error;
         process.stderr.write(
           `files: ${action.kind} settled from disk after ${codeOf(error) ?? (error instanceof Error ? error.name : 'an error')}
