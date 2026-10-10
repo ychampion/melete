@@ -1753,26 +1753,31 @@ export async function bootstrap(
         // file does not hold up the listener, and a shutdown waits for it.
         if (options.workers !== false) removals.start();
         // An account being deleted carries on where it was, and finishes.
+        const chatJobs = jobs;
         accountRemovals = new AccountRemovalService({
           sql: handle.sql,
           spaces: removals,
           principals: new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
-          removeChats: (ids) =>
-            removeJobs(
-              {
-                jobs,
-                sql: handle.sql,
-                runner,
-                blobs: attachments?.store,
-                workspaces: {
-                  workRoot: env.MELETE_WORK_DIR,
-                  days: env.MELETE_TRASH_DAYS,
-                  spacesRoot: env.MELETE_SPACES_DIR,
-                },
-              },
-              ids,
-            ),
+          ...(chatJobs
+            ? {
+                removeChats: (ids: readonly string[]) =>
+                  removeJobs(
+                    {
+                      jobs: chatJobs,
+                      sql: handle.sql,
+                      runner,
+                      blobs: attachments?.store,
+                      workspaces: {
+                        workRoot: env.MELETE_WORK_DIR,
+                        days: env.MELETE_TRASH_DAYS,
+                        spacesRoot: env.MELETE_SPACES_DIR,
+                      },
+                    },
+                    ids,
+                  ),
+              }
+            : {}),
         });
         if (options.workers !== false) accountRemovals.start();
       }

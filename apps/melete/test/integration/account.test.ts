@@ -515,9 +515,9 @@ withDb('deleting an account', () => {
     await h.sql`insert into paired_device (id, space_id, connection_id, name, platform, token_hash,
         capabilities, local_capabilities, paired_by)
       values (${newId('dev')}, ${hal.spaceId}, ${connectionId}, 'Laptop', 'linux',
-        ${newId('tokh')}, '{}'::jsonb, '{}'::jsonb, ${hal.id})`;
+        ${newId('dev')}, '{}'::jsonb, '{}'::jsonb, ${hal.id})`;
     await h.sql`insert into device_pairing (id, space_id, principal_id, code_hash, capabilities, expires_at)
-      values (${newId('dpr')}, ${hal.spaceId}, ${hal.id}, ${newId('codeh')}, '{}'::jsonb,
+      values (${newId('dpr')}, ${hal.spaceId}, ${hal.id}, ${newId('dpr')}, '{}'::jsonb,
         now() + interval '10 minutes')`;
     // What a computer's token is checked against: its row and its connection.
     const usable =

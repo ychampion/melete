@@ -390,9 +390,13 @@ async function eraseFromHistoryAlone(
   const tracked = (await git(paths.root, ['ls-files', '-z', '--', spec]))
     .split('\0')
     .filter((path) => path.length > 0 && match(path));
-  const committed = (await hasCommits(paths.root))
-    ? (await git(paths.root, ['log', '--all', '-n', '1', '--format=%H', '--', spec])).trim()
-    : '';
+  // The glob only narrows the search: a file of the person's own that merely
+  // looks like one of ours never sets off a rewrite.
+  const committed =
+    (await hasCommits(paths.root)) &&
+    (await git(paths.root, ['log', '--all', '--format=', '--name-only', '-z', '--', spec]))
+      .split(/[\0\n]/)
+      .some((path) => path.length > 0 && match(path));
   if (!committed && tracked.length === 0) return false;
   if (committed) {
     const exported = await gitBytes(paths.root, [
@@ -400,6 +404,8 @@ async function eraseFromHistoryAlone(
       '--all',
       '--no-data',
       '--signed-tags=strip',
+      // A commit written in another encoding would otherwise stop the export.
+      '--reencode=yes',
     ]);
     await gitBytes(paths.root, ['fast-import', '--force', '--quiet'], dropPaths(exported, match));
   }
