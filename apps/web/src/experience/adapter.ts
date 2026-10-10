@@ -15,6 +15,7 @@ import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
 import type { Seen } from './together.ts';
 import type {
+  AccountAccess,
   AccountSignInStart,
   AccountSignInStatus,
   ActionResolution,
@@ -183,6 +184,20 @@ export type SavedFilePreview =
 const screenshotUrl = (id: string): string =>
   `${client.options.baseUrl}/screenshots/${encodeURIComponent(id)}`;
 
+/**
+ * Announced when the service says this browser's sign-in has ended: it expired,
+ * or the account was signed out everywhere from another device. The app goes
+ * back to the sign-in page instead of every screen failing on its own.
+ */
+export const SESSION_ENDED_EVENT = 'melete:session-ended';
+
+/** A 401 that means the session is gone, not a wrong password at sign-in. */
+function sessionEnded(outcome: { error?: unknown; response?: Response }): boolean {
+  if (outcome.response?.status !== 401) return false;
+  const code = (outcome.error as { error?: { code?: unknown } } | undefined)?.error?.code;
+  return code === 'unauthorized';
+}
+
 /** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
 function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
   if (outcome.data !== undefined) {
@@ -190,6 +205,8 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
       return { data: null, error: null, unavailable: outcome.data.reason };
     return { data: outcome.data as T, error: null, unavailable: null };
   }
+  if (sessionEnded(outcome) && typeof window !== 'undefined')
+    window.dispatchEvent(new Event(SESSION_ENDED_EVENT));
   return {
     data: null,
     error: plainError(errorMessage(outcome.error, OFFLINE)),
@@ -222,22 +239,39 @@ export const adapter = {
   profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
   saveProfile: (profile: ProfileInput) =>
     guard<{ profile: Profile }>(() => api.PATCH('/profile', { body: profile })),
-  /** Whether this installation still needs its first account. Public. */
-  setupStatus: () => guard<{ needed: boolean; multiplayer?: boolean }>(() => api.GET('/setup')),
+  /**
+   * Whether this installation still needs its first account, whether creating
+   * it takes the setup code, and whether it can email a sign-in link. Public.
+   */
+  setupStatus: () =>
+    guard<{
+      needed: boolean;
+      multiplayer?: boolean;
+      code_required?: boolean;
+      email_sign_in?: boolean;
+    }>(() => api.GET('/setup')),
   /** Creates the first account and signs this browser in. */
-  createAccount: (email: string, password: string) =>
-    guard<{ owner: SignedInOwner }>(() => api.POST('/setup', { body: { email, password } })),
+  createAccount: (email: string, password: string, setup_code?: string) =>
+    guard<{ owner: SignedInOwner }>(() =>
+      api.POST('/setup', {
+        body: setup_code === undefined ? { email, password } : { email, password, setup_code },
+      }),
+    ),
   logIn: (email: string, password: string) =>
     guard<{ owner: SignedInOwner }>(() => api.POST('/login', { body: { email, password } })),
   magicLink: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
   consumeMagicLink: (token: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
-  signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
-  signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
-  signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
+  /** Where the account is signed in, and the computers, browsers and assistants that reach it. */
+  accountAccess: () => guard<AccountAccess>(() => api.GET('/account/sessions')),
+  /** Signs out one browser. */
+  endSession: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/account/sessions/{id}', path(id))),
+  /** Signs out everywhere but here, as a new password would. */
+  signOutOthers: () => guard<{ status: 'ok' }>(() => api.POST('/account/sessions/revoke-others')),
   /** Sets a new password; every other session and connected app is signed out. */
   changePassword: (current_password: string, new_password: string) =>
     guard<{ status: 'ok' }>(() =>
@@ -246,6 +280,9 @@ export const adapter = {
   /** Mails a reset link when this install can send mail; otherwise says why not. */
   requestPasswordReset: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
+  /** Whether a reset code is still good, before a new password is chosen for it. */
+  checkPasswordReset: (token: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/password-reset/check', { body: { token } })),
   consumePasswordReset: (token: string, new_password: string) =>
     guard<{ status: 'ok' }>(() =>
       api.POST('/password-reset/consume', { body: { token, new_password } }),

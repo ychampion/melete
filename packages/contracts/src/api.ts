@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { ATTACHMENT_LIMITS } from './attachments.ts';
 import { actionStatus, approvalRequestView, effectClass, payloadHash } from './broker.ts';
-import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, jsonObject, newPasswordInput, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
 import { action, attempt, job, jobBudget, jobConstraints, space, trigger } from './entities.ts';
 import {
@@ -104,11 +104,29 @@ export const signedInOwner = z.object({
   kind: z.enum(['person', 'guest']).optional(),
 });
 export const ownerResponse = z.object({ owner: signedInOwner });
+/**
+ * The first account. `setup_code` is the one-time code the installer printed;
+ * it is needed whenever the installation has one (`code_required` in the setup
+ * status), and a link from the installer carries it.
+ */
+export const setupRequest = z.object({
+  email: z.email().max(254),
+  password: newPasswordInput,
+  setup_code: z.string().min(1).max(200).optional(),
+});
 /** Whether this installation still needs its first account: true until an owner exists. */
 export const setupStatusResponse = z.strictObject({
   needed: z.boolean(),
   /** Whether rooms, shared spaces, guests and hand-offs are switched on here. */
   multiplayer: z.boolean(),
+  /** Whether creating the first account needs the installation's one-time setup code. */
+  code_required: z.boolean(),
+  /**
+   * Whether this installation can email a sign-in link and a password reset
+   * link. When it cannot, the sign-in page does not offer email sign-in, and a
+   * forgotten password needs the person who runs the installation.
+   */
+  email_sign_in: z.boolean(),
 });
 
 // --------------------------------------------------------------------------

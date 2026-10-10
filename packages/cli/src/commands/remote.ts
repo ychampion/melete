@@ -48,6 +48,8 @@ export const REMOTE_COMMANDS = [
   'restore',
   'upgrade',
   'history',
+  'account',
+  'feedback',
 ] as const;
 
 export class RemoteRefusal extends Error {}

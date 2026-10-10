@@ -546,15 +546,18 @@ describe('the knowledge module inside the service', () => {
       const cookie = await signIn(api);
       const catalog = (await (
         await api.request('/spaces', { headers: { Cookie: cookie } })
-      ).json()) as { spaces: Array<{ id: string; git_path: string }> };
+      ).json()) as { spaces: Array<{ id: string }> };
       const personal = catalog.spaces[0];
       if (!personal) throw new Error('Setup did not create a personal space');
+      // Where it is kept on disk is the service's own business, not in the response.
+      expect(personal).not.toHaveProperty('git_path');
+      const [stored] = await database().sql`select git_path from space where id = ${personal.id}`;
       const search = await api.request(`/knowledge/search?space_id=${personal.id}&q=anything`, {
         headers: { Cookie: cookie },
       });
       expect(search.status).toBe(200);
       expect(await search.json()).toEqual({ hits: [] });
-      expect(existsSync(join(personal.git_path, '.git', 'HEAD'))).toBe(true);
+      expect(existsSync(join(String(stored?.git_path), '.git', 'HEAD'))).toBe(true);
 
       const listing = await api.request('/knowledge', { headers: { Cookie: cookie } });
       expect(listing.status).toBe(200);

@@ -5,7 +5,8 @@ import { ChatScreen } from './chat/Chat.tsx';
 import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
-import { adapter, type Result } from './experience/adapter.ts';
+import { stopPushHere } from './experience/account.ts';
+import { adapter, type Result, SESSION_ENDED_EVENT } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import {
   AppContext,
@@ -137,9 +138,6 @@ export function App() {
   const [capabilities, setCapabilities] = useState<Capabilities>({
     calendar: false,
     browser: false,
-    google_sign_in: false,
-    apple_sign_in: false,
-    magic_link: true,
     multiplayer: false,
   });
   // Whether the server has rooms switched on, read once whoever is signed in.
@@ -271,12 +269,8 @@ export function App() {
     }
   }, []);
 
-  const signOut = useCallback(async () => {
-    const result = await adapter.signOut();
-    if (result.data === null) {
-      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t sign out' });
-      return;
-    }
+  // What this browser held for the account goes when its sign-in ends.
+  const clearSignedIn = useCallback(() => {
     setAgents([]);
     setAgentsLoaded(false);
     setConversations([]);
@@ -285,8 +279,28 @@ export function App() {
     setOnboardedHere(false);
     setSignedOut(true);
     setGuest(false);
-    navigate('/welcome');
   }, []);
+
+  const signOut = useCallback(async () => {
+    // Notifications stop here first, while the session can still say so.
+    await stopPushHere();
+    const result = await adapter.signOut();
+    // A session that had already ended is signed out all the same.
+    const alreadyEnded = result.error !== null && result.unauthorized === true;
+    if (result.data === null && !alreadyEnded) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t sign out' });
+      return;
+    }
+    clearSignedIn();
+    navigate('/welcome');
+  }, [clearSignedIn]);
+
+  // A sign-in that expired, or was ended from another device, shows the
+  // sign-in page rather than an error on every screen.
+  useEffect(() => {
+    window.addEventListener(SESSION_ENDED_EVENT, clearSignedIn);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, clearSignedIn);
+  }, [clearSignedIn]);
 
   const onboarded = onboardedHere || saved?.onboarded === true;
   // Setup finished before the service kept the record is recorded there once.

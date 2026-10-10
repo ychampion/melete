@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   passwordChange,
+  passwordResetCheck,
   passwordResetConsume,
   passwordResetRequest,
   unavailable,
@@ -11,12 +12,17 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { z } from 'zod';
 import type { ExperienceSignIn } from '../experience/signin.ts';
 import type { LimitStore } from '../ops/limiter.ts';
+import { endAccess } from './account-access.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
+import { requireStrongPassword } from './password-policy.ts';
 
-/** How long a reset link lasts: longer for the operator's command, which someone may carry over. */
-export const RESET_MINUTES = { operator: 60, email: 30 } as const;
+/**
+ * How long a reset link lasts: longer for the operator's command, which someone
+ * may carry over, and a week for the link a new account is created with.
+ */
+export const RESET_MINUTES = { operator: 60, email: 30, invite: 7 * 24 * 60 } as const;
 export type ResetVia = keyof typeof RESET_MINUTES;
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -50,29 +56,24 @@ export function resetUrl(publicUrl: string, token: string): string {
 }
 
 /**
- * Sets an account's password and signs out its sessions, apart from the one
- * named in `keep`. Sign-in links still waiting for the account stop working,
- * and so do what connected apps were granted and the chat platform accounts
- * linked to it: a new password is how someone shuts out whoever else had the
- * account.
+ * Sets an account's password and ends everything else that reaches it, apart
+ * from the browser session named in `keep`: other sessions, sign-in links,
+ * connected assistants and their unused codes, paired computers, browsers that
+ * receive its notifications, and linked chat accounts. A new password is how
+ * someone shuts out whoever else had the account. Returns the computers it
+ * disconnected.
  */
 async function setPassword(
   tx: TransactionSql,
   principalId: string,
   password: string,
   keep: string | null,
-) {
+): Promise<string[]> {
   const hash = await hashPassword(password);
   await tx`update principal set password_hash = ${hash} where id = ${principalId}`;
   // The installation's owner row carries the same account; the two never disagree.
   await tx`update owner set password_hash = ${hash} where id = ${principalId}`;
-  await tx`delete from session where coalesce(principal_id, owner_id) = ${principalId}
-    and token_hash is distinct from ${keep}`;
-  await tx`update magic_link set used_at = now() where owner_id = ${principalId} and used_at is null`;
-  await tx`update mcp_token set revoked_at = now()
-    where principal_id = ${principalId} and revoked_at is null`;
-  // Chat platform accounts linked to the person stop speaking as them.
-  await tx`delete from principal_identity where principal_id = ${principalId}`;
+  return endAccess(tx, principalId, keep);
 }
 
 /** Operator command and routes share this: an account by its sign-in address. */
@@ -103,7 +104,8 @@ function limited(c: Context, retryAfter: number) {
 /**
  * Change password for a signed-in person, and the way back in for someone who
  * forgot theirs: a one-time link, printed on the host by the operator's
- * command or mailed from the account's own connected mailbox.
+ * command, or mailed by the installation's mail sender or from the owner's own
+ * connected mailbox.
  */
 export function mountPassword(
   app: Hono,
@@ -115,6 +117,8 @@ export function mountPassword(
     clock?: () => number;
     /** Where the limits are counted; left out, in this process. */
     limits?: LimitStore;
+    /** Closes the connections of the computers a new password disconnected. */
+    devicesEnded?: (principalId: string, deviceIds: string[]) => Promise<void>;
   },
 ) {
   const { sql } = deps;
@@ -127,16 +131,18 @@ export function mountPassword(
     const retryAfter = await changes.admit(principalId);
     if (retryAfter > 0) return limited(c, retryAfter);
     const input = passwordChange.parse(await c.req.json());
+    requireStrongPassword(input.new_password, c.get('owner').email);
     const [row] = await sql`select password_hash from principal where id = ${principalId}`;
     const hash = row?.password_hash ? String(row.password_hash) : null;
     if (!hash || !(await Bun.password.verify(input.current_password, hash)))
       // Not 401: the session is fine, and a 401 would sign the person out.
       throw new ServiceError('wrong_password', 'Your current password is not right.', 400);
     const token = getCookie(c, deps.sessionCookie);
-    await sql.begin((tx) =>
+    const devices = await sql.begin((tx) =>
       setPassword(tx, principalId, input.new_password, token ? digest(token) : null),
     );
     await changes.succeeded(principalId);
+    await deps.devicesEnded?.(principalId, devices);
     return c.json({ status: 'ok' as const });
   });
 
@@ -147,10 +153,30 @@ export function mountPassword(
     if (!deps.signIn || !deps.publicUrl)
       return c.json(
         unavailable(
-          'This Melete cannot send email. Ask the person who runs it to print you a reset link.',
+          'This Melete can’t email you a reset link. Ask whoever set up your account to send you one.',
         ),
       );
     return c.json(await deps.signIn.requestPasswordReset(input.email));
+  });
+
+  // Counted with the attempts to use a code, so checking is no faster a way to guess one.
+  app.post('/password-reset/check', async (c) => {
+    const source = clientAddress(c);
+    const retryAfter = await consumes.admit(source);
+    if (retryAfter > 0) return limited(c, retryAfter);
+    const shaped = passwordResetCheck.safeParse(await c.req.json().catch(() => null));
+    const [open] = shaped.success
+      ? await sql`select 1 from password_reset r join principal p on p.id = r.principal_id
+          where r.token_hash = ${digest(shaped.data.token)} and r.used_at is null
+          and r.expires_at > now() and p.disabled_at is null`
+      : [];
+    if (!open)
+      throw new ServiceError(
+        'invalid_reset_link',
+        'That code isn’t right, or it has expired or been used. Ask for a new one.',
+        400,
+      );
+    return c.json({ status: 'ok' as const });
   });
 
   app.post('/password-reset/consume', async (c) => {
@@ -164,6 +190,7 @@ export function mountPassword(
       !shaped.success && shaped.error.issues.some((issue) => issue.path[0] === 'token')
         ? false
         : await consume(passwordResetConsume.parse(body));
+    if (done) await deps.devicesEnded?.(done.principalId, done.devices);
     if (!done)
       throw new ServiceError(
         'invalid_reset_link',
@@ -176,15 +203,18 @@ export function mountPassword(
 
   const consume = (input: z.infer<typeof passwordResetConsume>) =>
     sql.begin(async (tx) => {
-      const [reset] = await tx`select principal_id from password_reset
-        where token_hash = ${digest(input.token)} and used_at is null and expires_at > now()
-        for update`;
-      if (!reset) return false;
+      const [reset] = await tx`select r.principal_id, p.email from password_reset r
+        join principal p on p.id = r.principal_id
+        where r.token_hash = ${digest(input.token)} and r.used_at is null and r.expires_at > now()
+        for update of r`;
+      if (!reset) return null;
+      // Checked once the link is known good, so a weak choice does not spend it.
+      requireStrongPassword(input.new_password, String(reset.email));
       await tx`update password_reset set used_at = now() where token_hash = ${digest(input.token)}`;
-      await setPassword(tx, String(reset.principal_id), input.new_password, null);
-      // Once a password is set, no other reset link for the account is left open.
-      await tx`update password_reset set used_at = now()
-        where principal_id = ${reset.principal_id} and used_at is null`;
-      return true;
+      const principalId = String(reset.principal_id);
+      // Once a password is set, no other reset link for the account is left open:
+      // ending its access marks every unused one used.
+      const devices = await setPassword(tx, principalId, input.new_password, null);
+      return { principalId, devices };
     });
 }

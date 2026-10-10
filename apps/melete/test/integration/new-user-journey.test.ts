@@ -141,7 +141,12 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         });
 
       // The web app asks whether this installation still needs its first account.
-      expect(await (await call('/setup')).json()).toEqual({ needed: true, multiplayer: false });
+      expect(await (await call('/setup')).json()).toEqual({
+        needed: true,
+        multiplayer: false,
+        code_required: false,
+        email_sign_in: false,
+      });
       const setup = await call('/setup', 'POST', {
         email: 'new@example.test',
         password: 'a-new-person-password',
@@ -153,7 +158,12 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
           .map((value) => value.split(';')[0] ?? '')
           .find((value) => value.startsWith('melete_session=')) ?? '';
       expect(cookie).not.toBe('');
-      expect(await (await call('/setup')).json()).toEqual({ needed: false, multiplayer: false });
+      expect(await (await call('/setup')).json()).toEqual({
+        needed: false,
+        multiplayer: false,
+        code_required: false,
+        email_sign_in: false,
+      });
 
       // The first onboarding question is answered into memory, on a space no job has touched.
       const saved = await call('/memory/items', 'POST', {
