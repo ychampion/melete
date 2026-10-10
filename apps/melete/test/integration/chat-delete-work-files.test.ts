@@ -31,6 +31,7 @@ import {
   readStart,
   recordWorkFiles,
   removeQueuedWork,
+  trashOtherCopies,
   type WorkComputer,
 } from '../../src/sandbox/work-files.ts';
 import { createTestDatabase } from './postgres.ts';
@@ -405,14 +406,14 @@ withDb('who made a file in /work', () => {
       return row ? { writers: row.writers as string[], shared: row.shared as boolean } : null;
     };
     /** Another chat's command on the computer, under way until settled. */
-    const command = async (jobId: string) => {
+    const command = async (jobId: string, connectionId = seeded.connectionId) => {
       const id = recordId('act');
       const attemptId = recordId('att');
       await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
         values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
       await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
           canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
-        values (${id}, ${jobId}, ${attemptId}, ${seeded.connectionId}, 'terminal.run',
+        values (${id}, ${jobId}, ${attemptId}, ${connectionId}, 'terminal.run',
           'write_reversible', '{}'::jsonb, 'hash', ${id}, 'dispatched', now())`;
       return async () => {
         await sql`update action set status = 'succeeded', resolved_at = now() where id = ${id}`;
@@ -511,6 +512,43 @@ withDb('who made a file in /work', () => {
     await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b' }, { 'a.txt': 'a', 'b.txt': 'b' });
     expect((await s.recorded('a.txt'))?.shared).toBe(true);
     expect((await s.recorded('b.txt'))?.shared).toBe(true);
+  }, 30_000);
+
+  test("only the copies of chats that used the computer lose a deleted chat's file", async () => {
+    const s = await scope();
+    const workRoot = path.join(root, 'work');
+    const user = await s.chat();
+    const stranger = await s.chat();
+    // The stranger works on another computer of the same agent.
+    const elsewhere = recordId('conn');
+    await s.sql`insert into connection (id, space_id, provider, label)
+      values (${elsewhere}, ${s.seeded.spaceId}, 'test', 'Other sandbox')`;
+    const settleUser = await s.command(user, s.seeded.connectionId);
+    const settleStranger = await s.command(stranger, elsewhere);
+    await settleUser();
+    await settleStranger();
+    for (const id of [user, stranger]) {
+      await mkdir(path.join(workRoot, id), { recursive: true });
+      await writeFile(path.join(workRoot, id, 'package.json'), '{}');
+    }
+    const moved = await trashOtherCopies(
+      s.sql,
+      { workRoot, days: 7 },
+      [
+        {
+          spaceId: s.seeded.spaceId,
+          agentId: s.seeded.agentId,
+          connectionId: s.seeded.connectionId,
+          jobId: recordId('job'),
+          path: 'package.json',
+          hash: digest('{}'),
+        },
+      ],
+      () => {},
+    );
+    expect(moved).toBe(1);
+    expect(await exists(path.join(workRoot, user, 'package.json'))).toBe(false);
+    expect(await exists(path.join(workRoot, stranger, 'package.json'))).toBe(true);
   }, 30_000);
 
   test('nothing is removed while another chat is at work on the computer', async () => {

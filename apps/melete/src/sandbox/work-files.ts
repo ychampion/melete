@@ -367,14 +367,18 @@ export async function trashOtherCopies(
   const fs = new LocalWorkspaceFs(workspaces.workRoot);
   const byComputer = new Map<string, QueuedRemoval[]>();
   for (const each of queued) {
-    const key = `${each.spaceId}\n${each.agentId}`;
+    const key = `${each.spaceId}\n${each.agentId}\n${each.connectionId}`;
     byComputer.set(key, [...(byComputer.get(key) ?? []), each]);
   }
   let moved = 0;
   for (const files of byComputer.values()) {
     const first = files[0] as QueuedRemoval;
-    const jobs = await sql`select id from job
-      where space_id = ${first.spaceId} and agent_id = ${first.agentId}`;
+    // Only chats that worked on this computer hold a copy of its /work; a
+    // like-named file of another computer's chat is that chat's own.
+    const jobs = await sql`select j.id from job j
+      where j.space_id = ${first.spaceId} and j.agent_id = ${first.agentId}
+        and exists (select 1 from action a
+          where a.job_id = j.id and a.connection_id = ${first.connectionId})`;
     for (const job of jobs) {
       const jobId = String(job.id);
       const place = await fs.trash(jobId).catch(() => null);
