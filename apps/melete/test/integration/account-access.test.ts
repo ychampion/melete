@@ -6,6 +6,9 @@
  * the file and app routes.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAccount } from '../../src/account/cli.ts';
 import { purgeExpiredAccess } from '../../src/api/account-access.ts';
 import { issueSetupCode, newSetupCode, setupCodeHash } from '../../src/api/setup-code.ts';
@@ -28,6 +31,8 @@ function database() {
 }
 
 const vapid = await generateVapidKeys();
+// Spaces and work files go in a folder of this run's own, never the service's default.
+const files = mkdtempSync(join(tmpdir(), 'melete-account-access-'));
 
 function app(options: { env?: Record<string, string>; mail?: AccountMail[] } = {}) {
   const mail = options.mail;
@@ -35,6 +40,8 @@ function app(options: { env?: Record<string, string>; mail?: AccountMail[] } = {
     env: loadEnv({
       NODE_ENV: 'test',
       MELETE_PUBLIC_URL: PUBLIC_URL,
+      MELETE_SPACES_DIR: join(files, 'spaces'),
+      MELETE_WORK_DIR: join(files, 'work'),
       MELETE_VAPID_PUBLIC_KEY: vapid.publicKey,
       MELETE_VAPID_PRIVATE_KEY: vapid.privateKey,
       MELETE_VAPID_SUBJECT: 'mailto:owner@example.test',
@@ -109,6 +116,7 @@ describeWithDb('account access', () => {
   }, 15_000);
   afterAll(async () => {
     await handle?.close();
+    rmSync(files, { recursive: true, force: true });
   });
 
   describe('claiming a new installation', () => {
