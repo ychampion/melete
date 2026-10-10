@@ -20,10 +20,18 @@
  * Only files of the job the request belongs to are swapped in; a block naming
  * any other file stays text. The gateway's own limits hold: no more pictures
  * than a request may carry, each within the per-picture size, and the whole
- * body within the request limit. Newest files are shown first; one that does
- * not fit keeps its text.
+ * body within the request limit. A picture the person attached is a larger
+ * copy than a screenshot, so its text stays legible, and travels in room of its
+ * own beyond that limit. Newest files are shown first; one that does not fit
+ * keeps its text.
  */
-import { type AttachmentKind, MAX_REQUEST_IMAGES, modelSupportsVision } from '@melete/contracts';
+import {
+  type AttachmentKind,
+  MAX_ATTACHED_IMAGE_ENCODED_BYTES,
+  MAX_IMAGE_ENCODED_BYTES,
+  MAX_REQUEST_IMAGES,
+  modelSupportsVision,
+} from '@melete/contracts';
 import { blockIntact, FILE_BLOCK, PICTURE_NOT_SHOWN } from '../attachments/render.ts';
 import { countImages, imageTokens } from './images.ts';
 import type { GatewayPrincipal, GatewayProtocol } from './types.ts';
@@ -226,6 +234,8 @@ export async function withAttachedFiles(input: {
     return input.body;
   }
   let pictures = MAX_REQUEST_IMAGES - countImages(body);
+  // Pictures the person attached travel beyond the body limit, in room of their own.
+  let pictureRoom = pictures * (MAX_ATTACHED_IMAGE_ENCODED_BYTES + 200);
   // Newest first; a file named twice is shown at its latest place only.
   const chosen = new Map<TextHolder, Found[]>();
   const shown = new Set<string>();
@@ -233,10 +243,16 @@ export async function withAttachedFiles(input: {
     const file = files.get(entry.id);
     if (!file || shown.has(entry.id)) continue;
     if (file.kind === 'image' && pictures <= 0) continue;
-    const added = Math.ceil((file.data.length * 4) / 3) + 200 - (entry.end - entry.start);
-    if (size + added > input.maxRequestBytes) continue;
-    size += added;
-    if (file.kind === 'image') pictures--;
+    const encoded = Math.ceil((file.data.length * 4) / 3) + 200;
+    if (file.kind === 'image') {
+      if (encoded > pictureRoom || encoded > MAX_ATTACHED_IMAGE_ENCODED_BYTES + 200) continue;
+      pictureRoom -= encoded;
+      pictures--;
+    } else {
+      const added = encoded - (entry.end - entry.start);
+      if (size + added > input.maxRequestBytes) continue;
+      size += added;
+    }
     shown.add(entry.id);
     chosen.set(entry.holder, [...(chosen.get(entry.holder) ?? []), entry]);
   }
@@ -295,7 +311,11 @@ export function mediaTokens(body: Record<string, unknown>): {
   tokens: number;
   text: Record<string, unknown>;
 } {
-  const pictures = imageTokens(body);
+  // Counted on the body as it leaves, with the person's own pictures in it.
+  const pictures = imageTokens(
+    body,
+    Math.max(MAX_IMAGE_ENCODED_BYTES, MAX_ATTACHED_IMAGE_ENCODED_BYTES),
+  );
   let pages = 0;
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(walk);

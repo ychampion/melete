@@ -40,8 +40,9 @@ export type McpCatalogEntry = {
   /**
    * Set when the app's sign-in accepts only a client registered with it ahead
    * of time: the operator registers one and names it in these settings.
+   * `meanwhile` is how a person connects the same account without one.
    */
-  client?: { id_setting: string; secret_setting: string; register_at: string };
+  client?: { id_setting: string; secret_setting: string; register_at: string; meanwhile?: string };
   tools: readonly McpCatalogTool[];
 };
 
@@ -232,6 +233,8 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
       id_setting: 'GITHUB_MCP_CLIENT_ID',
       secret_setting: 'GITHUB_MCP_CLIENT_SECRET',
       register_at: 'https://github.com/settings/applications/new',
+      meanwhile:
+        'Until then, “GitHub for the agent’s computer”, under For developers, connects your account with a token you make on GitHub.',
     },
     tools: [
       read('get_me', 'get_me', 'See which account is connected'),

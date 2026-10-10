@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
-import { IMAGE_INPUT_TOKENS, MAX_REQUEST_IMAGES } from '@melete/contracts';
+import {
+  ATTACHMENT_LIMITS,
+  IMAGE_INPUT_TOKENS,
+  MAX_IMAGE_ENCODED_BYTES,
+  MAX_REQUEST_IMAGES,
+} from '@melete/contracts';
 import { pdfWith, TINY_PNG } from '../attachments/fixtures.ts';
 import { PICTURE_NOT_SHOWN, withFiles } from '../attachments/render.ts';
 import { newId } from '../ids.ts';
@@ -217,6 +222,61 @@ describe('files the person sent, as the model is given them', () => {
     expect(text).toContain('[Page 2]');
     expect(sent[0]?.body).not.toContain(PDF_DATA);
     expect(reservations[0]?.estimatedTokens).toBeGreaterThan(IMAGE_INPUT_TOKENS);
+  });
+
+  test('a full-size phone photo goes whole, well past the size of a screenshot', async () => {
+    // A 2048-pixel photo of a receipt, as the browser makes it: about 900 KB.
+    const bytes = new Uint8Array(900 * 1024).fill(0x41);
+    bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+    expect(Buffer.from(bytes).toString('base64').length).toBeGreaterThan(MAX_IMAGE_ENCODED_BYTES);
+    const receipt: ModelFile = { ...PHOTO, mediaType: 'image/jpeg', data: bytes };
+    const { chat, sent } = await start({ attachments: source(true, [receipt, LEASE]) });
+    expect((await chat()).status).toBe(200);
+    const content = sentContent(sent) as { type: string; image_url?: { url: string } }[];
+    expect(content.find((part) => part.type === 'image_url')?.image_url?.url).toBe(
+      `data:image/jpeg;base64,${Buffer.from(bytes).toString('base64')}`,
+    );
+  });
+
+  test('three full-size photos go together, and one larger than any copy the browser makes keeps its words', async () => {
+    const photo = (fill: number, size: number): ModelFile => {
+      const data = new Uint8Array(size).fill(fill);
+      data.set([0xff, 0xd8, 0xff, 0xe0]);
+      return {
+        id: newId('file'),
+        kind: 'image',
+        name: `p${fill}.jpg`,
+        mediaType: 'image/jpeg',
+        data,
+        pages: null,
+      };
+    };
+    const full = [0x41, 0x42, 0x43].map((fill) => photo(fill, ATTACHMENT_LIMITS.model_image_bytes));
+    const message = withFiles(
+      'Which of these is the newest?',
+      full.map((file) => ({
+        id: file.id,
+        name: file.name,
+        kind: 'image',
+        size: file.data.length,
+        pages: null,
+      })),
+      new Map(),
+    );
+    const three = await start({ attachments: source(true, full) });
+    expect((await three.chat('fireworks', message)).status).toBe(200);
+    const parts = sentContent(three.sent) as { type: string }[];
+    expect(parts.filter((part) => part.type === 'image_url')).toHaveLength(3);
+
+    const huge = photo(0x44, ATTACHMENT_LIMITS.model_image_bytes + 3);
+    const one = await start({ attachments: source(true, [huge]) });
+    const words = withFiles(
+      'What does it say?',
+      [{ id: huge.id, name: huge.name, kind: 'image', size: huge.data.length, pages: null }],
+      new Map(),
+    );
+    expect((await one.chat('fireworks', words)).status).toBe(200);
+    expect(sentContent(one.sent)).toBe(words);
   });
 
   test('with vision off, the request goes as the engine wrote it: words and placeholders only', async () => {

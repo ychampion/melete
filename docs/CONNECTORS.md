@@ -1003,7 +1003,9 @@ github.com/settings/applications/new (free, with no review), with
 `<MELETE_PUBLIC_URL>/api/oauth/callback` as its callback URL, then set
 `GITHUB_MCP_CLIENT_ID` and `GITHUB_MCP_CLIENT_SECRET` and restart. Until both are
 set, GitHub is listed as not set up, people are told it needs an app registered
-by whoever runs Melete, and its operator is told what to set.
+by whoever runs Melete, and its operator is told what to set. People are also
+pointed to "GitHub for the agent's computer" under For developers, which connects the
+same account with a fine-grained token and needs nothing registered.
 
 Notion, Linear, Atlassian, Sentry and Stripe need nothing set up: each one's
 authorization server offers dynamic client registration (RFC 7591), so they are

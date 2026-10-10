@@ -30,7 +30,9 @@ export function catalogAppMissing(
   if (!returnTo) return { reason: RETURN_ADDRESS_MISSING, hint: RETURN_ADDRESS_NEEDED };
   if (entry.client && !hasClient)
     return {
-      reason: `${entry.title} only accepts apps registered with ${entry.title} ahead of time, and this Melete does not have one yet. Whoever runs it can register one.`,
+      reason: `${entry.title} only accepts apps registered with ${entry.title} ahead of time, and this Melete does not have one yet. Whoever runs it can register one.${
+        entry.client.meanwhile ? ` ${entry.client.meanwhile}` : ''
+      }`,
       hint: `Register an OAuth app at ${entry.client.register_at} with ${returnTo} as its callback, then set ${entry.client.id_setting} and ${entry.client.secret_setting}.`,
     };
   return undefined;

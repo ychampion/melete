@@ -74,6 +74,11 @@ export function unclassifiedFault(error: unknown, effectClass?: EffectClass): Co
       may_have_committed: false,
       retry_after: null,
     });
+  // The record keeps only the honest default; the operator still hears why,
+  // in the same one redacted line a read's failure is kept as.
+  console.error(
+    `connector: a step failed without a known cause (${errorName(error)}): ${describeFailure(error, 'no message')}`,
+  );
   return connectorFault.parse({
     kind: 'unclassified',
     detail: UNCLASSIFIED_DETAIL,
@@ -100,7 +105,7 @@ const SYSTEM_FAILURES: Record<string, string> = {
  * on the record: system errors by their code, anything else by the first line
  * of its message with host paths and address query strings taken out.
  */
-export function describeFailure(error: unknown): string {
+export function describeFailure(error: unknown, fallback = 'the read failed'): string {
   const code =
     error && typeof error === 'object' && 'code' in error
       ? String((error as { code: unknown }).code)
@@ -120,7 +125,17 @@ export function describeFailure(error: unknown): string {
   )
     .trim()
     .slice(0, 200);
-  return line || 'the read failed';
+  return line || fallback;
+}
+
+/** The kind of a thrown value, by its class and any system code, for the operator's log. */
+function errorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '';
+  return code ? `${name} ${code.slice(0, 40)}` : name;
 }
 
 /** Keys that announce themselves by prefix, whatever their length. */
