@@ -150,7 +150,6 @@ export function mountPrincipals(
           kind: row.kind,
           audience: row.audience,
           owner_principal_id: row.ownerPrincipalId,
-          git_path: row.gitPath,
           created_at: row.createdAt.toISOString(),
         }),
       },

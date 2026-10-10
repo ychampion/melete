@@ -4,6 +4,8 @@
  * who runs the installation reads all of them and moves them through
  * open, fixing, fixed and won't fix.
  */
+
+import type { FeedbackReport } from '@melete/contracts';
 import {
   createFeedbackRequest,
   feedbackListQuery,
@@ -15,10 +17,46 @@ import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import type { LimitStore } from '../ops/limiter.ts';
+import { reportMarkdown } from './markdown.ts';
 import { FeedbackLimiter } from './rate-limit.ts';
 import { type FeedbackScope, FeedbackStore } from './service.ts';
 
 const NOT_FOUND = () => new ServiceError('not_found', 'No such report.', 404);
+
+/** Hands a new report to the people who run the installation. */
+export type FeedbackForward = (report: FeedbackReport) => Promise<void>;
+
+/**
+ * Forwards each report as a JSON POST to `MELETE_FEEDBACK_WEBHOOK_URL`: a
+ * `text` line chat webhooks show, the report itself as the API returns it, and
+ * the same Markdown `melete feedback show` prints. `installation` is the
+ * public address, so one endpoint can take reports from many installations.
+ */
+export function feedbackWebhook(
+  url: string,
+  installation: string | null = null,
+  transport: (request: Request) => Promise<Response> = fetch,
+): FeedbackForward {
+  return async (report) => {
+    const response = await transport(
+      new Request(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: `New Melete problem report ${report.id}${installation ? ` on ${installation}` : ''}: ${report.summary}`,
+          service: 'melete',
+          installation,
+          report,
+          markdown: reportMarkdown(report),
+        }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      }),
+    );
+    await response.body?.cancel().catch(() => {});
+    if (!response.ok) throw new Error(`feedback webhook answered ${response.status}`);
+  };
+}
 
 export function mountFeedback(
   app: Hono,
@@ -28,6 +66,8 @@ export function mountFeedback(
     limiter?: FeedbackLimiter;
     /** Where reports are counted; left out, in this process. */
     limits?: LimitStore;
+    /** Where each new report is also sent, for the people running the installation. */
+    webhook?: FeedbackForward;
   },
 ): void {
   const store = new FeedbackStore(deps.db);
@@ -66,6 +106,15 @@ export function mountFeedback(
         context: input.context,
         appVersion: deps.version,
       });
+      // After the answer, and never in its way: the report is kept here either way.
+      if (deps.webhook)
+        void deps
+          .webhook(report)
+          .catch((error: unknown) =>
+            process.stderr.write(
+              `problem report ${report.id} was not forwarded: ${error instanceof Error ? error.message : String(error)}\n`,
+            ),
+          );
       return c.json(feedbackResponse.parse({ report }), 201);
     } catch (error) {
       // The report's own failure is what the person hears about, not the refund's.

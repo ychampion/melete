@@ -18,7 +18,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { CLIENT_ADDRESS_HEADER as API_CLIENT_ADDRESS_HEADER } from '../../apps/melete/src/api/listener.ts';
 import { isIsolated, viewHeaders } from '../../apps/melete/src/viewer/headers.ts';
-import { CLIENT_ADDRESS_HEADER, createStaticServer, resolveInside } from './serve-static.ts';
+import {
+  CLIENT_ADDRESS_HEADER,
+  createStaticServer,
+  defaultGateway,
+  resolveInside,
+} from './serve-static.ts';
 
 /** Appears only in files outside the bundle. Any response carrying it is a leak. */
 const SENTINEL = 'melete-outside-the-bundle-4f9c2a';
@@ -770,6 +775,44 @@ describe('a trusted upstream in front of the web server', () => {
       try {
         const result = await ask(web, { 'x-forwarded-for': '100.100.0.5' });
         expect(result.clientAddress, String(upstream)).toBe('127.0.0.1');
+      } finally {
+        web.stop(true);
+      }
+    }
+  });
+
+  /** A container's routing table whose default route goes through `gateway` (little-endian hex). */
+  const table = (gateway: string) =>
+    [
+      'Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT',
+      `eth0\t00000000\t${gateway}\t0003\t0\t0\t0\t00000000\t0\t0\t0`,
+      'eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0',
+    ].join('\n');
+
+  test('the routing table names the gateway a proxy on the host reaches the container through', () => {
+    expect(defaultGateway(table('010012AC'))).toBe('172.18.0.1');
+    expect(defaultGateway(table('0100007F'))).toBe('127.0.0.1');
+    expect(defaultGateway(table('00000000'))).toBeNull();
+    expect(defaultGateway('Iface\tDestination\tGateway\n')).toBeNull();
+    expect(defaultGateway('')).toBeNull();
+  });
+
+  test('a proxy on the host, named as the gateway, states the address; any other peer does not', async () => {
+    for (const [gateway, expected] of [
+      ['0100007F', '100.100.0.5'],
+      ['010012AC', '127.0.0.1'],
+    ] as const) {
+      const web = createStaticServer({
+        root: join(base, 'dist'),
+        port: 0,
+        hostname: '127.0.0.1',
+        apiOrigin: apiOrigin(),
+        trustedUpstream: 'gateway',
+        routeTable: async () => table(gateway),
+      });
+      try {
+        const result = await ask(web, { 'x-forwarded-for': '100.100.0.5' });
+        expect(result.clientAddress, gateway).toBe(expected);
       } finally {
         web.stop(true);
       }

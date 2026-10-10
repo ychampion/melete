@@ -16,6 +16,7 @@ import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
+import { startAccessSweep } from './api/account-access.ts';
 import { mountActions } from './api/actions.ts';
 import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
@@ -88,12 +89,13 @@ import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { type AccountMailer, accountMailerFromEnv } from './experience/account-mail.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
-import { mountFeedback } from './feedback/routes.ts';
+import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
@@ -316,6 +318,8 @@ export type AppDeps = {
   attachments?: AttachmentService;
   /** Sorting what came in, for "Needs you". Left out, the list reads what is stored. */
   triage?: TriageService;
+  /** Sends sign-in and reset links. Left out, the sender MELETE_SMTP_URL configures, if any. */
+  accountMail?: AccountMailer;
 };
 
 export function createApp(deps: AppDeps) {
@@ -355,7 +359,35 @@ export function createApp(deps: AppDeps) {
   if (connections) mountDefaultConnections(app, connections);
   // Limits every instance on the database shares; one instance alone counts the same.
   const limits = deps.limits ?? (deps.sql ? new PostgresLimitStore(deps.sql) : undefined);
-  mountAuth(app, { ...deps, limits });
+  const devices = connections
+    ? new DeviceService({
+        ...connections,
+        policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
+        ...(deps.jobs ? { jobs: deps.jobs } : {}),
+      })
+    : undefined;
+  mountAuth(app, {
+    ...deps,
+    limits,
+    accountMail: deps.accountMail ?? accountMailerFromEnv(deps.env),
+    // Computers a new password or "sign out everywhere" disconnected lose their
+    // connection the way a revoke from Settings ends it, fencing running work.
+    ...(devices
+      ? {
+          devicesEnded: async (principalId: string, deviceIds: string[]) => {
+            for (const id of deviceIds)
+              await devices.revoke(id, principalId).catch((error: unknown) => {
+                process.stderr.write(
+                  `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
+                );
+              });
+          },
+        }
+      : {}),
+  });
+  // Before every route that answers with a session, so its checks of a space
+  // header, ?space_id and ?job_id run for all of them, files and apps included.
+  mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
@@ -386,22 +418,12 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
   if (deps.attachments) mountAttachments(app, deps.attachments, personalSpace, limits);
-  mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
-  if (connections)
-    mountDevices(
-      app,
-      new DeviceService({
-        ...connections,
-        policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
-        ...(deps.jobs ? { jobs: deps.jobs } : {}),
-      }),
-      limits,
-    );
+  if (devices) mountDevices(app, devices, limits);
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
   const modelSettings =
@@ -454,7 +476,7 @@ export function createApp(deps: AppDeps) {
     deps.questions ?? (deps.jobs ? new QuestionService(deps.jobs, submissions) : undefined);
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
-  if (deps.triggers) mountTriggers(app, deps.triggers);
+  if (deps.triggers) mountTriggers(app, deps.triggers, db);
   const noticing =
     deps.situations ??
     (deps.jobs && deps.triggers
@@ -623,7 +645,20 @@ export function createApp(deps: AppDeps) {
       limits,
     });
   if (deps.db)
-    mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter, limits });
+    mountFeedback(app, {
+      db: deps.db,
+      version: VERSION,
+      limiter: deps.feedbackLimiter,
+      limits,
+      ...(deps.env.MELETE_FEEDBACK_WEBHOOK_URL
+        ? {
+            webhook: feedbackWebhook(
+              deps.env.MELETE_FEEDBACK_WEBHOOK_URL,
+              deps.env.MELETE_PUBLIC_URL ?? null,
+            ),
+          }
+        : {}),
+    });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -796,6 +831,7 @@ export async function bootstrap(
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopAccessSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
@@ -847,6 +883,7 @@ export async function bootstrap(
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
+    stopAccessSweep?.();
     stopManagedRemovals?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
@@ -960,6 +997,8 @@ export async function bootstrap(
       );
       // Each finished day of model calls is rolled up for reports, by one instance.
       stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
+      // Sessions, links and codes that expired go, so the tables do not grow for ever.
+      stopAccessSweep = startAccessSweep(handle.sql, () => leading(leases, 'access-sweep'));
       // Deleted files are kept in the trash for MELETE_TRASH_DAYS, then go.
       stopTrashSweep = startTrashSweep(
         { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },

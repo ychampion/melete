@@ -10,6 +10,7 @@ import {
   failureReport,
   providerSettings,
   sandboxProject,
+  setupCodeNote,
   voiceSettings,
 } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
@@ -315,6 +316,13 @@ describe('what configure prints', () => {
     expect(windows).toBe(
       'Created deploy/.env and the explicit fake provider. On Windows it has the permissions of its folder.',
     );
+  });
+
+  test('the setup code is said once, with a link that carries it', () => {
+    const note = setupCodeNote('ABCD-EFGH-JKMN-PQRS-TVWX', 'http://127.0.0.1:3101');
+    expect(note).toContain('  ABCD-EFGH-JKMN-PQRS-TVWX\n');
+    expect(note).toContain('http://127.0.0.1:3101/#/welcome?code=ABCD-EFGH-JKMN-PQRS-TVWX');
+    expect(note).toContain('melete account setup-code');
   });
 
   test('a refusal, such as a second run, is its message alone, with no stack', () => {

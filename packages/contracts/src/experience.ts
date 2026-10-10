@@ -18,6 +18,7 @@ import {
   rewindPreview,
   rewindTarget,
 } from './beliefs.ts';
+import { newPasswordInput } from './common.ts';
 import { PROCESS_STATES } from './execution.ts';
 import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
@@ -1289,12 +1290,42 @@ export const experienceSearchResult = z.strictObject({
 export const experienceSearch = z.strictObject({ results: z.array(experienceSearchResult) });
 export const magicLinkRequest = z.strictObject({ email: z.email() });
 export const magicLinkConsume = z.strictObject({ token: z.string().min(32).max(200) });
-const newPassword = z.string().min(8).max(1024);
+const newPassword = newPasswordInput;
 export const passwordChange = z.strictObject({
   current_password: z.string().min(1).max(1024),
   new_password: newPassword,
 });
 export const passwordResetRequest = z.strictObject({ email: z.email().max(254) });
+/** One browser signed in to the account. */
+export const accountSession = z.strictObject({
+  id: z.string().min(1).max(64),
+  /** The browser and system it signed in from, when it said; "A browser" otherwise. */
+  label: z.string().max(120),
+  created_at: date,
+  expires_at: date,
+  /** The browser asking. */
+  current: z.boolean(),
+});
+/**
+ * Everything that can reach the account without its password: browsers,
+ * paired computers, browsers that receive notifications, and assistants
+ * connected over MCP. Each kind is ended from here or from its own setting.
+ */
+export const accountAccess = z.strictObject({
+  sessions: z.array(accountSession),
+  computers: z.array(
+    z.strictObject({ id: z.string().min(1).max(64), name: z.string().max(200), paired_at: date }),
+  ),
+  notifications: z.array(
+    z.strictObject({ id: z.string().min(1).max(64), label: z.string().max(200), created_at: date }),
+  ),
+  assistants: z.array(
+    z.strictObject({ client: z.string().max(200), connected_at: date, expires_at: date }),
+  ),
+});
+export type AccountAccess = z.infer<typeof accountAccess>;
+/** A reset code, checked before a new password is chosen for it. */
+export const passwordResetCheck = z.strictObject({ token: z.string().min(1).max(2000) });
 export const passwordResetConsume = z.strictObject({
   token: z.string().min(20).max(200),
   new_password: newPassword,
@@ -1491,14 +1522,33 @@ export const experienceOperations = {
   'POST /signin/chatgpt': { response: notAvailable },
   /** Ends the session behind the cookie; the next request needs a new sign-in. */
   'POST /signout': { response: experienceOk },
-  /** Checks the current password, sets the new one and signs out every other session. */
-  'POST /account/password': { request: passwordChange, response: experienceOk },
   /**
-   * Mails a one-time reset link when the account's own mailbox is connected.
-   * Without one it answers not_available, and the person who runs the install
-   * prints a link with `bun run reset-password`.
+   * Checks the current password, sets the new one, and ends everything else
+   * that reaches the account: other sessions, paired computers, notifications,
+   * connected assistants and their unused codes, and linked chat accounts.
+   */
+  'POST /account/password': { request: passwordChange, response: experienceOk },
+  /** Where the account is signed in, and what else reaches it. */
+  'GET /account/sessions': { response: accountAccess },
+  /** Signs out one browser session. */
+  'DELETE /account/sessions/{id}': { response: experienceOk },
+  /**
+   * Signs out everywhere but this browser: the same ending as a password
+   * change, without changing the password.
+   */
+  'POST /account/sessions/revoke-others': { response: experienceOk },
+  /**
+   * Mails a one-time reset link through the installation's mail sender
+   * (`MELETE_SMTP_URL`), or, without one, from the owner's own connected
+   * mailbox. When neither can send it answers not_available, and the person who
+   * runs the install prints a link with `melete account reset`.
    */
   'POST /password-reset': { request: passwordResetRequest, response: experienceOk },
+  /**
+   * Whether a reset code is still good: unused and unexpired. A code that isn't
+   * answers 400 invalid_reset_link. Spends nothing.
+   */
+  'POST /password-reset/check': { request: passwordResetCheck, response: experienceOk },
   /** Sets a new password from a one-time link and signs out every session. */
   'POST /password-reset/consume': { request: passwordResetConsume, response: experienceOk },
   'GET /browser/sessions/{id}': { response: browserResponse },

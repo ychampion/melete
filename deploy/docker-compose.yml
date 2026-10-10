@@ -264,6 +264,11 @@ services:
       MELETE_ALERT_SPEND_HOURLY_MULTIPLE: ${MELETE_ALERT_SPEND_HOURLY_MULTIPLE:-}
       MELETE_ALERT_SPEND_PERSON_PERCENT: ${MELETE_ALERT_SPEND_PERSON_PERCENT:-}
       MELETE_ALERT_SPEND_MIN_USD: ${MELETE_ALERT_SPEND_MIN_USD:-}
+      MELETE_FEEDBACK_WEBHOOK_URL: ${MELETE_FEEDBACK_WEBHOOK_URL:-}
+      # Account mail and the claim code (docs/DEPLOYMENT.md, "Account mail").
+      MELETE_SMTP_URL: ${MELETE_SMTP_URL:-}
+      MELETE_MAIL_FROM: ${MELETE_MAIL_FROM:-}
+      MELETE_SETUP_CODE_HASH: ${MELETE_SETUP_CODE_HASH:-}
       MELETE_PUBLIC_URL: ${MELETE_PUBLIC_URL:-}
       MELETE_OAUTH_CLIENT_METADATA: ${MELETE_OAUTH_CLIENT_METADATA:-}
       # Signing in with Google for Gmail and Google Calendar (docs/mail-calendar.md).
@@ -490,6 +495,10 @@ services:
         condition: service_healthy
     environment:
       MELETE_WEB_ORIGIN: ${MELETE_WEB_ORIGIN:-}
+      # The reverse proxy whose X-Forwarded-For names each browser, for sign-in
+      # limits: an address, or `gateway` for a proxy on this host
+      # (docs/DEPLOYMENT.md, "Sign-in limits"). Unset, none is believed.
+      MELETE_WEB_TRUSTED_UPSTREAM: ${MELETE_WEB_TRUSTED_UPSTREAM:-}
     ports:
       - "127.0.0.1:${WEB_PORT:-3101}:3000"
     healthcheck:

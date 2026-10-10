@@ -7,6 +7,7 @@ import {
 } from '@melete/contracts';
 import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { requireStrongPassword } from '../api/password-policy.ts';
 import type { Database } from '../db/client.ts';
 import {
   attempt,
@@ -44,6 +45,7 @@ export class PrincipalService {
     const [installation] = await this.db.select().from(owner).limit(1);
     if (installation?.id !== actor)
       throw new ServiceError('scope_denied', 'Only the setup owner can provision an account.', 403);
+    requireStrongPassword(password, email);
     const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' });
     return serviceTransaction(this.db, async (tx) => {
       const [created] = await tx
