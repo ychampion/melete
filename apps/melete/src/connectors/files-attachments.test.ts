@@ -120,19 +120,90 @@ describe('files.save_attachment', () => {
     );
   });
 
-  test("never replaces another file, and refuses a file that is not this chat's", async () => {
+  test("never replaces another file, and refuses a file that is not this chat's, saying why", async () => {
     await put('taken.pdf', 'something else');
-    await expect(
-      run('files.save_attachment', { attachment_id: 'file_LEASE', path: 'taken.pdf' }),
-    ).rejects.toThrow('there is already a file at "taken.pdf"');
+    expect(
+      await run('files.save_attachment', { attachment_id: 'file_LEASE', path: 'taken.pdf' }),
+    ).toMatchObject({
+      outcome: 'failed',
+      reason: 'there is already a file at "taken.pdf"',
+      retryable: false,
+    });
     expect(await readFile(path.join(root, 'work', 'job_01', 'taken.pdf'), 'utf8')).toBe(
       'something else',
     );
-    await expect(
-      run('files.save_attachment', { attachment_id: 'file_OTHER', path: 'x.pdf' }),
-    ).rejects.toThrow('there is no attached file file_OTHER in this chat');
+    expect(
+      await run('files.save_attachment', { attachment_id: 'file_OTHER', path: 'x.pdf' }),
+    ).toMatchObject({
+      outcome: 'failed',
+      reason: 'there is no attached file file_OTHER in this chat',
+    });
     await expect(
       run('files.save_attachment', { attachment_id: 'file_LEASE', path: '../x.pdf' }),
     ).rejects.toThrow();
+  });
+
+  const prepare = (kind: string, proposed: Record<string, string>) => {
+    const prepared = connector().prepare;
+    if (!prepared) throw new Error('the files connection prepares its steps');
+    return prepared(
+      proposed,
+      connectorContext(connectorAction(kind, proposed)),
+      undefined as never,
+      kind,
+    );
+  };
+
+  test('a path the way the computer spells it is the same place in the workspace', async () => {
+    const proposed = { attachment_id: 'file_LEASE', path: '/work/data/lease.pdf' };
+    const prepared = await prepare('files.save_attachment', proposed);
+    expect(prepared).toEqual({ attachment_id: 'file_LEASE', path: 'data/lease.pdf' });
+    // Saved, confirmed on disk, and verified as the attachment.
+    expect(await detail('files.save_attachment', proposed)).toMatchObject({
+      path: '/work/data/lease.pdf',
+      bytes: LEASE.length,
+    });
+    const target = path.join(root, 'work', 'job_01', 'data', 'lease.pdf');
+    expect(Buffer.from(await readFile(target)).equals(Buffer.from(LEASE))).toBe(true);
+    const action = connectorAction('files.save_attachment', prepared);
+    expect((await connector().verify(action, connectorContext(action))).decision).toBe('succeeded');
+  });
+
+  test('a path that cannot be used is refused before anything is decided, in words to act on', async () => {
+    for (const bad of ['/etc/passwd', 'C:\\work\\x.pdf', '../x.pdf']) {
+      await expect(
+        prepare('files.save_attachment', { attachment_id: 'file_LEASE', path: bad }),
+      ).rejects.toMatchObject({
+        code: 'payload_invalid',
+        message: expect.stringContaining('Give a path inside your workspace'),
+      });
+    }
+  });
+
+  test('a move from the computer into Files is said to be done only once it is there', async () => {
+    await put('chart.png', TINY_PNG);
+    const prepared = await prepare('files.move', {
+      from: '/work/chart.png',
+      to: 'charts/chart.png',
+      to_area: 'artifacts',
+    });
+    expect(prepared).toMatchObject({ from: 'chart.png', to: 'charts/chart.png' });
+    const moved = await detail('files.move', prepared);
+    expect(moved).toMatchObject({
+      from: 'chart.png',
+      to: 'charts/chart.png',
+      to_area: 'artifacts',
+    });
+    const landed = path.join(root, 'spaces', 'sp_01', 'artifacts', 'charts', 'chart.png');
+    expect(Buffer.from(await readFile(landed)).equals(Buffer.from(TINY_PNG))).toBe(true);
+    await expect(stat(path.join(root, 'work', 'job_01', 'chart.png'))).rejects.toThrow();
+    const action = connectorAction('files.move', { ...prepared, content_hash: moved.content_hash });
+    expect((await connector().verify(action, connectorContext(action))).decision).toBe('succeeded');
+  });
+
+  test('a move that could not happen fails with its reason', async () => {
+    expect(
+      await run('files.move', { from: 'missing.png', to: 'chart.png', to_area: 'artifacts' }),
+    ).toMatchObject({ outcome: 'failed', reason: 'not found', retryable: false });
   });
 });
