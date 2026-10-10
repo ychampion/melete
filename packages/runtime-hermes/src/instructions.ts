@@ -330,6 +330,15 @@ export function renderConstraints(constraints: AttemptBundle['job']['constraints
 }
 
 /**
+ * A remembered allergy or dietary rule is a limit, not a taste. Both models
+ * once suggested a peanut-heavy kitchen to someone whose peanut allergy was in
+ * the recalled details. Recall carries those details first whatever was asked
+ * (`safetyCandidates` in the service's memory recall).
+ */
+export const HARD_LIMITS =
+  'An allergy, a dietary rule, a medical need or another limit the person stated is a hard constraint: every place, dish, product or plan you suggest must respect it, and leave out anything that breaks it rather than add a warning. When it matters, say in a few words that you kept to it.';
+
+/**
  * What Melete already knows that bears on this turn. It is recalled for the
  * latest message, so it changes from turn to turn and is rendered after the
  * prior conversation, never in the cached system prompt.
@@ -345,6 +354,7 @@ export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[]
     '## What Melete already knows',
     '',
     'Each line is a record, not a belief. Name a path only when asked where something came from or when it is disputed. These are the details recalled for this message, not everything Melete remembers.',
+    HARD_LIMITS,
     '',
     ...knowledge.map(
       (entry) =>
@@ -442,6 +452,40 @@ export function renderInput(bundle: AttemptBundle): string {
   return lines.join('\n');
 }
 
+/** How many days the calendar strip in the volatile input shows, today first. */
+export const CALENDAR_DAYS = 14;
+
+/**
+ * Each of `days` calendar days from the person's today, as "Sat 14 Nov 2026".
+ * Counted on the calendar, not in hours, so a clock change never skips or
+ * repeats a day.
+ */
+export function calendarStrip(at: string, timeZone: string, days: number): string[] {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(at));
+  const part = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const format = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  return Array.from({ length: days }, (_, offset) => {
+    // Assembled from its parts, so no runtime's punctuation changes the line.
+    const of = format.formatToParts(
+      new Date(Date.UTC(part('year'), part('month') - 1, part('day') + offset, 12)),
+    );
+    const named = (type: string) => of.find((p) => p.type === type)?.value ?? '';
+    const day = `${named('weekday')} ${named('day')} ${named('month')} ${named('year')}`;
+    return offset === 0 ? `${day} (today)` : day;
+  });
+}
+
 /**
  * The person's own date, time and weekday, and where they probably are. A
  * reminder once gave the weather for the city a stale profile zone was named
@@ -463,7 +507,14 @@ export function renderNow(now: AttemptBundle['local_now']): string[] {
   } catch {
     return [];
   }
-  const lines = ['', '## Now', '', `It is ${said} for the person (${now.time_zone}).`];
+  const lines = [
+    '',
+    '## Now',
+    '',
+    `It is ${said} for the person (${now.time_zone}).`,
+    `The next two weeks: ${calendarStrip(now.at, now.time_zone, CALENDAR_DAYS).join(', ')}.`,
+    'Take dates and weekdays from these lines; do not work them out or run a clock command for them.',
+  ];
   if (now.city)
     lines.push(
       `They are probably in or near ${now.city}, the city their time zone is named for. A place they name, or one you know they are in, comes first; for anything local (weather, travel, opening hours) say which place you used.`,

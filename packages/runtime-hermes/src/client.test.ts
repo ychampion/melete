@@ -19,8 +19,11 @@ import {
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
   BACKGROUND_WORDS,
+  CALENDAR_DAYS,
+  calendarStrip,
   DONE_WORDS,
   DUE_NOW_WORDS,
+  HARD_LIMITS,
   instructionTokens,
   MEMORY_WORDS,
   measureRenderedInput,
@@ -277,6 +280,48 @@ describe('context assembly', () => {
     expect(told).toContain(
       "Their profile says Asia/Kolkata but their device is set to America/Los_Angeles. Times here use their device's America/Los_Angeles, not their profile's Asia/Kolkata.",
     );
+  });
+
+  test('two weeks of dates and weekdays come with the moment, counted in the person’s zone', () => {
+    // 05:30 UTC on 14 Nov is still the 13th in Los Angeles, and already the 14th in Kolkata.
+    const at = '2026-11-14T05:30:00.000Z';
+    const pacific = calendarStrip(at, 'America/Los_Angeles', CALENDAR_DAYS);
+    expect(pacific).toHaveLength(14);
+    expect(pacific[0]).toBe('Fri 13 Nov 2026 (today)');
+    expect(pacific[1]).toBe('Sat 14 Nov 2026');
+    expect(calendarStrip(at, 'Asia/Kolkata', 2)).toEqual([
+      'Sat 14 Nov 2026 (today)',
+      'Sun 15 Nov 2026',
+    ]);
+    // A clock change neither skips nor repeats a day.
+    expect(calendarStrip('2026-10-31T12:00:00.000Z', 'Europe/London', 3)).toEqual([
+      'Sat 31 Oct 2026 (today)',
+      'Sun 1 Nov 2026',
+      'Mon 2 Nov 2026',
+    ]);
+    const lines = renderNow({
+      at,
+      time_zone: 'Asia/Kolkata',
+      city: 'Kolkata',
+      zone_mismatch: null,
+    });
+    expect(lines.join('\n')).toContain(
+      'The next two weeks: Sat 14 Nov 2026 (today), Sun 15 Nov 2026,',
+    );
+    expect(lines.join('\n')).toContain('do not work them out or run a clock command');
+  });
+
+  test('a remembered allergy or dietary rule is read as a hard constraint', () => {
+    const fed = structuredClone(bundle);
+    fed.knowledge = [
+      {
+        ...required(bundle.knowledge[0]),
+        excerpt: 'Allergic to peanuts.',
+      },
+    ];
+    const input = renderInput(fed);
+    expect(input).toContain(HARD_LIMITS);
+    expect(input.indexOf(HARD_LIMITS)).toBeLessThan(input.indexOf('Allergic to peanuts.'));
   });
 
   test('the instructions ask for the original source and for each link once', () => {
