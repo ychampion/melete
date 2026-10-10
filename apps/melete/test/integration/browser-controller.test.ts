@@ -10,6 +10,7 @@ import type {
 } from '../../src/workers/browser/controller.ts';
 import type { BrowserSession } from '../../src/workers/browser/sessions.ts';
 import { startBrowserFixture } from '../helpers/browser-fixture.ts';
+import { CHECK_PAGES, SIGN_IN_PAGES } from '../helpers/real-pages.ts';
 import { ORDINARY_LABELS, SECRET_LABELS } from '../helpers/secret-labels.ts';
 
 if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
@@ -158,6 +159,56 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     ).rejects.toThrow('sensitive_input_require_takeover');
     expect(fixture.effects.filter((effect) => effect.run === 'credentials')).toHaveLength(0);
   }, 15_000);
+  test('a sign-in form with an empty password field is looked at, and only the person types the password', async () => {
+    const opened = await call({
+      kind: 'open',
+      url: `${fixture.url}/form/password_only?run=password`,
+    });
+    expect(opened.observation?.screenshot).not.toBe('');
+    expect(opened.result?.secret_fields).toBe(true);
+    expect(opened.result?.challenge).toBeUndefined();
+    expect(
+      opened.observation?.schema
+        .filter((control) => control.sensitive)
+        .map((control) => control.label),
+    ).toEqual(['Password']);
+    expect(String(opened.result?.note)).toContain('are the person’s to type');
+    await call({ kind: 'observe' });
+    await call({ kind: 'read', selector: 'body' });
+    await call({ kind: 'fill', label: 'Name', value: 'A Person' });
+    await expect(call({ kind: 'fill', label: 'Password', value: 'not-recorded' })).rejects.toThrow(
+      'sensitive_input_require_takeover',
+    );
+    expect(fixture.effects.filter((effect) => effect.run === 'password')).toHaveLength(0);
+  }, 15_000);
+  test('a password field that already holds something refuses captures and reads', async () => {
+    await expect(
+      call({ kind: 'open', url: `${fixture.url}/form/password_held?run=held` }),
+    ).rejects.toThrow('sensitive_input_require_takeover');
+    await expect(call({ kind: 'observe' })).rejects.toThrow('sensitive_input_require_takeover');
+    await expect(call({ kind: 'read', selector: 'body' })).rejects.toThrow(
+      'sensitive_input_require_takeover',
+    );
+  }, 15_000);
+  test.each(Object.keys(SIGN_IN_PAGES))(
+    'the sign-in page %s is no check, and is looked at like any other',
+    async (name) => {
+      const seen = await call({ kind: 'open', url: `${fixture.url}/page/${name}` });
+      expect(seen.result?.challenge).toBeUndefined();
+      expect(seen.result?.secret_fields).toBe(true);
+      expect(seen.observation?.screenshot).not.toBe('');
+      expect(seen.observation?.schema.some((control) => control.sensitive)).toBe(true);
+    },
+    15_000,
+  );
+  test.each(Object.keys(CHECK_PAGES))(
+    'the check page %s is a check only the person can pass, seen as the page opens',
+    async (name) => {
+      const seen = await call({ kind: 'open', url: `${fixture.url}/page/${name}` });
+      expect(seen.result?.challenge).toBe(true);
+    },
+    15_000,
+  );
   test('a page that only links to signing in is read like any other', async () => {
     const seen = await call({ kind: 'open', url: `${fixture.url}/form/sign_in_links?run=links` });
     expect(seen.observation?.schema.map((control) => control.label)).toEqual(

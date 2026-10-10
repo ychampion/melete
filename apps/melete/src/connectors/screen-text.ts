@@ -72,6 +72,7 @@ export const CHALLENGE_PROVIDERS = [
   'hcaptcha',
   'arkose',
   'datadome',
+  'perimeterx',
   'other',
 ] as const;
 export type ChallengeProvider = (typeof CHALLENGE_PROVIDERS)[number];

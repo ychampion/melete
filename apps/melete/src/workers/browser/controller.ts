@@ -149,15 +149,16 @@ export type BrowserCommandResult = {
 /**
  * Whether the page shows a check that a person is there: a visible widget or
  * frame from a bot-check provider, in the page or in any open shadow root in
- * it, or Cloudflare's own check page, whose widget sits where no page script
- * can see it. The invisible kind, which only names itself in a badge or a
- * footer line, asks nothing of anyone and is left out. The desktop's helper
- * looks the same way (`CHALLENGE_SHOWN` in `deploy/sandbox/melete-desktop`).
+ * it (PerimeterX's press-and-hold box among them), or Cloudflare's own check
+ * page, whose widget sits where no page script can see it. The invisible kind,
+ * which only names itself in a badge or a footer line, asks nothing of anyone
+ * and is left out. A sign-in form is no check, whatever it asks. The desktop's
+ * helper looks the same way (`CHALLENGE_SHOWN` in `deploy/sandbox/melete-desktop`).
  * Runs in the page.
  */
 function challengeShown(): boolean {
   const provider =
-    /(^|\.)(recaptcha\.net|hcaptcha\.com|challenges\.cloudflare\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)$/i;
+    /(^|\.)(recaptcha\.net|hcaptcha\.com|challenges\.cloudflare\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com|px-cdn\.net|px-cloud\.net|perimeterx\.net)$/i;
   const shown = (element: BrowserElement) => {
     const box = element.getBoundingClientRect();
     const style = getComputedStyle(element);
@@ -172,7 +173,7 @@ function challengeShown(): boolean {
   const found: BrowserElement[] = [];
   const look = (root: BrowserRoot) => {
     for (const element of Array.from(
-      root.querySelectorAll('iframe, .g-recaptcha, .h-captcha, .cf-turnstile'),
+      root.querySelectorAll('iframe, .g-recaptcha, .h-captcha, .cf-turnstile, #px-captcha'),
     )) {
       if (found.length >= 200) return;
       found.push(element);
@@ -203,26 +204,70 @@ function challengeShown(): boolean {
 }
 
 /**
- * Whether a field where a secret goes (a password, a one-time code, a card
- * number or code, by its type or autocomplete hint) shows anywhere on the
- * page, open shadow roots included. Runs in the page.
+ * Whether the page is a check still being drawn: a bot-check provider's
+ * script that draws a widget is on it, and it shows no field to fill. Such a
+ * page (a site's own "confirm you are a real user" page) draws its widget a
+ * moment after it loads, so a look taken as it opens can miss it. The kind
+ * that runs unseen, given a site key to `render`, draws nothing and is left
+ * out. Runs in the page.
  */
-function secretFieldShown(): boolean {
+function challengeLoading(): boolean {
+  const provider =
+    /(^|\.)(recaptcha\.net|hcaptcha\.com|challenges\.cloudflare\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com|px-cdn\.net|px-cloud\.net|perimeterx\.net)$/i;
+  const drawing = Array.from(document.querySelectorAll('script[src]')).some((script) => {
+    let url: URL;
+    try {
+      url = new URL(script.getAttribute('src') ?? '', location.href);
+    } catch {
+      return false;
+    }
+    const google = /(^|\.)google\.com$/i.test(url.hostname) && url.pathname.includes('/recaptcha/');
+    if (!google && !provider.test(url.hostname)) return false;
+    const render = url.searchParams.get('render');
+    return render === null || render === 'explicit' || render === 'onload';
+  });
+  if (!drawing) return false;
+  return !Array.from(
+    document.querySelectorAll('input:not([type="hidden"]), textarea, select'),
+  ).some((field) => field.getClientRects().length > 0);
+}
+
+/** How long a look waits for a check page to draw its widget. */
+export const CHALLENGE_DRAW_MS = 4_000;
+
+/**
+ * Which fields where a secret goes (a password, a one-time code, a card number
+ * or code, by its type or autocomplete hint) show anywhere on the page, open
+ * shadow roots included: 'none'; 'passwords' when each is an empty password
+ * field, as on a sign-in or sign-up form; else 'guarded'. Runs in the page.
+ */
+function secretFieldState(): 'none' | 'passwords' | 'guarded' {
   const secret = /password|one-time-code|webauthn|cc-number|cc-csc/i;
-  const look = (root: BrowserRoot): boolean => {
+  const other = /one-time-code|webauthn|cc-number|cc-csc/i;
+  let state: 'none' | 'passwords' | 'guarded' = 'none';
+  const look = (root: BrowserRoot) => {
     for (const element of Array.from(root.querySelectorAll('input, textarea, select')))
       if (
         (element.getAttribute('type') === 'password' ||
           secret.test(element.getAttribute('autocomplete') ?? '')) &&
         element.getClientRects().length > 0 &&
         getComputedStyle(element).visibility !== 'hidden'
-      )
-        return true;
+      ) {
+        if (
+          element.getAttribute('type') !== 'password' ||
+          other.test(element.getAttribute('autocomplete') ?? '') ||
+          element.value !== ''
+        ) {
+          state = 'guarded';
+          return;
+        }
+        state = 'passwords';
+      }
     for (const element of Array.from(root.querySelectorAll('*')))
-      if (element.shadowRoot && look(element.shadowRoot)) return true;
-    return false;
+      if (state !== 'guarded' && element.shadowRoot) look(element.shadowRoot);
   };
-  return look(document);
+  look(document);
+  return state;
 }
 
 /**
@@ -250,8 +295,9 @@ type Candidate = { label: string; role: string; required: boolean; node?: number
 /**
  * What each of the given controls is, as a look lists it: whether it shows (as Playwright's
  * `visible` reads it: displayed, not hidden, with a box), whether a secret goes in it by its
- * type or autocomplete hint, and whether it is a submit button of a form that posts, the only
- * kind a submit intent is made for. Runs in the page, on the controls' own nodes.
+ * type or autocomplete hint, whether it is an empty password field, and whether it is a submit
+ * button of a form that posts, the only kind a submit intent is made for. Runs in the page, on
+ * the controls' own nodes.
  */
 function controlLooks(...elements: BrowserElement[]) {
   return elements.map((element) => {
@@ -269,6 +315,14 @@ function controlLooks(...elements: BrowserElement[]) {
         /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
           element.getAttribute('autocomplete') ?? '',
         ),
+      // A password field with nothing in it yet, as a sign-in or sign-up form shows one.
+      emptyPassword:
+        element.tagName === 'INPUT' &&
+        element.getAttribute('type') === 'password' &&
+        !/one-time-code|webauthn|cc-number|cc-csc/i.test(
+          element.getAttribute('autocomplete') ?? '',
+        ) &&
+        element.value === '',
       posts:
         ['BUTTON', 'INPUT'].includes(element.tagName) &&
         element.type === 'submit' &&
@@ -285,6 +339,15 @@ export function unlistedResult(listed: number, unlisted: number): Record<string,
   return {
     controls_unlisted: unlisted,
     note: `The page has more controls than one look lists: schema shows ${listed} (fields first, then buttons, then links), and up to ${unlisted} more are not listed. The page's tree lists every one by role and name, and click, fill and select take any control on the page by its exact role and name, listed or not.`,
+  };
+}
+
+/** What a look says about a page with empty password fields, a sign-in or sign-up form's. */
+export function secretFieldsResult(sensitive: boolean): Record<string, unknown> {
+  if (!sensitive) return {};
+  return {
+    secret_fields: true,
+    note: 'The password fields, marked sensitive, are the person’s to type: filling one hands the browser to them. The rest of the page is yours to read and use as usual.',
   };
 }
 
@@ -517,8 +580,9 @@ export class BrowserController {
   /**
    * What a look lists: the visible controls, at most MAX_LISTED_CONTROLS, most likely needed
    * first; how many more the page names past them; whether a field where a secret goes shows
-   * anywhere on the page, listed or not; and the names of the listed buttons that submit a
-   * form that posts.
+   * anywhere on the page, listed or not, and whether the page is guarded for it (any such field
+   * but an empty password field: a code, a card, a value already typed); and the names of the
+   * listed buttons that submit a form that posts.
    */
   private async schema(
     page: Page,
@@ -527,11 +591,13 @@ export class BrowserController {
     controls: VisibleSchema;
     unlisted: number;
     sensitive: boolean;
+    guarded: boolean;
     submits: string[];
   }> {
     const candidates = await this.candidates(cdp);
     const controls: VisibleSchema = [];
     const submits = new Set<string>();
+    let guarded = false;
     let next = 0;
     // On a busy page the controls past the limit are counted, not looked at.
     while (next < candidates.length && controls.length < MAX_LISTED_CONTROLS) {
@@ -541,26 +607,35 @@ export class BrowserController {
       batch.forEach(({ label, role, required }, index) => {
         const look = looks[index];
         if (!look?.visible) return;
-        controls.push({
-          label,
-          role,
-          sensitive:
-            look.secret || isSensitiveControl({ label, role, sensitive: false, required: false }),
-          required,
-        });
+        const sensitive =
+          look.secret || isSensitiveControl({ label, role, sensitive: false, required: false });
+        if (sensitive && !look.emptyPassword) guarded = true;
+        controls.push({ label, role, sensitive, required });
         if (role === 'button' && look.posts) submits.add(label);
       });
     }
     const rest = candidates.slice(next);
     let sensitive = controls.some((control) => control.sensitive);
     // A field left unlisted can still be where a secret goes: by its name, or by its type or
-    // hint, looked for across the whole page at once. A page that cannot be asked counts as one.
+    // hint, looked for across the whole page at once. A page that cannot be asked counts as a
+    // guarded one.
     const fields = rest.filter((candidate) => VALUE_ROLES.has(candidate.role));
-    if (!sensitive && fields.length)
-      sensitive =
-        fields.some((field) => isSensitiveControl({ ...field, sensitive: false })) ||
-        (await page.evaluate(secretFieldShown).catch(() => true));
-    return { controls, unlisted: rest.length, sensitive, submits: [...submits] };
+    if (fields.length) {
+      const named = fields.filter((field) => isSensitiveControl({ ...field, sensitive: false }));
+      if (named.length) {
+        sensitive = true;
+        const looks = await this.looks(cdp, named.slice(0, MAX_LISTED_CONTROLS));
+        if (
+          named.length > MAX_LISTED_CONTROLS ||
+          looks.some((look) => look?.visible && !look.emptyPassword)
+        )
+          guarded = true;
+      }
+      const state = await page.evaluate(secretFieldState).catch(() => 'guarded' as const);
+      if (state !== 'none') sensitive = true;
+      if (state === 'guarded') guarded = true;
+    }
+    return { controls, unlisted: rest.length, sensitive, guarded, submits: [...submits] };
   }
 
   private async formIntent(page: Page, name: string): Promise<BrowserSubmitIntent> {
@@ -638,9 +713,29 @@ export class BrowserController {
     // and a tree and labels with the page's contents taken out, and it still refuses below.
     const handedBack = this.handback;
     const { page, cdp } = await this.attach();
-    const { controls: schema, unlisted, sensitive, submits } = await this.schema(page, cdp);
-    // No screenshot, tree, episode, recipe or artifact is recorded while authentication fields are visible.
-    if (sensitive) throw new BrowserFault('sensitive_input_require_takeover');
+    const {
+      controls: schema,
+      unlisted,
+      sensitive,
+      guarded,
+      submits,
+    } = await this.schema(page, cdp);
+    // No screenshot, tree, episode, recipe or artifact is recorded while a field for a code, a
+    // card or another secret shows, or one already holds something: such a page can show the
+    // secret beside its field. A sign-in or sign-up form with only empty password fields is
+    // looked at like any other page, and typing the password stays the person's.
+    if (guarded) throw new BrowserFault('sensitive_input_require_takeover');
+    // Read from the page's structure, never its words: a widget or frame of a
+    // bot check, big enough to be clicked, that a person has to pass. A check
+    // page still drawing its widget is given a moment, so the look taken as it
+    // opens finds it rather than a later one.
+    const looksChecked = () => page.evaluate(challengeShown).catch(() => false);
+    let challenge = !handedBack && (await looksChecked());
+    if (!handedBack && !challenge && (await page.evaluate(challengeLoading).catch(() => false)))
+      for (let waited = 0; !challenge && waited < CHALLENGE_DRAW_MS; waited += 250) {
+        await page.waitForTimeout(250);
+        challenge = await looksChecked();
+      }
     const snapshot = await page.locator('body').ariaSnapshot();
     const whole = handedBack ? withoutValues(snapshot) : snapshot;
     // A long page's tree is kept to its start, cut at a line, and the look says so.
@@ -669,9 +764,6 @@ export class BrowserController {
         if (!(error instanceof BrowserFault)) throw error;
       }
     }
-    // Read from the page's structure, never its words: a widget or frame of a
-    // bot check, big enough to be clicked, that a person has to pass.
-    const challenge = !handedBack && (await page.evaluate(challengeShown).catch(() => false));
     this.sessions.observed(session.id, epoch);
     this.metrics.observations++;
     // A page still loads when a third-party host it uses is down, or when it tries to send
@@ -698,6 +790,7 @@ export class BrowserController {
           droppedResult(dropped),
           unlistedResult(schema.length, unlisted),
           shortenedResult(whole.length, tree.length),
+          secretFieldsResult(sensitive),
         ),
         ...(challenge ? { challenge: true } : {}),
       },
@@ -889,7 +982,7 @@ export class BrowserController {
           // Text read from the page is kept with the receipt, and the page still holds what the
           // person typed or was shown until automation moves it to another document.
           if (this.handback) throw new BrowserFault('read_after_handback');
-          if ((await this.schema(page, cdp)).sensitive)
+          if ((await this.schema(page, cdp)).guarded)
             throw new BrowserFault('sensitive_input_require_takeover');
           const query = command.operation;
           const handle = await this.unique(

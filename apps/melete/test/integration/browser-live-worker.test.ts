@@ -147,9 +147,10 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         allowed_domains: ['127.0.0.1'],
       });
       await command({ kind: 'observe' });
-      expect(await reason(command({ kind: 'open', url: `${fixture.app}/signin` }))).toBe(
-        'sensitive_input_require_takeover',
-      );
+      // A sign-in page with its password field empty is looked at like any other.
+      expect(
+        (await command({ kind: 'open', url: `${fixture.app}/signin` })).result?.secret_fields,
+      ).toBe(true);
     }, 30_000);
 
     afterAll(async () => {
@@ -414,14 +415,14 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         'This browser is signed in.',
       );
 
-      // Handed back with a password field showing, the observation still refuses, and the next
-      // one that completes is still the one without a picture.
-      expect(await reason(command({ kind: 'open', url: `${fixture.app}/signin` }))).toBe(
-        'sensitive_input_require_takeover',
-      );
+      // Handed back with an empty password field showing, the look is the one without a
+      // picture, as every look on a handed-back page is.
+      expect(
+        (await command({ kind: 'open', url: `${fixture.app}/signin` })).result?.secret_fields,
+      ).toBe(true);
       session = await worker.takeover(session.id);
       session = await worker.handback(session.id);
-      expect(await reason(command({ kind: 'observe' }))).toBe('sensitive_input_require_takeover');
+      expect((await command({ kind: 'observe' })).observation?.screenshot).toBe('');
       session = await worker.takeover(session.id);
       open = await worker.liveOpen(session.id, session.control_epoch);
       seq = 0;
