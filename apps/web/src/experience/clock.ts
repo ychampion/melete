@@ -28,10 +28,24 @@ export function displayZone(): string {
   return chosen ?? browserTimeZone() ?? 'UTC';
 }
 
+/**
+ * Formatters made once per zone and shape and kept: making one costs far more
+ * than using it, and a list of chats reads several times per row.
+ */
+const formats = new Map<string, Intl.DateTimeFormat>();
+function formatIn(zone: string, shape: string, options: Intl.DateTimeFormatOptions) {
+  const key = `${shape} ${zone}`;
+  let format = formats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat('en-US', { ...options, timeZone: zone });
+    formats.set(key, format);
+  }
+  return format;
+}
+
 function partsOf(date: Date, zone: string): Record<string, string> {
   const parts: Record<string, string> = {};
-  for (const part of new Intl.DateTimeFormat('en-US', {
-    timeZone: zone,
+  for (const part of formatIn(zone, 'parts', {
     hourCycle: 'h23',
     year: 'numeric',
     month: '2-digit',
@@ -71,15 +85,17 @@ export function hourOfDay(date: Date, zone: string = displayZone()): number {
 
 /** "8:26 PM" on the zone's clock. */
 export const clockTime = (date: Date, zone: string = displayZone()): string =>
-  date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: zone });
+  formatIn(zone, 'time', { hour: 'numeric', minute: '2-digit' }).format(date);
 
 /** "Sat", or "Saturday" when long. */
 export const weekday = (date: Date, zone: string = displayZone(), long = false): string =>
-  date.toLocaleDateString('en-US', { weekday: long ? 'long' : 'short', timeZone: zone });
+  formatIn(zone, long ? 'weekday-long' : 'weekday', { weekday: long ? 'long' : 'short' }).format(
+    date,
+  );
 
 /** "Oct 10". */
 export const monthDay = (date: Date, zone: string = displayZone()): string =>
-  date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: zone });
+  formatIn(zone, 'month-day', { month: 'short', day: 'numeric' }).format(date);
 
 /** "Today", "Yesterday", or "Sat, Oct 3": the day something happened, said from now. */
 export function dayWords(date: Date, now: Date, zone: string = displayZone()): string {
