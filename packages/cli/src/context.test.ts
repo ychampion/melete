@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stream } from './context.ts';
+import { CHANGED_WHILE_READ } from './files.ts';
 
 const bun = process.execPath;
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -47,6 +48,25 @@ describe('streaming a backup part', () => {
     );
     expect(failed.ok).toBe(false);
     expect(failed.detail).toContain('exited 4');
+  });
+
+  test("a source's last stderr line is kept, however long the lines before it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    // As tar prints a changed file with a long path before the archive says so.
+    const line = `tar: ./${'d'.repeat(200)}/${'f'.repeat(120)}: file changed as we read it`;
+    const source = {
+      command: [
+        bun,
+        '-e',
+        `process.stderr.write(${JSON.stringify(`${line}
+${line}
+${CHANGED_WHILE_READ}
+`)}); process.stdout.write("tar")`,
+      ],
+    };
+    const result = await stream(source, [{ file: join(dir, 'e.tar') }]);
+    expect(result).toMatchObject({ ok: true, bytes: 3 });
+    expect(result.stderr).toContain(CHANGED_WHILE_READ);
   });
 
   test('a source that writes a lot to stderr before its output does not stall', async () => {

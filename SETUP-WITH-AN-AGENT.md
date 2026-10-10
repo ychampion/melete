@@ -372,8 +372,9 @@ second space gets a worker of its own only when the person asks, following
   browser step already wrote `deploy/melete.deploy.json`, so skip it then), then
   `bun run melete deploy --checkout --dry-run` to show the person the plan, and
   `bun run melete deploy --checkout`. It sizes the update against the disk,
-  backs up the database when the release adds migrations, pulls one image at a
-  time, and leaves the running stack alone if anything fails before the switch.
+  backs up the database and the files when the release adds migrations, pulls
+  one image at a time, and leaves the running stack alone if anything fails
+  before the switch.
   `bun run melete rollback` goes back.
 - **Back up**: `bun run melete backup --estimate`, then `bun run melete backup`
   ([Backup and restore](docs/DEPLOYMENT.md#backup-and-restore)).
