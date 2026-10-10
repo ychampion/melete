@@ -147,10 +147,20 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
   const bindSpace: MiddlewareHandler<{ Variables: Variables }> = async (c, next) => {
     const header = c.req.header(SPACE_HEADER);
     const authenticated = Boolean(c.get('owner'));
-    const selected = header ?? (authenticated ? c.req.query('space_id') : undefined);
+    // Without a header or ?space_id, a session uses the space it signed in to,
+    // however many other accounts the installation has.
+    const selected =
+      header ??
+      (authenticated
+        ? (c.req.query('space_id') ?? (c.get('experienceSpaceId') as string | undefined))
+        : undefined);
     const available = !selected && authenticated ? await deps.spaces.list() : [];
     if (!selected && available.length !== 1) {
-      return c.json(fail('no_space', `Select a space using ${SPACE_HEADER}.`), 401);
+      // Signed in, a request that names no space is a bad request, not a signed-out one.
+      return c.json(
+        fail('no_space', `Select a space using ${SPACE_HEADER}.`),
+        authenticated ? 400 : 401,
+      );
     }
     const space = selected ? await deps.spaces.byId(selected) : available[0];
     if (!space) return c.json(fail('no_such_space', 'No accessible space has that id.'), 404);

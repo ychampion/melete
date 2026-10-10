@@ -1214,3 +1214,40 @@ withDb("the agent's own terminal beside a paired computer", () => {
     });
   }, 60_000);
 });
+
+withDb('signing out everywhere else', () => {
+  test('disconnects every paired computer, and its token stops working at once', async () => {
+    const s = need();
+    const { config } = await s.computer();
+    const hello = () =>
+      s.app.request('/device/hello', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ companion_version: 'test', capabilities: ALL, folders: [] }),
+      });
+    expect((await hello()).status).toBe(200);
+    const unused = await s.code();
+    const ended = await s.app.request('/account/sessions/revoke-others', s.as(s.cookie, 'POST'));
+    expect(ended.status).toBe(200);
+    expect((await hello()).status).toBe(401);
+    const [connection] = await s.sql`select c.status from connection c
+      join paired_device d on d.connection_id = c.id where d.id = ${config.device_id}`;
+    expect(connection?.status).toBe('revoked');
+    // A pairing code made before it no longer pairs anything.
+    const late = await s.app.request('/device/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code: unused.code,
+        name: 'After sign-out',
+        platform: 'linux',
+        companion_version: 'test',
+        capabilities: ALL,
+        folders: [],
+      }),
+    });
+    expect(late.status).toBe(400);
+    // This browser stays signed in.
+    expect((await s.app.request('/devices', s.as(s.cookie))).status).toBe(200);
+  }, 30_000);
+});

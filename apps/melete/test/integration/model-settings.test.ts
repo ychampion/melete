@@ -216,6 +216,27 @@ describeWithDb('the model, connected in the app', () => {
     expect((await api.call('/model-settings', '')).status).toBe(401);
   });
 
+  test('a member sees that a key is set, but not which one', async () => {
+    const api = app();
+    const ownerCookie = await owner(api);
+    const memberCookie = await member(api, ownerCookie);
+    const saved = await api.call(
+      '/model-settings/keys/anthropic',
+      ownerCookie,
+      put({ api_key: ANTHROPIC_KEY }),
+    );
+    expect(saved.status).toBe(200);
+    const keyOf = (body: Json) => body.providers.find((p: Json) => p.provider === 'anthropic')?.key;
+    expect(keyOf((await api.call('/model-settings', ownerCookie)).body)).toMatchObject({
+      state: 'set',
+      last_four: '7a3f',
+    });
+    expect(keyOf((await api.call('/model-settings', memberCookie)).body)).toMatchObject({
+      state: 'set',
+      last_four: null,
+    });
+  });
+
   test('a key the environment sets wins, is shown as the operator’s, and cannot be replaced', async () => {
     const api = app({ ANTHROPIC_API_KEY: 'operator-anthropic-key' });
     const cookie = await owner(api);

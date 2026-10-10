@@ -373,12 +373,14 @@ describeWithDb('changing and resetting a password', () => {
     expect((await api.request('/login', json({ email, password }))).status).toBe(200);
   });
 
-  test('asking for an email link without a mailbox says how to get one instead', async () => {
+  test('asking for an email link without a mailbox gives plain next steps, not host commands', async () => {
     const { api } = await signedIn();
     const response = await api.request('/password-reset', json({ email }));
     expect(response.status).toBe(200);
     const body = (await response.json()) as { status: string; reason?: string };
     expect(body.status).toBe('not_available');
-    expect(body.reason).toContain('print you a reset link');
+    expect(body.reason).toBe(
+      'This Melete can’t email you a reset link. Ask whoever set up your account to send you one.',
+    );
   });
 });

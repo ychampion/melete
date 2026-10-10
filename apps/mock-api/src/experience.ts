@@ -2135,8 +2135,27 @@ export class ExperienceMock {
       }
       case 'POST /password-reset':
         return C.unavailable(
-          'This Melete cannot send you email yet. Ask the person who runs it to print you a reset link.',
+          'This Melete can’t email you a reset link. Ask whoever set up your account to send you one.',
         );
+      case 'GET /account/sessions':
+        return {
+          sessions: [
+            {
+              id: 'ses_this_browser',
+              label: 'This browser',
+              created_at: this.now(),
+              expires_at: new Date(Date.parse(this.now()) + 30 * 86_400_000).toISOString(),
+              current: true,
+            },
+          ],
+          computers: [],
+          notifications: [],
+          assistants: [],
+        };
+      case 'DELETE /account/sessions/{id}':
+        throw new MockExperienceError(404, 'That session has already ended.', 'not_found');
+      case 'POST /account/sessions/revoke-others':
+        return { status: 'ok' };
       case 'GET /home': {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {

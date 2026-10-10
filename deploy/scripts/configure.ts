@@ -33,6 +33,7 @@ import { existsSync } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
+import { newSetupCode, setupCodeHash, setupLink } from '../../apps/melete/src/api/setup-code.ts';
 import {
   OPENAI_COMPATIBLE,
   PROVIDER_NAMES,
@@ -286,6 +287,22 @@ export function createdMessage(
     : `Created deploy/.env with private permissions${fakeProvider}.`;
 }
 
+/**
+ * The one-time code that claims the new installation, said once: only its
+ * digest is written to deploy/.env. Whoever opens the link, or types the code,
+ * creates the first account; nobody else who reaches the address can.
+ */
+export function setupCodeNote(code: string, webUrl: string): string {
+  return [
+    'Create the first account with this one-time setup code. It is shown only now; keep it until the account exists:',
+    '',
+    `  ${code}`,
+    '',
+    `Once Melete is running, open ${setupLink(webUrl, code)}`,
+    'Lost it? bun run melete account setup-code issues another.',
+  ].join('\n');
+}
+
 /** The line and exit code for a failed run: a refusal is its message alone. */
 export function failureReport(error: unknown): { text: string; code: number } | null {
   return error instanceof ConfigureRefusal ? { text: `${error.message}\n`, code: 1 } : null;
@@ -322,6 +339,7 @@ async function configure(root: string) {
     },
   });
   const password = randomBytes(24).toString('hex');
+  const setupCode = newSetupCode();
   // This installation's own Web Push key pair: phones are reached without a third party.
   const vapid = await generateVapidKeys();
   const values: Record<string, string> = {
@@ -334,6 +352,7 @@ async function configure(root: string) {
     MELETE_APPROVAL_KEY: randomBytes(32).toString('hex'),
     MELETE_RUNTIME_KEY: randomBytes(32).toString('hex'),
     POSTGRES_PASSWORD: password,
+    MELETE_SETUP_CODE_HASH: setupCodeHash(setupCode),
     DATABASE_URL: databaseUrl(defaults, password),
     DOCKER_GID: String(dockerGid),
     ...provider,
@@ -356,6 +375,10 @@ async function configure(root: string) {
   process.stdout.write(
     `${createdMessage(process.platform, fake, provider.MELETE_DEFAULT_PROVIDER)}\n`,
   );
+  const written = parseEnvFile(content);
+  const webUrl =
+    written.MELETE_PUBLIC_URL?.trim() || `http://127.0.0.1:${written.WEB_PORT?.trim() || '3101'}`;
+  process.stdout.write(`${setupCodeNote(setupCode, webUrl)}\n`);
   if (nodeName !== null)
     for (const note of tailscaleNotes(nodeName)) process.stdout.write(`${note}\n`);
   // A real provider is selected with its key still empty. Say so now, not at the first job,

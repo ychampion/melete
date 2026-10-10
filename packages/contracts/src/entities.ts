@@ -45,8 +45,11 @@ export const space = z
     kind: spaceKind,
     audience: spaceAudience,
     owner_principal_id: prefixedId(ID_PREFIXES.owner).nullable().optional(),
-    /** Path of this space's git repository on the `spaces` volume. */
-    git_path: z.string().min(1),
+    /**
+     * Where the space's repository is kept on the server. The service no longer
+     * sends it; older services did.
+     */
+    git_path: z.string().min(1).optional(),
     created_at: timestamp,
   })
   .meta({ id: 'Space' });

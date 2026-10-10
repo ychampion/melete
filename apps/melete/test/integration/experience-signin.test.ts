@@ -79,7 +79,10 @@ databaseTest(
       const url = sent.at(-1)?.body.match(/https:\/\/[^\s]+/)?.[0];
       if (!url) throw new Error('Missing sign-in URL');
       expect(new URL(url).origin).toBe('https://melete.example.test');
-      const value = new URLSearchParams(new URL(url).hash.slice(1)).get('token');
+      // The sign-in screen's route, with the token in its query, where the web app reads it.
+      const hash = new URL(url).hash;
+      expect(hash).toMatch(/^#\/welcome\?token=[A-Za-z0-9_-]+$/);
+      const value = new URLSearchParams(hash.split('?')[1]).get('token');
       if (!value) throw new Error('Missing sign-in token');
       return value;
     };

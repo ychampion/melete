@@ -1,7 +1,8 @@
 /**
- * Sign-in and the guided setup on the contract: a magic link (Google and Apple
- * only when the service says they work), the tour (only stages this instance
- * can do), plugging in apps, meeting Melete, and saving four answers
+ * Sign-in and the guided setup on the contract: a password, or an emailed link
+ * when the service says it can send one, the first account (with the
+ * installation's setup code when it has one), the tour (only stages this
+ * instance can do), plugging in apps, meeting Melete, and saving four answers
  * as memory before opening a conversation that refers to one of them.
  */
 
@@ -12,6 +13,7 @@ import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
 import { MeleteAvatar, MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
+import { NEW_PASSWORD_MIN } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
 import { plainSchedule, zoneName } from '../experience/plain.ts';
@@ -21,7 +23,7 @@ import { browserTimeZone, setupTimeZone, timeZoneChoices } from '../experience/t
 import type { AgentTemplate, Automation, MemoryItem, TourStage } from '../experience/types.ts';
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
-import { navigate, useRoute } from '../router.ts';
+import { linkParam, navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { inputOf } from './Agents.tsx';
 import { TopPicks } from './ConnectionInstall.tsx';
@@ -48,46 +50,45 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   // A fresh install has no account yet: it offers "Create your account"
   // instead of sign-in. Until the service answers, it is sign-in.
   const [creating, setCreating] = useState(false);
+  // Whether creating it needs the installation's one-time setup code.
+  const [codeRequired, setCodeRequired] = useState(false);
+  // Whether this installation can email a sign-in link; until it says so, no.
+  const [emailSignIn, setEmailSignIn] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // The installer's link carries the code; otherwise it is typed.
+  const [setupCode, setSetupCode] = useState(() => route.query.get('code') ?? '');
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [linking, setLinking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [google, setGoogle] = useState<boolean | null>(null);
-  const [apple, setApple] = useState<boolean | null>(null);
-  // ChatGPT is offered, like Google and Apple, only when this server is set up for it.
-  const [chatgpt, setChatgpt] = useState(false);
-  const [chatgptOpen, setChatgptOpen] = useState(false);
+  // Said under the email field, where the missing address goes.
+  const [emailProblem, setEmailProblem] = useState<string | null>(null);
   const phone = useMedia('(max-width: 900px)');
 
   useEffect(() => {
-    void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
+    void adapter.setupStatus().then((r) => {
+      setCreating(r.data?.needed === true);
+      setCodeRequired(r.data?.code_required === true);
+      setEmailSignIn(r.data?.email_sign_in === true);
+    });
   }, []);
 
-  // Google, Apple and ChatGPT are drawn only when the service says they work.
+  // A sign-in link lands here with its token in the fragment; consume it once.
+  const linkToken = linkParam(route, 'token');
   useEffect(() => {
-    void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
-    void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
-    void adapter
-      .signInChatGPT()
-      .then((r) => setChatgpt(r.unavailable === null && r.error === null));
-  }, []);
-
-  // A magic link lands here with its token in the fragment; consume it once.
-  useEffect(() => {
-    const token = route.query.get('token');
+    const token = linkToken;
     if (!token) return;
     void adapter.consumeMagicLink(token).then((r) => {
       window.history.replaceState(null, '', `${window.location.pathname}#/`);
       if (r.data) refreshProfile();
       else setNotice(r.error ?? r.unavailable ?? 'That link did not work.');
     });
-  }, [route.query, refreshProfile]);
+  }, [linkToken, refreshProfile]);
 
   const sendLink = async () => {
     if (!email.includes('@')) {
-      toast({ kind: 'err', title: 'Enter the email address to send the link to.' });
+      setEmailProblem('Enter the email address to send the link to.');
       return;
     }
     setLinking(true);
@@ -100,17 +101,28 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
 
   const submit = async () => {
     if (!email.includes('@')) {
-      toast({ kind: 'err', title: 'Enter your email address.' });
+      setEmailProblem('Enter your email address.');
       return;
     }
-    if (password.length < 8) {
-      toast({ kind: 'err', title: 'The password needs at least 8 characters.' });
+    if (password.length < (creating ? NEW_PASSWORD_MIN : 8)) {
+      toast({
+        kind: 'err',
+        title: `The password needs at least ${creating ? NEW_PASSWORD_MIN : 8} characters.`,
+      });
+      return;
+    }
+    if (creating && codeRequired && !setupCode.trim()) {
+      toast({ kind: 'err', title: 'Enter the setup code for this installation.' });
       return;
     }
     setBusy(true);
     setNotice(null);
     if (creating) {
-      const made = await adapter.createAccount(email, password);
+      const made = await adapter.createAccount(
+        email,
+        password,
+        codeRequired ? setupCode.trim() : undefined,
+      );
       if (made.data) {
         // Setup signs this browser in; sign in here only if it did not.
         const me = await adapter.profile();
@@ -233,8 +245,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'pretty',
               }}
             >
-              Melete runs on your machine with any model, keeps working while you’re away, follows
-              up for you, and comes back when something needs your approval.
+              Melete works with any model, keeps working while you’re away, follows up for you, and
+              comes back when something needs your approval.
             </span>
           </div>
           <div className="signin-art">
@@ -402,98 +414,12 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 Check your inbox
               </span>
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                A sign-in link went to {email}. It works once and expires in ten minutes.
+                If {email} has an account here, a sign-in link is on its way. It works once and
+                expires in ten minutes.
               </span>
             </div>
           ) : (
             <>
-              {!creating ? (
-                <div className="col" style={{ gap: 10 }}>
-                  {google ? (
-                    <button
-                      type="button"
-                      className="btn btn-xl btn-outline"
-                      style={{ width: '100%', gap: 10, fontSize: 14 }}
-                      onClick={() =>
-                        void adapter
-                          .signInGoogle()
-                          .then((r) =>
-                            r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
-                          )
-                      }
-                    >
-                      <Logo name="google" size={18} />
-                      <span>Continue with Google</span>
-                    </button>
-                  ) : null}
-                  {apple ? (
-                    <button
-                      type="button"
-                      className="btn btn-xl btn-outline"
-                      style={{ width: '100%', gap: 10, fontSize: 14 }}
-                      onClick={() =>
-                        void adapter
-                          .signInApple()
-                          .then((r) =>
-                            r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
-                          )
-                      }
-                    >
-                      <Icon name="apple" size={18} />
-                      <span>Continue with Apple</span>
-                    </button>
-                  ) : null}
-                  {chatgpt ? (
-                    <button
-                      type="button"
-                      className="btn btn-xl btn-outline"
-                      style={{ width: '100%', gap: 10, fontSize: 14 }}
-                      aria-expanded={chatgptOpen}
-                      aria-controls="signin-chatgpt"
-                      onClick={() => setChatgptOpen((open) => !open)}
-                    >
-                      <Icon name="chat" size={18} />
-                      <span>Sign in with ChatGPT</span>
-                    </button>
-                  ) : null}
-                  {chatgpt && chatgptOpen ? (
-                    <section
-                      id="signin-chatgpt"
-                      aria-label="Sign in with ChatGPT"
-                      className="col card"
-                      style={{ gap: 10, padding: 16 }}
-                    >
-                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-                        Sign in with your ChatGPT account
-                      </span>
-                      <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                        OpenAI confirms who you are and shares your name, email address and profile
-                        picture with this installation. Your ChatGPT password stays with OpenAI.
-                      </span>
-                      <Button
-                        icon="arrowUpRight"
-                        block
-                        onClick={() =>
-                          void adapter
-                            .signInChatGPT()
-                            .then((r) =>
-                              r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
-                            )
-                        }
-                      >
-                        Continue to ChatGPT
-                      </Button>
-                    </section>
-                  ) : null}
-                  {google || apple || chatgpt ? (
-                    <div className="row" style={{ gap: 12 }}>
-                      <span className="grow hairline" />
-                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>or with email</span>
-                      <span className="grow hairline" />
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               <form
                 className="col"
                 style={{ gap: 12 }}
@@ -502,25 +428,52 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                   void submit();
                 }}
               >
+                {creating && codeRequired ? (
+                  <Field
+                    label="Setup code"
+                    hint="Whoever set up this Melete has it. The link they sent fills it in."
+                  >
+                    <Input
+                      icon="lock"
+                      value={setupCode}
+                      onChange={(event) => setSetupCode(event.target.value)}
+                      placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+                      width="100%"
+                      height={44}
+                      autoComplete="one-time-code"
+                      spellCheck={false}
+                    />
+                  </Field>
+                ) : null}
                 <Field label="Email">
                   <Input
                     type="email"
                     icon="mail"
                     value={email}
-                    onChange={(event) => setEmail(event.target.value)}
+                    onChange={(event) => {
+                      setEmail(event.target.value);
+                      setEmailProblem(null);
+                    }}
                     placeholder="you@example.com"
                     width="100%"
                     height={44}
                     autoComplete="email"
+                    error={emailProblem !== null}
+                    aria-invalid={emailProblem !== null}
                   />
                 </Field>
+                {emailProblem ? (
+                  <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+                    {emailProblem}
+                  </span>
+                ) : null}
                 <Field label="Password">
                   <Input
                     type="password"
                     icon="lock"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    placeholder={creating ? 'At least 8 characters' : undefined}
+                    placeholder={creating ? `At least ${NEW_PASSWORD_MIN} characters` : undefined}
                     width="100%"
                     height={44}
                     autoComplete={creating ? 'new-password' : 'current-password'}
@@ -529,7 +482,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 <Button size="lg" icon="chevronRight" block type="submit" loading={busy}>
                   {creating ? 'Create account' : 'Sign in'}
                 </Button>
-                {creating ? null : (
+                {creating || !emailSignIn ? null : (
                   <Button
                     variant="ghost"
                     icon="send"

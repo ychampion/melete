@@ -34,6 +34,7 @@ import {
   proposeKnowledgeResponse,
   resolveActionRequest,
   retractKnowledgeRequest,
+  setupRequest,
   setupStatusResponse,
   skillListResponse,
   spaceListResponse,
@@ -2409,7 +2410,9 @@ export function buildOpenApiDocument() {
               'creating the account and signing in. `needed` is true until an owner exists. ' +
               '`multiplayer` says whether rooms, shared spaces, guests and hand-offs are ' +
               'switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 ' +
-              '`not_available`.',
+              '`not_available`. `code_required` says whether setup needs the one-time setup ' +
+              'code, and `email_sign_in` whether this installation can email sign-in and ' +
+              'password reset links.',
             responses: {
               '200': jsonResponse('Whether setup is needed', setupStatusResponse),
               '503': problem('No database is configured'),
@@ -2421,12 +2424,19 @@ export function buildOpenApiDocument() {
             description:
               'Sets the melete_session cookie, and the melete_device cookie that marks this browser ' +
               'as known for sign-in limits. Once an owner exists the answer is 409 before anything ' +
-              'is parsed.',
-            requestBody: json(credentialsRequest),
+              'is parsed. When the installation has a setup code (`MELETE_SETUP_CODE_HASH`, or ' +
+              'one `melete account setup-code` issued), `setup_code` must be it; a missing or ' +
+              'wrong code is 403 `setup_code_required` or `invalid_setup_code`, and counts ' +
+              'against the setup limit.',
+            requestBody: json(setupRequest),
             responses: {
               '201': jsonResponse('The owner, signed in', ownerResponse),
-              '400': problem('An email and a password of 8 to 1024 characters are required'),
-              '403': problem('The request came from another origin'),
+              '400': problem(
+                'An email and a password of 10 to 1024 characters are required, and the password is not a common one',
+              ),
+              '403': problem(
+                'The request came from another origin, or the setup code is missing or wrong',
+              ),
               '409': problem('The owner is already set up'),
               '429': rateLimited('Too many setup attempts from this address'),
               '503': problem('No database is configured'),

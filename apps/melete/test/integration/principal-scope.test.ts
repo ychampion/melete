@@ -955,5 +955,24 @@ withDb('each account acts only inside its own space', () => {
     expect(
       await sql`select 1 from event where dedup_key = ${`connector:${clubMail}:member`}`,
     ).toHaveLength(0);
+
+    // Being the setup owner reaches no further than the spaces it owns: an
+    // event on another account's own connection is refused, and none is written.
+    const theirs = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${theirs}, ${second.spaceId}, ${emailManifest.provider}, 'Their mail', '["email.search"]'::jsonb)`;
+    expect(
+      (
+        await call(
+          first.cookie,
+          '/internal/events/deliver',
+          'POST',
+          delivery('setup-owner', theirs),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      await sql`select 1 from event where dedup_key = ${`connector:${theirs}:setup-owner`}`,
+    ).toHaveLength(0);
   }, 60_000);
 });
