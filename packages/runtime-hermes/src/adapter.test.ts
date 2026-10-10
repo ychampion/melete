@@ -898,6 +898,45 @@ describe('a turn never hangs silently and never ends without a word', () => {
     expect(plain.inputs).toHaveLength(1);
   });
 
+  test('a reply that claims a step no tool took is asked once, out of sight, to do it or say it again', async () => {
+    const { adapter, inputs } = script([
+      said('I found the summary and I sent it to Priya.', ['web.search']),
+      said('I found the summary. I have not sent it to Priya yet; say the word and I will.'),
+    ]);
+    const outcome = await adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(outcome).toEqual({
+      kind: 'completed',
+      summary: 'I found the summary. I have not sent it to Priya yet; say the word and I will.',
+      evidence: [],
+    });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toContain('Your reply says you did something no tool in this turn did');
+    expect(inputs[1]).toContain('sending something');
+    expect(inputs[1]).toContain('Do not mention this check');
+  });
+
+  test('a claim a tool backs is left alone, and the repair is asked for only once', async () => {
+    const backed = script([
+      said('I opened their page in my browser: the clinic is open until 6.', ['browser.open']),
+      said('never started'),
+    ]);
+    await backed.adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(backed.inputs).toHaveLength(1);
+    const stubborn = script([
+      said('I booked the table for 7.'),
+      said('I booked the table for 7.'),
+      said('never started'),
+    ]);
+    const outcome = await stubborn.adapter.start(
+      bundle,
+      new Collector(),
+      new AbortController().signal,
+    );
+    expect(stubborn.inputs).toHaveLength(2);
+    // What still claims it is the service's to take out, from the turn's receipts.
+    expect(outcome).toMatchObject({ kind: 'completed', summary: 'I booked the table for 7.' });
+  });
+
   test('the time a step may take follows its deadline, and silence with no step is short', () => {
     const catalog: AttemptBundle['tools'] = [
       {

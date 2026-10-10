@@ -25,6 +25,7 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
+import { claimsContinuation, unbackedClaims } from './claims.ts';
 import {
   HermesClient,
   type HermesRequest,
@@ -181,6 +182,13 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     const started = this.now();
     let stalled: RunResult['stalled'];
     let delivered = false;
+    // A reply that claims a step no tool took gets one hidden chance to take
+    // it or say it again without the claim. Actions the person approved in
+    // this wake were carried out for it, so they back a claim as well.
+    let repaired = false;
+    const approvedKinds = bundle.inputs.approval_results.flatMap((entry) =>
+      entry.decision === 'approved' && entry.kind ? [entry.kind] : [],
+    );
     const stuck = (silentMs: number): AttemptOutcome => ({
       kind: 'completed',
       summary: stalledNote(silentMs, this.now() - started),
@@ -301,6 +309,20 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             break;
           delivered = true;
           input = DELIVER_CONTINUATION;
+          continue;
+        }
+        const claims =
+          !result.loaded && !repaired && final.kind === 'completed' && final.summary.trim()
+            ? unbackedClaims(final.summary, [...called, ...approvedKinds])
+            : [];
+        if (claims.length > 0 && !signal.aborted && !controller.signal.aborted) {
+          if (
+            (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+              .length > 0
+          )
+            break;
+          repaired = true;
+          input = claimsContinuation(claims);
           continue;
         }
         if (!result.loaded || signal.aborted || controller.signal.aborted) break;
