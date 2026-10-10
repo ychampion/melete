@@ -182,6 +182,38 @@ withDb('a computer restored without its container', () => {
     expect(engine.volumes.size).toBe(0);
   });
 
+  test('a restored computer nobody resumes goes with its volumes when its retention runs out', async () => {
+    const { sql, engine, host, sessions, open, reconcile, restoreOntoNewMachine, volumesOf } =
+      await setup();
+    const first = await open();
+    const name = first.providerSandboxId;
+    await sessions.suspendWorkspace(first.id, host, signal());
+    restoreOntoNewMachine();
+    expect(await reconcile()).toEqual({ destroyed: [], lost: [] });
+    // Suspended longer ago than the retention period.
+    await sql`update sandbox_session set lease_expires_at = now() - interval '2 days'
+      where id = ${first.id}`;
+    expect(await sessions.sweep(() => host, signal())).toEqual([first.id]);
+    expect((await sessions.get(first.id))?.status).toBe('closed');
+    expect(volumesOf(name)).toEqual([]);
+    expect(engine.volumes.size).toBe(0);
+  });
+
+  test('a computer restored with one of its two volumes is lost, and that volume removed', async () => {
+    const { engine, host, sessions, open, reconcile, restoreOntoNewMachine, volumesOf } =
+      await setup();
+    const first = await open();
+    const name = first.providerSandboxId;
+    await sessions.suspendWorkspace(first.id, host, signal());
+    restoreOntoNewMachine();
+    engine.volumes.delete(`${name}-work`);
+    // Its reference keeps the volume for this pass; the next one removes it.
+    expect(await reconcile()).toEqual({ destroyed: [], lost: [first.id] });
+    expect((await sessions.get(first.id))?.status).toBe('lost');
+    expect(await reconcile()).toEqual({ destroyed: [name], lost: [] });
+    expect(volumesOf(name)).toEqual([]);
+  });
+
   test('volumes whose session row is gone are still removed', async () => {
     const { sql, engine, host, sessions, open, reconcile, restoreOntoNewMachine, volumesOf } =
       await setup();
