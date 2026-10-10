@@ -7,6 +7,7 @@ import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { adapter, type Result } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
+import { setDisplayZone } from './experience/clock.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -259,6 +260,8 @@ export function App() {
   }, [signedIn, refreshConversations]);
 
   const saved = profile.data?.profile ?? null;
+  // Every time shown below is on the person's own clock, the one routines run on.
+  setDisplayZone(signedIn ? saved?.time_zone : null);
   // Setup is recorded on the service by whoever finishes or skips it, so every
   // browser agrees and a list that fails to load can never send a set-up
   // account back through it. This only says so here at once.

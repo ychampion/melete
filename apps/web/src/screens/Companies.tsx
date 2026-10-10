@@ -16,6 +16,7 @@ import { CompanyHeader, EmptyLedger, LedgerDetailPanel, LedgerRow } from '../com
 import { TotalsRow, totalsOf } from '../companies/Totals.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
+import { adapter } from '../experience/adapter.ts';
 import { useMedia, useNow } from '../experience/hooks.ts';
 import type { CompanyMap, LedgerDetail, ScanProgress } from '../experience/types.ts';
 import { navigate } from '../router.ts';
@@ -36,6 +37,8 @@ export function CompaniesScreen() {
   const [busy, setBusy] = useState(false);
   const [scan, setScan] = useState<ScanProgress | null>(null);
   const [scanning, setScanning] = useState(false);
+  // Whether a mailbox is connected to scan: unknown until the connections load.
+  const [mailbox, setMailbox] = useState(true);
   const phone = useMedia('(max-width: 767px)');
   // The relative dates on the rows stay honest while the screen is open.
   const now = useNow(true, 60_000);
@@ -49,6 +52,17 @@ export function CompaniesScreen() {
       setError(null);
     }
     setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void adapter.connections().then((result) => {
+      if (live && result.data)
+        setMailbox(result.data.connections.some((connection) => connection.app === 'Mail'));
+    });
+    return () => {
+      live = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -96,7 +110,9 @@ export function CompaniesScreen() {
     void companiesApi.startScan(spaceId).then((started) => {
       if (started.data === null) {
         setScanning(false);
-        setError(started.error ?? started.unavailable);
+        // No mailbox to read: the screen offers to connect one instead of an error.
+        if ('code' in started && started.code === 'not_connected') setMailbox(false);
+        else setError(started.error ?? started.unavailable);
         return;
       }
       const scanId = started.data.scan_id;
@@ -267,7 +283,13 @@ export function CompaniesScreen() {
 
         {nothingFound || (loading === false && map === null && !error) ? (
           <div className="ledger">
-            <EmptyLedger scanning={scanning} progress={scan} error={null} onScan={startScan} />
+            <EmptyLedger
+              scanning={scanning}
+              progress={scan}
+              error={null}
+              onScan={startScan}
+              mailbox={mailbox}
+            />
           </div>
         ) : null}
       </div>

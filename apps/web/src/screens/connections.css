@@ -200,3 +200,11 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* An app this Melete does not offer yet: one calm line where the button would be. */
+.app-card-later {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}

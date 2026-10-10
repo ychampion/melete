@@ -91,9 +91,9 @@ function Sent({ preview }: { preview: PrivacyPreview }) {
   const parts = preview.sent.split(/(⟦[A-Z_]+_\d+⟧)/g);
   const route =
     preview.route === 'local'
-      ? 'This would stay on your local model, as written, and not go to a cloud model. Had it gone to one, it would have looked like this:'
+      ? 'This would stay on your private model, as written, and not go to a cloud model. Had it gone to one, it would have looked like this:'
       : preview.route === 'ask'
-        ? 'This would stay private. With no local model, Melete asks you before sending the version below.'
+        ? 'This would stay private. With no private model, Melete asks you before sending the version below.'
         : preview.details.length
           ? `A cloud model would see this, with ${preview.details.length} detail${preview.details.length === 1 ? '' : 's'} swapped.`
           : 'A cloud model would see this as written: nothing here matched.';
@@ -221,8 +221,8 @@ export function PrivacyTab() {
     <div className="col" style={{ gap: 14 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 620, margin: 0 }}>
         Before anything goes to a cloud model, Melete swaps these details for placeholders such as
-        ⟦ACCOUNT_1⟧ and puts the real values back on this machine. The most private work runs on
-        your own model instead.
+        ⟦ACCOUNT_1⟧, and puts the real values back only once the answer is back inside Melete. The
+        most private work can run on a private model you connect instead.
       </p>
       {settings.model_on_device ? (
         <div className="row" style={{ gap: 8, fontSize: 13, color: 'var(--secondary)' }}>
@@ -294,7 +294,7 @@ export function PrivacyTab() {
       {settings.model_address_local ? (
         <Section
           title="Your model’s address"
-          sub={`Your model is set to ${settings.model_address ?? 'an address'}, which is on this machine or your network. That can be a model you run, or a proxy or gateway that passes requests on to a cloud service, so Melete still swaps details out of what it sends there.`}
+          sub={`Your model is set to ${settings.model_address ?? 'an address'}, which is a private address on the same server or network as Melete. That can be a model you run, or a proxy or gateway that passes requests on to a cloud service, so Melete still swaps details out of what it sends there.`}
         >
           <SwitchRow
             label="This is a model running on a machine I control"
@@ -306,8 +306,8 @@ export function PrivacyTab() {
       ) : null}
 
       <Section
-        title="Keep private work on your own model"
-        sub="These conversations stay on your local model. Without one, Melete asks you first and sends only a redacted version if you agree."
+        title="Keep private work on a private model"
+        sub="These conversations stay on your private model. Without one, Melete asks you first and sends only a redacted version if you agree."
       >
         <SwitchRow
           label="Everything in this space"
@@ -354,8 +354,8 @@ export function PrivacyTab() {
       </Section>
 
       <Section
-        title="Local model"
-        sub="An OpenAI-compatible server on this machine or your network, such as Ollama, llama.cpp or vLLM."
+        title="Private model"
+        sub="An OpenAI-compatible model server that Melete reaches at a private address, such as Ollama, llama.cpp or vLLM."
       >
         <form
           className="col"
@@ -370,7 +370,7 @@ export function PrivacyTab() {
                   ...(apiKey ? { api_key: apiKey } : {}),
                 },
               },
-              'Local model saved',
+              'Private model saved',
             ).then((ok) => ok && setApiKey(''));
           }}
         >
@@ -443,7 +443,7 @@ export function PrivacyTab() {
                 variant="ghost"
                 type="button"
                 onClick={() =>
-                  void save({ local_model: null }, 'Local model removed').then((ok) => {
+                  void save({ local_model: null }, 'Private model removed').then((ok) => {
                     if (!ok) return;
                     setBaseUrl('');
                     setModel('');
@@ -462,7 +462,7 @@ export function PrivacyTab() {
           </div>
         </form>
         <SwitchRow
-          label="Let the local model find names, addresses and health details too"
+          label="Let the private model find names, addresses and health details too"
           hint="Slower: each new message is read by your model first."
           on={settings.local_detection}
           disabled={!settings.local_model}
@@ -489,13 +489,13 @@ export function PrivacyTab() {
         <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
           Screenshots are pictures, so nothing in them is swapped for a placeholder: the details
           above and your Always protect list apply to text only. Private conversations never send
-          screenshots to a cloud model; your local model sees them only if it reads images.
+          screenshots to a cloud model; your private model sees them only if it reads images.
         </p>
       </Section>
 
       <Section
         title="Always protect"
-        sub="Names of people close to you, your accounts, your address: listed here, they are swapped wherever they appear. Kept sealed on this machine."
+        sub="Names of people close to you, your accounts, your address: listed here, they are swapped wherever they appear. Kept sealed inside Melete."
       >
         {settings.known_values.length ? (
           <div className="col" style={{ gap: 2 }}>

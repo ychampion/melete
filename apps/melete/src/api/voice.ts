@@ -30,7 +30,7 @@ import {
   voiceTranscription,
   voiceTranscriptionQuery,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import {
@@ -206,6 +206,8 @@ const providerFailed = (what: string) =>
  * A refused key stops Speech and Transcription as surely as voice: the default
  * rows for both read the same key, so they are shown failing at once rather
  * than Connected until someone presses Test. A passing Test sets them back.
+ * Each refusal records its time again, so voice can tell that the key it runs
+ * with now is the one refused.
  */
 async function markSpeechFailing(db: Database) {
   try {
@@ -216,13 +218,47 @@ async function markSpeechFailing(db: Database) {
         and(
           eq(connection.provider, 'generation'),
           eq(connection.status, 'active'),
-          ne(connection.health, 'failing'),
           inArray(sql`${connection.configuration}->>'builtin'`, ['generation', 'transcription']),
         ),
       );
   } catch {
     process.stderr.write('voice: speech connections could not be marked failing\n');
   }
+}
+
+/** Whether a space's speech connections passed their last check, by what each serves. */
+export type SpeechHealth = (
+  spaceId: string,
+) => Promise<{ speech: boolean; transcription: boolean }>;
+
+/**
+ * Read from the space's own Voice and Voice to text rows: one whose last check
+ * failed, as a refused key leaves both, is not offered until a passing Test
+ * sets it back. A space without the rows, or a read that fails, is not held back.
+ * The speech key is read from the settings when the service starts, so only a
+ * failure recorded since `since` (this start) speaks for the key in use: once
+ * a refused key is replaced and the service restarted, voice is offered again
+ * everywhere, and a key still refused is caught again at its first use.
+ */
+export function speechHealthFrom(db: Database, since: Date = new Date()): SpeechHealth {
+  return async (spaceId) => {
+    const builtin = sql<string>`${connection.configuration}->>'builtin'`;
+    const rows = await db
+      .select({ builtin, health: connection.health })
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          eq(connection.provider, 'generation'),
+          eq(connection.status, 'active'),
+          inArray(builtin, ['generation', 'transcription']),
+          gte(connection.lastCheckedAt, since),
+        ),
+      );
+    const failing = (key: string) =>
+      rows.some((row) => row.builtin === key && row.health === 'failing');
+    return { speech: !failing('generation'), transcription: !failing('transcription') };
+  };
 }
 
 export function mountVoice(
@@ -240,6 +276,8 @@ export function mountVoice(
     context?: (conversationId: string, agentId: string | null) => Promise<CompanionContext>;
     /** The clock the aside rate limit reads; tests supply one. */
     now?: () => number;
+    /** Whether the speech connections are working. Left out, read from the database. */
+    speechHealth?: SpeechHealth;
   },
 ): void {
   const { db, allowance, providers, limits, privacy } = deps;
@@ -247,6 +285,7 @@ export function mountVoice(
   /** When each person's recent asides were asked, held in memory only. */
   const asides = new Map<string, number[]>();
   const context = deps.context ?? ((id, agentId) => conversationContext(db, id, agentId));
+  const speechHealth = deps.speechHealth ?? speechHealthFrom(db);
   const pushToTalk = Boolean(providers.transcription && allowance);
   const voiceMode = Boolean(providers.live && allowance);
 
@@ -343,13 +382,21 @@ export function mountVoice(
     const query = voiceContextQuery.safeParse(c.req.query());
     if (!query.success) throw new ServiceError('invalid_request', 'Invalid voice query.', 400);
     const at = await place(spaceId, principalId, query.data);
+    // Offered only while it works: a speech service that refused its last check
+    // would fail as soon as it was pressed.
+    const healthy =
+      pushToTalk || voiceMode
+        ? await speechHealth(spaceId).catch(() => ({ speech: true, transcription: true }))
+        : { speech: false, transcription: false };
+    const talk = pushToTalk && healthy.transcription;
+    const mode = voiceMode && healthy.speech;
     return c.json(
       voiceStatus.parse({
-        push_to_talk: pushToTalk,
-        voice_mode: voiceMode,
+        push_to_talk: talk,
+        voice_mode: mode,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
-        off_reason: pushToTalk || voiceMode ? await offReason({ spaceId, ...at }) : null,
+        off_reason: talk || mode ? await offReason({ spaceId, ...at }) : null,
       }),
     );
   });
