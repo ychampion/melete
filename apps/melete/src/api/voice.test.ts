@@ -8,6 +8,7 @@ import type { Database } from '../db/client.ts';
 import { ServiceError } from './errors.ts';
 import {
   mountVoice,
+  type SpeechHealth,
   type VoiceAllowance,
   type VoicePrivacy,
   type VoiceProviders,
@@ -40,7 +41,12 @@ const PERSON = 'prn_01J00000000000000000000000';
 
 function app(
   providers: Partial<VoiceProviders> = {},
-  options: { allowance?: CountingAllowance | null; seconds?: number; privacy?: VoicePrivacy } = {},
+  options: {
+    allowance?: CountingAllowance | null;
+    seconds?: number;
+    privacy?: VoicePrivacy;
+    speechHealth?: SpeechHealth;
+  } = {},
 ) {
   const allowance =
     options.allowance === null ? undefined : (options.allowance ?? new CountingAllowance());
@@ -67,6 +73,7 @@ function app(
     providers: { transcription: null, live: null, ...providers },
     limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30, asides: 600 },
     privacy: options.privacy ?? (async () => null),
+    ...(options.speechHealth ? { speechHealth: options.speechHealth } : {}),
   });
   return { built, allowance };
 }
@@ -125,6 +132,61 @@ describe('which voice features the service offers', () => {
       push_to_talk: false,
       voice_mode: false,
     });
+  });
+
+  test('a speech service whose last check failed is not offered until it passes again', async () => {
+    const live = {
+      speak: async () => ({
+        body: new Response('').body as ReadableStream<Uint8Array>,
+        mime: 'audio/mpeg',
+      }),
+      session: async () => ({ url: 'wss://x', expires_at: new Date().toISOString() }),
+    };
+    const asked: string[] = [];
+    const status = async (health: { speech: boolean; transcription: boolean }) =>
+      voiceStatus.parse(
+        await (
+          await app(
+            { transcription: fakeTranscriptionAdapter, live },
+            {
+              speechHealth: async (spaceId) => {
+                asked.push(spaceId);
+                return health;
+              },
+            },
+          ).built.request('/voice')
+        ).json(),
+      );
+    // A refused key leaves both failing: neither button is drawn, and no reason is shown.
+    expect(await status({ speech: false, transcription: false })).toMatchObject({
+      push_to_talk: false,
+      voice_mode: false,
+      off_reason: null,
+    });
+    expect(await status({ speech: false, transcription: true })).toMatchObject({
+      push_to_talk: true,
+      voice_mode: false,
+    });
+    expect(await status({ speech: true, transcription: true })).toMatchObject({
+      push_to_talk: true,
+      voice_mode: true,
+    });
+    // Each space is asked about its own connections.
+    expect(new Set(asked)).toEqual(new Set(['sp_01J00000000000000000000000']));
+    // A health read that fails does not take voice away.
+    const unread = voiceStatus.parse(
+      await (
+        await app(
+          { transcription: fakeTranscriptionAdapter, live },
+          {
+            speechHealth: async () => {
+              throw new Error('database away');
+            },
+          },
+        ).built.request('/voice')
+      ).json(),
+    );
+    expect(unread).toMatchObject({ push_to_talk: true, voice_mode: true });
   });
 });
 

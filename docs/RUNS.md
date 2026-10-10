@@ -25,7 +25,7 @@ no model call (`RunService.shiftEnded`):
 | after `run.finish` | the run completes with that result, or, when it has a definition of done, its result is checked first (below) |
 | asking the person, or parked on an approval | that wait stands, as for any job |
 | with `run.checkpoint` | the next shift starts now, at the time it named, when its helpers are done, or when the trigger it stands on fires |
-| without a handoff, or at its ceiling | a handoff is written for it from what it said, and the next shift starts (standing work rests on its trigger instead) |
+| without a handoff, or at its ceiling | a handoff is written for it from what it said, and the next shift starts (standing work rests on its trigger instead); at its ceiling the person is also given what it has so far |
 | having done nothing but hand off to go on now, three times in a row | it stops and asks what to change; resting on a trigger never counts |
 | failing three times in a row | it stops and asks, naming the failure, instead of ending |
 | lost after it gave its result | it completes with that result instead of trying again |
@@ -33,9 +33,17 @@ no model call (`RunService.shiftEnded`):
 
 Failed shifts are counted in a row, not in total, so a run that has worked for
 a hundred shifts is not near any attempt limit. Lost shifts count as failed
-ones, and the count starts again whenever the person writes to the run
-("continue" or anything else). Budget ledger rows for a run
+ones, except a shift stopped because what it was handed changed (a connection
+or memory it was given changed mid-shift): that one is run again from a fresh
+start and not counted. The count starts again whenever the person writes to the
+run ("continue" or anything else). Budget ledger rows for a run
 are counted per shift.
+
+Stopping short never means nothing reaches the person. Whenever a run stops to
+ask (failures, no progress, a limit) or one stretch of it reaches its time
+limit, it first gives a report, "What it has so far", marked unfinished
+(`partial: true`): the result it offered, or else its findings and its helpers'
+results. A run the person stops keeps that as its result, with the same mark.
 
 ## Checking the result
 
@@ -52,8 +60,7 @@ any helper's.
 | The check… | What happens |
 | --- | --- |
 | passes | the run completes with its result; the record, the view (`check.state: "passed"`) and the status line say it was checked |
-| finds gaps | the gaps go into the record and the next shift starts with them at the top of its brief; the next `run.finish` is checked again |
-| finds gaps a second time (`RUN_CHECK_LIMIT`) | the run completes anyway, and the result the person sees ends with what could not be confirmed |
+| finds gaps (`RUN_CHECK_LIMIT` is one check) | the run completes with its result, and the result the person sees ends with what could not be confirmed, rather than waiting on another round of work |
 | ends without a verdict | the run completes, and its result says the check could not be finished |
 
 The run is given its result by a shift that only records it, with no model
@@ -320,13 +327,15 @@ resume and stop, finishing, limits, refused wakes, the hourly limit on
 schedules the work sets with the person told of each change, and reports from
 a woken shift that are never held back.
 `apps/melete/test/integration/runs-check.test.ts` covers the check
-of a result (passing, gaps sent back, given anyway after two, no verdict,
+of a result (passing, gaps given with the result after one check, no verdict,
 refused while under way and said in the brief, turned off), the "already
 tried" list and ties with the best left out of it, the repeat guard and
 `run.try` left out of it, a cancelled helper waking its run, helpers ending at once, the failure
-count starting again, a shift lost after its result, helpers that cannot read
-an action back, the limits a run keeps, spaced-out notifications, and the
-list agreeing with each view.
+count starting again, a shift lost after its result, shifts stopped because
+what they were handed changed, what it has so far given when it stops short or
+is stopped, the brief fanning research out to one helper per candidate,
+helpers that cannot read an action back, the limits a run keeps, spaced-out
+notifications, and the list agreeing with each view.
 `apps/melete/test/integration/runs-together.test.ts` covers a checked result
 meeting other things: a shift during the check, standing work cancelled any way,
 and an answer the person gave while the check ran, read before the result is

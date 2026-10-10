@@ -1,7 +1,7 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
 Three observer seams, one prompt seam, one reasoning seam, one picture
-seam, one live-tools seam and one delegation seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
+seam, one live-tools seam, one delegation seam and one parallel-reads seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
 product pointer, its profile line and its host runtime block, which describe
 the engine's install rather than the attempt. It is inert unless that key is
 set. The reasoning seam puts the model's reasoning on a run's event stream as
@@ -13,8 +13,10 @@ to the support module, so a tool the broker loads part way through a run can be
 added to that run's tool list by the engine's own live refresh instead of
 ending the run and starting another. The delegation seam keeps a delegation
 inside the turn that made it, so its results reach the attempt that asked.
+The parallel-reads seam lets the engine run Melete's web lookups side by side
+in one batch, as it already runs its own.
 
-All eight original source hashes are checked before any write. A subsequent
+All nine original source hashes are checked before any write. A subsequent
 run accepts only the same patch, or a named earlier version of it, never an
 arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
@@ -238,6 +240,19 @@ def _durable_content(content: Any) -> Any:
              "    return attach_helper_parked(_run_batch(batch, background))  # Melete delegation seam\n"),
         ],
     ),
+    # The parallel-reads seam. At the pin the engine runs a batch of tool calls
+    # side by side only for its own read-only tools (web_search, read_file and
+    # the like); Melete's lookups go through the broker under their own names,
+    # so several pages asked for at once were read one after another.
+    "agent/tool_dispatch_helpers.py": (
+        "56afe434c75a2e3b1d8bdf8894be0a577fcdd4e41c60af407ad6749ebe3f79da",
+        [
+            ("    if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):\n",
+             "    from melete_runtime_hooks import parallel_read  # Melete parallel-reads seam\n"
+             "    if (name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name)\n"
+             "            or parallel_read(name)):  # Melete parallel-reads seam\n"),
+        ],
+    ),
 }
 
 # A checkout patched by an earlier reviewed version of a file's patch is
@@ -304,7 +319,7 @@ def main() -> None:
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:
         target.write_text(content, encoding="utf-8", newline="\n")
-    print("Melete observer bridge applied: 8 checked source files and 1 support module")
+    print("Melete observer bridge applied: 9 checked source files and 1 support module")
 
 
 if __name__ == "__main__":

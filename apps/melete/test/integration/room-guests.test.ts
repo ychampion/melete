@@ -186,7 +186,7 @@ const GUEST_ROUTES = [
  */
 const SIGNED_OUT_ROUTES = [
   /^GET \/(health|health\/detail|setup)$/,
-  /^POST \/(setup|login|password-reset|password-reset\/consume)$/,
+  /^POST \/(setup|login|password-reset|password-reset\/check|password-reset\/consume)$/,
   /^POST \/signin\/[a-z-]+(\/consume)?$/,
   /^POST \/invites\/(view|accept)$/,
   /^GET \/oauth\/client-metadata\.json$/,

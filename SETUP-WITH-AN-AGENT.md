@@ -135,6 +135,10 @@ This writes `deploy/.env` with fresh secrets for this installation and no model
 key: the person adds their key in the app in step 7, so it never passes through
 a shell. It prints `Created deploy/.env` and a line about connecting a model.
 
+It also prints a one-time setup code, once, with a link that fills it in.
+Whoever opens that link creates the installation's first account, so keep it
+for step 6 and give it only to the person.
+
 If it refuses, the message names the reason, usually Docker. Fix that and run it
 again; nothing was written.
 
@@ -210,15 +214,19 @@ last 30 lines of the log, after checking they hold no secret.
 
 Don't create the account yourself: its password is the person's.
 
-- **On this computer**, tell them to open http://localhost:3101 and create their
-  account.
+- **On this computer**, give them the setup link from step 4 (it starts with
+  `http://localhost:3101/#/welcome?code=`) and tell them to open it and create
+  their account.
 - **On a server**, Melete listens only on the server itself. Tell them to run
-  this on their own computer, keep it open, and then open
-  http://localhost:3101 there:
+  this on their own computer, keep it open, and then open the setup link
+  there:
 
   ```bash
   ssh -N -L 3101:127.0.0.1:3101 <user>@<server address>
   ```
+
+If the link is lost, `bun run melete account setup-code` prints a new one;
+earlier codes stop working.
 
 **Worked when** `status.ts` reports Account `ok`. Wait for the person to say
 they are done, then run it.
@@ -372,8 +380,9 @@ second space gets a worker of its own only when the person asks, following
   browser step already wrote `deploy/melete.deploy.json`, so skip it then), then
   `bun run melete deploy --checkout --dry-run` to show the person the plan, and
   `bun run melete deploy --checkout`. It sizes the update against the disk,
-  backs up the database when the release adds migrations, pulls one image at a
-  time, and leaves the running stack alone if anything fails before the switch.
+  backs up the database and the files when the release adds migrations, pulls
+  one image at a time, and leaves the running stack alone if anything fails
+  before the switch.
   `bun run melete rollback` goes back.
 - **Back up**: `bun run melete backup --estimate`, then `bun run melete backup`
   ([Backup and restore](docs/DEPLOYMENT.md#backup-and-restore)).

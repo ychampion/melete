@@ -25,12 +25,21 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
          [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
   rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
-  backup [--estimate]        Back up the database, journal and settings to backup.dir, a new private directory
-         [--with-volumes] [--dir <path>] [--to ssh://host:/path]
+  backup [--estimate]        Back up the database, journal, settings, files and agents' computers to backup.dir
+         [--database-only | --offline] [--dir <path>] [--to ssh://host:/path]
          [--encrypt | --encrypt-to <age recipient>]
-  restore <backup> [--plan]  Check a backup's checksums and print the steps that restore it
+  restore <backup> [--plan]  Check a backup and print the steps that restore it
+          [--verify]         Read every archive in it through, changing nothing
+          [--yes]            Restore it: stop the stack, put every part back, start it
+          [--keep-database]  Leave an external database that already holds the data as it is
+          [--replace-files]  With --keep-database, put back the files even where this machine has some
   upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
   history [--json]           The deploys, rollbacks and upgrades this installation has run
+  account list|setup-code    The accounts, or a new one-time code for creating the first one
+  account create|reset|disable|enable <email>
+                             Add an account (the owner, on a new installation), print a password
+                             link, or stop and restore an account's access; --json for a program
+  feedback [list|show <id>]  The problem reports people sent from the app
   remote <ssh-target> [--path <dir>] <command> [args]
                              Run one of these commands on another machine over SSH, in its checkout
   remote <ssh-target> [--path <dir>] push [--replace] [--dry-run]
@@ -143,6 +152,10 @@ export async function main(argv: readonly string[], make = realContext): Promise
         json: parsed.json,
         offline: parsed.offline,
       });
+    case 'account':
+      return (await import('./commands/account.ts')).runAccount(context, parsed.rest, parsed.json);
+    case 'feedback':
+      return (await import('./commands/account.ts')).runFeedback(context, parsed.rest);
     case 'history': {
       const refused = noExtra('Usage: bun run melete history [--json]');
       if (refused !== null) return refused;

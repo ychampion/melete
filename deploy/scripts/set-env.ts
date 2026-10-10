@@ -29,7 +29,10 @@ export const SET_ENV_USAGE =
 
 /** A name whose value is a secret: it is only ever taken from the environment, and never printed. */
 export const isSecretName = (name: string) =>
-  /(KEY|TOKEN|SECRET|PASSWORD)$/.test(name) || name === 'DATABASE_URL';
+  /(KEY|TOKEN|SECRET|PASSWORD)$/.test(name) ||
+  name === 'DATABASE_URL' ||
+  // A mail server's address carries its sign-in, user and password.
+  name.endsWith('_SMTP_URL');
 
 export class SetEnvRefusal extends Error {}
 

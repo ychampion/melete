@@ -1,5 +1,5 @@
 {
-  "id": "bc29a53a-51f0-4799-8756-c3f44337f824",
+  "id": "52c5892f-bb58-4b97-9ad6-8c75cf40489b",
   "prevId": "dd971537-0a0d-497e-a52b-f7beae3c4456",
   "version": "7",
   "dialect": "postgresql",
@@ -2096,45 +2096,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.client_focus": {
-      "name": "client_focus",
-      "schema": "",
-      "columns": {
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "focused_at": {
-          "name": "focused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "client_focus_principal_id_principal_id_fk": {
-          "name": "client_focus_principal_id_principal_id_fk",
-          "tableFrom": "client_focus",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -4517,6 +4478,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "disabled_at": {
+          "name": "disabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -6810,23 +6777,29 @@
           "primaryKey": false,
           "notNull": true
         },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "space_id": {
           "name": "space_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "connection_id": {
           "name": "connection_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "connection_generation": {
           "name": "connection_generation",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "expires_at": {
           "name": "expires_at",
@@ -6878,6 +6851,19 @@
           "tableTo": "owner",
           "columnsFrom": [
             "owner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "magic_link_principal_id_principal_id_fk": {
+          "name": "magic_link_principal_id_principal_id_fk",
+          "tableFrom": "magic_link",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
           ],
           "columnsTo": [
             "id"
@@ -7414,6 +7400,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -7474,6 +7466,44 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.setup_code": {
+      "name": "setup_code",
+      "schema": "",
+      "columns": {
+        "code_hash": {
+          "name": "code_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

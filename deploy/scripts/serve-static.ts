@@ -12,7 +12,7 @@
  * base: `file:///etc/passwd` is not a path under `dist`, it is a different
  * absolute URL, and `%2e%2e` is a dot segment the URL parser climbs with.
  */
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import {
   plainAddress,
@@ -33,12 +33,38 @@ export type StaticServerOptions = {
   publicOrigin?: string;
   /**
    * The one upstream whose `X-Forwarded-For` states a browser's address: a
-   * literal address, or a service name on a shared network. Unset, as in the
-   * default loopback deployment, every request is attributed to its own socket
-   * peer and no forwarding header is read.
+   * literal address, a service name on a shared network, or `gateway` for a
+   * reverse proxy on the Docker host. Unset, as in the default loopback
+   * deployment, every request is attributed to its own socket peer and no
+   * forwarding header is read.
    */
   trustedUpstream?: string;
+  /** Reads the container's routing table; a test supplies its own. */
+  routeTable?: () => Promise<string>;
 };
+
+/**
+ * The upstream named for a reverse proxy on the Docker host. A connection that
+ * reaches a published port from the host arrives from the container's default
+ * gateway, whose address Docker chooses, so it is read from the routing table
+ * rather than written into the configuration.
+ */
+export const HOST_GATEWAY = 'gateway';
+
+/**
+ * The default route's gateway in a Linux routing table (`/proc/net/route`),
+ * whose addresses are little-endian hex, or null when there is none.
+ */
+export function defaultGateway(table: string): string | null {
+  for (const line of table.split('\n').slice(1)) {
+    const [, destination, gateway] = line.trim().split(/\s+/);
+    if (destination !== '00000000' || !gateway || !/^[0-9A-Fa-f]{8}$/.test(gateway)) continue;
+    const octets = [6, 4, 2, 0].map((at) => Number.parseInt(gateway.slice(at, at + 2), 16));
+    const address = octets.join('.');
+    return address === '0.0.0.0' ? null : address;
+  }
+  return null;
+}
 
 const API_ORIGIN = 'http://melete:8787';
 
@@ -350,7 +376,14 @@ export function createStaticServer(options: StaticServerOptions) {
   const publicOrigin = options.publicOrigin
     ? parseOrigin(options.publicOrigin, 'MELETE_WEB_ORIGIN')
     : undefined;
-  const upstream = trustedPeer(options.trustedUpstream);
+  const routeTable = options.routeTable ?? (() => readFile('/proc/net/route', 'utf8'));
+  const upstream =
+    options.trustedUpstream === HOST_GATEWAY
+      ? trustedPeer(HOST_GATEWAY, async () => {
+          const gateway = defaultGateway(await routeTable());
+          return gateway ? [gateway] : [];
+        })
+      : trustedPeer(options.trustedUpstream);
 
   const index = () =>
     new Response(Bun.file(indexPath), {

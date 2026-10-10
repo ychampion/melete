@@ -15,11 +15,18 @@ export const session = pgTable(
       .references(() => owner.id, { onDelete: 'cascade' }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The browser and system it signed in from, as its User-Agent said, for the person's list. */
+    label: text('label'),
   },
   (table) => [index('session_expires_idx').on(table.expiresAt)],
 );
 
-/** Single-use digests bind a login to the mailbox connection that delivered it. */
+/**
+ * Single-use sign-in link digests. A link the owner's own mailbox sent is bound
+ * to that connection and its generation, and to the owner's personal space. A
+ * link the installation's mail sender sent has no connection; it names the
+ * account it signs in, and the session picks that account's space.
+ */
 export const magicLink = pgTable(
   'magic_link',
   {
@@ -27,13 +34,11 @@ export const magicLink = pgTable(
     ownerId: text('owner_id')
       .notNull()
       .references(() => owner.id, { onDelete: 'cascade' }),
-    spaceId: text('space_id')
-      .notNull()
-      .references(() => space.id, { onDelete: 'cascade' }),
-    connectionId: text('connection_id')
-      .notNull()
-      .references(() => connection.id, { onDelete: 'cascade' }),
-    connectionGeneration: integer('connection_generation').notNull(),
+    /** The account the link signs in; null for the setup owner. */
+    principalId: text('principal_id').references(() => principal.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id').references(() => space.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
+    connectionGeneration: integer('connection_generation'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     usedAt: timestamp('used_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -134,3 +139,16 @@ export const passwordReset = pgTable(
   },
   (table) => [index('password_reset_principal_created_idx').on(table.principalId, table.createdAt)],
 );
+
+/**
+ * One-time codes that let someone create an installation's first account,
+ * issued by `melete account setup-code`. Only a digest is stored. Once any has
+ * been issued, setup needs one, as it does when the environment carries a
+ * code's digest.
+ */
+export const setupCode = pgTable('setup_code', {
+  codeHash: text('code_hash').primaryKey(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

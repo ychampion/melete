@@ -250,10 +250,20 @@ def test_the_check_looks_for_what_the_browser_tools_look_for(desktop):
     controller = (HELPER.parents[2] / "apps" / "melete" / "src" / "workers" / "browser" / "controller.ts").read_text(
         encoding="utf-8"
     )
-    for shared in (".g-recaptcha, .h-captcha, .cf-turnstile", "=== 'invisible'", "/recaptcha/"):
+    for shared in (".g-recaptcha, .h-captcha, .cf-turnstile, #px-captcha", "=== 'invisible'", "/recaptcha/"):
         assert shared in controller, shared
         assert shared in desktop.CHALLENGE_SHOWN, shared
-    for host in ("recaptcha", "hcaptcha", "challenges", "arkoselabs", "funcaptcha", "captcha-delivery"):
+    for host in (
+        "recaptcha",
+        "hcaptcha",
+        "challenges",
+        "arkoselabs",
+        "funcaptcha",
+        "captcha-delivery",
+        "px-cdn",
+        "px-cloud",
+        "perimeterx",
+    ):
         assert host in controller and host in desktop.CHALLENGE_SHOWN, host
 
 

@@ -78,7 +78,7 @@ own bundled skills are never copied into an attempt's home.
 The boot script adds only what belongs to one attempt: the capability, the model
 it was granted, and the window and trigger that follow from that model. The
 image also applies
-`patches/observer_bridge.py`: eight source hashes must match the audited pin or
+`patches/observer_bridge.py`: nine source hashes must match the audited pin or
 the identical reviewed patch. It adds a real compaction dispatch, binds plugin
 observations to the current HTTP run queue, puts the model's reasoning on the
 run's event stream as `reasoning.delta`, keeps the agent's own screenshot in
@@ -91,7 +91,9 @@ inside the turn that made it (at the pin a top-level delegation returns at once
 and its results arrive later as a new message, which an attempt that ends with
 its run would never see), builds each helper with Melete's identity and without
 the parent-only tools, and hands the parent what its helpers left waiting for
-approval. Updating the pin means
+approval. It lets the engine run Melete's web lookups (`web.search`,
+`web.fetch`, `web.weather`) side by side when the model asks for several in one
+batch, as it already runs its own read-only tools. Updating the pin means
 reviewing those seams again. A
 checkout carrying the version of the patch before the reasoning seam is moved to
 this one; one carrying any other version is refused, so it has to be restored to

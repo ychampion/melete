@@ -479,12 +479,13 @@ def union(quads):
 
 
 #: Who may draw a check that a person is there, as the service names them.
-CHALLENGE_PROVIDERS = ("cloudflare", "recaptcha", "hcaptcha", "arkose", "datadome")
+CHALLENGE_PROVIDERS = ("cloudflare", "recaptcha", "hcaptcha", "arkose", "datadome", "perimeterx")
 #: Whether the page shows such a check, and whose: a visible frame or widget
 #: from a bot-check provider, as the browser tools look for one
 #: (`apps/melete/src/workers/browser/controller.ts`, `challengeShown`), in open
-#: shadow roots too, or Cloudflare's own check page. The invisible kind, which
-#: asks nothing of anyone, is left out. Null when there is none.
+#: shadow roots too (PerimeterX's press-and-hold box among them), or
+#: Cloudflare's own check page. The invisible kind, which asks nothing of
+#: anyone, is left out. Null when there is none.
 CHALLENGE_SHOWN = r"""(() => {
   const hosts = [
     [/(^|\.)challenges\.cloudflare\.com$/i, 'cloudflare'],
@@ -492,6 +493,7 @@ CHALLENGE_SHOWN = r"""(() => {
     [/(^|\.)hcaptcha\.com$/i, 'hcaptcha'],
     [/(^|\.)(arkoselabs\.com|funcaptcha\.com)$/i, 'arkose'],
     [/(^|\.)captcha-delivery\.com$/i, 'datadome'],
+    [/(^|\.)(px-cdn\.net|px-cloud\.net|perimeterx\.net)$/i, 'perimeterx'],
   ];
   const shown = (element) => {
     const box = element.getBoundingClientRect();
@@ -501,7 +503,7 @@ CHALLENGE_SHOWN = r"""(() => {
   };
   const found = [];
   const look = (root) => {
-    for (const element of root.querySelectorAll('iframe, .g-recaptcha, .h-captcha, .cf-turnstile')) {
+    for (const element of root.querySelectorAll('iframe, .g-recaptcha, .h-captcha, .cf-turnstile, #px-captcha')) {
       if (found.length >= 200) return;
       found.push(element);
     }
@@ -517,7 +519,8 @@ CHALLENGE_SHOWN = r"""(() => {
       const named = google ? 'recaptcha' : (hosts.find(([host]) => host.test(url.hostname)) || [])[1];
       if (named && shown(element)) return named;
     } else if (element.getAttribute('data-size') !== 'invisible' && shown(element)) {
-      return element.classList.contains('cf-turnstile') ? 'cloudflare'
+      return element.id === 'px-captcha' ? 'perimeterx'
+        : element.classList.contains('cf-turnstile') ? 'cloudflare'
         : element.classList.contains('h-captcha') ? 'hcaptcha' : 'recaptcha';
     }
   }

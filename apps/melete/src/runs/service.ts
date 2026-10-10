@@ -23,6 +23,7 @@ import {
   type JobState,
   jobConstraints,
   RUN_ACTIVE_STEP_LIMIT,
+  RUN_BODY_LIMIT,
   RUN_CHECK_LIMIT,
   RUN_IDLE_SHIFT_LIMIT,
   RUN_MANAGE_TOOLS,
@@ -188,6 +189,11 @@ export const STALLED_QUESTION = `It stopped making progress: its next step has n
  * itself is answered beside it, with Approve or Decline.
  */
 export const WAITING_FOR_OK = 'Waiting for your OK before it goes on';
+
+/** Why a shift is stopped when what it was handed changed under it: a replan, not a failure. */
+const CONTEXT_INVALIDATED = 'context_invalidated';
+/** The title of what a run gives the person when it stops short of its result. */
+const SO_FAR = 'What it has so far';
 
 const missing = () => new ServiceError('not_found', 'That piece of work was not found.', 404);
 const ENDED_STATES = ['completed', 'failed', 'cancelled'];
@@ -1185,6 +1191,10 @@ export class RunService {
       )
       .orderBy(desc(event.seq))
       .limit(1);
+    // A shift stopped because what it was handed changed under it (the
+    // space's connections, its policy or its memory) is started again on the
+    // new facts on purpose. That is no failure of the work: counted, it parked
+    // work whose space was simply busy before it had done anything.
     const recent = await tx
       .select({ outcome: attempt.outcome, lease: attempt.leaseStatus })
       .from(attempt)
@@ -1193,6 +1203,7 @@ export class RunService {
           eq(attempt.jobId, row.id),
           isNotNull(attempt.endedAt),
           answered ? gt(attempt.startedAt, answered.at) : undefined,
+          sql`coalesce(${attempt.outcomeDetail}->>'reason', '') <> ${CONTEXT_INVALIDATED}`,
         ),
       )
       .orderBy(desc(attempt.epoch))
@@ -1304,11 +1315,14 @@ export class RunService {
 
     // A helper has nobody to ask: the person does not see it, and its run
     // cannot finish while it waits. What would stop it to ask ends it instead,
-    // and its run reads why with the helper's result.
-    const ask = (question: string, why: string): AttemptOutcome =>
-      step
-        ? { kind: 'failed', retryable: false, reason: why }
-        : { kind: 'waiting_for_input', question };
+    // and its run reads why with the helper's result. A run that stops to ask
+    // gives the person what it has first, so stopping short never means
+    // nothing reaches them.
+    const ask = async (question: string, why: string): Promise<AttemptOutcome> => {
+      if (step) return { kind: 'failed', retryable: false, reason: why };
+      await this.giveSoFar(tx, row, attemptId, why);
+      return { kind: 'waiting_for_input', question };
+    };
 
     // The result is given, by this shift or by one before it that could not
     // close yet: the run completes, and no later shift reworks it. While an
@@ -1416,10 +1430,20 @@ export class RunService {
 
     const over = await this.overLimit(tx, run, state, shifts);
     if (over)
-      return {
-        kind: 'waiting_for_input',
-        question: `This reached the limit you set (${over}). Say "continue" to keep going.`,
-      };
+      return ask(
+        `This reached the limit you set (${over}). Say "continue" to keep going.`,
+        `It reached the limit you set (${over}).`,
+      );
+
+    // A stretch of work that ran into its own time or step limit goes on in
+    // the next shift; the person is given what it has meanwhile.
+    if (!step && outcome.kind === 'budget_exhausted')
+      await this.giveSoFar(
+        tx,
+        row,
+        attemptId,
+        'One stretch of the work reached its time limit; it carries on from here.',
+      );
 
     // Every shift leaves a handoff. One the work did not write is written for it.
     let handoff = [...mine].reverse().find((entry) => entry.kind === 'checkpoint');
@@ -1703,6 +1727,76 @@ export class RunService {
         ...(settle ? { result: final } : {}),
       },
     });
+  }
+
+  /**
+   * What the work has before it has given its result: the result as its
+   * check left it, or the result it offered, or else its findings and what
+   * its helpers brought back. Null once a result was given, or when there is
+   * nothing to show yet.
+   */
+  private async soFar(tx: Transaction, run: string): Promise<string | null> {
+    const last = await this.lastResult(tx, run);
+    if (last?.kind === 'finished') return null;
+    const checked = object(last?.data).result;
+    if (last?.kind === 'check' && typeof checked === 'string' && checked.trim()) return checked;
+    const [offered] = await tx
+      .select()
+      .from(runEntry)
+      .where(
+        and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'proposed'), isNull(runEntry.stepJobId)),
+      )
+      .orderBy(desc(runEntry.seq))
+      .limit(1);
+    if (offered?.body.trim()) return offered.body;
+    const found = await tx
+      .select()
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, run),
+          or(
+            eq(runEntry.kind, 'finding'),
+            and(
+              eq(runEntry.kind, 'step_finished'),
+              ne(runEntry.body, ''),
+              sql`${runEntry.data}->>'state' = 'completed'`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(runEntry.seq))
+      .limit(20);
+    if (!found.length) return null;
+    return found
+      .map((entry) => `- ${entry.title}${entry.body ? `: ${clip(entry.body, 1500)}` : ''}`)
+      .join('\n');
+  }
+
+  /**
+   * The work stopped short of its result, at a limit or to ask: the person is
+   * given what it has, said plainly to be unfinished, on its card in the
+   * conversation and as a notification. False when there was nothing to give.
+   */
+  async giveSoFar(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string | null,
+    why: string,
+  ): Promise<boolean> {
+    const has = await this.soFar(tx, row.id);
+    if (!has) return false;
+    const body = clip(`Not finished yet. ${why}\n\n${has}`, RUN_BODY_LIMIT);
+    await this.write(tx, {
+      run: row.id,
+      attemptId,
+      kind: 'report',
+      title: SO_FAR,
+      body,
+      data: { automatic: true, partial: true },
+    });
+    await this.reported(tx, row.id, row, SO_FAR, body, { spaced: false, key: 'run-partial' });
+    return true;
   }
 
   /**
@@ -2298,7 +2392,8 @@ export class RunService {
     // What it stands on goes first, so nothing wakes it behind the stop. Then
     // the run: once it is fenced it cannot start another helper, so the
     // helpers read after it are all there are.
-    if (await this.jobs.transaction((tx) => unstand(tx, row.id))) await this.syncSchedules();
+    const stood = await this.jobs.transaction((tx) => unstand(tx, row.id));
+    if (stood) await this.syncSchedules();
     await cancel(row.id);
     const steps = await this.db
       .select({ id: job.id })
@@ -2311,6 +2406,21 @@ export class RunService {
         ),
       );
     for (const step of steps) await cancel(step.id);
+    // Work stopped before its result keeps what it had, as its result, said
+    // plainly to be unfinished: the person who stops waiting still gets it.
+    // Standing work reports each time it runs, so it has no result to keep.
+    if (stood) return;
+    await this.jobs.transaction(async (tx) => {
+      const has = await this.soFar(tx, row.id);
+      if (!has) return;
+      await this.write(tx, {
+        run: row.id,
+        kind: 'finished',
+        title: SO_FAR,
+        body: clip(`Stopped before it finished. What it had so far:\n\n${has}`, RUN_BODY_LIMIT),
+        data: { partial: true },
+      });
+    });
   }
 
   /**
@@ -2551,12 +2661,16 @@ export class RunService {
           payload: { kind: 'run_paused', reason: STALLED, message: STALLED_QUESTION },
           dedupKey: `${entry.id}:${STALLED}:${newId('op')}`,
         });
+        // What it has so far goes with the question, so the card shows both.
+        const has = await this.soFar(tx, entry.id);
         await this.write(tx, {
           run: entry.id,
           kind: 'report',
           title: 'It stopped making progress',
-          body: STALLED_QUESTION,
-          data: { automatic: true, stalled: true },
+          body: has
+            ? clip(`${STALLED_QUESTION}\n\n${SO_FAR}:\n${has}`, RUN_BODY_LIMIT)
+            : STALLED_QUESTION,
+          data: { automatic: true, stalled: true, ...(has ? { partial: true } : {}) },
         });
         await this.reported(tx, entry.id, locked, 'It stopped making progress', STALLED_QUESTION, {
           spaced: false,

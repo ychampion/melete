@@ -94,6 +94,8 @@ const service = (url: string, multiplayer: boolean | null) =>
       expect(await (await call(on.app, '/setup')).json()).toEqual({
         needed: true,
         multiplayer: true,
+        code_required: false,
+        email_sign_in: false,
       });
       const setup = await call(on.app, '/setup', 'POST', {
         email: 'solo@example.test',
@@ -129,6 +131,8 @@ const service = (url: string, multiplayer: boolean | null) =>
       expect(await (await call(app, '/setup')).json()).toEqual({
         needed: false,
         multiplayer: false,
+        code_required: false,
+        email_sign_in: false,
       });
 
       // Making, reading, inviting to and posting in a room, accepting an

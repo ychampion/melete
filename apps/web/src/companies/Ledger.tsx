@@ -13,6 +13,7 @@ import type {
   LedgerItem,
   ScanProgress,
 } from '../experience/types.ts';
+import { navigate } from '../router.ts';
 import { MessageCard } from './evidence.tsx';
 import {
   amountWords,
@@ -163,9 +164,7 @@ export function LedgerDetailPanel({
         // message is no longer held there is nothing to open. Saying so is
         // better than drawing the quote on its own, which would look like
         // evidence while no longer being checkable against anything.
-        <p className="ledger-detail-gone">
-          The message this came from is no longer on this machine.
-        </p>
+        <p className="ledger-detail-gone">The message this came from is no longer kept.</p>
       )}
       <div className="ledger-actions">
         {item.job_id ? (
@@ -222,11 +221,14 @@ export function EmptyLedger({
   progress,
   error,
   onScan,
+  mailbox = true,
 }: {
   scanning: boolean;
   progress: ScanProgress | null;
   error: string | null;
   onScan: () => void;
+  /** False when no mailbox is connected yet: the way forward is connecting one. */
+  mailbox?: boolean;
 }) {
   const share =
     progress && progress.messages_seen > 0
@@ -253,9 +255,13 @@ export function EmptyLedger({
               : 'Starting'}
           </span>
         </div>
-      ) : (
+      ) : mailbox ? (
         <Button icon="search" onClick={onScan}>
           Scan the inbox
+        </Button>
+      ) : (
+        <Button icon="mail" onClick={() => navigate('/settings/connections')}>
+          Connect a mailbox
         </Button>
       )}
       {error ? <span className="ledger-empty-error">{error}</span> : null}

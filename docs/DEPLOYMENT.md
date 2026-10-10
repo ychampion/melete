@@ -213,6 +213,8 @@ bun run melete backup --estimate && bun run melete backup
 bun run melete deploy --checkout --dry-run
 bun run melete rollback --dry-run
 bun run melete history
+bun run melete account list    # every account, and whether it is signed in anywhere
+bun run melete feedback        # problem reports people sent from the app
 ```
 
 | Command | What it does |
@@ -227,10 +229,12 @@ bun run melete history
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
-| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
-| `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
+| `backup` | Backs up the database, the restriction journal, the settings and the files (the spaces, uploads, the shared `/work` and the agents' computers) into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--database-only`, `--offline`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
+| `restore <backup> [--plan \| --verify \| --yes] [--keep-database]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. `--verify` also reads every archive through; `--yes` runs the steps. Neither of the first two changes anything. |
 | `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
+| `account <command>` | The accounts on the installation, run in the service container; [Accounts](#accounts) lists the commands. `--json` prints each answer as one JSON object. |
+| `feedback [list\|show <id>]` | The [problem reports](FEEDBACK.md) people sent, as `bun run feedback` prints them, run in the service container. |
 | `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
 
 `--deploy-dir <checkout>/deploy` runs a command against another checkout's
@@ -421,23 +425,40 @@ unset MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
 
 ### Replacing the VM
 
-With the database and the bucket at a provider, the VM holds only the
-settings, the restriction journal and the spaces' files, so a new one takes
-over from a backup:
+With the database and the bucket at a provider, the VM holds the settings, the
+restriction journal, the spaces' files, the shared `/work` and the agents'
+computers, so a new one takes over from a backup:
 
 1. On the old VM, or from your computer through `remote`: `bun run melete
    backup` (or `--to ssh://host:/path` when the VM is short of disk). Note the
    image tag `bun run melete history` shows.
-2. On the new VM, clone the checkout at the same commit, and copy the backup's
-   `deploy.env` to `deploy/.env` (mode 0600) and its `melete.deploy.json`, or
-   push your local copies.
-3. `bun run melete restore <backup> --plan` checks the backup and prints the
-   steps. On a new machine they put the newest restriction journal back before
-   the service starts. With an external database that already holds the data,
-   skip the `pg_restore` line; to restore into a new database, point
-   `DATABASE_URL` at it first.
-4. `bun run melete deploy --tag <the same tag>` pulls the images and starts the
-   stack, and `bun run melete status` reports it.
+2. On the new VM, clone the checkout at the same commit, and copy the backup
+   directory there. Copy its `deploy.env` to `deploy/.env` (mode 0600) and its
+   `melete.deploy.json` to `deploy/`, or push your local copies. The master key
+   is not in the backup: `read -rs MELETE_MASTER_KEY && export
+   MELETE_MASTER_KEY`, then `bun run melete set --from-env MELETE_MASTER_KEY`.
+3. `bun run melete restore <backup> --verify` checks every part and changes
+   nothing. `bun run melete restore <backup>` prints the steps; on a new machine
+   they put the newest restriction journal back before the service starts.
+4. `bun run melete restore <backup> --yes` runs them and starts the stack.
+   With an external database that already holds the data, add
+   `--keep-database`; to restore into a new database, point `DATABASE_URL` at
+   an empty one first. Docker pulls the images the tag names when the steps
+   first need them. `bun run melete status` then reports the stack.
+
+If the stack was started on the new VM before the restore, its own start-up
+files are in the file volumes, and `--keep-database` refuses to replace them
+until you add `--replace-files`. The restriction journal that start left, which
+holds no entry, is replaced by the backup's, as on a VM that never ran.
+
+The agents' computers come back as their volumes, but a new machine has none of
+their containers. A release whose service makes a computer's container again on
+its kept volumes (see [docs/sandbox-docker.md](sandbox-docker.md)) brings each
+computer back with its `/work` and home folder the next time the agent uses it.
+An earlier release treats a computer without its container as gone: each agent
+gets a new computer, with each chat's files in `/work` back from the shared
+`/work` and an empty home folder, so browser sign-ins and tools installed there
+are lost. `restore` says which computers have no container before it starts.
 
 ## Using prebuilt images
 
@@ -526,8 +547,10 @@ step either passes or stops with exit 2 and the running stack as it was:
    the layers they need. The disk it takes is their compressed size times 2.2
    plus `disk.pull_margin_mb`, and the plan is refused unless
    `disk.min_free_mb` is still free after it.
-4. When the new release adds migrations, it dumps the database into
-   `backup.dir` first, or streams it with `--backup-to ssh://host:/path`.
+4. When the new release adds migrations, it first takes a whole backup, the
+   database and the files as `melete backup` takes them, into `backup.dir`
+   (its disk plan counts both), or streams it with `--backup-to
+   ssh://host:/path`.
 5. It pulls one image at a time, measuring the disk after each, and stops at
    the first failure or at the floor. Images already pulled are kept, unused.
 6. It checks out the commit, if asked, and writes `MELETE_IMAGE_TAG`.
@@ -1040,6 +1063,88 @@ docker compose -f deploy/docker-compose.yml \
   -f deploy/docker-compose.tailscale.yml exec tailscale tailscale funnel status
 ```
 
+## Claiming a new installation
+
+Until its first account exists, an installation belongs to whoever creates
+that account. `bun run melete init` (and `deploy/scripts/configure.ts`, which it
+runs) therefore makes a one-time setup code, prints it once with a link that
+fills it in, and writes only its SHA-256 digest to `deploy/.env` as
+`MELETE_SETUP_CODE_HASH`:
+
+```text
+Create the first account with this one-time setup code. It is shown only now; keep it until the account exists:
+
+  K7QM-2XRT-9WPC-HV4N-ZD6B
+
+Once Melete is running, open http://127.0.0.1:3101/#/welcome?code=K7QM-2XRT-9WPC-HV4N-ZD6B
+```
+
+While the code is configured, the sign-in page asks for it beside the email and
+password (the link fills it in), and `POST /setup` answers 403
+`setup_code_required` without it and 403 `invalid_setup_code` for a wrong one.
+Case, spaces and dashes don't matter. The password is checked first, so a weak
+one does not use up an issued code. Once the account exists the code has
+nothing left to open. `GET /setup` says `code_required` while it matters.
+
+Lost it, or setting up installations for other people without `init`?
+
+```bash
+bun run melete account setup-code
+```
+
+prints a new code and link that last 72 hours; each new one cancels the one
+before. An operator who provisions an installation for someone else can also
+skip the code and create that person's account directly with
+`bun run melete account create <email>` (see [Accounts](#accounts)).
+
+An installation with no code configured and none issued, such as one set up
+before codes existed or a local install whose `deploy/.env` has an empty
+`MELETE_SETUP_CODE_HASH`, keeps the old behaviour: the first visitor creates
+the account. That is fine on the default loopback ports, where only this
+machine reaches the page; give an installation a code before it is reachable
+from anywhere else.
+
+## Accounts
+
+The person who runs an installation manages its accounts from the checkout, or
+from another machine with `bun run melete remote <host> account …`. Each
+command runs in the service container and prints a link where one is needed;
+links use `MELETE_PUBLIC_URL`, or the web port on this machine.
+
+| Command | What it does |
+|---|---|
+| `account list` | Every account: email, owner, person or guest, created, disabled, whether it has a password yet, how many browsers are signed in, and the last sign-in. |
+| `account create <email>` | A new account with a one-time link, valid for seven days, to choose its password. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
+| `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
+| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
+| `account enable <email>` | Lets a disabled account sign in again. |
+| `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
+
+The exit code is 0 when it was done, 2 when it was refused (no such account,
+an email already in use, a setup code once the owner exists) and 1 when it
+failed.
+
+## Signing out everywhere
+
+Settings › Account › Where you're signed in lists every browser signed in to the
+account, with the system and browser each signed in from, and the paired
+computers, browsers that receive notifications, and connected assistants. Any
+browser or computer can be signed out on its own. "Sign out everywhere else"
+ends all of them except the browser that asked: other browser sessions, unused
+sign-in and reset links, connected assistants and their unused codes, unused
+computer pairing codes, paired computers (their connections are revoked as a
+revoke in Settings › Devices revokes them), notification subscriptions, and
+linked chat accounts. Changing the password does the same. A reset link
+does it for every browser, the one that used the link included. Signing out of
+one browser also stops that browser's notifications.
+
+Expired sessions, and links and codes that expired or were used more than a
+day ago, are deleted every six hours.
+
+New passwords need at least 10 characters, and the most common passwords, one
+character repeated, a straight run of keys and the account's own email address
+are refused (400 `weak_password`). Existing passwords keep working.
+
 ## Sign-in limits
 
 Every limit below is counted in Postgres, in `rate_limit_window`, so it holds
@@ -1072,6 +1177,16 @@ With the default loopback ports, the SSH tunnel, or a TLS reverse proxy
 on the host, the web server's socket peer is the Docker gateway, so all browsers
 still arrive as one address and the per-address limit below is shared between
 them. The known-device rule is what keeps a sign-in available in that case.
+
+A reverse proxy on the host can state each browser's address instead. Set
+`MELETE_WEB_TRUSTED_UPSTREAM=gateway` and have the proxy set `X-Forwarded-For`
+to the one address it accepted the connection from, replacing any value the
+browser sent (Caddy's `reverse_proxy` and nginx's
+`proxy_set_header X-Forwarded-For $remote_addr` do). The web server reads the
+container's default gateway from its routing table and believes the header
+only on a connection from that address, and only when it holds one
+well-formed address; anything else is attributed to the socket as before. A
+proxy on another machine is named by its address instead of `gateway`.
 
 **Per client address.** A burst of five attempts, then 1, 2, 4, up to 60
 seconds between attempts. A refusal is 429 `login_rate_limited` with
@@ -1120,15 +1235,22 @@ connected apps lose their access and have to be connected again. Wrong current
 passwords are limited per account with the same backoff as sign-in.
 
 Someone who has forgotten theirs chooses "Forgot your password?" on the sign-in
-page. When the owner's own mailbox is connected, the page can mail a reset link
-(30 minutes, at most three an hour). Without one, the person who runs the
-install prints a link on the host:
+page. With [account mail](#account-mail) set up, the page mails any account a
+reset link (30 minutes, at most three an hour). Without it, only the owner can
+get one, and only when their own mailbox is connected. The page also takes a
+reset code, or a whole link, pasted in, and checks it before asking for a new
+password. Otherwise the person who runs the install prints a link:
 
 ```bash
+bun run melete account reset you@example.com
+# Without the melete command:
 docker compose exec melete bun run reset-password you@example.com
 # Outside Docker, from the checkout, with DATABASE_URL set:
 bun run reset-password you@example.com
 ```
+
+The page never shows these commands: the person who forgot their password is
+told only what they can do.
 
 The link uses `MELETE_PUBLIC_URL`; without it the command prints a code to paste
 on the reset page instead. A link or code works once, expires after 60 minutes,
@@ -1137,7 +1259,38 @@ leaves a printed one working. Choosing a new password signs the account out
 everywhere, connected apps included. Only a digest of each token is stored, and
 attempts to use one are limited per client address.
 
-Room invites work the same way. A guest's invite link uses `MELETE_PUBLIC_URL`
+### Account mail
+
+Sign-in links and password reset links go out through the installation's own
+mail sender when one is configured:
+
+```bash
+# The URL holds the mail server's password, so it is read, not typed on the command line:
+# smtps://user:password@smtp.example.com:465
+read -rs MELETE_SMTP_URL && export MELETE_SMTP_URL
+bun run melete set --from-env MELETE_SMTP_URL
+unset MELETE_SMTP_URL
+bun run melete set MELETE_MAIL_FROM='Melete <melete@example.com>' MELETE_PUBLIC_URL=https://melete.example.com
+```
+
+Both are needed, or neither; the service refuses to start with one alone. The
+links point at `MELETE_PUBLIC_URL`, so email sign-in and mailed resets are
+offered only once it is set. Every link signs in to an account, so `smtp://`
+must upgrade to TLS with STARTTLS before anything is sent, unless the server
+is on this machine; add `?requireTLS=false` to the URL only for a relay on a
+network you trust that cannot.
+This sender carries nothing but these two kinds of mail, for any account;
+what Melete sends for a person still leaves from their own connected
+accounts, after their approval. The answer to a request is the same whether or
+not the address has an account, and the mail is sent after the answer.
+
+Without a sender, account mail goes out from the owner's own connected mailbox,
+to the owner only, as before. The sign-in page shows "Email me a link instead"
+only when one of the two can send (`email_sign_in` in `GET /setup`).
+
+### Room invites
+
+Room invite links work like reset links. A guest's invite link uses `MELETE_PUBLIC_URL`
 when it is set; without it, the owner is given a path to open on the address
 people use for this installation. Only a digest of each invite's token is
 stored, and the token rides in the link's fragment, which no server log sees.
@@ -2196,12 +2349,15 @@ must outlive rotation belong in a log collector you run beside the stack.
 ## Backup and restore
 
 ```bash
-bun run melete backup --estimate     # sizes, against the free space where the backup goes
-bun run melete backup                # database, journal and settings, online
-bun run melete backup --with-volumes # also /data and /work, with the writers stopped
+bun run melete backup --estimate      # sizes, against the free space where the backup goes
+bun run melete backup                 # everything, with the stack running
+bun run melete backup --offline       # everything, with the writers stopped while the files are copied
+bun run melete backup --database-only # the database, journal and settings alone
 bun run melete backup --to ssh://backup-host:/srv/melete-backups
 bun run melete backup --encrypt-to age1...  # every part encrypted with age to that public key
-bun run melete restore ~/melete-backups/melete-20261002T101500Z
+bun run melete restore ~/melete-backups/melete-20261002T101500Z --verify  # read every part; change nothing
+bun run melete restore ~/melete-backups/melete-20261002T101500Z           # print the steps; change nothing
+bun run melete restore ~/melete-backups/melete-20261002T101500Z --yes     # run them
 ```
 
 **Keep the master key apart from the backups.** `MELETE_MASTER_KEY` in
@@ -2225,12 +2381,17 @@ written, here or over SSH. `--encrypt` encrypts each part with gpg (AES-256)
 under the passphrase exported as `MELETE_BACKUP_PASSPHRASE`. The tool must be
 installed on the machine taking the backup. `SHA256SUMS` lists the encrypted
 files, so `restore` checks a set without opening it, and its steps decrypt
-each part as it is loaded: for age, export `MELETE_BACKUP_IDENTITY` as the path
-of the identity file that opens it; gpg asks for the passphrase.
+each part as it is loaded. `restore --verify` and `--yes` need what opens it:
+for age, export `MELETE_BACKUP_IDENTITY` as the path of the identity file; for
+gpg, export the passphrase as `MELETE_BACKUP_PASSPHRASE`. The list of parts,
+`contents.json`, stays readable like `SHA256SUMS`: it names volumes, never
+their files.
 
 **The S3 bucket is outside the backup.** With `"blobs": { "store": "s3" }`, the
-files the service keeps by their content live in the bucket, and a backup holds
-only the database's references to them. Protect the bucket at the provider:
+files the service keeps by their content (uploads and Files) live in the
+bucket, and a backup holds only the database's references to them; it still
+holds the spaces' own files, the shared `/work` and the agents' computers.
+Every backup says so when it is made. Protect the bucket at the provider:
 turn on versioning (with a lifecycle rule that expires old versions after the
 time you keep backups), or copy it on the same schedule as the backups, for
 example with `rclone sync` or `aws s3 sync` to a second bucket. A restored
@@ -2243,19 +2404,81 @@ holds the database as a custom-format dump, read back with `pg_restore --list`
 while it is written; the restriction journal on its own, under a timestamped
 name; `deploy/.env` without the master key, the key's fingerprint
 (`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
-and a `SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
-online and small, so the stack keeps running; `--with-volumes` stops the
-writers to archive the volumes and starts them again. `--to` streams every part
-to another machine over SSH and keeps nothing on this disk, for a host short on
-space.
+then the files, one archive per volume, with ownership and modes kept:
+`spaces.tar` (each space's files), `artifacts.tar` (uploads and Files, kept by
+their content, unless they are in an S3 bucket), `work.tar` (the shared
+`/work`), and for each agent computer of this installation its two volumes,
+`computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
+home folder, browser profile included); `contents.json`, which lists those
+archives and each computer volume's labels; and a `SHA256SUMS` list. The
+runtime's attempt homes are left out: they are disposable, and jobs recover
+from the database into fresh attempts. The newest `backup.keep` backups are
+kept, each holding the files, so the disk they take is about `backup.keep`
+times what `--estimate` reports. `--to` streams every part to another machine
+over SSH and keeps nothing on this disk, for a host short on space.
 
-`restore` checks a backup's checksums and prints the steps that restore it,
-following the rules below: only the database volume is replaced, and the
-newest restriction journal is kept. On a machine that never ran the
-installation, the newest journal archive beside the backups goes back before
-the service starts, keeping its file ownership. A backup counts as whole only when
-`SHA256SUMS` lists every file in it and each matches. `backup.keep` never
-removes the backup the last deploy took.
+**What "online" means for the files.** By default the stack keeps running. The
+database is dumped first and the files are copied after it, so every file the
+dump refers to is in the backup; a file written in between is in the backup
+without a reference, which is harmless. A file being written while it is
+copied can be caught halfway; the backup still passes, and warns
+(`backup.files_changed`) naming the archives it happened in. Each agent computer
+that is running is paused while its own two volumes are copied, a few seconds
+for a typical one, so its files, the browser profile among them, are from one
+moment; a command it runs waits meanwhile, and it is resumed even when the
+copy fails. `--offline` (formerly `--with-volumes`, still accepted) stops the
+service, the runtime, the web app, the browser worker and `melete-cells`, with
+the attempt containers it started, while the files are copied, so the database
+and the files agree exactly, then starts them again.
+`--database-only` leaves the files out, and says so: a restore from it brings
+back the database alone and leaves the files on the machine as they are, so on
+a new machine the uploads and Files it refers to are missing unless they are in
+an S3 bucket.
+
+**Restoring.** `restore <backup>` checks the checksums and the list of parts,
+and prints the steps; `--verify` (or `--dry-run`) also reads every archive
+through, decrypting an encrypted one, so a damaged or missing part shows before
+you need it. Neither changes anything. `--yes` checks every archive the same
+way first, then runs the steps in order: it stops the writers, `melete-cells`
+and the attempt containers it started, and every agent computer whose container
+is on the machine, running or not; takes the stack down without touching its
+volumes; replaces the database volume and loads the dump; puts the newest
+restriction journal back where the journal volume is missing or holds no entry,
+as on a machine that never ran the installation or after a restore that stopped
+before that step (keeping its file ownership); empties each file volume and
+unpacks its archive into it, after asking the engine that no running container uses that volume; makes any
+missing computer volume with its labels; and only then starts the stack.
+
+A step that fails stops the restore there, and the report says what that left:
+
+- before anything was replaced, nothing was; it gives the command that starts
+  the stack as it was;
+- after something was replaced, the stack stays stopped, never started on a
+  half-restored installation; run the same `restore --yes` again once the
+  cause is fixed, and it starts over from the backup;
+- when only the final start fails, every part is back; fix the cause and start
+  the stack with the command it gives, without restoring again.
+
+A volume still in use when its turn comes stops the restore the same way, and
+names what uses it. On this machine the restriction journal stays as it is,
+since it is newer than any backup, and the service replays it at startup, so
+nothing forgotten since the backup comes back. With an external database, the
+restore loads into an empty one (it refuses one that holds tables), or
+`--keep-database` leaves the database as it is; then, if the file volumes here
+already hold files, which may be newer than the backup's, it refuses unless
+`--replace-files` is given too. With the bundled database, `--keep-database` is
+refused: the files are put back as the backup's database
+knows them, so that database comes back with them. An agent computer whose
+container is still on the machine starts on its restored volumes when it is
+next used; for one whose container is gone, see
+[Replacing the VM](#replacing-the-vm). A computer in the backup that belongs to
+another installation (another `MELETE_SANDBOX_PROJECT`), or whose volume name
+is taken here by a volume labelled for something else, is left out, and the
+report says so. A backup made by `--with-volumes` before backups held their
+list of parts restores its `data.tar` and `work.tar` the same way, without
+their copy of the journal; each is checked first to hold the folders put back
+from it. A backup counts as whole only when `SHA256SUMS` lists every file in it
+and each matches. `backup.keep` never removes the backup the last deploy took.
 
 The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.

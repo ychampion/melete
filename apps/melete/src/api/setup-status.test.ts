@@ -12,6 +12,8 @@ import { type AppDeps, createApp } from '../index.ts';
 /** A database whose owner table holds `owners` rows, and nothing else is read. */
 function appWith(owners: { id: string }[], settings: Record<string, string> = {}) {
   const stub = new Proxy({}, { get: () => () => undefined }) as never;
+  // Queries answer with no rows: no setup code was ever issued here.
+  const sql = new Proxy(async () => [], { get: () => () => undefined }) as never;
   const db = {
     select: () => ({ from: () => ({ limit: async () => owners }) }),
   } as unknown as AppDeps['db'];
@@ -19,7 +21,7 @@ function appWith(owners: { id: string }[], settings: Record<string, string> = {}
     env: loadEnv(settings),
     checkDatabase: async () => 'ok',
     db,
-    sql: stub,
+    sql,
     registry: stub,
     jobs: stub,
     triggers: stub,
@@ -40,13 +42,30 @@ describe('GET /setup', () => {
     expect(setupStatusResponse.parse(await response.json())).toEqual({
       needed: true,
       multiplayer: false,
+      code_required: false,
+      email_sign_in: false,
+    });
+  });
+
+  test('an installation made with a setup code says the first account needs it', async () => {
+    const response = await appWith([], { MELETE_SETUP_CODE_HASH: 'a'.repeat(64) }).request(
+      '/setup',
+    );
+    expect(setupStatusResponse.parse(await response.json())).toMatchObject({
+      needed: true,
+      code_required: true,
     });
   });
 
   test('once an owner exists, setup is no longer needed', async () => {
     const response = await appWith([{ id: 'own_01M2000000000000000000000A' }]).request('/setup');
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ needed: false, multiplayer: false });
+    expect(await response.json()).toEqual({
+      needed: false,
+      multiplayer: false,
+      code_required: false,
+      email_sign_in: false,
+    });
   });
 
   test('without a database it says the service is not configured', async () => {
@@ -89,6 +108,8 @@ describe('the multiplayer switch', () => {
     expect(await (await app.request('/setup')).json()).toEqual({
       needed: false,
       multiplayer: false,
+      code_required: false,
+      email_sign_in: false,
     });
     for (const route of covered) {
       const response = await send(app, route);
@@ -111,6 +132,8 @@ describe('the multiplayer switch', () => {
     expect(await (await app.request('/setup')).json()).toEqual({
       needed: false,
       multiplayer: true,
+      code_required: false,
+      email_sign_in: false,
     });
     for (const route of covered.filter(([, path]) => !path.startsWith('/invites/'))) {
       const response = await send(app, route);

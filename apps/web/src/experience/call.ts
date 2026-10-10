@@ -8,7 +8,7 @@ import { API_BASE_URL, client, type Result } from './adapter.ts';
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
-type Failure = { error?: { message?: string } };
+type Failure = { error?: { message?: string; code?: string } };
 
 export async function call<T>(
   path: string,
@@ -26,8 +26,13 @@ export async function call<T>(
     });
     const body: unknown = await response.json().catch(() => null);
     if (!response.ok) {
-      const said = (body as Failure | null)?.error?.message;
-      return { data: null, error: said ?? OFFLINE, unavailable: null };
+      const failure = (body as Failure | null)?.error;
+      return {
+        data: null,
+        error: failure?.message ?? OFFLINE,
+        unavailable: null,
+        ...(failure?.code ? { code: failure.code } : {}),
+      };
     }
     return { data: body as T, error: null, unavailable: null };
   } catch {

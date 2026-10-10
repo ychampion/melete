@@ -11,6 +11,13 @@ import type { JobRow } from '../jobs/service.ts';
 import { standingBrief } from './standing.ts';
 
 export const BRIEF_RECENT = 5;
+/**
+ * How research that compares options goes fast: one narrow helper per
+ * candidate, working side by side, rather than one shift reading every
+ * source in turn.
+ */
+export const FAN_OUT =
+  'When the work compares several options (products, providers, places, flights), name the candidates first, then start one helper per candidate with run.delegate, each with one narrow task (read that candidate’s own sources and return its facts with links), and end the shift with run.checkpoint and next_shift "when_helpers_finish". The next shift combines what they return and gives the result.';
 /** Approaches that did not work, listed so later shifts do not repeat them. */
 const BRIEF_DEAD_ENDS = 8;
 /** Tries and findings a check is shown, newest first. */
@@ -268,8 +275,8 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
   lines.push(...(await standingBrief(tx, row)));
   lines.push(
     step
-      ? 'Record what you learn with run.log. Call run.finish with the result when your part is done, or run.checkpoint to continue in another shift.'
-      : 'Record what you learn with run.log. End each shift with run.checkpoint. Use run.delegate for parts that can go in parallel. Call run.finish once it is done.',
+      ? 'Keep to your own part: other helpers have the rest. Record what you learn with run.log. Call run.finish with the result when your part is done, or run.checkpoint to continue in another shift.'
+      : `Record what you learn with run.log. End each shift with run.checkpoint. Use run.delegate for parts that can go in parallel. ${FAN_OUT} Call run.finish once it is done.`,
   );
   // The tool's own schema stays small in the shared catalog; how to use it is here.
   lines.push(

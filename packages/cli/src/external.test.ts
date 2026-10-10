@@ -301,7 +301,7 @@ describe('reaching an external database', () => {
       context,
       external,
       { kind: 'dir', dir: join(deployDir, '..', 'b') },
-      false,
+      'database',
     );
     expect(outcome.ok).toBe(true);
     const dump = context.streams[0];
@@ -311,11 +311,12 @@ describe('reaching an external database', () => {
     );
     expect(source).not.toContain('exec -T postgres');
     const check = dump?.sinks.find((sink) => 'command' in sink);
-    expect(check && 'command' in check ? check.command.slice(-4) : []).toEqual([
+    expect(check && 'command' in check ? check.command.slice(-5) : []).toEqual([
       '-T',
       'database-client',
-      'pg_restore',
-      '--list',
+      'sh',
+      '-c',
+      'pg_restore --list >/dev/null; s=$?; cat >/dev/null; exit $s',
     ]);
     const lines = [
       ...context.docker.calls,
@@ -352,6 +353,7 @@ describe('reaching an external database', () => {
       project: 'melete',
       compose: composeCommand('/srv/melete/deploy', external),
       writers: ['melete', 'runtime', 'web'],
+      services: ['melete-cells', 'melete', 'runtime', 'web'],
       backupDir: '/b/melete-20261002T024141Z',
       previous: null,
       freshHost: true,
@@ -365,7 +367,7 @@ describe('reaching an external database', () => {
     );
     // The journal still comes back before the service starts on a new machine.
     expect(steps.indexOf('cp -a - melete:/data')).toBeLessThan(
-      steps.indexOf('up -d --no-build --wait\n'),
+      steps.indexOf('up -d --no-build --wait melete-cells melete runtime web\n'),
     );
   });
 
