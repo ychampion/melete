@@ -66,11 +66,25 @@ export function requestedSettings(
   });
 }
 
-/** The file with `name` set to `value`: rewritten where it stands, or appended. */
+/**
+ * The file with `name` set to `value`: rewritten where it first stands, or
+ * appended. A later line for the same name is dropped, since Compose reads the
+ * last one and would otherwise ignore the value written here.
+ */
 export function withSetting(envFile: string, name: string, value: string): string {
   const line = `${name}=${value}`;
-  const setting = new RegExp(`^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=.*$`, 'm');
-  if (setting.test(envFile)) return envFile.replace(setting, () => line);
+  // A whole line, up to its \n, as awk reads it: a \r is part of the line.
+  const setting = new RegExp(
+    `(?<![^\\n])[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=[^\\n]*(\\n|$)`,
+    'g',
+  );
+  let found = false;
+  const rewritten = envFile.replace(setting, (_whole, end: string) => {
+    if (found) return '';
+    found = true;
+    return `${line}${end}`;
+  });
+  if (found) return rewritten;
   const separator = envFile === '' || envFile.endsWith('\n') ? '' : '\n';
   return `${envFile}${separator}${line}\n`;
 }

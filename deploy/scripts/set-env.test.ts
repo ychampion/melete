@@ -83,4 +83,9 @@ group('rewriting deploy/.env', () => {
   test('a name is matched whole, not as the end of another', () => {
     expect(withSetting('MY_WEB_PORT=1\n', 'WEB_PORT', '2')).toBe('MY_WEB_PORT=1\nWEB_PORT=2\n');
   });
+
+  test('a later line for the same name is dropped, since Compose would read it instead', () => {
+    expect(withSetting('X=1\nA=2\n  export X=\n# X=3\nX=4', 'X', '5')).toBe('X=5\nA=2\n# X=3\n');
+    expect(withSetting('A=1\nX=\r\nX=\r\n', 'X', '5')).toBe('A=1\nX=5\n');
+  });
 });

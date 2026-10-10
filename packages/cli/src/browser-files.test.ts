@@ -208,6 +208,12 @@ describe('the installer turns the worker on as browser enable does', () => {
         'MELETE_IMAGE_TAG',
         'v1',
       ],
+      // A later empty line, which Compose would read, goes.
+      [
+        `MELETE_SETUP_CODE_HASH=${'a'.repeat(64)}\nB=2\n  export MELETE_SETUP_CODE_HASH=\r\nC=3\nMELETE_SETUP_CODE_HASH=`,
+        'MELETE_SETUP_CODE_HASH',
+        'b'.repeat(64),
+      ],
     ];
     for (const [before, name, value] of cases) {
       const dir = mkdtempSync(join(tmpdir(), 'melete-deploy-'));
