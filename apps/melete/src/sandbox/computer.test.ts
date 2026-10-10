@@ -478,6 +478,7 @@ withDb('the computer a person steers', () => {
           failing ? Promise.reject(new Error('database unavailable')) : controls.state(sandbox),
         change: (sandbox, to, options) => controls.change(sandbox, to, options),
         seen: (sandbox) => controls.seen(sandbox),
+        heldAnywhere: (sandbox) => controls.heldAnywhere(sandbox),
         handBackUnwatched: (afterMs) => controls.handBackUnwatched(afterMs),
         onChange: (listener) => controls.onChange(listener),
       }),

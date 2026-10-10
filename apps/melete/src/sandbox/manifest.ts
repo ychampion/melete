@@ -31,6 +31,7 @@ export type RefusalCode =
   | 'session_exists'
   | 'workspace_exists'
   | 'workspace_busy'
+  | 'computer_full'
   | 'workspace_incompatible'
   | 'workspace_lost'
   | 'workspace_not_live'

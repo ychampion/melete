@@ -188,6 +188,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'learning_evaluation_lease',
   // How long the space's computers were kept running by their processes, by day.
   'sandbox_awake_day',
+  // Which chat or run works on which display of the space's computers.
+  'sandbox_display',
   // The privacy router's sealed vaults, its settings and its audit rows.
   'privacy_vault',
   'privacy_settings',

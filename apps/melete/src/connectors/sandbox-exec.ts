@@ -51,6 +51,7 @@ import {
   sandboxSpecFor,
   sandboxTimeZone,
 } from '../sandbox/connection.ts';
+import { type DisplayRow, ownerJobOf } from '../sandbox/displays.ts';
 import { checkHandOffs, handComputerToPerson, MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
@@ -371,6 +372,23 @@ export const sandboxExecManifest: ConnectorManifest = {
 export const sandboxManifestFor = (provider: SandboxProvider): ConnectorManifest =>
   isDesktopProvider(provider) ? sandboxExecManifest : sandboxTerminalManifest;
 
+/**
+ * Why nothing ran, as the model reads it: a full computer is said in plain
+ * words, and is not tried again by itself.
+ */
+function refusedBefore(error: unknown) {
+  if (error instanceof SandboxRefusal && error.code === 'computer_full')
+    return { outcome: 'failed' as const, reason: error.message, retryable: false };
+  return {
+    outcome: 'failed' as const,
+    reason:
+      error instanceof SandboxRefusal
+        ? `${error.code}: ${error.message}`
+        : (error as Error).message,
+    retryable: true,
+  };
+}
+
 /** How long one computer action may take, the desktop's own wait for a page included. */
 const COMPUTER_BUDGET_MS = 60_000;
 
@@ -508,8 +526,19 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       where attempt_id = ${action.attempt_id} and adapter = ${provider.capabilities.adapter}
         and connection_id = ${options.connectionId} and status = 'ready'
       limit 1`;
-    if (existing) {
-      const row = await sessions.get(existing.id as string);
+    // Or the computer this attempt joined, on a display of its own chat.
+    const [joined] = existing
+      ? []
+      : await sql`select s.* from sandbox_display d
+          join sandbox_session s on s.provider_sandbox_id = d.provider_sandbox_id
+            and s.connection_id = d.connection_id and s.adapter = ${provider.capabilities.adapter}
+            and s.status = 'ready'
+          where d.attempt_id = ${action.attempt_id} and d.connection_id = ${options.connectionId}
+            and d.ended_at is null
+          limit 1`;
+    const found = existing ?? joined;
+    if (found) {
+      const row = await sessions.get(found.id as string);
       if (row) {
         // A session opened by an earlier command, possibly in another process.
         await provider.connect(sessionHandle(row), signal);
@@ -551,8 +580,17 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     if (facts.agentId && options.config.persistence !== 'ephemeral') {
       const agentId = facts.agentId;
       const persistence = options.config.persistence;
+      // A computer with displays is shared: each chat or run works on its own.
+      const share = isDesktopProvider(provider)
+        ? { ownerJobId: await ownerJobOf(sql, ctx.job_id) }
+        : undefined;
       const row = await waitForWorkspace(ctx, agentId, signal, () =>
-        sessions.openWorkspace({ ...opening, agentId, persistence }, provider, specFor, signal),
+        sessions.openWorkspace(
+          { ...opening, agentId, persistence, ...(share ? { share } : {}) },
+          provider,
+          specFor,
+          signal,
+        ),
       );
       await noteRecreated(ctx, row);
       return { row, reused: false };
@@ -798,20 +836,31 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         retryable: false,
       };
     let session: SessionRow;
+    let display: DisplayRow | null = null;
     try {
       const opened = await sessionFor(action, ctx, signal);
       const renewed = await sessions.renew(opened.row.id);
       if (!renewed) throw new Error('the sandbox session ended before the action was sent');
       session = renewed;
+      // A workspace's computer is shared, one display per chat or run; a
+      // computer of one attempt alone keeps its single screen.
+      if (session.agentId) {
+        const owner = await ownerJobOf(sql, ctx.job_id);
+        const current = session;
+        display = await sql.begin((tx) =>
+          sessions.displays.acquire(tx, {
+            spaceId: current.spaceId,
+            connectionId: current.connectionId,
+            adapter: current.adapter,
+            providerSandboxId: current.providerSandboxId,
+            ownerJobId: owner,
+            jobId: ctx.job_id,
+            attemptId: action.attempt_id,
+          }),
+        );
+      }
     } catch (error) {
-      return {
-        outcome: 'failed' as const,
-        reason:
-          error instanceof SandboxRefusal
-            ? `${error.code}: ${error.message}`
-            : (error as Error).message,
-        retryable: true,
-      };
+      return refusedBefore(error);
     }
     try {
       const detail = await runComputerAction({
@@ -822,6 +871,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         provider,
         controls: sessions.controls,
         signal,
+        display: display ? { number: display.display, id: display.id } : null,
         ...(options.challengeWaitMs !== undefined
           ? { challengeWaitMs: options.challengeWaitMs }
           : {}),
@@ -842,7 +892,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           : await handComputerToPerson(sql, {
               spaceId: ctx.space_id,
               jobId: ctx.job_id,
-              sessionId: session.id,
+              // The person takes over this chat's display, not the computer.
+              sessionId: display?.id ?? session.id,
               attemptId: action.attempt_id,
               service:
                 serviceOfUrl(typeof screen.url === 'string' ? screen.url : '') ?? 'this site',
@@ -1025,14 +1076,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       } catch (error) {
         // Nothing was dispatched: no sandbox took a command, so this is a
         // plain failure and the same action may be sent again.
-        return {
-          outcome: 'failed',
-          reason:
-            error instanceof SandboxRefusal
-              ? `${error.code}: ${error.message}`
-              : (error as Error).message,
-          retryable: true,
-        };
+        return refusedBefore(error);
       }
       const forget = settled.get(session.providerSandboxId) ?? [];
       settled.delete(session.providerSandboxId);

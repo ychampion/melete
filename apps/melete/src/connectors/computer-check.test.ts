@@ -178,8 +178,10 @@ withDb('a check that a person is there, on the computer', () => {
       reason: 'captcha',
       service: 'shop.example',
       done: ['Opened demo.shop.example'],
-      take_over: { surface: 'computer', session_id: detail.session_id },
+      // The person takes over the chat's own display of the computer.
+      take_over: { surface: 'computer', session_id: detail.computer_id },
     });
+    expect(String(detail.computer_id)).toStartWith('sbd_');
     expect(attempt?.outcome).toBe('fenced');
   }, 60_000);
 

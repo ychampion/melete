@@ -17,6 +17,11 @@
  * the scheduler that already owns retries. A workspace nobody resumes within
  * the retention period is destroyed by the sweep, snapshot included.
  *
+ * A computer with displays (`displays.ts`) is shared instead: another chat's
+ * attempt joins it on a display of its own, the row stays with the attempt
+ * that opened it, and when that attempt ends the row passes to a joined one
+ * still running. It is suspended only once no chat is using it.
+ *
  * Background processes change one thing. A workspace whose processes still
  * run when its attempt ends is not suspended: the row stays `ready` with no
  * attempt and `held_by = 'processes'`, and the sweep keeps its lease while
@@ -39,6 +44,7 @@ import {
   notHeldByPerson,
   PostgresComputerControls,
 } from './computer-control.ts';
+import { type DisplayRow, displayInUse, passToJoiners, SandboxDisplays } from './displays.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
 import type { SessionHolder, SessionStatus } from './schema.ts';
 import {
@@ -106,6 +112,12 @@ export type WorkspacePersistence = Exclude<SessionPersistence, 'ephemeral'>;
 export type OpenWorkspace = Omit<OpenSession, 'agentId' | 'persistence'> & {
   agentId: string;
   persistence: WorkspacePersistence;
+  /**
+   * Set where the computer has displays (`displays.ts`): an attempt arriving
+   * while another chat's attempt holds the computer joins it on a display of
+   * its own chat or run, rather than waiting for it.
+   */
+  share?: { ownerJobId: string };
 };
 
 export type WorkspaceSession = SessionRow & {
@@ -115,6 +127,8 @@ export type WorkspaceSession = SessionRow & {
    * with now, keeping its files: the image it ran before, or null when unknown.
    */
   recreatedFrom?: string | null;
+  /** Set when this attempt joined a computer another attempt holds, with its display there. */
+  joined?: DisplayRow;
 };
 
 export type SessionOptions = {
@@ -125,6 +139,8 @@ export type SessionOptions = {
   ids?: () => string;
   /** Who is driving each computer; the process's own table unless a test brings one. */
   controls?: ComputerControls;
+  /** How many displays one computer runs at once (`MELETE_SANDBOX_MAX_DISPLAYS`). */
+  maxDisplays?: number;
 };
 
 /**
@@ -220,6 +236,9 @@ const BUSY =
 const PERSON_BUSY =
   'a person has taken over this agent’s computer; it is theirs until they hand it back, and this attempt is refused';
 
+const IN_USE =
+  'another conversation is using this computer on a display of its own, so it is kept running';
+
 const DAY_MS = 86_400_000;
 
 /** Seconds between two instants, split at each UTC midnight, keyed by day. */
@@ -293,7 +312,9 @@ export async function markSessionLost(
       seconds_charged = coalesce(seconds_charged, extract(epoch from now() - opened_at)),
       last_error = ${reason}
     where id = ${id} and status in ${sql(statuses)}
-    returning id`;
+    returning id, provider_sandbox_id`;
+  for (const row of rows)
+    await SandboxDisplays.endFor(sql, String(row.provider_sandbox_id), 'its computer was lost');
   return rows.length > 0;
 }
 
@@ -311,6 +332,8 @@ export class SandboxSessions {
   private readonly ids: () => string;
   /** Who drives each computer, read from the database every time it matters. */
   readonly controls: ComputerControls;
+  /** The displays each computer runs, one per chat or run. */
+  readonly displays: SandboxDisplays;
 
   /** How long a lease runs, in seconds. */
   get leaseSeconds(): number {
@@ -330,15 +353,19 @@ export class SandboxSessions {
       throw new Error('workspace retention needs a positive whole number of seconds');
     this.ids = options.ids ?? (() => recordId('sbx'));
     this.controls = options.controls ?? new PostgresComputerControls(sql);
+    this.displays = new SandboxDisplays(
+      sql,
+      options.maxDisplays === undefined ? {} : { maxDisplays: options.maxDisplays },
+    );
   }
 
   /**
-   * Whether a person has taken over this computer. Taking over ends the
-   * agent's attempt, and the computer is the person's until they hand it
-   * back: it is not settled with that attempt, nor handed to another one.
+   * Whether a person has taken over any display of this computer. Taking over
+   * ends that display's attempt, and the display is the person's until they
+   * hand it back: the computer is not settled under them.
    */
   async heldByPerson(providerSandboxId: string): Promise<boolean> {
-    return (await this.controls.state(providerSandboxId)).control === 'human';
+    return this.controls.heldAnywhere(providerSandboxId);
   }
 
   async get(id: string): Promise<SessionRow | null> {
@@ -552,6 +579,7 @@ export class SandboxSessions {
     const { id, spec, cap } = this.prepare(input, provider, specFor, input.persistence);
     let suspended: SessionRow | null = null;
     let adopted: SessionRow | null = null;
+    let joined: { row: SessionRow; display: DisplayRow } | null = null;
     /** The control epoch the computer was handed to this attempt at. */
     let claimed: number | null = null;
     try {
@@ -571,8 +599,45 @@ export class SandboxSessions {
         const held = live.find(
           (row) => row.status === 'ready' && row.heldBy === 'processes' && row.attemptId === null,
         );
-        if (live.some((row) => row.status !== 'paused' && row !== held))
-          throw new SandboxRefusal('workspace_busy', BUSY);
+        const busy = live.filter((row) => row.status !== 'paused' && row !== held);
+        if (busy.length) {
+          // Another chat's attempt holds the computer: with displays, this
+          // one joins it on its own display; without, it waits its turn.
+          const shared = busy.length === 1 ? busy[0] : undefined;
+          if (
+            !input.share ||
+            !shared ||
+            shared.status !== 'ready' ||
+            shared.heldBy === 'processes' ||
+            shared.attemptId === null ||
+            shared.attemptId === input.attemptId ||
+            shared.connectionId !== input.connectionId ||
+            shared.adapter !== provider.capabilities.adapter ||
+            shared.persistence !== input.persistence ||
+            egressKey(shared.egressPolicy) !== egressKey(spec.egress)
+          )
+            throw new SandboxRefusal('workspace_busy', BUSY);
+          // Only while a chat is still on it: once the attempt holding it has
+          // ended with no other on a display, the computer is being settled
+          // and may be suspending, so this attempt waits and then resumes it.
+          const [kept] = await tx`select 1 from attempt a
+            where a.ended_at is null and (a.lease_expires_at is null or a.lease_expires_at > now())
+              and (a.id = ${shared.attemptId} or a.id in (select d.attempt_id from sandbox_display d
+                where d.provider_sandbox_id = ${shared.providerSandboxId} and d.ended_at is null))
+            limit 1`;
+          if (!kept) throw new SandboxRefusal('workspace_busy', BUSY);
+          const display = await this.displays.acquire(tx, {
+            spaceId: input.spaceId,
+            connectionId: input.connectionId,
+            adapter: shared.adapter,
+            providerSandboxId: shared.providerSandboxId,
+            ownerJobId: input.share.ownerJobId,
+            jobId: input.jobId,
+            attemptId: input.attemptId,
+          });
+          joined = { row: shared, display };
+          return;
+        }
         const kept = held ?? live[0] ?? null;
         if (kept) {
           if (
@@ -595,7 +660,9 @@ export class SandboxSessions {
           // back: no attempt is given it meanwhile. Handing it over moves the
           // control epoch in this transaction, so a takeover read before it,
           // on any instance, fails rather than parking the job it no longer runs.
-          if ((await claimForAttempt(tx, held.providerSandboxId)) === null)
+          // With displays, a person holds one display, which stays theirs,
+          // and this attempt works on its own.
+          if ((await claimForAttempt(tx, held.providerSandboxId)) === null && !input.share)
             throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Running, with its processes in it: taken over as it is, on a new
           // row, so nothing is paused or resumed under them.
@@ -624,6 +691,13 @@ export class SandboxSessions {
       });
     } catch (error) {
       throw this.refusalFor(error);
+    }
+    const joining = joined as { row: SessionRow; display: DisplayRow } | null;
+    if (joining) {
+      // A computer whose attempt has gone is this attempt's to hold from now.
+      await passToJoiners(this.sql, this.options.leaseSeconds, { sessionId: joining.row.id });
+      const row = (await this.get(joining.row.id)) ?? joining.row;
+      return { ...row, resumed: true, joined: joining.display };
     }
     const taken = adopted as SessionRow | null;
     if (taken) return { ...taken, resumed: true };
@@ -827,6 +901,12 @@ export class SandboxSessions {
         and not exists (select 1 from sandbox_process p
           where p.space_id = ${from.spaceId} and p.agent_id = ${from.agentId}
             and p.connection_id = ${from.connectionId} and p.state in ('starting', 'running'))
+        and not exists (select 1 from sandbox_control c
+          where c.control = 'human'
+            and starts_with(c.provider_sandbox_id, ${`${from.providerSandboxId}#`}))
+        and not exists (select 1 from sandbox_display d join attempt a on a.id = d.attempt_id
+          where d.provider_sandbox_id = ${from.providerSandboxId} and d.ended_at is null
+            and a.ended_at is null and (a.lease_expires_at is null or a.lease_expires_at > now()))
       as quiet`;
     return row?.quiet === true;
   }
@@ -980,16 +1060,28 @@ export class SandboxSessions {
     await this.sql.begin((tx) => this.meterHeld(tx, id));
     // The lease is renewed first, so the sweep does not take the row meanwhile,
     // and the processes let go in the same statement: a row being suspended
-    // is busy, never handed to an attempt while its sandbox pauses.
-    const [claimed] = await this.sql`update sandbox_session
-      set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
-        held_by = case when held_by = 'processes' then null else held_by end
-      where id = ${id} and status = 'ready' and agent_id is not null
-        and persistence in ('pause', 'snapshot') and ${notHeldByPerson(this.sql)}
-      returning *`;
+    // is busy, never handed to an attempt while its sandbox pauses. Under the
+    // workspace lock an opening takes, so a display another chat is taking on
+    // the computer meanwhile is seen here and the computer is kept for it.
+    const [claimed] = await this.sql.begin(async (tx) => {
+      const [scope] = await tx`select space_id, agent_id from sandbox_session where id = ${id}`;
+      if (scope?.agent_id)
+        await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${String(scope.space_id)}:${String(scope.agent_id)}`}))`;
+      return await tx`update sandbox_session
+        set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
+          held_by = case when held_by = 'processes' then null else held_by end
+        where id = ${id} and status = 'ready' and agent_id is not null
+          and persistence in ('pause', 'snapshot') and ${notHeldByPerson(tx)}
+          and not ${displayInUse(tx)}
+        returning *`;
+    });
     if (!claimed) {
-      if (await this.heldByPerson((await this.get(id))?.providerSandboxId ?? ''))
+      const current = await this.get(id);
+      if (await this.heldByPerson(current?.providerSandboxId ?? ''))
         throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
+      const [using] = await this.sql`select ${displayInUse(this.sql)} as used
+        from sandbox_session where id = ${id} and status = 'ready'`;
+      if (using?.used === true) throw new SandboxRefusal('workspace_busy', IN_USE);
       throw new SandboxRefusal('workspace_not_live', 'only a ready workspace can be suspended');
     }
     const row = toRow(claimed);
@@ -1162,6 +1254,7 @@ export class SandboxSessions {
       where id = ${row.id} and status = 'closing'
       returning *`;
     if (!closed) return row;
+    await SandboxDisplays.endFor(this.sql, row.providerSandboxId, 'its computer was closed');
     // A snapshot workspace's snapshot was deleted above, so the row, closed
     // now, keeps no reference to it: nothing is left to ask a provider about.
     if (row.resumeRef && row.persistence === 'snapshot') {
@@ -1256,6 +1349,8 @@ export class SandboxSessions {
    * attempt on purpose. With `scope`, only one agent's workspace in one space.
    */
   async expireOrphaned(scope?: { spaceId: string; agentId: string }): Promise<string[]> {
+    // A computer another chat has joined goes on with that chat's attempt.
+    await passToJoiners(this.sql, this.options.leaseSeconds);
     const rows = await this.sql`update sandbox_session
       set lease_expires_at = now() - interval '1 second',
         last_error = coalesce(last_error, 'the attempt that held this session ended')

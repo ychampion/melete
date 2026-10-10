@@ -806,6 +806,12 @@ const variables = z.object({
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
   ),
+  /**
+   * How many displays one agent's computer runs at once: each chat and each
+   * background run works on its own, with its own browser. A chat past this
+   * is told the computer is full.
+   */
+  MELETE_SANDBOX_MAX_DISPLAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(64).default(6)),
   /** How many background processes one agent's computer may run at once. */
   MELETE_PROCESS_MAX_PER_COMPUTER: unsetWhenBlank(
     z.coerce.number().int().positive().default(PROCESS_LIMITS.max_per_computer),
