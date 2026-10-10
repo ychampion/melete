@@ -29,10 +29,12 @@ describe('melete check', () => {
     const context = { ...base, machine: { ...base.machine, platform: process.platform } };
     expect(runCheck(context, true)).toBe(0);
     const value = reportSchema.parse(JSON.parse(base.printed()));
-    // Only the browser worker, which is turned on once the account exists, waits.
+    // What an installation for other people needs is a warning on one not marked
+    // hosted; the browser worker is turned on once the account exists.
     expect(
       value.results.filter((result) => result.level !== 'ok').map((result) => result.id),
-    ).toEqual(['browser.worker']);
+    ).toEqual(['hosted.public_url', 'hosted.alerts', 'hosted.operator_token', 'browser.worker']);
+    expect(value.results.every((result) => result.level !== 'fail')).toBe(true);
     expect(value.results.map((result) => result.id)).toEqual(
       expect.arrayContaining([
         'deploy.contract',

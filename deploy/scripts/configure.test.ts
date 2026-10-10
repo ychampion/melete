@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../../apps/melete/src/env.ts';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
 import {
+  addressSettings,
   ConfigureRefusal,
   configureOptions,
   createdMessage,
@@ -36,6 +37,43 @@ describe('the configuration generator options', () => {
       [['--tailscale', '--tailscale-host', 'desk'], '--tailscale-host'],
     ] as const)
       expect(() => configureOptions(args)).toThrow(`Unknown option ${unknown}.`);
+  });
+});
+
+describe('the public address and a hosted installation', () => {
+  test('--public-url writes the public address and the web origin together', () => {
+    const options = configureOptions(['--public-url', 'https://Assistant.example.net/']);
+    expect(options.publicUrl).toBe('https://assistant.example.net');
+    expect(addressSettings(options)).toEqual({
+      MELETE_PUBLIC_URL: 'https://assistant.example.net',
+      MELETE_WEB_ORIGIN: 'https://assistant.example.net',
+    });
+  });
+
+  test('--hosted needs an https address, and writes an operator token', () => {
+    const options = configureOptions([
+      '--connect-in-app',
+      '--public-url',
+      'https://assistant.example.net',
+      '--hosted',
+    ]);
+    expect(options.hosted).toBe(true);
+    const settings = addressSettings(options);
+    expect(settings.MELETE_OPERATOR_TOKEN).toMatch(/^[0-9a-f]{64}$/);
+    expect(addressSettings(options).MELETE_OPERATOR_TOKEN).not.toBe(settings.MELETE_OPERATOR_TOKEN);
+    expect(() => configureOptions(['--hosted'])).toThrow('--hosted needs --public-url');
+    expect(() =>
+      configureOptions(['--public-url', 'http://assistant.example.net', '--hosted']),
+    ).toThrow('https://');
+  });
+
+  test.each([
+    ['assistant.example.net'],
+    ['https://assistant.example.net/app'],
+    ['https://user:pass@assistant.example.net'],
+    ['ftp://assistant.example.net'],
+  ])('--public-url %s is refused', (value) => {
+    expect(() => configureOptions(['--public-url', value])).toThrow('--public-url');
   });
 });
 

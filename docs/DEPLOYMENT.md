@@ -217,19 +217,19 @@ bun run melete history
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). |
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
-| `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, and the Compose boundary checks. |
+| `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
 | `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
 | `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| bash`. |
-| `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor. |
-| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. |
-| `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
+| `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor, and the `hosted.*` rules `check` reports. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
+| `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. `--attempts` lists the containers attempts ran in, and `--computers` the agents' computers, found by this installation's labels; with an attempt id or a container name it shows that one's logs, with the same options. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
 | `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
 | `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
-| `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
+| `upgrade <version>` | For an installation that builds its images: takes the release's own `deploy/scripts/upgrade.ts` out of its tag with `git archive` (fetching the tag first if this clone lacks it) and runs that copy ([Upgrading between releases](UPGRADING.md)) with every overlay file and profile in the deploy file: the browser and tailnet files, the sandbox profile, an external database and an S3 blob store. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
 | `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
 
@@ -309,6 +309,9 @@ complete file, and `init` writes each one out:
 - `database.external: true` adds `deploy/docker-compose.external-db.yml` to
   every Compose command: the service uses the server `DATABASE_URL` names, and
   the bundled postgres stays off. `check` requires the URL to ask for TLS.
+- `hosted: true` marks an installation that other people reach over the
+  internet; see [Hosting for other people](#hosting-for-other-people). Left
+  out, it is false.
 - `cells.hosts` describes container hosts on other machines; `check` fails
   while the checkout has no `deploy/docker-compose.cells.yml` to run them with.
 - `remote.path` is the checkout on the machine `bun run melete remote` reaches,
@@ -316,6 +319,37 @@ complete file, and `init` writes each one out:
   command there, `["bun", "run", "melete"]` by default.
 - A contract number the command does not know, or a key it does not know, is
   refused rather than guessed at.
+
+## Hosting for other people
+
+An installation that other people sign in to needs four things that a private
+one can do without: a public `https://` address (`MELETE_PUBLIC_URL`) for
+sign-in and reset links, invites, Google, Microsoft and MCP sign-ins and
+texting; the web origin that matches it (`MELETE_WEB_ORIGIN`), or the web app
+refuses sign-in there; an alert target (`MELETE_ALERT_WEBHOOK_URL`, or
+`MELETE_ALERT_EMAIL_TO` with `MELETE_ALERT_SMTP_URL`, see [Alerts](#alerts));
+and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`.
+
+Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
+`check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
+`hosted.alerts` and `hosted.operator_token`, until each is set. Without the
+mark the same rules only warn. A new installation gets all of it but the alert
+target in one step:
+
+```bash
+bun run melete init --connect-in-app --public-url https://assistant.example.net --hosted
+bun run melete set MELETE_ALERT_WEBHOOK_URL=https://hooks.example.net/melete
+```
+
+For an installation that is already running, set the two addresses together,
+put `"hosted": true` in the deploy file, and give it a token:
+
+```bash
+bun run melete set MELETE_PUBLIC_URL=https://assistant.example.net MELETE_WEB_ORIGIN=https://assistant.example.net
+read -rs MELETE_OPERATOR_TOKEN && export MELETE_OPERATOR_TOKEN   # 24 or more random characters
+bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOKEN
+bun run melete check
+```
 
 ## On a cloud VM
 
@@ -1125,7 +1159,7 @@ page. When the owner's own mailbox is connected, the page can mail a reset link
 install prints a link on the host:
 
 ```bash
-docker compose exec melete bun run reset-password you@example.com
+docker compose -f deploy/docker-compose.yml exec melete bun run reset-password you@example.com
 # Outside Docker, from the checkout, with DATABASE_URL set:
 bun run reset-password you@example.com
 ```
@@ -1896,6 +1930,10 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 
 - the database does not answer;
 - the runtime that runs attempts does not answer within five seconds;
+- melete-cells, or the container engine behind it, does not answer, so no
+  attempt or agent's computer can start (`cells`);
+- the disk runs short: less than `MELETE_ALERT_DISK_MIN_FREE_MB` (default
+  `2048`) MB free under the spaces, artifacts or work directory (`disk`);
 - the job queue is stuck: work due more than ten minutes ago has not started;
 - the error rate spikes: over the last fifteen minutes, at least five attempts
   or model calls and half or more of them failed, were lost, or were refused by
@@ -1913,6 +1951,7 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
 | `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465` |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
+| `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
 | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` | Alert when the last hour's spending is above this many times the usual hour (off unless set) |
 | `MELETE_ALERT_SPEND_PERSON_PERCENT` | Alert when one person is above this percent of today's spending (off unless set) |
@@ -1934,7 +1973,9 @@ These checks run inside the service, so they cannot report the service itself
 being down, the host losing power or the network failing. Add an external
 uptime check as well: point a monitor such as UptimeRobot, Better Stack or
 Healthchecks.io at `https://<your host>/api/health` every minute, alerting
-when it fails twice in a row or when the body's `database` is not `ok`. With
+when it fails twice in a row. `/api/health` answers `503`, with the same body
+and `database` `unreachable`, while the database is down, so a monitor that
+only reads the status code sees that too. With
 the operator token, a monitor that can send a header can watch
 `/api/health/detail` instead and alert on any non-200 answer.
 
@@ -2176,6 +2217,26 @@ with `bun run melete deploy` instead ([Update](#update)). The service migrates i
 procedure is a consistent backup, a checkout, a rebuild and a wait for health;
 the backup below is its first half.
 
+## Memory limits
+
+Each long-running service has a memory cap, so one runaway process or query
+cannot take the whole machine, the agents' computers and the database with it.
+The defaults fit a small virtual machine; raise them in `deploy/.env` on a
+larger one, then apply the change with `bun run melete deploy` or by recreating
+the service (`up -d --force-recreate <service>`).
+
+| Setting | Service | Default |
+| --- | --- | --- |
+| `MELETE_MEMORY_LIMIT` | `melete` | `2g` |
+| `POSTGRES_MEMORY_LIMIT` | `postgres` | `1g` |
+| `WEB_MEMORY_LIMIT` | `web` | `256m` |
+| `MELETE_CELLS_MEMORY_LIMIT` | `melete-cells` | `512m` |
+
+The `runtime` service keeps its own `2g`; attempt containers and agents'
+computers are started with limits of their own. `bun run compose:check`
+refuses a long-running service without a cap. CPU is left unlimited: a fixed
+CPU count is refused outright by a machine with fewer cores.
+
 ## Logs
 
 Docker's default `json-file` log has no size limit. Every Compose service, and
@@ -2185,7 +2246,14 @@ log on the host. Read them with Compose:
 
 ```bash
 docker compose -f deploy/docker-compose.yml logs --since 1h melete
+bun run melete logs melete --since 1h      # the same, with the deploy file's overlays
+bun run melete logs --attempts             # the containers attempts ran in
+bun run melete logs --attempts att_01... --tail 200
+bun run melete logs --computers            # the agents' computers
 ```
+
+An attempt's container is found by its attempt id, a computer's by its name.
+A container that was removed when its work ended has no logs left.
 
 The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is

@@ -15629,6 +15629,7 @@
           "health"
         ],
         "summary": "Liveness and dependency check",
+        "description": "Answers 503 with the same body while the database is unreachable, so an uptime monitor or a load balancer sees the outage without reading the body.",
         "responses": {
           "200": {
             "description": "Service is up",
@@ -15818,6 +15819,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The database is unreachable; the body is the same report, with status degraded"
           }
         }
       }

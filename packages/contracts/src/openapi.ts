@@ -2377,7 +2377,16 @@ export function buildOpenApiDocument() {
           get: {
             tags: ['health'],
             summary: 'Liveness and dependency check',
-            responses: { '200': jsonResponse('Service is up', healthResponse) },
+            description:
+              'Answers 503 with the same body while the database is unreachable, so an uptime ' +
+              'monitor or a load balancer sees the outage without reading the body.',
+            responses: {
+              '200': jsonResponse('Service is up', healthResponse),
+              '503': {
+                description:
+                  'The database is unreachable; the body is the same report, with status degraded',
+              },
+            },
           },
         },
 

@@ -34,6 +34,50 @@ describe('melete logs', () => {
     expect(await runLogs(context, ['browser'])).toBe(0);
     expect(context.attached[0]?.join(' ')).toMatch(/docker-compose\.browser\.yml logs browser$/);
   });
+
+  const ATTEMPT = 'att_01m4k68ytkpakvwpf4ta2hgnyg';
+  const attempts = () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_SANDBOX_PROJECT: 'melete-1a2b3c4d' });
+    return testContext(deployDir, [
+      [
+        'docker ps --all --filter label=com.melete.project=melete --filter label=com.melete.attempt',
+        { code: 0, stdout: `melete-${ATTEMPT}\tExited (0) 2 minutes ago\t${ATTEMPT}\n` },
+      ],
+      [
+        'docker ps --all --filter label=com.melete.sandbox --filter label=melete.project=melete-1a2b3c4d',
+        { code: 0, stdout: 'melete-sbx-desk\tUp 3 hours\tdesk\n' },
+      ],
+    ]);
+  };
+
+  test("--attempts lists this installation's attempt containers, found by its labels", async () => {
+    const context = attempts();
+    expect(await runLogs(context, ['--attempts'])).toBe(0);
+    expect(context.printed()).toContain(`melete-${ATTEMPT}\tExited (0) 2 minutes ago`);
+    expect(context.attached).toEqual([]);
+  });
+
+  test('an attempt id shows that container with the same options', async () => {
+    const context = attempts();
+    expect(await runLogs(context, ['--attempts', ATTEMPT, '--tail', '50', '-t'])).toBe(0);
+    expect(context.attached).toEqual([
+      ['docker', 'logs', '--tail', '50', '--timestamps', `melete-${ATTEMPT}`],
+    ]);
+  });
+
+  test("--computers finds the agents' computers by the installation's sandbox label", async () => {
+    const context = attempts();
+    expect(await runLogs(context, ['--computers', 'desk', '-f'])).toBe(0);
+    expect(context.attached).toEqual([['docker', 'logs', '--follow', 'melete-sbx-desk']]);
+  });
+
+  test('a name that is not one of them is refused, and so is asking for both', async () => {
+    const context = attempts();
+    expect(await runLogs(context, ['--attempts', 'att_unknown'])).toBe(2);
+    expect(context.errors()).toContain('No attempt container of this installation');
+    expect(() => logsArguments(['--attempts', '--computers'])).toThrow(LogsRefusal);
+  });
 });
 
 describe('the melete command', () => {

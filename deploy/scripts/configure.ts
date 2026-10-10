@@ -5,6 +5,11 @@
  *     [--tailscale [--tailscale-hostname name]]
  *   bun run deploy/scripts/configure.ts --fake [--tailscale ...]
  *   bun run deploy/scripts/configure.ts --connect-in-app [--provider name] [--model id]
+ *   ... [--public-url https://your.domain [--hosted]]
+ *
+ * `--public-url` writes the address people open as both MELETE_PUBLIC_URL and
+ * MELETE_WEB_ORIGIN. `--hosted`, for an installation other people use, also
+ * writes an operator token; `melete init` then marks the installation hosted.
  *
  * The default is a production configuration: a real model provider, with its
  * key read from this command's environment (FIREWORKS_API_KEY for the default
@@ -60,7 +65,34 @@ import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 
 export const CONFIGURE_USAGE =
-  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--connect-in-app] [--tailscale [--tailscale-hostname name]], or --fake for the demonstration';
+  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--connect-in-app] [--tailscale [--tailscale-hostname name]] [--public-url https://your.domain [--hosted]], or --fake for the demonstration';
+
+/**
+ * `--public-url`'s value as the origin both settings take: an http(s) address
+ * with no account, path, query or fragment. `--hosted` needs it to be https.
+ */
+export function publicOrigin(value: string, hosted: boolean): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`--public-url ${value} is not a web address. ${CONFIGURE_USAGE}`);
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  )
+    throw new Error(
+      `--public-url takes the address people open, such as https://assistant.example.net, with no path. ${CONFIGURE_USAGE}`,
+    );
+  if (hosted && url.protocol !== 'https:')
+    throw new Error(`--hosted needs an https:// --public-url. ${CONFIGURE_USAGE}`);
+  return url.origin;
+}
 
 /** Printed after a `--connect-in-app` run, in place of the warning about an empty key. */
 export const CONNECT_IN_APP_NOTE =
@@ -77,28 +109,44 @@ export function configureOptions(args: readonly string[]): {
   provider?: string;
   model?: string;
   inApp?: true;
+  /** The origin `--public-url` names, written as MELETE_PUBLIC_URL and MELETE_WEB_ORIGIN. */
+  publicUrl?: string;
+  hosted?: true;
 } {
   let provider: string | undefined;
   let model: string | undefined;
+  let publicUrl: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--tailscale-hostname') index += 1;
-    else if (argument === '--provider' || argument === '--model') {
+    else if (argument === '--provider' || argument === '--model' || argument === '--public-url') {
       const value = args[index + 1];
       if (!value || value.startsWith('--'))
         throw new Error(`${argument} needs a value. ${CONFIGURE_USAGE}`);
       if (argument === '--provider') provider = value;
-      else model = value;
+      else if (argument === '--model') model = value;
+      else publicUrl = value;
       index += 1;
     } else if (
       argument !== '--fake' &&
       argument !== '--tailscale' &&
-      argument !== '--connect-in-app'
+      argument !== '--connect-in-app' &&
+      argument !== '--hosted'
     )
       throw new Error(`Unknown option ${argument}. ${CONFIGURE_USAGE}`);
   }
   const fake = args.includes('--fake');
   const inApp = args.includes('--connect-in-app');
+  const hosted = args.includes('--hosted');
+  if (hosted && publicUrl === undefined)
+    throw new Error(
+      `--hosted needs --public-url, the https address people will open. ${CONFIGURE_USAGE}`,
+    );
+  if (hosted && fake)
+    throw new Error(
+      `--fake is the demonstration; an installation for other people needs a real model. ${CONFIGURE_USAGE}`,
+    );
+  const origin = publicUrl === undefined ? undefined : publicOrigin(publicUrl, hosted);
   if (fake && inApp)
     throw new Error(
       `--fake needs no model key, so --connect-in-app has nothing to do beside it. ${CONFIGURE_USAGE}`,
@@ -118,6 +166,25 @@ export function configureOptions(args: readonly string[]): {
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
     ...(inApp ? { inApp: true as const } : {}),
+    ...(origin ? { publicUrl: origin } : {}),
+    ...(hosted ? { hosted: true as const } : {}),
+  };
+}
+
+/**
+ * The address settings: the public address and the web origin are the same
+ * origin, so they are written together. A hosted installation also gets its
+ * operator token, which opens /health/detail; it is never printed.
+ */
+export function addressSettings(options: {
+  publicUrl?: string;
+  hosted?: boolean;
+}): Record<string, string> {
+  return {
+    ...(options.publicUrl
+      ? { MELETE_PUBLIC_URL: options.publicUrl, MELETE_WEB_ORIGIN: options.publicUrl }
+      : {}),
+    ...(options.hosted ? { MELETE_OPERATOR_TOKEN: randomBytes(32).toString('hex') } : {}),
   };
 }
 
@@ -338,6 +405,7 @@ async function configure(root: string) {
     DOCKER_GID: String(dockerGid),
     ...provider,
     ...voice,
+    ...addressSettings(options),
     // TS_AUTHKEY stays as the template leaves it, which is empty: it is issued by
     // the Tailscale admin console and nothing here can invent one.
     ...(nodeName === null ? {} : { TS_HOSTNAME: nodeName }),
@@ -358,6 +426,14 @@ async function configure(root: string) {
   );
   if (nodeName !== null)
     for (const note of tailscaleNotes(nodeName)) process.stdout.write(`${note}\n`);
+  if (options.publicUrl)
+    process.stdout.write(
+      `People open ${options.publicUrl}; point your HTTPS proxy at the web service (docs/DEPLOYMENT.md).\n`,
+    );
+  if (options.hosted)
+    process.stdout.write(
+      'An operator token was written. Name where alerts go before people sign up: bun run melete set MELETE_ALERT_WEBHOOK_URL=https://... (docs/DEPLOYMENT.md, "Alerts").\n',
+    );
   // A real provider is selected with its key still empty. Say so now, not at the first job,
   // unless the key is meant to be pasted into the app.
   if (options.inApp) process.stdout.write(`${CONNECT_IN_APP_NOTE}\n`);
