@@ -322,7 +322,8 @@ withDb('a display per chat on the agent computer', () => {
       String(b.computer_id),
     ]);
     expect(s.ended.map((each) => each.id)).toEqual([String(a.computer_id), String(b.computer_id)]);
-    const [left] = await s.sql`select ended_at from sandbox_display where id = ${c.computer_id}`;
+    const [left] = await s.sql`select ended_at from sandbox_display
+      where id = ${String(c.computer_id)}`;
     expect(left?.ended_at).toBeNull();
   }, 60_000);
 
