@@ -16,6 +16,11 @@ x-logging: &bounded-logs
     max-size: "10m"
     max-file: "5"
 
+# Health checks: every second while a service starts, so `up --wait` and the
+# start order stay quick, then every 30 seconds. Each check starts a process in
+# the container, and an installation that is doing nothing should cost nearly
+# nothing. Three failed checks in a row mark a service unhealthy.
+
 networks:
   edge:
     driver: bridge
@@ -67,9 +72,11 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-melete} -d ${POSTGRES_DB:-melete}"]
-      interval: 2s
+      interval: 30s
       timeout: 5s
-      retries: 30
+      start_period: 120s
+      start_interval: 1s
+      retries: 3
 
   # Runs before the service on every start, with the operator's DATABASE_URL:
   # creates the database roles, hands the schema to melete_migrate, runs every
@@ -130,10 +137,11 @@ services:
     command: ["bun", "run", "apps/melete/src/cells/main.ts"]
     healthcheck:
       test: ["CMD", "bun", "-e", "process.exit((await fetch('http://127.0.0.1:8791/health')).ok?0:1)"]
-      interval: 2s
+      interval: 30s
       timeout: 5s
-      start_period: 30s
-      retries: 30
+      start_period: 120s
+      start_interval: 1s
+      retries: 3
 
   melete:
     image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
@@ -412,10 +420,11 @@ services:
       - "127.0.0.1:${MELETE_PORT:-3100}:8787"
     healthcheck:
       test: ["CMD", "bun", "-e", "const r=await fetch('http://melete-api:8787/health');const b=await r.json();process.exit(r.ok&&b.database==='ok'?0:1)"]
-      interval: 2s
+      interval: 30s
       timeout: 5s
-      start_period: 30s
-      retries: 30
+      start_period: 300s
+      start_interval: 1s
+      retries: 3
     stop_grace_period: 40s
 
   # Builds the runtime image (or holds the pulled one) before the service can
@@ -495,10 +504,11 @@ services:
       - runtime-home:/var/lib/hermes
     healthcheck:
       test: ["CMD", "python", "/opt/melete-runtime/healthcheck.py"]
-      interval: 2s
+      interval: 30s
       timeout: 5s
-      start_period: 60s
-      retries: 30
+      start_period: 300s
+      start_interval: 1s
+      retries: 3
 
   web:
     image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-web:${MELETE_IMAGE_TAG:-local}"
@@ -524,6 +534,8 @@ services:
       - "127.0.0.1:${WEB_PORT:-3101}:3000"
     healthcheck:
       test: ["CMD", "bun", "-e", "process.exit((await fetch('http://127.0.0.1:3000/')).ok?0:1)"]
-      interval: 2s
+      interval: 30s
       timeout: 5s
-      retries: 30
+      start_period: 120s
+      start_interval: 1s
+      retries: 3
