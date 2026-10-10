@@ -11,7 +11,7 @@
  *   others.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
@@ -21,6 +21,7 @@ import { AccountRemovalService, removedEmail } from '../../src/account/removal.t
 import { zipEntries } from '../../src/attachments/extract.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { loadEnv } from '../../src/env.ts';
+import { removeJobs } from '../../src/experience/removal.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -89,6 +90,7 @@ async function harness() {
     spaces: removals,
     principals: new PrincipalService(db, spacesRoot, jobs),
     log: (line) => logged.push(line),
+    removeChats: (ids) => removeJobs({ jobs, sql }, ids),
   });
   const app = createApp({
     db,
@@ -139,7 +141,20 @@ async function harness() {
     }
     await accounts.resume();
   };
-  return { app, call, cookieOf, sql, owner, ownerId: ownerRow.id, person, settle, accounts };
+  const principals = new PrincipalService(db, spacesRoot, jobs);
+  return {
+    app,
+    call,
+    cookieOf,
+    sql,
+    owner,
+    ownerId: ownerRow.id,
+    person,
+    settle,
+    accounts,
+    removals,
+    principals,
+  };
 }
 
 const h = handle ? await harness() : null;
@@ -490,5 +505,132 @@ withDb('deleting an account', () => {
     );
     const listed = accountList.parse(await (await h.call(h.owner, '/principals')).json());
     expect(listed.accounts.some((account) => account.id === room.memberId)).toBe(false);
+  }, 120_000);
+  test('its paired computers and unused pairing codes stop at once, before any space is swept', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const hal = await h.person('hal@example.test');
+    const connectionId = newId('conn');
+    await h.sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${connectionId}, ${hal.spaceId}, 'device', 'Laptop', '[]'::jsonb)`;
+    await h.sql`insert into paired_device (id, space_id, connection_id, name, platform, token_hash,
+        capabilities, local_capabilities, paired_by)
+      values (${newId('dev')}, ${hal.spaceId}, ${connectionId}, 'Laptop', 'linux',
+        ${newId('tokh')}, '{}'::jsonb, '{}'::jsonb, ${hal.id})`;
+    await h.sql`insert into device_pairing (id, space_id, principal_id, code_hash, capabilities, expires_at)
+      values (${newId('dpr')}, ${hal.spaceId}, ${hal.id}, ${newId('codeh')}, '{}'::jsonb,
+        now() + interval '10 minutes')`;
+    // What a computer's token is checked against: its row and its connection.
+    const usable =
+      () => h.sql`select 1 from paired_device d join connection c on c.id = d.connection_id
+      where d.paired_by = ${hal.id} and d.revoked_at is null and c.status <> 'revoked'`;
+    const codes = () => h.sql`select 1 from device_pairing
+      where principal_id = ${hal.id} and used_at is null and expires_at > now()`;
+    expect(await usable()).toHaveLength(1);
+    // The sweep of its space has not run yet (or is held up), as after a restart.
+    const held = Object.create(h.removals) as typeof h.removals;
+    held.dispatch = () => {};
+    const accounts = new AccountRemovalService({
+      sql: h.sql,
+      spaces: held,
+      principals: h.principals,
+      log: (line) => logged.push(line),
+    });
+    await accounts.remove(hal.id, hal.id, 'hal@example.test');
+    expect(await usable()).toHaveLength(0);
+    expect(await codes()).toHaveLength(0);
+    await h.settle(hal.id);
+    expect(await h.sql`select 1 from principal where id = ${hal.id}`).toHaveLength(0);
+  }, 120_000);
+  test('its own chats in a room someone else owns go with it; what it said to the room stays', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Garden club',
+      spacesRoot,
+      workRoot,
+    });
+    const own = await chat(
+      room.spaceId,
+      room.memberId,
+      'My seed list',
+      'Tomatoes, privately',
+      'Noted.',
+    );
+    const shared = await chat(
+      room.spaceId,
+      room.memberId,
+      'Pots for all',
+      'Who has pots?',
+      'Asking.',
+    );
+    await h.sql`update job set audience = 'room' where id = ${shared}`;
+    const [thread] = await h.sql<{ id: string }[]>`select id from room_thread
+      where space_id = ${room.spaceId} limit 1`;
+    await h.sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
+      values (${recordId('rmg')}, ${room.spaceId}, ${thread?.id ?? ''}, ${room.memberId},
+        'Who has spare pots?', ${recordId('rmg')})`;
+    const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    expect(
+      (await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', { confirm_email: email }))
+        .status,
+    ).toBe(202);
+    await h.settle(room.memberId);
+    expect(await h.sql`select 1 from job where id = ${own}`).toHaveLength(0);
+    expect(await h.sql`select 1 from experience_turn where job_id = ${own}`).toHaveLength(0);
+    // A chat it held with the whole room is the room's, and stays.
+    expect(await h.sql`select 1 from job where id = ${shared}`).toHaveLength(1);
+    expect(
+      await h.sql`select 1 from room_message where author_principal_id = ${room.memberId}`,
+    ).toHaveLength(1);
+    expect(await h.sql`select 1 from space where id = ${room.spaceId}`).toHaveLength(1);
+  }, 120_000);
+  test('nobody else sees what deleting an account would take, or how it is going', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const jo = await h.person('jo@example.test');
+    const kit = await h.person('kit@example.test');
+    await chat(jo.spaceId, jo.id, 'Private plans', 'A surprise party', 'Lovely.');
+    // Kit cannot read Jo's preview (her email, spaces and counts) nor follow a deletion.
+    expect((await h.call(kit.cookie, `/principals/${jo.id}/removal/preview`)).status).toBe(404);
+    expect((await h.call(kit.cookie, `/principals/${jo.id}/removal`)).status).toBe(403);
+    // A room's own principal is not an account anyone deletes.
+    const roomPrincipal = newId('own');
+    await h.sql`insert into principal (id, email, kind, display_name)
+      values (${roomPrincipal}, ${`room+${roomPrincipal.toLowerCase()}@rooms.invalid`}, 'room', 'Den')`;
+    expect(
+      (
+        await h.call(h.owner, `/principals/${roomPrincipal}`, 'DELETE', {
+          confirm_email: `room+${roomPrincipal.toLowerCase()}@rooms.invalid`,
+        })
+      ).status,
+    ).toBe(404);
+    expect(await h.sql`select 1 from principal where id = ${roomPrincipal}`).toHaveLength(1);
+    await h.sql`delete from principal where id = ${roomPrincipal}`;
+  }, 120_000);
+
+  test('an export never follows a link out of the space', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const lou = await h.person('lou@example.test');
+    const max = await h.person('max@example.test');
+    await mkdir(join(spacesRoot, max.spaceId, 'artifacts'), { recursive: true });
+    await writeFile(join(spacesRoot, max.spaceId, 'artifacts', 'diary.txt'), 'MAX-PRIVATE-DIARY');
+    await mkdir(join(spacesRoot, lou.spaceId, 'artifacts'), { recursive: true });
+    await writeFile(join(spacesRoot, lou.spaceId, 'artifacts', 'mine.txt'), 'LOU-OWN-NOTE');
+    await symlink(
+      join(spacesRoot, max.spaceId, 'artifacts', 'diary.txt'),
+      join(spacesRoot, lou.spaceId, 'artifacts', 'diary-link.txt'),
+    );
+    await symlink(
+      join(spacesRoot, max.spaceId, 'artifacts'),
+      join(spacesRoot, lou.spaceId, 'artifacts', 'folder-link'),
+    );
+    const response = await h.call(lou.cookie, '/account/export');
+    expect(response.status).toBe(200);
+    const entries = unzip(new Uint8Array(await response.arrayBuffer()));
+    const names = [...entries.keys()];
+    expect(names.some((name) => name.endsWith('/files/artifacts/mine.txt'))).toBe(true);
+    expect(names.some((name) => name.includes('diary'))).toBe(false);
+    expect(names.some((name) => name.includes('folder-link'))).toBe(false);
+    for (const data of entries.values()) expect(data.toString('utf8')).not.toContain('MAX-PRIVATE');
   }, 120_000);
 });

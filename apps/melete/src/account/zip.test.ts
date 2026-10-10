@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { zipEntries } from '../attachments/extract.ts';
-import { type ZipEntry, zipStream } from './zip.ts';
+import { entryName, type ZipEntry, zipStream } from './zip.ts';
 
 /** Every entry of an archive, read back with its own sizes and checksum checked. */
 function unzip(bytes: Uint8Array): Map<string, Uint8Array> {
@@ -130,5 +130,45 @@ describe('an export archive', () => {
       ]),
     );
     await expect(new Response(stream).arrayBuffer()).rejects.toThrow('the disk went away');
+  });
+  test('no name can reach outside the folder it is unpacked into', async () => {
+    const bytes = await archive([
+      { name: '../outside.txt', data: 'a' },
+      { name: 'spaces/home/files/artifacts/../../../../etc/passwd', data: 'b' },
+      { name: 'spaces/home/files/artifacts/..\\..\\..\\Startup\\run.bat', data: 'c' },
+      { name: '/rooted.txt', data: 'd' },
+      { name: './here/./and//there.txt', data: 'e' },
+      { name: '..', data: 'f' },
+    ]);
+    const names = [...unzip(bytes).keys()];
+    expect(names).toHaveLength(5);
+    for (const name of names) {
+      expect(name.startsWith('/')).toBe(false);
+      expect(name.includes('\\')).toBe(false);
+      expect(name.split('/')).not.toContain('..');
+      expect(name.split('/')).not.toContain('.');
+      expect(name.split('/')).not.toContain('');
+    }
+    expect(names).toContain('outside.txt');
+    expect(names).toContain('here/and/there.txt');
+    expect(entryName('..')).toBe('');
+  });
+
+  test('a download given up part way stops reading what it was writing', async () => {
+    for (const store of [false, true]) {
+      let closed = false;
+      async function* endless(): AsyncGenerator<Uint8Array> {
+        try {
+          for (;;) yield crypto.getRandomValues(new Uint8Array(16_384));
+        } finally {
+          closed = true;
+        }
+      }
+      const reader = zipStream(listed([{ name: 'big.bin', data: endless(), store }])).getReader();
+      for (let index = 0; index < 8; index++) await reader.read();
+      await Promise.race([reader.cancel(), Bun.sleep(2_000)]);
+      for (let waited = 0; !closed && waited < 2_000; waited += 20) await Bun.sleep(20);
+      expect({ store, closed }).toEqual({ store, closed: true });
+    }
   });
 });

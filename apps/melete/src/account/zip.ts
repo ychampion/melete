@@ -53,6 +53,22 @@ type Written = {
   offset: number;
 };
 
+/**
+ * A name that stays inside the folder the archive is unpacked into, whatever
+ * program unpacks it: no `.` or `..` part, no empty part (so no leading `/`),
+ * and no backslash or control character, which some programs read as a
+ * folder break or worse. Empty when nothing of the name is left.
+ */
+export function entryName(name: string): string {
+  return name
+    .split('/')
+    .filter((part) => part !== '' && part !== '.' && part !== '..')
+    .map((part) =>
+      [...part].map((char) => (char === '\\' || char.charCodeAt(0) < 0x20 ? '_' : char)).join(''),
+    )
+    .join('/');
+}
+
 /** The archive as a stream of bytes. An entry that fails ends the stream with that error. */
 export function zipStream(entries: AsyncIterable<ZipEntry>): ReadableStream<Uint8Array> {
   const iterator = archive(entries);
@@ -77,7 +93,7 @@ async function* archive(entries: AsyncIterable<ZipEntry>): AsyncGenerator<Uint8A
   let offset = 0;
   const seen = new Set<string>();
   for await (const entry of entries) {
-    const clean = entry.name.replace(/^\/+/, '');
+    const clean = entryName(entry.name);
     if (!clean || seen.has(clean)) continue;
     seen.add(clean);
     const name = encoder.encode(clean);
@@ -124,16 +140,28 @@ async function* archive(entries: AsyncIterable<ZipEntry>): AsyncGenerator<Uint8A
       })();
       // Read while it is fed, so neither side waits on the other.
       const reader = deflate.readable.getReader();
-      for (;;) {
-        const part = await reader.read().catch(async (error) => {
+      let finished = false;
+      try {
+        for (;;) {
+          const part = await reader.read().catch(async (error) => {
+            await feeding.catch(() => {});
+            throw error;
+          });
+          if (part.done) break;
+          compressed += part.value.length;
+          yield part.value;
+        }
+        await feeding;
+        finished = true;
+      } finally {
+        // The download was given up part way. Stop the compressor, which ends
+        // the feeding with an error, so what it reads from (a file, a database
+        // cursor) is closed rather than left waiting for a reader that is gone.
+        if (!finished) {
+          await reader.cancel().catch(() => {});
           await feeding.catch(() => {});
-          throw error;
-        });
-        if (part.done) break;
-        compressed += part.value.length;
-        yield part.value;
+        }
       }
-      await feeding;
     }
     if (size > LIMIT_32 || compressed > LIMIT_32)
       throw new Error(`${clean} is larger than an export can hold`);

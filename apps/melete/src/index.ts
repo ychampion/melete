@@ -100,7 +100,7 @@ import { type AccountMailer, accountMailerFromEnv } from './experience/account-m
 import { ExperienceBeliefs } from './experience/beliefs.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
-import { removeDeletedRoutineThreads } from './experience/removal.ts';
+import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
@@ -528,6 +528,21 @@ export function createApp(deps: AppDeps) {
               ...(deps.env.MELETE_BROWSER_SPACE
                 ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
                 : {}),
+              removeChats: (ids) =>
+                removeJobs(
+                  {
+                    jobs: deps.jobs as JobService,
+                    sql,
+                    runner: deps.runner,
+                    blobs: deps.attachments?.store,
+                    workspaces: {
+                      workRoot: deps.env.MELETE_WORK_DIR,
+                      days: deps.env.MELETE_TRASH_DAYS,
+                      spacesRoot: deps.env.MELETE_SPACES_DIR,
+                    },
+                  },
+                  ids,
+                ),
             })
           : undefined),
     });
@@ -1733,6 +1748,21 @@ export async function bootstrap(
           spaces: removals,
           principals: new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
+          removeChats: (ids) =>
+            removeJobs(
+              {
+                jobs,
+                sql: handle.sql,
+                runner,
+                blobs: attachments?.store,
+                workspaces: {
+                  workRoot: env.MELETE_WORK_DIR,
+                  days: env.MELETE_TRASH_DAYS,
+                  spacesRoot: env.MELETE_SPACES_DIR,
+                },
+              },
+              ids,
+            ),
         });
         if (options.workers !== false) accountRemovals.start();
       }

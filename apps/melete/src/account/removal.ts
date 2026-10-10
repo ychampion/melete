@@ -7,9 +7,12 @@
  * 1. At once, in one transaction, the account can no longer be used: its
  *    email, name, password and passkey are wiped, and its sign-in sessions,
  *    linked sign-ins, reset links, assistant grants, push subscriptions and
- *    pending notification texts are deleted. The email is free again.
+ *    pending notification texts are deleted, and its paired computers are
+ *    disconnected. The email is free again.
  * 2. It leaves the rooms other people own, as leaving one does: its place
- *    there ends and the work it started there stops.
+ *    there ends and the work it started there stops. Its own chats there,
+ *    which only it could read, are deleted as deleting each would delete it;
+ *    what it said to the room stays with the room.
  * 3. Every space it owns is removed by the space removal: its own space and
  *    the rooms it made, with everything in them. The same phased sweep and
  *    final count that removing one space runs, so a space is reported gone
@@ -29,6 +32,7 @@
  */
 import type { AccountRemovalPreview, AccountSummary } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { endAccess } from '../api/account-access.ts';
 import { ServiceError } from '../api/errors.ts';
 import { principalContext } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
@@ -84,6 +88,8 @@ export type AccountRemovalDeps = {
   principals: PrincipalService;
   /** The space a running browser worker mounts, which cannot be removed under it. */
   browserSpace?: string;
+  /** Deletes chats and their files as deleting a chat does. */
+  removeChats?: (jobIds: readonly string[]) => Promise<unknown>;
   log?: (line: string) => void;
 };
 
@@ -195,6 +201,14 @@ export class AccountRemovalService {
       await tx`update principal set email = ${removedEmail(principalId)}, password_hash = null,
         passkey = null, display_name = null, disabled_at = coalesce(disabled_at, now())
         where id = ${principalId}`;
+      // Every way in ends now, as signing out everywhere ends it: its paired
+      // computers and unused pairing codes too, without waiting for the sweep
+      // of its spaces to reach them.
+      const devices = await endAccess(tx, principalId, null);
+      if (devices.length)
+        await tx`update connection set status = 'revoked', generation = generation + 1
+          where id in (select connection_id from paired_device where id = any(${devices}))
+            and status <> 'revoked'`;
       for (const table of ACCOUNT_RECORDS)
         await tx`delete from ${tx(table)} where principal_id = ${principalId}`;
     });
@@ -258,6 +272,21 @@ export class AccountRemovalService {
         if (row) spaces.dispatch(row.id);
       }
     });
+    // Its own chats in rooms someone else owns: nobody else could read them,
+    // so nothing of the room's is lost with them. Rooms it owns go whole above.
+    const removeChats = this.deps.removeChats;
+    if (!removeChats) return;
+    const own = await sql<{ id: string }[]>`select j.id from job j join space s on s.id = j.space_id
+      where j.principal_id = ${principalId} and j.audience = 'principal'
+        and s.kind = 'shared' and s.removed_at is null
+        and s.owner_principal_id is distinct from ${principalId}
+        and not exists (select 1 from space_membership m where m.space_id = s.id
+          and m.principal_id = ${principalId} and m.role = 'owner')
+      order by j.id`;
+    if (own.length)
+      await removeChats(own.map((row) => row.id)).catch((error) =>
+        this.log(`account deletion: its chats in rooms did not go yet (${describe(error)})`),
+      );
   }
 
   /**

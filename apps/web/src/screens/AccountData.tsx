@@ -50,7 +50,8 @@ function SpacesList({ preview }: { preview: AccountRemovalPreview }) {
       ))}
       {preview.rooms_left.map((room) => (
         <li key={room.id} style={{ listStyle: 'none', fontSize: 13, color: 'var(--text)' }}>
-          Leaves <strong>{room.name}</strong>; what was written there stays with that room.
+          Leaves <strong>{room.name}</strong>; what was said to the room stays with it, and your own
+          chats there are deleted.
         </li>
       ))}
     </ul>
