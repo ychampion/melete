@@ -135,6 +135,22 @@ describe('the model defaults', () => {
     );
   });
 
+  test('the first visitor is let in without a setup code only when the operator says true', () => {
+    expect(loadEnv({}).MELETE_SETUP_OPEN).toBe(false);
+    expect(loadEnv({ MELETE_SETUP_OPEN: '' }).MELETE_SETUP_OPEN).toBe(false);
+    expect(loadEnv({ MELETE_SETUP_OPEN: 'false' }).MELETE_SETUP_OPEN).toBe(false);
+    expect(loadEnv({ MELETE_SETUP_OPEN: 'true' }).MELETE_SETUP_OPEN).toBe(true);
+    expect(readEnv({ MELETE_SETUP_OPEN: 'yes' }).ok).toBe(false);
+    // Compose hands the service both, and the web origin it shares with the web server.
+    const composed = composeServiceEnvironment();
+    for (const name of ['MELETE_SETUP_OPEN', 'MELETE_SETUP_CODE_HASH', 'MELETE_WEB_ORIGIN'])
+      expect([name, composed[name]]).toEqual([name, '']);
+    const env = loadEnv(composed);
+    expect(env.MELETE_SETUP_OPEN).toBe(false);
+    expect(env.MELETE_SETUP_CODE_HASH).toBeUndefined();
+    expect(env.MELETE_WEB_ORIGIN).toBeUndefined();
+  });
+
   test('Compose passes the output limit through to the service', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
   });

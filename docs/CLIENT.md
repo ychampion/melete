@@ -278,6 +278,11 @@ Browser mutations must originate from the same origin as the API.
 `code_required` (creating it needs the installation's setup code, sent to
 `POST /setup` as `setup_code`) and `email_sign_in` (whether an emailed sign-in
 link can be sent). Offer the link only when `email_sign_in` is true.
+`code_required` is also true on an installation that has no code yet but is
+configured for an address other machines reach; there `POST /setup` answers
+403 `setup_code_required` until the operator issues a code
+([Claiming a new installation](DEPLOYMENT.md#claiming-a-new-installation)),
+so ask for the code whenever `code_required` is true.
 
 For email sign-in, configure `MELETE_PUBLIC_URL` and either the installation's
 account mail sender (`MELETE_SMTP_URL` and `MELETE_MAIL_FROM`; see

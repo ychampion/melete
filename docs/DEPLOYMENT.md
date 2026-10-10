@@ -1155,12 +1155,35 @@ before. An operator who provisions an installation for someone else can also
 skip the code and create that person's account directly with
 `bun run melete account create <email>` (see [Accounts](#accounts)).
 
-An installation with no code configured and none issued, such as one set up
-before codes existed or a local install whose `deploy/.env` has an empty
-`MELETE_SETUP_CODE_HASH`, keeps the old behaviour: the first visitor creates
-the account. That is fine on the default loopback ports, where only this
-machine reaches the page; give an installation a code before it is reachable
-from anywhere else.
+### With no code: decided by the address
+
+An installation can have no code configured and none issued: one set up
+before codes existed, or one whose `deploy/.env` leaves `MELETE_SETUP_CODE_HASH`
+empty or out. An empty value counts as no code. What happens then depends on
+the addresses in `deploy/.env`:
+
+- **Every address is on this machine** (`MELETE_PUBLIC_URL` and
+  `MELETE_WEB_ORIGIN` unset, or naming `localhost`, `127.x.x.x` or `::1`). The
+  first visitor creates the account, as before. That is the default loopback
+  setup, where only this machine reaches the page.
+- **Either names another machine** (a domain, a Tailscale name, a LAN or
+  public address). The installation refuses to create the first account:
+  `POST /setup` answers 403 `setup_code_required`, `GET /setup` says
+  `code_required: true`, and the sign-in page asks for a code. Run
+  `bun run melete account setup-code` on the host for one, then open the link
+  it prints. The service says so in its log at start, and `melete check` and
+  `melete status` say so too.
+
+`MELETE_SETUP_OPEN=true` turns that refusal off: whoever opens the page first
+becomes the owner, without a code. You'd rarely want this. On an address other
+people can reach, a scanner or a stranger can get there before you do, and
+they then own the installation and everything you connect to it. It is only
+for a page that is reachable but private in practice, such as one behind
+your own sign-in proxy, and only until your account exists. While it is on,
+the service logs a warning at start, and `melete check` and `melete status`
+warn that the claim is open. Set it back to `false` once the account exists.
+It never skips a code that exists: with a configured or issued code, the code
+is still required.
 
 ## Accounts
 
