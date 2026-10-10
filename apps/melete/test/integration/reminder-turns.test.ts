@@ -196,6 +196,21 @@ withDb('a reminder the agent set', () => {
     expect(after.map((turn) => turn.status)).toEqual(['needs_you', 'done']);
   });
 
+  test('while it waits, the chat says until when, not that it needs the person', async () => {
+    const who = await person();
+    const { chat, wait } = await reminderSet(who);
+    const shown = conversationResponse.parse(
+      await (await who.request(`/conversations/${chat.id}`)).json(),
+    ).conversation;
+    expect(shown.status).toBe('needs_you');
+    expect(Date.parse(shown.waiting_until ?? '')).toBe(Date.parse(wait.wake_at));
+    await fire(chat.id);
+    const woken = conversationResponse.parse(
+      await (await who.request(`/conversations/${chat.id}`)).json(),
+    ).conversation;
+    expect(woken.waiting_until).toBeUndefined();
+  });
+
   test('one wake opens one turn, however often it is delivered', async () => {
     const who = await person();
     const { chat } = await reminderSet(who);

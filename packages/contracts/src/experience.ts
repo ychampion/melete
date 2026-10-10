@@ -640,6 +640,11 @@ export const conversation = z.strictObject({
    * schedule adds to it; a message from the person starts a chat instead.
    */
   automation_id: id.optional(),
+  /**
+   * Set while the conversation rests on a time it set itself, such as a
+   * reminder or a check later: nothing is asked of the person until then.
+   */
+  waiting_until: date.optional(),
 });
 export type Conversation = z.infer<typeof conversation>;
 export const conversationTurn = z.strictObject({

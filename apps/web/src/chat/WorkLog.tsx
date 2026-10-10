@@ -16,6 +16,7 @@ import { webHref } from '../experience/markdown.ts';
 import type { TranscriptTurn, TurnBlock } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type { ResultCard } from '../experience/types.ts';
+import { waitingUntilWords } from '../experience/waiting.ts';
 import { href } from '../router.ts';
 import { toolIcon } from './activity.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -704,14 +705,19 @@ export function LogEntries({
 /* ---------- the turn ---------- */
 
 /** The header over a turn's work: live while it runs, how long it worked once it ends. */
-export function headerWords(turn: TranscriptTurn, now: number): string {
+export function headerWords(
+  turn: TranscriptTurn,
+  now: number,
+  /** When the turn rests on a time it set itself rather than on the person. */
+  until?: string | null,
+): string {
   const seconds = turnSeconds(turn, now);
   const took = seconds === null ? null : workedFor(seconds);
   switch (turn.status) {
     case 'paused':
       return took ? `Paused after ${took}` : 'Paused';
     case 'needs_you':
-      return 'Waiting for you';
+      return until ? waitingUntilWords(until, now) : 'Waiting for you';
     case 'stalled':
       // Nothing has come from the agent for longer than its step may take.
       return took ? `Stalled · working for ${took}` : 'Stalled';
@@ -754,9 +760,12 @@ export function WorkLog({
   items,
   finished,
   renderBlock,
+  until,
 }: {
   turn: TranscriptTurn;
   now: number;
+  /** When the turn waits on a time it set itself. */
+  until?: string | null;
   items: LogItem[];
   finished: boolean;
   renderBlock: (block: TurnBlock) => ReactNode;
@@ -810,7 +819,7 @@ export function WorkLog({
             <Icon name={paused ? 'clock' : 'sparkles'} size={14} />
           </span>
           <span className="log-title">
-            <Live on={!paused}>{headerWords(turn, now)}</Live>
+            <Live on={!paused}>{headerWords(turn, now, until)}</Live>
           </span>
         </div>
       ) : null}

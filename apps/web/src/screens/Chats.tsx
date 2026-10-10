@@ -11,7 +11,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { agentById, faceOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
-import { isWaiting, waitingOn } from '../experience/waiting.ts';
+import { isWaiting, waitingOn, waitingUntilWords } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { RailToggle, Shell } from '../shell/Shell.tsx';
 
@@ -32,7 +32,8 @@ const STATUS_WORDS: Record<Conversation['status'], string> = {
 
 /** A chat's state in words; one held up by an open decision waits for the person. */
 export function statusWord(chat: Conversation, waiting: ReadonlySet<string>): string {
-  return STATUS_WORDS[isWaiting(chat, waiting) ? 'needs_you' : chat.status];
+  if (isWaiting(chat, waiting)) return STATUS_WORDS.needs_you;
+  return chat.waiting_until ? waitingUntilWords(chat.waiting_until) : STATUS_WORDS[chat.status];
 }
 
 function when(iso: string, now: number): string {

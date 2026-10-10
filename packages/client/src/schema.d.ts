@@ -23975,6 +23975,7 @@ export interface components {
             status: components["schemas"]["__schema305"];
             title: components["schemas"]["__schema304"];
             updated_at: components["schemas"]["__schema307"];
+            waiting_until?: components["schemas"]["__schema307"];
         };
         __schema303: string;
         __schema304: string;

@@ -80,6 +80,10 @@ export function conversationView(
     plan_id: row.planId,
     ...(progress ? { progress } : {}),
     ...(automationId ? { automation_id: automationId } : {}),
+    // A turn resting on its own timer waits for that time, not for the person.
+    ...(status === 'needs_you' && row.state === 'waiting_for_event_or_time' && row.nextWakeAt
+      ? { waiting_until: row.nextWakeAt.toISOString() }
+      : {}),
   });
 }
 

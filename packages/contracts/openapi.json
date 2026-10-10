@@ -36146,6 +36146,9 @@
           },
           "automation_id": {
             "$ref": "#/components/schemas/__schema303"
+          },
+          "waiting_until": {
+            "$ref": "#/components/schemas/__schema307"
           }
         },
         "required": [

@@ -309,8 +309,11 @@ function TurnView({
   busy,
   onRetry,
   conversationAgentId,
+  waitingUntil,
 }: {
   turn: TranscriptTurn;
+  /** When the conversation rests on a time it set itself (the latest turn only). */
+  waitingUntil?: string | null;
   now: number;
   touch: boolean;
   latest: boolean;
@@ -452,6 +455,7 @@ function TurnView({
             <WorkLog
               turn={turn}
               now={now}
+              until={waitingUntil}
               items={layout.log}
               finished={layout.finished}
               renderBlock={renderBlock}
@@ -1249,6 +1253,9 @@ export function ChatScreen({ id }: { id: string | null }) {
                       now={now}
                       touch={touch}
                       latest={turn.id === lastId}
+                      waitingUntil={
+                        turn.id === lastId ? (conversation?.waiting_until ?? null) : null
+                      }
                       onDecide={decide}
                       onSendDraft={sendDraft}
                       onUndo={undo}
