@@ -373,6 +373,37 @@ withDb('removing a computer', () => {
     const [connection] = await s.sql`select status from connection where id = ${connectionId}`;
     expect(connection?.status).toBe('revoked');
     expect((await remove(s.cookie)).status).toBe(404);
+    // Its token stays dead: nothing is left for it to sign in as.
+    const hello = await s.app.request('/device/hello', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ companion_version: 'test', capabilities: ALL, folders: [] }),
+    });
+    expect(hello.status).toBe(401);
+  }, 30_000);
+
+  test('a computer shown as disconnected can be removed, and a disconnect left part way is finished', async () => {
+    const s = need();
+    const remove = (id: string) => s.app.request(`/devices/${id}`, s.as(s.cookie, 'DELETE'));
+    const connectionOf = async (id: string) =>
+      String(
+        (await s.sql`select connection_id from paired_device where id = ${id}`)[0]?.connection_id,
+      );
+
+    // Its connection was revoked on its own: the list says disconnected, so it comes off.
+    const first = (await s.computer()).config;
+    const firstConnection = await connectionOf(first.device_id);
+    await s.sql`update connection set status = 'revoked', generation = generation + 1
+      where id = ${firstConnection}`;
+    expect((await remove(first.device_id)).status).toBe(200);
+
+    // Its own row was marked but its connection still stands: removing finishes the disconnect.
+    const second = (await s.computer()).config;
+    const secondConnection = await connectionOf(second.device_id);
+    await s.sql`update paired_device set revoked_at = now() where id = ${second.device_id}`;
+    expect((await remove(second.device_id)).status).toBe(200);
+    const [left] = await s.sql`select status from connection where id = ${secondConnection}`;
+    expect(left?.status).toBe('revoked');
   }, 30_000);
 });
 

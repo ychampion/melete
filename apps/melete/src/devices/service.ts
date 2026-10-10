@@ -441,13 +441,17 @@ export class DeviceService {
    * connection stays revoked, and the receipts of what it did stay with it.
    */
   async remove(id: string, actor: string) {
-    const { row } = await this.get(id, actor);
-    if (!row.revokedAt)
-      throw new ServiceError(
-        'device_connected',
-        'Disconnect this computer before removing it.',
-        409,
-      );
+    const { row, status } = await this.get(id, actor);
+    const refuse = () =>
+      new ServiceError('device_connected', 'Disconnect this computer before removing it.', 409);
+    // Disconnected as the list shows it: the computer's own row or its connection.
+    if (!row.revokedAt && status !== 'revoked') throw refuse();
+    // A disconnect that stopped part way is finished first, so no connection
+    // outlives the computer it belonged to.
+    if (!row.revokedAt || status !== 'revoked') {
+      await this.revoke(id, actor);
+      if ((await this.get(id, actor)).status !== 'revoked') throw refuse();
+    }
     await this.deps.db.delete(pairedDevice).where(eq(pairedDevice.id, id));
     return { status: 'ok' as const };
   }

@@ -521,6 +521,14 @@ withDb('the agent asks the person and waits for the answer', () => {
     expect((await request(`/quick-answers/${card.id}/dismiss`, 'POST')).status).toBe(200);
     expect((await quickAnswers()).some((entry) => entry.id === card.id)).toBe(false);
     expect((await questionsOf(id))[0]?.state).toBe('withdrawn');
+    // The chat no longer reads as waiting on the person, and the question is not carried on.
+    const chat = conversationResponse.parse(
+      await (await request(`/conversations/${id}`)).json(),
+    ).conversation;
+    expect(chat.status).not.toBe('needs_you');
+    const [held] = await sql()`select state, wait from job where id = ${id}`;
+    expect(held?.state).toBe('waiting_for_input');
+    expect(JSON.stringify(held?.wait)).not.toContain('Which park?');
     const closed = await required(handle)
       .db.select({ payload: event.payload })
       .from(event)
@@ -538,5 +546,31 @@ withDb('the agent asks the person and waits for the answer', () => {
     const refused = await request(`/quick-answers/${blocking}/dismiss`, 'POST');
     expect(refused.status).toBe(409);
     expect((await quickAnswers()).find((entry) => entry.id === blocking)?.needs_answer).toBe(true);
+  });
+
+  test('work that only an answer moves on keeps its question', async () => {
+    const jobId = newId('job');
+    await sql()`insert into job (id, space_id, principal_id, title, objective, state, lease_epoch, budget, constraints, wait)
+      values (${jobId}, ${spaceId}, ${ownerId}, 'Order supplies', 'Order the supplies', 'waiting_for_input', 1,
+        ${JSON.stringify({ max_actions: 20, max_attempts: 3, max_output_tokens: 10_000, max_turns: 10, max_wall_ms: 60_000, max_usd_est: 2 })}::jsonb,
+        '{}'::jsonb, ${JSON.stringify({ kind: 'user_input', question: 'Which supplier?' })}::jsonb)`;
+    const asked = newId('qst');
+    await sql()`insert into question (id, source, job_id, text, because, if_ignored)
+      values (${asked}, 'job', ${jobId}, 'Which supplier?', '["Two quoted the same price."]'::jsonb,
+        'The order waits for your answer.')`;
+    expect((await quickAnswers()).find((entry) => entry.id === asked)?.needs_answer).toBe(true);
+    expect((await request(`/quick-answers/${asked}/dismiss`, 'POST')).status).toBe(409);
+    expect((await quickAnswers()).some((entry) => entry.id === asked)).toBe(true);
+  });
+
+  test('a memory question is settled on its memory item, not dismissed', async () => {
+    const asked = newId('qst');
+    await sql()`insert into question (id, source, space_id, key, text, because, if_ignored)
+      values (${asked}, 'memory', ${spaceId}, 'pref.home.city', 'Which city is home?',
+        '["Two answers disagree."]'::jsonb, 'Both stay until you choose.')`;
+    expect((await quickAnswers()).find((entry) => entry.id === asked)?.needs_answer).toBe(true);
+    expect((await request(`/quick-answers/${asked}/dismiss`, 'POST')).status).toBe(409);
+    const [kept] = await sql()`select state from question where id = ${asked}`;
+    expect(kept?.state).toBe('open');
   });
 });

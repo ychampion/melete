@@ -11,8 +11,8 @@ import {
   type Decisions,
   NO_DECISIONS,
 } from '../experience/hooks.ts';
-import type { Conversation, Question } from '../experience/types.ts';
-import { WaitingOnYou } from './Home.tsx';
+import type { Conversation, Question, Run } from '../experience/types.ts';
+import { DecisionCard, runOfDecision, WaitingOnYou } from './Home.tsx';
 import { emptyLine, whenWords } from './NeedsYouSection.tsx';
 
 const now = Date.parse('2026-10-09T09:00:00.000Z');
@@ -76,4 +76,33 @@ test('the line under the queue does not say nothing needs you while something wa
 test('a reminder from more than a week ago reads as a date, not a weekday', () => {
   const nineDaysAgo = new Date(now - 9 * 86_400_000).toISOString();
   expect(whenWords(nineDaysAgo, now)).not.toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/);
+});
+
+test('a question long work stopped to ask says dismissing it stops that work', () => {
+  const run = { id: 'job_run', title: 'Quote the order', steps: [] } as unknown as Run;
+  const asked = { ...question, conversation_id: 'job_run' } as Question;
+  const decision = { kind: 'question', id: asked.id, question: asked } as Parameters<
+    typeof runOfDecision
+  >[1];
+  expect(runOfDecision([run], decision)?.id).toBe('job_run');
+  expect(runOfDecision([run], { ...decision, question: question } as typeof decision)).toBeNull();
+  const card = (forRun: boolean) =>
+    renderToStaticMarkup(
+      <DecisionCard
+        decision={decision}
+        conversation={undefined}
+        run={forRun ? run : null}
+        agent={null}
+        linked={null}
+        now={now}
+        busy={false}
+        onDecide={() => {}}
+        onAnswer={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+  expect(card(true)).toContain('from “Quote the order”');
+  expect(card(true)).toContain('>Dismiss and stop<');
+  expect(card(false)).toContain('>Dismiss<');
+  expect(card(false)).not.toContain('Dismiss and stop');
 });

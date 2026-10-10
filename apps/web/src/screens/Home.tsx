@@ -303,7 +303,7 @@ function Face({ agent, size, state }: { agent: Agent | null; size: number; state
   return <AgentAvatar agent={agent} size={size} state={state ?? 'idle'} />;
 }
 
-function DecisionCard({
+export function DecisionCard({
   decision,
   conversation,
   run,
@@ -551,16 +551,23 @@ function DecisionCard({
             className="btn-card"
             variant="ghost"
             disabled={busy}
-            aria-label={`Dismiss: ${question.text}`}
+            aria-label={`${run && !conversation ? 'Dismiss and stop' : 'Dismiss'}: ${question.text}`}
             onClick={() => onDismiss(question)}
           >
-            Dismiss
+            {/* Long work that stopped to ask has nothing else to wait for, so it stops too. */}
+            {run && !conversation ? 'Dismiss and stop' : 'Dismiss'}
           </Button>
         ) : null}
       </div>
     </div>
   );
 }
+
+/** The long work a decision came from, when it came from long work rather than a chat. */
+export const runOfDecision = (runs: readonly Run[], decision: Decision) =>
+  decision.kind === 'permission'
+    ? runOfPermission(runs, decision.permission)
+    : (runs.find((run) => run.id === decision.question.conversation_id) ?? null);
 
 export function WaitingOnYou({
   decisions,
@@ -711,7 +718,7 @@ export function WaitingOnYou({
             key={front.id}
             decision={front}
             conversation={conversationOf(front)}
-            run={front.kind === 'permission' ? runOfPermission(runs, front.permission) : null}
+            run={runOfDecision(runs, front)}
             agent={agentOf(front)}
             linked={linkedOf(front)}
             now={now}

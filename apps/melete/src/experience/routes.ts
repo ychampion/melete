@@ -123,7 +123,17 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   if (deps.attachments) service.attachments = deps.attachments;
   if (deps.workspaces) service.workspaces = deps.workspaces;
-  const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
+  const longWork = deps.runs;
+  const questions = new ExperienceQuestions(
+    deps.db,
+    deps.questions,
+    deps.sql,
+    longWork
+      ? async (spaceId, runId) => {
+          await longWork.stop(await longWork.requireRun(spaceId, runId));
+        }
+      : undefined,
+  );
   const memory = deps.sql
     ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
     : undefined;
