@@ -794,9 +794,8 @@ function AppCard({
 
 /** The one line an account's card says about it; the full words are on its sign-in. */
 const ACCOUNT_NOTE: Record<string, string> = {
-  google:
-    'Gmail, Google Calendar and Drive. Asks you before it sends mail or changes your calendar.',
-  microsoft: 'Outlook mail and calendar. Asks you before it sends mail or changes your calendar.',
+  google: 'Gmail, Google Calendar and Drive. Asks you before it sends mail or invites anyone.',
+  microsoft: 'Outlook mail and calendar. Asks you before it sends mail or invites anyone.',
 };
 
 export function AddConnection({
