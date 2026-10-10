@@ -132,6 +132,14 @@ sha256_hex() {
 setup_code_hash() {
   printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]' | LC_ALL=C tr -cd 'A-Z0-9' | sha256_hex
 }
+
+# A new code in NEW_SETUP_CODE and its hash in NEW_SETUP_HASH.
+make_setup_code() {
+  NEW_SETUP_CODE="$(new_setup_code)"
+  NEW_SETUP_HASH="$(setup_code_hash "$NEW_SETUP_CODE")" || NEW_SETUP_HASH=''
+  [[ "$NEW_SETUP_HASH" =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'sha256sum or shasum is needed to make the setup code. Install coreutils, then run this again.'
+}
 base64_bytes() { head -c "$1" /dev/urandom | base64 | tr -d '\n'; }
 base64url() { base64 | tr -d '\n=' | tr '+/' '-_'; }
 
@@ -258,15 +266,11 @@ write_env() {
   esac
 
   # Shown once, at the end of this run; only its hash is written.
-  local setup_code setup_hash
-  setup_code="$(new_setup_code)"
-  setup_hash="$(setup_code_hash "$setup_code")" || setup_hash=''
-  [[ "$setup_hash" =~ ^[0-9a-f]{64}$ ]] ||
-    fail 'sha256sum or shasum is needed to make the setup code. Install coreutils, then run this again.'
+  make_setup_code
 
   # Passed to awk through its environment, never on a command line.
   local settings
-  settings="MELETE_SETUP_CODE_HASH=$setup_hash
+  settings="MELETE_SETUP_CODE_HASH=$NEW_SETUP_HASH
 MELETE_VAPID_PUBLIC_KEY=$VAPID_PUBLIC
 MELETE_VAPID_PRIVATE_KEY=$VAPID_PRIVATE
 MELETE_MASTER_KEY=$(base64_bytes 32)
@@ -323,7 +327,7 @@ ELEVENLABS_API_KEY=@VOICE"
     fail 'deploy/.env appeared while this ran. Run this again to keep it and start Melete.'
   fi
   rm -f "$partial"
-  SETUP_CODE="$setup_code"
+  SETUP_CODE="$NEW_SETUP_CODE"
   if [ "$PROVIDER" = fake ]; then
     say 'Created deploy/.env with the practice model.'
   else
@@ -568,6 +572,17 @@ main() {
     say 'Keeping deploy/.env and your data.'
     if [ -n "${MELETE_IMAGE_TAG:-}" ] || ! grep -q '^MELETE_IMAGE_TAG=.' "$DEPLOY/.env"; then
       set_env MELETE_IMAGE_TAG "$IMAGE_TAG"
+    fi
+    # An installation made before setup codes has none: it gets one now, said
+    # once, as a first install does. A hash already there is kept.
+    local kept
+    kept="$(env_value MELETE_SETUP_CODE_HASH)"
+    kept="${kept//[[:space:]]/}"
+    if [ -z "$kept" ]; then
+      make_setup_code
+      set_env MELETE_SETUP_CODE_HASH "$NEW_SETUP_HASH"
+      SETUP_CODE="$NEW_SETUP_CODE"
+      say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
     fi
   else
     write_env
