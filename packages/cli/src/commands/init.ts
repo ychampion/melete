@@ -143,7 +143,11 @@ export function adoptedConfig(
   const overlays = (Object.entries(OVERLAY_FILES) as [Overlay, string][])
     .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
     .map(([name]) => name);
-  const sandbox = names.has('sandbox-image') || env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
+  // sandbox-image keeps no container, except one an older Compose file started.
+  const sandbox =
+    names.has('sandbox-image') ||
+    env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker' ||
+    (env.COMPOSE_PROFILES ?? '').split(',').some((profile) => profile.trim() === 'sandbox');
   const setting = (name: string) => env[name]?.trim() || undefined;
   const bucket = setting('MELETE_BLOB_S3_BUCKET');
   if (files.has(BLOBS_S3_FILE) && !bucket)

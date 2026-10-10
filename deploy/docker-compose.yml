@@ -433,13 +433,17 @@ services:
 
   # Builds the agents' computer image, only with --profile sandbox: it is large
   # (a desktop and a browser) and only a docker sandbox provider uses it. The
-  # service starts one container per agent from it; nothing runs here.
+  # service starts one container per agent from it; nothing runs here. Zero
+  # replicas: build, pull and `up` still provide the image, and no container that
+  # exits at once makes `up --wait` fail on a healthy stack.
   sandbox-image:
     image: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
     build:
       context: ..
       dockerfile: deploy/Dockerfile.sandbox
     profiles: [sandbox]
+    deploy:
+      replicas: 0
     entrypoint: ["/bin/true"]
     network_mode: none
     restart: "no"

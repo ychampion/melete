@@ -87,6 +87,15 @@ describe('melete init --adopt', () => {
     ]);
   });
 
+  test('the sandbox profile is adopted from COMPOSE_PROFILES, with no image holder container', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140', COMPOSE_PROFILES: 'other, sandbox' });
+    await runInit(testContext(deployDir, engine(running)), ['--adopt']);
+    expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).profiles).toEqual([
+      'sandbox',
+    ]);
+  });
+
   test('a one-off or stopped service container never decides the adopted image', async () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140' });

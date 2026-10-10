@@ -55,6 +55,8 @@ export type ComposeService = {
   command?: string | string[];
   depends_on?: string[] | Record<string, unknown>;
   logging?: ComposeLogging;
+  restart?: string;
+  deploy?: { replicas?: number };
 };
 
 export type ComposeLogging = {
@@ -187,6 +189,31 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'every long-running service has a memory cap',
     uncapped.length === 0,
     `services without mem_limit: ${uncapped.join(', ')}; a runaway one could take the machine`,
+  );
+
+  // `up --wait` counts a container that exits as a failure, even with status 0,
+  // unless another service waits for it to complete. A one-shot service nothing
+  // waits for is left at zero replicas: build, pull and `up` still provide its image.
+  const services = Object.entries(compose.services ?? {});
+  const awaited = new Set(
+    services.flatMap(([, entry]) =>
+      Array.isArray(entry.depends_on)
+        ? []
+        : Object.entries((entry.depends_on ?? {}) as Record<string, { condition?: string } | null>)
+            .filter(([, rule]) => rule?.condition === 'service_completed_successfully')
+            .map(([name]) => name),
+    ),
+  );
+  const exiting = services
+    .filter(
+      ([name, entry]) =>
+        entry.restart === 'no' && !awaited.has(name) && entry.deploy?.replicas !== 0,
+    )
+    .map(([name]) => name);
+  say(
+    'up --wait passes on a healthy stack',
+    exiting.length === 0,
+    `one-shot services nothing waits for: ${exiting.join(', ')}; give them deploy.replicas: 0`,
   );
 
   const unbounded = unboundedServices(compose.services ?? {});

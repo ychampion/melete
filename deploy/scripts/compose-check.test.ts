@@ -273,6 +273,14 @@ describe('the check catches the mistakes that would matter', () => {
     expect(failures(dropped)).toContain(name);
   });
 
+  test('a one-shot service that up --wait would count as failed', () => {
+    const name = 'up --wait passes on a healthy stack';
+    expect(failures(compose)).not.toContain(name);
+    const started: ComposeFile = structuredClone(compose);
+    delete started.services?.['sandbox-image']?.deploy;
+    expect(failures(started)).toContain(name);
+  });
+
   test('a setting the service reads but is not handed', () => {
     const name = 'the service receives every setting it reads';
     expect(failures(compose)).not.toContain(name);

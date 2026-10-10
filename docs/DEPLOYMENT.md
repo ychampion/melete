@@ -192,6 +192,29 @@ Outlook.com accepts only its own sign-in: with your own Microsoft app set in
 calendar connect by signing in with Microsoft
 ([setup](mail-calendar.md#setting-up-your-microsoft-app)).
 
+### A second installation on this host
+
+Compose names every container, volume and network after the project, and
+`deploy/.env.example` names the project `melete` with ports 3100 and 3101. A
+second installation that keeps those values is the first one: its `up` replaces
+the first installation's containers and opens its database. The
+[one-line install](#one-line-install) always writes those values, so use it only
+for the first installation on a host.
+
+For another one, clone into a directory of its own and run `configure.ts` there
+as above. Then, before the first `up`, give it its own project and ports:
+
+```bash
+bun run deploy/scripts/set-env.ts COMPOSE_PROJECT_NAME=melete-two MELETE_PORT=3110 WEB_PORT=3111
+```
+
+Keep the `MELETE_SANDBOX_PROJECT` that `configure.ts` wrote: it is random for
+each installation and tells apart the agents' computers and attempt containers,
+which Compose does not manage. Run every command from that installation's own
+directory, so its `deploy/.env` names the project; a `docker compose` command
+given a Compose file without that `.env` acts on the project `melete`. Its web
+address is then **http://localhost:3111**.
+
 ## The melete command
 
 `bun run melete` looks after an installation from its checkout. Each command
