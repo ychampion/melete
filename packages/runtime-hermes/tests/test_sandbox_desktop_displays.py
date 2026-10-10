@@ -79,3 +79,20 @@ def test_a_display_given_to_another_chat_is_cleared_first(desktop, tmp_path, mon
 def test_a_display_outside_the_range_or_an_owner_that_is_not_an_id_is_refused(desktop, argv):
     with pytest.raises(SystemExit):
         desktop.main(argv)
+
+
+def test_stopping_a_display_another_chat_now_holds_leaves_it_running(desktop, tmp_path, monkeypatch):
+    ended = []
+    monkeypatch.setattr(desktop, "display_file", lambda name: str(tmp_path / f"display.{name}"))
+    monkeypatch.setattr(desktop, "end_display", lambda: ended.append(desktop.NUMBER))
+    monkeypatch.setattr(desktop, "wait_for_display", lambda: None)
+    (tmp_path / "display.owner").write_text("sbd_B\n")
+    # The stop for the chat that had display 4 before arrives after sbd_B took it.
+    desktop.main(["--display", "4", "--owner", "sbd_A", "stop"])
+    assert ended == []
+    # Its own stop, or one for a display nobody has claimed, still ends it.
+    desktop.main(["--display", "4", "--owner", "sbd_B", "stop"])
+    assert ended == [4]
+    (tmp_path / "display.owner").unlink()
+    desktop.main(["--display", "4", "--owner", "sbd_A", "stop"])
+    assert ended == [4, 4]
