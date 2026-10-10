@@ -271,6 +271,20 @@ export class ProcessWatchRefusal extends Error {
 export const PROCESS_WATCH_SQL = (alias: string) =>
   `${alias}.kind = 'watch' and ${alias}.spec->>'event_name' in ('process.exited', 'process.output', 'process.listening') and ${alias}.spec #>> '{predicate,all,0,field}' = 'process_id'`;
 
+const processWatchListeners = new Set<() => void>();
+
+/**
+ * Be told, in this process, each time a process watch is made, once it has
+ * committed. The process monitor rests while nothing is watched and wakes on
+ * this rather than asking every few seconds. Returns a way to stop listening.
+ */
+export function onProcessWatch(listener: () => void): () => void {
+  processWatchListeners.add(listener);
+  return () => {
+    processWatchListeners.delete(listener);
+  };
+}
+
 /**
  * Make a watch on a process for the job that asked, from its own tool call.
  * The process must still run, and the job may hold only a few live watches.
@@ -302,7 +316,7 @@ export async function createProcessWatch(
     }
   }
   const eventName = PROCESS_EVENTS[input.kind];
-  return (await sql.begin(async (tx) => {
+  const made = (await sql.begin(async (tx) => {
     const job = await lockJob(tx, input.jobId);
     if (job.space_id !== input.spaceId || isTerminal(jobState.parse(job.state)))
       throw new ProcessWatchRefusal(
@@ -366,6 +380,8 @@ export async function createProcessWatch(
     );
     return { triggerId, eventName, created: true };
   })) as { triggerId: string; eventName: string; created: boolean };
+  if (made.created) for (const listener of processWatchListeners) listener();
+  return made;
 }
 
 export class TriggerService {
