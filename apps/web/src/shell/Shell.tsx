@@ -470,8 +470,9 @@ export function Rail({
       has: eventDays.has(d.toDateString()),
     };
   });
+  // The person's own apps; the tools that come with Melete are not counted.
   const connected =
-    connections.data?.connections.filter((c) => c.status === 'connected').length ?? 0;
+    connections.data?.connections.filter((c) => c.status === 'connected' && !c.builtin).length ?? 0;
   const footer = connections.data ? (
     <a href={href('/settings/connections')} className="rail-foot">
       <span className="rail-foot-dot" data-on={connected > 0 ? 'true' : undefined} />
