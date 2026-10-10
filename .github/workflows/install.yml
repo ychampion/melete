@@ -140,8 +140,10 @@ jobs:
           state() { printf '%s\n' "$1" > "$RUNNER_TEMP/state/.env" && (source "$RUNNER_TEMP/install-functions.sh" && DEPLOY="$RUNNER_TEMP/state" setup_code_state); }
           test "$(state "export MELETE_SETUP_CODE_HASH=$hash")" = set
           test "$(state "  MELETE_SETUP_CODE_HASH = \"$hash\"")" = set
-          test "$(state 'MELETE_SETUP_CODE_HASH=""')" = off
-          test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = off
+          # An empty one, as deploy/.env.example ships it, is no hash: it gets a code.
+          test "$(state 'MELETE_SETUP_CODE_HASH=')" = missing
+          test "$(state 'MELETE_SETUP_CODE_HASH=""')" = missing
+          test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = missing
           test "$(state 'MELETE_IMAGE_TAG=main')" = missing
           # The service's own setupCodeHash() gives the printed code the same hash.
           compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml")
@@ -170,18 +172,39 @@ jobs:
           test "$(printf '%s' "${code//-/}" | sha256sum | cut -d ' ' -f 1)" = "$hash"
           # From here on, this run's code is the installation's.
           cp "$RUNNER_TEMP/upgrade.log" "$RUNNER_TEMP/first.log"
-      - name: An empty setup code hash is kept, as the way to go without codes
+      - name: MELETE_SETUP_OPEN=true makes no code, and an empty hash otherwise gets one
         run: |
           set -euo pipefail
           env_file="$HOME/melete/deploy/.env"
-          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          before="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          # Open setup: no code is made, even with no hash.
           sed -i 's/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=/' "$env_file"
-          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/off.log"
+          printf 'MELETE_SETUP_OPEN="True"\n' >> "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/open.log"
           grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
-          if grep -F 'welcome?code=' "$RUNNER_TEMP/off.log"; then exit 1; fi
-          grep -F 'Setup codes are turned off for this installation. To turn them on, run:' "$RUNNER_TEMP/off.log" | grep -F 'melete account setup-code'
-          # Put back, and the next run keeps it and prints no code.
-          sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$hash/" "$env_file"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/open.log"; then exit 1; fi
+          grep -F 'Setup is open: with MELETE_SETUP_OPEN=true' "$RUNNER_TEMP/open.log"
+          # Without it, the empty hash, as deploy/.env.example ships it, gets a
+          # code; so does one followed by a later empty line, which Compose reads.
+          sed -i '/^MELETE_SETUP_OPEN=/d' "$env_file"
+          sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$before/" "$env_file"
+          printf 'MELETE_SETUP_CODE_HASH=\n' >> "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/empty.log"
+          test "$(grep -c 'MELETE_SETUP_CODE_HASH' "$env_file")" = 1
+          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          test "$hash" != "$before"
+          test "$(stat -c %a "$env_file")" = 600
+          code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/empty.log")"
+          [[ "$code" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]]
+          if grep -rqF -e "$code" -e "${code//-/}" "$HOME/melete"; then
+            echo "the plain setup code was written to a file"
+            exit 1
+          fi
+          test "$(printf '%s' "${code//-/}" | sha256sum | cut -d ' ' -f 1)" = "$hash"
+          grep -qx 'Set MELETE_SETUP_OPEN=true only if the first visitor should be allowed to create the owner without a code.' "$RUNNER_TEMP/empty.log"
+          cp "$RUNNER_TEMP/empty.log" "$RUNNER_TEMP/first.log"
+          # The next run keeps that hash and prints no code.
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/back.log"
           test "$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")" = "$hash"
           if grep -F 'welcome?code=' "$RUNNER_TEMP/back.log"; then exit 1; fi
