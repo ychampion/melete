@@ -56,7 +56,16 @@ export type FlowEntry =
   | { type: 'text'; text: string }
   | { type: 'tool'; id: string }
   | { type: 'step'; step: Exclude<TrailStep, { type: 'reasoning' }> }
-  | { type: 'block'; id: string };
+  | { type: 'block'; id: string }
+  /**
+   * Words the person sent while this turn ran. `sending` until the service
+   * has them, `queued` until the agent reads them at its next step, then
+   * `delivered`. Words the turn ended without reading leave its flow: they
+   * are the next turn's message instead.
+   */
+  | { type: 'steer'; id: string; text: string; state: SteerState };
+
+export type SteerState = 'sending' | 'queued' | 'delivered';
 
 export type TranscriptTurn = {
   id: string;
@@ -544,6 +553,8 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       return patchTurn(base, event.turn_id, (turn) =>
         turn.compacted ? turn : { ...turn, compacted: true },
       );
+    case 'steer':
+      return applySteer(base, event.turn_id, item);
     case 'tool': {
       const tool = item.tool;
       const underWay = tool.status === 'running' || tool.status === 'needs_approval';
@@ -646,6 +657,75 @@ export function applyGap(transcript: Transcript, gap: StreamGap): Transcript {
 }
 
 /** A message the person just sent, drawn before the service confirms it. */
+const holdsSteer = (turn: TranscriptTurn, id: string) =>
+  turn.flow.some((entry) => entry.type === 'steer' && entry.id === id);
+
+/** Every turn's flow with `change` applied to its steer entries. */
+function mapSteers(
+  transcript: Transcript,
+  change: (entry: Extract<FlowEntry, { type: 'steer' }>) => FlowEntry | null,
+): Transcript {
+  return {
+    ...transcript,
+    turns: transcript.turns.map((turn) =>
+      turn.flow.some((entry) => entry.type === 'steer')
+        ? {
+            ...turn,
+            flow: turn.flow.flatMap((entry) => {
+              if (entry.type !== 'steer') return [entry];
+              const next = change(entry);
+              return next ? [next] : [];
+            }),
+          }
+        : turn,
+    ),
+  };
+}
+
+function applySteer(
+  transcript: Transcript,
+  turnId: string | null,
+  item: { id: string; text?: string; state: 'queued' | 'delivered' | 'carried' },
+): Transcript {
+  if (item.state === 'carried')
+    return mapSteers(transcript, (entry) => (entry.id === item.id ? null : entry));
+  if (transcript.turns.some((turn) => holdsSteer(turn, item.id)))
+    return mapSteers(transcript, (entry) =>
+      entry.id === item.id && entry.state !== 'delivered' ? { ...entry, state: item.state } : entry,
+    );
+  // Read from history, or sent from another tab: drawn where it was said.
+  return patchTurn(transcript, turnId, (turn) => ({
+    ...turn,
+    flow: [...turn.flow, { type: 'steer', id: item.id, text: item.text ?? '', state: item.state }],
+  }));
+}
+
+/** Draws words sent to the running turn before the service has them. */
+export function addLocalSteer(transcript: Transcript, localId: string, text: string): Transcript {
+  return patchTurn(transcript, null, (turn) => ({
+    ...turn,
+    flow: [...turn.flow, { type: 'steer', id: localId, text, state: 'sending' }],
+  }));
+}
+
+/** The running turn took them: they carry the service's id from now on. */
+export function acceptLocalSteer(
+  transcript: Transcript,
+  localId: string,
+  steerId: string,
+): Transcript {
+  // The stream may have drawn them already; that copy stays and this one goes.
+  const drawn = transcript.turns.some((turn) => holdsSteer(turn, steerId));
+  return mapSteers(transcript, (entry) =>
+    entry.id !== localId ? entry : drawn ? null : { ...entry, id: steerId, state: 'queued' },
+  );
+}
+
+/** Words that did not go to the running turn: sent again as a message, or kept as a draft. */
+export function dropLocalSteer(transcript: Transcript, localId: string): Transcript {
+  return mapSteers(transcript, (entry) => (entry.id === localId ? null : entry));
+}
+
 export function addLocalTurn(
   transcript: Transcript,
   text: string,

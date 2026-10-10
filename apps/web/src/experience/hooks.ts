@@ -7,13 +7,16 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { FaceState } from '../design/face.tsx';
 import { adapter, type Result, subscribeConversation } from './adapter.ts';
 import {
+  acceptLocalSteer,
   acceptLocalTurn,
+  addLocalSteer,
   addLocalTurn,
   adoptSaved,
   applyEvent,
   applyGap,
   applyHistory,
   applyMessageEvent,
+  dropLocalSteer,
   emptyTranscript,
   fillAnswers,
   fillTurns,
@@ -216,6 +219,10 @@ export type ConversationState = {
   ) => string;
   accepted: (localId: string, turnId: string, receivedAt: string) => void;
   settle: (localId: string, delivery: Turn['delivery']) => void;
+  /** Draw words for the running turn inside it; settle them once the service answers. */
+  steer: (text: string) => string;
+  /** `steerId` when the running turn took them; null when they did not go to it. */
+  steered: (localId: string, steerId: string | null) => void;
   /** Show the conversation as the service now has it, after a rename. */
   renamed: (conversation: Conversation) => void;
 };
@@ -426,6 +433,18 @@ export function useConversation(id: string | null): ConversationState {
       setTranscriptState((previous) => setDelivery(previous, localId, delivery)),
     [],
   );
+  const steer = useCallback((text: string) => {
+    const localId = `local_steer_${Date.now()}`;
+    setTranscriptState((previous) => addLocalSteer(previous, localId, text));
+    return localId;
+  }, []);
+  const steered = useCallback(
+    (localId: string, steerId: string | null) =>
+      setTranscriptState((previous) =>
+        steerId ? acceptLocalSteer(previous, localId, steerId) : dropLocalSteer(previous, localId),
+      ),
+    [],
+  );
 
   return {
     conversation,
@@ -437,6 +456,8 @@ export function useConversation(id: string | null): ConversationState {
     local,
     accepted,
     settle,
+    steer,
+    steered,
     renamed: setConversation,
   };
 }

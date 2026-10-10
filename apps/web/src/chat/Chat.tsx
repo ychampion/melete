@@ -808,7 +808,33 @@ export function ChatScreen({ id }: { id: string | null }) {
         return accepted.data !== null;
       }
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
-      const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
+      const mentioned = mentionedAgent(clean, agents);
+      const speaker = mentioned?.id ?? agent ?? '';
+      // While a turn runs, plain words go to it at its next step, drawn inside it.
+      if (working && !attached.length && !mentioned && navigator.onLine) {
+        const steerId = state.steer(clean);
+        const accepted = await adapter.send(conversationId, clean, messageKey(), [], pasted);
+        if (accepted.data === null) {
+          state.steered(steerId, null);
+          changeDraft(clean);
+          pasteMarks.current = wholeDraft(pasted, clean);
+          toast({
+            kind: 'err',
+            title: 'Couldn’t send',
+            sub: accepted.error ?? accepted.unavailable ?? '',
+          });
+          return false;
+        }
+        const taken = accepted.data.steer;
+        state.steered(steerId, taken?.id ?? null);
+        if (!taken) {
+          // The turn ended as they were sent: they are the next turn's message.
+          const next = state.local(clean, speaker, 'sending');
+          state.accepted(next, accepted.data.turn_id, accepted.data.receipt.received_at);
+        }
+        refreshConversations();
+        return true;
+      }
       const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline', [
         ...attached,
       ]);
@@ -855,6 +881,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       clearFiles,
       restoreFiles,
       changeDraft,
+      working,
     ],
   );
 

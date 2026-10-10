@@ -8,6 +8,7 @@ import {
   answerOf,
   blockId,
   type FlowEntry,
+  type SteerState,
   type TranscriptTurn,
   type TurnBlock,
 } from '../experience/reduce.ts';
@@ -27,7 +28,9 @@ export type LogItem =
   | { type: 'note'; key: string; text: string }
   /** Pages the work found or read, drawn as one quiet row that opens onto their links. */
   | { type: 'sources'; key: string; cards: ResultCard[] }
-  | { type: 'block'; key: string; block: TurnBlock };
+  | { type: 'block'; key: string; block: TurnBlock }
+  /** Words the person sent while the turn ran, where they were sent. */
+  | { type: 'steer'; key: string; text: string; state: SteerState };
 
 export const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
@@ -323,6 +326,16 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
           items.push({ type: 'note', key: `note-${index}`, text: step.text });
         } else if (step.type === 'action' && !toldElsewhere(turn, step, hasTools))
           add({ type: 'group', step }, `group-${index}`);
+        return;
+      }
+      case 'steer': {
+        close();
+        items.push({
+          type: 'steer',
+          key: `steer-${entry.id}`,
+          text: entry.text,
+          state: entry.state,
+        });
         return;
       }
       case 'block': {

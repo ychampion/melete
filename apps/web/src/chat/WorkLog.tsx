@@ -669,6 +669,24 @@ export function LogEntries({
                 <span className="log-title">{item.text}</span>
               </div>
             );
+          case 'steer':
+            return (
+              <div key={item.key} className="bubble-wrap log-steer" data-state={item.state}>
+                <div
+                  className="bubble"
+                  data-pending={item.state !== 'delivered' ? 'true' : undefined}
+                >
+                  <div className="bubble-text">{item.text}</div>
+                </div>
+                <div className="bubble-meta">
+                  {item.state === 'sending'
+                    ? 'Sending…'
+                    : item.state === 'queued'
+                      ? 'Queued for the next step'
+                      : 'Delivered'}
+                </div>
+              </div>
+            );
           case 'block':
             return (
               <div key={item.key} className="log-block">
