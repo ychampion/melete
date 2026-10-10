@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import type { MailTransport, OutgoingMail } from '../../src/connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -25,7 +25,7 @@ test('a sign-in link names its account with most of the address hidden', () => {
 });
 
 databaseTest(
-  'magic links use the owner mailbox, bind its generation, expire, and consume once',
+  'magic links use the owner mailbox, bind its generation, expire, end with their account, and consume once',
   async () => {
     if (!database) throw new Error('Postgres unavailable');
     const sql = database.sql;
@@ -136,6 +136,17 @@ databaseTest(
       expect(odd.status).toBe(400);
       expect(((await odd.json()) as Refusal).error.code).toBe('invalid_signin_link');
     }
+    // So does a body that holds no token at all, rather than a server error.
+    for (const body of [
+      {},
+      { token: 7 },
+      { token: first, more: true },
+      { token: 'x'.repeat(2001) },
+    ]) {
+      const odd = await post('/signin/magic-link/check', body);
+      expect(odd.status).toBe(400);
+      expect(((await odd.json()) as Refusal).error.code).toBe('invalid_signin_link');
+    }
     await sql`update magic_link set created_at = now() - interval '2 minutes'`;
     await post('/signin/magic-link', { email });
     const second = tokenFromMail();
@@ -148,6 +159,15 @@ databaseTest(
     await sql`update magic_link set expires_at = now() - interval '1 second' where used_at is null`;
     expect((await post('/signin/magic-link/check', { token: third })).status).toBe(400);
     expect((await post('/signin/magic-link/consume', { token: third })).status).toBe(400);
+    // A link that works stops working once the operator disables its account.
+    const fourth = randomBytes(32).toString('base64url');
+    await sql`insert into magic_link (token_hash, owner_id, space_id, expires_at)
+      values (${createHash('sha256').update(fourth).digest('hex')}, ${ownerId}, ${spaceId},
+        now() + interval '10 minutes')`;
+    expect((await post('/signin/magic-link/check', { token: fourth })).status).toBe(200);
+    await sql`update principal set disabled_at = now() where id = ${ownerId}`;
+    expect((await post('/signin/magic-link/check', { token: fourth })).status).toBe(400);
+    expect((await post('/signin/magic-link/consume', { token: fourth })).status).toBe(400);
     const [records] =
       await sql`select (select count(*) from action)::int as actions, (select count(*) from event)::int as events`;
     expect(records).toMatchObject({ actions: 0, events: 0 });
