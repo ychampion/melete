@@ -315,6 +315,11 @@ jobs:
         run: bun test apps/melete/test/integration/browser-forget-site.test.ts --max-concurrency=1
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
+      # The worker launches Chromium with its own renderer sandbox, which needs a user namespace.
+      # Ubuntu 24.04 lets only programs with an AppArmor profile make one, and the downloaded
+      # Chromium has none, so this runner allows it as the worker container does.
+      - name: Let Chromium on this runner make its sandbox's user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # A missing browser or database fails this step rather than skipping the proof.
       - name: Prove the signed-in sites list follows a sign-out
         env:
