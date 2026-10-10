@@ -426,7 +426,7 @@ function filesRig(
           .slice(5)
           .map(
             (volume) =>
-              `${volume} ${JSON.stringify(labelsOf(volume.replace(/-(work|home)$/, '')))}`,
+              `${volume} ${JSON.stringify(owners.get(volume) ?? labelsOf(volume.replace(/-(work|home)$/, '')))}`,
           )
           .join('\n'),
       );
@@ -625,6 +625,29 @@ describe('the people files and the agents computers in a backup', () => {
     expect(await runBackup(rig.context, [], false)).toBe(1);
     expect(rig.context.printed()).toMatch(
       /fail\s+backup\.computers\s+The agents' computers' volumes could not be listed: Cannot connect/,
+    );
+    expect(readdirSync(rig.backups)).toEqual([]);
+  });
+
+  test('a volume of the stack that is not on the engine fails the backup, and is never made empty and archived', async () => {
+    const rig = filesRig();
+    rig.volumes.delete('melete_artifacts');
+    expect(await runBackup(rig.context, [], false)).toBe(1);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+backup\.artifacts\s+melete_artifacts, which holds the files kept by their content/,
+    );
+    // Mounting a missing volume would create it empty; no archiving container ran at all.
+    expect(indexOf(rig.events, '--entrypoint sh')).toBe(-1);
+    expect(readdirSync(rig.backups)).toEqual([]);
+  });
+
+  test('a computer volume whose labels do not name its computer fails the backup', async () => {
+    const rig = filesRig();
+    const [first, second] = COMPUTERS;
+    rig.owners.set(`${first}-home`, labelsOf(second ?? ''));
+    expect(await runBackup(rig.context, [], false)).toBe(1);
+    expect(rig.context.printed()).toMatch(
+      new RegExp(`fail\\s+backup\\.computers\\s+${first}-home's labels could not be read`),
     );
     expect(readdirSync(rig.backups)).toEqual([]);
   });
