@@ -193,6 +193,21 @@ describe('melete init', () => {
     });
   });
 
+  test('--hosted marks the new installation hosted, and --public-url reaches configure', async () => {
+    const deployDir = temporaryDeployDir();
+    const context = testContext(deployDir, [], {
+      attach: async (command) => {
+        context.attached.push([...command]);
+        writeEnv(deployDir, { MELETE_IMAGE_TAG: 'main' });
+        return 0;
+      },
+    });
+    const args = ['--connect-in-app', '--public-url', 'https://assistant.example.net', '--hosted'];
+    expect(await runInit(context, args)).toBe(0);
+    expect(context.attached[0]?.slice(2)).toEqual(args);
+    expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).hosted).toBe(true);
+  });
+
   test('a configure refusal leaves no contract behind', async () => {
     const deployDir = temporaryDeployDir();
     const context = testContext(deployDir, [], { attach: async () => 1 });

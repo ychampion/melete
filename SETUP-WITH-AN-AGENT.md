@@ -284,8 +284,8 @@ docker compose -f deploy/docker-compose.yml --profile sandbox up -d --build --wa
 
 **Worked when** `status.ts` reports Computer `ok`, and **Settings → Connections**
 lists a sandbox connection called **Computer**. From now on, pass
-`--profile sandbox` to every `docker compose` line and to
-`deploy/scripts/update.sh`. A cloud sandbox (E2B, Modal or Daytona) is the other
+`--profile sandbox` to every `docker compose` line; `bun run melete deploy`,
+the way to update, adds it itself. A cloud sandbox (E2B, Modal or Daytona) is the other
 choice: the person adds it in **Settings → Connections → Sandbox** with their
 own key. Details: [sandbox-docker.md](docs/sandbox-docker.md).
 

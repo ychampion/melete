@@ -3,6 +3,7 @@
  *
  *   bun run deploy/scripts/set-env.ts NAME=value [NAME=value ...]
  *   bun run deploy/scripts/set-env.ts --from-env NAME [NAME ...]
+ *   bun run deploy/scripts/set-env.ts --clear NAME [NAME ...]
  *
  * The first form is for ordinary settings, such as ports or MELETE_IMAGE_TAG,
  * and refuses a name that holds a secret, so a key never lands on a command
@@ -25,7 +26,7 @@ import { resolve } from 'node:path';
 import { ENV_FILE_MODE, fileReplacer, replaceFile } from './tailscale-origin.ts';
 
 export const SET_ENV_USAGE =
-  'Usage: bun run deploy/scripts/set-env.ts NAME=value [NAME=value ...], or --from-env NAME [NAME ...] for a key';
+  'Usage: bun run deploy/scripts/set-env.ts NAME=value [NAME=value ...], --from-env NAME [NAME ...] for a key, or --clear NAME [NAME ...] to empty settings';
 
 /** A name whose value is a secret: it is only ever taken from the environment, and never printed. */
 export const isSecretName = (name: string) =>
@@ -39,8 +40,16 @@ export function requestedSettings(
   environment: Record<string, string | undefined>,
 ): { name: string; value: string; secret: boolean }[] {
   const fromEnv = args[0] === '--from-env';
-  const items = fromEnv ? args.slice(1) : args;
+  const clear = args[0] === '--clear';
+  const items = fromEnv || clear ? args.slice(1) : args;
   if (items.length === 0) throw new SetEnvRefusal(SET_ENV_USAGE);
+  // Emptying a setting needs no value, so a key is cleared without being typed.
+  if (clear)
+    return items.map((name) => {
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(name))
+        throw new SetEnvRefusal(`${name} is not a setting name. ${SET_ENV_USAGE}`);
+      return { name, value: '', secret: isSecretName(name) };
+    });
   return items.map((item) => {
     const [name, ...rest] = fromEnv ? [item] : item.split('=');
     if (!name || !/^[A-Z_][A-Z0-9_]*$/.test(name) || (!fromEnv && rest.length === 0))
@@ -74,6 +83,7 @@ export function withSetting(envFile: string, name: string, value: string): strin
 
 /** What was done, one line per setting; a secret is named, never shown. */
 export function describe(setting: { name: string; value: string; secret: boolean }): string {
+  if (setting.value === '') return `Cleared ${setting.name}.`;
   return setting.secret ? `Set ${setting.name}.` : `Set ${setting.name}=${setting.value}.`;
 }
 

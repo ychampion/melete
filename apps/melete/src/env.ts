@@ -760,6 +760,13 @@ const variables = z.object({
   MELETE_ALERT_REPEAT_MINUTES: unsetWhenBlank(
     z.coerce.number().int().min(5).max(10_080).default(60),
   ),
+  /**
+   * The free space, in MB, below which the disk check fails, measured under the
+   * spaces, artifacts and work directories; 0 turns the check off.
+   */
+  MELETE_ALERT_DISK_MIN_FREE_MB: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(10_000_000).default(2048),
+  ),
   /** A bearer token that opens GET /health/detail to the operator. */
   MELETE_OPERATOR_TOKEN: unsetWhenBlank(z.string().min(24).max(512).optional()),
 

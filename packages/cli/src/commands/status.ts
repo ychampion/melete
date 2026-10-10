@@ -14,6 +14,7 @@ import {
 } from '../../../../deploy/scripts/status.ts';
 import { type Context, inServiceImage } from '../context.ts';
 import { composeFiles, type DeployConfig } from '../deploy-config.ts';
+import { judgeHosted } from '../hosted.ts';
 import { readInstallation } from '../installation.ts';
 import { EXIT, type ExitCode, hostOnly, type Result, renderReport, report } from '../schema.ts';
 import { judgeContract } from './check.ts';
@@ -115,7 +116,8 @@ export function judgeStatusInImage(
 async function askService(context: Context, url: string): Promise<Record<string, unknown> | null> {
   try {
     const response = await context.fetch(url, { signal: AbortSignal.timeout(5_000) });
-    if (!response.ok) return null;
+    // /health answers 503 with its report while the database is down.
+    if (!response.ok && response.status !== 503) return null;
     return (await response.json()) as Record<string, unknown>;
   } catch {
     return null;
@@ -148,6 +150,7 @@ export async function runStatus(context: Context, json: boolean): Promise<ExitCo
           diskFloors(installation.config),
           statusServices(installation.config),
         ).map(asResult),
+        ...(installation.env ? judgeHosted(installation.config, installation.env) : []),
       ];
   const value = report('status', results);
   context.out(

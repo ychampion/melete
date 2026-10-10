@@ -55,6 +55,9 @@ services:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
     logging: *bounded-logs
+    # Memory caps keep one runaway service from taking the machine; each is a
+    # setting in deploy/.env (docs/DEPLOYMENT.md, "Memory limits").
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
     networks: [database]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-melete}
@@ -104,6 +107,7 @@ services:
     image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
     restart: unless-stopped
     logging: *bounded-logs
+    mem_limit: ${MELETE_CELLS_MEMORY_LIMIT:-512m}
     networks: [cells]
     environment:
       MELETE_DOCKER_SOCKET: /var/run/docker.sock
@@ -138,6 +142,7 @@ services:
       dockerfile: deploy/Dockerfile.melete
     restart: unless-stopped
     logging: *bounded-logs
+    mem_limit: ${MELETE_MEMORY_LIMIT:-2g}
     networks:
       edge:
         aliases: [melete-api]
@@ -157,6 +162,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8787
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Names this instance when several share one database (docs/DEPLOYMENT.md).
+      MELETE_INSTANCE_ID: ${MELETE_INSTANCE_ID:-}
       MELETE_API_BIND: melete-api
       # The only peer believed about a browser's address, for login limits.
       MELETE_TRUSTED_PROXY: web
@@ -214,6 +222,11 @@ services:
       MELETE_EMBEDDING_PROVIDER: ${MELETE_EMBEDDING_PROVIDER:-}
       MELETE_EMBEDDING_MODEL: ${MELETE_EMBEDDING_MODEL:-}
       MELETE_EMBEDDING_DIMENSIONS: ${MELETE_EMBEDDING_DIMENSIONS:-}
+      # A model on your own machine or network, for private conversations and `local`
+      # embeddings (docs/PRIVACY-ROUTER.md).
+      MELETE_LOCAL_MODEL_URL: ${MELETE_LOCAL_MODEL_URL:-}
+      MELETE_LOCAL_MODEL: ${MELETE_LOCAL_MODEL:-}
+      MELETE_LOCAL_MODEL_KEY: ${MELETE_LOCAL_MODEL_KEY:-}
       # Auto-review of reversible actions (docs/DEPLOYMENT.md, "Auto-review"). Empty uses the default model.
       MELETE_REVIEW_MODEL: ${MELETE_REVIEW_MODEL:-}
       MELETE_REVIEW_PROVIDER: ${MELETE_REVIEW_PROVIDER:-}
@@ -260,6 +273,7 @@ services:
       MELETE_ALERT_SMTP_URL: ${MELETE_ALERT_SMTP_URL:-}
       MELETE_ALERT_INTERVAL_SECONDS: ${MELETE_ALERT_INTERVAL_SECONDS:-}
       MELETE_ALERT_REPEAT_MINUTES: ${MELETE_ALERT_REPEAT_MINUTES:-}
+      MELETE_ALERT_DISK_MIN_FREE_MB: ${MELETE_ALERT_DISK_MIN_FREE_MB:-}
       MELETE_OPERATOR_TOKEN: ${MELETE_OPERATOR_TOKEN:-}
       MELETE_ALERT_SPEND_HOURLY_MULTIPLE: ${MELETE_ALERT_SPEND_HOURLY_MULTIPLE:-}
       MELETE_ALERT_SPEND_PERSON_PERCENT: ${MELETE_ALERT_SPEND_PERSON_PERCENT:-}
@@ -273,6 +287,8 @@ services:
       GITHUB_MCP_CLIENT_ID: ${GITHUB_MCP_CLIENT_ID:-}
       GITHUB_MCP_CLIENT_SECRET: ${GITHUB_MCP_CLIENT_SECRET:-}
       COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+      # Only a private Composio region replaces its address.
+      COMPOSIO_BASE_URL: ${COMPOSIO_BASE_URL:-}
       COMPOSIO_AUTH_CONFIG_GMAIL: ${COMPOSIO_AUTH_CONFIG_GMAIL:-}
       COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR: ${COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR:-}
       COMPOSIO_AUTH_CONFIG_GOOGLEDRIVE: ${COMPOSIO_AUTH_CONFIG_GOOGLEDRIVE:-}
@@ -484,6 +500,7 @@ services:
         VITE_MELETE_API: /api
     restart: unless-stopped
     logging: *bounded-logs
+    mem_limit: ${WEB_MEMORY_LIMIT:-256m}
     networks: [edge]
     depends_on:
       melete:

@@ -64,7 +64,7 @@ The command only reads. With the Docker Compose install, run it inside the
 service container, where `DATABASE_URL` is already set:
 
 ```sh
-docker compose exec melete bun run feedback show FB-7K3Q
+docker compose -f deploy/docker-compose.yml exec melete bun run feedback show FB-7K3Q
 ```
 
 `show` prints the status, who sent the report and when, the page, the service

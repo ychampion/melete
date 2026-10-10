@@ -929,7 +929,11 @@ export async function runDeploy(
       if (poll > 0) await context.sleep(POLL_MS);
       try {
         const response = await context.fetch(healthUrl, { signal: AbortSignal.timeout(5_000) });
-        health = response.ok ? ((await response.json()) as Record<string, unknown>) : null;
+        // A 503 still carries the report, which names the database's state.
+        health =
+          response.ok || response.status === 503
+            ? ((await response.json()) as Record<string, unknown>)
+            : null;
       } catch {
         health = null;
       }

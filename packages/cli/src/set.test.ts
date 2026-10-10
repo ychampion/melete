@@ -18,7 +18,9 @@ describe('melete set', () => {
     const context = testContext(deployDir);
     expect(await runSet(context, ['WEB_PORT=3201'])).toBe(0);
     expect(read(deployDir, '.env')).toContain('\nWEB_PORT=3201\n');
-    expect(context.printed()).toBe('Set WEB_PORT=3201.\n');
+    expect(context.printed()).toStartWith('Set WEB_PORT=3201.\n');
+    // Compose reads deploy/.env when it creates a container, so the web service is recreated.
+    expect(context.printed()).toContain('up -d --force-recreate web');
   });
 
   test('a secret on the command line is refused with nothing changed', async () => {
@@ -41,7 +43,8 @@ describe('melete set', () => {
       }),
     ).toBe(0);
     expect(read(deployDir, '.env')).toContain('ELEVENLABS_API_KEY=el-secret');
-    expect(context.printed()).toBe('Set ELEVENLABS_API_KEY.\n');
+    expect(context.printed()).toStartWith('Set ELEVENLABS_API_KEY.\n');
+    expect(context.printed()).not.toContain('el-secret');
   });
 
   test('changing the image tag keeps the contract in step', async () => {
@@ -95,6 +98,36 @@ describe('melete set', () => {
     expect(await runSet(context, ['WEB_PORT=3201'])).toBe(2);
     expect(read(deployDir, '.env')).toBe(before);
     expect(context.errors()).toContain('Another melete command holds');
+  });
+
+  test('a misspelt name is refused with the setting it is closest to', async () => {
+    const deployDir = temporaryDeployDir();
+    const before = writeEnv(deployDir);
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['MELETE_PUBLC_URL=https://assistant.example.net'])).toBe(2);
+    expect(read(deployDir, '.env')).toBe(before);
+    expect(context.errors()).toContain('did you mean MELETE_PUBLIC_URL?');
+    // --force writes a name of the operator's own.
+    expect(await runSet(context, ['MY_OVERLAY_SETTING=1', '--force'])).toBe(0);
+    expect(read(deployDir, '.env')).toContain('MY_OVERLAY_SETTING=1');
+  });
+
+  test('a setting no service reads says nothing needs to restart; an image tag says deploy', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['MELETE_IMAGE_TAG=v0.3.0'])).toBe(0);
+    expect(context.printed()).toContain('Apply it with bun run melete deploy.');
+  });
+
+  test('--clear empties a key without it being typed', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['--clear', 'ANTHROPIC_API_KEY'])).toBe(0);
+    expect(read(deployDir, '.env')).toMatch(/^ANTHROPIC_API_KEY=$/m);
+    expect(context.printed()).toStartWith('Cleared ANTHROPIC_API_KEY.\n');
+    expect(context.printed()).toContain('--force-recreate melete');
   });
 
   test('without deploy/.env it is refused and points at init', async () => {

@@ -11,11 +11,13 @@
  * tests exercise the procedure without Docker.
  *
  *   bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale]
+ *     [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile sandbox]
  *     [--backup-dir /absolute/parent] [--wait-timeout seconds]
  *     [--repository /absolute/installation]
  *
- * Name the same overlay files the installation runs with. An upgrade that
- * forgets one would rebuild the stack without that service.
+ * Name the same overlay files and profiles the installation runs with. An
+ * upgrade that forgets one would rebuild the stack without that service.
+ * `melete upgrade` names them from deploy/melete.deploy.json.
  *
  * The script that runs is the target release's own, taken from the tag into a
  * directory outside the installation (docs/UPGRADING.md), so an installation
@@ -49,8 +51,19 @@ import {
 } from '../../apps/melete/src/runtime/docker-host.ts';
 import { parseEnvFile } from './provider-settings.ts';
 
+/** The external-database file's client service (packages/cli/src/database.ts). */
+const DATABASE_CLIENT = 'database-client';
+/**
+ * packages/cli/src/database.ts's CLIENT_TLS, repeated because that file reaches
+ * the CLI's dependencies and this copy runs without them; a test keeps them equal.
+ */
+export const UPGRADE_CLIENT_TLS =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
+  'case "$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; ';
+const CLIENT_TLS = UPGRADE_CLIENT_TLS;
+
 export const USAGE =
-  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
+  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
 
 const GIB = 1024 ** 3;
 /** docs/UPGRADING.md's floor for the filesystem that holds Docker's data. */
@@ -71,11 +84,26 @@ export type UpgradeOptions = {
   browser: boolean;
   /** Include deploy/docker-compose.tailscale.yml in every Compose command. */
   tailscale: boolean;
+  /** Include deploy/docker-compose.tailscale-kernel.yml, read on top of the Tailscale file. */
+  tailscaleKernel?: boolean;
+  /**
+   * Include deploy/docker-compose.external-db.yml: the database is the server
+   * DATABASE_URL names, reached from the database-client service, and there is
+   * no bundled postgres to dump from or to replace in a rollback.
+   */
+  externalDatabase?: boolean;
+  /** Include deploy/docker-compose.blobs-s3.yml, read last. */
+  blobsS3?: boolean;
+  /** Compose profiles the installation runs with, such as `sandbox` for the agents' computer image. */
+  profiles?: string[];
   waitTimeoutSeconds: number;
 };
 
-/** The overlay files an installation runs with, which the upgrade must repeat. */
-export type Overlays = Pick<UpgradeOptions, 'browser' | 'tailscale'>;
+/** The overlay files and profiles an installation runs with, which the upgrade must repeat. */
+export type Overlays = Pick<
+  UpgradeOptions,
+  'browser' | 'tailscale' | 'tailscaleKernel' | 'externalDatabase' | 'blobsS3' | 'profiles'
+>;
 
 export type UpgradeContext = UpgradeOptions & {
   project: string;
@@ -114,6 +142,10 @@ export function parseArguments(
   let dryRun = false;
   let browser = false;
   let tailscale = false;
+  let tailscaleKernel = false;
+  let externalDatabase = false;
+  let blobsS3 = false;
+  const profiles: string[] = [];
   let waitTimeoutSeconds = 300;
   let repository = repositoryRoot;
   for (let index = 0; index < argv.length; index += 1) {
@@ -121,7 +153,15 @@ export function parseArguments(
     if (argument === '--dry-run') dryRun = true;
     else if (argument === '--browser') browser = true;
     else if (argument === '--tailscale') tailscale = true;
-    else if (argument === '--backup-dir') {
+    else if (argument === '--tailscale-kernel') tailscaleKernel = true;
+    else if (argument === '--external-db') externalDatabase = true;
+    else if (argument === '--blobs-s3') blobsS3 = true;
+    else if (argument === '--profile') {
+      index += 1;
+      const value = argv[index] ?? '';
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(value)) fail();
+      if (!profiles.includes(value)) profiles.push(value);
+    } else if (argument === '--backup-dir') {
       index += 1;
       const value = argv[index];
       if (!value || !isAbsolute(value)) fail();
@@ -140,6 +180,8 @@ export function parseArguments(
     else fail();
   }
   if (tag === undefined) return fail();
+  // The kernel file adjusts the Tailscale node; without that node it has nothing to adjust.
+  if (tailscaleKernel && !tailscale) fail();
   const stamp = now
     .toISOString()
     .replace(/\.\d+Z$/, 'Z')
@@ -149,6 +191,10 @@ export function parseArguments(
     dryRun,
     browser,
     tailscale,
+    tailscaleKernel,
+    externalDatabase,
+    blobsS3,
+    profiles,
     waitTimeoutSeconds,
     repositoryRoot: repository,
     backupDir: join(parent, `upgrade-${tag}-${stamp}`).replaceAll('\\', '/'),
@@ -161,8 +207,12 @@ export function parseArguments(
  * so Compose builds it as `<project>-browser:latest`; without it here a
  * rollback would start the old service beside the new release's browser.
  */
-const stackImages = (context: Pick<UpgradeContext, 'browser' | 'project'>) => [
+const stackImages = (context: Pick<UpgradeContext, 'browser' | 'project' | 'profiles'>) => [
   ...IMAGES.map((image) => ({ repository: image, running: `${image}:local` })),
+  // The agents' computer image, built only with the sandbox profile.
+  ...(context.profiles?.includes('sandbox')
+    ? [{ repository: 'melete-sandbox', running: 'melete-sandbox:local' }]
+    : []),
   ...(context.browser
     ? [
         {
@@ -173,18 +223,43 @@ const stackImages = (context: Pick<UpgradeContext, 'browser' | 'project'>) => [
     : []),
 ];
 
-const composeArguments = (overlays: Overlays) => [
+/** The files, in the order `melete deploy` reads them, and the profiles. */
+export const composeArguments = (overlays: Overlays) => [
   'docker',
   'compose',
   '-f',
   'deploy/docker-compose.yml',
   ...(overlays.browser ? ['-f', 'deploy/docker-compose.browser.yml'] : []),
   ...(overlays.tailscale ? ['-f', 'deploy/docker-compose.tailscale.yml'] : []),
+  ...(overlays.tailscaleKernel ? ['-f', 'deploy/docker-compose.tailscale-kernel.yml'] : []),
+  ...(overlays.externalDatabase ? ['-f', 'deploy/docker-compose.external-db.yml'] : []),
+  ...(overlays.blobsS3 ? ['-f', 'deploy/docker-compose.blobs-s3.yml'] : []),
+  ...(overlays.profiles ?? []).flatMap((profile) => ['--profile', profile]),
 ];
 
-const inPostgres = (script: string) => ['exec', '-T', 'postgres', 'sh', '-c', script];
-const MIGRATION_COUNT =
-  'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select count(*) from drizzle.__drizzle_migrations"';
+/**
+ * Where a database client runs: inside the bundled postgres or, for an external
+ * database, in a one-off database-client container, which has DATABASE_URL in
+ * its environment so the address never reaches a command line.
+ */
+const databaseClient = (overlays: Overlays) =>
+  overlays.externalDatabase
+    ? ['run', '--rm', '--no-deps', '-T', DATABASE_CLIENT]
+    : ['exec', '-T', 'postgres'];
+/** A shell line run where the database client is; `script` receives the connection arguments. */
+const inDatabase = (overlays: Overlays, script: (db: string) => string) => [
+  ...databaseClient(overlays),
+  'sh',
+  '-c',
+  overlays.externalDatabase
+    ? `${CLIENT_TLS}${script('--dbname="$DATABASE_URL"')}`
+    : script('-U "$POSTGRES_USER" -d "$POSTGRES_DB"'),
+];
+const migrationCount = (overlays: Overlays) =>
+  inDatabase(
+    overlays,
+    (db) => `exec psql ${db} -At -c "select count(*) from drizzle.__drizzle_migrations"`,
+  );
 
 /** Every command of the upgrade, in the order it runs, relative to the repository root. */
 export function upgradePlan(context: UpgradeContext): PlanStep[] {
@@ -215,16 +290,13 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
     {
       phase: 'backup',
       title: 'Dump the database in custom format',
-      command: [
-        ...compose,
-        ...inPostgres('exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom'),
-      ],
+      command: [...compose, ...inDatabase(context, (db) => `exec pg_dump ${db} --format=custom`)],
       stdoutFile: backup('database.dump'),
     },
     {
       phase: 'backup',
       title: 'Check that the dump is a readable archive',
-      command: [...compose, 'exec', '-T', 'postgres', 'pg_restore', '--list'],
+      command: [...compose, ...databaseClient(context), 'pg_restore', '--list'],
       stdinFile: backup('database.dump'),
       stdoutFile: backup('database.contents'),
     },
@@ -325,7 +397,7 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
     {
       phase: 'verify',
       title: "Wait until every migration in the release's journal is recorded",
-      command: [...compose, ...inPostgres(MIGRATION_COUNT)],
+      command: [...compose, ...migrationCount(context)],
       until: 'journal-recorded',
     },
   ];
@@ -348,12 +420,21 @@ export function rollbackSteps(context: UpgradeContext): string[] {
       ({ repository, running }) => `docker tag ${repository}:${context.fromVersion} ${running}`,
     ),
     `cp -p ${quote(`${context.backupDir}/deploy.env`)} deploy/.env`,
-    `# Replace only the database volume. Keep ${context.project}_restrictions and every other`,
-    `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,
-    `# forgotten since the backup comes back. Do not unpack restrictions.tar over it.`,
-    `docker volume rm ${context.project}_pgdata`,
-    `${compose} up -d --wait postgres`,
-    `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(`${context.backupDir}/database.dump`)}`,
+    ...(context.externalDatabase
+      ? [
+          `# Replace only the database's contents. Keep ${context.project}_restrictions and every`,
+          `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,
+          `# forgotten since the backup comes back. Do not unpack restrictions.tar over it.`,
+          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c ${quote(`${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --clean --if-exists --no-owner --no-privileges --exit-on-error`)} < ${quote(`${context.backupDir}/database.dump`)}`,
+        ]
+      : [
+          `# Replace only the database volume. Keep ${context.project}_restrictions and every other`,
+          `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,
+          `# forgotten since the backup comes back. Do not unpack restrictions.tar over it.`,
+          `docker volume rm ${context.project}_pgdata`,
+          `${compose} up -d --wait postgres`,
+          `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(`${context.backupDir}/database.dump`)}`,
+        ]),
     `# Start only after the restore has finished, then check health and any waiting approval.`,
     `${compose} up -d --wait --wait-timeout ${context.waitTimeoutSeconds}`,
     `${compose} ps`,
@@ -389,6 +470,8 @@ export type PreflightFacts = {
   /** HOST_TOOLS that are not on PATH; on Windows outside Git Bash, all of them. */
   missingTools: string[];
   postgresRunning: boolean;
+  /** The database is external, so no bundled postgres has to be running. */
+  externalDatabase?: boolean;
   serviceContainer: boolean;
   dockerRootFreeBytes: number | null;
   backupFreeBytes: number | null;
@@ -451,7 +534,7 @@ export function judgePreflight(facts: PreflightFacts): string[] {
         ? `${facts.missingTools.join(', ')} ${facts.missingTools.length === 1 ? 'is' : 'are'} not on PATH. Run the upgrade from Git Bash, which comes with Git for Windows and provides them.`
         : `${facts.missingTools.join(', ')} ${facts.missingTools.length === 1 ? 'is' : 'are'} not on PATH; the backup steps need them.`,
     );
-  if (!facts.postgresRunning)
+  if (!facts.postgresRunning && !facts.externalDatabase)
     problems.push(
       'The postgres service is not running, so the database cannot be dumped. Start the stack and wait for it to be healthy.',
     );
@@ -585,24 +668,32 @@ export async function gatherPreflight(
   });
   const missingTools = HOST_TOOLS.filter((tool) => machine.which(tool) === null);
   // Docker Desktop keeps images and volumes in its VM, and a remote engine on
-  // its own machine; this host's df sees neither. The database volume is on
-  // that disk, so ask from beside it.
+  // its own machine; this host's df sees neither. The volumes are on that disk,
+  // so ask from beside one: the database's, or the service's when the database
+  // is elsewhere.
   const dockerRootFreeBytes = engineElsewhere(host)
     ? availableBytes(
-        await run([...compose, 'exec', '-T', 'postgres', 'df', '-Pk', '/var/lib/postgresql/data']),
+        await run(
+          options.externalDatabase
+            ? [...compose, 'exec', '-T', 'melete', 'df', '-Pk', '/data']
+            : [...compose, 'exec', '-T', 'postgres', 'df', '-Pk', '/var/lib/postgresql/data'],
+        ),
       )
     : host.info?.dockerRootDir
       ? availableBytes(await run(['df', '-Pk', host.info.dockerRootDir]))
       : null;
   const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(options.backupDir)]));
-  const postgresRunning = Boolean(await text([...compose, 'ps', '-q', 'postgres']));
+  const postgresRunning = options.externalDatabase
+    ? false
+    : Boolean(await text([...compose, 'ps', '-q', 'postgres']));
   const serviceContainer = Boolean(await text([...compose, 'ps', '-a', '-q', 'melete']));
   // Sizes are an estimate for the disk check; one that cannot be measured refuses the upgrade.
   const volumes = await text([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data', '/work']);
   const database = await text([
     ...compose,
-    ...inPostgres(
-      'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select pg_database_size(current_database())"',
+    ...inDatabase(
+      options,
+      (db) => `exec psql ${db} -At -c "select pg_database_size(current_database())"`,
     ),
   ]);
   const volumeBytes = (volumes ?? '')
@@ -620,7 +711,7 @@ export async function gatherPreflight(
     : 'melete';
   // The image the backup phase tags for a rollback; a missing one is named now.
   const browserImageName = options.browser
-    ? stackImages({ browser: true, project }).at(-1)?.running
+    ? stackImages({ browser: true, project, profiles: [] }).at(-1)?.running
     : undefined;
   const browserImage = browserImageName
     ? {
@@ -646,6 +737,7 @@ export async function gatherPreflight(
       host,
       missingTools,
       postgresRunning,
+      ...(options.externalDatabase ? { externalDatabase: true } : {}),
       serviceContainer,
       dockerRootFreeBytes,
       backupFreeBytes,
