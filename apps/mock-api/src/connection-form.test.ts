@@ -38,6 +38,10 @@ const TYPED: Record<string, string> = {
   'credentials.access_key_id': 'AKIAEXAMPLEKEY000001',
   'credentials.secret_access_key': 'example/Secret+value0000000',
   'command_line.region': 'us-east-1',
+  'credentials.account_sid': `AC${'0123456789abcdef'.repeat(2)}`,
+  'credentials.auth_token': 'twilio0auth0token0value0123456789',
+  'credentials.from_number': '+15550001111',
+  'sms.allowed_numbers': '+15557654321',
 };
 const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },
@@ -72,6 +76,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
     'mcp',
     'mcp_stdio',
     'sandbox',
+    'sms',
   ]);
 
   for (const kind of kinds) {
