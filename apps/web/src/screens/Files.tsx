@@ -217,6 +217,8 @@ export function FilesScreen() {
     }
     const trash = result.data.trash_id;
     loaded.set({ files: files.filter((item) => item.id !== file.id) });
+    // An Undo may have put another file back while this delete was on its way.
+    loaded.reload();
     toast({
       kind: 'ok',
       title: `Deleted ${file.name}`,

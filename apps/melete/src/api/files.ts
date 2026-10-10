@@ -29,6 +29,7 @@ import {
   latestTrash,
   moveToTrash,
   restoreFromTrash,
+  SPACE_FILES_TRASH,
   type TrashPlace,
 } from '../connectors/files-trash.ts';
 import type { Database } from '../db/client.ts';
@@ -190,7 +191,7 @@ async function trashFor(
     return { place: await new LocalWorkspaceFs(roots.workRoot).trash(where.job), path: where.path };
   // A file in the space's folder goes into the trash of the conversation that
   // saved it, where Melete can also restore it; one saved with none, into the space's.
-  const owner = found.job?.id ?? 'files';
+  const owner = found.job?.id ?? SPACE_FILES_TRASH;
   return { place: filesTrash(await realpath(roots.spacesRoot), spaceId, owner), path: where.path };
 }
 

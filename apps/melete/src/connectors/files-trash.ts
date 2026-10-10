@@ -7,6 +7,8 @@
  *
  * - from a job's workspace: `<workRoot>/.trash/<job>/<trash id>/`
  * - from the person's Files, and a deleted skill: `<spacesRoot>/<space>/.trash/<job>/<trash id>/`
+ * - from the person's Files, a file no conversation names any more:
+ *   `<spacesRoot>/<space>/.trash/files/<trash id>/`
  *
  * Each trash folder holds the files as `items/<n>` and a `manifest.json` that
  * says where each came from and until when it is kept. The manifest is
@@ -48,6 +50,8 @@ export const DEFAULT_TRASH_DAYS = 7;
 /** The most one job's trash holds, by default. */
 export const DEFAULT_TRASH_MAX_BYTES = 1024 * 1024 * 1024;
 const TRASH_ID = /^del_[0-9]{13}_[0-9a-f]{12}$/;
+/** A space's trash for what was deleted from its Files with no conversation behind it. */
+export const SPACE_FILES_TRASH = 'files';
 const MANIFEST = 'manifest.json';
 const ITEMS = 'items';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -513,7 +517,7 @@ export async function sweepTrash(
     }
     try {
       for (const job of await readdir(held.self)) {
-        if (!/^job_[A-Za-z0-9]+$/.test(job)) continue;
+        if (!/^job_[A-Za-z0-9]+$/.test(job) && job !== SPACE_FILES_TRASH) continue;
         const folder = await holdWithin(held, job);
         try {
           for (const id of await readdir(folder.self)) {
