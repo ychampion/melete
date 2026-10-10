@@ -35,6 +35,7 @@ import {
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
 import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
+import { leftOnComputer, removeMovedFromComputers } from '../sandbox/move-out.ts';
 import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
@@ -450,7 +451,24 @@ export class ConnectorFactory {
         unitCostUsd: configured.unitCostUsd,
       });
     }
-    if (row.provider === 'files') return createFilesConnector(options);
+    if (row.provider === 'files')
+      return createFilesConnector({
+        ...options,
+        ...(options.sandbox
+          ? {
+              computer: {
+                leftThere: (jobId, relative) => leftOnComputer(options.sql, jobId, relative),
+                removeMoved: (input) =>
+                  removeMovedFromComputers({
+                    ...input,
+                    sql: options.sql,
+                    providerFor: (connectionId) =>
+                      this.sandboxProviders.get(connectionId)?.provider,
+                  }),
+              },
+            }
+          : {}),
+      });
     if (row.provider === 'exec')
       // A default exec row outlives a change of runtime; without a container it offers nothing.
       return row.configuration?.builtin && !options.cellIsolated
