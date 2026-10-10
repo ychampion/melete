@@ -74,9 +74,11 @@ jobs:
       - name: Create the owner account, as the person does in the browser
         run: |
           password="$(openssl rand -hex 16)"
+          # The code configure.ts printed is in this job's log only; a new one stands in for it.
+          code="$(bun run melete account setup-code --json | jq -r .code)"
           curl -fsS -X POST http://127.0.0.1:3101/api/setup \
             -H 'content-type: application/json' \
-            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" > /dev/null
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\",\"setup_code\":\"$code\"}" > /dev/null
       - name: Everything but the model is ready
         run: bun run deploy/scripts/status.ts --json | bun run deploy/scripts/setup-guide.ts expect after
       - name: Following the guide again changes nothing
