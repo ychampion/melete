@@ -175,6 +175,8 @@ export type DeviceView = z.infer<typeof deviceView>;
 
 export const deviceListResponse = z.strictObject({ devices: z.array(deviceView) });
 export const deviceResponse = z.strictObject({ device: deviceView });
+/** A disconnected computer taken off the list. */
+export const deviceRemoved = z.strictObject({ status: z.literal('ok') });
 
 export const devicePairingRequest = z.strictObject({
   capabilities: deviceCapabilities.default(DEFAULT_DEVICE_CAPABILITIES),

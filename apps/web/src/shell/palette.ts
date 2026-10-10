@@ -40,3 +40,24 @@ export function secondaryOf(hit: SearchResult): string | null {
 export function withoutBuiltins(hits: SearchResult[], builtinIds: ReadonlySet<string>) {
   return hits.filter((hit) => hit.kind !== 'connection' || !builtinIds.has(hit.id));
 }
+
+/** How long typing pauses before the palette searches. */
+export const SEARCH_PAUSE_MS = 150;
+
+/**
+ * Search once typing pauses rather than on every key. Opening the palette, an
+ * empty box, searches at once. Returns the cancel the next keystroke calls, so
+ * only the last word typed is ever searched.
+ */
+export function searchAfterPause(
+  query: string,
+  run: (query: string) => void,
+  wait: (callback: () => void, ms: number) => () => void = (callback, ms) => {
+    const timer = setTimeout(callback, ms);
+    return () => clearTimeout(timer);
+  },
+): () => void {
+  const trimmed = query.trim();
+  // The contract wants a non-empty query; an empty box lists everything.
+  return wait(() => run(trimmed || ' '), trimmed ? SEARCH_PAUSE_MS : 0);
+}

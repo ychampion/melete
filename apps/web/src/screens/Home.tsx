@@ -35,6 +35,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { pastDay } from '../experience/past-day.ts';
 import { givenName } from '../experience/profile.ts';
 import { shortTitle } from '../experience/title.ts';
 import { foldedOptions, foldTogether, seenTogether } from '../experience/together.ts';
@@ -228,8 +229,7 @@ function relative(iso: string, now: number): string {
   if (now - date.getTime() < 5 * 60_000) return 'now';
   if (date.toDateString() === new Date(now).toDateString())
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (date.toDateString() === new Date(now - 86_400_000).toDateString()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { weekday: 'short' });
+  return pastDay(date, now);
 }
 
 /* ---------- the queue ---------- */
@@ -306,6 +306,7 @@ function DecisionCard({
   cardRef,
   onDecide,
   onAnswer,
+  onDismiss,
 }: {
   cardRef?: Ref<HTMLDivElement>;
   decision: Decision;
@@ -320,6 +321,8 @@ function DecisionCard({
   onDecide: (permission: Permission, option: 'allow_once' | 'deny') => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
   onAnswer: (question: Question, answer: string | { text: string }) => void;
+  /** Stop waiting for an answer to the question. */
+  onDismiss: (question: Question) => void;
 }) {
   const [own, setOwn] = useState('');
   const chatId =
@@ -421,9 +424,9 @@ function DecisionCard({
         <Face agent={agent} size={22} />
         <span className="decision-agent">{agent?.name ?? 'Melete'}</span>
         {conversation ? (
-          <span className="decision-for clamp1">for {conversation.title}</span>
+          <span className="decision-for clamp1">from “{conversation.title}”</span>
         ) : run ? (
-          <span className="decision-for clamp1">for {run.title}</span>
+          <span className="decision-for clamp1">from “{run.title}”</span>
         ) : null}
         <div className="grow" />
         {amount && state ? (
@@ -533,6 +536,17 @@ function DecisionCard({
             onClick={() => onDecide(permission, 'deny')}
           >
             Deny
+          </Button>
+        ) : null}
+        {question ? (
+          <Button
+            className="btn-card"
+            variant="ghost"
+            disabled={busy}
+            aria-label={`Dismiss: ${question.text}`}
+            onClick={() => onDismiss(question)}
+          >
+            Dismiss
           </Button>
         ) : null}
       </div>
@@ -651,6 +665,15 @@ export function WaitingOnYou({
       }
       settled(question.id);
     });
+  const dismiss = (question: Question) =>
+    void flight.run(question.id, async () => {
+      const result = await adapter.dismissQuestion(question.id);
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t dismiss it' });
+        return;
+      }
+      settled(question.id);
+    });
 
   return (
     <section className="home-section" aria-labelledby="home-waiting">
@@ -690,6 +713,7 @@ export function WaitingOnYou({
               decide(permission, option, front.kind === 'permission' ? front.together : [])
             }
             onAnswer={answer}
+            onDismiss={dismiss}
           />
           {next ? (
             <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>

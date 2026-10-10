@@ -3,7 +3,7 @@
  * the recent ones; this is where "All chats" goes, and where chats are tidied
  * up: Select picks several to delete at once, or one to rename.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DeleteChatsDialog, RenameChatDialog } from '../chat/ChatActions.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Button, Checkbox } from '../design/primitives.tsx';
@@ -42,8 +42,32 @@ function when(iso: string, now: number): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/**
+ * The pages read here, kept current by the list the sidebar reads again every
+ * few seconds: a chat that changed shows its new state and title, and one
+ * started meanwhile comes in at the top, so this list and the sidebar agree.
+ * A newer chat is added only where it belongs among what has been read.
+ */
+export function withFresh(
+  paged: readonly Conversation[],
+  fresh: readonly Conversation[],
+  complete: boolean,
+): Conversation[] {
+  if (fresh.length === 0) return [...paged];
+  const byId = new Map(fresh.map((chat) => [chat.id, chat]));
+  const known = new Set(paged.map((chat) => chat.id));
+  const oldest = paged.at(-1)?.updated_at;
+  const added = fresh.filter(
+    (chat) =>
+      !known.has(chat.id) && (complete || oldest === undefined || chat.updated_at >= oldest),
+  );
+  return [...added, ...paged.map((chat) => byId.get(chat.id) ?? chat)].sort((a, b) =>
+    b.updated_at.localeCompare(a.updated_at),
+  );
+}
+
 export function ChatsScreen() {
-  const { agents, refreshConversations } = useApp();
+  const { agents, conversations, refreshConversations } = useApp();
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<'rename' | 'delete' | null>(null);
@@ -75,7 +99,18 @@ export function ChatsScreen() {
 
   useEffect(() => read(null), [read]);
 
-  const chosen = chats.filter((chat) => picked.has(chat.id));
+  // Deleted here: kept out until the sidebar's list has caught up.
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  const shown = useMemo(
+    () =>
+      withFresh(
+        chats,
+        conversations.filter((chat) => !gone.has(chat.id)),
+        cursor === null && !loading,
+      ),
+    [chats, conversations, gone, cursor, loading],
+  );
+  const chosen = shown.filter((chat) => picked.has(chat.id));
   const stopSelecting = () => {
     setSelecting(false);
     setPicked(new Set());
@@ -125,7 +160,7 @@ export function ChatsScreen() {
             </div>
           ) : (
             <div className="row" style={{ gap: 8 }}>
-              {chats.length > 0 ? (
+              {shown.length > 0 ? (
                 <Button variant="outline" icon="check" onClick={() => setSelecting(true)}>
                   Select
                 </Button>
@@ -146,7 +181,7 @@ export function ChatsScreen() {
           </div>
         ) : null}
         <div className="card-12" style={{ overflow: 'hidden' }}>
-          {chats.map((chat, index) => {
+          {shown.map((chat, index) => {
             const agent = agentById(agents, chat.agent_id);
             const body = (
               <>
@@ -196,7 +231,7 @@ export function ChatsScreen() {
               </a>
             );
           })}
-          {!loading && chats.length === 0 && !error ? (
+          {!loading && shown.length === 0 && !error ? (
             <div style={{ padding: '28px 16px', fontSize: 14, color: 'var(--muted)' }}>
               Your first conversation lands here.
             </div>
@@ -234,6 +269,7 @@ export function ChatsScreen() {
         onClose={() => setDialog(null)}
         onDeleted={(ids) => {
           setChats((previous) => previous.filter((chat) => !ids.includes(chat.id)));
+          setGone((previous) => new Set([...previous, ...ids]));
           // Any that couldn't be deleted stay picked, ready to try again.
           setPicked((previous) => new Set([...previous].filter((id) => !ids.includes(id))));
           refreshConversations();

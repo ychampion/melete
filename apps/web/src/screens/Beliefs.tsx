@@ -58,15 +58,44 @@ const CATEGORY_ORDER: BeliefCategory[] = [
  * A belief whose line is its own sentence ("Sister Lena lives in Seattle")
  * shows it once, not again as its value.
  */
-const saysSame = (label: string, value: string) => {
-  const plain = (text: string) =>
-    text
-      .toLowerCase()
-      .replace(/[\s.!]+$/u, '')
-      .replace(/\s+/gu, ' ')
-      .trim();
-  return plain(label) === plain(value);
-};
+const plain = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[\s.!]+$/u, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+export const saysSame = (label: string, value: string) => plain(label) === plain(value);
+
+/**
+ * One row per detail. The same words saved twice under different subjects
+ * ("Can be home Thursday afternoon" as both availability and Thursday's
+ * availability) show once, the newest kept; correcting or forgetting that row
+ * does the same to the copies behind it, so none comes back afterwards.
+ */
+export function sameDetailOnce(beliefs: readonly Belief[]): { belief: Belief; twins: string[] }[] {
+  const rows = new Map<string, { belief: Belief; twins: string[] }>();
+  for (const belief of beliefs) {
+    const key = plain(belief.value);
+    const kept = rows.get(key);
+    if (kept) kept.twins.push(belief.id);
+    else rows.set(key, { belief, twins: [] });
+  }
+  return [...rows.values()];
+}
+
+/** Does the same to every copy of a detail; the first refusal is the answer. */
+async function eachCopy<T>(
+  ids: readonly string[],
+  act: (
+    id: string,
+  ) => Promise<{ data: T | null; error: string | null; unavailable: string | null }>,
+) {
+  for (const id of ids) {
+    const result = await act(id);
+    if (result.data === null) return result;
+  }
+  return null;
+}
 const TRUST_TONE: Record<Belief['trust'], BadgeTone> = {
   yours: 'success',
   connected: 'blue',
@@ -157,11 +186,14 @@ function EditForm({
 
 function BeliefRow({
   belief,
+  twins = [],
   highlighted,
   onChanged,
   onRemoved,
 }: {
   belief: Belief;
+  /** The same detail saved again under another subject, kept out of view behind this row. */
+  twins?: readonly string[];
   highlighted: boolean;
   onChanged: () => void;
   onRemoved: (message: string) => void;
@@ -209,6 +241,9 @@ function BeliefRow({
                 failed(r, 'Couldn’t save the correction');
                 return false;
               }
+              // The copies said what was just corrected; left, they would show the old words.
+              const copies = await eachCopy(twins, adapter.deleteMemory);
+              if (copies) failed(copies, 'Couldn’t remove an older copy');
               setMode('view');
               setHistoryOpen(false);
               toast({ kind: 'ok', title: 'Corrected', sub: 'Your words replace what I had.' });
@@ -255,8 +290,8 @@ function BeliefRow({
                 variant="destructive"
                 autoFocus
                 onClick={() =>
-                  void adapter.deleteMemory(belief.id).then((r) => {
-                    if (r.data === null) return failed(r, 'Couldn’t forget that');
+                  void eachCopy([belief.id, ...twins], adapter.deleteMemory).then((r) => {
+                    if (r) return failed(r, 'Couldn’t forget that');
                     onRemoved(`Forgot “${belief.label}”`);
                   })
                 }
@@ -267,8 +302,8 @@ function BeliefRow({
                 size="sm"
                 variant="outline"
                 onClick={() =>
-                  void adapter.blockBelief(belief.id).then((r) => {
-                    if (r.data === null) return failed(r, 'Couldn’t forget that');
+                  void eachCopy([belief.id, ...twins], adapter.blockBelief).then((r) => {
+                    if (r) return failed(r, 'Couldn’t forget that');
                     onRemoved(`Forgot “${belief.label}” and won’t learn it again`);
                   })
                 }
@@ -389,7 +424,8 @@ function BeliefsView({ focus }: { focus: string | null }) {
   const beliefs = useLoad(() => adapter.beliefs(), []);
   const blocks = useLoad(() => adapter.beliefBlocks(), []);
   const [filter, setFilter] = useState<BeliefCategory | 'all'>('all');
-  const list = beliefs.data?.beliefs ?? [];
+  const rows = sameDetailOnce(beliefs.data?.beliefs ?? []);
+  const list = rows.map((row) => row.belief);
   const counts = new Map<BeliefCategory, number>();
   for (const belief of list) counts.set(belief.category, (counts.get(belief.category) ?? 0) + 1);
   const shown = CATEGORY_ORDER.filter(
@@ -424,13 +460,14 @@ function BeliefsView({ focus }: { focus: string | null }) {
             {CATEGORY_TITLE[category]}
           </h3>
           <div className="card-12 belief-list">
-            {list
-              .filter((belief) => belief.category === category)
-              .map((belief) => (
+            {rows
+              .filter(({ belief }) => belief.category === category)
+              .map(({ belief, twins }) => (
                 <BeliefRow
                   key={`${belief.id}:${belief.version}`}
                   belief={belief}
-                  highlighted={focus === belief.id}
+                  twins={twins}
+                  highlighted={focus === belief.id || (focus !== null && twins.includes(focus))}
                   onChanged={beliefs.reload}
                   onRemoved={(message) => {
                     toast({ kind: 'ok', title: message });
@@ -631,7 +668,10 @@ function TimelineView() {
                     {CHANGE_WORD[change.change]}
                   </Badge>
                   <span className="timeline-text">
-                    <strong>{change.label}</strong>: {change.value ?? '—'}
+                    <strong>{change.label}</strong>
+                    {change.value && saysSame(change.label, change.value)
+                      ? null
+                      : `: ${change.value ?? '—'}`}
                     {change.previous && change.change !== 'learned' ? (
                       <span className="belief-note"> (was {change.previous})</span>
                     ) : null}

@@ -894,7 +894,8 @@ export function Shell({
                   onClick={toggleRail}
                 />
               ) : null}
-              {guest ? null : (
+              {/* A page with its own actions here leaves search to the sidebar, so its title fits. */}
+              {guest || phoneActions ? null : (
                 <IconButton
                   name="search"
                   label="Search"

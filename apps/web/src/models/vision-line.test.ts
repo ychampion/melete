@@ -47,22 +47,25 @@ const settings = (over: Partial<ModelSettings> = {}): ModelSettings => ({
   ...over,
 });
 
-test('the models screen says what the model does with screenshots, and where that came from', () => {
+test('the image switch says what it does, whether it is on, and where that came from', () => {
   expect(visionLine(active(false, 'catalog'))).toEqual({
-    text: 'Gets screenshots as text: where each was saved and its size',
-    hint: 'Melete doesn’t know this model to read images. If it does, turn this on.',
+    text: 'Send screenshots as pictures',
+    hint: 'Off: it is told only where each screenshot was saved and its size. Melete doesn’t know this model to read images. If it does, turn this on.',
   });
-  expect(visionLine(active(true, 'catalog')).text).toBe('Sees screenshots as pictures');
+  expect(visionLine(active(true, 'catalog')).text).toBe('Send screenshots as pictures');
   expect(visionLine(active(true, 'catalog')).hint).toBe(
-    'This model reads images, by Melete’s list.',
+    'On: it sees each screenshot. This model reads images, by Melete’s list.',
   );
   // The provider's answer informs; the switch stays the owner's.
-  expect(visionLine(active(false, 'catalog', true))).toEqual({
-    text: 'Gets screenshots as text: where each was saved and its size',
-    hint: 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.',
-  });
-  expect(visionLine(active(true, 'app')).hint).toBe('You set this for this model.');
-  expect(visionLine(active(false, 'operator')).hint).toBe('Set in the server’s configuration.');
+  expect(visionLine(active(false, 'catalog', true)).hint).toBe(
+    'Off: it is told only where each screenshot was saved and its size. Your provider says this model can read images. Turn this on to send it screenshots as pictures.',
+  );
+  expect(visionLine(active(true, 'app')).hint).toBe(
+    'On: it sees each screenshot. You set this for this model.',
+  );
+  expect(visionLine(active(false, 'operator')).hint).toBe(
+    'Off: it is told only where each screenshot was saved and its size. Set in the server’s configuration.',
+  );
 });
 
 test('only the owner, on a connected model they could choose, can change it', () => {

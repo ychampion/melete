@@ -26,7 +26,7 @@ test('a finished run shows what it said and links to its result', () => {
   const html = renderToStaticMarkup(<RunRow run={run()} />);
   expect(html).toContain('Succeeded');
   expect(html).toContain('Two meetings today.');
-  expect(html).toContain('href="#/chat/job_1"');
+  expect(html).toContain('href="#/chat/job_1?turn=turn_1"');
 });
 
 test('a failed run says why', () => {
@@ -61,7 +61,7 @@ test('Home lists the newest run of each routine, and nothing when none ran', () 
   expect(html).toContain('From your routines');
   expect(html).toContain('Your morning brief · Finished');
   expect(html).toContain('Two meetings today.');
-  expect(html).toContain('href="#/chat/job_1"');
+  expect(html).toContain('href="#/chat/job_1?turn=turn_1"');
   expect(renderToStaticMarkup(<RoutineResults now={now} results={[]} />)).toBe('');
 });
 

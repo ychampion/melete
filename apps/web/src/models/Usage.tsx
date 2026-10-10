@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { useLoad } from '../experience/hooks.ts';
+import { modelDisplayName } from '../experience/model-name.ts';
 import { type Usage, usage } from './api.ts';
 
 const dollars = (value: number) =>
@@ -33,6 +34,15 @@ export function dayResetLine(iso: string, now = new Date(), timeZone?: string) {
   if (dateKey(at) === dateKey(now)) return `today at ${time}`;
   if (dateKey(at) === dateKey(tomorrow)) return `tomorrow at ${time}`;
   return `on ${at.toLocaleDateString('en-US', { month: 'long', day: 'numeric', ...zone })} at ${time}`;
+}
+
+/**
+ * A model as a person reads it on the usage list: "Kimi K3", not its provider
+ * path. The model that indexes memory for search is named for what it does.
+ */
+export function usageModelName(model: string): string {
+  if (/embed/i.test(model)) return 'Memory search';
+  return modelDisplayName(model) || model;
 }
 
 /** "$4.20 of $10.00 · 1.2M tokens", or without the limit when there is none. */
@@ -84,8 +94,8 @@ export function UsageThisMonth() {
         <ul className="models-usage-list">
           {data.models.map((row) => (
             <li key={`${row.provider}/${row.model}`}>
-              <span className="models-id" title={row.model}>
-                {row.model}
+              <span className="models-usage-name" title={row.model}>
+                {usageModelName(row.model)}
               </span>
               <span>
                 {row.role ? (

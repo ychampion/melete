@@ -439,7 +439,7 @@ function TurnView({
         reactions={reactions.filter((r) => r.by === 'assistant')}
         onRetry={onRetry ? () => onRetry(turn.id) : undefined}
       />
-      <div className="turn">
+      <div className="turn" data-turn={turn.id}>
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
           <div className="turn-main">
@@ -625,7 +625,11 @@ export function ChatScreen({ id }: { id: string | null }) {
     conversationId,
     agentId: conversationId ? null : (agentId ?? fallback?.id ?? null),
   };
-  const voice = useVoiceStatus(voicePlace);
+  // A routine's thread takes no messages, so voice is not offered or asked about there; an
+  // existing chat is asked about once it is read and known to be an ordinary one.
+  const voice = useVoiceStatus(
+    conversationId && (!conversation || conversation.automation_id) ? null : voicePlace,
+  );
   const [voiceOpen, setVoiceOpen] = useState(() => {
     const arriving = conversationId !== null && voiceOnArrival === conversationId;
     if (arriving) voiceOnArrival = null;
@@ -744,6 +748,28 @@ export function ChatScreen({ id }: { id: string | null }) {
     if (!node || !stuck) return;
     node.scrollTop = node.scrollHeight;
   }, [transcript, stuck]);
+
+  // A link to one answer (`?turn=`, a routine run's "Open result") opens on that answer,
+  // unfolding the earlier turns when it is one of them. It is shown once; after that the
+  // chat scrolls as usual.
+  const focusTurn = route.query.get('turn');
+  const focusedTurn = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusTurn || focusedTurn.current === focusTurn) return;
+    const index = transcript.turns.findIndex((turn) => turn.id === focusTurn);
+    if (index < 0) return;
+    if (index < hidden) {
+      setShowAll(true);
+      return;
+    }
+    const node = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-turn="${CSS.escape(focusTurn)}"]`,
+    );
+    if (!node) return;
+    focusedTurn.current = focusTurn;
+    setStuck(false);
+    node.scrollIntoView({ block: 'start' });
+  }, [focusTurn, transcript, hidden]);
 
   const onScroll = () => {
     const node = scrollRef.current;

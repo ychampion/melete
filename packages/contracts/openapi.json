@@ -5056,6 +5056,44 @@
         }
       }
     },
+    "/quick-answers/{id}/dismiss": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /quick-answers/{id}/dismiss",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema338"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema307"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agents": {
       "get": {
         "tags": [
@@ -27232,6 +27270,67 @@
           },
           "409": {
             "description": "Device revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema216"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Remove a disconnected computer from the list",
+        "description": "Only a computer already disconnected can be removed. Its connection stays revoked and the receipts of what it did are kept.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Device id"
+            },
+            "required": true,
+            "description": "Device id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "ok"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema216"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Device still connected",
             "content": {
               "application/json": {
                 "schema": {

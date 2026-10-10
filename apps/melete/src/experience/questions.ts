@@ -9,6 +9,8 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { job, question } from '../db/schema.ts';
+import { serviceTransaction } from '../db/transaction.ts';
+import { appendEvent } from '../events/store.ts';
 import type { QuestionService } from '../jobs/questions.ts';
 import { ownedSpace, ownJob } from '../principals/authority.ts';
 import { explainHandles } from './evidence.ts';
@@ -111,5 +113,50 @@ export class ExperienceQuestions {
         409,
       );
     return { status: 'ok' };
+  }
+  /**
+   * The person no longer wants to answer: the question leaves every list and
+   * its card in the conversation closes. The conversation waits for their next
+   * message, as it does after Stop. A question about something that may
+   * already have gone out keeps waiting, since only an answer settles it.
+   */
+  async dismiss(spaceId: string, id: string) {
+    const [entry] = await this.find(spaceId, id);
+    if (!entry) throw experienceMissing();
+    const row = entry.question;
+    if (row.state !== 'open') return { status: 'ok' as const };
+    if (row.source === 'memory')
+      throw new ServiceError(
+        'question_needs_answer',
+        'Open this memory item to choose the detail to keep.',
+        409,
+      );
+    if (row.blocksExternalEffect)
+      throw new ServiceError(
+        'question_needs_answer',
+        'This one is about something that may already have gone out, so it needs your answer.',
+        409,
+      );
+    await serviceTransaction(this.db, async (tx) => {
+      const [closed] = await tx
+        .update(question)
+        .set({ state: 'withdrawn', answer: null, answerSubmissionId: null, answeredAt: new Date() })
+        .where(and(eq(question.id, id), eq(question.state, 'open')))
+        .returning();
+      if (!closed?.jobId) return;
+      await appendEvent(tx, {
+        jobId: closed.jobId,
+        type: 'notice',
+        payload: {
+          kind: 'question_closed',
+          question_id: closed.id,
+          state: closed.state,
+          reason: 'dismissed',
+          submission_id: null,
+        },
+        dedupKey: `${closed.id}:closed`,
+      });
+    });
+    return { status: 'ok' as const };
   }
 }

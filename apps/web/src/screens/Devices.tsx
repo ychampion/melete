@@ -223,7 +223,7 @@ function PairDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   );
 }
 
-function DeviceCard({
+export function DeviceCard({
   device,
   onChanged,
   screensByDefault,
@@ -235,7 +235,21 @@ function DeviceCard({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState<keyof DeviceCapabilities | 'screens' | null>(null);
+  const [removing, setRemoving] = useState(false);
   const revoked = device.status === 'revoked';
+  // Only a computer already disconnected comes off the list; what it did stays in Activity.
+  const remove = () => {
+    setRemoving(true);
+    void adapter.removeDevice(device.id).then((r) => {
+      setRemoving(false);
+      if (r.data === null) {
+        toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t remove it' });
+        return;
+      }
+      toast({ kind: 'ok', title: `${device.name} is removed` });
+      onChanged();
+    });
+  };
   const status =
     device.status === 'online' ? (
       <Badge tone="success" dot>
@@ -286,7 +300,17 @@ function DeviceCard({
             Browser connected
           </Badge>
         ) : null}
-        {revoked ? null : (
+        {revoked ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={removing}
+            aria-label={`Remove ${device.name}`}
+            onClick={remove}
+          >
+            Remove
+          </Button>
+        ) : (
           <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
             Disconnect
           </Button>

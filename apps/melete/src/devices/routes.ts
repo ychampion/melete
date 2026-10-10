@@ -14,6 +14,7 @@ import {
   devicePairRequest,
   devicePairResponse,
   devicePollResponse,
+  deviceRemoved,
   deviceResponse,
   deviceResult,
   deviceUpdateRequest,
@@ -106,6 +107,9 @@ export function mountDevices(
     const device = await devices.revoke(c.req.param('id'), c.get('owner').id);
     return c.json(deviceResponse.parse({ device }));
   });
+  app.delete('/devices/:id', async (c) =>
+    c.json(deviceRemoved.parse(await devices.remove(c.req.param('id'), c.get('owner').id))),
+  );
 
   /* ---------- the companion ---------- */
   app.post('/device/pair', smallBody, async (c) => {

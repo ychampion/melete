@@ -63,7 +63,7 @@ const CLASSES: readonly { key: ClassKey; title: string; sub: string; reviewed: b
 const ALWAYS_ASKS = [
   'Paying or spending money',
   'Sending, publishing or submitting anything, except an app for the same people as now',
-  'An app that new people could open, that uses WebRTC, or that shows new data',
+  'An app that new people could open, that makes live calls, or that shows new data',
   'Deleting or removing anything',
   'Passwords, keys, codes or card details',
   'A recipient, place or amount you didn’t give Melete yourself',
