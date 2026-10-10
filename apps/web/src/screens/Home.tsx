@@ -546,7 +546,7 @@ function DecisionCard({
             Deny
           </Button>
         ) : null}
-        {question ? (
+        {question && !question.needs_answer ? (
           <Button
             className="btn-card"
             variant="ghost"

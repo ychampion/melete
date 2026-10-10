@@ -24499,6 +24499,7 @@ export interface components {
             free_text: boolean;
             id: components["schemas"]["__schema301"];
             if_ignored: components["schemas"]["__schema302"];
+            needs_answer?: boolean;
             options: components["schemas"]["__schema330"];
             text: components["schemas"]["__schema302"];
             why: components["schemas"]["__schema302"][];

@@ -37872,6 +37872,9 @@
           "free_text": {
             "type": "boolean"
           },
+          "needs_answer": {
+            "type": "boolean"
+          },
           "created_at": {
             "$ref": "#/components/schemas/__schema305"
           }

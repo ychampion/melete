@@ -173,6 +173,12 @@ export const experienceQuestion = z.strictObject({
    * conversation may leave the device, takes one of its options only.
    */
   free_text: z.boolean(),
+  /**
+   * Only an answer settles it, so it cannot be dismissed: a memory question,
+   * or one about something that may already have gone out. Absent reads as
+   * false.
+   */
+  needs_answer: z.boolean().optional(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });

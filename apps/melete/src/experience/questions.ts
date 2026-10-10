@@ -77,6 +77,7 @@ export class ExperienceQuestions {
             .parse(row.options)
             .map((option) => ({ ...option, label: plainText(option.label, 'Choose this option') })),
           free_text: freeText(row),
+          needs_answer: row.source === 'memory' || row.blocksExternalEffect,
           created_at: row.createdAt.toISOString(),
         }),
       );

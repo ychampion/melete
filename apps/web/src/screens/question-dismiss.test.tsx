@@ -58,6 +58,16 @@ test('a question card says which chat it came from and offers to dismiss it', ()
   expect(html).toContain('>Dismiss<');
 });
 
+test('a question only an answer settles offers no Dismiss', () => {
+  const chat = { id: 'job_1', title: 'Trip to Kyoto' } as Conversation;
+  const html = render(
+    { ...NO_DECISIONS, loaded: true, questions: [{ ...question, needs_answer: true }] },
+    [chat],
+  );
+  expect(html).toContain('Which hotel should I book?');
+  expect(html).not.toContain('>Dismiss<');
+});
+
 test('the line under the queue does not say nothing needs you while something waits', () => {
   expect(emptyLine(0)).toBe('Nothing needs you right now.');
   expect(emptyLine(2)).toBe('Nothing else needs you right now.');

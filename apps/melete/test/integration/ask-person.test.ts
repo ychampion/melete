@@ -512,6 +512,7 @@ withDb('the agent asks the person and waits for the answer', () => {
       evidence: [],
     });
     const card = required((await quickAnswers()).find((entry) => entry.conversation_id === id));
+    expect(card.needs_answer).toBe(false);
     // Signed out, nothing changes.
     const anonymous = await required(app).request(`/quick-answers/${card.id}/dismiss`, {
       method: 'POST',
@@ -536,6 +537,6 @@ withDb('the agent asks the person and waits for the answer', () => {
         'Nothing is sent in the meantime.', true)`;
     const refused = await request(`/quick-answers/${blocking}/dismiss`, 'POST');
     expect(refused.status).toBe(409);
-    expect((await quickAnswers()).some((entry) => entry.id === blocking)).toBe(true);
+    expect((await quickAnswers()).find((entry) => entry.id === blocking)?.needs_answer).toBe(true);
   });
 });
