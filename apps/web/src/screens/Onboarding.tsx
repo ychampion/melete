@@ -62,8 +62,11 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   const [busy, setBusy] = useState(false);
   const [linking, setLinking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  // Said under the email field, where the missing address goes.
+  // Said under the field that needs fixing: toasts belong to the signed-in shell
+  // and never show here.
   const [emailProblem, setEmailProblem] = useState<string | null>(null);
+  const [passwordProblem, setPasswordProblem] = useState<string | null>(null);
+  const [codeProblem, setCodeProblem] = useState<string | null>(null);
   const phone = useMedia('(max-width: 900px)');
 
   useEffect(() => {
@@ -104,15 +107,16 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
       setEmailProblem('Enter your email address.');
       return;
     }
-    if (password.length < (creating ? NEW_PASSWORD_MIN : 8)) {
-      toast({
-        kind: 'err',
-        title: `The password needs at least ${creating ? NEW_PASSWORD_MIN : 8} characters.`,
-      });
+    if (creating ? password.length < NEW_PASSWORD_MIN : !password) {
+      setPasswordProblem(
+        creating
+          ? `Choose a password of at least ${NEW_PASSWORD_MIN} characters.`
+          : 'Enter your password.',
+      );
       return;
     }
     if (creating && codeRequired && !setupCode.trim()) {
-      toast({ kind: 'err', title: 'Enter the setup code for this installation.' });
+      setCodeProblem('Enter the setup code for this installation.');
       return;
     }
     setBusy(true);
@@ -436,14 +440,24 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                     <Input
                       icon="lock"
                       value={setupCode}
-                      onChange={(event) => setSetupCode(event.target.value)}
+                      onChange={(event) => {
+                        setSetupCode(event.target.value);
+                        setCodeProblem(null);
+                      }}
                       placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
                       width="100%"
                       height={44}
                       autoComplete="one-time-code"
                       spellCheck={false}
+                      error={codeProblem !== null}
+                      aria-invalid={codeProblem !== null}
                     />
                   </Field>
+                ) : null}
+                {creating && codeRequired && codeProblem ? (
+                  <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+                    {codeProblem}
+                  </span>
                 ) : null}
                 <Field label="Email">
                   <Input
@@ -472,13 +486,23 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                     type="password"
                     icon="lock"
                     value={password}
-                    onChange={(event) => setPassword(event.target.value)}
+                    onChange={(event) => {
+                      setPassword(event.target.value);
+                      setPasswordProblem(null);
+                    }}
                     placeholder={creating ? `At least ${NEW_PASSWORD_MIN} characters` : undefined}
                     width="100%"
                     height={44}
                     autoComplete={creating ? 'new-password' : 'current-password'}
+                    error={passwordProblem !== null}
+                    aria-invalid={passwordProblem !== null}
                   />
                 </Field>
+                {passwordProblem ? (
+                  <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+                    {passwordProblem}
+                  </span>
+                ) : null}
                 <Button size="lg" icon="chevronRight" block type="submit" loading={busy}>
                   {creating ? 'Create account' : 'Sign in'}
                 </Button>
