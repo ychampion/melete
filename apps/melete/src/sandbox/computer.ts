@@ -265,6 +265,24 @@ export class SandboxComputerService {
     return row;
   }
 
+  /**
+   * What a session id reaches. On a computer from before displays, the
+   * session itself. On one with displays, display 0, under the chat that has
+   * it: the session row names whichever chat's attempt holds the computer
+   * now, which need not be the chat on display 0. Nothing when display 0 is
+   * nobody's.
+   */
+  private async displayZero(
+    session: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined> {
+    const [first] = await this.sql`select id, display from sandbox_display
+      where provider_sandbox_id = ${String(session.provider_sandbox_id)}
+        and connection_id = ${String(session.connection_id)} and ended_at is null
+      order by display limit 1`;
+    if (!first) return session;
+    return Number(first.display) === 0 ? this.displayRow(String(first.id)) : undefined;
+  }
+
   /** The control key an id the routes take names, read before anything else about it. */
   private async keyOf(id: string): Promise<string | null> {
     const [shown] = await this.sql`select provider_sandbox_id, display from sandbox_display
@@ -280,7 +298,7 @@ export class SandboxComputerService {
     const [legacy] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session where id = ${sessionId} and status in ('ready', 'paused')`;
-    const row = legacy ?? (await this.displayRow(sessionId));
+    const row = legacy ? await this.displayZero(legacy) : await this.displayRow(sessionId);
     const binding = row ? this.bindingOf(row) : null;
     const reach = binding ? await this.reach(binding.jobId, principalId) : null;
     if (!binding || !reach || (need === 'steer' && reach !== 'steer'))
