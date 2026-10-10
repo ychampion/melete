@@ -72,6 +72,30 @@ describe('the upgrade reads the same Compose files and profiles as a deploy', ()
     );
   });
 
+  test('with the sandbox profile, the start waits on the services and leaves the one-shot image service out', () => {
+    const plan = (profiles: string[]) =>
+      upgradePlan({
+        ...parseArguments(
+          ['v1.0.0', ...profiles.flatMap((profile) => ['--profile', profile])],
+          new Date(),
+          '/home/owner',
+          '/srv/melete',
+        ),
+        project: 'melete',
+        fromCommit: 'a'.repeat(40),
+        fromBranch: 'main',
+        fromVersion: 'v0.9.0',
+      });
+    const start = (profiles: string[]) =>
+      plan(profiles)
+        .find((step) => step.phase === 'start')
+        ?.command.join(' ');
+    expect(start(['sandbox'])).toEndWith(
+      '--profile sandbox up -d --wait --wait-timeout 300 --scale sandbox-image=0',
+    );
+    expect(start([])).toEndWith('up -d --wait --wait-timeout 300');
+  });
+
   test('with an external database, the dump and the migration count use the database client', () => {
     const options = parseArguments(['v1.0.0', '--external-db'], new Date(), '/h', '/srv/melete');
     const lines = upgradePlan({

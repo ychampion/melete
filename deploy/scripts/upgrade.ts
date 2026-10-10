@@ -238,6 +238,20 @@ export const composeArguments = (overlays: Overlays) => [
 ];
 
 /**
+ * `up --wait` for the whole stack. Compose counts any container that exits as a
+ * failure, even with status 0, and the sandbox profile's sandbox-image service
+ * only names the agents' computer image and exits at once, so it is not started.
+ */
+const upAndWait = (overlays: Overlays, seconds: number) => [
+  'up',
+  '-d',
+  '--wait',
+  '--wait-timeout',
+  String(seconds),
+  ...((overlays.profiles ?? []).includes('sandbox') ? ['--scale', 'sandbox-image=0'] : []),
+];
+
+/**
  * Where a database client runs: inside the bundled postgres or, for an external
  * database, in a one-off database-client container, which has DATABASE_URL in
  * its environment so the address never reaches a command line.
@@ -384,14 +398,7 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
     {
       phase: 'start',
       title: 'Start the release and wait for every health check',
-      command: [
-        ...compose,
-        'up',
-        '-d',
-        '--wait',
-        '--wait-timeout',
-        String(context.waitTimeoutSeconds),
-      ],
+      command: [...compose, ...upAndWait(context, context.waitTimeoutSeconds)],
       timeoutMs: (context.waitTimeoutSeconds + 120) * 1000,
     },
     {
@@ -436,7 +443,7 @@ export function rollbackSteps(context: UpgradeContext): string[] {
           `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(`${context.backupDir}/database.dump`)}`,
         ]),
     `# Start only after the restore has finished, then check health and any waiting approval.`,
-    `${compose} up -d --wait --wait-timeout ${context.waitTimeoutSeconds}`,
+    `${compose} ${upAndWait(context, context.waitTimeoutSeconds).join(' ')}`,
     `${compose} ps`,
   ];
 }
