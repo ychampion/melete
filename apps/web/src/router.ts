@@ -49,3 +49,13 @@ export function navigate(path: string) {
 }
 
 export const href = (path: string) => `#${path}`;
+
+/** Said when the person asks for a new chat while a new chat is already open. */
+export const NEW_CHAT_AGAIN = 'melete:new-chat-again';
+
+/** Open a new chat; asked again on one already open, it says so, so the chat starts afresh. */
+export function newChat() {
+  if (window.location.hash.slice(1).split('?')[0] === '/chat/new')
+    window.dispatchEvent(new Event(NEW_CHAT_AGAIN));
+  else navigate('/chat/new');
+}

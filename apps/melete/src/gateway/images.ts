@@ -71,15 +71,15 @@ function visit(value: unknown, found: (data: string) => void): void {
 
 /**
  * How many pictures a request carries, refusing one it may not: more than a
- * request may hold, one larger than the runtime ever sends, or one whose
- * content is not base64.
+ * request may hold, one larger than `maxEncodedBytes` (by default, the most
+ * the runtime ever sends), or one whose content is not base64.
  */
-export function countImages(body: unknown): number {
+export function countImages(body: unknown, maxEncodedBytes = MAX_IMAGE_ENCODED_BYTES): number {
   let count = 0;
   visit(body, (data) => {
     count += 1;
     if (count > MAX_REQUEST_IMAGES) throw new GatewayError(413, 'too_many_images');
-    if (data.length > MAX_IMAGE_ENCODED_BYTES) throw new GatewayError(413, 'image_too_large');
+    if (data.length > maxEncodedBytes) throw new GatewayError(413, 'image_too_large');
     if (!BASE64.test(data)) throw new GatewayError(400, 'invalid_image');
   });
   return count;
@@ -204,11 +204,14 @@ function header(image: Node): Buffer {
  * The tokens a request's pictures are charged as, and the body to estimate the
  * rest from: the pictures' bytes are not text and are not counted as text.
  */
-export function imageTokens(body: Record<string, unknown>): {
+export function imageTokens(
+  body: Record<string, unknown>,
+  maxEncodedBytes = MAX_IMAGE_ENCODED_BYTES,
+): {
   tokens: number;
   text: Record<string, unknown>;
 } {
-  const count = countImages(body);
+  const count = countImages(body, maxEncodedBytes);
   return {
     tokens: count * IMAGE_INPUT_TOKENS,
     text: count ? withoutImages(body, '') : body,

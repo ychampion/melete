@@ -19,7 +19,7 @@
  * takes. Uploads per person are not limited unless the operator sets a limit.
  */
 import { z } from 'zod';
-import { MAX_IMAGE_ENCODED_BYTES } from './model-vision.ts';
+import { ATTACHED_IMAGE_MAX_EDGE, MAX_ATTACHED_IMAGE_BYTES } from './model-vision.ts';
 
 export const ATTACHMENT_LIMITS = {
   /** The largest file one upload may carry, unless the operator sets another. */
@@ -31,11 +31,12 @@ export const ATTACHMENT_LIMITS = {
   /** The most an operator may raise the files per message to. */
   per_message_ceiling: 100,
   /**
-   * The largest copy of a picture the model is shown: its base64 text fits the
-   * gateway's per-picture limit exactly. The browser makes this copy (at most
-   * `VISION_IMAGE_MAX_EDGE` on its longest side); the service checks it.
+   * The largest copy of a picture the model is shown. The browser makes this
+   * copy, at most `model_image_edge` on its longest side; the service checks it.
    */
-  model_image_bytes: Math.floor((MAX_IMAGE_ENCODED_BYTES * 3) / 4),
+  model_image_bytes: MAX_ATTACHED_IMAGE_BYTES,
+  /** The longest side of that copy, in pixels. */
+  model_image_edge: ATTACHED_IMAGE_MAX_EDGE,
   /** How much of a message's files' text goes into the model's prompt with it. */
   prompt_characters: 48_000,
   /** The most text kept from one file, for the prompt and for later reads. */
