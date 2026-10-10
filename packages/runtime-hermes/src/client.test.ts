@@ -29,6 +29,7 @@ import {
   PROGRESS_NOTES,
   renderInput,
   renderInstructions,
+  renderNow,
   renderSoul,
   SOURCE_QUALITY,
 } from './instructions.ts';
@@ -82,6 +83,11 @@ const bundle: AttemptBundle = {
 };
 
 const client = new HermesClient({ baseUrl: 'http://runtime:8790/', token: 'surrogate' });
+
+function required<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) throw new Error('fixture unavailable');
+  return value;
+}
 
 describe('request building', () => {
   test('start posts to /v1/runs with the surrogate token', () => {
@@ -243,6 +249,34 @@ describe('context assembly', () => {
       { role: 'user', content: 'Can you book Friday?', at: '2026-09-11T00:00:00Z' },
     ];
     expect(renderInput(room)).toContain('## From the person\n\nCan you book Friday?');
+  });
+
+  test('the moment is said in the person’s zone, with their likely city, in the volatile input', () => {
+    const grounded = structuredClone(bundle);
+    grounded.local_now = {
+      at: '2026-10-10T21:05:00.000Z',
+      time_zone: 'America/Los_Angeles',
+      city: 'Los Angeles',
+      zone_mismatch: null,
+    };
+    const input = renderInput(grounded);
+    expect(input).toContain(
+      '## Now\n\nIt is Saturday, October 10, 2026 at 2:05 PM for the person (America/Los_Angeles).',
+    );
+    expect(input).toContain('probably in or near Los Angeles');
+    expect(input.indexOf('## Now')).toBeLessThan(input.indexOf('## From the person'));
+    expect(renderInstructions(grounded)).not.toContain('2:05 PM');
+    expect(renderNow(undefined)).toEqual([]);
+    expect(renderNow({ ...required(grounded.local_now), time_zone: 'Mars/Olympus' })).toEqual([]);
+    const told = renderNow({
+      ...required(grounded.local_now),
+      city: null,
+      zone_mismatch: { profile: 'Asia/Kolkata', device: 'America/Los_Angeles', used: 'device' },
+    }).join('\n');
+    expect(told).not.toContain('probably in or near');
+    expect(told).toContain(
+      "Their profile says Asia/Kolkata but their device is set to America/Los_Angeles. Times here use their device's America/Los_Angeles, not their profile's Asia/Kolkata.",
+    );
   });
 
   test('the instructions ask for the original source and for each link once', () => {

@@ -39,6 +39,7 @@ import {
   spaceAuthority,
   visibleJob,
 } from '../principals/authority.ts';
+import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
@@ -450,7 +451,10 @@ export class JobService {
     attachments: readonly string[] = [],
     /** Stretches of `text` the person pasted rather than typed, as their composer saw them. */
     pasted: readonly MessageSpan[] = [],
+    /** The zone the sender's device reported; time is read in it until the profile's is confirmed. */
+    clientTimeZone?: string,
   ): Promise<JobRow> {
+    const deviceZone = knownZone(clientTimeZone);
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
     // Words in a job are its own principal's. Membership of the job's space lets
@@ -522,6 +526,7 @@ export class JobService {
         ...(corrects ? { corrects } : {}),
         ...(files.length ? { attachments: files } : {}),
         ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
+        ...(deviceZone ? { client_time_zone: deviceZone } : {}),
       },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });

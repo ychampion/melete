@@ -80,6 +80,7 @@ import {
   type StoredSummary,
   storedSummary,
 } from './history-summary.ts';
+import { localNow } from './local-now.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
@@ -1089,6 +1090,8 @@ export async function buildAttemptSkeleton(
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
+  // The zone the attempt reads time in, which may be the device's (see local-now.ts).
+  const moment = await localNow(tx, row, await databaseNow(tx));
   return responsibilityAttemptBundle.parse({
     ...(persona
       ? {
@@ -1097,7 +1100,8 @@ export async function buildAttemptSkeleton(
             : agentIdentity(agentView(persona)),
         }
       : {}),
-    ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
+    ...(profile?.timeZone ? { time_zone: canonicalTimeZone(moment.time_zone) } : {}),
+    local_now: moment,
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
       : {}),

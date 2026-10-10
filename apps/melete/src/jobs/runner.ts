@@ -94,6 +94,7 @@ import {
   WAKE_GUARD_LIMIT,
   WAKE_GUARD_QUESTION,
 } from './wake-guard.ts';
+import { openWakeTurn } from './wake-turn.ts';
 import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -272,8 +273,11 @@ export class AttemptRunner {
         row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime()
       )
         return null;
+      // The state version the timer's own transition made: one per firing.
+      let timerFired: number | null = null;
       if (row.state === 'waiting_for_event_or_time') {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
+        timerFired = row.stateVersion;
       }
       if (row.state !== 'queued') return null;
       const [previous] = await tx
@@ -292,6 +296,8 @@ export class AttemptRunner {
         await pauseForWakes(tx, row);
         return null;
       }
+      // A conversation's own timer answers in a new message, at the time it fired.
+      if (timerFired) row = await openWakeTurn(tx, row, `timer:${timerFired}`);
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);

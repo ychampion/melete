@@ -401,6 +401,8 @@ export function renderInput(bundle: AttemptBundle): string {
 
   // The durable delta must reach the run's prompt, not just its service-side bundle.
   lines.push('', renderSinceLast(bundle.since_last));
+  // The moment changes every wake, so it is said here and never in the cached prefix.
+  lines.push(...renderNow(bundle.local_now));
 
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.
@@ -438,6 +440,45 @@ export function renderInput(bundle: AttemptBundle): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * The person's own date, time and weekday, and where they probably are. A
+ * reminder once gave the weather for the city a stale profile zone was named
+ * for, and the model had no clock of its own to say "this evening" by.
+ */
+export function renderNow(now: AttemptBundle['local_now']): string[] {
+  if (!now) return [];
+  let said: string;
+  try {
+    said = new Intl.DateTimeFormat('en-US', {
+      timeZone: now.time_zone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(now.at));
+  } catch {
+    return [];
+  }
+  const lines = ['', '## Now', '', `It is ${said} for the person (${now.time_zone}).`];
+  if (now.city)
+    lines.push(
+      `They are probably in or near ${now.city}, the city their time zone is named for. A place they name, or one you know they are in, comes first; for anything local (weather, travel, opening hours) say which place you used.`,
+    );
+  const mismatch = now.zone_mismatch;
+  if (mismatch) {
+    const [used, other] =
+      mismatch.used === 'profile'
+        ? [`their profile's ${mismatch.profile}`, `their device's ${mismatch.device}`]
+        : [`their device's ${mismatch.device}`, `their profile's ${mismatch.profile}`];
+    lines.push(
+      `Their profile says ${mismatch.profile} but their device is set to ${mismatch.device}. Times here use ${used}, not ${other}. Mention the difference once, in one short sentence, and suggest they fix their time zone in Settings if it is wrong.`,
+    );
+  }
+  return lines;
 }
 
 /**

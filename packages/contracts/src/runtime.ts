@@ -299,6 +299,27 @@ export const attemptBundle = z.object({
   identity: z.string().max(1000).optional(),
   /** The person's IANA time zone, so dates the model reads and writes are theirs. */
   time_zone: z.string().min(1).max(64).optional(),
+  /**
+   * When and where this attempt starts, for the model's volatile input: the
+   * moment the attempt was claimed, the zone it is read in, the city that zone
+   * is named for, and a difference between the profile's zone and the person's
+   * device, reported once.
+   */
+  local_now: z
+    .object({
+      at: z.string().datetime({ offset: true }),
+      time_zone: z.string().min(1).max(64),
+      city: z.string().min(1).max(80).nullable(),
+      zone_mismatch: z
+        .object({
+          profile: z.string().min(1).max(64),
+          device: z.string().min(1).max(64),
+          /** Which of the two this attempt reads time in. */
+          used: z.enum(['profile', 'device']),
+        })
+        .nullable(),
+    })
+    .optional(),
   attempt: z.object({
     id: prefixedId(ID_PREFIXES.attempt),
     job_id: prefixedId(ID_PREFIXES.job),

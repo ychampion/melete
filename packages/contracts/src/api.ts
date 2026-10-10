@@ -177,6 +177,8 @@ export const postMessageRequest = z
       .optional(),
     /** Stretches of `text` the person pasted rather than typed, when their composer can tell. */
     pasted: z.array(messageSpan).max(MESSAGE_SPAN_LIMIT).optional(),
+    /** The time zone the sender's device is set to, by name, when it says. */
+    time_zone: z.string().min(1).max(64).optional(),
   })
   .refine((value) => value.text.length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',

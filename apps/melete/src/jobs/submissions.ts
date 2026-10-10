@@ -328,6 +328,7 @@ export class SubmissionService {
                 postMessageRequest.parse(parsed.data).corrects,
                 postMessageRequest.parse(parsed.data).attachments,
                 postMessageRequest.parse(parsed.data).pasted,
+                postMessageRequest.parse(parsed.data).time_zone,
               ),
         );
       } catch (error) {
