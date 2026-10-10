@@ -356,6 +356,21 @@ withDb('a display per chat on the agent computer', () => {
     expect(kept?.ended_at).toBeNull();
   }, 60_000);
 
+  test('a chat does not join a computer whose only chat has ended, which may be suspending', async () => {
+    const s = await setup();
+    const flights = await s.chat('Flights to Lisbon');
+    const groceries = await s.chat('Weekly groceries');
+    await flights.open('https://flights.example/lisbon');
+    // The turn has ended and its computer is not settled yet: nothing else is on it.
+    await flights.endTurn();
+    await groceries.open('https://shop.example/basket');
+    // It was suspended as the ended turn's, and resumed for this chat, not joined.
+    expect(s.provider.calls.pause).toBe(1);
+    const [row] = await s.sql`select attempt_id from sandbox_session
+      where space_id = ${s.scope.spaceId} and status = 'ready'`;
+    expect(row?.attempt_id).toBe(groceries.attempt());
+  }, 60_000);
+
   test("a chat's display ends with the chat, and a stop ends only that chat's", async () => {
     const s = await setup();
     const flights = await s.chat('Flights to Lisbon');
