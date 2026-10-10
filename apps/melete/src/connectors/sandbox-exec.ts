@@ -45,6 +45,7 @@ import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { serviceOfUrl } from '../paths/services.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
+import { CHECK_LEFT_BY_OTHER_WORK, screenCheckIsThisWorks } from '../sandbox/check-screen.ts';
 import {
   checkSandboxConfiguration,
   probeSandboxProvider,
@@ -826,8 +827,30 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           ? { challengeWaitMs: options.challengeWaitMs }
           : {}),
       });
+      const shown = detail.control_changed ? null : challengeShown(detail.screen_text ?? null);
+      // A check on a page that other work left on a shared computer is not this work's: the
+      // agent is told to open its own page instead.
+      const ours =
+        !shown ||
+        (await screenCheckIsThisWorks(sql, {
+          jobId: ctx.job_id,
+          connectionId: action.connection_id,
+          computerId:
+            typeof detail.computer_id === 'string' ? detail.computer_id : session.providerSandboxId,
+          current: {
+            kind: action.kind,
+            payload: action.canonical_payload as Record<string, unknown>,
+          },
+          screen: detail.screen_text ?? null,
+        }).catch((error: unknown) => {
+          process.stderr.write(
+            `earlier steps on the computer could not be read: ${String(error)}\n`,
+          );
+          return true;
+        }));
+      if (!ours) detail.next_step = CHECK_LEFT_BY_OTHER_WORK;
       // A check only a person can pass ends the agent's turn here, with a card for them.
-      const challenge = detail.control_changed ? null : challengeShown(detail.screen_text ?? null);
+      const challenge = ours ? shown : null;
       if (challenge) {
         const screen = detail.screen_text as Record<string, JsonValue>;
         // A check still there after the person handed the computer back, as

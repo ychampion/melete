@@ -1,3 +1,5 @@
+import { CHECK_PAGES, SIGN_IN_PAGES } from './real-pages.ts';
+
 export const BROWSER_VARIANTS = [
   'baseline',
   'reordered',
@@ -33,6 +35,17 @@ export function startBrowserFixture() {
           { headers: { 'content-type': 'text/html' } },
         );
       }
+      if (url.pathname.startsWith('/page/')) {
+        const name = url.pathname.slice('/page/'.length);
+        const html = Object.hasOwn(SIGN_IN_PAGES, name)
+          ? SIGN_IN_PAGES[name]
+          : Object.hasOwn(CHECK_PAGES, name)
+            ? CHECK_PAGES[name]
+            : undefined;
+        return html
+          ? new Response(html, { headers: { 'content-type': 'text/html' } })
+          : new Response('Not found', { status: 404 });
+      }
       if (!url.pathname.startsWith('/form/')) return new Response('Not found', { status: 404 });
       const variant = url.pathname.slice('/form/'.length);
       const emailLabel = variant === 'renamed_label' ? 'Email address' : 'Email';
@@ -46,10 +59,17 @@ export function startBrowserFixture() {
         variant === 'unknown_required'
           ? '<label for="year">Birth year</label><input id="year" name="year" required>'
           : '';
+      // A password and a code; a password alone, empty; or a password already holding something.
+      const password = (value: string) =>
+        `<label for="password">Password</label><input id="password" type="password" autocomplete="current-password"${value ? ` value="${value}"` : ''}>`;
       const auth =
         variant === 'credentials'
-          ? '<label for="password">Password</label><input id="password" type="password" autocomplete="current-password"><label for="otp">Verification code</label><input id="otp" autocomplete="one-time-code">'
-          : '';
+          ? `${password('')}<label for="otp">Verification code</label><input id="otp" autocomplete="one-time-code">`
+          : variant === 'password_only'
+            ? password('')
+            : variant === 'password_held'
+              ? password('typed-by-the-person')
+              : '';
       // One more field, labelled as the test asks: a secret's label, or an ordinary one.
       const labelled = (url.searchParams.get('label') ?? '').replace(/[^A-Za-z0-9 '/-]/g, '');
       const named =

@@ -67,7 +67,8 @@ suite('a person in the live session against real Chromium', () => {
   test('a scripted person types into the fixture password field and the page receives it', () => {
     const { result } = state;
     expect(result.error).toBeUndefined();
-    expect(result.agent_open).toBe('sensitive_input_require_takeover');
+    // The agent looks at the sign-in page; only typing the password is the person's.
+    expect(result.agent_open).toBe('accepted');
     expect(result.first_frame).toBe(true);
     expect(result.password_field).toBe(SIGN_IN.password);
     const signIn = requests('app', '/signin').filter((request) => request.method === 'POST');

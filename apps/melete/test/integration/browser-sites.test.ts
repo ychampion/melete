@@ -319,12 +319,11 @@ suite('the sites a space is signed in to', () => {
     expect(after.cookie).not.toContain('session=signed-in');
     expect(after.tree).toContain('signed out');
     expect(after.tree).toContain('not remembered');
-    // The site the person had signed in to asks for a password again.
-    const account = await command({ kind: 'open', url: `${fixture.app}/account` }).then(
-      () => 'observed',
-      (error: Error) => (error as Error & { reason?: string }).reason ?? error.message,
-    );
-    expect(account).toBe('sensitive_input_require_takeover');
+    // The site the person had signed in to asks for a password again: the agent sees its
+    // sign-in page, whose password field is the person's.
+    const account = await command({ kind: 'open', url: `${fixture.app}/account` });
+    expect(account.observation?.url).toBe(`${fixture.app}/signin`);
+    expect(account.result?.secret_fields).toBe(true);
     const refused = await call('/browser/sites/Not%20A%20Domain', { method: 'DELETE' });
     expect(refused.status).toBe(400);
   }, 120_000);
