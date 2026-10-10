@@ -284,6 +284,12 @@ export const adapter = {
     guard<{ owner: SignedInOwner }>(() => api.POST('/login', { body: { email, password } })),
   magicLink: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
+  /** Whether a sign-in link still works, and whose account it opens. Spends nothing. */
+  checkMagicLink: (token: string) =>
+    guard<{ status: 'ok'; masked_email: string }>(() =>
+      api.POST('/signin/magic-link/check', { body: { token } }),
+    ),
+  /** Uses a sign-in link once: only when the person presses Sign in. */
   consumeMagicLink: (token: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   /** Ends the session; the next request needs a new sign-in. */
