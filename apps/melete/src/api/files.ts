@@ -53,6 +53,9 @@ const LIST_LIMIT = 500;
  */
 const BROWSER_STEP = /^browser\/art_[A-Za-z0-9]+\.(?:txt|png)$/;
 
+/** Melete's own working folder in a chat's workspace. */
+const WORKING_FOLDER = /^\.melete\//;
+
 const noFile = () => new ServiceError('not_found', 'There is no such file.', 404);
 
 type Scope = { spaceId: string; principalId: string | undefined };
@@ -152,11 +155,16 @@ function fromAction(row: { action: typeof action.$inferSelect; job: JobRow }): F
   };
 }
 
-/** A browser step's capture, which is the browser's working record rather than the person's file. */
-const browserStep = (found: Found) =>
-  found.id.startsWith(`${ID_PREFIXES.artifact}_`) &&
-  found.row.sourceJobId === null &&
-  BROWSER_STEP.test(found.row.path);
+/**
+ * A record of Melete's own working, rather than the person's file: a browser
+ * step's capture, or anything under the `.melete/` folder, such as the full
+ * output of a command kept beside a chat.
+ */
+const workingRecord = (found: Found) =>
+  WORKING_FOLDER.test(found.row.path) ||
+  (found.id.startsWith(`${ID_PREFIXES.artifact}_`) &&
+    found.row.sourceJobId === null &&
+    BROWSER_STEP.test(found.row.path));
 
 /** One record by its id, when this person may see it; null otherwise. */
 async function oneRecord(db: Database, scope: Scope, id: string): Promise<Found | null> {
@@ -257,7 +265,7 @@ export function mountFiles(
       ...artifacts.map(fromArtifact),
       ...actions.flatMap((row) => fromAction(row) ?? []),
     ]
-      .filter((found) => !browserStep(found))
+      .filter((found) => !workingRecord(found))
       .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime());
     // One file saved twice, or recorded both as an artifact and a write, is listed once, at its newest.
     const newest = new Map<string, { found: Found; where: ReturnType<typeof placeOf> }>();
@@ -318,7 +326,7 @@ export function mountFiles(
     const scope = await scopeOf(c, resolveSpace);
     const id = c.req.param('id');
     const found = await oneRecord(db, scope, id);
-    if (!found || browserStep(found)) throw noFile();
+    if (!found || workingRecord(found)) throw noFile();
     let target: { place: TrashPlace; path: string };
     try {
       target = await trashFor(roots, scope.spaceId, found);
@@ -365,7 +373,7 @@ export function mountFiles(
     if (!body.success)
       throw new ServiceError('invalid_request', 'Name the trash to restore from.', 400);
     const found = await oneRecord(db, scope, c.req.param('id'));
-    if (!found || browserStep(found)) throw noFile();
+    if (!found || workingRecord(found)) throw noFile();
     let target: { place: TrashPlace; path: string };
     try {
       target = await trashFor(roots, scope.spaceId, found);

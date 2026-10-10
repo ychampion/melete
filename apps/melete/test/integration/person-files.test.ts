@@ -169,7 +169,7 @@ databaseTest('a file made in a chat’s own folder and a file sent in chat are l
 });
 
 databaseTest(
-  'the browser’s step captures are left out; other files in browser/ are not',
+  'the browser’s captures and Melete’s working folder are left out; other files are not',
   async () => {
     const capture = recordId('art');
     await mkdir(inFiles('browser'), { recursive: true });
@@ -178,10 +178,19 @@ databaseTest(
     values (${capture}, ${spaceId}, ${jobId}, ${`browser/${capture}.txt`}, ${hash('page tree')},
       'text/plain', 9)`;
     const kept = await savedInFiles('browser/boarding-pass.pdf', '%PDF boarding\n');
+    // The full output of a command, kept in the chat's own working folder.
+    const output = recordId('art');
+    await mkdir(join(workRoot, jobId, '.melete', 'exec'), { recursive: true });
+    await writeFile(join(workRoot, jobId, '.melete', 'exec', 'act_1.out'), 'build log');
+    await sql()`insert into artifact
+      (id, space_id, job_id, source_job_id, area, path, content_hash, mime, size)
+      values (${output}, ${spaceId}, ${jobId}, ${jobId}, 'work', '.melete/exec/act_1.out',
+        ${hash('build log')}, 'text/plain', 9)`;
     const { files } = await list();
-    expect(files?.some((file) => file.id === capture)).toBe(false);
+    expect(files?.some((file) => file.id === capture || file.id === output)).toBe(false);
     expect(files?.some((file) => file.id === kept)).toBe(true);
     expect((await remove(capture)).status).toBe(404);
+    expect((await remove(output)).status).toBe(404);
   },
 );
 
