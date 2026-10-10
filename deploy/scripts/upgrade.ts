@@ -455,7 +455,7 @@ export type PreflightFacts = {
    */
   repositoryRoot: string;
   repositoryPrefix: string | null;
-  /** `git status --porcelain` of the repository. */
+  /** `git status --porcelain` of the repository's tracked files. */
   status: string;
   tagCommit: string | null;
   headCommit: string;
@@ -630,7 +630,9 @@ export async function gatherPreflight(
   };
   const target = `refs/tags/${options.tag}`;
   const repositoryPrefix = await text(['git', 'rev-parse', '--show-prefix']);
-  const status = (await run(['git', 'status', '--porcelain'])).stdout;
+  // Untracked files are left out, as `melete deploy` leaves them out: the deploy
+  // file `melete init` writes is one, and checking out the tag keeps them.
+  const status = (await run(['git', 'status', '--porcelain', '--untracked-files=no'])).stdout;
   const tagCommit = await text(['git', 'rev-parse', '--verify', '--quiet', `${target}^{commit}`]);
   const headCommit = (await text(['git', 'rev-parse', 'HEAD'])) ?? '';
   const fromBranch = await text(['git', 'symbolic-ref', '-q', '--short', 'HEAD']);
