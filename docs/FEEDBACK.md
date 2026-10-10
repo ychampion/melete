@@ -87,7 +87,7 @@ The command only reads. With the Docker Compose install, run it inside the
 service container, where `DATABASE_URL` is already set:
 
 ```sh
-docker compose exec melete bun run feedback show FB-7K3Q
+docker compose -f deploy/docker-compose.yml exec melete bun run feedback show FB-7K3Q
 # or, from the checkout, for this or a remote installation:
 bun run melete feedback show FB-7K3Q
 bun run melete remote my-vm feedback

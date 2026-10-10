@@ -7290,7 +7290,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Liveness and dependency check */
+        /**
+         * Liveness and dependency check
+         * @description Answers 503 with the same body while the database is unreachable, so an uptime monitor or a load balancer sees the outage without reading the body.
+         */
         get: {
             parameters: {
                 query?: never;
@@ -7335,6 +7338,13 @@ export interface paths {
                             version: string;
                         };
                     };
+                };
+                /** @description The database is unreachable; the body is the same report, with status degraded */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };

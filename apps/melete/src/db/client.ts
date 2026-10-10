@@ -131,12 +131,25 @@ export function openDatabase(
   };
 }
 
-/** Used by /health. Returns false rather than throwing, so health stays a report. */
-export async function pingDatabase(handle: DatabaseHandle): Promise<boolean> {
+/**
+ * Used by /health. Returns false rather than throwing, so health stays a report,
+ * and false after `timeoutMs`: with the server gone, a query waits for the
+ * connection timeout, and a health check that hangs is read as no answer at all.
+ */
+export async function pingDatabase(handle: DatabaseHandle, timeoutMs = 2000): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
   try {
-    await handle.sql`select 1`;
-    return true;
-  } catch {
-    return false;
+    return await Promise.race([
+      Promise.resolve(handle.sql`select 1`).then(
+        () => true,
+        () => false,
+      ),
+      late,
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

@@ -6,9 +6,12 @@ procedure on this page; `--dry-run` prints every command it would run, and the
 rollback, without executing any of them.
 
 From a checkout that has the melete command, `bun run melete upgrade <tag>`
-runs the checkout's `upgrade.ts` with the overlay files named in
-`deploy/melete.deploy.json`, under the deployment lock, and records the run in
-`deploy/.melete/history.jsonl`. An installation that runs the published images
+does the steps below for you: it fetches the tag if this clone lacks it, takes
+the release's own `upgrade.ts` out of the tag with `git archive`, and runs that
+copy with every overlay file and profile named in `deploy/melete.deploy.json`
+(the browser and tailnet files, the sandbox profile, an external database and
+an S3 blob store), under the deployment lock. It records the run in
+`deploy/.melete/history.jsonl` and removes the copy afterwards. An installation that runs the published images
 updates with `bun run melete deploy` ([DEPLOYMENT.md](DEPLOYMENT.md#update)).
 
 Read the target release's [changelog](../CHANGELOG.md) entry first. Releases are
@@ -106,6 +109,10 @@ non-zero when the preflight found a problem; the plan is printed either way.
 | `--backup-dir /absolute/parent` | Parent directory for this run's backup. Default: `~/melete-backups`. It must exist. |
 | `--browser` | Include `deploy/docker-compose.browser.yml` in every Compose command and stop the browser worker with the other writers. Use it if you start the stack with that override. |
 | `--tailscale` | Include `deploy/docker-compose.tailscale.yml` in every Compose command and stop the Tailscale node with the other writers. Use it if you start the stack with that override. |
+| `--tailscale-kernel` | Also include `deploy/docker-compose.tailscale-kernel.yml`, read on top of the Tailscale file. Needs `--tailscale`. |
+| `--external-db` | Include `deploy/docker-compose.external-db.yml`. The database is dumped, sized and checked through the `database-client` service rather than a bundled `postgres`, and the rollback restores the dump into that server. |
+| `--blobs-s3` | Include `deploy/docker-compose.blobs-s3.yml`, read last, so the service keeps its blobs in the bucket. |
+| `--profile sandbox` | Run every Compose command with the sandbox profile, so the agents' computer image is rebuilt with the release and its running image is kept for a rollback. |
 | `--wait-timeout seconds` | How long `up --wait` may take. Default 300. Image builds are not bounded by it. |
 | `--repository /absolute/path` | The installation to upgrade: the top of the checkout it was cloned into. Default: the checkout the script itself is in. |
 
@@ -131,8 +138,8 @@ Nothing is stopped or written until every check passes:
   descends from it.
 - **Docker Engine and Compose versions**, judged the same way the service and
   the configuration generator judge them.
-- **The stack**: the `postgres` service is running and the `melete` service has
-  a container to archive from.
+- **The stack**: the `postgres` service is running (unless the database is
+  external) and the `melete` service has a container to archive from.
 - **The browser worker image**, with `--browser`: `<project>-browser:latest`
   exists, so the backup can keep it for a rollback.
 - **Disk space**: at least 8 GiB free on Docker's data filesystem for the

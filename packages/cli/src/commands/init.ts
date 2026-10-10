@@ -10,6 +10,10 @@
  * commands and writes that one file; deploy/.env and the stack are left as
  * they are.
  *
+ * `--public-url https://…` sets the public address and the web origin together;
+ * with `--hosted` the new file also says `"hosted": true`, so `check` and
+ * `status` require what an installation for other people needs.
+ *
  * Either refuses, with nothing changed, when deploy/melete.deploy.json exists.
  * `--min-free-mb` and `--pull-margin-mb` set the disk floors in the new file.
  */
@@ -139,7 +143,11 @@ export function adoptedConfig(
   const overlays = (Object.entries(OVERLAY_FILES) as [Overlay, string][])
     .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
     .map(([name]) => name);
-  const sandbox = names.has('sandbox-image') || env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
+  // sandbox-image keeps no container, except one an older Compose file started.
+  const sandbox =
+    names.has('sandbox-image') ||
+    env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker' ||
+    (env.COMPOSE_PROFILES ?? '').split(',').some((profile) => profile.trim() === 'sandbox');
   const setting = (name: string) => env[name]?.trim() || undefined;
   const bucket = setting('MELETE_BLOB_S3_BUCKET');
   if (files.has(BLOBS_S3_FILE) && !bucket)
@@ -236,9 +244,11 @@ export async function runInit(context: Context, args: readonly string[]): Promis
       try {
         const env = parseEnvFile(readFileSync(envPath, 'utf8'));
         const tailscale = options.configure.includes('--tailscale');
+        const hosted = options.configure.includes('--hosted');
         const config = configFromEnv(env, {
           overlays: tailscale ? ['tailscale'] : [],
           disk: { min_free_mb: 4096, pull_margin_mb: 512, ...options.disk },
+          ...(hosted ? { hosted: true } : {}),
         });
         await createDeployConfig(context.deployDir, config);
         context.out(`Wrote ${DEPLOY_FILE}.\n`);

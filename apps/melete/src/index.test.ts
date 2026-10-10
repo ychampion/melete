@@ -43,10 +43,13 @@ describe('health', () => {
     expect(body.database).toBe('not_configured');
   });
 
-  test('reports degraded when the database is unreachable', async () => {
+  test('answers 503, still with its report, when the database is unreachable', async () => {
     const res = await testApp('unreachable').request('/health');
-    const body = (await res.json()) as { status: string };
+    // An uptime monitor that reads only the status code sees the outage.
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { status: string; database: string };
     expect(body.status).toBe('degraded');
+    expect(body.database).toBe('unreachable');
   });
 
   test('a sign-in request is dropped once its body is too big, not read whole', async () => {
