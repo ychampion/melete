@@ -27,7 +27,7 @@ import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
 import { PeopleTab } from './People.tsx';
-import { PrivacyTab } from './Privacy.tsx';
+import { PrivacyTab, SignedInSites } from './Privacy.tsx';
 import './settings.css';
 
 const dateOf = (iso: string | null) =>
@@ -432,7 +432,12 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             />
           </div>
         )}
-        {current === 'privacy' ? <PrivacyTab /> : null}
+        {current === 'privacy' ? (
+          <div className="col" style={{ gap: 14 }}>
+            <PrivacyTab />
+            <SignedInSites />
+          </div>
+        ) : null}
         {current === 'activity' ? <ActivityTab /> : null}
         {current === 'people' ? (
           <PeopleTab

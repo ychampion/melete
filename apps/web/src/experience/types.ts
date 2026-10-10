@@ -103,6 +103,14 @@ export type LearnedItem = LearnedList['items'][number];
 export type LearnedChange = NonNullable<LearnedList['last_change']>;
 export type LearnedItemResult = Ok<paths['/learned/{id}/pause'], 'post'>;
 export type EngineSkill = Ok<paths['/engine-skills'], 'get'>['skills'][number];
+/** A standing "don't do this" on a skill Melete wrote, until the person lifts it. */
+export type SkillProhibition = Ok<
+  paths['/engine-skills/prohibitions'],
+  'get'
+>['prohibitions'][number];
+/** One file Melete holds for the person, and what a delete of one gives back. */
+export type PersonFile = Ok<paths['/files'], 'get'>['files'][number];
+export type PersonFileDeleted = Ok<paths['/files/{id}'], 'delete'>;
 /** One of the person's own skills, read whole, with the version a change must name. */
 export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];
 export type OwnSkillEdit = Body<paths['/own-skills/{name}/edit'], 'post'>;
@@ -177,7 +185,8 @@ export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[nu
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;
 export type ConnectionInstalled = Ok<paths['/connections'], 'post'>;
 export type ConnectionChecked = Ok<paths['/connections/{connectionId}/health'], 'post'>;
-export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
+/** A site the agent's browser is signed in to. */
+export type BrowserSite = Ok<paths['/browser/sites'], 'get'>['sites'][number];
 /** What a conversation's agent is doing on its computer: its browser and its terminal. */
 export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
 export type ComputerBrowser = NonNullable<AgentComputer['browser']>;

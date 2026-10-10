@@ -24,6 +24,7 @@ import { mountAuth } from './api/auth.ts';
 import { connectorLiveness, mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
+import { mountFiles } from './api/files.ts';
 import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
@@ -369,6 +370,15 @@ export function createApp(deps: AppDeps) {
       deps.db,
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
+    );
+  // The person's files in one list, deleted into the same trash the files tools use.
+  if (deps.db)
+    mountFiles(
+      app,
+      deps.db,
+      { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+      personalSpace,
+      { days: deps.env.MELETE_TRASH_DAYS, maxBytes: deps.env.MELETE_TRASH_MAX_MB * 1024 * 1024 },
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql)

@@ -10,6 +10,9 @@ import {
   engineSkillApprovalRequest,
   engineSkillEditRequest,
   engineSkillListResponse,
+  engineSkillProhibitionListResponse,
+  type engineSkillProhibitionRecord,
+  engineSkillProhibitionResponse,
   type engineSkillRecord,
   engineSkillResponse,
   type LearnedAction,
@@ -330,7 +333,35 @@ export function mountLearnedMock(app: Hono, deps: AppDeps): void {
     const { entry, response } = engine(c, 'stop');
     if (!entry) return response;
     setState(entry, 'reverted', 'You said not to do this.');
+    const prohibition = {
+      id: newId('esp'),
+      space_id: deps.spaceId,
+      name: entry.item.name,
+      body_sha256: hashOf(entry.body),
+      reason: body.value.reason,
+      source_skill_id: entry.item.id,
+      created_at: new Date().toISOString(),
+    };
+    prohibitions.set(prohibition.id, prohibition);
     return c.json(engineSkillResponse.parse({ skill: skillOf(entry) }));
+  });
+
+  // What the person said not to do, until they allow it again.
+  const prohibitions = new Map<string, z.infer<typeof engineSkillProhibitionRecord>>();
+  app.get('/engine-skills/prohibitions', (c) => {
+    if (c.req.query('space_id') !== deps.spaceId)
+      return c.json(fail('scope_denied', 'This space is not yours to read.'), 403);
+    return c.json(
+      engineSkillProhibitionListResponse.parse({ prohibitions: [...prohibitions.values()] }),
+    );
+  });
+  app.post('/engine-skills/prohibitions/:id/lift', async (c) => {
+    const body = await read(c, learningSpaceRequest);
+    if (!body.ok) return body.response;
+    const prohibition = prohibitions.get(c.req.param('id'));
+    if (!prohibition) return c.json(fail('not_found', 'Prohibition not found.'), 404);
+    prohibitions.delete(prohibition.id);
+    return c.json(engineSkillProhibitionResponse.parse({ prohibition }));
   });
 
   // The person's own skills: files the agent saved for them, read whole here,

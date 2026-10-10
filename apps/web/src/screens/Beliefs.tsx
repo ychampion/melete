@@ -11,6 +11,7 @@
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import {
   Badge,
   type BadgeTone,
@@ -19,6 +20,7 @@ import {
   IconButton,
   Input,
   TabsUnderline,
+  Toggle,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
@@ -843,6 +845,55 @@ function PortableActions({ onImported }: { onImported: () => void }) {
 
 type View = 'beliefs' | 'timeline' | 'lessons';
 
+/**
+ * Whether Melete learns from the person's chats at all. Off, it keeps what it
+ * already knows and learns nothing new from what they say.
+ */
+export function LearningSwitch() {
+  const loaded = useLoad(() => adapter.memorySettings(), []);
+  const [saving, setSaving] = useState(false);
+  if (loaded.error)
+    return <LoadError what="whether Melete learns" error={loaded.error} onRetry={loaded.reload} />;
+  if (!loaded.data) return null;
+  const on = loaded.data.capture;
+  const flip = async (next: boolean) => {
+    loaded.set({ capture: next });
+    setSaving(true);
+    const result = await adapter.saveMemorySettings(next);
+    setSaving(false);
+    if (result.data === null) {
+      loaded.set({ capture: !next });
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t save' });
+      return;
+    }
+    loaded.set(result.data);
+    toast({
+      kind: 'ok',
+      title: next ? 'Learning from your chats' : 'Not learning from your chats',
+    });
+  };
+  return (
+    <div className="card-12 row belief-learning">
+      <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+          Learn from my chats
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          {on
+            ? 'Melete notices what you tell it and keeps what matters, shown here.'
+            : 'Melete keeps what it already knows, and learns nothing new from what you say.'}
+        </span>
+      </div>
+      <Toggle
+        on={on}
+        disabled={saving}
+        label="Learn from my chats"
+        onChange={(next) => void flip(next)}
+      />
+    </div>
+  );
+}
+
 export function MemoryPanel(): ReactNode {
   const route = useRoute();
   const view =
@@ -866,6 +917,7 @@ export function MemoryPanel(): ReactNode {
         </div>
         <PortableActions onImported={() => setReloadKey((n) => n + 1)} />
       </div>
+      <LearningSwitch />
       {showDigest && current ? (
         <DigestCard
           digest={current}

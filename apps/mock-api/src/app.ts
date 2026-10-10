@@ -7,7 +7,7 @@
  * out, so a body the mock invents that the document does not describe is a 500
  * here rather than a surprise in the real service later.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   type ApiEvent,
@@ -50,6 +50,11 @@ import {
   knowledgeSearchQuery,
   knowledgeSearchResponse,
   ownerResponse,
+  type PersonFile,
+  personFileDeleted,
+  personFileList,
+  personFileRestore,
+  personFileRestored,
   personReactionRequest,
   postMessageRequest,
   proposeKnowledgeRequest,
@@ -466,6 +471,85 @@ export function createMockApp(deps: AppDeps) {
     );
     headers.set('content-length', String(entry.bytes.length));
     return new Response(Uint8Array.from(entry.bytes), { headers });
+  });
+
+  // The person's files, as the service lists them: saved files and artifacts,
+  // without the computer's and the browser's own captures.
+  const listedArtifact = (path: string) => !/^artifacts\/(?:browser|screens)\//.test(path);
+  app.get('/files', (c) => {
+    if (getCookie(c, 'melete_mock_session') !== mockSession)
+      return c.json(fail('unauthorized', 'A session is required.'), 401);
+    const files: PersonFile[] = [
+      ...[...store.savedFiles].map(([id, entry]) => ({
+        id,
+        name: entry.name,
+        path: entry.name,
+        place: 'files' as const,
+        mime: mimeForName(entry.name),
+        size: entry.bytes.length,
+        saved_at: entry.savedAt ?? new Date().toISOString(),
+        chat: entry.chat ?? null,
+        deletable: true,
+      })),
+      ...[...store.artifacts]
+        .filter(
+          ([, entry]) =>
+            entry.artifact.space_id === deps.spaceId && listedArtifact(entry.artifact.path),
+        )
+        .map(([id, entry]) => {
+          const path = entry.artifact.path.replace(/^artifacts\//, '');
+          return {
+            id,
+            name: path.split('/').at(-1) ?? path,
+            path,
+            place: 'files' as const,
+            mime: entry.artifact.mime,
+            size: entry.bytes.length,
+            saved_at: entry.artifact.created_at,
+            chat: null,
+            deletable: true,
+          };
+        }),
+    ].sort((a, b) => Date.parse(b.saved_at) - Date.parse(a.saved_at));
+    return c.json(personFileList.parse({ files }));
+  });
+
+  app.delete('/files/:id', (c) => {
+    if (getCookie(c, 'melete_mock_session') !== mockSession)
+      return c.json(fail('unauthorized', 'A session is required.'), 401);
+    const id = c.req.param('id');
+    const saved = store.savedFiles.get(id);
+    const artifact = store.artifacts.get(id);
+    if (!saved && !(artifact && listedArtifact(artifact.artifact.path)))
+      return c.json(fail('not_found', 'There is no such file.'), 404);
+    const trash = `del_${String(Date.now()).padStart(13, '0')}_${randomBytes(6).toString('hex')}`;
+    if (saved) {
+      store.savedFiles.delete(id);
+      store.trashedFiles.set(trash, { id, kind: 'saved', entry: saved });
+    } else if (artifact) {
+      store.artifacts.delete(id);
+      store.trashedFiles.set(trash, { id, kind: 'artifact', entry: artifact });
+    }
+    return c.json(
+      personFileDeleted.parse({
+        id,
+        trash_id: trash,
+        restorable_until: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      }),
+    );
+  });
+
+  app.post('/files/:id/restore', async (c) => {
+    if (getCookie(c, 'melete_mock_session') !== mockSession)
+      return c.json(fail('unauthorized', 'A session is required.'), 401);
+    const body = personFileRestore.safeParse(await c.req.json().catch(() => null));
+    const held = body.success ? store.trashedFiles.get(body.data.trash_id) : undefined;
+    if (!body.success || !held || held.id !== c.req.param('id'))
+      return c.json(fail('not_found', 'There is nothing in the trash to put back.'), 404);
+    store.trashedFiles.delete(body.data.trash_id);
+    if (held.kind === 'saved') store.savedFiles.set(held.id, held.entry);
+    else store.artifacts.set(held.id, held.entry);
+    return c.json(personFileRestored.parse({ id: held.id, restored: true }));
   });
 
   // ------------------------------------------------------------------

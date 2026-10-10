@@ -24,6 +24,7 @@ import { AgentsScreen } from './screens/Agents.tsx';
 import { AutomationsScreen } from './screens/Automations.tsx';
 import { ChatsScreen } from './screens/Chats.tsx';
 import { CompaniesScreen } from './screens/Companies.tsx';
+import { FilesScreen } from './screens/Files.tsx';
 import { HomeScreen } from './screens/Home.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PasswordResetScreen } from './screens/PasswordReset.tsx';
@@ -210,11 +211,9 @@ export function App() {
         calendar: Boolean(home.data && Array.isArray(home.data.upcoming)),
       }));
     });
-    void adapter.browserSession('probe').then((session) => {
-      setCapabilities((c) => ({
-        ...c,
-        browser: session.unavailable === null && session.error === null,
-      }));
+    // The signed-in sites are served only where the service has a browser.
+    void adapter.browserSites().then((sites) => {
+      setCapabilities((c) => ({ ...c, browser: sites.data !== null }));
     });
   }, [signedIn, refreshAgentsSoon, refreshConversations]);
 
@@ -335,7 +334,8 @@ export function App() {
     ],
   );
 
-  if (route.path === '/design') {
+  // The component sheet is for building the app, not part of it.
+  if (import.meta.env.DEV && route.path === '/design') {
     return (
       <AppContext.Provider value={value}>
         <div style={{ height: '100%', overflowY: 'auto' }}>
@@ -393,6 +393,8 @@ export function App() {
     screen = <CompaniesScreen />;
   } else if (head === 'runs') {
     screen = <WorkScreen key={second ?? 'all'} id={second ?? null} />;
+  } else if (head === 'files') {
+    screen = <FilesScreen />;
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'apps') {

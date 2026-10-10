@@ -339,3 +339,60 @@ export function artifactIdForAction(actionId: string): string {
   prefixedId(ID_PREFIXES.action).parse(actionId);
   return `${ID_PREFIXES.artifact}_${actionId.slice(ID_PREFIXES.action.length + 1)}`;
 }
+
+// --------------------------------------------------------------------------
+// the person's files
+// --------------------------------------------------------------------------
+
+/**
+ * Where a file in the person's list is: in their Files, in one of their
+ * conversations' own folders, or sent by them in a chat.
+ */
+export const PERSON_FILE_PLACES = ['files', 'chat', 'sent'] as const;
+export const personFilePlace = z.enum(PERSON_FILE_PLACES);
+export type PersonFilePlace = z.infer<typeof personFilePlace>;
+
+/** A trash folder a delete made, by its id. */
+export const trashId = z.string().regex(/^del_[0-9]{13}_[0-9a-f]{12}$/, 'must be a trash id');
+
+/**
+ * One file Melete holds for the person. `id` reads it: an artifact (`art_…`)
+ * and a files action (`act_…`) from their content routes, a file sent in chat
+ * (`file_…`) from the attachments route.
+ */
+export const personFile = z
+  .strictObject({
+    id: z.string().min(1).max(240),
+    name: z.string().min(1),
+    /** Where it is inside its place, folders included. */
+    path: z.string().min(1),
+    place: personFilePlace,
+    mime: z.string().min(1),
+    size: z.number().int().nonnegative(),
+    saved_at: timestamp,
+    /** The chat it came from, when there is one to open. */
+    chat: z.strictObject({ id: z.string(), title: z.string() }).nullable(),
+    /** Whether the person can delete it here. A file sent in chat goes with its chat. */
+    deletable: z.boolean(),
+  })
+  .meta({ id: 'PersonFile' });
+export type PersonFile = z.infer<typeof personFile>;
+
+export const personFileList = z
+  .strictObject({ files: z.array(personFile) })
+  .meta({ id: 'PersonFileList' });
+export type PersonFileList = z.infer<typeof personFileList>;
+
+export const personFileDeleted = z
+  .strictObject({ id: z.string(), trash_id: trashId, restorable_until: timestamp })
+  .meta({ id: 'PersonFileDeleted' });
+export type PersonFileDeleted = z.infer<typeof personFileDeleted>;
+
+export const personFileRestore = z
+  .strictObject({ trash_id: trashId })
+  .meta({ id: 'PersonFileRestore' });
+
+export const personFileRestored = z
+  .strictObject({ id: z.string(), restored: z.literal(true) })
+  .meta({ id: 'PersonFileRestored' });
+export type PersonFileRestored = z.infer<typeof personFileRestored>;

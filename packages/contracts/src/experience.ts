@@ -1205,17 +1205,6 @@ export const experienceConnectionList = z.strictObject({
 });
 /** Turns watching an account for changes on or off. */
 export const connectionWatching = z.strictObject({ on: z.boolean() });
-export const browserSession = z.strictObject({
-  id,
-  status: z.enum(['working', 'needs_you', 'done', 'stopped']),
-  url,
-  task_label: text,
-  preview_frame: url.nullable(),
-});
-export const browserResponse = z.strictObject({ session: browserSession });
-export const browserControl = z.strictObject({
-  control: z.enum(['take_control', 'resume', 'stop']),
-});
 /** How many recent commands a conversation's computer view carries. */
 export const COMPUTER_TERMINAL_LIMIT = 8;
 /** One command the agent ran in its sandbox, with what it printed, scrubbed and clipped. */
@@ -1266,19 +1255,6 @@ export const agentComputer = z.strictObject({
   available: z.strictObject({ browser: z.boolean(), terminal: z.boolean() }),
 });
 export type AgentComputer = z.infer<typeof agentComputer>;
-export const nowPlaying = z.strictObject({
-  title: text,
-  artist: text,
-  image: url.optional(),
-  playing: z.boolean(),
-  source_connection: id,
-});
-export const liveData = z.strictObject({
-  title: text,
-  value: text,
-  updated_at: date,
-  source_connection: id,
-});
 export const experienceSearchResult = z.strictObject({
   id,
   kind: z.enum(['conversation', 'plan', 'task', 'event', 'connection', 'action']),
@@ -1501,10 +1477,6 @@ export const experienceOperations = {
   'POST /password-reset': { request: passwordResetRequest, response: experienceOk },
   /** Sets a new password from a one-time link and signs out every session. */
   'POST /password-reset/consume': { request: passwordResetConsume, response: experienceOk },
-  'GET /browser/sessions/{id}': { response: browserResponse },
-  'POST /browser/sessions/{id}/control': { request: browserControl, response: browserResponse },
-  'GET /experience/now-playing': { response: nowPlaying },
-  'GET /experience/live-data': { response: liveData },
   'GET /search': {
     query: z.strictObject({ q: z.string().min(1).max(200) }),
     response: experienceSearch,
