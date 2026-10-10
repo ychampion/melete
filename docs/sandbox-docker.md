@@ -182,6 +182,12 @@ Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
 lost is still reported from that record after an idle stop.
 
+A computer whose container is gone but whose two volumes are still there, as
+after a restore onto a new machine, is stopped rather than lost: its next use
+makes the container again on those volumes, with its files and home folder.
+Its volumes go when the computer or its space is removed, when the retention
+below runs out, or once no session refers to them.
+
 A suspended workspace nobody resumes is removed after
 `MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS`, as with the other providers.
 
