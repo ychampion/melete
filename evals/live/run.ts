@@ -75,6 +75,7 @@ async function main() {
       rubric: { type: 'boolean', default: false },
       'keep-chats': { type: 'boolean', default: false },
       'hand-back': { type: 'string', default: '0' },
+      tier: { type: 'string' },
       list: { type: 'boolean', default: false },
     },
   });
@@ -85,11 +86,14 @@ async function main() {
           .map((entry) => entry.trim())
           .filter(Boolean)
       : null;
-  const tasks = select(TASKS, list(values.category), list(values.task));
+  const tiers = list(values.tier);
+  const tasks = select(TASKS, list(values.category), list(values.task)).filter(
+    (task) => !tiers || tiers.includes(task.tier),
+  );
   if (values.list) {
     for (const task of tasks)
       console.log(
-        `${task.id.padEnd(30)} ${task.category.padEnd(12)} ${task.budget_s}s  ${task.title}`,
+        `${task.id.padEnd(30)} ${task.tier.padEnd(9)} ${task.category.padEnd(12)} ${task.budget_s}s  ${task.title}${task.slot ? ` [slot: ${task.slot}]` : ''}`,
       );
     return;
   }
@@ -133,10 +137,12 @@ async function main() {
     stopped_for_spend: false,
     jobs: [],
     bars: [],
+    practice: [],
     cleanup: [],
   };
   const write = () => {
-    result.bars = scoreBars(result.jobs);
+    result.bars = scoreBars(result.jobs, 'real');
+    result.practice = scoreBars(result.jobs, 'practice');
     result.finished_at = new Date().toISOString();
     for (const [extension, body] of [
       ['json', `${JSON.stringify(result, null, 2)}\n`],
@@ -154,9 +160,12 @@ async function main() {
     if (/\./.test(site) && !(await reachable(`https://${site}`))) down.add(site);
   if (down.size) log(`sites not answering: ${[...down].join(', ')}`);
 
-  // The GitHub errand needs the agent's computer to reach the test account.
+  // The GitHub errands need the agent's computer to reach the test account.
   let installed: string | null = null;
-  if (tasks.some((task) => task.id === 'github-issue') && env.MELETE_BENCH_GITHUB_TOKEN) {
+  if (
+    tasks.some((task) => task.needs_env?.includes('MELETE_BENCH_GITHUB_TOKEN')) &&
+    env.MELETE_BENCH_GITHUB_TOKEN
+  ) {
     const existing = (await client.connections()).find((connection) =>
       /github/i.test(`${connection.label ?? ''} ${connection.name ?? ''}`),
     );
@@ -215,6 +224,7 @@ async function main() {
             job: index + 1,
             task: task.id,
             category: task.category,
+            tier: task.tier,
             site: task.site,
             outcome: 'error',
             reason: (caught as Error).message,
@@ -277,6 +287,7 @@ async function removeFiles(client: LiveClient, files: readonly string[]): Promis
   const task: Task = {
     id: 'clean-up',
     category: 'everyday',
+    tier: 'real',
     title: 'Clean up test files',
     site: 'none',
     budget_s: 300,

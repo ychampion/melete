@@ -3,7 +3,10 @@
  * writing the short report. Every number here is computed from the job records
  * alone, so a recorded result can be scored again without the install.
  */
-import type { Bar, JobRecord, RunResult } from './types.ts';
+import type { Bar, JobRecord, RunResult, Tier } from './types.ts';
+
+/** The real logged-in errands the errand bar is measured over. */
+export const REAL_ERRANDS = 20;
 
 export const BARS = {
   errands: { target: 0.8, label: 'Logged-in errands done end to end', show: '≥80%' },
@@ -32,16 +35,30 @@ export const duration = (seconds: number | null): string => {
   return `${(seconds / 60).toFixed(1)} min`;
 };
 
-export function scoreBars(jobs: readonly JobRecord[]): Bar[] {
+/**
+ * The bars, on one tier's jobs. On the real tier they are the bars; on the
+ * practice tier the same measures are a regression signal only.
+ *
+ * The errand bar needs the full set of real errands before it says pass or
+ * fail: with fewer available it reports the rate and says it is not measurable
+ * yet. On real sites every needs-you card is timed, since a real site may show a
+ * check anywhere; on practice sites only the ones on tasks built to meet a check.
+ */
+export function scoreBars(all: readonly JobRecord[], tier: Tier = 'real'): Bar[] {
+  const jobs = all.filter((job) => job.tier === tier);
   const errands = jobs.filter((job) => job.category === 'errand' && ran(job));
   const passed = errands.filter((job) => job.outcome === 'pass');
   const errandRate = errands.length ? passed.length / errands.length : null;
+  const available = new Set(errands.map((job) => job.task)).size;
+  const errandsMeasurable = tier === 'practice' || available >= REAL_ERRANDS;
 
-  // Every hand-off is timed; a check the steps showed with no card is a miss.
+  // Hand-offs are timed; a check the steps showed with no card is a miss.
   const checks = jobs
     .filter(ran)
     .flatMap((job) => [
-      ...(job.check_expected ? job.handoffs.map((handoff) => handoff.latency_s) : []),
+      ...(tier === 'real' || job.check_expected
+        ? job.handoffs.map((handoff) => handoff.latency_s)
+        : []),
       ...(job.unshown_check ||
       (job.category === 'human_check' && job.handoffs.length === 0 && job.outcome !== 'error')
         ? [null]
@@ -77,14 +94,19 @@ export function scoreBars(jobs: readonly JobRecord[]): Bar[] {
     status: ok === null ? 'not_measured' : ok ? 'pass' : 'fail',
   });
 
-  return [
+  const bars = [
     bar(
       'errands',
-      errandRate === null
-        ? '—'
-        : `${Math.round(errandRate * 100)}% (${passed.length}/${errands.length})`,
+      [
+        errandRate === null
+          ? '—'
+          : `${Math.round(errandRate * 100)}% (${passed.length}/${errands.length})`,
+        errandsMeasurable
+          ? ''
+          : `; ≥80% not measurable yet: ${available} of ${REAL_ERRANDS} real errands available`,
+      ].join(''),
       errands.length,
-      errandRate === null ? null : errandRate >= BARS.errands.target,
+      errandRate === null || !errandsMeasurable ? null : errandRate >= BARS.errands.target,
     ),
     bar(
       'handoff',
@@ -114,14 +136,31 @@ export function scoreBars(jobs: readonly JobRecord[]): Bar[] {
       approvalMedian === null ? null : approvalMedian <= BARS.approvals.target,
     ),
   ];
+  // Lookups on real sites are reported beside the bars, not judged by one.
+  const lookups = jobs.filter((job) => job.category === 'lookup' && ran(job));
+  if (lookups.length) {
+    const done = lookups.filter((job) => job.outcome === 'pass').length;
+    const handed = lookups.filter((job) => job.outcome === 'handed_off').length;
+    bars.splice(1, 0, {
+      id: 'lookups',
+      label: 'Real-site lookups done (read-only)',
+      target: 'reported',
+      value: `${done}/${lookups.length}${handed ? `, ${handed} handed to the person` : ''}`,
+      n: lookups.length,
+      status: 'info',
+    });
+  }
+  return bars;
 }
 
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
 
-/** The failures that would stop a person most: wrong outcomes first, then false claims, then the slowest. */
+/** The failures that would stop a person most: real tier first, then wrong outcomes, false claims, the slowest. */
 export function worst(jobs: readonly JobRecord[], count = 3): JobRecord[] {
+  // Real-tier failures come before any practice one.
   const weight = (job: JobRecord) =>
-    ({ error: 6, timeout: 5, fail: 4, handed_off: 3, pass: 0, skipped: -1, site_down: -1 })[
+    (job.tier === 'real' ? 10_000 : 0) +
+    { error: 6, timeout: 5, fail: 4, handed_off: 3, pass: 0, skipped: -1, site_down: -1 }[
       job.outcome
     ] *
       1000 +
@@ -157,22 +196,46 @@ export function renderReport(result: RunResult): string {
       `${mismatched.length} jobs ran on a different model than they are meant to be measured on (${wanted.join(', ')}); the install picks one model for every chat, so those need a run with it set.`,
     );
   }
+  const table = (bars: readonly Bar[]) => {
+    lines.push('| Bar | Target | Value | n | Status |');
+    lines.push('|---|---|---|---|---|');
+    for (const bar of bars)
+      lines.push(
+        `| ${bar.label} | ${bar.target} | ${cell(bar.value)} | ${bar.n} | ${bar.status.replace('_', ' ')} |`,
+      );
+  };
   lines.push('');
-  lines.push('## Bars');
+  lines.push('## Bars (real tier)');
   lines.push('');
-  lines.push('| Bar | Target | Value | n | Status |');
-  lines.push('|---|---|---|---|---|');
-  for (const bar of result.bars)
+  lines.push('Real sites and real accounts only. Practice-site jobs are never counted here.');
+  lines.push('');
+  table(result.bars);
+  const slots = result.jobs.filter(
+    (job) =>
+      job.tier === 'real' && job.outcome === 'skipped' && /^account not provided/.test(job.reason),
+  );
+  if (slots.length) {
+    lines.push('');
+    lines.push('Not covered yet:');
+    for (const job of slots) lines.push(`- ${job.task}: ${cell(job.reason)}`);
+  }
+  if (result.practice?.length && result.jobs.some((job) => job.tier === 'practice')) {
+    lines.push('');
+    lines.push('## Practice tier (regression only, not counted toward any bar)');
+    lines.push('');
     lines.push(
-      `| ${bar.label} | ${bar.target} | ${cell(bar.value)} | ${bar.n} | ${bar.status.replace('_', ' ')} |`,
+      'Demo sites built to be automated: no real bot checks, two-step logins or accounts.',
     );
+    lines.push('');
+    table(result.practice);
+  }
   lines.push('');
   lines.push('## Jobs');
   lines.push('');
   lines.push(
-    '| # | Task | Category | Outcome | Time | Steps | Approvals | Hand-off (from first reaching the page) | Claims | Why |',
+    '| # | Task | Tier | Category | Outcome | Time | Steps | Approvals | Hand-off (from first reaching the page) | Claims | Why |',
   );
-  lines.push('|---|---|---|---|---|---|---|---|---|---|');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const job of result.jobs) {
     const handoff = job.handoffs.length
       ? job.handoffs
@@ -185,7 +248,7 @@ export function renderReport(result: RunResult): string {
         ? 'not shown'
         : '—';
     lines.push(
-      `| ${job.job} | ${job.task} | ${job.category} | ${job.outcome} | ${duration(job.wall_s)} | ${job.steps} | ${job.approvals} | ${handoff} | ${job.claims.length} | ${cell(job.reason).slice(0, 200)} |`,
+      `| ${job.job} | ${job.task} | ${job.tier} | ${job.category} | ${job.outcome} | ${duration(job.wall_s)} | ${job.steps} | ${job.approvals} | ${handoff} | ${job.claims.length} | ${cell(job.reason).slice(0, 200)} |`,
     );
   }
   const flagged = result.jobs.filter((job) => job.claims.length);

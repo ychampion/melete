@@ -12,7 +12,16 @@ import type {
   ToolCall,
 } from '@melete/contracts';
 
-export type Category = 'errand' | 'human_check' | 'research' | 'everyday';
+export type Category = 'errand' | 'human_check' | 'research' | 'lookup' | 'everyday';
+
+/**
+ * Practice tasks run on demo sites built to be automated: they have no bot checks,
+ * no two-step logins and nothing real behind them, so they are regression checks
+ * and never count toward a bar. Real tasks run on real sites and real accounts,
+ * and only they are scored against the bars.
+ */
+export type Tier = 'practice' | 'real';
+export const TIERS: readonly Tier[] = ['practice', 'real'];
 
 /**
  * The model a task is meant to be measured on. Capability tasks need a model that
@@ -24,17 +33,24 @@ export const WANTED_MODELS = {
   speed: 'accounts/fireworks/models/deepseek-v4p1-flash',
 } as const;
 export type ModelClass = keyof typeof WANTED_MODELS;
-/** Errands and research test what the agent can do; human checks and everyday lookups, how fast. */
+/** Errands and research test what the agent can do; human checks, lookups and everyday asks, how fast. */
 export const MODEL_CLASS: Record<Category, ModelClass> = {
   errand: 'capability',
   research: 'capability',
   human_check: 'speed',
+  lookup: 'speed',
   everyday: 'speed',
 };
 
 /** The model an install's chats run on, as its settings report it. */
 export type ActiveModel = { provider: string; model: string; vision: boolean };
-export const CATEGORIES: readonly Category[] = ['errand', 'human_check', 'research', 'everyday'];
+export const CATEGORIES: readonly Category[] = [
+  'errand',
+  'human_check',
+  'research',
+  'lookup',
+  'everyday',
+];
 
 /** Values made fresh for each job, so a check can tell this job's effect from anyone else's. */
 export type Vars = Record<string, string>;
@@ -56,6 +72,7 @@ export type Setup = { vars: Vars; cleanup?: () => Promise<void> };
 export type Task = {
   id: string;
   category: Category;
+  tier: Tier;
   /** One line on what it asks, for the report. */
   title: string;
   /** The public site the task works on, for the preflight and the report. */
@@ -64,6 +81,11 @@ export type Task = {
   budget_s: number;
   /** Names of environment variables the task needs; missing ones skip it with the reason. */
   needs_env?: readonly string[];
+  /**
+   * A real account the owner may provide. Until its variables are set the task is
+   * skipped as "account not provided"; it is never stood in for by a demo site.
+   */
+  slot?: string;
   /**
    * A host where a human check (captcha, bot check, 2FA) is expected. A hand-off
    * there is the outcome a human-check task wants, and is timed against the bar.
@@ -133,6 +155,7 @@ export type JobRecord = {
   job: number;
   task: string;
   category: Category;
+  tier: Tier;
   site: string;
   outcome: Outcome;
   reason: string;
@@ -162,7 +185,8 @@ export type JobRecord = {
   spend_usd: number | null;
 };
 
-export type BarStatus = 'pass' | 'fail' | 'not_measured';
+/** `info` rows are reported beside the bars and judged by nobody. */
+export type BarStatus = 'pass' | 'fail' | 'not_measured' | 'info';
 export type Bar = {
   id: string;
   label: string;
@@ -182,6 +206,9 @@ export type RunResult = {
   spend_usd: number | null;
   stopped_for_spend: boolean;
   jobs: JobRecord[];
+  /** The bars, scored on the real tier only. */
   bars: Bar[];
+  /** The same measures on the practice tier: regression signal, never a bar. */
+  practice: Bar[];
   cleanup: string[];
 };

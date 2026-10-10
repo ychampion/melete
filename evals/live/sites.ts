@@ -1,6 +1,7 @@
 /**
- * Reading the practice sites back after a job. Each of these is a public demo
- * built for automation, with its own published demo login; the benchmark reads
+ * Reading sites back after a job. The practice sites are public demos built for
+ * automation, with their own published demo logins; GitHub (the test account)
+ * and Wikipedia are real. The benchmark reads
  * its state through the site's own API where it has one, so a check sees what
  * happened on the site rather than what the reply says happened.
  */
@@ -145,7 +146,31 @@ export const github = {
     );
     return recent.filter((item) => item.title.includes(title));
   },
+  async repo(repo: string, auth: string) {
+    return json<{ default_branch: string; private: boolean; has_issues: boolean }>(
+      `https://api.github.com/repos/${repo}`,
+      { headers: { authorization: `Bearer ${auth}`, 'x-github-api-version': '2022-11-28' } },
+    );
+  },
+  /** The account's unread notifications, newest first. */
+  async unread(auth: string) {
+    return json<{ updated_at: string; subject: { title: string } }[]>(
+      'https://api.github.com/notifications?all=false&per_page=50',
+      { headers: { authorization: `Bearer ${auth}`, 'x-github-api-version': '2022-11-28' } },
+    );
+  },
 };
+
+/** Today's featured article on English Wikipedia, as its feed names it. */
+export async function featuredArticle(day = new Date()): Promise<string> {
+  const date = day.toISOString().slice(0, 10).replace(/-/g, '/');
+  const feed = await json<{ tfa?: { normalizedtitle?: string; titles?: { normalized?: string } } }>(
+    `https://en.wikipedia.org/api/rest_v1/feed/featured/${date}`,
+  );
+  const title = feed.tfa?.titles?.normalized ?? feed.tfa?.normalizedtitle;
+  if (!title) throw new Error('Wikipedia has no featured article for today yet');
+  return title;
+}
 
 /** Whether a site answers at all; a down site skips its tasks rather than failing them. */
 export async function reachable(url: string, tries = 3): Promise<boolean> {

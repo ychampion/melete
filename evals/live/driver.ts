@@ -111,6 +111,7 @@ export async function runJob(
     job: options.index,
     task: task.id,
     category: task.category,
+    tier: task.tier,
     site: task.site,
     outcome: 'error',
     reason: '',
@@ -135,7 +136,14 @@ export async function runJob(
   };
 
   const missing = (task.needs_env ?? []).filter((name) => !options.env[name]);
-  if (missing.length) return { ...base, outcome: 'skipped', reason: `needs ${missing.join(', ')}` };
+  if (missing.length)
+    return {
+      ...base,
+      outcome: 'skipped',
+      reason: task.slot
+        ? `account not provided: ${task.slot} (set ${missing.join(', ')})`
+        : `needs ${missing.join(', ')}`,
+    };
 
   let vars: Vars = {};
   let siteCleanup: (() => Promise<void>) | undefined;

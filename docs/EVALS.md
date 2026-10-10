@@ -1,6 +1,6 @@
 # Evaluation evidence
 
-The lab below runs Melete against fixture destinations. The live benchmark in [`evals/live/`](../evals/live/README.md) runs real errands, human checks and research against a running install with its real model, and scores them against the bars for charging: errands done end to end, needs-you cards for human checks within 10 s, errand and research times, claims with no receipt behind them, and approvals per job.
+The lab below runs Melete against fixture destinations. The live benchmark in [`evals/live/`](../evals/live/README.md) runs tasks against a running install with its real model, in two tiers: practice tasks on demo sites as a regression signal, and real tasks on real sites and accounts, which alone are scored against the bars for charging: errands done end to end, needs-you cards for human checks within 10 s, errand and research times, claims with no receipt behind them, and approvals per job.
 
 ## Regression scenarios, 9 October 2026
 

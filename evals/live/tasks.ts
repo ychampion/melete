@@ -1,7 +1,15 @@
 /**
- * The live task set. Errands run on public demo and practice sites that exist
- * to be automated and publish their own demo logins; the human-check tasks use
- * public captcha demo pages; research and everyday tasks use the open web.
+ * The live task set, in two tiers.
+ *
+ * Practice: errands on public demo sites that exist to be automated and publish
+ * their own demo logins, and human checks on captcha demo pages. They lack the
+ * bot checks, two-step logins and real accounts that real sites have, so they
+ * are regression checks and never count toward a bar.
+ *
+ * Real: read-only lookups on real, bot-protected sites; logged-in errands on
+ * accounts that really exist (the GitHub test account, plus slots for accounts
+ * the owner may add, skipped until then); a real two-step check where one is
+ * available; research and everyday asks on the open web. Only these are scored.
  *
  * Each check is deterministic where the site allows it: it reads the site's
  * state back through the site's API (ParaBank, OrangeHRM, Automation Exercise,
@@ -11,6 +19,7 @@
 import {
   automationExercise,
   downloadable,
+  featuredArticle,
   github,
   ORANGEHRM,
   orangehrm,
@@ -88,6 +97,14 @@ function handedOff(evidence: Evidence): Verdict {
     : fail(`needs-you card came ${first.latency_s.toFixed(1)} s after the check page`);
 }
 
+/** A real-account slot's answer holds what the owner read off the account. */
+function expected(evidence: Evidence, wanted: string | undefined): Verdict {
+  if (!wanted) return fail('no expected answer was set');
+  return evidence.reply.toLowerCase().includes(wanted.toLowerCase())
+    ? pass('the answer has what the account shows')
+    : fail('the answer lacks what the account shows');
+}
+
 const money = (value: number) => value.toFixed(2);
 
 /* ---------------------------------- errands ---------------------------------- */
@@ -98,6 +115,7 @@ const errands: Task[] = [
   {
     id: 'sauce-checkout',
     category: 'errand',
+    tier: 'practice',
     title: 'Sauce Demo: buy two items and report the total',
     site: 'saucedemo.com',
     budget_s: ERRAND_S,
@@ -108,6 +126,7 @@ const errands: Task[] = [
   {
     id: 'sauce-priciest',
     category: 'errand',
+    tier: 'practice',
     title: 'Sauce Demo: sort by price and name the priciest item',
     site: 'saucedemo.com',
     budget_s: ERRAND_S,
@@ -118,6 +137,7 @@ const errands: Task[] = [
   {
     id: 'sauce-locked-out',
     category: 'errand',
+    tier: 'practice',
     title: 'Sauce Demo: a locked account, reported honestly',
     site: 'saucedemo.com',
     budget_s: ERRAND_S,
@@ -128,6 +148,7 @@ const errands: Task[] = [
   {
     id: 'sauce-cart-edit',
     category: 'errand',
+    tier: 'practice',
     title: 'Sauce Demo: change the cart and report the subtotal',
     site: 'saucedemo.com',
     budget_s: ERRAND_S,
@@ -138,6 +159,7 @@ const errands: Task[] = [
   {
     id: 'internet-login',
     category: 'errand',
+    tier: 'practice',
     title: 'The Internet: log in to the secure area',
     site: 'the-internet.herokuapp.com',
     budget_s: ERRAND_S,
@@ -148,6 +170,7 @@ const errands: Task[] = [
   {
     id: 'internet-logout',
     category: 'errand',
+    tier: 'practice',
     title: 'The Internet: log in, then log out',
     site: 'the-internet.herokuapp.com',
     budget_s: ERRAND_S,
@@ -159,6 +182,7 @@ const errands: Task[] = [
   {
     id: 'internet-basic-auth',
     category: 'errand',
+    tier: 'practice',
     title: 'The Internet: a page behind basic auth',
     site: 'the-internet.herokuapp.com',
     budget_s: ERRAND_S,
@@ -169,6 +193,7 @@ const errands: Task[] = [
   {
     id: 'internet-dynamic-controls',
     category: 'errand',
+    tier: 'practice',
     title: 'The Internet: controls that change after a wait',
     site: 'the-internet.herokuapp.com',
     budget_s: ERRAND_S,
@@ -181,6 +206,7 @@ const errands: Task[] = [
   {
     id: 'internet-download',
     category: 'errand',
+    tier: 'practice',
     title: 'The Internet: download a named file into Files',
     site: 'the-internet.herokuapp.com',
     budget_s: ERRAND_S,
@@ -202,6 +228,7 @@ const errands: Task[] = [
   {
     id: 'parabank-transfer',
     category: 'errand',
+    tier: 'practice',
     title: 'ParaBank: transfer an exact amount between accounts',
     site: 'parabank.parasoft.com',
     budget_s: ERRAND_S,
@@ -234,6 +261,7 @@ const errands: Task[] = [
   {
     id: 'parabank-billpay',
     category: 'errand',
+    tier: 'practice',
     title: 'ParaBank: pay a bill to a new payee',
     site: 'parabank.parasoft.com',
     budget_s: ERRAND_S,
@@ -264,6 +292,7 @@ const errands: Task[] = [
   {
     id: 'parabank-accounts',
     category: 'errand',
+    tier: 'practice',
     title: 'ParaBank: list every account number',
     site: 'parabank.parasoft.com',
     budget_s: ERRAND_S,
@@ -281,6 +310,7 @@ const errands: Task[] = [
   {
     id: 'parabank-loan',
     category: 'errand',
+    tier: 'practice',
     title: 'ParaBank: apply for a loan and report the decision',
     site: 'parabank.parasoft.com',
     budget_s: ERRAND_S,
@@ -319,6 +349,7 @@ const errands: Task[] = [
   {
     id: 'orangehrm-add-employee',
     category: 'errand',
+    tier: 'practice',
     title: 'OrangeHRM: add an employee',
     site: 'opensource-demo.orangehrmlive.com',
     budget_s: ERRAND_S,
@@ -345,6 +376,7 @@ const errands: Task[] = [
   {
     id: 'orangehrm-user-count',
     category: 'errand',
+    tier: 'practice',
     title: 'OrangeHRM: count the system users',
     site: 'opensource-demo.orangehrmlive.com',
     budget_s: ERRAND_S,
@@ -363,6 +395,7 @@ const errands: Task[] = [
   {
     id: 'automationexercise-order',
     category: 'errand',
+    tier: 'practice',
     title: 'Automation Exercise: sign up and place an order',
     site: 'automationexercise.com',
     budget_s: ERRAND_S,
@@ -389,6 +422,7 @@ const errands: Task[] = [
   {
     id: 'nopcommerce-register',
     category: 'errand',
+    tier: 'practice',
     title: 'nopCommerce demo: register and add to the wishlist',
     site: 'demo.nopcommerce.com',
     budget_s: ERRAND_S,
@@ -407,6 +441,7 @@ const errands: Task[] = [
   {
     id: 'practicetest-login',
     category: 'errand',
+    tier: 'practice',
     title: 'Practice Test Automation: log in',
     site: 'practicetestautomation.com',
     budget_s: ERRAND_S,
@@ -417,6 +452,7 @@ const errands: Task[] = [
   {
     id: 'quotes-login',
     category: 'errand',
+    tier: 'practice',
     title: 'Quotes to Scrape: log in and read page 2',
     site: 'quotes.toscrape.com',
     budget_s: ERRAND_S,
@@ -428,6 +464,7 @@ const errands: Task[] = [
   {
     id: 'demoqa-form',
     category: 'errand',
+    tier: 'practice',
     title: 'DemoQA: fill and submit the practice form',
     site: 'demoqa.com',
     budget_s: ERRAND_S,
@@ -439,6 +476,7 @@ const errands: Task[] = [
   {
     id: 'github-issue',
     category: 'errand',
+    tier: 'real',
     title: 'GitHub: open an issue on the test repository, then close it',
     site: 'github.com',
     budget_s: ERRAND_S,
@@ -461,6 +499,100 @@ const errands: Task[] = [
         : fail(`#${issue.number} was opened but is still open`);
     },
   },
+  {
+    id: 'github-repo-settings',
+    category: 'errand',
+    tier: 'real',
+    title: "GitHub: read the test repository's default branch and visibility",
+    site: 'github.com',
+    budget_s: ERRAND_S,
+    needs_env: ['MELETE_BENCH_GITHUB_REPO', 'MELETE_BENCH_GITHUB_TOKEN'],
+    setup: async (env) => ({ vars: { repo: env.MELETE_BENCH_GITHUB_REPO ?? '' } }),
+    prompt: ({ repo }) =>
+      `On GitHub, look at the settings of ${repo}: what is its default branch, and is it public or private? Don't change anything.`,
+    check: async (evidence, { repo }, env) => {
+      const settings = await github.repo(repo ?? '', env.MELETE_BENCH_GITHUB_TOKEN ?? '');
+      const reply = evidence.reply.toLowerCase();
+      if (!reply.includes(settings.default_branch.toLowerCase()))
+        return fail(`the answer lacks the default branch ${settings.default_branch}`);
+      const visibility = settings.private ? 'private' : 'public';
+      if (!reply.includes(visibility)) return fail(`the answer does not say it is ${visibility}`);
+      return pass(`${settings.default_branch}, ${visibility}, as GitHub has it`);
+    },
+  },
+  {
+    id: 'github-notifications',
+    category: 'errand',
+    tier: 'real',
+    title: "GitHub: count the test account's unread notifications and name the newest",
+    site: 'github.com',
+    budget_s: ERRAND_S,
+    needs_env: ['MELETE_BENCH_GITHUB_TOKEN'],
+    prompt: () =>
+      "How many unread GitHub notifications do I have, and what is the newest one about? Don't mark anything as read.",
+    check: async (evidence, _vars, env) => {
+      const unread = await github.unread(env.MELETE_BENCH_GITHUB_TOKEN ?? '');
+      const count = unread.length;
+      const word = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'][
+        count
+      ];
+      const said = new RegExp(`\\b(${count}${word ? `|${word}` : ''})\\b`, 'i');
+      if (!said.test(evidence.reply)) return fail(`the answer does not give the count, ${count}`);
+      const newest = unread[0]?.subject.title;
+      if (newest && !evidence.reply.toLowerCase().includes(newest.slice(0, 30).toLowerCase()))
+        return fail('the answer does not name the newest notification');
+      return pass(`${count} unread, as GitHub has it`);
+    },
+  },
+  /*
+   * Slots for real accounts the owner may provide. Each is skipped as "account
+   * not provided" until its variables are set: the agent's browser is signed in
+   * to the account, and the EXPECT variable holds what the answer must contain,
+   * read off the account by the owner. None is ever run against a stand-in.
+   */
+  {
+    id: 'account-email',
+    category: 'errand',
+    tier: 'real',
+    slot: 'a throwaway email account',
+    title: 'Email: the subject of the newest message from a given sender',
+    site: 'email',
+    budget_s: ERRAND_S,
+    needs_env: ['MELETE_BENCH_EMAIL_URL', 'MELETE_BENCH_EMAIL_FROM', 'MELETE_BENCH_EMAIL_EXPECT'],
+    setup: async (env) => ({
+      vars: { inbox: env.MELETE_BENCH_EMAIL_URL ?? '', from: env.MELETE_BENCH_EMAIL_FROM ?? '' },
+    }),
+    prompt: ({ inbox, from }) =>
+      `Open my email at ${inbox} (you're signed in there in your browser) and tell me the subject of the newest message from ${from}. Don't send, delete or move anything.`,
+    check: (evidence, _vars, env) => expected(evidence, env.MELETE_BENCH_EMAIL_EXPECT),
+  },
+  {
+    id: 'account-reddit',
+    category: 'errand',
+    tier: 'real',
+    slot: 'a Reddit account',
+    title: 'Reddit: the title of the newest saved post',
+    site: 'reddit.com',
+    budget_s: ERRAND_S,
+    needs_env: ['MELETE_BENCH_REDDIT_EXPECT'],
+    prompt: () =>
+      "On reddit.com, where you're signed in in your browser, open my saved posts and tell me the title of the newest one. Don't post, vote or unsave anything.",
+    check: (evidence, _vars, env) => expected(evidence, env.MELETE_BENCH_REDDIT_EXPECT),
+  },
+  {
+    id: 'account-store',
+    category: 'errand',
+    tier: 'real',
+    slot: 'a store account',
+    title: 'Store: the date and total of the most recent order',
+    site: 'store',
+    budget_s: ERRAND_S,
+    needs_env: ['MELETE_BENCH_STORE_URL', 'MELETE_BENCH_STORE_EXPECT'],
+    setup: async (env) => ({ vars: { store: env.MELETE_BENCH_STORE_URL ?? '' } }),
+    prompt: ({ store }) =>
+      `On ${store}, where you're signed in in your browser, find my most recent order and tell me its date and total. Look only; don't buy, cancel or return anything.`,
+    check: (evidence, _vars, env) => expected(evidence, env.MELETE_BENCH_STORE_EXPECT),
+  },
 ];
 
 /* -------------------------------- human checks -------------------------------- */
@@ -469,6 +601,7 @@ const humanChecks: Task[] = [
   {
     id: 'check-recaptcha',
     category: 'human_check',
+    tier: 'practice',
     title: 'reCAPTCHA demo: hand the checkbox to the person',
     site: 'google.com/recaptcha',
     budget_s: CHECK_S,
@@ -480,6 +613,7 @@ const humanChecks: Task[] = [
   {
     id: 'check-turnstile',
     category: 'human_check',
+    tier: 'practice',
     title: 'Cloudflare Turnstile demo: hand the check to the person',
     site: '2captcha.com',
     budget_s: CHECK_S,
@@ -491,12 +625,29 @@ const humanChecks: Task[] = [
   {
     id: 'check-nopcommerce-checkout',
     category: 'human_check',
+    tier: 'practice',
     title: 'nopCommerce guest checkout behind a bot check, stopping before Confirm',
     site: 'demo.nopcommerce.com',
     budget_s: CHECK_S,
     challenge_host: 'demo.nopcommerce.com',
     prompt: () =>
       'On https://demo.nopcommerce.com, check out as a guest with a $25 virtual gift card for Ada Lovelace (ada@example.com), and stop before the final Confirm. Tell me the order total.',
+    check: handedOff,
+  },
+  {
+    // GitHub asks for the password or a two-step code again (sudo mode) before
+    // its security settings, in a browser signed in to the account.
+    id: 'check-github-sudo',
+    category: 'human_check',
+    tier: 'real',
+    slot: "the GitHub test account signed in in the agent's browser",
+    title: 'GitHub sudo prompt: hand the two-step check to the person',
+    site: 'github.com',
+    budget_s: CHECK_S,
+    challenge_host: 'github.com',
+    needs_env: ['MELETE_BENCH_GITHUB_BROWSER'],
+    prompt: () =>
+      "In your browser, where you're signed in to GitHub, open https://github.com/settings/security and tell me whether two-factor authentication is on. Don't change anything.",
     check: handedOff,
   },
 ];
@@ -507,6 +658,7 @@ const research: Task[] = [
   {
     id: 'research-monitors',
     category: 'research',
+    tier: 'real',
     title: 'Three best-reviewed 27-inch 4K monitors under $400, with links',
     site: 'web',
     budget_s: RESEARCH_S,
@@ -525,6 +677,7 @@ const research: Task[] = [
   {
     id: 'research-fed-rate',
     category: 'research',
+    tier: 'real',
     title: 'The federal funds target range and the next FOMC meeting, with sources',
     site: 'web',
     budget_s: RESEARCH_S,
@@ -542,6 +695,7 @@ const research: Task[] = [
   {
     id: 'research-storage-prices',
     category: 'research',
+    tier: 'real',
     title: 'Object storage prices on three clouds, with pricing pages',
     site: 'web',
     budget_s: RESEARCH_S,
@@ -560,12 +714,18 @@ const research: Task[] = [
   },
 ];
 
-/* ---------------------------------- everyday ---------------------------------- */
+/* ----------------------------------- lookups ---------------------------------- */
 
-const everyday: Task[] = [
+/*
+ * Read-only lookups on real sites that guard themselves against bots. Nothing is
+ * bought, booked or submitted. A bot check here is met for real, and the
+ * needs-you card for it is timed against the bar.
+ */
+const lookups: Task[] = [
   {
-    id: 'everyday-flights',
-    category: 'everyday',
+    id: 'lookup-flights',
+    category: 'lookup',
+    tier: 'real',
     title: 'Cheapest non-stop SFO to JFK next Friday, with a link',
     site: 'google.com/travel/flights',
     budget_s: ERRAND_S,
@@ -577,8 +737,9 @@ const everyday: Task[] = [
         : fail('no Google Flights link in the answer'),
   },
   {
-    id: 'everyday-transit',
-    category: 'everyday',
+    id: 'lookup-transit',
+    category: 'lookup',
+    tier: 'real',
     title: 'Transit from Union Square to SFO at 8 am tomorrow, with a link',
     site: 'google.com/maps',
     budget_s: ERRAND_S,
@@ -588,8 +749,73 @@ const everyday: Task[] = [
       says(evidence, /BART/i, /https?:\/\/[^\s]*(google\.[^\s/]+\/maps|maps\.app\.goo\.gl)/i),
   },
   {
+    id: 'lookup-bestbuy',
+    category: 'lookup',
+    tier: 'real',
+    title: 'Best Buy: the price of AirPods Pro 2, with the product link',
+    site: 'bestbuy.com',
+    budget_s: ERRAND_S,
+    prompt: () =>
+      "On bestbuy.com, look up Apple AirPods Pro 2 (USB-C) and tell me today's price and the link to the product page. Don't add anything to a cart.",
+    check: (evidence) => says(evidence, /bestbuy\.com\/(site|product)\//i, /\$\s?\d/),
+  },
+  {
+    id: 'lookup-kayak',
+    category: 'lookup',
+    tier: 'real',
+    title: 'Kayak: the cheapest downtown Chicago hotel for two nights, with a link',
+    site: 'kayak.com',
+    budget_s: ERRAND_S,
+    prompt: () =>
+      'On kayak.com, find the cheapest hotel in downtown Chicago for two nights starting four weeks from today, one adult. Give me its name, the total price and a link. Look only; do not book or reserve anything.',
+    check: (evidence) => says(evidence, /kayak\.com/i, /\$\s?\d/),
+  },
+  {
+    id: 'lookup-zillow',
+    category: 'lookup',
+    tier: 'real',
+    title: 'Zillow: the cheapest home for sale in 94110, with a link',
+    site: 'zillow.com',
+    budget_s: ERRAND_S,
+    prompt: () =>
+      'On zillow.com, what is the cheapest home for sale in the 94110 ZIP code right now? Give me the asking price, the address and the link. Look only; do not contact anyone.',
+    check: (evidence) => says(evidence, /zillow\.com/i, /\$\s?\d/),
+  },
+  {
+    id: 'lookup-wikipedia',
+    category: 'lookup',
+    tier: 'real',
+    title: "Wikipedia: today's featured article",
+    site: 'en.wikipedia.org',
+    budget_s: ERRAND_S,
+    setup: async () => ({ vars: { featured: await featuredArticle() } }),
+    prompt: () =>
+      "What is today's featured article on English Wikipedia? Give me its title and link.",
+    check: (evidence, { featured }) =>
+      evidence.reply.toLowerCase().includes((featured ?? '').toLowerCase())
+        ? pass(`named ${featured}`)
+        : fail(`the answer does not name ${featured}`),
+  },
+  {
+    id: 'lookup-cloudflare',
+    category: 'lookup',
+    tier: 'real',
+    title: "G2, behind Cloudflare: Notion's rating and review count, with a link",
+    site: 'g2.com',
+    budget_s: ERRAND_S,
+    prompt: () =>
+      "On g2.com, what is Notion's average star rating and how many reviews does it have? Give me the link to its G2 page.",
+    check: (evidence) => says(evidence, /g2\.com\/products\//i, /\b[1-5]\.\d\b/),
+  },
+];
+
+/* ---------------------------------- everyday ---------------------------------- */
+
+const everyday: Task[] = [
+  {
     id: 'everyday-store',
     category: 'everyday',
+    tier: 'real',
     title: 'Adafruit: Raspberry Pi 5 8 GB price, stock and link',
     site: 'adafruit.com',
     budget_s: ERRAND_S,
@@ -600,6 +826,7 @@ const everyday: Task[] = [
   {
     id: 'everyday-beige-book',
     category: 'everyday',
+    tier: 'real',
     title: 'The latest Beige Book as a PDF, with five bullets',
     site: 'federalreserve.gov',
     budget_s: ERRAND_S,
@@ -613,6 +840,7 @@ const everyday: Task[] = [
   {
     id: 'everyday-long-article',
     category: 'everyday',
+    tier: 'real',
     title: 'A long essay read to the end',
     site: 'paulgraham.com',
     budget_s: ERRAND_S,
@@ -623,6 +851,7 @@ const everyday: Task[] = [
   {
     id: 'everyday-packing-pdf',
     category: 'everyday',
+    tier: 'real',
     title: 'A one-page packing list as a PDF',
     site: 'none',
     budget_s: ERRAND_S,
@@ -635,7 +864,13 @@ const everyday: Task[] = [
   },
 ];
 
-export const TASKS: readonly Task[] = [...errands, ...humanChecks, ...research, ...everyday];
+export const TASKS: readonly Task[] = [
+  ...errands,
+  ...humanChecks,
+  ...research,
+  ...lookups,
+  ...everyday,
+];
 
 /** Words a page shows when only a person can get past it. */
 export const CHECK_WORDS =

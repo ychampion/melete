@@ -107,6 +107,7 @@ const job = (over: Partial<JobRecord>): JobRecord => ({
   job: 1,
   task: 't',
   category: 'errand',
+  tier: 'real',
   site: 'example.com',
   outcome: 'pass',
   reason: '',
@@ -140,16 +141,45 @@ describe('scoring against the bars', () => {
 
   test('errands pass at 80%, and down sites are left out', () => {
     const jobs = [
-      ...Array.from({ length: 8 }, () => job({})),
-      job({ outcome: 'fail' }),
-      job({ outcome: 'timeout', wall_s: 600 }),
-      job({ outcome: 'site_down', wall_s: null }),
+      ...Array.from({ length: 16 }, (_, i) => job({ task: `e${i}` })),
+      job({ task: 'e16', outcome: 'fail' }),
+      job({ task: 'e17', outcome: 'fail' }),
+      job({ task: 'e18', outcome: 'fail' }),
+      job({ task: 'e19', outcome: 'timeout', wall_s: 600 }),
+      job({ task: 'e20', outcome: 'site_down', wall_s: null }),
     ];
     const bars = scoreBars(jobs);
     const errands = bars.find((bar) => bar.id === 'errands');
-    expect(errands?.n).toBe(10);
+    expect(errands?.n).toBe(20);
     expect(errands?.status).toBe('pass');
     expect(bars.find((bar) => bar.id === 'errandMedian')?.status).toBe('pass');
+  });
+
+  test('with fewer than twenty real errands the errand bar is not measurable yet', () => {
+    const bars = scoreBars([job({ task: 'a' }), job({ task: 'b' }), job({ task: 'b' })]);
+    const errands = bars.find((bar) => bar.id === 'errands');
+    expect(errands?.status).toBe('not_measured');
+    expect(errands?.value).toBe(
+      '100% (3/3); ≥80% not measurable yet: 2 of 20 real errands available',
+    );
+  });
+
+  test('practice jobs never reach the real bars, and are scored on their own', () => {
+    const practice = [job({ tier: 'practice' }), job({ tier: 'practice', outcome: 'fail' })];
+    expect(scoreBars(practice).find((bar) => bar.id === 'errands')?.n).toBe(0);
+    const own = scoreBars(practice, 'practice').find((bar) => bar.id === 'errands');
+    expect(own?.value).toBe('50% (1/2)');
+    expect(own?.status).toBe('fail');
+  });
+
+  test('real-site lookups are reported beside the bars, not judged', () => {
+    const bars = scoreBars([
+      job({ category: 'lookup' }),
+      job({ category: 'lookup', outcome: 'handed_off' }),
+    ]);
+    const lookups = bars.find((bar) => bar.id === 'lookups');
+    expect(lookups?.value).toBe('1/2, 1 handed to the person');
+    expect(lookups?.status).toBe('info');
   });
 
   test('a human check with no card, or a slow card, fails the hand-off bar', () => {
@@ -176,7 +206,21 @@ describe('scoring against the bars', () => {
     ]);
     expect(quick.find((bar) => bar.id === 'handoff')?.status).toBe('pass');
     expect(scoreBars([job({})]).find((bar) => bar.id === 'handoff')?.status).toBe('not_measured');
-    const unexpected = scoreBars([
+    // On a practice site a hand-off where no check was built is not timed; on a real one it is.
+    const unexpected = scoreBars(
+      [
+        job({
+          tier: 'practice',
+          outcome: 'handed_off',
+          handoffs: [
+            { at: '', title: 'Over to you', latency_s: 30, last_step_s: 1, measured_from: 'page' },
+          ],
+        }),
+      ],
+      'practice',
+    );
+    expect(unexpected.find((bar) => bar.id === 'handoff')?.status).toBe('not_measured');
+    const real = scoreBars([
       job({
         outcome: 'handed_off',
         handoffs: [
@@ -184,7 +228,7 @@ describe('scoring against the bars', () => {
         ],
       }),
     ]);
-    expect(unexpected.find((bar) => bar.id === 'handoff')?.status).toBe('not_measured');
+    expect(real.find((bar) => bar.id === 'handoff')?.status).toBe('fail');
   });
 
   test('one unsupported claim fails the claims bar; approvals use the median of completed jobs', () => {
@@ -214,8 +258,17 @@ describe('scoring against the bars', () => {
     expect(picked.map((entry) => entry.task)).toEqual(['hung', 'wrong', 'claimed']);
   });
 
-  test('the report has the bars and a row per job', () => {
-    const jobs = [job({ task: 'sauce-checkout' })];
+  test('the report has both tiers and a row per job', () => {
+    const jobs = [
+      job({ task: 'github-issue' }),
+      job({ job: 2, task: 'sauce-checkout', tier: 'practice' }),
+      job({
+        job: 3,
+        task: 'account-reddit',
+        outcome: 'skipped',
+        reason: 'account not provided: a Reddit account (set MELETE_BENCH_REDDIT_EXPECT)',
+      }),
+    ];
     const result: RunResult = {
       started_at: '2026-10-10T10:00:00.000Z',
       finished_at: '2026-10-10T10:05:00.000Z',
@@ -231,20 +284,34 @@ describe('scoring against the bars', () => {
       stopped_for_spend: false,
       jobs,
       bars: scoreBars(jobs),
+      practice: scoreBars(jobs, 'practice'),
       cleanup: [],
     };
     const report = renderReport(result);
     expect(report).toContain(
-      '| Logged-in errands done end to end | ≥80% | 100% (1/1) | 1 | pass |',
+      '| Logged-in errands done end to end | ≥80% | 100% (1/1); ≥80% not measurable yet: 1 of 20 real errands available | 1 | not measured |',
     );
-    expect(report).toContain('| 1 | sauce-checkout | errand | pass |');
+    expect(report).toContain('## Practice tier (regression only, not counted toward any bar)');
+    expect(report).toContain('- account-reddit: account not provided: a Reddit account');
+    expect(report).toContain('| 1 | github-issue | real | errand | pass |');
+    expect(report).toContain('| 2 | sauce-checkout | practice | errand | pass |');
   });
 });
 
 describe('the task set', () => {
-  test('twenty site errands plus the GitHub errand, with unique ids and budgets', () => {
+  test('twenty practice errands; real errands only on real accounts; unique ids and budgets', () => {
     const errands = TASKS.filter((task) => task.category === 'errand');
-    expect(errands.filter((task) => task.id !== 'github-issue')).toHaveLength(20);
+    expect(errands.filter((task) => task.tier === 'practice')).toHaveLength(20);
+    for (const task of errands.filter((entry) => entry.tier === 'real')) {
+      expect(task.id).toMatch(/^(github|account)-/);
+      // A real errand runs only once its account is there.
+      expect(task.needs_env?.length).toBeGreaterThan(0);
+    }
+    for (const task of TASKS.filter((entry) => entry.slot))
+      expect(task.needs_env?.length).toBeGreaterThan(0);
+    expect(TASKS.filter((task) => task.category === 'lookup').length).toBeGreaterThanOrEqual(5);
+    for (const task of TASKS.filter((entry) => entry.category === 'lookup'))
+      expect(task.tier).toBe('real');
     expect(new Set(TASKS.map((task) => task.id)).size).toBe(TASKS.length);
     for (const task of TASKS) expect(task.budget_s).toBeGreaterThan(0);
     expect(TASKS.filter((task) => task.category === 'human_check').length).toBeGreaterThanOrEqual(

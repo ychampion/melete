@@ -2,7 +2,7 @@
 
 These evaluations run the actual Melete API, broker, Postgres authority, model gateway, pinned Hermes engine, and Melete plugin. The external destinations are fixtures: no scenario sends a real email, changes a real calendar, or modifies a real server. The destination records every acceptance without deduplicating it, so duplicate dispatches remain observable.
 
-The live benchmark, which drives a running install over its HTTP API with real tasks on public practice sites, is described in [`live/README.md`](live/README.md).
+The live benchmark, which drives a running install over its HTTP API with practice tasks on demo sites and real tasks on real sites and accounts, is described in [`live/README.md`](live/README.md).
 
 ## Run
 
