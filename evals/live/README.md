@@ -36,6 +36,10 @@ Checks are deterministic where the site allows it. ParaBank, OrangeHRM, Automati
 
 Every final answer is read sentence by sentence. A sentence that reports a delivery ("attached", "saved to your Files", "sent"), an action ("booked", "ordered", "submitted", "logged in") or a method ("in my browser", "searched the web", "ran a command") must have a step or receipt of that family behind it: a file card with Open or Download, a send receipt, a done browser or computer step, a done web search. Sentences that deny, offer or plan ("I couldn't attach it", "I can send it") are passed over. Each claim with nothing behind it counts against the claims bar and is listed in the report.
 
+## Models
+
+Only runs on a real model count. Errands and research measure what the agent can do and are meant to run on `accounts/fireworks/models/kimi-k3`, which sees and uses tools well; human checks and everyday lookups measure speed and are meant to run on `accounts/fireworks/models/deepseek-v4p1-flash`. An install answers every chat with the model set in its settings, so the benchmark never changes it: it reads the active model (and whether screenshots are shown to it) before each job, records it beside the model the task wants, and the report says which jobs ran on a different one. Run each class with the install set to its model.
+
 ## Run it
 
 Credentials come from the environment and are never written to a result:

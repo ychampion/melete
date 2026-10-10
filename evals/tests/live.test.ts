@@ -118,6 +118,8 @@ const job = (over: Partial<JobRecord>): JobRecord => ({
   unshown_check: false,
   check_expected: false,
   handed_back: 0,
+  wanted_model: 'm',
+  model: null,
   claims: [],
   stopped: false,
   rubric: null,
@@ -217,7 +219,11 @@ describe('scoring against the bars', () => {
     const result: RunResult = {
       started_at: '2026-10-10T10:00:00.000Z',
       finished_at: '2026-10-10T10:05:00.000Z',
-      install: { version: '0.2.1', host: 'melete.example.com' },
+      install: {
+        version: '0.2.1',
+        host: 'melete.example.com',
+        model: { provider: 'fireworks', model: 'flash', vision: false },
+      },
       mode: 'once',
       seed: 1,
       spend_cap_usd: 5,

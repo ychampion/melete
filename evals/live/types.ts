@@ -13,6 +13,27 @@ import type {
 } from '@melete/contracts';
 
 export type Category = 'errand' | 'human_check' | 'research' | 'everyday';
+
+/**
+ * The model a task is meant to be measured on. Capability tasks need a model that
+ * sees and uses tools well; speed tasks the fast one. An install answers every
+ * chat with its own default model, so the job records which one actually ran.
+ */
+export const WANTED_MODELS = {
+  capability: 'accounts/fireworks/models/kimi-k3',
+  speed: 'accounts/fireworks/models/deepseek-v4p1-flash',
+} as const;
+export type ModelClass = keyof typeof WANTED_MODELS;
+/** Errands and research test what the agent can do; human checks and everyday lookups, how fast. */
+export const MODEL_CLASS: Record<Category, ModelClass> = {
+  errand: 'capability',
+  research: 'capability',
+  human_check: 'speed',
+  everyday: 'speed',
+};
+
+/** The model an install's chats run on, as its settings report it. */
+export type ActiveModel = { provider: string; model: string; vision: boolean };
 export const CATEGORIES: readonly Category[] = ['errand', 'human_check', 'research', 'everyday'];
 
 /** Values made fresh for each job, so a check can tell this job's effect from anyone else's. */
@@ -127,6 +148,9 @@ export type JobRecord = {
   check_expected: boolean;
   /** Hand-offs given straight back (`--hand-back`). */
   handed_back: number;
+  /** The model the task should be measured on, and the one the install ran it on. */
+  wanted_model: string;
+  model: ActiveModel | null;
   claims: Claim[];
   stopped: boolean;
   rubric: { score: number; reason: string } | null;
@@ -151,7 +175,7 @@ export type Bar = {
 export type RunResult = {
   started_at: string;
   finished_at: string;
-  install: { version: string | null; host: string };
+  install: { version: string | null; host: string; model: ActiveModel | null };
   mode: 'once' | 'sample';
   seed: number;
   spend_cap_usd: number;

@@ -16,7 +16,18 @@ import type {
 import { unsupportedClaims } from './claims.ts';
 import type { LiveClient } from './client.ts';
 import { CHECK_WORDS, stepText } from './tasks.ts';
-import type { Env, Evidence, HandOff, JobRecord, Outcome, Policy, Task, Vars } from './types.ts';
+import {
+  type Env,
+  type Evidence,
+  type HandOff,
+  type JobRecord,
+  MODEL_CLASS,
+  type Outcome,
+  type Policy,
+  type Task,
+  type Vars,
+  WANTED_MODELS,
+} from './types.ts';
 
 export const DEFAULT_POLICY: Policy = {
   approvals: 'allow',
@@ -111,6 +122,8 @@ export async function runJob(
     unshown_check: false,
     check_expected: task.category === 'human_check' || Boolean(task.challenge_host),
     handed_back: 0,
+    wanted_model: WANTED_MODELS[MODEL_CLASS[task.category]],
+    model: null,
     claims: [],
     stopped: false,
     rubric: null,
@@ -136,6 +149,7 @@ export async function runJob(
 
   const policy: Policy = { ...DEFAULT_POLICY, ...task.policy };
   const spendBefore = await client.spend();
+  base.model = await client.activeModel();
   const conversation = await client.createChat(task.title);
   const sentAt = Date.now();
   const budgetEnd = sentAt + task.budget_s * 1000;

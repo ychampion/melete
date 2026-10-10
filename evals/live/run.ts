@@ -15,7 +15,15 @@ import { fireworksGrader } from './rubric.ts';
 import { renderReport, scoreBars } from './score.ts';
 import { reachable } from './sites.ts';
 import { TASKS } from './tasks.ts';
-import { CATEGORIES, type Category, type JobRecord, type RunResult, type Task } from './types.ts';
+import {
+  CATEGORIES,
+  type Category,
+  type JobRecord,
+  MODEL_CLASS,
+  type RunResult,
+  type Task,
+  WANTED_MODELS,
+} from './types.ts';
 
 /** A small seeded generator, so a sampled run can be repeated. */
 export function seeded(seed: number): () => number {
@@ -106,6 +114,10 @@ async function main() {
   await client.signIn(email, password);
   const log = (line: string) => console.log(line);
   log(`signed in to ${new URL(url).host} (version ${version ?? 'unknown'})`);
+  const active = await client.activeModel();
+  log(
+    `chats run on ${active ? `${active.model}${active.vision ? '' : ', without vision'}` : 'an unknown model'}`,
+  );
 
   const name = values.name ?? `live-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
   const outDir = resolve(values['out-dir']);
@@ -113,7 +125,7 @@ async function main() {
   const result: RunResult = {
     started_at: new Date().toISOString(),
     finished_at: '',
-    install: { version, host: new URL(url).host },
+    install: { version, host: new URL(url).host, model: await client.activeModel() },
     mode: jobs === null ? 'once' : 'sample',
     seed,
     spend_cap_usd: cap,
@@ -214,6 +226,8 @@ async function main() {
             unshown_check: false,
             check_expected: task.category === 'human_check' || Boolean(task.challenge_host),
             handed_back: 0,
+            wanted_model: WANTED_MODELS[MODEL_CLASS[task.category]],
+            model: null,
             claims: [],
             stopped: false,
             rubric: null,

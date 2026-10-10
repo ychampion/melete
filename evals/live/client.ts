@@ -234,6 +234,21 @@ export class LiveClient {
     await this.request('POST', `/${surface}/sessions/${encodeURIComponent(session)}/handback`);
   }
 
+  /** The model new chats run on, from the install's settings; null when they cannot be read. */
+  async activeModel(): Promise<{ provider: string; model: string; vision: boolean } | null> {
+    try {
+      const settings = await this.request<{
+        active?: { provider: string; model: string; vision: boolean } | null;
+      }>('GET', '/model-settings');
+      const active = settings.active;
+      return active
+        ? { provider: active.provider, model: active.model, vision: active.vision }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   async stopRun(run: string) {
     await this.request('POST', `/runs/${encodeURIComponent(run)}/stop`);
   }

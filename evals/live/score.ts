@@ -144,6 +144,19 @@ export function renderReport(result: RunResult): string {
       `Model spend recorded by the install: ${result.spend_usd === null ? 'unknown' : `$${result.spend_usd.toFixed(2)}`} ` +
       `(cap $${result.spend_cap_usd.toFixed(2)}${result.stopped_for_spend ? ', reached: the run stopped early' : ''}).`,
   );
+  const model = result.install.model;
+  lines.push(
+    model
+      ? `Chats ran on ${model.model} (${model.provider}), ${model.vision ? 'with' : 'without'} screenshots shown to the model.`
+      : 'The model the chats ran on could not be read.',
+  );
+  const mismatched = result.jobs.filter((job) => job.model && job.model.model !== job.wanted_model);
+  if (mismatched.length) {
+    const wanted = [...new Set(mismatched.map((job) => job.wanted_model))];
+    lines.push(
+      `${mismatched.length} jobs ran on a different model than they are meant to be measured on (${wanted.join(', ')}); the install picks one model for every chat, so those need a run with it set.`,
+    );
+  }
   lines.push('');
   lines.push('## Bars');
   lines.push('');
