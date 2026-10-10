@@ -38790,6 +38790,10 @@
                 "type": "null"
               }
             ]
+          },
+          "empty": {
+            "type": "boolean",
+            "const": true
           }
         },
         "required": [

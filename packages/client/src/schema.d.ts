@@ -24510,6 +24510,8 @@ export interface components {
         };
         __schema382: {
             conversation_id: components["schemas"]["__schema303"] | null;
+            /** @constant */
+            empty?: true;
             finished_at: components["schemas"]["__schema307"] | null;
             id: components["schemas"]["__schema303"];
             reason: string | null;

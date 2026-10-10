@@ -1137,6 +1137,11 @@ export const automationRun = z.strictObject({
   summary: z.string().max(600).nullable(),
   /** Why a run failed or stopped, or what it is waiting for, in a sentence. */
   reason: z.string().max(600).nullable(),
+  /**
+   * The run finished, but every step it tried (a page read, an app, a
+   * command) failed or was refused, so it has nothing new to show.
+   */
+  empty: z.literal(true).optional(),
 });
 /** The newest run of a routine, for the place the person looks first. */
 export const routineResult = z.strictObject({

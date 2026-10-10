@@ -13,6 +13,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
+  action,
   artifact,
   attempt,
   event,
@@ -318,6 +319,33 @@ export class ExperiencePlanning {
         .filter((entry) => object(entry.payload).experience_completed === false)
         .map((entry) => entry.attemptId),
     );
+    // What each run tried, and whether any of it worked.
+    const tried = new Map<string, { steps: number; worked: number }>();
+    const count = (attemptId: string | null, worked: boolean) => {
+      if (!attemptId) return;
+      const seen = tried.get(attemptId) ?? { steps: 0, worked: 0 };
+      seen.steps++;
+      if (worked) seen.worked++;
+      tried.set(attemptId, seen);
+    };
+    if (runs.length) {
+      const ids = runs.map((run) => run.id);
+      const results = await this.db
+        .select({ attemptId: event.attemptId, payload: event.payload })
+        .from(event)
+        .where(and(inArray(event.attemptId, ids), eq(event.type, 'tool_result')));
+      for (const result of results) count(result.attemptId, object(result.payload).ok === true);
+      const effects = await this.db
+        .select({ attemptId: action.attemptId, status: action.status })
+        .from(action)
+        .where(inArray(action.attemptId, ids));
+      for (const effect of effects)
+        count(effect.attemptId, !['failed', 'denied', 'withdrawn'].includes(effect.status));
+    }
+    const cameUpEmpty = (attemptId: string) => {
+      const seen = tried.get(attemptId);
+      return Boolean(seen && seen.steps > 0 && seen.worked === 0);
+    };
     return experienceAutomation.parse({
       id: row.id,
       title: plainText(title, 'Routine'),
@@ -346,6 +374,7 @@ export class ExperiencePlanning {
         // answer, so it speaks for a run still under way and for no other.
         const said = object(run.outcomeDetail).summary;
         const newest = !runs.slice(0, index).some((other) => other.turnId === run.turnId);
+        const empty = status === 'done' && cameUpEmpty(run.id);
         return {
           id: run.id,
           status,
@@ -359,7 +388,10 @@ export class ExperiencePlanning {
               : turn && newest && !run.endedAt
                 ? excerpt(turn.answer)
                 : null,
-          reason: runReason(status, run.outcome, run.outcomeDetail),
+          reason: empty
+            ? 'Everything it tried to read or use failed, so it has nothing new. Open the result to see what it said.'
+            : runReason(status, run.outcome, run.outcomeDetail),
+          ...(empty ? { empty: true as const } : {}),
         };
       }),
     });
