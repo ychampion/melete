@@ -29,8 +29,15 @@ export const FALLBACK_CONTEXT_WINDOW = 128_000;
  * broker, not a statement about any model, and it is the last thing standing
  * between a runaway history and the upstream provider — so the engine has to be
  * told to compact well before a request reaches it.
+ *
+ * Four MiB, so that for a million-token model the body is never what decides
+ * when to compact. With the screenshot reserve set aside it still leaves room
+ * for about 760,000 tokens of text, above the engine's own trigger for any
+ * window the catalog names (half of a million) and above the owner's cap, so the
+ * trigger follows the model's real window and that cap. At one MiB the reserve
+ * left a model that reads images only 131,072 tokens, well below both.
  */
-export const GATEWAY_MAX_REQUEST_BYTES = 1024 * 1024;
+export const GATEWAY_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * Tokens the gateway charges every model request for framing, on top of its
