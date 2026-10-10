@@ -98,8 +98,7 @@ export class PostgresComputerControls implements ComputerControls {
       values (${sandbox}, 'agent', 0) on conflict (provider_sandbox_id) do nothing`;
     const [row] = await this.sql<ComputerControlState[]>`
       update sandbox_control set control = ${to}, epoch = epoch + 1,
-        principal_id = ${principal}, changed_at = now(),
-        seen_at = ${to === 'human' ? this.sql`now()` : this.sql`null`}
+        principal_id = ${principal}, changed_at = now(), seen_at = now()
       where provider_sandbox_id = ${sandbox}
         ${from === undefined ? this.sql`` : this.sql`and epoch = ${from}`}
       returning control, epoch`;
@@ -124,7 +123,7 @@ export class PostgresComputerControls implements ComputerControls {
   async handBackUnwatched(afterMs = UNWATCHED_HOLD_MS): Promise<string[]> {
     const rows = await this.sql`update sandbox_control
       set control = 'agent', epoch = epoch + 1, principal_id = null, changed_at = now(),
-        seen_at = null
+        seen_at = now()
       where control = 'human'
         and coalesce(seen_at, changed_at) < now() - make_interval(secs => ${afterMs / 1000})
       returning provider_sandbox_id`;

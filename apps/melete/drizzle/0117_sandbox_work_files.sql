@@ -6,6 +6,7 @@ CREATE TABLE "sandbox_work_file" (
 	"hash" text,
 	"writers" text[] DEFAULT '{}'::text[] NOT NULL,
 	"shared" boolean DEFAULT false NOT NULL,
+	"stamp" text,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "sandbox_work_file_space_id_agent_id_connection_id_path_pk" PRIMARY KEY("space_id","agent_id","connection_id","path")
 );
@@ -15,6 +16,7 @@ CREATE TABLE "sandbox_work_read" (
 	"agent_id" text NOT NULL,
 	"connection_id" text NOT NULL,
 	"read_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"action_id" text,
 	CONSTRAINT "sandbox_work_read_space_id_agent_id_connection_id_pk" PRIMARY KEY("space_id","agent_id","connection_id")
 );
 --> statement-breakpoint
@@ -26,6 +28,7 @@ CREATE TABLE "sandbox_work_removal" (
 	"job_id" text NOT NULL,
 	"path" text NOT NULL,
 	"hash" text NOT NULL,
+	"stamp" text,
 	"queued_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

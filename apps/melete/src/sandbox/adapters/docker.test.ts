@@ -550,18 +550,29 @@ describe('files', () => {
     await host.create(spec(), signal());
     engine.onExec = (cmd) => {
       expect(cmd.slice(-1)).toEqual(['/work']);
-      return { stdout: 'd 4096 755 src\0f 12 644 src/a b.txt\0l 7 777 link\0', chunk: 9 };
+      return {
+        stdout:
+          'd 4096 755 1.5:1.5:7 src\0f 12 644 1728000000.25:1728000001.5:42 src/a b.txt\0l 7 777 2.0:2.0:9 link\0',
+        chunk: 9,
+      };
     };
     expect(await host.listFiles(handleOf(NAME), '/work/', signal())).toEqual([
-      { path: 'src', size: 0, mode: 0o755, symlink: false, directory: true },
-      { path: 'src/a b.txt', size: 12, mode: 0o644, symlink: false, directory: false },
-      { path: 'link', size: 0, mode: 0o777, symlink: true, directory: false },
+      { path: 'src', size: 0, mode: 0o755, symlink: false, directory: true, stamp: '1.5:1.5:7' },
+      {
+        path: 'src/a b.txt',
+        size: 12,
+        mode: 0o644,
+        symlink: false,
+        directory: false,
+        stamp: '1728000000.25:1728000001.5:42',
+      },
+      { path: 'link', size: 0, mode: 0o777, symlink: true, directory: false, stamp: '2.0:2.0:9' },
     ]);
     engine.onExec = () => ({ exitCode: 3 });
     await expect(host.listFiles(handleOf(NAME), '/work/gone', signal())).rejects.toBeInstanceOf(
       SandboxFileNotFound,
     );
-    engine.onExec = () => ({ stdout: 'p 0 644 fifo\0' });
+    engine.onExec = () => ({ stdout: 'p 0 644 1.0:1.0:3 fifo\0' });
     await expect(host.listFiles(handleOf(NAME), '/work', signal())).rejects.toThrow(/type p/);
   });
 

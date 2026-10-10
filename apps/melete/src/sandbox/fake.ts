@@ -73,8 +73,18 @@ export class FsError extends Error {
   }
 }
 
+/** Every change to a fake file moves this on, as a change time would. */
+let changes = 0;
+
 export class FakeFs {
   private readonly nodes = new Map<string, FsNode>();
+  /** When each entry last changed, as `changes` counted it. */
+  private readonly stamps = new Map<string, number>();
+
+  private touch(target: string): void {
+    changes += 1;
+    this.stamps.set(target, changes);
+  }
 
   constructor() {
     this.nodes.set('/', { kind: 'dir', mode: 0o755 });
@@ -96,6 +106,7 @@ export class FakeFs {
         key,
         node.kind === 'file' ? { ...node, bytes: node.bytes.slice() } : { ...node },
       );
+    for (const [key, stamp] of this.stamps) copy.stamps.set(key, stamp);
     return copy;
   }
 
@@ -167,6 +178,7 @@ export class FakeFs {
       if (this.nodes.has(target)) throw new FsError('EEXIST', target);
       this.parentOf(target);
       this.nodes.set(target, { kind: 'dir', mode });
+      this.touch(target);
       return;
     }
     let prefix = '';
@@ -180,6 +192,7 @@ export class FakeFs {
       this.parentOf(target);
       // As `mkdir -p -m`: the mode is the last directory's; the ones made on the way get the default.
       this.nodes.set(target, { kind: 'dir', mode: index === parts.length - 1 ? mode : 0o755 });
+      this.touch(target);
     }
   }
 
@@ -205,6 +218,7 @@ export class FakeFs {
       bytes: next,
       mode: options.mode ?? (existing?.kind === 'file' ? existing.mode : 0o644),
     });
+    this.touch(target);
   }
 
   readFile(value: string): Uint8Array {
@@ -220,6 +234,7 @@ export class FakeFs {
     if (this.nodes.has(link)) throw new FsError('EEXIST', link);
     this.parentOf(link);
     this.nodes.set(link, { kind: 'symlink', target: targetText });
+    this.touch(link);
   }
 
   chmod(value: string, mode: number): void {
@@ -227,6 +242,7 @@ export class FakeFs {
     const node = this.nodes.get(target);
     if (!node) throw new FsError('ENOENT', target);
     if (node.kind !== 'symlink') node.mode = mode;
+    this.touch(target);
   }
 
   rename(from: string, to: string): void {
@@ -238,7 +254,9 @@ export class FakeFs {
     for (const [key, value] of [...this.nodes]) {
       if (key === source || key.startsWith(`${source}/`)) {
         this.nodes.delete(key);
+        this.stamps.delete(key);
         this.nodes.set(target + key.slice(source.length), value);
+        this.touch(target + key.slice(source.length));
       }
     }
   }
@@ -250,9 +268,13 @@ export class FakeFs {
     if (node.kind === 'dir') {
       const children = [...this.nodes.keys()].filter((key) => key.startsWith(`${target}/`));
       if (children.length && !recursive) throw new FsError('EISDIR', target);
-      for (const child of children) this.nodes.delete(child);
+      for (const child of children) {
+        this.nodes.delete(child);
+        this.stamps.delete(child);
+      }
     }
     this.nodes.delete(target);
+    this.stamps.delete(target);
   }
 
   /** Every entry below a directory, without following links, relative to it. */
@@ -271,6 +293,7 @@ export class FakeFs {
         mode: value.kind === 'symlink' ? 0o777 : value.mode & 0o7777,
         symlink: value.kind === 'symlink',
         directory: value.kind === 'dir',
+        stamp: `${this.stamps.get(key) ?? 0}.0:${this.stamps.get(key) ?? 0}.0:${this.stamps.get(key) ?? 0}`,
       });
     }
     return entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -839,6 +862,7 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
             .replace(/%y/g, entry.symlink ? 'l' : entry.directory ? 'd' : 'f')
             .replace(/%s/g, String(entry.symlink ? 0 : entry.size))
             .replace(/%m/g, entry.mode.toString(8))
+            .replace(/%T@:%C@:%i/g, entry.stamp ?? '0.0:0.0:0')
             .replace(/%P/g, entry.path)
             .replace(/\\0/g, '\0')
             .replace(/\\n/g, '\n'),

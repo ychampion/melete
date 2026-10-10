@@ -117,7 +117,8 @@ const LAUNCHER =
  * file beyond this, in the 512-byte blocks of `/bin/sh`'s `ulimit -f`.
  */
 export const OVER_ALLOWANCE_FILE_BLOCKS = (2 * 1024 * 1024) / 512;
-const LIST = '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %P\\0"';
+const LIST =
+  '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %T@:%C@:%i %P\\0"';
 const READ =
   '[ -e "$1" ] || [ -L "$1" ] || exit 3; [ -f "$1" ] || exit 4; exec head -c "$2" -- "$1"';
 const USAGE = 'exec du -sk -x /work /home/agent 2>/dev/null';
@@ -1252,9 +1253,12 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       .split('\0')
       .filter(Boolean)
       .map((record) => {
-        const match = /^([a-z]) (\d+) ([0-7]+) (.+)$/s.exec(record);
+        const match = /^([a-z]) (\d+) ([0-7]+) (\d+(?:\.\d+)?:\d+(?:\.\d+)?:\d+) (.+)$/s.exec(
+          record,
+        );
         if (!match) throw new SandboxAdapterRefusal('the listing could not be read');
-        const [, type, size, mode, relative] = match as unknown as [
+        const [, type, size, mode, stamp, relative] = match as unknown as [
+          string,
           string,
           string,
           string,
@@ -1271,6 +1275,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
           mode: Number.parseInt(mode, 8) & 0o777,
           symlink: type === 'l',
           directory: type === 'd',
+          stamp,
         };
       });
   }

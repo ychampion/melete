@@ -1,5 +1,5 @@
 {
-  "id": "0349fb5d-6628-4a27-ad68-96680bddb857",
+  "id": "ab944e86-0cc3-424c-91de-dcfbccb61403",
   "prevId": "441826dd-cb99-40db-a84d-501950b8eacb",
   "version": "7",
   "dialect": "postgresql",
@@ -14930,6 +14930,12 @@
           "notNull": true,
           "default": false
         },
+        "stamp": {
+          "name": "stamp",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -15024,6 +15030,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -15128,6 +15140,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "stamp": {
+          "name": "stamp",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "queued_at": {
           "name": "queued_at",

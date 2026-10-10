@@ -258,7 +258,11 @@ export const sandboxControl = pgTable(
     /** The person holding it, while `control` is `human`. */
     principalId: text('principal_id').references(() => principal.id, { onDelete: 'set null' }),
     changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
-    /** When the holder's live view was last open; a hold with no view for long is handed back. */
+    /**
+     * When a person was last on it: while they hold it, when their live view
+     * was last open (a hold with no view for long is handed back); after, when
+     * they handed it back. Handing it to an attempt leaves it alone.
+     */
     seenAt: timestamp('seen_at', { withTimezone: true }),
   },
   (t) => [check('sandbox_control_control_check', sql`${t.control} in ('agent', 'human')`)],
@@ -294,6 +298,8 @@ export const sandboxWorkFile = pgTable(
     hash: text('hash'),
     writers: text('writers').array().notNull().default(sql`'{}'::text[]`),
     shared: boolean('shared').notNull().default(false),
+    /** Its change stamp when last read back (`FileEntry.stamp`); null when none was given. */
+    stamp: text('stamp'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.spaceId, t.agentId, t.connectionId, t.path] })],
@@ -317,6 +323,8 @@ export const sandboxWorkRead = pgTable(
       .notNull()
       .references(() => connection.id, { onDelete: 'cascade' }),
     readAt: timestamp('read_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The command read back then; it had ended, though it is settled only after. */
+    actionId: text('action_id'),
   },
   (t) => [primaryKey({ columns: [t.spaceId, t.agentId, t.connectionId] })],
 );
@@ -344,6 +352,8 @@ export const sandboxWorkRemoval = pgTable(
     jobId: text('job_id').notNull(),
     path: text('path').notNull(),
     hash: text('hash').notNull(),
+    /** Its change stamp when its chat was deleted: written again since, it stays. */
+    stamp: text('stamp'),
     queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('sandbox_work_removal_computer_idx').on(t.spaceId, t.agentId, t.connectionId)],

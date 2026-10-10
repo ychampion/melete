@@ -70,19 +70,23 @@ async function lockComputer(tx: TransactionSql, computer: WorkComputer) {
   await tx`select pg_advisory_xact_lock(hashtext(${key}))`;
 }
 
-/** The regular files in `/work`, by portable path, with their sizes; links and folders apart. */
+/**
+ * The regular files in `/work`, by portable path, with their sizes and change
+ * stamps; links and folders apart.
+ */
 async function listWork(
   provider: SandboxProvider,
   handle: SandboxHandle,
   signal: AbortSignal,
-): Promise<{ files: Map<string, number>; other: Set<string> }> {
+): Promise<{ files: Map<string, number>; other: Set<string>; stamps: Map<string, string> }> {
   const files = new Map<string, number>();
   const other = new Set<string>();
+  const stamps = new Map<string, string>();
   let listing: Awaited<ReturnType<SandboxProvider['listFiles']>>;
   try {
     listing = await provider.listFiles(handle, SANDBOX_WORKDIR, signal);
   } catch (error) {
-    if (error instanceof SandboxFileNotFound) return { files, other };
+    if (error instanceof SandboxFileNotFound) return { files, other, stamps };
     throw error;
   }
   for (const entry of listing) {
@@ -94,9 +98,29 @@ async function listWork(
     }
     if (!relative) continue;
     if (entry.symlink || entry.directory) other.add(relative);
-    else files.set(relative, entry.size);
+    else {
+      files.set(relative, entry.size);
+      if (entry.stamp !== undefined) stamps.set(relative, entry.stamp);
+    }
   }
-  return { files, other };
+  return { files, other, stamps };
+}
+
+/**
+ * The change stamp of every file in `/work`, taken once a command's files are
+ * sent and before it runs, so a file the command writes again with the same
+ * content can be told from one it left alone. Null when it cannot be listed.
+ */
+export async function listStamps(
+  provider: SandboxProvider,
+  handle: SandboxHandle,
+  signal: AbortSignal,
+): Promise<Map<string, string> | null> {
+  try {
+    return (await listWork(provider, handle, signal)).stamps;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -142,7 +166,9 @@ export async function startWorkRecords(
  * and now (null: whether anything is at work now): another chat's command or
  * computer action on this connection under way at any point since, a
  * background process another chat started that ran since, or the person
- * holding the computer, or one of its displays, at any point since. Every
+ * holding the computer, or one of its displays, at any point since (held now,
+ * or handed back since). Handing it to a chat's next turn is not the person
+ * at work. Every
  * sandbox the computer has been counts, since a computer made again keeps its
  * `/work` under a new id. When it cannot be asked, the answer is yes.
  */
@@ -151,6 +177,8 @@ export async function othersAtWork(
   computer: WorkComputer,
   jobId: string,
   since: DbTime | null,
+  /** The command whose read-back `since` is: it had finished by then. */
+  readBy: string | null = null,
 ): Promise<boolean> {
   const from = () => since ?? tx`now()`;
   try {
@@ -163,11 +191,12 @@ export async function othersAtWork(
       or exists (select 1 from action a join job j on j.id = a.job_id
         where a.connection_id = ${computer.connectionId} and j.space_id = ${computer.spaceId}
           and j.agent_id = ${computer.agentId} and a.job_id <> ${jobId}
+          and a.id is distinct from ${readBy}::text
           and a.dispatched_at is not null
           and (a.dispatched_at > ${from()} or a.resolved_at > ${from()}
             or (a.resolved_at is null and a.dispatched_at > now() - interval '1 day')))
       or exists (select 1 from sandbox_control c
-        where (c.control = 'human' or c.changed_at > ${from()})
+        where (c.control = 'human' or c.seen_at > ${from()})
           and (c.provider_sandbox_id = ${computer.providerSandboxId}
             or starts_with(c.provider_sandbox_id, ${`${computer.providerSandboxId}#`})
             or exists (select 1 from sandbox_session s
@@ -181,7 +210,22 @@ export async function othersAtWork(
   }
 }
 
-type FileRow = { path: string; hash: string | null; writers: string[]; shared: boolean };
+type FileRow = {
+  path: string;
+  hash: string | null;
+  writers: string[];
+  shared: boolean;
+  stamp: string | null;
+};
+
+/**
+ * The change stamps a command's read-back found (`after`), and those listed
+ * once its files were sent, before it ran (`before`; null when not listed).
+ */
+export type WorkStamps = {
+  after: ReadonlyMap<string, string>;
+  before: ReadonlyMap<string, string> | null;
+};
 
 /** A database time, as the driver gives it back. */
 export type DbTime = Date | string;
@@ -204,26 +248,46 @@ export async function readStart(sql: Sql): Promise<DbTime | null> {
  * put there before the command ran. `chatMade` says whether a file of that
  * copy is the chat's own rather than one the person gave it; null when that
  * is not known.
+ *
+ * A file with the content recorded may still have been written again: by
+ * this command, when its stamp moved while the command ran, which makes this
+ * chat one of its writers; or by someone else, when its stamp moved since the
+ * last read-back and this chat's copy did not send it, which makes it shared.
  */
 export async function recordWorkFiles(
   sql: Sql,
   computer: WorkComputer,
   jobId: string,
+  /** The command read back, which ends before its read-back begins; null when none. */
+  actionId: string | null,
   readFrom: DbTime,
   files: ReadonlyMap<string, string>,
+  stamps: WorkStamps,
   sent: ReadonlyMap<string, SentFile> | null,
   chatMade: ((path: string) => boolean) | null,
 ): Promise<void> {
   await sql.begin(async (tx) => {
     await lockComputer(tx, computer);
-    const [read] = await tx`select read_at from sandbox_work_read
+    const [read] = await tx`select read_at, action_id from sandbox_work_read
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
         and connection_id = ${computer.connectionId}`;
     // With no starting point, what changed cannot be told from what was there.
-    const others = read ? await othersAtWork(tx, computer, jobId, read.read_at as DbTime) : true;
+    // The command whose read-back that was is not at work since: it had ended,
+    // though it is settled only after.
+    const others = read
+      ? await othersAtWork(
+          tx,
+          computer,
+          jobId,
+          read.read_at as DbTime,
+          (read.action_id as string | null) ?? null,
+        )
+      : true;
     const paths = [...files.keys()];
     // Only the paths there now: a computer's records keep every path it has had.
-    const rows = await tx<FileRow[]>`select path, hash, writers, shared from sandbox_work_file
+    const rows = await tx<
+      FileRow[]
+    >`select path, hash, writers, shared, stamp from sandbox_work_file
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
         and connection_id = ${computer.connectionId} and path = any(${paths}::text[])`;
     const known = new Map(rows.map((row) => [row.path, row]));
@@ -237,7 +301,32 @@ export async function recordWorkFiles(
     );
     for (const [path, hash] of files) {
       const row = known.get(path);
-      if (row && row.hash === hash) continue;
+      if (row && row.hash === hash) {
+        const after = stamps.after.get(path);
+        if (after === undefined) continue;
+        const before = stamps.before ? (stamps.before.get(path) ?? null) : undefined;
+        // Written again by someone between the last read-back and this command:
+        // this chat's copy sending it is the only write here that is known.
+        // Without a listing before the command, any change is someone's.
+        const touched =
+          row.stamp !== null &&
+          (before === undefined ? row.stamp !== after : !sent?.has(path) && row.stamp !== before);
+        // Written again while this command ran.
+        const rewrote = before !== undefined && before !== after;
+        if (!touched && !rewrote) continue;
+        let writers = row.writers;
+        let shared = row.shared;
+        if (touched || others) shared = true;
+        else {
+          if (!writers.includes(jobId)) writers = [...writers, jobId];
+          shared = shared || writers.length > 1;
+        }
+        await tx`update sandbox_work_file
+          set writers = ${writers}::text[], shared = ${shared}, updated_at = now()
+          where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
+            and connection_id = ${computer.connectionId} and path = ${path}`;
+        continue;
+      }
       if (!row && queued.get(path) === hash) continue;
       const restored = sent?.get(path)?.hash === hash;
       let writers = row?.writers ?? [];
@@ -272,6 +361,13 @@ export async function recordWorkFiles(
           set hash = excluded.hash, writers = excluded.writers, shared = excluded.shared,
             updated_at = now()`;
     }
+    // Every file there now carries the stamp it was read back with.
+    await tx`update sandbox_work_file f set stamp = v.stamp
+      from unnest(${paths}::text[], ${paths.map((path) => stamps.after.get(path) ?? null)}::text[])
+        as v(path, stamp)
+      where f.space_id = ${computer.spaceId} and f.agent_id = ${computer.agentId}
+        and f.connection_id = ${computer.connectionId} and f.path = v.path
+        and f.stamp is distinct from v.stamp`;
     // A file no longer there keeps who made it, without content: a chat's
     // copy that brings it back is not taken for its maker.
     await tx`update sandbox_work_file set hash = null, updated_at = now()
@@ -281,9 +377,11 @@ export async function recordWorkFiles(
     // The next read-back counts from when this one began listing, so what
     // changed while it read is looked at again. Anything under way then is
     // counted at the next, as running, unresolved or held, or as ended since.
-    await tx`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at)
-      values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId}, ${readFrom})
-      on conflict (space_id, agent_id, connection_id) do update set read_at = excluded.read_at`;
+    await tx`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at, action_id)
+      values (${computer.spaceId}, ${computer.agentId}, ${computer.connectionId}, ${readFrom},
+        ${actionId})
+      on conflict (space_id, agent_id, connection_id) do update
+        set read_at = excluded.read_at, action_id = excluded.action_id`;
   });
 }
 
@@ -304,6 +402,8 @@ export type QueuedRemoval = {
   jobId: string;
   path: string;
   hash: string;
+  /** Its change stamp when last read back; null when the adapter gave none. */
+  stamp: string | null;
 };
 
 /**
@@ -322,7 +422,7 @@ export async function queueWorkRemovals(
   const own = await tx`delete from sandbox_work_file
     where ${theirs} and not shared and hash is not null
       and cardinality(writers) = 1 and writers[1] = any(${list})
-    returning space_id, agent_id, connection_id, path, hash, writers[1] as job_id`;
+    returning space_id, agent_id, connection_id, path, hash, stamp, writers[1] as job_id`;
   // A path only they had, gone from /work already, is nobody's to keep.
   await tx`delete from sandbox_work_file
     where ${theirs} and not shared and hash is null
@@ -334,6 +434,7 @@ export async function queueWorkRemovals(
     jobId: String(row.job_id),
     path: String(row.path),
     hash: String(row.hash),
+    stamp: row.stamp === null ? null : String(row.stamp),
   }));
   for (let at = 0; at < queued.length; at += 500) {
     const rows = queued.slice(at, at + 500).map((each) => ({
@@ -344,8 +445,9 @@ export async function queueWorkRemovals(
       job_id: each.jobId,
       path: each.path,
       hash: each.hash,
+      stamp: each.stamp,
     }));
-    await tx`insert into sandbox_work_removal ${tx(rows, 'id', 'space_id', 'agent_id', 'connection_id', 'job_id', 'path', 'hash')}`;
+    await tx`insert into sandbox_work_removal ${tx(rows, 'id', 'space_id', 'agent_id', 'connection_id', 'job_id', 'path', 'hash', 'stamp')}`;
   }
   const [kept] = await tx`select count(*)::int as n from sandbox_work_file
     where ${theirs} and hash is not null and writers && ${list}::text[]`;
@@ -427,7 +529,7 @@ export async function removeQueuedWork(
   signal: AbortSignal,
   busyFor = '',
 ): Promise<WorkCleanup> {
-  const queued = await sql`select id, path, hash from sandbox_work_removal
+  const queued = await sql`select id, path, hash, stamp from sandbox_work_removal
     where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
       and connection_id = ${computer.connectionId}
     order by queued_at, id limit 2000`;
@@ -435,7 +537,7 @@ export async function removeQueuedWork(
   if (!queued.length) return outcome;
   // A file someone is writing now could change between its check and its removal.
   if (await othersAtWork(sql, computer, busyFor, null)) return outcome;
-  const { files, other } = await listWork(provider, handle, signal);
+  const { files, other, stamps } = await listWork(provider, handle, signal);
   const keptPresent = new Map<string, string | null>();
   const remove = async (batch: string[]) => {
     if (!batch.length) return;
@@ -497,7 +599,10 @@ export async function removeQueuedWork(
       continue;
     }
     const hash = digest(bytes);
-    if (bytes.byteLength !== size || hash !== String(row.hash)) {
+    // Written again since, even with the same content: whoever did may rely on it.
+    const stamp = stamps.get(relative);
+    const rewritten = row.stamp !== null && stamp !== undefined && stamp !== String(row.stamp);
+    if (bytes.byteLength !== size || hash !== String(row.hash) || rewritten) {
       outcome.kept.push({ path, reason: 'it changed since the chat wrote it' });
       keptPresent.set(relative, hash);
       continue;

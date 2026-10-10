@@ -60,6 +60,8 @@ export type SyncInReport = SyncReport & {
 export type SyncOutReport = SyncReport & {
   /** Every file read back, by its path under the workspace, with its content hash. */
   hashes: Map<string, string>;
+  /** The listing's change stamp of each file read back, where the adapter gives one. */
+  stamps: Map<string, string>;
   /** Files the command deleted that went to the trash here too. */
   deleted: string[];
   /** Files the command deleted that are kept here, and go back on the next sync-in. */
@@ -270,6 +272,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const stale: string[] = [];
   const directories: string[][] = [];
   const files: { relative: string; segments: string[]; size: number; mode: number }[] = [];
+  const stamps = new Map<string, string>();
   let declared = 0;
   for (const entry of listing) {
     if (entry.symlink)
@@ -304,6 +307,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
     if (declared > limits.maxTotalBytes)
       throw new SyncRefusal('too_large', 'the sandbox workspace is above the total size cap');
     files.push({ relative: segments.join('/'), segments, size: entry.size, mode: entry.mode });
+    if (entry.stamp !== undefined) stamps.set(segments.join('/'), entry.stamp);
     if (files.length > limits.maxFiles)
       throw new SyncRefusal('too_many_files', 'the sandbox workspace has more files than the cap');
   }
@@ -365,7 +369,14 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const outcome = options.deletions
     ? await deleteLost(options, lost, new Set(directories.map((segments) => segments.join('/'))))
     : { deleted: [], kept: [], trash_id: null, restorable_until: null };
-  return { files: fetched.length, directories: directories.length, bytes, hashes, ...outcome };
+  return {
+    files: fetched.length,
+    directories: directories.length,
+    bytes,
+    hashes,
+    stamps,
+    ...outcome,
+  };
 }
 
 /**

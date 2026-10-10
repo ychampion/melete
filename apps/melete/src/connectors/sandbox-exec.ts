@@ -66,6 +66,7 @@ import {
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
 import {
+  listStamps,
   readStart,
   recordWorkFiles,
   removeQueuedWork,
@@ -1113,6 +1114,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       let timeZone: string | null = null;
       let sent: ReadonlyMap<string, SentFile> | null = null;
       let workComputer: WorkComputer | null = null;
+      let stampsBefore: Map<string, string> | null = null;
       try {
         payload = payloadOf(action);
         timeZone = (await jobFacts(ctx.job_id)).timeZone;
@@ -1133,6 +1135,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             signal,
           })
         ).sent;
+        // What /work holds as the command starts, to tell what it writes again.
+        if (workComputer) stampsBefore = await listStamps(provider, sessionHandle(session), signal);
       } catch (error) {
         // Nothing was dispatched: no sandbox took a command, so this is a
         // plain failure and the same action may be sent again.
@@ -1246,8 +1250,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           sql,
           recorded,
           ctx.job_id,
+          action.id,
           readFrom,
           report.hashes,
+          { after: report.stamps, before: stampsBefore },
           sent,
           records ? (relative) => personGivenReason(records, relative) === null : null,
         ).catch((error: unknown) => workLog('were not recorded', recorded, error));

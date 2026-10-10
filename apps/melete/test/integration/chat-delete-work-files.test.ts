@@ -227,9 +227,8 @@ withDb('deleting a chat and the files it made in /work', () => {
     const made = await s.run(first.id, await first.attempt(), 'printf draft > /work/draft.md');
     await s.suspend(made.sessionId);
     const turn = await second.attempt();
-    // The turn's first read-back counts the computer being handed over, so
-    // the edit comes in a second command, read back with nobody else at work.
-    await s.run(second.id, turn, 'true');
+    // The turn's first command: the computer being handed to the turn is not
+    // someone else at work, so its read-back is clean.
     await s.run(second.id, turn, 'printf edited > /work/draft.md; printf own > /work/own.md');
     const recorded = async (file: string) => {
       const [row] = await s.sql`select writers, shared from sandbox_work_file
@@ -246,6 +245,49 @@ withDb('deleting a chat and the files it made in /work', () => {
     await s.sweep();
     const after = await s.run(second.id, turn, 'cat /work/draft.md');
     expect(after.output).toBe('edited');
+  }, 90_000);
+
+  test('a file another chat wrote again with the same content stays', async () => {
+    const s = await setup();
+    const first = await s.chat('First');
+    const second = await s.chat('Second');
+    const made = await s.run(first.id, await first.attempt(), 'printf v1 > /work/config.json');
+    await s.suspend(made.sessionId);
+    // The second chat makes the same file again, byte for byte.
+    const turn = await second.attempt();
+    await s.run(second.id, turn, 'printf v1 > /work/config.json');
+    const [row] = await s.sql`select writers, shared from sandbox_work_file
+      where space_id = ${s.scope.spaceId} and path = 'config.json'`;
+    expect({ writers: row?.writers, shared: row?.shared }).toEqual({
+      writers: [first.id, second.id],
+      shared: true,
+    });
+    const removal = await s.remove(first.id);
+    expect(removal.computer_files).toEqual({ removed: 0, kept: 1 });
+    await s.sweep();
+    const after = await s.run(second.id, turn, 'cat /work/config.json');
+    expect(after.output).toBe('v1');
+  }, 90_000);
+
+  test('a file its chat alone left alone is not taken for written again', async () => {
+    const s = await setup();
+    const first = await s.chat('First');
+    const second = await s.chat('Second');
+    const made = await s.run(first.id, await first.attempt(), 'printf mine > /work/mine.txt');
+    await s.suspend(made.sessionId);
+    // The second chat's copy now holds it and sends it back with every command.
+    const turn = await second.attempt();
+    await s.run(second.id, turn, 'true');
+    await s.run(second.id, turn, 'true');
+    const removal = await s.remove(first.id);
+    expect(removal.computer_files).toEqual({ removed: 1, kept: 0 });
+    expect(await s.sweep()).toBe(1);
+    const after = await s.run(
+      second.id,
+      turn,
+      'test -e /work/mine.txt && printf here || printf gone',
+    );
+    expect(after.output).toBe('gone');
   }, 90_000);
 
   test('a stopped computer is not started to be cleaned, and is cleaned when it next starts', async () => {
@@ -398,7 +440,8 @@ withDb('who made a file in /work', () => {
           { size: body.length, hash: digest(body) },
         ]),
       );
-      await recordWorkFiles(sql, computer, jobId, from, hashes, copy, () => true);
+      const stamps = { after: new Map<string, string>(), before: null };
+      await recordWorkFiles(sql, computer, jobId, null, from, hashes, stamps, copy, () => true);
     };
     const recorded = async (file: string) => {
       const [row] = await sql`select writers, shared from sandbox_work_file
@@ -449,7 +492,7 @@ withDb('who made a file in /work', () => {
     await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b' });
     expect((await s.recorded('a.txt'))?.shared).toBe(true);
     expect((await s.recorded('b.txt'))?.shared).toBe(true);
-    await s.sql`update sandbox_control set control = 'agent', epoch = 2, changed_at = now()
+    await s.sql`update sandbox_control set control = 'agent', epoch = 2, changed_at = now(), seen_at = now()
       where provider_sandbox_id = ${display}`;
     await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
     expect((await s.recorded('c.txt'))?.shared).toBe(true);
@@ -466,8 +509,8 @@ withDb('who made a file in /work', () => {
       values (${recordId('sbs')}, ${s.seeded.connectionId}, ${s.seeded.spaceId}, ${s.seeded.agentId},
         'fake', ${before}, 'base', '{"kind":"deny_all"}'::jsonb, 'pause', 'closed', now(), now())`;
     // The person took the old sandbox over and handed it back since the last read-back.
-    await s.sql`insert into sandbox_control (provider_sandbox_id, control, epoch, changed_at)
-      values (${before}, 'agent', 2, now())`;
+    await s.sql`insert into sandbox_control (provider_sandbox_id, control, epoch, changed_at, seen_at)
+      values (${before}, 'agent', 2, now(), now())`;
     await s.readBack(mine, { 'notes.md': 'theirs' });
     expect((await s.recorded('notes.md'))?.shared).toBe(true);
   }, 30_000);
@@ -542,6 +585,7 @@ withDb('who made a file in /work', () => {
           jobId: recordId('job'),
           path: 'package.json',
           hash: digest('{}'),
+          stamp: null,
         },
       ],
       () => {},
@@ -549,6 +593,60 @@ withDb('who made a file in /work', () => {
     expect(moved).toBe(1);
     expect(await exists(path.join(workRoot, user, 'package.json'))).toBe(false);
     expect(await exists(path.join(workRoot, stranger, 'package.json'))).toBe(true);
+  }, 30_000);
+
+  test('a queued file written again with the same content stays', async () => {
+    const s = await scope();
+    const provider = new FakeSandboxProvider({ engine });
+    const sandbox = await provider.create(
+      {
+        image: 'base',
+        egress: { kind: 'deny_all' },
+        region: null,
+        lifetimeSeconds: 60,
+        idleSeconds: null,
+        workdir: '/work',
+        labels: {},
+        env: {},
+      },
+      AbortSignal.timeout(5_000),
+    );
+    const sh = (command: string) =>
+      provider.exec(
+        sandbox,
+        {
+          marker: recordId('act'),
+          argv: ['sh', '-c', command],
+          cwd: '/',
+          timeoutMs: 5_000,
+          maxOutputBytes: 4096,
+        },
+        AbortSignal.timeout(5_000),
+      );
+    await sh('mkdir -p /work; printf same > /work/same.txt');
+    const stampOf = async () =>
+      (await provider.listFiles(sandbox, '/work', AbortSignal.timeout(5_000))).find(
+        (entry) => entry.path === 'same.txt',
+      )?.stamp ?? null;
+    const queuedStamp = await stampOf();
+    expect(queuedStamp).not.toBeNull();
+    await s.sql`insert into sandbox_work_removal
+        (id, space_id, agent_id, connection_id, job_id, path, hash, stamp)
+      values (${recordId('wrm')}, ${s.seeded.spaceId}, ${s.seeded.agentId}, ${s.seeded.connectionId},
+        ${recordId('job')}, 'same.txt', ${digest('same')}, ${queuedStamp})`;
+    // Someone writes it again, byte for byte, before the removal comes.
+    await sh('printf same > /work/same.txt');
+    expect(await stampOf()).not.toBe(queuedStamp);
+    const computer = { ...s.computer, providerSandboxId: sandbox.providerSandboxId };
+    const outcome = await removeQueuedWork(
+      s.sql,
+      provider,
+      sandbox,
+      computer,
+      AbortSignal.timeout(10_000),
+    );
+    expect(outcome.removed).toEqual([]);
+    expect(outcome.kept.map((each) => each.path)).toEqual(['same.txt']);
   }, 30_000);
 
   test('nothing is removed while another chat is at work on the computer', async () => {
