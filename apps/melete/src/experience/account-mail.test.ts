@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
+import { plainSmtpAvailable, plainSmtpServer } from '../../test/helpers/plain-smtp.ts';
 import { signInMail, smtpAccountMailer, smtpTransportOptions } from './account-mail.ts';
 
 test('a mail server elsewhere must upgrade to TLS; one on this machine need not', () => {
@@ -13,56 +14,15 @@ test('a mail server elsewhere must upgrade to TLS; one on this machine need not'
   expect(options.connectionTimeout).toBe(10_000);
 });
 
-/**
- * A server that offers no STARTTLS and keeps what it is sent. It listens on
- * 127.0.0.2, which Linux routes to this machine but the sender treats as any
- * other address, so the sender's own TLS rule is what is tested.
- */
-const linux = process.platform === 'linux';
-const received: string[] = [];
-const server = linux
-  ? Bun.listen<{ data: boolean; buffer: string }>({
-      hostname: '127.0.0.2',
-      port: 0,
-      socket: {
-        open(socket) {
-          socket.data = { data: false, buffer: '' };
-          socket.write('220 test ESMTP\r\n');
-        },
-        data(socket, chunk) {
-          socket.data.buffer += chunk.toString();
-          for (let end = socket.data.buffer.indexOf('\r\n'); end >= 0; ) {
-            const line = socket.data.buffer.slice(0, end);
-            socket.data.buffer = socket.data.buffer.slice(end + 2);
-            end = socket.data.buffer.indexOf('\r\n');
-            if (socket.data.data) {
-              if (line === '.') {
-                socket.data.data = false;
-                socket.write('250 kept\r\n');
-              } else received.push(line);
-              continue;
-            }
-            const verb = line.slice(0, 4).toUpperCase();
-            if (verb === 'EHLO') socket.write('250 test\r\n');
-            else if (line.toUpperCase() === 'STARTTLS') socket.write('502 not offered\r\n');
-            else if (verb === 'DATA') {
-              socket.data.data = true;
-              socket.write('354 go on\r\n');
-            } else if (verb === 'QUIT') {
-              socket.write('221 bye\r\n');
-              socket.end();
-            } else socket.write('250 ok\r\n');
-          }
-        },
-      },
-    })
-  : null;
-afterAll(() => server?.stop(true));
+/** A server that offers no STARTTLS; see the helper for why it is on 127.0.0.2. */
+const server = plainSmtpServer();
+const received = server.received;
+afterAll(() => server.stop());
 
-test.skipIf(!linux)(
+test.skipIf(!plainSmtpAvailable)(
   'a link is never sent to a server that cannot take TLS, unless its URL allows that',
   async () => {
-    const at = `smtp://127.0.0.2:${server?.port}`;
+    const at = server.url;
     const from = 'Melete <melete@example.test>';
     const mail = signInMail('person@example.test', 'https://melete.example.test/#/welcome?token=x');
     await expect(smtpAccountMailer({ smtpUrl: at, from }).send(mail)).rejects.toThrow(/TLS/);
