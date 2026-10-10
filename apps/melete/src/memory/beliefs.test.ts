@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { memoryKeyLabel } from '../experience/evidence.ts';
 import {
   beliefCategoryOf,
   beliefLabel,
@@ -155,6 +156,12 @@ describe('labels', () => {
   test('a registry key reads as a name', () => {
     expect(subjectLabel('contact.maya.email', 'contact.maya.email')).toBe("Maya's email");
     expect(subjectLabel('pref.coffee.order', 'pref.coffee.order')).toBe('Coffee: order');
+    // Answers given while setting up read as words, the same on every screen.
+    expect(subjectLabel('pref.checkins.style', 'pref.checkins.style')).toBe('Check-ins: style');
+    expect(subjectLabel('pref.home.city', 'pref.home.city')).toBe('Home: city');
+    expect(memoryKeyLabel(null, 'fact.home_city')).toBe('Home city');
+    expect(memoryKeyLabel('contact.maya.email')).toBe("Maya's email");
+    expect(memoryKeyLabel(null)).toBe('Something you shared');
   });
   test('a subject reads as words, with the person first when it names one', () => {
     expect(subjectLabel(null, 'person.maya.birthday')).toBe("Maya's birthday");
