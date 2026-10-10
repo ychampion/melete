@@ -4008,6 +4008,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            computer_files: {
+                                kept: components["schemas"]["__schema306"];
+                                removed: components["schemas"]["__schema306"];
+                            };
                             forgotten: components["schemas"]["__schema306"];
                             id: components["schemas"]["__schema301"];
                             stopped: boolean;

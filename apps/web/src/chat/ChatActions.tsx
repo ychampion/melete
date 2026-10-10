@@ -226,8 +226,10 @@ export function DeleteChatsDialog({
           {busy
             ? 'Melete stops what it is doing there first, and anything waiting for your OK is withdrawn. '
             : ''}
-          The messages in {name} are deleted for good. Files on the computer stay, and anything it
-          sent or changed stays listed in Settings, Activity.
+          The messages in {name} are deleted for good. Files only{' '}
+          {one ? 'this chat' : 'these chats'} made on the computer are removed too. Files{' '}
+          {one ? 'it' : 'they'} changed that another chat or you also worked on stay. Anything{' '}
+          {one ? 'it' : 'they'} sent or changed stays listed in Settings, Activity.
         </>
       }
       footer={

@@ -263,3 +263,88 @@ export const sandboxControl = pgTable(
   },
   (t) => [check('sandbox_control_control_check', sql`${t.control} in ('agent', 'human')`)],
 );
+
+/**
+ * Who wrote each file in a persistent computer's `/work`, so deleting a chat
+ * can take the files it made there and leave the rest. `/work` is one folder
+ * for every chat of the agent in the space, so a file is recorded against the
+ * computer (space, agent and connection), as it was found when a command's
+ * changes were read back: its content hash and the chats that wrote it.
+ * `shared` is set when anyone else also wrote it, or when who wrote it cannot
+ * be shown (it was there before records were kept, it came back from a chat's
+ * own copy, or another chat, a background process or the person was at work
+ * on the computer meanwhile). Only a file one chat alone wrote, not shared,
+ * goes when that chat is deleted. The writers are kept after their chats go.
+ */
+export const sandboxWorkFile = pgTable(
+  'sandbox_work_file',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    /** Under `/work`, as a portable relative path. */
+    path: text('path').notNull(),
+    /** The sha256 of its content when last read back; null when it was never read. */
+    hash: text('hash'),
+    writers: text('writers').array().notNull().default(sql`'{}'::text[]`),
+    shared: boolean('shared').notNull().default(false),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.spaceId, t.agentId, t.connectionId, t.path] })],
+);
+
+/**
+ * When a persistent computer's `/work` was last read back and recorded. A
+ * change found later is the reading chat's only when nothing else could have
+ * made it since; with no row, records start from a listing of what is there.
+ */
+export const sandboxWorkRead = pgTable(
+  'sandbox_work_read',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.spaceId, t.agentId, t.connectionId] })],
+);
+
+/**
+ * Files a deleted chat alone made in a computer's `/work`, waiting to be
+ * removed there. A running computer is cleaned by the sweep; a stopped one
+ * when it next starts, never started for this. Each is removed only while it
+ * is still a regular file inside `/work` with the content recorded.
+ */
+export const sandboxWorkRemoval = pgTable(
+  'sandbox_work_removal',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    /** The deleted chat; the job row is gone, so no key. */
+    jobId: text('job_id').notNull(),
+    path: text('path').notNull(),
+    hash: text('hash').notNull(),
+    queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('sandbox_work_removal_computer_idx').on(t.spaceId, t.agentId, t.connectionId)],
+);

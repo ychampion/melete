@@ -135,6 +135,8 @@ Deleting a chat (`DELETE /conversations/{id}`), a plan (`DELETE /plans/{id}`) or
   It never holds a subject, a body or file contents. `GET /activity` lists these records, newest first, for the person whose work it was, and Settings shows them under Activity.
 - It removes the rows that name the job without a foreign key: delivered memory context, prepared outputs, repair briefs and the privacy router's per-conversation records. It also clears pointers to the job from company items and files. The files themselves stay.
 
+The agent's computer has one `/work` for all of the agent's chats in a space. Each time a command's changes are read back, every file there is recorded with its content hash and the chat that wrote it, when nothing else could have changed it meanwhile. Deleting a chat removes the files only that chat wrote, while they still hold what it left: from a running computer at the next sandbox sweep, and from a stopped one when it next starts. A file another chat or the person also wrote, or whose writer cannot be shown, stays. The same files leave the copies of `/work` the other chats keep, into their trash. The response's `computer_files` gives both counts.
+
 ## Adding work to the stream
 
 Work that happens inside Melete becomes an entry by writing a `notice` on the job, in the transaction that does the work or in a short one right after it commits. Memory writes it afterwards, so an event write never runs under the space lock:
