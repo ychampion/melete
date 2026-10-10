@@ -291,6 +291,17 @@ def parent_only(name: str) -> bool:
     return name in _PARENT_ONLY or name.startswith(("run.", "intent."))
 
 
+# Lookups that read the world and change nothing, in Melete or outside it. The
+# engine may run several of them at once in one batch, as it does its own
+# web_search; anything else in the batch still waits its turn.
+_PARALLEL_READS = frozenset(("web.search", "web.fetch", "web.weather"))
+
+
+def parallel_read(name: str) -> bool:
+    """A broker tool that may run beside other calls in the same batch."""
+    return name in _PARALLEL_READS
+
+
 def in_helper() -> bool:
     """True while the engine is running a delegated helper on this thread."""
     try:
