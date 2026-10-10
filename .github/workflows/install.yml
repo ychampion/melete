@@ -135,6 +135,14 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | sed '$d' > "$RUNNER_TEMP/install-functions.sh"
           fixed="$(source "$RUNNER_TEMP/install-functions.sh" && setup_code_hash ' abcd efgh-jkmn pqrs tvwx ')"
           test "$fixed" = 8582f0401bebbf68f0492d9590c5b80f40e8f33a29c45cfd13e185b2eb4c0170
+          # A hash line written another way is still found, so a later run keeps it.
+          mkdir -p "$RUNNER_TEMP/state"
+          state() { printf '%s\n' "$1" > "$RUNNER_TEMP/state/.env" && (source "$RUNNER_TEMP/install-functions.sh" && DEPLOY="$RUNNER_TEMP/state" setup_code_state); }
+          test "$(state "export MELETE_SETUP_CODE_HASH=$hash")" = set
+          test "$(state "  MELETE_SETUP_CODE_HASH = \"$hash\"")" = set
+          test "$(state 'MELETE_SETUP_CODE_HASH=""')" = off
+          test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = off
+          test "$(state 'MELETE_IMAGE_TAG=main')" = missing
           # The service's own setupCodeHash() gives the printed code the same hash.
           compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml")
           service="$(printf '%s' "$code" | "${compose[@]}" exec -T melete bun -e \

@@ -368,6 +368,21 @@ set_env() {
 # A setting's value in deploy/.env, or nothing.
 env_value() { sed -n "s/^$1=//p" "$DEPLOY/.env" | tail -n 1 | tr -d '\r'; }
 
+# What deploy/.env says of the setup code: `missing` with no line for it, `off`
+# with an empty one, `set` otherwise. A line counts as set_env would rewrite it,
+# indented or after `export`, so a hash already there is never replaced; quotes
+# are not a value, and the last line wins, as Compose reads the file.
+setup_code_state() {
+  local line value
+  line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?MELETE_SETUP_CODE_HASH[[:space:]]*=' "$DEPLOY/.env" | tail -n 1 | tr -d '\r' || true)"
+  if [ -z "$line" ]; then
+    say missing
+    return
+  fi
+  value="$(printf '%s' "${line#*=}" | tr -d "[:space:]\"'")"
+  if [ -z "$value" ]; then say off; else say set; fi
+}
+
 # A file's text, or a line of text, as one line of base64; `-` for a missing file.
 base64_line() { base64 | tr -d '\n'; }
 file_line() {
@@ -567,6 +582,7 @@ main() {
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
 
+  local codes
   SETUP_CODE='' CODES_OFF=0
   if [ -f "$DEPLOY/.env" ]; then
     say 'Keeping deploy/.env and your data.'
@@ -576,12 +592,13 @@ main() {
     # An installation made before setup codes has no line for one: it gets a
     # code now, said once, as a first install does. A line already there is
     # kept, and an empty one is the person's choice to go without codes.
-    if ! grep -q '^MELETE_SETUP_CODE_HASH=' "$DEPLOY/.env"; then
+    codes="$(setup_code_state)"
+    if [ "$codes" = missing ]; then
       make_setup_code
       set_env MELETE_SETUP_CODE_HASH "$NEW_SETUP_HASH"
       SETUP_CODE="$NEW_SETUP_CODE"
       say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
-    elif [ -z "$(env_value MELETE_SETUP_CODE_HASH | tr -d '[:space:]')" ]; then
+    elif [ "$codes" = off ]; then
       CODES_OFF=1
     fi
   else
