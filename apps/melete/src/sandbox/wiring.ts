@@ -33,6 +33,7 @@ import { END_REASONS, LIVE_STATES, type SandboxProcesses } from './processes.ts'
 import { reconcileSandboxes } from './reconcile.ts';
 import { type SandboxSessions, sessionHandle } from './sessions.ts';
 import type { SandboxProvider } from './types.ts';
+import { cleanRunningComputers } from './work-files.ts';
 
 /** The providers this installation currently has, by the connection that holds the key. */
 export type SandboxProviders = () => ReadonlyMap<
@@ -193,6 +194,11 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       const swept = await sessions.sweep(providerFor, signal);
       await wiring.reapDisplays(signal).catch((error: unknown) => {
         say(`sandbox displays were not reaped: ${String(error)}`);
+      });
+      // Files deleted chats made leave a running computer here; a stopped one
+      // is cleaned when it next starts, never started for this.
+      await cleanRunningComputers(sql, providerFor, signal, say).catch((error: unknown) => {
+        say(`files deleted chats made were not removed from their computers: ${String(error)}`);
       });
       return swept;
     },

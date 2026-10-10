@@ -314,7 +314,13 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
       const response = await call(`/conversations/${chat.id}`, 'DELETE');
       expect(response.status).toBe(200);
       const outcome = conversationDeleted.parse(await response.json());
-      expect(outcome).toEqual({ id: chat.id, stopped: true, withdrawn: 1, forgotten: 0 });
+      expect(outcome).toEqual({
+        id: chat.id,
+        stopped: true,
+        withdrawn: 1,
+        forgotten: 0,
+        computer_files: { removed: 0, kept: 0 },
+      });
     } finally {
       required(jobs).onCancelled = before;
     }

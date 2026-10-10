@@ -1966,7 +1966,7 @@ export class ExperienceMock {
         }
         this.chats.delete(id);
         // The mock keeps no record of which saved details came from which chat.
-        return { id, stopped, withdrawn, forgotten: 0 };
+        return { id, stopped, withdrawn, forgotten: 0, computer_files: { removed: 0, kept: 0 } };
       }
       case 'PATCH /conversations/{id}/agent': {
         const chat = required(this.chats, id);

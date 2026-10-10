@@ -3690,13 +3690,30 @@
                         },
                         "forgotten": {
                           "$ref": "#/components/schemas/__schema306"
+                        },
+                        "computer_files": {
+                          "type": "object",
+                          "properties": {
+                            "removed": {
+                              "$ref": "#/components/schemas/__schema306"
+                            },
+                            "kept": {
+                              "$ref": "#/components/schemas/__schema306"
+                            }
+                          },
+                          "required": [
+                            "removed",
+                            "kept"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "id",
                         "stopped",
                         "withdrawn",
-                        "forgotten"
+                        "forgotten",
+                        "computer_files"
                       ],
                       "additionalProperties": false
                     },

@@ -677,6 +677,13 @@ export const conversationDeleted = z.strictObject({
   withdrawn: count,
   /** Things Melete had learned from the chat that were forgotten with it. */
   forgotten: count,
+  /**
+   * Files in the agent's computer's `/work`. `removed`: files only this chat
+   * made, removed from the computer now, or when it next starts if it is
+   * stopped. `kept`: files the chat changed that another chat or the person
+   * also wrote, or whose maker cannot be shown; they stay.
+   */
+  computer_files: z.strictObject({ removed: count, kept: count }),
 });
 export type ConversationDeleted = z.infer<typeof conversationDeleted>;
 /** A person in the space the session is using. */
@@ -1307,8 +1314,9 @@ export const experienceOperations = {
   'PATCH /conversations/{id}': { request: conversationRename, response: conversationResponse },
   /**
    * Deletes the chat: a turn under way is stopped, waiting permissions are
-   * withdrawn, its work is cancelled and its messages are removed. Files on its
-   * computer stay. Memory stays unless `forget_memory=true`.
+   * withdrawn, its work is cancelled and its messages are removed. Files only
+   * it made in its computer's `/work` are removed; files there that someone
+   * else also wrote stay. Memory stays unless `forget_memory=true`.
    */
   'DELETE /conversations/{id}': { query: conversationDeleteQuery, response: conversationDeleted },
   'PATCH /conversations/{id}/agent': {

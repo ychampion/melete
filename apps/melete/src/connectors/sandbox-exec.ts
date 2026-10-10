@@ -65,6 +65,13 @@ import {
 } from '../sandbox/sessions.ts';
 import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
 import {
+  recordWorkFiles,
+  removeQueuedWork,
+  startWorkRecords,
+  type WorkComputer,
+  workComputerOf,
+} from '../sandbox/work-files.ts';
+import {
   SANDBOX_WORKDIR,
   type SentFile,
   type SyncOutReport,
@@ -601,6 +608,27 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     };
   };
 
+  const workLog = (what: string, computer: WorkComputer, error: unknown) =>
+    process.stderr.write(
+      `the files in /work of ${computer.providerSandboxId} ${what}: ${error instanceof Error ? error.message : String(error)}
+`,
+    );
+
+  /**
+   * Before a command's files are sent: the files deleted chats made here go,
+   * now that the computer runs, and its records start if they have not. A
+   * failure here never stops the command; what is queued waits for the next.
+   */
+  const prepareWork = async (session: SessionRow, computer: WorkComputer, signal: AbortSignal) => {
+    const handle = sessionHandle(session);
+    await removeQueuedWork(sql, provider, handle, computer, signal).catch((error: unknown) =>
+      workLog('of deleted chats were not removed yet', computer, error),
+    );
+    await startWorkRecords(sql, provider, handle, computer, signal).catch((error: unknown) =>
+      workLog('were not listed', computer, error),
+    );
+  };
+
   /**
    * The job's timeline records that the agent's computer was made again from
    * the image it is configured with now, its files kept. A record that cannot
@@ -1055,6 +1083,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       let session: SessionRow;
       let timeZone: string | null = null;
       let sent: ReadonlyMap<string, SentFile> | null = null;
+      let workComputer: WorkComputer | null = null;
       try {
         payload = payloadOf(action);
         timeZone = (await jobFacts(ctx.job_id)).timeZone;
@@ -1064,6 +1093,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         const renewed = await sessions.renew(opened.row.id);
         if (!renewed) throw new Error('the sandbox session ended before the command was sent');
         session = renewed;
+        workComputer = workComputerOf(session);
+        if (workComputer) await prepareWork(session, workComputer, signal);
         sent = (
           await syncIn({
             provider,
@@ -1178,6 +1209,17 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             }
           : {}),
       }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+      // Who made what in the shared /work, for when a chat is deleted.
+      const recorded = workComputer;
+      if (recorded && !(report instanceof Error))
+        await recordWorkFiles(
+          sql,
+          recorded,
+          ctx.job_id,
+          report.hashes,
+          sent,
+          records ? (relative) => personGivenReason(records, relative) === null : null,
+        ).catch((error: unknown) => workLog('were not recorded', recorded, error));
       return withWorkspaceNote(outcome, workspaceNote(report));
     },
 

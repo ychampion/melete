@@ -58,6 +58,8 @@ export type SyncInReport = SyncReport & {
   sent: Map<string, SentFile>;
 };
 export type SyncOutReport = SyncReport & {
+  /** Every file read back, by its path under the workspace, with its content hash. */
+  hashes: Map<string, string>;
   /** Files the command deleted that went to the trash here too. */
   deleted: string[];
   /** Files the command deleted that are kept here, and go back on the next sync-in. */
@@ -355,6 +357,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   } finally {
     await folders.close();
   }
+  const hashes = new Map(fetched.map((file) => [file.relative, digest(file.bytes)]));
   const listed = new Set(files.map((file) => file.relative));
   const lost = [...(options.deletions?.sent.keys() ?? [])]
     .filter((relative) => !listed.has(relative))
@@ -362,7 +365,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const outcome = options.deletions
     ? await deleteLost(options, lost, new Set(directories.map((segments) => segments.join('/'))))
     : { deleted: [], kept: [], trash_id: null, restorable_until: null };
-  return { files: fetched.length, directories: directories.length, bytes, ...outcome };
+  return { files: fetched.length, directories: directories.length, bytes, hashes, ...outcome };
 }
 
 /**
