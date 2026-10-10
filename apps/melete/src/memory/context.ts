@@ -10,11 +10,11 @@ import {
   styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
 import { lockJob } from '../broker/records.ts';
-import { memoryKeyLabel } from '../experience/evidence.ts';
 import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
 import { sharedRevisionEligible, withSharedItems } from '../rooms/shares.ts';
 import { withStyleCheck } from '../runtime/style.ts';
+import { subjectLabel } from './beliefs.ts';
 import { chatIntent } from './capture.ts';
 import { eligibleRevision } from './claims.ts';
 import {
@@ -250,6 +250,18 @@ async function recordRecallEntry(
       const [owned] = await tx`select (s.kind = 'personal' and (j.principal_id is null
           or j.principal_id = coalesce(s.owner_principal_id, (select id from owner limit 1)))) as mine
         from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+      // Each detail is named by what it is about ("Your availability", "Landlord Patel"), as
+      // the memory page names it, rather than "Something you shared".
+      const ids = context.items.map((item) => item.claim_id);
+      const subjects = owned?.mine
+        ? await tx`select id, key, domain_key from memory_claims where id = any(${ids})`
+        : [];
+      const named = new Map(
+        subjects.map((row) => [
+          String(row.id),
+          subjectLabel(row.key as string | null, String(row.domain_key)),
+        ]),
+      );
       await appendMemoryTool(tx, jobId, attemptId, {
         op: 'recall',
         id: `recall:${attemptId}`,
@@ -257,7 +269,9 @@ async function recordRecallEntry(
         started_at: startedAt?.toISOString() ?? context.created_at,
         ended_at: context.created_at,
         count: context.items.length,
-        labels: owned?.mine ? context.items.map((item) => memoryKeyLabel(item.key)) : [],
+        labels: owned?.mine
+          ? context.items.map((item) => named.get(item.claim_id) ?? 'Something you shared')
+          : [],
         value: null,
         memory_item_id: null,
         parent: null,

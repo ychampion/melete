@@ -19,6 +19,27 @@ const when = (iso: string) =>
     minute: '2-digit',
   });
 
+/**
+ * The line under an entry: where it happened and the deleted chat or plan it
+ * came from. A chat by the same name may still be open, so this one says it
+ * was deleted.
+ */
+export function sourceLine(entry: {
+  where: string;
+  source: string;
+  reference?: string | null;
+  undone_at?: string | null;
+}): string {
+  return [
+    entry.where,
+    `from “${entry.source}”, since deleted`,
+    entry.reference ? `ref ${entry.reference}` : null,
+    entry.undone_at ? 'undone' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export function ActivityTab() {
   const activity = useLoad(() => adapter.activity(), []);
   const entries = activity.data?.activity ?? [];
@@ -37,8 +58,9 @@ export function ActivityTab() {
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        What Melete did for you in chats and plans you have deleted: what it was, where it went and
-        when. What the messages said is not kept here.
+        What Melete did for you in chats and plans you have since deleted: what it was, where it
+        went and when. What the messages said is not kept here. A chat you still have keeps this in
+        its own work log.
       </p>
       {activity.error ? (
         <LoadError what="your activity" error={activity.error} onRetry={activity.reload} />
@@ -62,9 +84,7 @@ export function ActivityTab() {
                 {entry.destination ? ` · ${entry.destination}` : ''}
               </span>
               <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-                {entry.where} · from “{entry.source}”
-                {entry.reference ? ` · ref ${entry.reference}` : ''}
-                {entry.undone_at ? ' · undone' : ''}
+                {sourceLine(entry)}
               </span>
             </div>
             {entry.undo && Date.parse(entry.undo.valid_until) > Date.now() ? (

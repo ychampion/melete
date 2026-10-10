@@ -502,4 +502,40 @@ withDb('the agent asks the person and waits for the answer', () => {
       .where(eq(experienceTurn.id, required(woken.currentTurnId)));
     expect(turn?.text).toBe('You chose: Skip');
   });
+
+  test('a question the person no longer wants to answer can be dismissed', async () => {
+    const { id, claims } = await chatTurn('Plan a picnic');
+    await ask(claims.claims, { question: 'Which park?', choices: ['North', 'South'] });
+    await required(runner).commitOutcome(claims.claims, {
+      kind: 'completed',
+      summary: '',
+      evidence: [],
+    });
+    const card = required((await quickAnswers()).find((entry) => entry.conversation_id === id));
+    // Signed out, nothing changes.
+    const anonymous = await required(app).request(`/quick-answers/${card.id}/dismiss`, {
+      method: 'POST',
+    });
+    expect(anonymous.status).toBe(401);
+    expect((await request(`/quick-answers/${card.id}/dismiss`, 'POST')).status).toBe(200);
+    expect((await quickAnswers()).some((entry) => entry.id === card.id)).toBe(false);
+    expect((await questionsOf(id))[0]?.state).toBe('withdrawn');
+    const closed = await required(handle)
+      .db.select({ payload: event.payload })
+      .from(event)
+      .where(and(eq(event.jobId, id), eq(event.dedupKey, `${card.id}:closed`)));
+    expect(closed[0]?.payload).toMatchObject({ kind: 'question_closed', reason: 'dismissed' });
+    // Dismissing again is harmless; a question that was never there is not found.
+    expect((await request(`/quick-answers/${card.id}/dismiss`, 'POST')).status).toBe(200);
+    expect((await request(`/quick-answers/${newId('qst')}/dismiss`, 'POST')).status).toBe(404);
+
+    // One about something that may already have gone out needs an answer.
+    const blocking = newId('qst');
+    await sql()`insert into question (id, source, job_id, text, because, if_ignored, blocks_external_effect)
+      values (${blocking}, 'job', ${id}, 'Did the invite reach Ana?', '["It was never acknowledged."]'::jsonb,
+        'Nothing is sent in the meantime.', true)`;
+    const refused = await request(`/quick-answers/${blocking}/dismiss`, 'POST');
+    expect(refused.status).toBe(409);
+    expect((await quickAnswers()).some((entry) => entry.id === blocking)).toBe(true);
+  });
 });

@@ -143,6 +143,8 @@ const PERSON_HEADS = new Set([
   'friend',
   'friends',
 ]);
+/** Subjects that name the person themselves: their details read as "Your …", never "Owner's …". */
+const SELF = new Set(['owner', 'user', 'me', 'self', 'you', 'myself']);
 const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 /** A plain name for what a belief is about, from its registry key or its subject. */
@@ -151,6 +153,7 @@ export function subjectLabel(key: string | null, domainKey: string): string {
     const [kind, subject, field] = key.split('.');
     const name = capitalize((subject ?? '').replaceAll('-', ' '));
     const leaf = (field ?? '').replaceAll('-', ' ');
+    if (kind === 'contact' && SELF.has((subject ?? '').toLowerCase())) return `Your ${leaf}`;
     if (kind === 'contact') return `${name}'s ${leaf}`;
     if (kind === 'event') return `${name} ${leaf}`;
     if (kind === 'pref') return `${name}: ${leaf}`;
@@ -165,6 +168,7 @@ export function subjectLabel(key: string | null, domainKey: string): string {
   if (PERSON_HEADS.has(head.toLowerCase()) && rest.length >= 2) {
     // "person.sister.lena.city" is Sister Lena's city, not "Sister's lena city".
     const [first = '', second = '', ...field] = rest;
+    if (SELF.has(first.toLowerCase())) return `Your ${[second, ...field].join(' ')}`.slice(0, 200);
     // "person.sister.city" is a field of the sister's; "person.landlord.patel" names him.
     const related = RELATIONS.has(first.toLowerCase()) && !FIELDS.has(second.toLowerCase());
     const who = related ? `${capitalize(first)} ${capitalize(second)}` : capitalize(first);
@@ -347,7 +351,8 @@ export async function beliefFromHead(
   return {
     id: head.id,
     label: beliefLabel(head.key, head.domain_key, head.current.content),
-    value: head.current.content,
+    // Saved before details were put in the person's words, it may still say "the owner".
+    value: inPersonsWords(head.current.content),
     category: beliefCategoryOf({
       key: head.key,
       domainKey: head.domain_key,
@@ -415,7 +420,7 @@ export async function beliefHistory(
       if (!(await eligibleRevision(tx, scope, id, Number(row.revision)))) continue;
       const at = new Date(String(row.recorded_at)).toISOString();
       versions.push({
-        value: String(row.content),
+        value: inPersonsWords(String(row.content)),
         at,
         source: await sourceView(
           tx,
