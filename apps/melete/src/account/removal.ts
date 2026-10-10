@@ -140,7 +140,7 @@ export class AccountRemovalService {
         select (select count(*)::int from job where space_id = ${space.id} and kind = 'chat') as chats,
           (select count(*)::int from artifact where space_id = ${space.id}) as files,
           (select count(*)::int from connection where space_id = ${space.id}
-            and status <> 'revoked') as connections`;
+            and status <> 'revoked' and configuration->>'builtin' is null) as connections`;
       counts.set(space.id, row ?? { chats: 0, files: 0, connections: 0 });
     }
     const rooms = await this.deps.sql<{ id: string; name: string }[]>`
