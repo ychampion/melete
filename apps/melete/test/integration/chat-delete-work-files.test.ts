@@ -470,4 +470,46 @@ withDb('who made a file in /work', () => {
     await s.readBack(mine, { 'notes.md': 'theirs' });
     expect((await s.recorded('notes.md'))?.shared).toBe(true);
   }, 30_000);
+
+  test("a file another chat made that comes back from this chat's copy is not this chat's", async () => {
+    const s = await scope();
+    const maker = await s.chat();
+    const keeper = await s.chat();
+    const other = await s.chat();
+    await s.readBack(maker, { 'theirs.txt': 'made' });
+    expect(await s.recorded('theirs.txt')).toEqual({ writers: [maker], shared: false });
+    // The keeper's copy holds it after its read-back.
+    await s.readBack(keeper, { 'theirs.txt': 'made' });
+    // /work loses it (a computer made again empty), and another chat's copy,
+    // which never had it, is sent first.
+    await s.readBack(other, {});
+    // The keeper's copy brings it back, with a file the keeper wrote itself.
+    await s.readBack(
+      keeper,
+      { 'theirs.txt': 'made', 'own.txt': 'new' },
+      { 'theirs.txt': 'made', 'own.txt': 'new' },
+    );
+    expect(await s.recorded('theirs.txt')).toEqual({ writers: [maker], shared: true });
+    expect(await s.recorded('own.txt')).toEqual({ writers: [keeper], shared: false });
+  }, 30_000);
+
+  test("a file the chat alone made that comes back from its own copy stays the chat's", async () => {
+    const s = await scope();
+    const mine = await s.chat();
+    await s.readBack(mine, { 'report.md': 'v1' });
+    await s.readBack(mine, {});
+    await s.readBack(mine, { 'report.md': 'v1' }, { 'report.md': 'v1' });
+    expect(await s.recorded('report.md')).toEqual({ writers: [mine], shared: false });
+  }, 30_000);
+
+  test("before records start, nothing the chat's copy brings is taken for the chat's", async () => {
+    const s = await scope();
+    const mine = await s.chat();
+    await s.sql`delete from sandbox_work_read where space_id = ${s.seeded.spaceId}`;
+    // Everything in /work came from the chat's copy, which holds what other
+    // chats and the person made too.
+    await s.readBack(mine, { 'a.txt': 'a', 'b.txt': 'b' }, { 'a.txt': 'a', 'b.txt': 'b' });
+    expect((await s.recorded('a.txt'))?.shared).toBe(true);
+    expect((await s.recorded('b.txt'))?.shared).toBe(true);
+  }, 30_000);
 });

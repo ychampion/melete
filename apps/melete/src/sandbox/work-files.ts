@@ -221,16 +221,18 @@ export async function recordWorkFiles(
         and connection_id = ${computer.connectionId}`;
     // With no starting point, what changed cannot be told from what was there.
     const others = read ? await othersAtWork(tx, computer, jobId, read.read_at as DbTime) : true;
+    const paths = [...files.keys()];
+    // Only the paths there now: a computer's records keep every path it has had.
     const rows = await tx<FileRow[]>`select path, hash, writers, shared from sandbox_work_file
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
-        and connection_id = ${computer.connectionId}`;
+        and connection_id = ${computer.connectionId} and path = any(${paths}::text[])`;
     const known = new Map(rows.map((row) => [row.path, row]));
     // A deleted chat's file still waiting to be removed is not anyone's new file.
     const queued = new Map(
       (
         await tx`select path, hash from sandbox_work_removal
           where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
-            and connection_id = ${computer.connectionId}`
+            and connection_id = ${computer.connectionId} and path = any(${paths}::text[])`
       ).map((row) => [String(row.path), String(row.hash)]),
     );
     for (const [path, hash] of files) {
@@ -241,16 +243,26 @@ export async function recordWorkFiles(
       let writers = row?.writers ?? [];
       let shared: boolean;
       if (restored) {
-        // This chat's own copy brought it. New to /work, and not a file the
-        // person gave the chat, it is the chat's: written with its file tools.
-        // Over a file already there, who made that content cannot be shown.
-        if (!row && chatMade?.(path)) writers = [jobId];
-        shared = !(!row && chatMade?.(path));
+        // This chat's own copy brought it. A path /work never had, and not a
+        // file the person gave the chat, is the chat's: written with its file
+        // tools. So is one the chat alone had there before and that went.
+        // Over a file there, or one that was someone else's before it went
+        // (a copy keeps what it read back from /work), who made it cannot be
+        // shown; nor can anything before records start.
+        const own =
+          read !== undefined &&
+          chatMade?.(path) === true &&
+          (!row ||
+            (row.hash === null &&
+              !row.shared &&
+              row.writers.length === 1 &&
+              row.writers[0] === jobId));
+        if (own) writers = [jobId];
+        shared = !own;
       } else if (others) shared = true;
       else {
         if (!writers.includes(jobId)) writers = [...writers, jobId];
-        shared =
-          (row?.shared ?? false) || (row !== undefined && row.hash === null) || writers.length > 1;
+        shared = (row?.shared ?? false) || writers.length > 1;
       }
       await tx`insert into sandbox_work_file
           (space_id, agent_id, connection_id, path, hash, writers, shared, updated_at)
@@ -260,10 +272,12 @@ export async function recordWorkFiles(
           set hash = excluded.hash, writers = excluded.writers, shared = excluded.shared,
             updated_at = now()`;
     }
-    // A file no longer there has no maker to remember.
-    await tx`delete from sandbox_work_file
+    // A file no longer there keeps who made it, without content: a chat's
+    // copy that brings it back is not taken for its maker.
+    await tx`update sandbox_work_file set hash = null, updated_at = now()
       where space_id = ${computer.spaceId} and agent_id = ${computer.agentId}
-        and connection_id = ${computer.connectionId} and path <> all(${[...files.keys()]}::text[])`;
+        and connection_id = ${computer.connectionId} and hash is not null
+        and path <> all(${paths}::text[])`;
     // The next read-back counts from when this one began listing, so what
     // changed while it read is looked at again. Anything under way then is
     // counted at the next, as running, unresolved or held, or as ended since.
@@ -302,9 +316,17 @@ export async function queueWorkRemovals(
   jobIds: readonly string[],
 ): Promise<WorkFilesOutcome> {
   const list = [...jobIds];
+  // Only the computers of these chats' agents, read through the key's prefix.
+  const theirs = tx`(space_id, agent_id) in (select space_id, agent_id from job
+    where id = any(${list}) and agent_id is not null)`;
   const own = await tx`delete from sandbox_work_file
-    where not shared and hash is not null and cardinality(writers) = 1 and writers[1] = any(${list})
+    where ${theirs} and not shared and hash is not null
+      and cardinality(writers) = 1 and writers[1] = any(${list})
     returning space_id, agent_id, connection_id, path, hash, writers[1] as job_id`;
+  // A path only they had, gone from /work already, is nobody's to keep.
+  await tx`delete from sandbox_work_file
+    where ${theirs} and not shared and hash is null
+      and cardinality(writers) > 0 and writers <@ ${list}::text[]`;
   const queued: QueuedRemoval[] = own.map((row) => ({
     spaceId: String(row.space_id),
     agentId: String(row.agent_id),
@@ -326,7 +348,7 @@ export async function queueWorkRemovals(
     await tx`insert into sandbox_work_removal ${tx(rows, 'id', 'space_id', 'agent_id', 'connection_id', 'job_id', 'path', 'hash')}`;
   }
   const [kept] = await tx`select count(*)::int as n from sandbox_work_file
-    where writers && ${list}::text[]`;
+    where ${theirs} and hash is not null and writers && ${list}::text[]`;
   return { removed: queued.length, kept: Number(kept?.n ?? 0), queued };
 }
 
