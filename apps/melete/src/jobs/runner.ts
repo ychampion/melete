@@ -1368,6 +1368,14 @@ export class AttemptRunner {
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
                 { attemptId, reason: 'recovery' },
               );
+    // Long work that stops to ask gives the person what it has first.
+    if (
+      run &&
+      row.state === 'running' &&
+      moved.kind === 'run' &&
+      moved.state === 'waiting_for_input'
+    )
+      await run.giveSoFar(tx, moved, attemptId, 'Its work kept getting interrupted.');
     if (run && moved.kind === 'run_step' && moved.state === 'failed')
       await run.stepEnded(tx, moved, {
         kind: 'failed',

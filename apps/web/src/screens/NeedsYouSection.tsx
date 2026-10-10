@@ -15,6 +15,7 @@ import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Status } from '../design/primitives.tsx';
 import type { Result } from '../experience/adapter.ts';
 import { call } from '../experience/call.ts';
+import { clockTime, sameDay, weekday } from '../experience/clock.ts';
 import type { NeedsYou, NeedsYouItem } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -52,9 +53,9 @@ export function whenWords(iso: string | null, now: number): string | null {
   if (!iso) return null;
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return null;
-  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (date.toDateString() === new Date(now).toDateString()) return time;
-  return `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${time}`;
+  const time = clockTime(date);
+  if (sameDay(date, new Date(now))) return time;
+  return `${weekday(date)} ${time}`;
 }
 
 const WAITING_BECAUSE: Record<NonNullable<NeedsYou['unsorted_reason']>, string> = {

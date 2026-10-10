@@ -274,18 +274,36 @@ owner or space id. An item from another space or another account is unavailable
 and reads as 404.
 Browser mutations must originate from the same origin as the API.
 
-For email sign-in, configure `MELETE_PUBLIC_URL` and connect the owner's own
-mailbox with send access. `POST /signin/magic-link` accepts `{ email }`. The
-connector sends a link to that same mailbox; it cannot send sign-in mail to a
-different recipient. The link expires in ten minutes and works once. Revoking or
-replacing the connection invalidates its outstanding links. Requests are limited
-to one per minute and five per hour for the owner.
+`GET /setup` is public. It answers `needed` (no account exists yet),
+`code_required` (creating it needs the installation's setup code, sent to
+`POST /setup` as `setup_code`) and `email_sign_in` (whether an emailed sign-in
+link can be sent). Offer the link only when `email_sign_in` is true.
 
-The link carries its token in the URL fragment. Read it on the sign-in page,
+For email sign-in, configure `MELETE_PUBLIC_URL` and either the installation's
+account mail sender (`MELETE_SMTP_URL` and `MELETE_MAIL_FROM`; see
+[Account mail](DEPLOYMENT.md#account-mail)), which mails any account, or the
+owner's own mailbox with send access, which mails only the owner.
+`POST /signin/magic-link` accepts `{ email }` and gives the same answer whether
+or not the address has an account. The link expires in ten minutes and works
+once. A link from the owner's mailbox stops working when that connection is
+revoked or replaced. Requests are limited to one per minute and five per hour
+for each account.
+
+The link opens the sign-in screen with its token in the fragment's query:
+`https://melete.example.com/#/welcome?token=…`. Read it on the sign-in page,
 remove the fragment from browser history, and post `{ token }` to
 `/signin/magic-link/consume`; the response sets the normal session cookie.
 Never place the token in a query string or store it in browser persistence.
+A reset link has the same shape on `#/reset`; `POST /password-reset/check`
+says whether its token is still good before a new password is asked for.
 Google and Apple sign-in return `not_available`.
+
+`GET /account/sessions` lists where the account is signed in, with the
+computers, notification subscriptions and assistants that reach it.
+`DELETE /account/sessions/{id}` signs one browser out, and
+`POST /account/sessions/revoke-others` signs out everything but the caller, as
+a new password does. A request whose session has ended answers 401
+`unauthorized`; a client should then show its sign-in screen.
 
 ### Conversations and the composer
 

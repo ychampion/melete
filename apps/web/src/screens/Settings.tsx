@@ -12,7 +12,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useLoad } from '../experience/hooks.ts';
+import { type Loaded, useLoad } from '../experience/hooks.ts';
 import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
@@ -42,11 +42,14 @@ const ACCESS_LABEL: Record<Connection['access'], string> = {
 export function ConnectionCard({
   connection,
   compact = false,
+  quiet = false,
   actions,
   footer,
 }: {
   connection: Connection;
   compact?: boolean;
+  /** A tool that comes with Melete: when it is not working, said calmly, without the reason. */
+  quiet?: boolean;
   /** What may be done to this connection here; absent where a card only reports. */
   actions?: ReactNode;
   /** A setting for this connection, on its own line under the rest. */
@@ -63,6 +66,8 @@ export function ConnectionCard({
         <Icon name="loader" size={14} stroke={2} className="spin" />
         Connecting…
       </span>
+    ) : connection.status === 'error' && quiet ? (
+      <Badge tone="outline">Not available</Badge>
     ) : connection.status === 'error' ? (
       <Badge tone="danger" dot>
         {connection.problem?.kind === 'not_running'
@@ -109,7 +114,11 @@ export function ConnectionCard({
           <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
             {connection.app} · {ACCESS_LABEL[connection.access]}
           </span>
-          {connection.status === 'error' && connection.problem ? (
+          {connection.status === 'error' && quiet ? (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              {connection.label} isn’t available right now.
+            </span>
+          ) : connection.status === 'error' && connection.problem ? (
             <span className="connection-problem">{connection.problem.detail}</span>
           ) : connection.reading_note ? (
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>{connection.reading_note}</span>
@@ -316,6 +325,78 @@ function WebReads() {
   );
 }
 
+/** The apps a person connected, then what they can connect, then what comes with Melete. */
+export function ConnectionsTab({
+  connections,
+}: {
+  connections: Loaded<{ connections: Connection[] }>;
+}) {
+  const list = connections.data?.connections ?? [];
+  const own = list.filter((connection) => !connection.builtin);
+  const builtin = list.filter((connection) => connection.builtin);
+  const card = (connection: Connection) => (
+    <ConnectionCard
+      key={connection.id}
+      connection={connection}
+      quiet={connection.builtin === true}
+      actions={
+        <ConnectionActions
+          id={connection.id}
+          label={connection.label}
+          removable={connection.builtin !== true}
+          onChanged={connections.reload}
+        />
+      }
+      footer={
+        connection.watching === undefined ? undefined : (
+          <WatchSwitch
+            connection={connection}
+            onChanged={(next) => connections.set({ connections: next })}
+          />
+        )
+      }
+    />
+  );
+  return (
+    <div className="col" style={{ gap: 12 }}>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+        Melete looks things up and makes changes in the apps you connect, and keeps a record of what
+        it did. It asks you first before it sends, posts or pays for anything. Choose what each
+        agent may use on its Access tab.
+      </p>
+      {connections.error ? (
+        <LoadError what="your connections" error={connections.error} onRetry={connections.reload} />
+      ) : null}
+      {own.length ? (
+        <section className="col" style={{ gap: 8 }} aria-label="Your apps">
+          {own.map(card)}
+        </section>
+      ) : null}
+      <AddConnection
+        onInstalled={connections.reload}
+        connected={new Set(list.flatMap((item) => (item.catalog_id ? [item.catalog_id] : [])))}
+      />
+      {builtin.length ? (
+        <details className="connect-advanced builtin-tools">
+          <summary>
+            <span className="connect-advanced-title">Built-in tools</span>
+            <span className="connect-advanced-note">
+              What Melete has without connecting anything, such as files and the web
+            </span>
+          </summary>
+          <div className="col" style={{ gap: 8, paddingTop: 12 }}>
+            <WebReads />
+            {builtin.map(card)}
+          </div>
+        </details>
+      ) : (
+        <WebReads />
+      )}
+      <ConnectedAssistants />
+    </div>
+  );
+}
+
 const ruleWhen = (rule: Rule) => {
   const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
     month: 'short',
@@ -415,7 +496,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                   label: 'Connections',
                   count: connections.error
                     ? undefined
-                    : list.filter((c) => c.status === 'connected').length,
+                    : list.filter((c) => c.status === 'connected' && !c.builtin).length,
                 },
                 { value: 'devices', label: 'Devices', count: deviceCount },
                 { value: 'approvals', label: 'Approvals' },
@@ -457,54 +538,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
         ) : current === 'account' ? (
           <AccountSettings />
         ) : current === 'connections' ? (
-          <div className="col" style={{ gap: 12 }}>
-            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-              Melete reads what you connect and asks before it writes anywhere. Access is per agent;
-              set it on each agent’s Access tab.
-            </p>
-            <WebReads />
-            {connections.error ? (
-              <LoadError
-                what="your connections"
-                error={connections.error}
-                onRetry={connections.reload}
-              />
-            ) : null}
-            <div className="col" style={{ gap: 8 }}>
-              {list.map((connection) => (
-                <ConnectionCard
-                  key={connection.id}
-                  connection={connection}
-                  actions={
-                    <ConnectionActions
-                      id={connection.id}
-                      label={connection.label}
-                      removable={connection.builtin !== true}
-                      onChanged={connections.reload}
-                    />
-                  }
-                  footer={
-                    connection.watching === undefined ? undefined : (
-                      <WatchSwitch
-                        connection={connection}
-                        onChanged={(next) => connections.set({ connections: next })}
-                      />
-                    )
-                  }
-                />
-              ))}
-            </div>
-            {connections.data && !connections.error && list.length === 0 ? (
-              <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
-            ) : null}
-            <AddConnection
-              onInstalled={connections.reload}
-              connected={
-                new Set(list.flatMap((item) => (item.catalog_id ? [item.catalog_id] : [])))
-              }
-            />
-            <ConnectedAssistants />
-          </div>
+          <ConnectionsTab connections={connections} />
         ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
@@ -579,7 +613,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                     No standing rules
                   </span>
                   <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    Every agent asks before it writes anywhere.
+                    When you choose “Always allow” on a request, it shows up here.
                   </span>
                 </div>
               ) : null}

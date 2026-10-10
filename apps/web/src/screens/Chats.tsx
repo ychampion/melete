@@ -9,6 +9,7 @@ import { Icon } from '../design/icons.tsx';
 import { Button, Checkbox } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { clockTime, isYesterday, monthDay, sameDay } from '../experience/clock.ts';
 import { agentById, faceOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
@@ -37,10 +38,9 @@ export function statusWord(chat: Conversation, waiting: ReadonlySet<string>): st
 
 function when(iso: string, now: number): string {
   const date = new Date(iso);
-  if (date.toDateString() === new Date(now).toDateString())
-    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (date.toDateString() === new Date(now - 86_400_000).toDateString()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (sameDay(date, new Date(now))) return clockTime(date);
+  if (isYesterday(date, new Date(now))) return 'Yesterday';
+  return monthDay(date);
 }
 
 export function ChatsScreen() {

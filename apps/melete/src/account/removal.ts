@@ -51,6 +51,7 @@ const ACCOUNT_RECORDS = [
   'mcp_token',
   'push_subscription',
   'push_intent',
+  'magic_link',
 ];
 
 /** What is left of an account once its spaces are gone, should its row have to stay. */
@@ -192,7 +193,8 @@ export class AccountRemovalService {
       const [locked] = await tx`select id from principal where id = ${principalId} for update`;
       if (!locked) throw new ServiceError('not_found', 'No such account.', 404);
       await tx`update principal set email = ${removedEmail(principalId)}, password_hash = null,
-        passkey = null, display_name = null where id = ${principalId}`;
+        passkey = null, display_name = null, disabled_at = coalesce(disabled_at, now())
+        where id = ${principalId}`;
       for (const table of ACCOUNT_RECORDS)
         await tx`delete from ${tx(table)} where principal_id = ${principalId}`;
     });

@@ -4,6 +4,7 @@
  * thread that holds the whole answer.
  */
 import { Icon } from '../design/icons.tsx';
+import { clockTime as clockOf, sameDay } from '../experience/clock.ts';
 import { plainRunReason } from '../experience/plain.ts';
 import type { Home } from '../experience/types.ts';
 import { href } from '../router.ts';
@@ -26,8 +27,8 @@ export function runHeadline(run: RoutineResult['run']): string {
 
 export function clockTime(iso: string, now: number): string {
   const date = new Date(iso);
-  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  return new Date(now).toDateString() === date.toDateString() ? time : `Yesterday ${time}`;
+  const time = clockOf(date);
+  return sameDay(new Date(now), date) ? time : `Yesterday ${time}`;
 }
 
 export function RoutineResults({ results, now }: { results: RoutineResult[]; now: number }) {

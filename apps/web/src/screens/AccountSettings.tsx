@@ -1,11 +1,13 @@
 /**
- * Settings › Account: the name Melete uses, the time zone routines run on, and
- * the password. Changing the password signs out every other device. Signing
- * out is in the account menu, at the foot of the sidebar. Below them, your
- * data: download it, erase it, or delete the account (`AccountData.tsx`).
+ * Settings › Account: the name Melete uses, the time zone routines run on, the
+ * password, and where the account is signed in. Changing the password signs
+ * out every other device. Signing out of this one is in the account menu, at
+ * the foot of the sidebar. Below them, your data: download it, erase it, or
+ * delete the account (`AccountData.tsx`).
  */
 import { useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
+import { keepingPushHere, NEW_PASSWORD_MIN } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
 import { zoneName } from '../experience/plain.ts';
@@ -13,6 +15,7 @@ import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
 import { toast } from '../shell/Shell.tsx';
 import { AccountData } from './AccountData.tsx';
+import { SignedIn } from './SignedIn.tsx';
 
 function TimeZoneField() {
   const { profile, refreshProfile } = useApp();
@@ -141,11 +144,12 @@ function PasswordForm() {
       style={{ gap: 10, maxWidth: 360 }}
       onSubmit={(event) => {
         event.preventDefault();
-        if (next.length < 8) return setProblem('The new password needs at least 8 characters.');
+        if (next.length < NEW_PASSWORD_MIN)
+          return setProblem(`The new password needs at least ${NEW_PASSWORD_MIN} characters.`);
         if (next !== again) return setProblem('The two new passwords are not the same.');
         setBusy(true);
         setProblem(null);
-        void adapter.changePassword(current, next).then((result) => {
+        void keepingPushHere(() => adapter.changePassword(current, next)).then((result) => {
           setBusy(false);
           if (result.data === null) {
             setProblem(result.error ?? result.unavailable ?? 'Couldn’t change the password.');
@@ -176,7 +180,7 @@ function PasswordForm() {
           type="password"
           value={next}
           onChange={(event) => setNext(event.target.value)}
-          placeholder="At least 8 characters"
+          placeholder={`At least ${NEW_PASSWORD_MIN} characters`}
           autoComplete="new-password"
           width="100%"
         />
@@ -221,6 +225,7 @@ export function AccountSettings() {
         </span>
         <PasswordForm />
       </div>
+      <SignedIn />
       <AccountData />
     </div>
   );

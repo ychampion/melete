@@ -22,6 +22,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { FAN_OUT } from '../../src/runs/record.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf } from '../helpers/broker.ts';
@@ -230,56 +231,151 @@ withDb('checking a result before it is called done', () => {
     expect(pushes.map((push) => push.body)).toEqual(['TAP at $412: https://example.test/book']);
   });
 
-  test('gaps go back to the work; after two checks with gaps the result is given with them named', async () => {
+  test('one check: when it finds gaps the result is given at once, with them named', async () => {
     const run = await start({
       goal: 'Write the launch questions and answers',
       done_when: 'Every question on the list is answered',
     });
-    const give = async (summary: string, gaps: string[]) => {
-      const shift = await claim(run.id);
-      await tool(shift.claims, 'run.finish', { summary });
-      await commit(shift.claims);
-      const check = await claim(await checker(run.id));
-      await tool(check.claims, 'run.finish', { summary: 'Not yet.', verdict: 'gaps', gaps });
-      await commit(check.claims);
-      return shift;
-    };
-    await give('All answered.', ['The pricing question has no answer']);
-    expect((await row(run.id)).state).toBe('queued');
-    expect((await view(run.id)).check).toEqual({
-      enabled: true,
-      state: 'gaps',
-      gaps: ['The pricing question has no answer'],
-    });
-
-    // The next shift starts with the gaps, then the rest of its brief.
-    const next = await claimNow(run.id);
-    const brief = required(next).bundle.job.objective;
-    expect(brief).toContain(
-      'A separate check of the result you gave found it is not done yet:\n- The pricing question has no answer',
-    );
-    expect(brief.indexOf('found it is not done yet')).toBeLessThan(
-      brief.indexOf('long work done in shifts'),
-    );
-    await tool(required(next).claims, 'run.finish', { summary: 'Pricing answered too.' });
-    await commit(required(next).claims);
+    const shift = await claim(run.id);
+    await tool(shift.claims, 'run.finish', { summary: 'All answered.' });
+    await commit(shift.claims);
     const check = await claim(await checker(run.id));
     await tool(check.claims, 'run.finish', {
-      summary: 'One left.',
+      summary: 'Not yet.',
       verdict: 'gaps',
-      gaps: ['The refund question has no answer'],
+      gaps: ['The pricing question has no answer'],
     });
     await commit(check.claims);
 
-    // The second check with gaps is the last: the result is given, saying what was not confirmed.
+    // Before, the gaps went back to the work for another round, and the person
+    // heard nothing until that round was done and checked again; a round that
+    // ran long left them with nothing at all. The result is given by a shift
+    // that only records it, saying what was not confirmed.
     expect(await claimNow(run.id)).toBeNull();
     const finished = await view(run.id);
     expect(finished.status).toBe('done');
     expect(finished.result).toBe(
-      'Pricing answered too.\n\nWhat a separate check could not confirm:\n- The refund question has no answer',
+      'All answered.\n\nWhat a separate check could not confirm:\n- The pricing question has no answer',
     );
-    expect(finished.check.state).toBe('not_confirmed');
+    expect(finished.check).toEqual({
+      enabled: true,
+      state: 'not_confirmed',
+      gaps: ['The pricing question has no answer'],
+    });
     expect(finished.status_line).toStartWith('Done · not fully confirmed');
+  });
+
+  test('work that stops short gives the person what it has, said to be unfinished, and keeps it when stopped', async () => {
+    const run = await start({ goal: 'Compare three 4K monitors under $400' });
+    for (let tries = 0; tries < 3; tries++) {
+      const shift = await claim(run.id);
+      if (tries === 0)
+        await tool(shift.claims, 'run.log', {
+          kind: 'finding',
+          title: 'Dell S2725QS',
+          body: '$249.99 at https://example.test/dell',
+        });
+      await commit(shift.claims, {
+        kind: 'failed',
+        retryable: true,
+        reason: 'The review site would not load.',
+      });
+    }
+    // Before, it only asked; what it had found stayed in its record.
+    const stuck = await view(run.id);
+    expect(stuck.status).toBe('needs_you');
+    expect(stuck.question).toContain('I keep running into a problem');
+    expect(stuck.latest_report?.title).toBe('What it has so far');
+    expect(stuck.latest_report?.body).toBe(
+      'Not finished yet. It kept running into a problem: The review site would not load.\n\n- Dell S2725QS: $249.99 at https://example.test/dell',
+    );
+    const told = await required(handle)
+      .db.select({ title: pushIntent.title })
+      .from(pushIntent)
+      .where(sql`starts_with(${pushIntent.dedupKey}, ${`run-partial:${run.id}:`})`);
+    expect(told.map((push) => push.title)).toEqual([`${run.title}: What it has so far`]);
+
+    // The person stops waiting: what it had stays, as its result.
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+    const stopped = await view(run.id);
+    expect(stopped.status).toBe('stopped');
+    expect(stopped.result).toBe(
+      'Stopped before it finished. What it had so far:\n\n- Dell S2725QS: $249.99 at https://example.test/dell',
+    );
+  });
+
+  test('a stretch of work cut off at its time limit gives what it has and goes on', async () => {
+    const run = await start({ goal: 'Compare cloud storage prices' });
+    const shift = await claim(run.id);
+    await tool(shift.claims, 'run.log', {
+      kind: 'finding',
+      title: 'S3 Standard',
+      body: '$0.023/GB-month, https://example.test/s3',
+    });
+    await commit(shift.claims, { kind: 'budget_exhausted', summary: 'Out of time.' });
+    expect((await view(run.id)).latest_report?.body).toBe(
+      'Not finished yet. One stretch of the work reached its time limit; it carries on from here.\n\n- S3 Standard: $0.023/GB-month, https://example.test/s3',
+    );
+    // It goes on with the next stretch.
+    expect(await claimNow(run.id)).not.toBeNull();
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+  });
+
+  test('a stopped run gives the result it offered, while its check was still going', async () => {
+    const run = await start({ goal: 'Find a fare to Lisbon', done_when: 'A fare with a link' });
+    const shift = await claim(run.id);
+    await tool(shift.claims, 'run.finish', { summary: 'TAP at $412: https://example.test/book' });
+    await commit(shift.claims);
+    expect((await view(run.id)).result).toBeNull();
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+    expect((await view(run.id)).result).toBe(
+      'Stopped before it finished. What it had so far:\n\nTAP at $412: https://example.test/book',
+    );
+    // Nothing to show is nothing given.
+    const empty = await start({ goal: 'Nothing yet' });
+    expect((await request(`/runs/${empty.id}/stop`, 'POST')).status).toBe(200);
+    expect((await view(empty.id)).result).toBeNull();
+  });
+
+  test('a shift stopped because what it was handed changed is run again, not counted as a failure', async () => {
+    const run = await start({ goal: 'Work in a busy space' });
+    // Before, three of these in a row parked the work on "keeps getting
+    // interrupted" before it had done anything.
+    for (let lost = 0; lost < 4; lost++) {
+      const shift = await claim(run.id);
+      expect(
+        await required(runner).loseAttempt(shift.claims.attempt_id, 'context_invalidated'),
+      ).toBe(true);
+    }
+    expect((await row(run.id)).state).toBe('queued');
+    // A shift lost for any other reason still counts.
+    for (let lost = 0; lost < 3; lost++) {
+      const shift = await claim(run.id);
+      await required(runner).loseAttempt(shift.claims.attempt_id, 'lease expired');
+    }
+    expect((await row(run.id)).state).toBe('waiting_for_input');
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+  });
+
+  test('the brief has research fan out, one helper per candidate', async () => {
+    const run = await start({ goal: 'Compare three monitors' });
+    const lead = await claim(run.id);
+    expect(lead.bundle.job.objective).toContain(FAN_OUT);
+    const helper = (
+      (await tool(lead.claims, 'run.delegate', { task: 'Read the Dell S2725QS reviews' })) as {
+        helper_id: string;
+      }
+    ).helper_id;
+    await tool(lead.claims, 'run.checkpoint', {
+      summary: 'Helpers started.',
+      next: 'Combine.',
+      next_shift: 'when_helpers_finish',
+    });
+    await commit(lead.claims);
+    const part = await claim(helper);
+    expect(part.bundle.job.objective).toContain('Keep to your own part');
+    expect(part.bundle.job.objective).not.toContain(FAN_OUT);
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
   });
 
   test('finishing during the check is refused; a check without a verdict says so; checks can be off', async () => {

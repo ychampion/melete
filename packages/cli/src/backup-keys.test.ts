@@ -40,6 +40,8 @@ function rig(env: Record<string, string> = {}) {
       return { code: 127, stdout: '', stderr: 'not found' };
     if (text.endsWith('--version')) return { code: 0, stdout: 'v1', stderr: '' };
     if (text.startsWith('docker volume inspect')) return { code: 0, stdout: '[]', stderr: '' };
+    // The journal volume here holds entries.
+    if (text.includes('/v/restrictions.jsonl')) return { code: 0, stdout: 'lines 3\n', stderr: '' };
     return { code: 0, stdout: '', stderr: '' };
   };
   const context = testContext(deployDir, [], { run });
@@ -170,11 +172,16 @@ describe('encrypted backups', () => {
     const files = readdirSync(set).sort();
     expect(files).toEqual([
       'SHA256SUMS',
+      'artifacts.tar.age',
+      // The list of parts stays readable, like SHA256SUMS: it names volumes, never their files.
+      'contents.json',
       'database.dump.age',
       'deploy.env.age',
       'master-key.fingerprint',
       'melete.deploy.json.age',
       `restrictions-${(name ?? '').slice('melete-'.length)}.tar.age`,
+      'spaces.tar.age',
+      'work.tar.age',
     ]);
     // The sums are of the stored, encrypted files, so the set is checked without its key.
     const sums = readFileSync(join(set, 'SHA256SUMS'), 'utf8');
@@ -287,7 +294,12 @@ describe('database errors never print the URL or its password', () => {
       detail: `pg_dump exited 1: invalid percent-encoded token: "${PASSWORD}"`,
     });
     const config = deployConfigSchema.parse({ contract: 1 });
-    const outcome = await takeBackup(r.context, config, { kind: 'dir', dir: r.backups }, false);
+    const outcome = await takeBackup(
+      r.context,
+      config,
+      { kind: 'dir', dir: r.backups },
+      'database',
+    );
     expect(outcome.ok).toBe(false);
     expect(JSON.stringify(outcome.results)).not.toContain(PASSWORD);
   });

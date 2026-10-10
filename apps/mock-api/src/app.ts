@@ -59,6 +59,7 @@ import {
   resolveActionRequest,
   retractKnowledgeRequest,
   SSE_KEEPALIVE,
+  setupRequest,
   setupStatusResponse,
   skillListResponse,
   spaceListResponse,
@@ -337,14 +338,22 @@ export function createMockApp(deps: AppDeps) {
     owner: { id: row.id, email: row.email, created_at: row.created_at },
   });
 
-  app.get('/setup', () => send(setupStatusResponse, { needed: account === null, multiplayer }));
+  // Like a self-hosted install with no setup code and no mail sender.
+  app.get('/setup', () =>
+    send(setupStatusResponse, {
+      needed: account === null,
+      multiplayer,
+      code_required: false,
+      email_sign_in: false,
+    }),
+  );
 
   app.post('/setup', async (c) => {
     if (account) return c.json(fail('already_setup', 'The owner is already set up.'), 409);
-    const body = await parseBody(c.req.raw, credentialsRequest);
+    const body = await parseBody(c.req.raw, setupRequest);
     if (!body.ok)
       return c.json(
-        fail('invalid_input', 'Provide an email and a password of 8 characters or more.'),
+        fail('invalid_input', 'Provide an email and a password of at least 10 characters.'),
         400,
       );
     account = {

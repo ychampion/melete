@@ -6,8 +6,9 @@ import { useEffect, useState } from 'react';
 
 export type Route = { path: string; parts: string[]; query: URLSearchParams };
 
-function parse(): Route {
-  const raw = window.location.hash.slice(1) || '/';
+/** The route a location's fragment names: `#/welcome?token=…` is /welcome with a query. */
+export function parseHash(hash: string): Route {
+  const raw = hash.replace(/^#/, '') || '/';
   const [pathPart, queryPart] = raw.split('?');
   const path = pathPart && pathPart.length > 0 ? pathPart : '/';
   return {
@@ -15,6 +16,22 @@ function parse(): Route {
     parts: path.split('/').filter(Boolean),
     query: new URLSearchParams(queryPart ?? ''),
   };
+}
+
+function parse(): Route {
+  return parseHash(window.location.hash);
+}
+
+/**
+ * A value a mailed or printed link carries in its query. Sign-in links mailed
+ * before links took the `#/welcome?token=…` form put the token straight after
+ * the `#`, as `#token=…`; those still open the sign-in screen with it.
+ */
+export function linkParam(route: Route, name: string): string | null {
+  const value = route.query.get(name);
+  if (value) return value;
+  if (!route.path.startsWith(`${name}=`)) return null;
+  return new URLSearchParams(route.path).get(name);
 }
 
 export function useRoute(): Route {

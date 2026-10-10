@@ -577,7 +577,8 @@ export class ModelSettingsService {
             : row
               ? {
                   state: 'set' as const,
-                  last_four: row.lastFour,
+                  // Only whoever can change the key sees which one it is.
+                  last_four: canEdit ? row.lastFour : null,
                   updated_at: row.updatedAt.toISOString(),
                 }
               : { state: 'unset' as const, last_four: null, updated_at: null },

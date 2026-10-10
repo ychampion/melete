@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, newPasswordInput, prefixedId, timestamp } from './common.ts';
 
 /** Owner-class account identities reuse the established owner ID and login wire shape. */
 export const principal = z.object({
@@ -10,7 +10,7 @@ export const principal = z.object({
 export type Principal = z.infer<typeof principal>;
 export const createPrincipalRequest = z.object({
   email: z.email().max(254),
-  password: z.string().min(8).max(1024),
+  password: newPasswordInput,
 });
 export type CreatePrincipalRequest = z.infer<typeof createPrincipalRequest>;
 export const createSharedSpaceRequest = z.object({ name: z.string().min(1).max(120) });

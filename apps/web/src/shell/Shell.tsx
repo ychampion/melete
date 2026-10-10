@@ -35,6 +35,7 @@ import {
 } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
+import { clockTime, sameDay, weekday } from '../experience/clock.ts';
 import {
   agentById,
   type Loaded,
@@ -414,11 +415,10 @@ export function RailToggle() {
 
 const dayLabel = (iso: string, today: Date): string => {
   const d = new Date(iso);
-  if (d.toDateString() === today.toDateString()) return 'Today';
-  return d.toLocaleDateString('en-US', { weekday: 'short' });
+  if (sameDay(d, today)) return 'Today';
+  return weekday(d);
 };
-const timeLabel = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+const timeLabel = (iso: string) => clockTime(new Date(iso));
 const durationLabel = (event: CalendarEvent) => {
   const minutes = Math.round((Date.parse(event.ends_at) - Date.parse(event.starts_at)) / 60_000);
   if (minutes < 60) return `${minutes} minutes`;
@@ -470,8 +470,9 @@ export function Rail({
       has: eventDays.has(d.toDateString()),
     };
   });
+  // The person's own apps; the tools that come with Melete are not counted.
   const connected =
-    connections.data?.connections.filter((c) => c.status === 'connected').length ?? 0;
+    connections.data?.connections.filter((c) => c.status === 'connected' && !c.builtin).length ?? 0;
   const footer = connections.data ? (
     <a href={href('/settings/connections')} className="rail-foot">
       <span className="rail-foot-dot" data-on={connected > 0 ? 'true' : undefined} />

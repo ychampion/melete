@@ -11,6 +11,7 @@ import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import type { DesktopCommand } from '../sandbox/adapters/docker.ts';
+import { CHECK_LEFT_BY_OTHER_WORK } from '../sandbox/check-screen.ts';
 import { FakeSandboxProvider } from '../sandbox/fake.ts';
 import { MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
@@ -110,22 +111,48 @@ withDb('a check that a person is there, on the computer', () => {
       challengeWaitMs: 1,
     });
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
-    /** One step on the computer, by a new attempt of the work, as the job runs again. */
-    const step = async () => {
-      const attemptId = await scope.attempt();
-      await sql`update job set state = 'running' where id = ${scope.jobId}`;
+    /** Another chat's work in the same space, on the same agent's computer. */
+    const otherWork = async () => {
+      const jobId = `job_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      await sql`insert into job (id, space_id, title, objective, agent_id, state, lease_epoch)
+        values (${jobId}, ${scope.spaceId}, 'Other chat', 'Run', ${scope.agentId}, 'running', 1)`;
+      const attemptId = `att_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+      await mkdir(path.join(workRoot, jobId), { recursive: true });
+      return { jobId, attemptId };
+    };
+    /**
+     * One step on the computer, by a new attempt of the work, as the job runs
+     * again: an open of the checkout unless another step is given. It is then
+     * recorded as done with its receipt, as the broker records it.
+     */
+    const step = async (
+      given: {
+        kind?: string;
+        payload?: Record<string, unknown>;
+        /** Another work's job and the attempt its steps run in, one after another. */
+        work?: { jobId: string; attemptId: string };
+      } = {},
+    ) => {
+      const jobId = given.work?.jobId ?? scope.jobId;
+      const kind = given.kind ?? 'computer.open';
+      const attemptId = given.work?.attemptId ?? (await scope.attempt());
+      await sql`update job set state = 'running' where id = ${jobId}`;
       const id = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
-      const canonical = canonicalizePayload({ step: 1, url: 'https://demo.shop.example/checkout' });
+      const canonical = canonicalizePayload(
+        given.payload ?? { step: 1, url: 'https://demo.shop.example/checkout' },
+      );
       await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
         canonical_payload, payload_hash, idempotency_key)
-      values (${id}, ${scope.jobId}, ${attemptId}, ${scope.connectionId}, 'computer.open',
+      values (${id}, ${jobId}, ${attemptId}, ${scope.connectionId}, ${kind},
         'write_reversible', ${canonical.json}::jsonb, ${canonical.hash}, ${id})`;
       const action = {
         id,
-        job_id: scope.jobId,
+        job_id: jobId,
         attempt_id: attemptId,
         connection_id: scope.connectionId,
-        kind: 'computer.open',
+        kind,
         effect_class: 'write_reversible',
         canonical_payload: canonical.canonical,
         payload_hash: canonical.hash,
@@ -145,7 +172,7 @@ withDb('a check that a person is there, on the computer', () => {
         created_at: new Date().toISOString(),
       } as Action;
       const ctx: ConnectorContext = {
-        job_id: scope.jobId,
+        job_id: jobId,
         space_id: scope.spaceId,
         idempotency_key: id,
         constraints: {
@@ -156,12 +183,14 @@ withDb('a check that a person is there, on the computer', () => {
       };
       const result = await connector.execute(action, ctx);
       if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+      await sql`update action set status = 'succeeded', receipt = ${JSON.stringify(result.receipt)}::jsonb
+        where id = ${id}`;
       const detail = result.receipt.detail as Record<string, unknown>;
-      const [job] = await sql`select state, wait from job where id = ${scope.jobId}`;
+      const [job] = await sql`select state, wait from job where id = ${jobId}`;
       const [attempt] = await sql`select outcome from attempt where id = ${attemptId}`;
       return { detail, job, attempt };
     };
-    return { step };
+    return { step, otherWork };
   };
   const setup = async (screen: Uint8Array) => (await scene(screen)).step();
 
@@ -193,6 +222,27 @@ withDb('a check that a person is there, on the computer', () => {
     expect(detail.handed_to).toBeUndefined();
     expect(job?.state).toBe('running');
     expect(attempt?.outcome).toBeNull();
+  }, 60_000);
+
+  test('a check another chat left on the shared computer is not handed over, and one this work opens is', async () => {
+    const { step, otherWork } = await scene(CHECK_PAGE);
+    // The first chat met the check and left it on the screen.
+    expect((await step()).detail.handed_to).toBe('person');
+    // The next chat only looks, and sees that page: it was never there, so the check is not its.
+    const other = await otherWork();
+    const looked = await step({ kind: 'computer.screenshot', payload: { step: 1 }, work: other });
+    expect(looked.detail.challenge).toBeUndefined();
+    expect(looked.detail.handed_to).toBeUndefined();
+    expect(looked.detail.next_step).toBe(CHECK_LEFT_BY_OTHER_WORK);
+    expect(looked.job?.state).toBe('running');
+    expect(looked.attempt?.outcome).toBeNull();
+    // Once it opens that site itself, the check is its own and the person gets it.
+    const opened = await step({
+      payload: { step: 2, url: 'https://demo.shop.example/checkout' },
+      work: other,
+    });
+    expect(opened.detail).toMatchObject({ challenge: 'cloudflare', handed_to: 'person' });
+    expect(opened.job?.state).toBe('waiting_for_input');
   }, 60_000);
 
   test('a page with no check goes on as before', async () => {

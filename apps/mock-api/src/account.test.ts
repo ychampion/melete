@@ -18,6 +18,8 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(setupStatusResponse.parse(await (await app.request('/setup')).json())).toEqual({
     needed: true,
     multiplayer: false,
+    code_required: false,
+    email_sign_in: false,
   });
   expect((await app.request('/profile')).status).toBe(401);
 
@@ -28,7 +30,12 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(made.status).toBe(201);
   expect(ownerResponse.parse(await made.json()).owner.email).toBe('sam@example.com');
   expect((await app.request('/profile')).status).toBe(200);
-  expect(await (await app.request('/setup')).json()).toEqual({ needed: false, multiplayer: false });
+  expect(await (await app.request('/setup')).json()).toEqual({
+    needed: false,
+    multiplayer: false,
+    code_required: false,
+    email_sign_in: false,
+  });
 
   const again = await post(app, '/setup', {
     email: 'sam@example.com',
@@ -53,6 +60,11 @@ test('a fresh install asks for its first account, then signs in with it', async 
 
 test('by default the demo account exists and setup is not needed', async () => {
   const { app } = createMock({ speed: 0 });
-  expect(await (await app.request('/setup')).json()).toEqual({ needed: false, multiplayer: false });
+  expect(await (await app.request('/setup')).json()).toEqual({
+    needed: false,
+    multiplayer: false,
+    code_required: false,
+    email_sign_in: false,
+  });
   expect((await app.request('/profile')).status).toBe(200);
 });

@@ -472,13 +472,15 @@ withDb('deleting an account', () => {
       where space_id = ${room.spaceId} and principal_id = ${room.memberId}`;
     expect(membership?.revoked_at ?? 'gone').not.toBeNull();
     // Its row stays only to name what it wrote there, with nothing of the person in it.
-    const [left] = await h.sql`select email, password_hash, passkey, display_name from principal
+    const [left] = await h.sql`select email, password_hash, passkey, display_name,
+        disabled_at is not null as disabled from principal
       where id = ${room.memberId}`;
     expect(left).toEqual({
       email: removedEmail(room.memberId),
       password_hash: null,
       passkey: null,
       display_name: null,
+      disabled: true,
     });
     expect(await h.sql`select 1 from mcp_token where principal_id = ${room.memberId}`).toHaveLength(
       0,

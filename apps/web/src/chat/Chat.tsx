@@ -23,6 +23,7 @@ import {
 } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { dayWords } from '../experience/clock.ts';
 import { useInFlight, useTapOnce } from '../experience/decide.ts';
 import {
   agentById,
@@ -1164,7 +1165,12 @@ export function ChatScreen({ id }: { id: string | null }) {
               ) : null}
               {transcript.turns.length > 0 ? (
                 <div className="day-divider">
-                  <span className="overline">Today</span>
+                  <span className="overline">
+                    {dayWords(
+                      new Date(transcript.turns[0]?.turn.created_at ?? Date.now()),
+                      new Date(),
+                    )}
+                  </span>
                 </div>
               ) : null}
               {welcome ? <WelcomeThread welcome={welcome} onTry={changeDraft} /> : null}
