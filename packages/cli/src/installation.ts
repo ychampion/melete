@@ -24,7 +24,9 @@ export type ComposeDocument = {
   services?: Record<
     string,
     {
+      image?: string;
       profiles?: string[];
+      restart?: string;
       ports?: (string | number | { host_ip?: string; published?: string | number })[];
       environment?: Record<string, unknown> | string[];
     }
@@ -150,6 +152,27 @@ function safeConfigFromEnv(env: Record<string, string>, loaded: LoadedConfig): D
 /** Whether a service runs with the installation's profiles: one with no profiles always does. */
 const active = (profiles: string[] | undefined, config: DeployConfig) =>
   !profiles?.length || profiles.some((profile) => (config.profiles as string[]).includes(profile));
+
+/**
+ * The active services that keep running. A one-shot (`restart: "no"`, like the
+ * image holders) is left out: `up --wait` counts its normal exit as a failure
+ * unless another service waits for it, and one that is waited for still starts
+ * as a dependency.
+ */
+export function longRunningServices(installation: Installation): string[] {
+  const services = new Map<string, { restart?: string; profiles?: string[] }>();
+  for (const read of installation.compose)
+    for (const [service, definition] of Object.entries(read.resolved?.services ?? {})) {
+      const known = services.get(service);
+      services.set(service, {
+        restart: definition?.restart ?? known?.restart,
+        profiles: definition?.profiles ?? known?.profiles,
+      });
+    }
+  return [...services]
+    .filter(([, each]) => active(each.profiles, installation.config) && each.restart !== 'no')
+    .map(([service]) => service);
+}
 
 /** Every port the active services publish, after substitution. */
 export function publishedPorts(installation: Installation): ComposePort[] {

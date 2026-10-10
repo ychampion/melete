@@ -44,6 +44,7 @@ import {
 import type { Context } from '../context.ts';
 import { psqlLine } from '../database.ts';
 import { composeCommand, composeFiles, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
+import { fileSettings, measureFiles } from '../files.ts';
 import { appendHistory, type HistoryEntry, readHistory } from '../history.ts';
 import {
   imagesInRepositories,
@@ -75,7 +76,7 @@ import {
   migrationDelta,
 } from '../plan.ts';
 import { EXIT, type ExitCode, type Result, report } from '../schema.ts';
-import { BackupRefusal, expandHome, parseSshTarget, takeBackup } from './backup.ts';
+import { BackupRefusal, duBytes, expandHome, parseSshTarget, takeBackup } from './backup.ts';
 import { judgeCheck } from './check.ts';
 import { contractAfter } from './set.ts';
 import { diskFloors, statusComposeArgs, statusServices } from './status.ts';
@@ -397,6 +398,11 @@ export function gatherDeploy(
         ...(options.accepted ? { accepted: options.accepted } : {}),
       },
       databaseBytes: databaseBytes(context, compose, config),
+      // Only a backup kept on this machine is sized; one streamed elsewhere takes no room here.
+      filesBytes:
+        backup.kind === 'dir'
+          ? measureFiles(context, config, fileSettings(installation), duBytes)
+          : 0,
       backup,
     },
     compose,
@@ -714,7 +720,7 @@ export async function runDeploy(
         facts.backup.kind === 'ssh'
           ? { kind: 'ssh', target: parseSshTarget(facts.backup.location) }
           : { kind: 'dir', dir: facts.backup.location },
-        false,
+        'online',
       );
       steps.add(...taken.results);
       if (!taken.ok) return refuse(`the backup to ${taken.location} failed`);

@@ -15,6 +15,7 @@ import { composeCommand } from '../deploy-config.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import {
   envImageTag,
+  longRunningServices,
   readInstallation,
   shellOverrideMessage,
   shellOverrides,
@@ -112,6 +113,7 @@ export async function runRollback(
       project: installation.config.project,
       compose,
       writers: writersOf(installation.config),
+      services: longRunningServices(installation),
       backupDir: last.backup?.startsWith('ssh://') ? null : last.backup,
       previous: { tag, revision: last.checkout ? last.checkout.from : null },
       freshHost: false,

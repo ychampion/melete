@@ -55,6 +55,8 @@ export type Engine = {
   /** Journal times of the migrations the database records. */
   recorded: number[];
   databaseBytes: number;
+  /** What the people's files and the agents' computers take, as the backup measures them. */
+  filesBytes: number;
   /** A pull of a reference starting with one of these fails. */
   failPulls: string[];
   failUp: boolean;
@@ -119,6 +121,7 @@ export function engine(overrides: Partial<Engine> = {}): Engine {
     dirty: [],
     recorded: whens(68),
     databaseBytes: 40 * MB,
+    filesBytes: 10 * MB,
     failPulls: [],
     failUp: false,
     projects: { melete: ['c0ffee'] },
@@ -269,6 +272,15 @@ export function engineRun(state: Engine, root: string) {
     if (text.includes('select created_at from drizzle.__drizzle_migrations'))
       return ok(`${[...state.recorded].sort((a, b) => a - b).join('\n')}\n`);
     if (text.includes('select pg_database_size')) return ok(`${state.databaseBytes}\n`);
+    // The backup's files: the stack's volumes are there, and no agent computer is.
+    if (text.startsWith('docker volume inspect --format {{.Name}} '))
+      return ok(`${text.split(' ').at(-1)}\n`);
+    if (text.startsWith('docker volume ls ')) return ok('');
+    if (
+      text.startsWith('docker run --rm --network none --user 0:0 ') &&
+      text.includes(' --entrypoint du ')
+    )
+      return ok(`${Math.ceil(state.filesBytes / 1024)}\t/m/0\n`);
     if (text.startsWith(`git -C ${root} `)) return gitRun(state, command.slice(3));
     return no('no such command in this test');
   };

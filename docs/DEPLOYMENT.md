@@ -227,8 +227,8 @@ bun run melete history
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
-| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
-| `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
+| `backup` | Backs up the database, the restriction journal, the settings and the files (the spaces, uploads, the shared `/work` and the agents' computers) into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--database-only`, `--offline`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
+| `restore <backup> [--plan \| --verify \| --yes] [--keep-database]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. `--verify` also reads every archive through; `--yes` runs the steps. Neither of the first two changes anything. |
 | `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
 | `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
@@ -421,23 +421,32 @@ unset MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
 
 ### Replacing the VM
 
-With the database and the bucket at a provider, the VM holds only the
-settings, the restriction journal and the spaces' files, so a new one takes
-over from a backup:
+With the database and the bucket at a provider, the VM holds the settings, the
+restriction journal, the spaces' files, the shared `/work` and the agents'
+computers, so a new one takes over from a backup:
 
 1. On the old VM, or from your computer through `remote`: `bun run melete
    backup` (or `--to ssh://host:/path` when the VM is short of disk). Note the
    image tag `bun run melete history` shows.
-2. On the new VM, clone the checkout at the same commit, and copy the backup's
-   `deploy.env` to `deploy/.env` (mode 0600) and its `melete.deploy.json`, or
-   push your local copies.
-3. `bun run melete restore <backup> --plan` checks the backup and prints the
-   steps. On a new machine they put the newest restriction journal back before
-   the service starts. With an external database that already holds the data,
-   skip the `pg_restore` line; to restore into a new database, point
-   `DATABASE_URL` at it first.
-4. `bun run melete deploy --tag <the same tag>` pulls the images and starts the
-   stack, and `bun run melete status` reports it.
+2. On the new VM, clone the checkout at the same commit, and copy the backup
+   directory there. Copy its `deploy.env` to `deploy/.env` (mode 0600) and its
+   `melete.deploy.json` to `deploy/`, or push your local copies. The master key
+   is not in the backup: `read -rs MELETE_MASTER_KEY && export
+   MELETE_MASTER_KEY`, then `bun run melete set --from-env MELETE_MASTER_KEY`.
+3. `bun run melete restore <backup> --verify` checks every part and changes
+   nothing. `bun run melete restore <backup>` prints the steps; on a new machine
+   they put the newest restriction journal back before the service starts.
+4. `bun run melete restore <backup> --yes` runs them and starts the stack.
+   With an external database that already holds the data, add
+   `--keep-database`; to restore into a new database, point `DATABASE_URL` at
+   an empty one first. Docker pulls the images the tag names when the steps
+   first need them. `bun run melete status` then reports the stack.
+
+The agents' computers come back as their volumes, but a new machine has none of
+their containers, and the service treats a computer without its container as
+gone: each agent gets a new computer, with each chat's files in `/work` back
+from the shared `/work` and an empty home folder, so browser sign-ins and tools
+installed there are lost. `restore` says so before it starts.
 
 ## Using prebuilt images
 
@@ -526,8 +535,10 @@ step either passes or stops with exit 2 and the running stack as it was:
    the layers they need. The disk it takes is their compressed size times 2.2
    plus `disk.pull_margin_mb`, and the plan is refused unless
    `disk.min_free_mb` is still free after it.
-4. When the new release adds migrations, it dumps the database into
-   `backup.dir` first, or streams it with `--backup-to ssh://host:/path`.
+4. When the new release adds migrations, it first takes a whole backup, the
+   database and the files as `melete backup` takes them, into `backup.dir`
+   (its disk plan counts both), or streams it with `--backup-to
+   ssh://host:/path`.
 5. It pulls one image at a time, measuring the disk after each, and stops at
    the first failure or at the floor. Images already pulled are kept, unused.
 6. It checks out the commit, if asked, and writes `MELETE_IMAGE_TAG`.
@@ -2196,12 +2207,15 @@ must outlive rotation belong in a log collector you run beside the stack.
 ## Backup and restore
 
 ```bash
-bun run melete backup --estimate     # sizes, against the free space where the backup goes
-bun run melete backup                # database, journal and settings, online
-bun run melete backup --with-volumes # also /data and /work, with the writers stopped
+bun run melete backup --estimate      # sizes, against the free space where the backup goes
+bun run melete backup                 # everything, with the stack running
+bun run melete backup --offline       # everything, with the writers stopped while the files are copied
+bun run melete backup --database-only # the database, journal and settings alone
 bun run melete backup --to ssh://backup-host:/srv/melete-backups
 bun run melete backup --encrypt-to age1...  # every part encrypted with age to that public key
-bun run melete restore ~/melete-backups/melete-20261002T101500Z
+bun run melete restore ~/melete-backups/melete-20261002T101500Z --verify  # read every part; change nothing
+bun run melete restore ~/melete-backups/melete-20261002T101500Z           # print the steps; change nothing
+bun run melete restore ~/melete-backups/melete-20261002T101500Z --yes     # run them
 ```
 
 **Keep the master key apart from the backups.** `MELETE_MASTER_KEY` in
@@ -2225,12 +2239,17 @@ written, here or over SSH. `--encrypt` encrypts each part with gpg (AES-256)
 under the passphrase exported as `MELETE_BACKUP_PASSPHRASE`. The tool must be
 installed on the machine taking the backup. `SHA256SUMS` lists the encrypted
 files, so `restore` checks a set without opening it, and its steps decrypt
-each part as it is loaded: for age, export `MELETE_BACKUP_IDENTITY` as the path
-of the identity file that opens it; gpg asks for the passphrase.
+each part as it is loaded. `restore --verify` and `--yes` need what opens it:
+for age, export `MELETE_BACKUP_IDENTITY` as the path of the identity file; for
+gpg, export the passphrase as `MELETE_BACKUP_PASSPHRASE`. The list of parts,
+`contents.json`, stays readable like `SHA256SUMS`: it names volumes, never
+their files.
 
 **The S3 bucket is outside the backup.** With `"blobs": { "store": "s3" }`, the
-files the service keeps by their content live in the bucket, and a backup holds
-only the database's references to them. Protect the bucket at the provider:
+files the service keeps by their content (uploads and Files) live in the
+bucket, and a backup holds only the database's references to them; it still
+holds the spaces' own files, the shared `/work` and the agents' computers.
+Every backup says so when it is made. Protect the bucket at the provider:
 turn on versioning (with a lifecycle rule that expires old versions after the
 time you keep backups), or copy it on the same schedule as the backups, for
 example with `rclone sync` or `aws s3 sync` to a second bucket. A restored
@@ -2243,19 +2262,77 @@ holds the database as a custom-format dump, read back with `pg_restore --list`
 while it is written; the restriction journal on its own, under a timestamped
 name; `deploy/.env` without the master key, the key's fingerprint
 (`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
-and a `SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
-online and small, so the stack keeps running; `--with-volumes` stops the
-writers to archive the volumes and starts them again. `--to` streams every part
-to another machine over SSH and keeps nothing on this disk, for a host short on
-space.
+then the files, one archive per volume, with ownership and modes kept:
+`spaces.tar` (each space's files), `artifacts.tar` (uploads and Files, kept by
+their content, unless they are in an S3 bucket), `work.tar` (the shared
+`/work`), and for each agent computer of this installation its two volumes,
+`computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
+home folder, browser profile included); `contents.json`, which lists those
+archives and each computer volume's labels; and a `SHA256SUMS` list. The
+runtime's attempt homes are left out: they are disposable, and jobs recover
+from the database into fresh attempts. The newest `backup.keep` backups are
+kept, each holding the files, so the disk they take is about `backup.keep`
+times what `--estimate` reports. `--to` streams every part to another machine
+over SSH and keeps nothing on this disk, for a host short on space.
 
-`restore` checks a backup's checksums and prints the steps that restore it,
-following the rules below: only the database volume is replaced, and the
-newest restriction journal is kept. On a machine that never ran the
-installation, the newest journal archive beside the backups goes back before
-the service starts, keeping its file ownership. A backup counts as whole only when
-`SHA256SUMS` lists every file in it and each matches. `backup.keep` never
-removes the backup the last deploy took.
+**What "online" means for the files.** By default the stack keeps running. The
+database is dumped first and the files are copied after it, so every file the
+dump refers to is in the backup; a file written in between is in the backup
+without a reference, which is harmless. A file being written while it is
+copied can be caught halfway, and the backup still passes. Each agent computer
+that is running is paused while its own two volumes are copied, a few seconds
+for a typical one, so its files, the browser profile among them, are from one
+moment; a command it runs waits meanwhile, and it is resumed even when the
+copy fails. `--offline` (formerly `--with-volumes`, still accepted) stops the
+service, the runtime, the web app, the browser worker and `melete-cells`, with
+the attempt containers it started, while the files are copied, so the database
+and the files agree exactly, then starts them again.
+`--database-only` leaves the files out, and says so: a restore from it brings
+back the database alone and leaves the files on the machine as they are, so on
+a new machine the uploads and Files it refers to are missing unless they are in
+an S3 bucket.
+
+**Restoring.** `restore <backup>` checks the checksums and the list of parts,
+and prints the steps; `--verify` (or `--dry-run`) also reads every archive
+through, decrypting an encrypted one, so a damaged or missing part shows before
+you need it. Neither changes anything. `--yes` checks every archive the same
+way first, then runs the steps in order: it stops the writers, `melete-cells`
+and the attempt containers it started, and every agent computer whose container
+is on the machine, running or not; takes the stack down without touching its
+volumes; replaces the database volume and loads the dump; puts the newest
+restriction journal back on a machine that never ran the installation (keeping
+its file ownership); empties each file volume and unpacks its archive into it,
+after asking the engine that no running container uses that volume; makes any
+missing computer volume with its labels; and only then starts the stack.
+
+A step that fails stops the restore there, and the report says what that left:
+
+- before anything was replaced, nothing was; it gives the command that starts
+  the stack as it was;
+- after something was replaced, the stack stays stopped, never started on a
+  half-restored installation; run the same `restore --yes` again once the
+  cause is fixed, and it starts over from the backup;
+- when only the final start fails, every part is back; fix the cause and start
+  the stack with the command it gives, without restoring again.
+
+A volume still in use when its turn comes stops the restore the same way, and
+names what uses it. On this machine the restriction journal stays as it is,
+since it is newer than any backup, and the service replays it at startup, so
+nothing forgotten since the backup comes back. With an external database, the
+restore loads into an empty one (it refuses one that holds tables), or
+`--keep-database` leaves the database as it is. With the bundled database,
+`--keep-database` is refused: the files are put back as the backup's database
+knows them, so that database comes back with them. An agent computer whose
+container is still on the machine starts on its restored volumes when it is
+next used; for one whose container is gone, see
+[Replacing the VM](#replacing-the-vm). A computer in the backup that belongs to
+another installation (another `MELETE_SANDBOX_PROJECT`), or whose volume name
+is taken here by a volume labelled for something else, is left out, and the
+report says so. A backup made by `--with-volumes` before backups held their
+list of parts restores its `data.tar` and `work.tar` the same way, without
+their copy of the journal; each is checked first to hold the folders put back
+from it. A backup counts as whole only when `SHA256SUMS` lists every file in it
+and each matches. `backup.keep` never removes the backup the last deploy took.
 
 The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
