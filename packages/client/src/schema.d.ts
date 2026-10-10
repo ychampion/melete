@@ -21176,7 +21176,7 @@ export interface paths {
                             masked_email: string;
                             /** @constant */
                             status: "ok";
-                        } | components["schemas"]["__schema306"];
+                        } | components["schemas"]["__schema307"];
                     };
                 };
             };

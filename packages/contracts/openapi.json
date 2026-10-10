@@ -9151,7 +9151,7 @@
                       "additionalProperties": false
                     },
                     {
-                      "$ref": "#/components/schemas/__schema306"
+                      "$ref": "#/components/schemas/__schema307"
                     }
                   ]
                 }
