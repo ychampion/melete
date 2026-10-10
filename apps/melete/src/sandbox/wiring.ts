@@ -132,18 +132,20 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
   /**
    * End displays: recorded first, then the browser and screen on each are
    * stopped inside its computer, when the computer is running. A display a
-   * person holds is theirs and is left alone.
+   * person holds is theirs and is left alone; with `reaping`, so is one a chat
+   * came back to after it was listed.
    */
   const endDisplays = async (
     rows: DisplayRow[],
     reason: string,
     signal: AbortSignal,
+    reaping = false,
   ): Promise<string[]> => {
     const ended: string[] = [];
     for (const row of rows) {
       const key = displayKey(row.providerSandboxId, row.display);
       if ((await sessions.controls.state(key)).control === 'human') continue;
-      const [gone] = await sessions.displays.end([row.id], reason);
+      const [gone] = await sessions.displays.end([row.id], reason, { reaping });
       if (!gone) continue;
       ended.push(row.id);
       try {
@@ -199,7 +201,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       const ended: string[] = [];
       for (const row of await sessions.displays.reapable()) {
         if (signal.aborted) break;
-        ended.push(...(await endDisplays([row], row.reason, signal)));
+        ended.push(...(await endDisplays([row], row.reason, signal, true)));
       }
       return ended;
     },

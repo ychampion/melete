@@ -333,6 +333,29 @@ withDb('a display per chat on the agent computer', () => {
     expect(zero.jobId).toBe(flights.jobId);
   }, 60_000);
 
+  test('a display listed as unused is kept when its chat comes back to it before it ends', async () => {
+    const s = await setup();
+    const flights = await s.chat('Flights to Lisbon');
+    const a = await flights.open('https://flights.example/lisbon');
+    await flights.endTurn();
+    await s.sessions.displays.release(flights.attempt());
+    await s.sql`update sandbox_display set used_at = now() - interval '2 hours'
+      where id = ${String(a.computer_id)}`;
+    const [listed] = await s.sessions.displays.reapable();
+    expect(listed?.id).toBe(String(a.computer_id));
+    // The chat's next turn uses it between the listing and the end.
+    await flights.turn();
+    expect((await flights.screenshot()).computer_id).toBe(a.computer_id);
+    expect(
+      await s.sessions.displays.end([String(a.computer_id)], 'unused for a while', {
+        reaping: true,
+      }),
+    ).toEqual([]);
+    const [kept] = await s.sql`select ended_at from sandbox_display
+      where id = ${String(a.computer_id)}`;
+    expect(kept?.ended_at).toBeNull();
+  }, 60_000);
+
   test("a chat's display ends with the chat, and a stop ends only that chat's", async () => {
     const s = await setup();
     const flights = await s.chat('Flights to Lisbon');

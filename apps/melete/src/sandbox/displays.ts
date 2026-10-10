@@ -96,6 +96,12 @@ export function displayInUse(sql: Query) {
       and ${liveAttempt(sql, 'd.attempt_id')})`;
 }
 
+/** A condition on a display `d`: a person holds it, under its control key (`displayKey`). */
+const heldByPerson = (sql: Query) => sql`exists (select 1 from sandbox_control c
+  where c.control = 'human' and c.provider_sandbox_id =
+    case when d.display = 0 then d.provider_sandbox_id
+      else d.provider_sandbox_id || '#' || d.display end)`;
+
 export class SandboxDisplays {
   readonly maxDisplays: number;
 
@@ -214,12 +220,35 @@ export class SandboxDisplays {
             and s.status in ('opening', 'ready', 'paused', 'closing'))`;
   }
 
-  /** Mark displays ended; returns those that were still live. */
-  async end(ids: string[], reason: string): Promise<DisplayRow[]> {
+  /**
+   * Mark displays ended; returns those that were still live. A display a
+   * person holds is left, read in the statement that ends it. With `reaping`,
+   * so is one that is no longer reapable by the time the statement runs: a
+   * chat that came back to it since it was listed keeps it.
+   */
+  async end(
+    ids: string[],
+    reason: string,
+    options: { reaping?: boolean } = {},
+  ): Promise<DisplayRow[]> {
     if (!ids.length) return [];
-    const rows = await this.sql`update sandbox_display set ended_at = now(), end_reason = ${reason}
-      where id in ${this.sql(ids)} and ended_at is null returning *`;
+    const rows = await this.sql`update sandbox_display d
+      set ended_at = now(), end_reason = ${reason}
+      where d.id in ${this.sql(ids)} and d.ended_at is null and not ${heldByPerson(this.sql)}
+        ${options.reaping ? this.sql`and ${this.unused()}` : this.sql``}
+      returning d.*`;
     return rows.map(toDisplay);
+  }
+
+  /**
+   * A condition on a live display `d`: no running attempt uses it, and its
+   * chat or run has ended or nothing has used it for the idle period.
+   */
+  private unused() {
+    return this.sql`not (d.attempt_id is not null and ${liveAttempt(this.sql, 'd.attempt_id')})
+      and (not exists (select 1 from job o where o.id = d.owner_job_id
+          and o.state not in ('completed', 'failed', 'cancelled'))
+        or d.used_at < now() - make_interval(secs => ${this.idleMs / 1000}))`;
   }
 
   /**
@@ -233,14 +262,7 @@ export class SandboxDisplays {
             then 'its conversation or run ended'
           else 'unused for a while' end as reason
       from sandbox_display d left join job o on o.id = d.owner_job_id
-      where d.ended_at is null
-        and not (d.attempt_id is not null and ${liveAttempt(this.sql, 'd.attempt_id')})
-        and (o.id is null or o.state in ('completed', 'failed', 'cancelled')
-          or d.used_at < now() - make_interval(secs => ${this.idleMs / 1000}))
-        and not exists (select 1 from sandbox_control c
-          where c.control = 'human' and c.provider_sandbox_id =
-            case when d.display = 0 then d.provider_sandbox_id
-              else d.provider_sandbox_id || '#' || d.display end)
+      where d.ended_at is null and ${this.unused()} and not ${heldByPerson(this.sql)}
       order by d.used_at limit ${limit}`;
     return rows.map((row) => ({ ...toDisplay(row), reason: String(row.reason) }));
   }
