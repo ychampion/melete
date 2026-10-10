@@ -213,6 +213,10 @@ describe('arguments', () => {
       dryRun: true,
       browser: false,
       tailscale: false,
+      tailscaleKernel: false,
+      externalDatabase: false,
+      blobsS3: false,
+      profiles: [],
       waitTimeoutSeconds: 300,
       repositoryRoot: '/srv/melete',
       backupDir: '/home/owner/melete-backups/upgrade-v0.2.0-20300102T030405Z',
@@ -253,6 +257,9 @@ describe('arguments', () => {
     [['v0.2.0', '--backup-dir', 'relative/path']],
     [['v0.2.0', '--wait-timeout', 'soon']],
     [['v0.2.0', '--force']],
+    [['v0.2.0', '--tailscale-kernel']],
+    [['v0.2.0', '--profile']],
+    [['v0.2.0', '--profile', 'Sandbox; rm']],
   ])('refuses %j', (argv) => {
     expect(() => parseArguments(argv, now, '/home/owner', '/srv/melete')).toThrow('Usage:');
   });

@@ -179,6 +179,16 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     `networks with a name outside the project: ${fixedNames.map(([key]) => key).join(', ')}; leave name unset so Compose prefixes the project`,
   );
 
+  const uncapped = LONG_RUNNING.filter((name) => {
+    const service = compose.services?.[name];
+    return service && !(typeof service.mem_limit === 'string' && service.mem_limit.length > 0);
+  });
+  say(
+    'every long-running service has a memory cap',
+    uncapped.length === 0,
+    `services without mem_limit: ${uncapped.join(', ')}; a runaway one could take the machine`,
+  );
+
   const unbounded = unboundedServices(compose.services ?? {});
   say(
     'every service has bounded logs',
@@ -545,9 +555,43 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     unvoiced.length === 0,
     `add to the melete environment as \${NAME:-}: ${unvoiced.join(', ')}`,
   );
+  // A setting the documentation tells an operator to put in deploy/.env does
+  // nothing unless this file hands it on; each exception says why.
+  const unhanded = SERVICE_SETTINGS.filter(
+    (name) => !(name in (melete?.environment ?? {})) && !(name in SETTINGS_NOT_FROM_DEPLOY_ENV),
+  );
+  say(
+    'the service receives every setting it reads',
+    unhanded.length === 0,
+    `add to the melete environment as \${NAME:-}, or to SETTINGS_NOT_FROM_DEPLOY_ENV with the reason: ${unhanded.join(', ')}`,
+  );
 
   return results;
 }
+
+/** The services that run all the time, each capped in memory. */
+export const LONG_RUNNING = ['postgres', 'melete-cells', 'melete', 'runtime', 'web'] as const;
+
+/** Every setting the service's schema reads. */
+export const SERVICE_SETTINGS = Object.keys(envSchema.in.shape);
+
+/** Settings the melete service's environment leaves out on purpose, and why. */
+export const SETTINGS_NOT_FROM_DEPLOY_ENV: Record<string, string> = {
+  DATABASE_URL: 'the service reads its own role from DATABASE_URL_FILE, never the operator URL',
+  MELETE_EFFECTS_DATABASE_URL: 'read from MELETE_EFFECTS_DATABASE_URL_FILE',
+  MELETE_CELLS_KEY: 'read from MELETE_CELLS_KEY_FILE',
+  MELETE_DOCKER_SOCKET: 'the service has no socket; it reaches the engine through melete-cells',
+  MELETE_RUNTIME_SUPERVISOR: 'only for the in-process runtime; Compose runs the runtime container',
+  MELETE_HERMES_ROOT: 'only for the in-process runtime',
+  MELETE_HERMES_PYTHON: 'only for the in-process runtime',
+  MELETE_RUNTIME_PACKAGE: 'only for the in-process runtime',
+  MELETE_RUNTIME_NETWORK: 'only for the in-process runtime',
+  MELETE_RUNTIME_WORK_VOLUME: 'only for the in-process runtime',
+  MELETE_BROWSER_URL: 'set by docker-compose.browser.yml',
+  MELETE_BROWSER_SPACE: 'set by docker-compose.browser.yml',
+  MELETE_BROWSER_TOKEN: 'set by docker-compose.browser.yml',
+  MELETE_BROWSER_IDLE_MS: 'an empty value is not a number, so the five-minute default holds',
+};
 
 /**
  * The engine configuration the attempt image carries. A boundary the release

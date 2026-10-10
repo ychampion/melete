@@ -10,6 +10,10 @@
  * commands and writes that one file; deploy/.env and the stack are left as
  * they are.
  *
+ * `--public-url https://…` sets the public address and the web origin together;
+ * with `--hosted` the new file also says `"hosted": true`, so `check` and
+ * `status` require what an installation for other people needs.
+ *
  * Either refuses, with nothing changed, when deploy/melete.deploy.json exists.
  * `--min-free-mb` and `--pull-margin-mb` set the disk floors in the new file.
  */
@@ -236,9 +240,11 @@ export async function runInit(context: Context, args: readonly string[]): Promis
       try {
         const env = parseEnvFile(readFileSync(envPath, 'utf8'));
         const tailscale = options.configure.includes('--tailscale');
+        const hosted = options.configure.includes('--hosted');
         const config = configFromEnv(env, {
           overlays: tailscale ? ['tailscale'] : [],
           disk: { min_free_mb: 4096, pull_margin_mb: 512, ...options.disk },
+          ...(hosted ? { hosted: true } : {}),
         });
         await createDeployConfig(context.deployDir, config);
         context.out(`Wrote ${DEPLOY_FILE}.\n`);

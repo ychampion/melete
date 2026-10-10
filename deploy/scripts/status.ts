@@ -271,7 +271,7 @@ export function judgeStatus(
     name: 'Public address',
     detail: publicUrl
       ? `${publicUrl}; other assistants connect at ${publicUrl.replace(/\/$/, '')}/api/mcp`
-      : 'None set (optional).',
+      : 'None set; an installation other people reach needs one (MELETE_PUBLIC_URL).',
   });
 
   return checks;
@@ -389,7 +389,8 @@ export type GetJson = (url: string) => Promise<Record<string, unknown> | null>;
 export async function getJson(url: string): Promise<Record<string, unknown> | null> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-    if (!response.ok) return null;
+    // /health answers 503 with its report while the database is down.
+    if (!response.ok && response.status !== 503) return null;
     return (await response.json()) as Record<string, unknown>;
   } catch {
     return null;
