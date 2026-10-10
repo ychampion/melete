@@ -5,6 +5,7 @@ import {
   AccountSignIn,
   AppConnect,
   type AppEntry,
+  Catalog,
   ConnectionActions,
   KindForm,
   Linked,
@@ -178,12 +179,9 @@ test('before signing in, the person sees where and everything that is asked for'
   expect(html).toContain('Continue to Google');
 });
 
-test('an entry this server is not set up for says so, links the setup guide, and never names settings', () => {
-  for (const setup_hint of [
-    undefined,
-    'Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
-  ]) {
-    const html = renderToStaticMarkup(
+test('an entry this Melete does not offer says so calmly; only whoever runs it is shown how to set it up', () => {
+  const view = (setup_hint?: string) =>
+    renderToStaticMarkup(
       <AccountSignIn
         entry={googleEntry({
           available: false,
@@ -194,11 +192,15 @@ test('an entry this server is not set up for says so, links the setup guide, and
         onInstalled={() => {}}
       />,
     );
-    expect(html).toContain('Available when your server is set up for it.');
-    expect(html).toContain('docs/mail-calendar.md#signing-in-with-google');
-    expect(html).not.toContain('GOOGLE_OAUTH');
-    expect(html).not.toContain('Continue to Google');
-  }
+  const person = view();
+  expect(person).toContain('Not offered on this Melete yet.');
+  expect(person).not.toContain('docs/mail-calendar.md');
+  expect(person).not.toContain('your server');
+  expect(person).not.toContain('Continue to Google');
+  const operator = view('Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.');
+  expect(operator).toContain('docs/mail-calendar.md#signing-in-with-google');
+  expect(operator).not.toContain('GOOGLE_OAUTH');
+  expect(operator).not.toContain('Continue to Google');
 });
 
 test('signing in to Google through Composio says who handles it, and lists no Google scopes of its own', () => {
@@ -290,8 +292,9 @@ test('an app that needs an app registered for it says what is missing, and only 
     );
   const person = github({});
   expect(person).toContain('only accepts apps registered with GitHub');
-  expect(person).not.toContain('Available when your server is set up for it.');
-  expect(person).toContain('docs/CONNECTORS.md#connecting-github');
+  expect(person).not.toContain('Not offered on this Melete yet.');
+  // Setup guides are for whoever runs this Melete, not the person connecting.
+  expect(person).not.toContain('docs/CONNECTORS.md');
   expect(person).not.toContain('GITHUB_MCP');
   expect(person).not.toContain('Continue to GitHub');
   // The service sends the setting to whoever runs this Melete, and no one else.
@@ -300,6 +303,85 @@ test('an app that needs an app registered for it says what is missing, and only 
       'Register an OAuth app, then set GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET.',
   });
   expect(operator).toContain('GITHUB_MCP_CLIENT_ID');
+  expect(operator).toContain('docs/CONNECTORS.md#connecting-github');
+});
+
+/** The mail and calendar kinds a person connects by app password or link. */
+const gmailKind: ConnectionKind = {
+  id: 'gmail',
+  kind: 'mail',
+  title: 'Gmail',
+  description: 'Gmail with an app password.',
+  fixed: [{ path: 'provider', value: 'imap' }],
+  fields: [],
+  scopes: [],
+};
+const mcpKind: ConnectionKind = {
+  id: 'mcp',
+  kind: 'mcp',
+  title: 'MCP server (HTTP)',
+  description: 'Any MCP server by its address.',
+  fixed: [],
+  fields: [],
+  scopes: [],
+};
+
+test('what connects now leads, mail and calendar sit in plain view, and what is not offered waits at the end', () => {
+  const offered = (setup_hint?: string) =>
+    renderToStaticMarkup(
+      <Catalog
+        entries={[
+          googleEntry({
+            available: false,
+            unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
+            ...(setup_hint ? { setup_hint } : {}),
+          }),
+          stripeEntry(),
+        ]}
+        kinds={[gmailKind, mcpKind]}
+        onOpen={() => {}}
+        onChoose={() => {}}
+      />,
+    );
+  const person = offered();
+  const at = (text: string) => {
+    const index = person.indexOf(text);
+    expect(index).toBeGreaterThan(-1);
+    return index;
+  };
+  // Stripe connects now, so it comes first; Google, not offered here, comes after mail.
+  expect(at('Connect Stripe')).toBeLessThan(at('Mail and calendar'));
+  expect(at('Mail and calendar')).toBeLessThan(at('Google'));
+  expect(at('Google')).toBeLessThan(at('For developers'));
+  // Mail and calendar are not folded away; only the developer kinds are.
+  expect(person.indexOf('<details')).toBeGreaterThan(at('Gmail'));
+  expect(person).toContain('Not offered here yet');
+  expect(person).not.toContain('How to set up Google');
+  expect(person).not.toContain('Advanced');
+  // Whoever runs this Melete can open its setup instead.
+  const operator = offered('Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.');
+  expect(operator).toContain('aria-label="How to set up Google"');
+  expect(operator).not.toContain('Not offered here yet');
+});
+
+test('a mail form says nothing about server setup to the person connecting it', () => {
+  const unavailableGoogle = googleEntry({
+    available: false,
+    unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
+  });
+  const html = renderToStaticMarkup(
+    <KindForm kind={gmailKind} signIn={unavailableGoogle} onDone={() => {}} />,
+  );
+  expect(html).not.toContain('set up');
+  expect(html).not.toContain('docs/mail-calendar.md');
+  const operator = renderToStaticMarkup(
+    <KindForm
+      kind={gmailKind}
+      signIn={{ ...unavailableGoogle, setup_hint: 'Set GOOGLE_OAUTH_CLIENT_ID.' }}
+      onDone={() => {}}
+    />,
+  );
+  expect(operator).toContain('How to set up Google sign-in');
 });
 
 test('the tools a server listed are each kept or dropped, with how far each may act, and none is typed', () => {

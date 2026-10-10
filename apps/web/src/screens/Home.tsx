@@ -25,6 +25,14 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
+import {
+  clockTime,
+  displayZone,
+  hourOfDay,
+  isYesterday,
+  sameDay,
+  weekday,
+} from '../experience/clock.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
 import {
   agentById,
@@ -63,15 +71,23 @@ import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 import { WhatImOnSection } from './WhatImOnSection.tsx';
 
-const PROMPTS: { label: string; icon: IconName; text: string }[] = [
-  {
-    label: 'Plan my day',
-    icon: 'calendar',
-    text: 'Plan my day around what is already on the calendar.',
-  },
-  { label: 'Explore an idea', icon: 'sparkles', text: 'Help me think through an idea.' },
-  { label: 'Plan a trip', icon: 'compass', text: 'Plan a trip: two weeks in Japan, slow pace.' },
-];
+/**
+ * Ways to begin, each a start for the person to finish: pressing one writes
+ * its words into the box and nothing is sent until they send it.
+ */
+export function promptChips(calendar: boolean): { label: string; icon: IconName; text: string }[] {
+  return [
+    {
+      label: 'Plan my day',
+      icon: 'calendar',
+      text: calendar
+        ? 'Plan my day around my calendar. I also want to '
+        : 'Help me plan my day. Today I want to ',
+    },
+    { label: 'Explore an idea', icon: 'sparkles', text: 'Help me think through an idea: ' },
+    { label: 'Plan a trip', icon: 'compass', text: 'Help me plan a trip to ' },
+  ];
+}
 
 const FIRST_MESSAGE = 'This is the first message to this company. You are asked once.';
 
@@ -223,13 +239,12 @@ function suggestionsOf(map: CompanyMap | null, now: number): Suggestion[] {
     }));
 }
 
-function relative(iso: string, now: number): string {
+export function relative(iso: string, now: number, zone: string = displayZone()): string {
   const date = new Date(iso);
   if (now - date.getTime() < 5 * 60_000) return 'now';
-  if (date.toDateString() === new Date(now).toDateString())
-    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (date.toDateString() === new Date(now - 86_400_000).toDateString()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { weekday: 'short' });
+  if (sameDay(date, new Date(now), zone)) return clockTime(date, zone);
+  if (isYesterday(date, new Date(now), zone)) return 'Yesterday';
+  return weekday(date, zone);
 }
 
 /* ---------- the queue ---------- */
@@ -799,8 +814,6 @@ const TINTS = ['travel', 'sage', 'lilac', 'sand'] as const;
 
 const hourLabel = (hour: number) =>
   hour === 12 ? 'Noon' : `${hour > 12 ? hour - 12 : hour} ${hour >= 12 ? 'PM' : 'AM'}`;
-const clockOf = (date: Date) =>
-  date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
 function EventBody({ title, time, tall }: { title: string; time: string; tall: boolean }) {
   return tall ? (
@@ -815,16 +828,24 @@ function EventBody({ title, time, tall }: { title: string; time: string; tall: b
   );
 }
 
-function DayGrid({ events, now }: { events: CalendarEvent[]; now: number }) {
+/** The day's hours with the now line and today's events, on the person's own clock. */
+export function DayGrid({
+  events,
+  now,
+  zone = displayZone(),
+}: {
+  events: CalendarEvent[];
+  now: number;
+  zone?: string;
+}) {
   const today = new Date(now);
-  const hoursOf = (date: Date) => date.getHours() + date.getMinutes() / 60;
+  const hoursOf = (date: Date) => hourOfDay(date, zone);
+  const clockOf = (date: Date) => clockTime(date, zone);
   const top = (hours: number) =>
     (Math.min(DAY_END, Math.max(DAY_START, hours)) - DAY_START) * HOUR_PX;
   const nowHours = hoursOf(today);
   const nowTop = nowHours >= DAY_START && nowHours <= DAY_END ? top(nowHours) : null;
-  const todays = events.filter(
-    (event) => new Date(event.starts_at).toDateString() === today.toDateString(),
-  );
+  const todays = events.filter((event) => sameDay(new Date(event.starts_at), today, zone));
   const hours: number[] = [];
   for (let hour = DAY_START; hour <= DAY_END; hour += 2) hours.push(hour);
   return (
@@ -889,16 +910,13 @@ function DayColumn({ now }: { now: number }) {
   const [draft, setDraft] = useState('');
   const upcoming: CalendarEvent[] | null =
     home.data && Array.isArray(home.data.upcoming) ? (home.data.upcoming as CalendarEvent[]) : null;
-  const today = new Date(now).toDateString();
+  const today = new Date(now);
   const later = (upcoming ?? []).find(
-    (event) =>
-      new Date(event.starts_at).toDateString() !== today && Date.parse(event.starts_at) > now,
+    (event) => !sameDay(new Date(event.starts_at), today) && Date.parse(event.starts_at) > now,
   );
   const list = tasks.data?.tasks ?? [];
   const done = list.filter((task) => task.done).length;
-  const todays = (upcoming ?? []).filter(
-    (event) => new Date(event.starts_at).toDateString() === today,
-  );
+  const todays = (upcoming ?? []).filter((event) => sameDay(new Date(event.starts_at), today));
   // The day is drawn before anything loads and with no calendar at all: the
   // hours and the now line hold the column, with one quiet line about the calendar.
   const quiet = home.loading
@@ -924,9 +942,8 @@ function DayColumn({ now }: { now: number }) {
         {quiet ? <span className="day-next">{quiet}</span> : null}
         {later ? (
           <span className="day-next">
-            Next: {later.title},{' '}
-            {new Date(later.starts_at).toLocaleDateString('en-US', { weekday: 'long' })}{' '}
-            {clockOf(new Date(later.starts_at))}
+            Next: {later.title}, {weekday(new Date(later.starts_at), displayZone(), true)}{' '}
+            {clockTime(new Date(later.starts_at))}
           </span>
         ) : null}
       </section>
@@ -1015,6 +1032,7 @@ export function HomeScreen() {
   const files = useAttachments();
   const now = useNow(true, 60_000);
   const mainRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLDivElement>(null);
   const cleared = useCallback(() => mainRef.current?.focus(), []);
 
   useEffect(() => {
@@ -1086,7 +1104,20 @@ export function HomeScreen() {
     map?.currency ?? 'GBP',
   );
   const suggestions = suggestionsOf(map, now);
-  const prompts = PROMPTS.slice(0, Math.max(0, 3 - suggestions.length));
+  const prompts = promptChips(Array.isArray(home.data?.upcoming)).slice(
+    0,
+    Math.max(0, 3 - suggestions.length),
+  );
+  // A chip's words go into the box with the cursor after them, ready to finish.
+  const begin = (words: string) => {
+    setText(words);
+    requestAnimationFrame(() => {
+      const box = composeRef.current?.querySelector('textarea');
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(words.length, words.length);
+    });
+  };
   const data = home.data;
 
   return (
@@ -1104,7 +1135,7 @@ export function HomeScreen() {
           {home.error ? (
             <LoadError what="your day" error={home.error} onRetry={home.reload} />
           ) : null}
-          <div className="home-compose">
+          <div className="home-compose" ref={composeRef}>
             <Composer
               value={text}
               onChange={setText}
@@ -1132,7 +1163,7 @@ export function HomeScreen() {
                   type="button"
                   className="suggestion"
                   disabled={busy}
-                  onClick={() => void start(prompt.text)}
+                  onClick={() => begin(prompt.text)}
                 >
                   <Icon name={prompt.icon} size={14} />
                   <span>{prompt.label}</span>

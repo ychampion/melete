@@ -225,6 +225,36 @@ async function markSpeechFailing(db: Database) {
   }
 }
 
+/** Whether a space's speech connections passed their last check, by what each serves. */
+export type SpeechHealth = (
+  spaceId: string,
+) => Promise<{ speech: boolean; transcription: boolean }>;
+
+/**
+ * Read from the space's own Voice and Voice to text rows: one whose last check
+ * failed, as a refused key leaves both, is not offered until a passing Test
+ * sets it back. A space without the rows, or a read that fails, is not held back.
+ */
+export function speechHealthFrom(db: Database): SpeechHealth {
+  return async (spaceId) => {
+    const builtin = sql<string>`${connection.configuration}->>'builtin'`;
+    const rows = await db
+      .select({ builtin, health: connection.health })
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          eq(connection.provider, 'generation'),
+          eq(connection.status, 'active'),
+          inArray(builtin, ['generation', 'transcription']),
+        ),
+      );
+    const failing = (key: string) =>
+      rows.some((row) => row.builtin === key && row.health === 'failing');
+    return { speech: !failing('generation'), transcription: !failing('transcription') };
+  };
+}
+
 export function mountVoice(
   app: Hono,
   deps: {
@@ -240,6 +270,8 @@ export function mountVoice(
     context?: (conversationId: string, agentId: string | null) => Promise<CompanionContext>;
     /** The clock the aside rate limit reads; tests supply one. */
     now?: () => number;
+    /** Whether the speech connections are working. Left out, read from the database. */
+    speechHealth?: SpeechHealth;
   },
 ): void {
   const { db, allowance, providers, limits, privacy } = deps;
@@ -247,6 +279,7 @@ export function mountVoice(
   /** When each person's recent asides were asked, held in memory only. */
   const asides = new Map<string, number[]>();
   const context = deps.context ?? ((id, agentId) => conversationContext(db, id, agentId));
+  const speechHealth = deps.speechHealth ?? speechHealthFrom(db);
   const pushToTalk = Boolean(providers.transcription && allowance);
   const voiceMode = Boolean(providers.live && allowance);
 
@@ -343,13 +376,21 @@ export function mountVoice(
     const query = voiceContextQuery.safeParse(c.req.query());
     if (!query.success) throw new ServiceError('invalid_request', 'Invalid voice query.', 400);
     const at = await place(spaceId, principalId, query.data);
+    // Offered only while it works: a speech service that refused its last check
+    // would fail as soon as it was pressed.
+    const healthy =
+      pushToTalk || voiceMode
+        ? await speechHealth(spaceId).catch(() => ({ speech: true, transcription: true }))
+        : { speech: false, transcription: false };
+    const talk = pushToTalk && healthy.transcription;
+    const mode = voiceMode && healthy.speech;
     return c.json(
       voiceStatus.parse({
-        push_to_talk: pushToTalk,
-        voice_mode: voiceMode,
+        push_to_talk: talk,
+        voice_mode: mode,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
-        off_reason: pushToTalk || voiceMode ? await offReason({ spaceId, ...at }) : null,
+        off_reason: talk || mode ? await offReason({ spaceId, ...at }) : null,
       }),
     );
   });
