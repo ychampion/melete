@@ -1290,6 +1290,14 @@ export const experienceSearchResult = z.strictObject({
 export const experienceSearch = z.strictObject({ results: z.array(experienceSearchResult) });
 export const magicLinkRequest = z.strictObject({ email: z.email() });
 export const magicLinkConsume = z.strictObject({ token: z.string().min(32).max(200) });
+/** A sign-in link checked before it is used: whose account it opens, its address masked. */
+export const magicLinkCheckRequest = z.strictObject({ token: z.string().min(1).max(2000) });
+export const magicLinkCheck = z.strictObject({
+  status: z.literal('ok'),
+  /** The account's address with most of its name hidden, as `p•••@example.com`. */
+  masked_email: z.string().max(320),
+});
+export type MagicLinkCheck = z.infer<typeof magicLinkCheck>;
 const newPassword = newPasswordInput;
 export const passwordChange = z.strictObject({
   current_password: z.string().min(1).max(1024),
@@ -1516,6 +1524,14 @@ export const experienceOperations = {
    */
   'DELETE /space/members/{id}': { response: experienceOk },
   'POST /signin/magic-link': { request: magicLinkRequest, response: experienceOk },
+  /**
+   * Whether a sign-in link still works, and whose account it opens. Spends
+   * nothing: opening a link only shows a button, and the link is used when the
+   * person presses it, so a mail scanner that opens links cannot use one up. A
+   * link that would not work answers 400 invalid_signin_link.
+   */
+  'POST /signin/magic-link/check': { request: magicLinkCheckRequest, response: magicLinkCheck },
+  /** Uses a sign-in link once and starts a session. */
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },
   'POST /signin/apple': { response: notAvailable },

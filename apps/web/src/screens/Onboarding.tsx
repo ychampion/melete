@@ -77,17 +77,45 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     });
   }, []);
 
-  // A sign-in link lands here with its token in the fragment; consume it once.
+  // A mailed sign-in link lands here with its token in the fragment. Opening it
+  // spends nothing, because mail scanners open links too: the screen only asks
+  // whose account it opens, and the link is used when the person presses Sign in.
   const linkToken = linkParam(route, 'token');
+  const [link, setLink] = useState<{ token: string; account: string | null } | null>(null);
+  const [usingLink, setUsingLink] = useState(false);
   useEffect(() => {
-    const token = linkToken;
-    if (!token) return;
-    void adapter.consumeMagicLink(token).then((r) => {
-      window.history.replaceState(null, '', `${window.location.pathname}#/`);
-      if (r.data) refreshProfile();
-      else setNotice(r.error ?? r.unavailable ?? 'That link did not work.');
+    if (!linkToken) {
+      setLink(null);
+      return;
+    }
+    let current = true;
+    setLink({ token: linkToken, account: null });
+    void adapter.checkMagicLink(linkToken).then((r) => {
+      if (!current) return;
+      if (r.data) {
+        setLink({ token: linkToken, account: r.data.masked_email });
+        return;
+      }
+      // Off the address bar and out of history, so a reload doesn't ask again.
+      window.location.replace('#/welcome');
+      setNotice(r.error ?? r.unavailable ?? 'That link did not work.');
     });
-  }, [linkToken, refreshProfile]);
+    return () => {
+      current = false;
+    };
+  }, [linkToken]);
+
+  const signInWithLink = async () => {
+    if (!link) return;
+    setUsingLink(true);
+    setNotice(null);
+    const result = await adapter.consumeMagicLink(link.token);
+    setUsingLink(false);
+    // Used or refused, the link is done: it leaves the address bar and history.
+    window.location.replace(result.data ? '#/' : '#/welcome');
+    if (result.data) refreshProfile();
+    else setNotice(result.error ?? result.unavailable ?? 'That link did not work.');
+  };
 
   const sendLink = async () => {
     if (!email.includes('@')) {
@@ -399,10 +427,19 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
             <p style={{ fontSize: 15, lineHeight: '22px', color: 'var(--muted)' }}>
               {creating
                 ? 'This is the first account on this installation. Your agents come next.'
-                : 'Sign in with your email and password.'}
+                : link
+                  ? 'Finish signing in with the link from your email.'
+                  : 'Sign in with your email and password.'}
             </p>
           </div>
-          {signedIn ? (
+          {link ? (
+            <SignInLinkCard
+              account={link.account}
+              busy={usingLink}
+              onSignIn={() => void signInWithLink()}
+              onElsewise={() => window.location.replace('#/welcome')}
+            />
+          ) : signedIn ? (
             <div className="col card" style={{ gap: 10, padding: 16 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                 You’re already signed in on this device.
@@ -412,7 +449,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
               </Button>
             </div>
           ) : null}
-          {sent ? (
+          {link ? null : sent ? (
             <div className="col card" style={{ gap: 10, padding: 16 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                 Check your inbox
@@ -549,6 +586,57 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What a sign-in link opens to: whose account it is, and one button that uses
+ * it. Until the button is pressed the link is unspent, so a mail scanner that
+ * opens the page signs no one in.
+ */
+export function SignInLinkCard({
+  account,
+  busy,
+  onSignIn,
+  onElsewise,
+}: {
+  /** The account's address, masked; null while the link is being checked. */
+  account: string | null;
+  busy: boolean;
+  onSignIn: () => void;
+  onElsewise: () => void;
+}) {
+  return (
+    <div className="col card" style={{ gap: 12, padding: 16 }}>
+      {account === null ? (
+        <span className="row" style={{ gap: 8, fontSize: 14, color: 'var(--muted)' }}>
+          <Icon name="loader" size={14} stroke={2} className="spin" />
+          Checking your sign-in link…
+        </span>
+      ) : (
+        <>
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+            Sign in as <span style={{ overflowWrap: 'anywhere' }}>{account}</span>
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            This link works once, and only after you press Sign in.
+          </span>
+          <Button
+            size="lg"
+            icon="chevronRight"
+            block
+            loading={busy}
+            disabled={busy}
+            onClick={onSignIn}
+          >
+            Sign in
+          </Button>
+        </>
+      )}
+      <Button variant="ghost" size="sm" onClick={onElsewise}>
+        Sign in another way
+      </Button>
     </div>
   );
 }

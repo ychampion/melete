@@ -9096,6 +9096,71 @@
         }
       }
     },
+    "/signin/magic-link/check": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /signin/magic-link/check",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "ok"
+                        },
+                        "masked_email": {
+                          "type": "string",
+                          "maxLength": 320
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "masked_email"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema306"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/signin/magic-link/consume": {
       "post": {
         "tags": [

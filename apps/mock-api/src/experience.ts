@@ -2087,6 +2087,9 @@ export class ExperienceMock {
       case 'POST /signin/magic-link':
         // The mock sends no mail; the link is any token consumed below.
         return { status: 'ok' };
+      case 'POST /signin/magic-link/check':
+        // Any link works here, and checking one spends nothing.
+        return { status: 'ok', masked_email: 'y•••@example.com' };
       case 'POST /signin/magic-link/consume':
         this.signedOut = false;
         return { status: 'ok' };
