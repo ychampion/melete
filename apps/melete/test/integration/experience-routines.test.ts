@@ -292,8 +292,33 @@ withDb('routines, time zone and setup as the person sees them', () => {
       .db.update(trigger)
       .set({ spec: triggerSpec.parse({ ...(await specOf()), timezone: 'Asia/Calcutta' }) })
       .where(eq(trigger.id, routine.id));
+    // Work the person asked to wake on another clock ("9 AM Tokyo time") keeps it.
+    const standing = await required(jobs).transaction(async (tx) => {
+      const row = await required(jobs).createInTransaction(
+        tx,
+        {
+          space_id: spaceId,
+          title: 'Tokyo check',
+          objective: 'Check the Tokyo office at 9',
+          scheduling_class: 'background',
+          importance: 'routine',
+        },
+        { kind: 'run', dormant: true },
+      );
+      const [registration] = await tx
+        .insert(trigger)
+        .values({
+          id: newId('trg'),
+          jobId: row.id,
+          kind: 'schedule',
+          spec: triggerSpec.parse({ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Tokyo' }),
+        })
+        .returning();
+      return required(registration);
+    });
     const zone = (await profile()).time_zone;
     expect(zone).not.toBe('Asia/Calcutta');
+    expect(zone).not.toBe('Asia/Tokyo');
     // Only the name changes; the clock stays where it was.
     const saved = await request('/profile', 'PATCH', {
       name: 'Sam Lee',
@@ -302,6 +327,11 @@ withDb('routines, time zone and setup as the person sees them', () => {
     });
     expect(saved.status).toBe(200);
     expect((await specOf()).timezone).toBe(zone);
+    const [kept] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, standing.id));
+    expect(triggerSpec.parse(required(kept).spec)).toMatchObject({ timezone: 'Asia/Tokyo' });
     const listed = experienceOperations['GET /automations'].response
       .parse(await (await request('/automations')).json())
       .automations.find((row) => row.id === routine.id);
