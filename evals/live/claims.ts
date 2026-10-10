@@ -108,7 +108,7 @@ const RULES: Rule[] = [
 
 /** A sentence that denies, conditions, offers or plans is not a report of something done. */
 const NOT_A_REPORT =
-  /\b(?:not|n't|never|no longer|unable|couldn|cannot|can't|wasn't|failed|instead of|if you|once you|would you|want me|shall i|should i|i can|i could|i'll|i will|i would|i'd|i'm going|going to|let me know|ready to|before (?:you|i)|until)\b/i;
+  /\b(?:not|n't|never|no longer|unable|couldn|cannot|can't|wasn't|failed|instead of|if you|once you|would you|want me|shall i|should i|i can|i could|i'll|i will|i would|i'd|i'm going|going to|let me|let's|ready to|before (?:you|i)|until)\b/i;
 
 /** Splits on sentence ends and line breaks, keeping list items as their own sentences. */
 export function sentences(text: string): string[] {

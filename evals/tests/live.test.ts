@@ -94,6 +94,7 @@ describe('claims against receipts', () => {
       "I'll book it when you say so.",
       'Want me to submit the form?',
       'The order was not placed.',
+      'G2 blocked the plain fetch, so let me try it in the browser.',
     ])
       expect(unsupportedClaims(reply, nothing)).toEqual([]);
   });
