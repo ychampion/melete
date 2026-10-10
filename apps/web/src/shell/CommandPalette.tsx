@@ -9,7 +9,7 @@ import { Kbd } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import type { SearchResult } from '../experience/types.ts';
 import { navigate } from '../router.ts';
-import { secondaryOf, withoutBuiltins } from './palette.ts';
+import { searchAfterPause, secondaryOf, withoutBuiltins } from './palette.ts';
 
 const TABS = [
   ['all', 'All'],
@@ -89,12 +89,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (!open) return;
     let live = true;
-    // The contract wants a non-empty query; an empty box lists everything.
-    void adapter.search(query.trim() || ' ').then((result) => {
-      if (live) setHits(result.data ? result.data.results : []);
+    // Only the answer for what is in the box now is shown; an older one arriving late is dropped.
+    const cancel = searchAfterPause(query, (q) => {
+      void adapter.search(q).then((result) => {
+        if (live) setHits(result.data ? result.data.results : []);
+      });
     });
     return () => {
       live = false;
+      cancel();
     };
   }, [open, query]);
 

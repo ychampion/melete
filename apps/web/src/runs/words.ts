@@ -60,6 +60,27 @@ export function statusOf(run: Pick<Run, 'status' | 'status_line'>): {
   }
 }
 
+/**
+ * The line under a card's status pill: what the pill does not already say.
+ * "Done · checked" under "Done" reads "Checked"; a line that only repeats the
+ * pill gives way to the latest update, or to nothing. Work under way shows
+ * its latest update rather than "Working on it".
+ */
+export function lineUnderStatus(
+  run: Pick<Run, 'status' | 'status_line' | 'latest_report'>,
+  word: string,
+): string | null {
+  const line = run.status_line.trim();
+  const latest = run.latest_report?.title?.trim() || null;
+  if (line === word || line === `${word}.`) return latest;
+  if (line.startsWith(`${word} · `)) {
+    const rest = line.slice(word.length + 3);
+    return `${rest.charAt(0).toUpperCase()}${rest.slice(1)}`;
+  }
+  if (run.status === 'working' && line === 'Working on it' && latest) return latest;
+  return line || latest;
+}
+
 /** A helper's state in a word. */
 export function helperWord(status: RunStatus): string {
   return statusOf({ status, status_line: '' }).word;

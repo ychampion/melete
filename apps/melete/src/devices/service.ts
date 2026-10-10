@@ -434,4 +434,21 @@ export class DeviceService {
     this.hub.disconnect(id);
     return this.view({ ...row, revokedAt }, 'revoked');
   }
+
+  /**
+   * Take a disconnected computer off the list. Only one already disconnected
+   * can go, so removing never cuts off a computer that still works. Its
+   * connection stays revoked, and the receipts of what it did stay with it.
+   */
+  async remove(id: string, actor: string) {
+    const { row } = await this.get(id, actor);
+    if (!row.revokedAt)
+      throw new ServiceError(
+        'device_connected',
+        'Disconnect this computer before removing it.',
+        409,
+      );
+    await this.deps.db.delete(pairedDevice).where(eq(pairedDevice.id, id));
+    return { status: 'ok' as const };
+  }
 }

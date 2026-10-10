@@ -23,24 +23,20 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
+import { pastDay } from '../experience/past-day.ts';
 import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun, Run } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { isFinished, isPaused, standingLine } from '../runs/words.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { resultPath } from './RoutineResults.tsx';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-const when = (iso: string) => {
+/** "Today at 7:30 AM", "Thu at 10:55 PM" within the week, "Oct 1 at 10:55 PM" before it. */
+export const when = (iso: string, now = Date.now()) => {
   const date = new Date(iso);
-  const today = new Date().toDateString();
-  const day =
-    date.toDateString() === today
-      ? 'Today'
-      : date.toDateString() === new Date(Date.now() - 86_400_000).toDateString()
-        ? 'Yesterday'
-        : date.toLocaleDateString('en-US', { weekday: 'short' });
-  return `${day} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  return `${pastDay(date, now)} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 };
 
 export const runLabel = (run: AutomationRun) =>
@@ -53,6 +49,22 @@ export const runLabel = (run: AutomationRun) =>
         : run.status === 'needs_you'
           ? 'Waiting for you'
           : 'Running';
+
+/**
+ * The runs a card lists, newest first, with a repeat folded in: two runs that
+ * ended the same way in the same minute, saying the same thing, read as one.
+ */
+export function distinctRuns(runs: readonly AutomationRun[]): AutomationRun[] {
+  const seen = new Set<string>();
+  return runs.filter((run) => {
+    const key = [run.status, run.started_at.slice(0, 16), run.summary ?? '', run.reason ?? ''].join(
+      '|',
+    );
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export function RunRow({ run }: { run: AutomationRun }) {
   const ok = run.status === 'done';
@@ -89,7 +101,7 @@ export function RunRow({ run }: { run: AutomationRun }) {
         </span>
         {run.conversation_id ? (
           <a
-            href={href(`/chat/${run.conversation_id}`)}
+            href={href(resultPath(run.conversation_id, run.turn_id))}
             style={{ fontSize: 13, whiteSpace: 'nowrap', flexShrink: 0 }}
             className="section-link"
           >
@@ -232,9 +244,11 @@ export function RoutineCard({
       />
       <div className="col">
         <Overline style={{ paddingBottom: 4 }}>Last runs</Overline>
-        {automation.runs.slice(0, 4).map((run) => (
-          <RunRow key={run.id} run={run} />
-        ))}
+        {distinctRuns(automation.runs)
+          .slice(0, 4)
+          .map((run) => (
+            <RunRow key={run.id} run={run} />
+          ))}
         {automation.runs.length === 0 ? (
           <span style={{ fontSize: 13, color: 'var(--muted)' }}>Not run yet</span>
         ) : null}
@@ -566,6 +580,19 @@ export function AutomationsScreen() {
   const repeating = runs.filter(repeats);
   const update = (next: Automation) =>
     data.set({ automations: list.map((a) => (a.id === next.id ? next : a)) });
+  const card = (automation: Automation) => (
+    <RoutineCard
+      key={automation.id}
+      automation={automation}
+      onChange={update}
+      onRemoved={(id) => data.set({ automations: list.filter((a) => a.id !== id) })}
+      onReplaced={(id, next) =>
+        data.set({ automations: list.map((a) => (a.id === id ? next : a)) })
+      }
+    />
+  );
+  // Routines that ended sit apart, after the ones still running, so they never crowd them.
+  const ended = list.filter((automation) => automation.ended);
   const updateRun = (next: Run) =>
     work.set({ runs: runs.map((r) => (r.id === next.id ? next : r)) });
   return (
@@ -598,17 +625,7 @@ export function AutomationsScreen() {
             gap: 12,
           }}
         >
-          {list.map((automation) => (
-            <RoutineCard
-              key={automation.id}
-              automation={automation}
-              onChange={update}
-              onRemoved={(id) => data.set({ automations: list.filter((a) => a.id !== id) })}
-              onReplaced={(id, next) =>
-                data.set({ automations: list.map((a) => (a.id === id ? next : a)) })
-              }
-            />
-          ))}
+          {list.filter((automation) => !automation.ended).map(card)}
           {repeating.map((run) => (
             <RepeatingWorkCard
               key={run.id}
@@ -618,6 +635,25 @@ export function AutomationsScreen() {
             />
           ))}
         </div>
+        {ended.length ? (
+          <section className="col" style={{ gap: 10 }} aria-labelledby="routines-stopped">
+            <h2
+              id="routines-stopped"
+              style={{ fontSize: 15, fontWeight: 600, lineHeight: '20px', color: 'var(--heading)' }}
+            >
+              Stopped
+            </h2>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+                gap: 12,
+              }}
+            >
+              {ended.map(card)}
+            </div>
+          </section>
+        ) : null}
         {data.data && !data.error && list.length === 0 && repeating.length === 0 ? (
           <div
             className="col"

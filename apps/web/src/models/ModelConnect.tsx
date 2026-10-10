@@ -111,10 +111,11 @@ export function statusLine(
 
 /** What the active model does with the screenshots agents take, in plain words. */
 export function visionLine(active: ModelSettings['active']): { text: string; hint: string } {
-  const text = active.vision
-    ? 'Sees screenshots as pictures'
-    : 'Gets screenshots as text: where each was saved and its size';
-  const hint =
+  const text = 'Send screenshots as pictures';
+  const now = active.vision
+    ? 'On: it sees each screenshot.'
+    : 'Off: it is told only where each screenshot was saved and its size.';
+  const why =
     active.vision_source === 'app'
       ? 'You set this for this model.'
       : active.vision_source === 'operator'
@@ -124,7 +125,7 @@ export function visionLine(active: ModelSettings['active']): { text: string; hin
           : active.provider_vision
             ? 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.'
             : 'Melete doesn’t know this model to read images. If it does, turn this on.';
-  return { text, hint };
+  return { text, hint: `${now} ${why}` };
 }
 
 /** Whether the owner can change the active model's answer here: it has to be one they could choose. */

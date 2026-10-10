@@ -28,7 +28,17 @@ import type { Plan } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 
-type Category = 'travel' | 'wellbeing' | 'learning' | 'finance' | 'other';
+type Category = 'travel' | 'wellbeing' | 'learning' | 'finance' | 'home' | 'work' | 'other';
+
+/** The categories a plan can be made in, in the order the filter and the board show them. */
+export const PLAN_CATEGORIES = [
+  'travel',
+  'wellbeing',
+  'learning',
+  'finance',
+  'home',
+  'work',
+] as const;
 
 export const CATEGORY: Record<
   Category,
@@ -62,6 +72,20 @@ export const CATEGORY: Record<
     bg: 'var(--sand)',
     ink: 'var(--sand-ink)',
   },
+  home: {
+    label: 'Home',
+    icon: 'home',
+    tone: 'chip',
+    bg: 'var(--rose)',
+    ink: 'var(--rose-ink)',
+  },
+  work: {
+    label: 'Work',
+    icon: 'laptop',
+    tone: 'blue',
+    bg: 'var(--blue-soft)',
+    ink: 'var(--blue-ink)',
+  },
   other: {
     label: 'Plan',
     icon: 'plans',
@@ -78,6 +102,8 @@ export function categoryOf(text: string): Category {
   if (/well|health|run|fit|sleep/.test(lower)) return 'wellbeing';
   if (/learn|study|language|course|spanish/.test(lower)) return 'learning';
   if (/financ|money|saving|fund|budget/.test(lower)) return 'finance';
+  if (/\bhome\b|house|garden|move|renovat/.test(lower)) return 'home';
+  if (/\bwork\b|job|career|office|project/.test(lower)) return 'work';
   return 'other';
 }
 
@@ -622,9 +648,9 @@ function NewPlanDialog({
           value={category}
           onChange={setCategory}
           width="100%"
-          options={['Travel', 'Wellbeing', 'Learning', 'Finances', 'Home', 'Work'].map((value) => ({
-            value,
-            label: value,
+          options={PLAN_CATEGORIES.map((key) => ({
+            value: CATEGORY[key].label,
+            label: CATEGORY[key].label,
           }))}
         />
       </Field>
@@ -735,7 +761,7 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                 onChange={setCategory}
                 options={[
                   { value: 'all', label: 'All' },
-                  ...(['travel', 'wellbeing', 'learning', 'finance'] as const).map((value) => ({
+                  ...PLAN_CATEGORIES.map((value) => ({
                     value,
                     label: CATEGORY[value].label,
                   })),
@@ -767,7 +793,7 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                 gap: 12,
               }}
             >
-              {(['travel', 'wellbeing', 'learning', 'finance', 'other'] as const).map((key) => {
+              {[...PLAN_CATEGORIES, 'other' as const].map((key) => {
                 const column = visible.filter((p) => categoryOf(p.category) === key);
                 if (column.length === 0) return null;
                 return (

@@ -404,6 +404,9 @@ export const adapter = {
         body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
       }),
     ).then(worthHearing),
+  /** Stop waiting for an answer to a question the person no longer wants to answer. */
+  dismissQuestion: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/quick-answers/{id}/dismiss', path(id))),
 
   /* ---------- phone presence ---------- */
   pushPublicKey: () => guard<{ public_key: string | null }>(() => api.GET('/push/public-key')),
@@ -473,6 +476,9 @@ export const adapter = {
     ),
   revokeDevice: (id: string) =>
     guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
+  /** Take a disconnected computer off the list. */
+  removeDevice: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/devices/{id}', path(id))),
   /* ---------- other assistants connected over MCP ---------- */
   assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
   /** Ends every token the assistant holds for this person; answered with 204 and no body. */

@@ -170,6 +170,19 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
     expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
   });
+  test('a detail about the person themself reads as theirs, never as "the owner"', () => {
+    expect(subjectLabel('contact.owner.availability', 'contact.owner.availability')).toBe(
+      'Your availability',
+    );
+    expect(subjectLabel(null, 'person.owner.city')).toBe('Your city');
+    expect(beliefLabel(null, 'person.owner', "The owner's landlord is Mr. Patel")).toBe(
+      'Your landlord is Mr. Patel',
+    );
+    // Someone else who owns something stays as written.
+    expect(beliefLabel(null, 'person.cafe', 'The owner of the café is Ana')).toBe(
+      'The owner of the café is Ana',
+    );
+  });
   test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {
     expect(beliefLabel(null, 'person.sister.lena.city', 'Sister Lena lives in Seattle.')).toBe(
       'Sister Lena lives in Seattle',

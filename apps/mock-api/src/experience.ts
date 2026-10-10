@@ -2054,6 +2054,14 @@ export class ExperienceMock {
         }
         return { status: 'ok' };
       }
+      case 'POST /quick-answers/{id}/dismiss': {
+        const question = this.questions.get(id);
+        if (!question) return { status: 'ok' };
+        this.questions.delete(id);
+        if (question.conversation_id)
+          this.decided(required(this.chats, question.conversation_id), 'question', id, 'withdrawn');
+        return { status: 'ok' };
+      }
       case 'GET /memory/items':
         return { items: [...this.memories.values()] };
       case 'POST /memory/items': {

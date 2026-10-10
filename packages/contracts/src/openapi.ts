@@ -83,6 +83,7 @@ import {
   devicePairRequest,
   devicePairResponse,
   devicePollResponse,
+  deviceRemoved,
   deviceResponse,
   deviceResult,
   deviceUpdateRequest,
@@ -654,6 +655,19 @@ const devicePaths = () => ({
         '200': jsonResponse('Device', deviceResponse),
         '404': problem('Device not found'),
         '409': problem('Device revoked'),
+      },
+    },
+    delete: {
+      tags: ['devices'],
+      summary: 'Remove a disconnected computer from the list',
+      description:
+        'Only a computer already disconnected can be removed. Its connection stays revoked ' +
+        'and the receipts of what it did are kept.',
+      requestParams: idParam('id', 'Device id'),
+      responses: {
+        '200': jsonResponse('Removed', deviceRemoved),
+        '404': problem('Device not found'),
+        '409': problem('Device still connected'),
       },
     },
   },

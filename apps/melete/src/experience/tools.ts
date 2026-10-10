@@ -935,12 +935,18 @@ const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   todo_list: ['tool', 'Planning the steps', 'Planned the steps'],
 };
 
+/** The `skills.` tools that manage skills rather than use one. */
+const SKILL_TOOLS = new Set(['create', 'update', 'delete', 'restore', 'list', 'read']);
+
 /** How a runtime-named tool is shown, or null when another record already shows it. */
 export function runtimeTool(name: string): { kind: ToolKind; doing: string; done: string } | null {
   if (UNSHOWN.has(name)) return null;
   const native = NATIVE[name];
   if (native) return { kind: native[0], doing: native[1], done: native[2] };
   if (name.startsWith('skills.')) {
+    // Listing, saving or changing skills is a broker action with its own entry
+    // ("Looked through your skills"), not a skill named "List".
+    if (SKILL_TOOLS.has(name.slice('skills.'.length))) return null;
     const words = name.slice('skills.'.length).replace(/[_-]+/g, ' ').trim();
     const title = words ? `${words[0]?.toUpperCase()}${words.slice(1)}` : 'a skill';
     return {

@@ -22,12 +22,20 @@ export type VoicePlace = { conversationId: string | null; agentId: string | null
 /**
  * The installation's voice features, and whether voice is off at this place.
  * Read again when the place changes: a private space or agent, or a
- * conversation about a sensitive topic, has voice off.
+ * conversation about a sensitive topic, has voice off. `null` is a place with
+ * no voice at all, such as a routine's thread, which takes no messages: it is
+ * not asked about.
  */
-export function useVoiceStatus(place: VoicePlace): VoiceStatus | null {
+export function useVoiceStatus(place: VoicePlace | null): VoiceStatus | null {
   const [value, setValue] = useState<VoiceStatus | null>(null);
-  const { conversationId, agentId } = place;
+  const asked = place !== null;
+  const conversationId = place?.conversationId ?? null;
+  const agentId = place?.agentId ?? null;
   useEffect(() => {
+    if (!asked) {
+      setValue(null);
+      return;
+    }
     let live = true;
     void adapter.voice({ conversationId, agentId }).then((result) => {
       if (live) setValue(result.data);
@@ -35,7 +43,7 @@ export function useVoiceStatus(place: VoicePlace): VoiceStatus | null {
     return () => {
       live = false;
     };
-  }, [conversationId, agentId]);
+  }, [asked, conversationId, agentId]);
   return value;
 }
 

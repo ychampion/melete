@@ -1363,6 +1363,12 @@ export const experienceOperations = {
     request: quickAnswerRequest,
     response: experienceOk,
   },
+  /**
+   * Stops waiting for an answer: the question leaves every list and the
+   * conversation waits for the person's next message. Refused for a question
+   * about something that may already have gone out.
+   */
+  'POST /quick-answers/{id}/dismiss': { response: experienceOk },
   'GET /agents': { response: agentList },
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },

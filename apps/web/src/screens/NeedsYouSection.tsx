@@ -15,6 +15,8 @@ import { Icon, type IconName } from '../design/icons.tsx';
 import { Button, Status } from '../design/primitives.tsx';
 import type { Result } from '../experience/adapter.ts';
 import { call } from '../experience/call.ts';
+import { useDecisions } from '../experience/hooks.ts';
+import { pastDay } from '../experience/past-day.ts';
 import type { NeedsYou, NeedsYouItem } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -54,7 +56,7 @@ export function whenWords(iso: string | null, now: number): string | null {
   if (Number.isNaN(date.getTime())) return null;
   const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   if (date.toDateString() === new Date(now).toDateString()) return time;
-  return `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${time}`;
+  return `${pastDay(date, now)} ${time}`;
 }
 
 const WAITING_BECAUSE: Record<NonNullable<NeedsYou['unsorted_reason']>, string> = {
@@ -68,6 +70,14 @@ const WAITING_BECAUSE: Record<NonNullable<NeedsYou['unsorted_reason']>, string> 
 export function unsortedLine(count: number, reason: NeedsYou['unsorted_reason']): string | null {
   if (count <= 0) return null;
   return reason ? `${count} not sorted yet: ${WAITING_BECAUSE[reason]}` : `${count} not sorted yet`;
+}
+
+/**
+ * The line for an empty list. Decisions waiting on the person sit just above
+ * it on Home, so it never says that nothing needs them while those wait.
+ */
+export function emptyLine(waiting: number): string {
+  return waiting > 0 ? 'Nothing else needs you right now.' : 'Nothing needs you right now.';
 }
 
 function Row({
@@ -169,6 +179,7 @@ export function NeedsYouSection({
   const [view, setView] = useState<NeedsYou | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const live = useRef(true);
+  const waiting = useDecisions().count;
 
   const load = useCallback(async () => {
     const result = await needsYouApi.list();
@@ -230,7 +241,7 @@ export function NeedsYouSection({
           ))}
         </ul>
       ) : (
-        <p className="needs-you-empty voice">Nothing needs you right now.</p>
+        <p className="needs-you-empty voice">{emptyLine(waiting)}</p>
       )}
     </section>
   );

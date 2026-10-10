@@ -10,6 +10,10 @@ import { href } from '../router.ts';
 
 type RoutineResult = Home['routine_results'][number];
 
+/** Where a run's result opens: its own answer in the routine's thread, not the thread's top. */
+export const resultPath = (conversationId: string, turnId: string | null) =>
+  turnId ? `/chat/${conversationId}?turn=${encodeURIComponent(turnId)}` : `/chat/${conversationId}`;
+
 export function runHeadline(run: RoutineResult['run']): string {
   switch (run.status) {
     case 'done':
@@ -49,7 +53,7 @@ export function RoutineResults({ results, now }: { results: RoutineResult[]; now
             <a
               key={result.automation_id}
               className="motion-row"
-              href={href(`/chat/${result.conversation_id}`)}
+              href={href(resultPath(result.conversation_id, result.run.turn_id))}
               style={{ alignItems: 'flex-start' }}
             >
               <span

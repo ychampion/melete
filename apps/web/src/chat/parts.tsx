@@ -680,9 +680,20 @@ export function ReceiptRow({
   );
 }
 
-/** A sentence as the tail of another one: "approved because it only reads." */
+/** A sentence as the tail of another one: "because it only reads." A name keeps its capital. */
 const asClause = (text: string) =>
-  /^[A-Z][a-z]/.test(text) ? `${text[0]?.toLowerCase()}${text.slice(1)}` : text;
+  /^(?!Melete\b)[A-Z][a-z]/.test(text) ? `${text[0]?.toLowerCase()}${text.slice(1)}` : text;
+
+/**
+ * Why Melete went ahead without asking, on the receipt of what it let through,
+ * or why it is asking, on the card it sent on: one plain sentence.
+ */
+export function reviewWords(review: ActionReview): string {
+  const reason = asClause(review.reason.trim().replace(/\.+$/, ''));
+  return review.outcome === 'auto_approved'
+    ? `Went ahead without asking you, because ${reason}.`
+    : `Asking you, because ${reason}.`;
+}
 
 /** What auto-review decided, on the receipt of what it let through or the card it sent on. */
 export function ReviewNote({ review }: { review: ActionReview }) {
@@ -690,10 +701,7 @@ export function ReviewNote({ review }: { review: ActionReview }) {
   return (
     <span className="review-note" data-outcome={review.outcome}>
       <Icon name={approved ? 'check' : 'info'} size={12} stroke={2.5} />
-      <span>
-        <strong>{approved ? 'Auto-reviewed:' : 'Escalated:'}</strong>{' '}
-        {approved ? `approved because ${asClause(review.reason)}` : review.reason}
-      </span>
+      <span>{reviewWords(review)}</span>
     </span>
   );
 }
