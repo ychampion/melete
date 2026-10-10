@@ -15,7 +15,14 @@ group('the settings set-env writes', () => {
   });
 
   test('a secret is refused on the command line, without echoing it', () => {
-    for (const name of ['ELEVENLABS_API_KEY', 'TS_AUTHKEY', 'MELETE_BROWSER_TOKEN', 'DATABASE_URL'])
+    for (const name of [
+      'ELEVENLABS_API_KEY',
+      'TS_AUTHKEY',
+      'MELETE_BROWSER_TOKEN',
+      'DATABASE_URL',
+      'MELETE_SMTP_URL',
+      'MELETE_ALERT_SMTP_URL',
+    ])
       expect(isSecretName(name)).toBe(true);
     try {
       requestedSettings(['ELEVENLABS_API_KEY=el-secret'], {});

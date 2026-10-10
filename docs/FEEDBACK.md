@@ -66,9 +66,9 @@ JSON, after the person who sent it has their id:
 /feedback/{id}` returns it, and `markdown` what `melete feedback show` prints.
 `installation` is `MELETE_PUBLIC_URL`, so one endpoint can collect reports from
 many installations. A failed delivery is logged and not retried; the report is
-kept in the installation either way. The webhook gets what the person sent and
-the page details, redacted as above, so point it only at somewhere the people
-running the installation control.
+kept in the installation either way. The webhook gets what the person sent,
+their email address and the page details, redacted as above, so point it only
+at somewhere the people running the installation control.
 
 ## Fixing a report with a coding agent
 

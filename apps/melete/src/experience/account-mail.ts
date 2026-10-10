@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import type { Env } from '../env.ts';
 
 export type AccountMail = { to: string; subject: string; text: string };
@@ -32,16 +33,36 @@ export function passwordResetMail(to: string, url: string, minutes: number): Acc
   };
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * How the sender connects. The links it mails sign in to an account, so a
+ * plain `smtp://` server must upgrade the connection with STARTTLS before the
+ * sign-in and the message are sent, unless the server runs on this machine.
+ * What the URL itself says wins: `?requireTLS=false` for a relay that cannot.
+ */
+export function smtpTransportOptions(smtpUrl: string): SMTPTransport.Options {
+  let host = '';
+  try {
+    host = new URL(smtpUrl).hostname.toLowerCase();
+  } catch {
+    // Unreadable here: TLS stays required.
+  }
+  return {
+    url: smtpUrl,
+    requireTLS: !LOOPBACK.has(host),
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
+  };
+}
+
 /** An SMTP sender, opened for each message and closed after it. */
 export function smtpAccountMailer(options: { smtpUrl: string; from: string }): AccountMailer {
   const domain = /@([^>\s]+)>?\s*$/.exec(options.from)?.[1] ?? 'melete.local';
   return {
     async send(mail) {
-      const smtp = nodemailer.createTransport(options.smtpUrl, {
-        connectionTimeout: 10_000,
-        greetingTimeout: 10_000,
-        socketTimeout: 15_000,
-      } as never);
+      const smtp = nodemailer.createTransport(smtpTransportOptions(options.smtpUrl));
       try {
         await smtp.sendMail({
           from: options.from,

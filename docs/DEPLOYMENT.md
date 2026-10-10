@@ -1246,13 +1246,20 @@ Sign-in links and password reset links go out through the installation's own
 mail sender when one is configured:
 
 ```bash
-bun run melete set MELETE_SMTP_URL=smtps://user:password@smtp.example.com:465 \
-  MELETE_MAIL_FROM='Melete <melete@example.com>' MELETE_PUBLIC_URL=https://melete.example.com
+# The URL holds the mail server's password, so it is read, not typed on the command line:
+# smtps://user:password@smtp.example.com:465
+read -rs MELETE_SMTP_URL && export MELETE_SMTP_URL
+bun run melete set --from-env MELETE_SMTP_URL
+unset MELETE_SMTP_URL
+bun run melete set MELETE_MAIL_FROM='Melete <melete@example.com>' MELETE_PUBLIC_URL=https://melete.example.com
 ```
 
 Both are needed, or neither; the service refuses to start with one alone. The
 links point at `MELETE_PUBLIC_URL`, so email sign-in and mailed resets are
-offered only once it is set. `smtp://` uses STARTTLS when the server offers it.
+offered only once it is set. Every link signs in to an account, so `smtp://`
+must upgrade to TLS with STARTTLS before anything is sent, unless the server
+is on this machine; add `?requireTLS=false` to the URL only for a relay on a
+network you trust that cannot.
 This sender carries nothing but these two kinds of mail, for any account;
 what Melete sends for a person still leaves from their own connected
 accounts, after their approval. The answer to a request is the same whether or
