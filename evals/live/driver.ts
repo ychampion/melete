@@ -41,6 +41,14 @@ const IDLE_NEEDS_YOU_MS = 20_000;
 
 const seconds = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / 1000;
 
+/**
+ * The site a hand-off card names ("Over to you at kayak.com"). On a real site
+ * the check can be anywhere, so the delay is timed from reaching that site.
+ */
+export function cardHost(title: string): string | undefined {
+  return title.match(/\bat\s+((?:[a-z0-9-]+\.)+[a-z]{2,})\b/i)?.[1];
+}
+
 export function isHandOff(card: ResultCard): boolean {
   return card.meta === 'Needs you' || card.primary_action?.kind === 'take_over';
 }
@@ -252,7 +260,7 @@ export async function runJob(
             ...handOffLatency(
               { at: event.created_at },
               [...tools.values()],
-              task.challenge_host,
+              task.challenge_host ?? cardHost(item.card.title),
               turnStart,
             ),
           });

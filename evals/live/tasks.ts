@@ -874,4 +874,4 @@ export const TASKS: readonly Task[] = [
 
 /** Words a page shows when only a person can get past it. */
 export const CHECK_WORDS =
-  /\b(captcha|recaptcha|turnstile|verify (?:you are|you're) (?:a )?human|are you a robot|just a moment|checking your browser|security check|one-time code|verification code|two-factor|2fa)\b/i;
+  /\b(captcha|recaptcha|turnstile|verify (?:you are|you're) (?:a )?human|are you a robot|just a moment|checking your browser|security check|press (?:and|&) hold|confirm (?:you are|you're) (?:a )?human|one-time code|verification code|two-factor|2fa)\b/i;

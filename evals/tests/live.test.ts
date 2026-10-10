@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ToolCall } from '@melete/contracts';
 import { type ClaimEvidence, sentences, unsupportedClaims } from '../live/claims.ts';
-import { handOffLatency, isHandOff } from '../live/driver.ts';
+import { cardHost, handOffLatency, isHandOff } from '../live/driver.ts';
 import { plan, select } from '../live/run.ts';
 import { median, renderReport, scoreBars, worst } from '../live/score.ts';
 import { CHECK_WORDS, TASKS } from '../live/tasks.ts';
@@ -338,6 +338,7 @@ describe('the task set', () => {
       'Verify you are human',
       'reCAPTCHA',
       'Enter the verification code',
+      'Press and hold to confirm you are a human',
     ])
       expect(CHECK_WORDS.test(text)).toBe(true);
     expect(CHECK_WORDS.test('Your order has been placed')).toBe(false);
@@ -358,6 +359,14 @@ describe('the task set', () => {
 });
 
 describe('hand-off timing', () => {
+  test('a card names the site it hands over', () => {
+    expect(cardHost('Over to you at kayak.com')).toBe('kayak.com');
+    expect(cardHost('Over to you at the-internet.herokuapp.com')).toBe(
+      'the-internet.herokuapp.com',
+    );
+    expect(cardHost('Over to you')).toBeUndefined();
+  });
+
   test('timed from the step that reached the checked host', () => {
     const tools = [
       tool({ id: 'a', title: 'Searched the web for "demo"', kind: 'web' }),
