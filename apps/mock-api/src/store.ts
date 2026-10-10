@@ -53,6 +53,14 @@ export type EventInput = {
 export type Subscriber = (event: ApiEvent) => void;
 
 /** Thrown when a caller asks for something the state machine refuses. */
+/** A file a files action saved, with the chat it was saved in. */
+export type SavedFile = {
+  name: string;
+  bytes: Uint8Array;
+  savedAt?: string;
+  chat?: { id: string; title: string };
+};
+
 export class MockConflict extends Error {
   readonly code: string;
   readonly detail: Record<string, unknown> | undefined;
@@ -76,7 +84,13 @@ export class Store {
   readonly approvals = new Map<string, Approval>();
   readonly artifacts = new Map<string, { artifact: Artifact; bytes: Uint8Array }>();
   /** Files a scenario's files action saved, by that action's id, as `/files/{id}/content` serves them. */
-  readonly savedFiles = new Map<string, { name: string; bytes: Uint8Array }>();
+  readonly savedFiles = new Map<string, SavedFile>();
+  /** Files deleted from the Files screen, by trash id, until they are put back. */
+  readonly trashedFiles = new Map<
+    string,
+    | { id: string; kind: 'saved'; entry: SavedFile }
+    | { id: string; kind: 'artifact'; entry: { artifact: Artifact; bytes: Uint8Array } }
+  >();
   readonly knowledge = new Map<string, KnowledgeEntry>();
   readonly skills = new Map<string, SkillEntry>();
   readonly proposals = new Map<string, { path: string; diff: string }>();

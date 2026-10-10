@@ -18,6 +18,7 @@ import {
   EXTERNAL_DB_FILE,
   OVERLAY_FILES,
 } from '../deploy-config.ts';
+import { judgeHosted } from '../hosted.ts';
 import {
   deployFilePresent,
   envImageTag,
@@ -125,6 +126,7 @@ export function judgeCheck(installation: Installation): Result[] {
   });
 
   results.push(...judgeContractAgainstEnv(installation));
+  results.push(...judgeHosted(installation.config, env));
   results.push(...judgeBrowser(installation));
   results.push(judgePorts(installation));
 

@@ -25,6 +25,7 @@ import { mountAuth } from './api/auth.ts';
 import { connectorLiveness, mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
+import { mountFiles } from './api/files.ts';
 import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
@@ -106,10 +107,12 @@ import type { UsageClass } from './gateway/usage-class.ts';
 import { startUsageRollup } from './gateway/usage-day.ts';
 import {
   alertSendersFromEnv,
+  cellsProbe,
   type HealthDetail,
   HealthMonitor,
   healthDetail,
   spendAlertsFromEnv,
+  statfsFree,
 } from './health/monitor.ts';
 import { mountIntents } from './intents/routes.ts';
 import { IntentService, undoThrough } from './intents/service.ts';
@@ -401,6 +404,15 @@ export function createApp(deps: AppDeps) {
       deps.db,
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
+    );
+  // The person's files in one list, deleted into the same trash the files tools use.
+  if (deps.db)
+    mountFiles(
+      app,
+      deps.db,
+      { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+      personalSpace,
+      { days: deps.env.MELETE_TRASH_DAYS, maxBytes: deps.env.MELETE_TRASH_MAX_MB * 1024 * 1024 },
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql)
@@ -695,18 +707,22 @@ export function createApp(deps: AppDeps) {
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
-    return c.json({
-      status: database === 'unreachable' ? 'degraded' : 'ok',
-      version: VERSION,
-      database,
-      runtime_adapter: deps.runtimeAdapter,
-      runtime_supervisor:
-        deps.runtimeAdapter === 'hermes' ? deps.env.MELETE_RUNTIME_SUPERVISOR : null,
-      ...(database === 'ok' && deps.checkMemory
-        ? { memory: (await deps.checkMemory().catch(() => null)) ?? undefined }
-        : {}),
-      time: new Date().toISOString(),
-    });
+    // 503 while the database is down, so a monitor that reads only the status code sees it.
+    return c.json(
+      {
+        status: database === 'unreachable' ? 'degraded' : 'ok',
+        version: VERSION,
+        database,
+        runtime_adapter: deps.runtimeAdapter,
+        runtime_supervisor:
+          deps.runtimeAdapter === 'hermes' ? deps.env.MELETE_RUNTIME_SUPERVISOR : null,
+        ...(database === 'ok' && deps.checkMemory
+          ? { memory: (await deps.checkMemory().catch(() => null)) ?? undefined }
+          : {}),
+        time: new Date().toISOString(),
+      },
+      database === 'unreachable' ? 503 : 200,
+    );
   });
 
   app.route(
@@ -1834,6 +1850,16 @@ export async function bootstrap(
       ...(runtimeProbe ? { runtime: runtimeProbe } : {}),
       ...(sqlForHealth ? { sql: sqlForHealth } : {}),
       ...(spendAlerts ? { spend: spendAlerts } : {}),
+      ...(env.MELETE_CELLS_URL ? { cells: cellsProbe(env.MELETE_CELLS_URL) } : {}),
+      ...(env.MELETE_ALERT_DISK_MIN_FREE_MB > 0
+        ? {
+            disk: {
+              paths: [env.MELETE_SPACES_DIR, env.MELETE_ARTIFACTS_DIR, env.MELETE_WORK_DIR],
+              minFreeBytes: env.MELETE_ALERT_DISK_MIN_FREE_MB * 1024 ** 2,
+              free: statfsFree,
+            },
+          }
+        : {}),
     });
   // The operator is told when the service turns unhealthy, where alerts are configured.
   if (options.workers !== false) {

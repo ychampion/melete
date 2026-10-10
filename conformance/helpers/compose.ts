@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { JobBudget } from '@melete/contracts';
 import postgres from 'postgres';
+import { issueSetupCode } from '../../apps/melete/src/api/setup-code.ts';
 import { newId } from '../../apps/melete/src/ids.ts';
 import { repointTestServer } from '../../apps/melete/test/helpers/database.ts';
 import { parseEnvFile } from '../../deploy/scripts/provider-settings.ts';
@@ -131,6 +132,23 @@ async function ownerCookie(): Promise<string> {
     redirect: 'error' as const,
   };
   let response = await fetch(`${apiBase}/setup`, init);
+  // A configured installation asks for its one-time setup code. The stack's operator issues one,
+  // as `melete account setup-code` does, and the owner is created with it.
+  if (response.status === 403) {
+    const refusal = (await response
+      .clone()
+      .json()
+      .catch(() => null)) as { error?: { code?: string } } | null;
+    if (refusal?.error?.code === 'setup_code_required') {
+      const database = await sql();
+      const issued = await issueSetupCode(database).finally(() => database.end());
+      if (!issued) throw new Error('Compose asked for a setup code but already has an owner');
+      response = await fetch(`${apiBase}/setup`, {
+        ...init,
+        body: JSON.stringify({ ...credentials, setup_code: issued.code }),
+      });
+    }
+  }
   if (response.status === 409) {
     if (createdCredentials)
       throw new Error(

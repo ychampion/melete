@@ -183,6 +183,8 @@ export class ExperienceMock {
   /** Each morning brief's news topics, by routine, so a test run reads like one. */
   readonly briefTopics = new Map<string, string[]>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** Whether Melete learns from chats. */
+  private capture = true;
   /** What the mock believes about the person, with its history and rewinds. */
   readonly beliefs = new MockBeliefs(
     () => this.deps.store.now(),
@@ -1130,7 +1132,12 @@ export class ExperienceMock {
       if (source && name && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
         const fixture = new URL(`../fixtures/files/${name}`, import.meta.url);
         if (existsSync(fixture))
-          this.deps.store.savedFiles.set(id, { name, bytes: readFileSync(fixture) });
+          this.deps.store.savedFiles.set(id, {
+            name,
+            bytes: readFileSync(fixture),
+            savedAt: new Date().toISOString(),
+            chat: { id: chat.view.id, title: chat.view.title },
+          });
       }
       if (source)
         chat.pending.push({
@@ -2054,6 +2061,11 @@ export class ExperienceMock {
         }
         return { status: 'ok' };
       }
+      case 'GET /memory/settings':
+        return { capture: this.capture };
+      case 'PUT /memory/settings':
+        this.capture = C.memorySettings.parse(input).capture;
+        return { capture: this.capture };
       case 'GET /memory/items':
         return { items: [...this.memories.values()] };
       case 'POST /memory/items': {
