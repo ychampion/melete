@@ -29,7 +29,10 @@ export type StreamResult = {
   sha256: string;
   /** Why it did not finish; stderr is cut short and never holds the bytes themselves. */
   detail: string;
-  /** The source command's stderr, cut short, also when it succeeded. */
+  /**
+   * The end of the source command's stderr, also when it succeeded: a source
+   * says how it finished on its last line, however long the lines before it.
+   */
   stderr?: string;
 };
 
@@ -242,7 +245,7 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       for (const close of closers) await close();
       if (producer) {
         const [code, stderr] = await Promise.all([producer.exited, producerStderr]);
-        sourceStderr = short(stderr);
+        sourceStderr = stderr.trimEnd().slice(-400);
         if (code !== 0) problems.push(`${producerName} exited ${code}: ${short(stderr)}`);
       }
       for (const { name, child, stderr: text } of children) {

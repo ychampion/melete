@@ -761,6 +761,20 @@ describe('the people files and the agents computers in a backup', () => {
     expect(quiet.context.printed()).not.toContain('backup.files_changed');
   });
 
+  test.skipIf(process.platform === 'win32')(
+    "an online archive takes tar's exit 1 as a file changing, and any other failure stays a failure",
+    () => {
+      const script = archiveCommand('img', 'melete_spaces', true).at(-1) ?? '';
+      const outcome = (code: number) => {
+        const run = Bun.spawnSync(['sh', '-c', `tar() { return ${code}; }; ${script}`]);
+        return { code: run.exitCode, marked: run.stderr.toString().includes(CHANGED_WHILE_READ) };
+      };
+      expect(outcome(0)).toEqual({ code: 0, marked: false });
+      expect(outcome(1)).toEqual({ code: 0, marked: true });
+      expect(outcome(2)).toEqual({ code: 2, marked: false });
+    },
+  );
+
   test("a volume labelled for this installation's computers that is not a /work or home is named, not left out silently", async () => {
     const rig = filesRig();
     rig.volumes.add(`${COMPUTERS[0]}-cache`);
