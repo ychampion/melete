@@ -31,7 +31,7 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { withoutUnbackedClaims } from '@melete/runtime-hermes';
+import { withoutNarration, withoutUnbackedClaims } from '@melete/runtime-hermes';
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
@@ -868,13 +868,16 @@ export class AttemptRunner {
     // A result found on a page is linked to that page, when the answer links nothing.
     // A file said to be attached that no action in the turn delivered is named as missing.
     // A closing links line names each page once.
-    // A sentence that still claims a step no action in the turn took is taken out.
-    const summary = withoutUnbackedClaims(
-      withDeliveryNote(
-        withoutRepeatedLinks(withVisitedLinks(checked.text, pagesVisited(reads))),
-        reads,
+    // A sentence that still claims a step no action in the turn took is taken out,
+    // and so is a line about the agent's own workings ("Let me check…").
+    const summary = withoutNarration(
+      withoutUnbackedClaims(
+        withDeliveryNote(
+          withoutRepeatedLinks(withVisitedLinks(checked.text, pagesVisited(reads))),
+          reads,
+        ),
+        reads.map((read) => read.kind),
       ),
-      reads.map((read) => read.kind),
     );
     return summary !== given.summary ? { ...given, summary } : given;
   }

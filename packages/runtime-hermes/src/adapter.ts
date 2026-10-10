@@ -42,6 +42,7 @@ import {
   stalledContinuation,
   stalledNote,
 } from './liveness.ts';
+import { onlyNarration } from './narration.ts';
 import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
 import { steerContinuation, steerInput } from './steer.ts';
 import { RUNTIME_VERSION } from './version.ts';
@@ -379,11 +380,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         }
         // A run that ended on its tool calls with nothing said to the person
         // is asked once, out of their sight, to say it now.
+        // So is one that only said what it was about to do ("Let me check…").
         const wordless =
           !result.loaded &&
           final.kind === 'completed' &&
-          !final.summary.trim() &&
-          called.length > 0;
+          ((!final.summary.trim() && called.length > 0) || onlyNarration(final.summary));
         if (wordless && !delivered && !signal.aborted && !controller.signal.aborted) {
           if (
             (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))

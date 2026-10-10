@@ -567,6 +567,7 @@ describe('context assembly', () => {
     expect(text).toContain(
       'Say how you did something (in your browser, on the desktop, with a command) only when\nthat is how you did it; otherwise leave the method out.',
     );
+    expect(text).toContain('to the person they are "my browser" and "my computer", never');
   });
 
   test('a conversation offered background work is told when to start it, and others are not', () => {

@@ -148,7 +148,9 @@ export const DONE_WORDS: readonly string[] = [
   'to_area or area artifacts) before you say it is attached or here; a file left on your',
   'computer has not reached them.',
   'Say how you did something (in your browser, on the desktop, with a command) only when',
-  'that is how you did it; otherwise leave the method out.',
+  'that is how you did it; otherwise leave the method out. The browser and computer you',
+  'work in are your own: to the person they are "my browser" and "my computer", never',
+  '"your browser", which would mean theirs.',
 ];
 
 /**
