@@ -2139,6 +2139,13 @@ when the service turns unhealthy, again every repeat interval while it stays
 so, and one more when it is healthy again. With several instances on one
 database, the instance holding the `health-alerts` lease sends them.
 
+Alert email needs TLS unless the mail server is on this machine
+(`localhost`, `127.0.0.1` or `::1`). Releases up to v0.2.1 also sent it in
+plain text, so an installation upgraded from one that sends alerts through a
+relay on another host without TLS must add `?requireTLS=false` to
+`MELETE_ALERT_SMTP_URL`. Otherwise its alert email stops, and the service
+logs `alert not sent` each time.
+
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
 each check with what it found, `200` while all pass and `503` while any fails:
 
