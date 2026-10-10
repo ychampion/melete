@@ -582,10 +582,12 @@ docker builder prune -af
 docker image rm melete-service:local melete-web:local melete-runtime:local
 ```
 
-Keep `melete-sandbox:local` when spaces already have a **Computer**: their
-connections name that image, and `melete deploy` (with the `sandbox` profile)
-and `update.sh` point it at the pulled sandbox image on every update so those
-computers stay current.
+Each space's **Computer** follows `MELETE_SANDBOX_DOCKER_IMAGE` when the
+service starts, so its computers are made from the pulled sandbox image from
+then on. Keep `melete-sandbox:local` when someone added a docker sandbox by
+hand that names it: `melete deploy` (with the `sandbox` profile) and
+`update.sh` point that name at the pulled sandbox image on every update so
+those computers stay current.
 
 ### Package visibility
 

@@ -36,9 +36,13 @@ the desktop and the browser. Every space then has a sandbox connection called
 needs one.
 
 To use another image, build it and set `MELETE_SANDBOX_DOCKER_IMAGE`; it must
-already be on the engine. A space's owner can also add a docker sandbox by hand
-in Settings → Connections → Sandbox, choosing "This server (Docker)" and leaving
-the key empty.
+already be on the engine. Every space's **Computer** follows that setting when
+the service starts, after an update or a restore onto another machine too, and
+an agent's computer is made again from the new image, keeping its files, the
+next time it is used with nothing running in it.
+
+A space's owner can also add a docker sandbox by hand in Settings → Connections
+→ Sandbox, choosing "This server (Docker)" and leaving the key empty.
 
 ## One container per agent
 
