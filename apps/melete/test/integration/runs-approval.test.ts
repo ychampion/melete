@@ -331,7 +331,7 @@ withDb('background work that needs the person’s OK', () => {
     expect(reported[0]?.status_line).toStartWith('Done · checked');
   });
 
-  test('a reply while it waits for an OK takes the place of the request; gaps it cannot close are reported, not disowned', async () => {
+  test('a reply while it waits for an OK takes the place of the request; gaps one check finds are given with the result', async () => {
     const { run } = await startFromChat(
       'Find the 5 best robot vacuums under $600 for a cat',
       'Five named, with sources',
@@ -360,7 +360,9 @@ withDb('background work that needs the person’s OK', () => {
     await tool(answered.claims, 'run.finish', { summary: REPORT });
     await commit(answered.claims);
 
-    // The check names a gap, and the run is told its record shows the reads.
+    // The check names a gap. One check is all there is: the result is given
+    // at once with the gap named, rather than held back for another round of
+    // work while the person hears nothing.
     const check = await claim(await checker(run.id));
     await tool(check.claims, 'run.finish', {
       summary: 'Two gaps.',
@@ -368,15 +370,7 @@ withDb('background work that needs the person’s OK', () => {
       gaps: ['Only 4 review sites were read; three per pick is not shown for the MOVA P10.'],
     });
     await commit(check.claims);
-    const back = await claim(run.id);
-    expect(back.bundle.job.objective).toContain('Your own record shows what you read');
-    expect(back.bundle.job.objective).toContain(PAGES[2] as string);
-    expect(back.bundle.job.objective).toContain('do not take them back');
-    await commit(back.claims);
-
-    // Shifts that cannot close the gap give the result with the gap named,
-    // instead of stopping to ask while the person hears nothing.
-    for (let idle = 1; idle < 3; idle++) await commit((await claim(run.id)).claims);
+    expect(await claimNow(run.id)).toBeNull();
     const finished = await view(run.id);
     expect(finished.status).toBe('done');
     expect(finished.check.state).toBe('not_confirmed');

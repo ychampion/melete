@@ -53,8 +53,12 @@ export const RUN_BODY_LIMIT = 8000;
 export const RUN_ACTIVE_STEP_LIMIT = 6;
 /** Shifts in a row that recorded nothing and did nothing before the run stops to ask. */
 export const RUN_IDLE_SHIFT_LIMIT = 3;
-/** Checks that may find gaps in a result before it is given anyway, with the gaps named. */
-export const RUN_CHECK_LIMIT = 2;
+/**
+ * Checks that may find gaps in a result before it is given anyway, with the
+ * gaps named. One: the person gets the result after a single check, rather
+ * than waiting on another round of work that may not finish.
+ */
+export const RUN_CHECK_LIMIT = 1;
 
 export const runMetric = z.object({
   name: z.string().min(1).max(80),
