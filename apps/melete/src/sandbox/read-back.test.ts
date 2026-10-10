@@ -142,10 +142,16 @@ test('a move into Files of a path the read-back left on the computer fails with 
       removeMoved: async () => null,
     });
 
-  await expect(move(connector(ledger()), 'big.bin')).rejects.toThrow(
+  // What a move ends as, so a move that should have been refused shows what it did instead.
+  const ended = (from: string) =>
+    move(connector(ledger()), from).then(
+      (result) => `succeeded: ${JSON.stringify(result)}; skipped: ${JSON.stringify(report.skipped)}`,
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+  expect(await ended('big.bin')).toBe(
     '"big.bin" is not in your workspace: the last read-back from your computer left it there (8 MB, over the 8 MB limit)',
   );
-  await expect(move(connector(ledger()), 'tree/f1.txt')).rejects.toThrow(
+  expect(await ended('tree/f1.txt')).toBe(
     '"tree/f1.txt" is not in your workspace: it is under tree/, which the last read-back from your computer left there (too many files)',
   );
   // A path no read-back skipped is still just not there.
