@@ -32,6 +32,7 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
           [--verify]         Read every archive in it through, changing nothing
           [--yes]            Restore it: stop the stack, put every part back, start it
           [--keep-database]  Leave an external database that already holds the data as it is
+          [--replace-files]  With --keep-database, put back the files even where this machine has some
   upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
   history [--json]           The deploys, rollbacks and upgrades this installation has run
   remote <ssh-target> [--path <dir>] <command> [args]

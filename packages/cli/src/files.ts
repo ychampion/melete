@@ -109,17 +109,85 @@ export function helperCommand(
   ];
 }
 
+/** What an online archive prints on stderr when a file changed while it was read. */
+export const CHANGED_WHILE_READ = 'melete-backup: a file changed while it was read';
+
 /**
  * Archives a volume to stdout. Taken online, a file written during the copy
  * makes GNU tar exit 1 ("file changed as we read it"); the archive is whole and
- * that one file may be from mid-write, so 1 is accepted there and nowhere else.
+ * that one file may be from mid-write, so 1 is accepted there and nowhere else,
+ * and CHANGED_WHILE_READ on stderr says it happened.
  */
 export function archiveCommand(image: string, volume: string, online: boolean): string[] {
   const tar = 'tar -C /v --numeric-owner -cf - .';
   return helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'sh', [
     '-c',
-    online ? `${tar}; s=$?; [ "$s" -eq 1 ] && exit 0; exit "$s"` : `exec ${tar}`,
+    online
+      ? `${tar}; s=$?; if [ "$s" -eq 1 ]; then echo '${CHANGED_WHILE_READ}' >&2; exit 0; fi; exit "$s"`
+      : `exec ${tar}`,
   ]);
+}
+
+/** The service's restriction journal, in its volume (MELETE_RESTRICTIONS_DIR). */
+export const JOURNAL_FILE = 'restrictions.jsonl';
+
+/**
+ * The restriction journal volume as the engine has it: absent; there but with
+ * no entry (no journal file, or only its header line), as `compose create`
+ * leaves it on a new machine, or as the first start of an empty installation
+ * leaves it; holding entries; or unreadable, with why.
+ */
+export function journalOnEngine(
+  context: Context,
+  image: string | null,
+  volume: string,
+): 'absent' | 'empty' | 'kept' | { unreadable: string } {
+  if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
+    return 'absent';
+  if (!image) return { unreadable: 'the Compose files name no image for the melete service' };
+  const read = context.run(
+    helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'sh', [
+      '-c',
+      `if [ -e /v/${JOURNAL_FILE} ]; then echo "lines $(wc -l < /v/${JOURNAL_FILE})"; else echo 'lines none'; fi`,
+    ]),
+  );
+  const lines = /^lines (none|\d+)$/m.exec(read.stdout)?.[1];
+  if (read.code !== 0 || lines === undefined)
+    return {
+      // docker run's own error comes first; its last line only points at --help.
+      unreadable: read.stderr.trim().split('\n')[0] || `exit ${read.code}`,
+    };
+  // The first line is the journal's header; each entry is a line after it.
+  return lines === 'none' || Number(lines) <= 1 ? 'empty' : 'kept';
+}
+
+/**
+ * Which of these volumes hold at least one file, from one container that mounts
+ * them read-only; null when that could not be read. Only volumes already on
+ * the engine may be given: mounting a missing one would create it.
+ */
+export function volumesHoldingFiles(
+  context: Context,
+  image: string,
+  volumes: readonly string[],
+): string[] | null {
+  if (volumes.length === 0) return [];
+  const read = context.run(
+    helperCommand(
+      image,
+      volumes.map((volume, index) => ({ volume, path: `/m/${index}`, readOnly: true })),
+      'sh',
+      [
+        '-c',
+        'for d in "$@"; do f=$(find "$d" -mindepth 1 -type f -print -quit) || exit 2; [ -z "$f" ] || echo "held $d"; done; echo done',
+        'sh',
+        ...volumes.map((_, index) => `/m/${index}`),
+      ],
+    ),
+    600_000,
+  );
+  if (read.code !== 0 || !/^done$/m.test(read.stdout)) return null;
+  return volumes.filter((_, index) => new RegExp(`^held /m/${index}$`, 'm').test(read.stdout));
 }
 
 /** Empties a volume and unpacks the archive on stdin into it, keeping owners and modes. */
@@ -177,10 +245,14 @@ export class FilesRefusal extends Error {}
  * This installation's computers' volumes on this engine, with their labels.
  * Null project: the installation has no docker computers, so none are listed.
  * A listing that fails throws: a backup never leaves the computers out silently.
+ * A volume labelled for this installation whose name is not a computer's
+ * `-work` or `-home` is not taken; its name goes into `skipped`, so the backup
+ * can say so.
  */
 export function listComputerVolumes(
   context: Context,
   sandboxProject: string | null,
+  skipped: string[] = [],
 ): ComputerVolume[] {
   if (!sandboxProject) return [];
   const listed = context.run([
@@ -197,11 +269,13 @@ export function listComputerVolumes(
     throw new FilesRefusal(
       `The agents' computers' volumes could not be listed: ${listed.stderr.trim().split('\n').at(-1) || `exit ${listed.code}`}`,
     );
-  const names = listed.stdout
+  const all = listed.stdout
     .split('\n')
     .map((name) => name.trim())
-    .filter((name) => COMPUTER_VOLUME.test(name))
+    .filter(Boolean)
     .sort();
+  skipped.push(...all.filter((name) => !COMPUTER_VOLUME.test(name)));
+  const names = all.filter((name) => COMPUTER_VOLUME.test(name));
   if (names.length === 0) return [];
   const inspected = context.run([
     'docker',

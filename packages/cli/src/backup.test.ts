@@ -16,7 +16,7 @@ import { runDeploy } from './commands/deploy.ts';
 import { runRestore } from './commands/restore.ts';
 import type { Source } from './context.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
-import { parseContents } from './files.ts';
+import { archiveCommand, CHANGED_WHILE_READ, parseContents } from './files.ts';
 import { appendHistory } from './history.ts';
 import { masterKeyFingerprint } from './master-key.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
@@ -241,7 +241,10 @@ describe('melete restore', () => {
     expect(await runBackup(rig.context, [], false)).toBe(0);
     const set = join(rig.backups, 'melete-20261002T100000Z');
     const context = testContext(rig.deployDir, [], {
-      run: (command) => ({ code: command[1] === 'volume' ? 0 : 1, stdout: '', stderr: '' }),
+      run: (command) =>
+        command.join(' ').includes('/v/restrictions.jsonl')
+          ? { code: 0, stdout: 'lines 3\n', stderr: '' }
+          : { code: command[1] === 'volume' ? 0 : 1, stdout: '', stderr: '' },
     });
     expect(await runRestore(context, [set, '--plan'], false)).toBe(0);
     const printed = context.printed();
@@ -402,6 +405,10 @@ function filesRig(
   const users = new Map<string, string[]>();
   /** Commands that fail. */
   const fails: ((text: string) => boolean)[] = [];
+  /** The journal file in melete_restrictions: `none`, or its line count (the header is one). */
+  const journal = { lines: '4' };
+  /** Volumes that hold at least one file. */
+  const held = new Set<string>();
   const run = (command: readonly string[]): CommandOutput => {
     const text = command.join(' ');
     events.push(`run ${text}`);
@@ -474,6 +481,22 @@ function filesRig(
       return ok((users.get(volume) ?? []).map((name) => `${name}\n`).join(''));
     }
     if (text.startsWith('sh -c docker ps ')) return ok();
+    if (text.includes('/v/restrictions.jsonl')) return ok(`lines ${journal.lines}\n`);
+    if (text.includes('find "$d"'))
+      return ok(
+        `${[...text.matchAll(/src=([^,]+),dst=(\/m\/\d+)/g)]
+          .filter((mount) => held.has(mount[1] ?? ''))
+          .map((mount) => `held ${mount[2]}\n`)
+          .join('')}done\n`,
+      );
+    // Compose makes the service's volumes, the journal's empty, on a machine without them.
+    if (text.startsWith('docker compose') && text.endsWith(' create melete')) {
+      if (!volumes.has('melete_restrictions')) {
+        volumes.add('melete_restrictions');
+        journal.lines = 'none';
+      }
+      return ok();
+    }
     if (text.startsWith('docker compose')) return ok();
     if (text.endsWith('--version')) return ok('v1');
     return no('no such command in this test');
@@ -504,6 +527,8 @@ function filesRig(
     owners,
     users,
     fails,
+    journal,
+    held,
   };
 }
 
@@ -709,6 +734,46 @@ describe('the people files and the agents computers in a backup', () => {
     for (const volume of ['melete_spaces', `${COMPUTERS[1]}-work`])
       expect(measure).toContain(`src=${volume},dst=`);
   });
+
+  test('an online backup says which archive caught a file changing as it was read', async () => {
+    const online = archiveCommand('img', 'melete_spaces', true).join(' ');
+    expect(online).toContain(CHANGED_WHILE_READ);
+    expect(archiveCommand('img', 'melete_spaces', false).join(' ')).not.toContain(
+      CHANGED_WHILE_READ,
+    );
+    const rig = filesRig();
+    const inner = rig.context.stream;
+    rig.context.stream = async (source, sinks) => {
+      const result = await inner(source, sinks);
+      return 'command' in source && source.command.join(' ').includes('src=melete_spaces,')
+        ? { ...result, stderr: `tar: ./sp/a.md: file changed as we read it ${CHANGED_WHILE_READ}` }
+        : result;
+    };
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      /warn\s+backup\.files_changed\s+A file changed while it was copied into spaces\.tar\./,
+    );
+    expect(printed).toContain('--offline');
+
+    const quiet = filesRig();
+    expect(await runBackup(quiet.context, [], false)).toBe(0);
+    expect(quiet.context.printed()).not.toContain('backup.files_changed');
+  });
+
+  test("a volume labelled for this installation's computers that is not a /work or home is named, not left out silently", async () => {
+    const rig = filesRig();
+    rig.volumes.add(`${COMPUTERS[0]}-cache`);
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(rig.context.printed()).toMatch(
+      /warn\s+backup\.computer_volumes_skipped\s+1 volume\(s\) labelled for this installation's computers .*melete-sbx-proj-sbx_a-cache/,
+    );
+    expect(rig.events.some((event) => event.includes(`src=${COMPUTERS[0]}-cache`))).toBe(false);
+
+    const plain = filesRig();
+    expect(await runBackup(plain.context, [], false)).toBe(0);
+    expect(plain.context.printed()).not.toContain('backup.computer_volumes_skipped');
+  });
 });
 
 describe('restoring the files', () => {
@@ -736,6 +801,10 @@ describe('restoring the files', () => {
     const printed = rig.context.printed();
     expect(printed).toMatch(
       /warn\s+restore\.computers_without_container\s+1 of the 2 agent computer\(s\) have no container on this machine/,
+    );
+    // True whether or not the service makes the computer again on its kept volumes.
+    expect(printed).toContain(
+      'A service that makes a computer again on its kept volumes does so the next time the agent uses it',
     );
     expect(printed).toContain('an empty home folder');
     expect(printed).toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
@@ -889,6 +958,101 @@ describe('restoring the files', () => {
     expect(await runRestore(external.context, [external.set, '--keep-database'], false)).toBe(0);
     expect(external.context.printed()).toContain('The database stays as it is');
     expect(external.context.printed()).not.toContain('pg_restore');
+  });
+
+  test('a restore on a new machine that stopped after Compose made the journal volume puts the journal back when run again', async () => {
+    const rig = await backedUp();
+    // A new machine: no journal volume yet. The journal step fails once.
+    rig.volumes.delete('melete_restrictions');
+    rig.context.streamFails.push('cp -a - melete:/data');
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+    expect(rig.context.printed()).toMatch(
+      /ok\s+restore\.journal\s+This machine has no journal yet/,
+    );
+    // `compose create` made the volume, with no journal in it, before the step failed.
+    expect(rig.volumes.has('melete_restrictions')).toBe(true);
+    expect(rig.journal.lines).toBe('none');
+
+    rig.context.streamFails.length = 0;
+    rig.events.length = 0;
+    const again = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(await runRestore(again, [rig.set, '--yes'], false)).toBe(0);
+    const printed = again.printed();
+    expect(printed).toMatch(
+      /ok\s+restore\.journal\s+melete_restrictions holds no entry yet .*the newest archive, \S+restrictions-20261002T100000Z\.tar, is put back\./,
+    );
+    expect(printed).not.toContain('stays as it is');
+    const created = indexOf(rig.events, ' create melete');
+    const journal = indexOf(rig.events, 'cp -a - melete:/data');
+    expect(journal).toBeGreaterThan(created);
+    expect(rig.events.findIndex(startsStack)).toBeGreaterThan(journal);
+  });
+
+  test('a journal volume with only its header counts as new, one with entries is kept, and one that cannot be read stops the restore', async () => {
+    const header = await backedUp();
+    header.journal.lines = '1';
+    expect(await runRestore(header.context, [header.set], false)).toBe(0);
+    expect(header.context.printed()).toMatch(
+      /ok\s+restore\.journal\s+melete_restrictions holds no entry yet/,
+    );
+    expect(header.context.printed()).toContain('cp -a - melete:/data <');
+
+    const kept = await backedUp();
+    expect(await runRestore(kept.context, [kept.set], false)).toBe(0);
+    expect(kept.context.printed()).toContain('melete_restrictions stays as it is');
+    expect(kept.context.printed()).not.toContain('melete:/data');
+
+    const unreadable = await backedUp();
+    unreadable.fails.push((text) => text.includes('/v/restrictions.jsonl'));
+    expect(await runRestore(unreadable.context, [unreadable.set, '--yes'], false)).toBe(2);
+    expect(unreadable.context.printed()).toMatch(
+      /fail\s+restore\.journal\s+melete_restrictions is on this machine but could not be read/,
+    );
+    expect(changes(unreadable.events)).toEqual([]);
+  });
+
+  test('--keep-database never puts the files back over files here unless --replace-files says so', async () => {
+    const rig = filesRig({ contract: { database: { external: true } } });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    rig.events.length = 0;
+    rig.held.add('melete_artifacts');
+    expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(1);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+restore\.keep_database_files\s+melete_artifacts already hold files\. With --keep-database/,
+    );
+    expect(await runRestore(rig.context, [rig.set, '--keep-database', '--yes'], false)).toBe(2);
+    expect(changes(rig.events)).toEqual([]);
+
+    const replace = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(await runRestore(replace, [rig.set, '--keep-database', '--replace-files'], false)).toBe(
+      0,
+    );
+    expect(replace.printed()).toMatch(
+      /warn\s+restore\.keep_database_files\s+melete_artifacts already hold files; --replace-files/,
+    );
+    // --replace-files means nothing without --keep-database: the database comes back with the files.
+    expect(await runRestore(replace, [rig.set, '--replace-files'], false)).toBe(2);
+
+    // A volume that is not on the engine is never mounted to look into: that would make it.
+    rig.volumes.delete('melete_work');
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(1);
+    const look = rig.events.find((event) => event.includes('find "$d"')) ?? '';
+    expect(look).toContain('src=melete_artifacts,');
+    expect(look).not.toContain('src=melete_work,');
+
+    // Files the probe cannot read are not taken for empty ones.
+    const blind = filesRig({ contract: { database: { external: true } } });
+    expect(await runBackup(blind.context, [], false)).toBe(0);
+    blind.fails.push((text) => text.includes('find "$d"'));
+    expect(await runRestore(blind.context, [blind.set, '--keep-database'], false)).toBe(1);
+    expect(blind.context.printed()).toMatch(/fail\s+restore\.keep_database_files\s+Whether /);
   });
 
   test('every computer whose container is here is stopped first, running or not', async () => {

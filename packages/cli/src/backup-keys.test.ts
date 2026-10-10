@@ -40,6 +40,8 @@ function rig(env: Record<string, string> = {}) {
       return { code: 127, stdout: '', stderr: 'not found' };
     if (text.endsWith('--version')) return { code: 0, stdout: 'v1', stderr: '' };
     if (text.startsWith('docker volume inspect')) return { code: 0, stdout: '[]', stderr: '' };
+    // The journal volume here holds entries.
+    if (text.includes('/v/restrictions.jsonl')) return { code: 0, stdout: 'lines 3\n', stderr: '' };
     return { code: 0, stdout: '', stderr: '' };
   };
   const context = testContext(deployDir, [], { run });

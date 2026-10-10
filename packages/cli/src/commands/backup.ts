@@ -54,6 +54,7 @@ import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config
 import {
   archiveCommand,
   CELLS_SERVICE,
+  CHANGED_WHILE_READ,
   CONTENTS_FILE,
   type ComputerVolume,
   type Contents,
@@ -329,8 +330,9 @@ async function backupFiles(
       'The Compose files name no image for the melete service, so the files cannot be archived. Nothing was kept of them.',
     );
   let computers: ComputerVolume[];
+  const skipped: string[] = [];
   try {
-    computers = listComputerVolumes(context, settings.sandboxProject);
+    computers = listComputerVolumes(context, settings.sandboxProject, skipped);
   } catch (error) {
     if (!(error instanceof FilesRefusal)) throw error;
     return fail(
@@ -339,6 +341,13 @@ async function backupFiles(
       'Check that docker volume ls answers, then back up again.',
     );
   }
+  if (skipped.length > 0)
+    results.push({
+      id: 'backup.computer_volumes_skipped',
+      level: 'warn',
+      detail: `${skipped.length} volume(s) labelled for this installation's computers are not a computer's /work or home volume, so this backup leaves them out: ${skipped.join(', ')}.`,
+      fix: 'Check that this checkout is at the release the installation runs (bun run melete history): a newer release may keep more of a computer, and its backup takes it.',
+    });
   for (const each of FILE_PARTS) {
     const volume = composeVolume(config.project, each);
     if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
@@ -521,6 +530,8 @@ export async function takeBackup(
   const name = `melete-${stamp(context.now())}`;
   const results: Result[] = [];
   const sums: string[] = [];
+  /** Archives taken online in which a file changed while it was read. */
+  const changed: string[] = [];
   let location: string;
   let sink: (file: string) => Endpoint;
   let remove: () => void;
@@ -592,6 +603,7 @@ export async function takeBackup(
       results.push({ id, level: 'fail', detail: redact(`${file}: ${outcome.detail}`, secrets) });
       return false;
     }
+    if ('command' in source && outcome.stderr?.includes(CHANGED_WHILE_READ)) changed.push(file);
     // Encrypted, the stream saw the plaintext: the sum is of what was stored.
     const stored = encrypt ? await storedHash(file) : outcome.sha256;
     if (stored === null) {
@@ -687,6 +699,13 @@ export async function takeBackup(
   );
 
   results.push(...coverage(contents, settings));
+  if (changed.length > 0)
+    results.push({
+      id: 'backup.files_changed',
+      level: 'warn',
+      detail: `A file changed while it was copied into ${changed.join(', ')}. Each archive is whole, but that file may be from the middle of a change.`,
+      fix: 'For a copy where nothing changes underneath, back up with --offline: it stops the writers while the files are copied.',
+    });
 
   if (destination.kind === 'dir') {
     // The backup the last deploy took is the one rollback restores from: it is never pruned.

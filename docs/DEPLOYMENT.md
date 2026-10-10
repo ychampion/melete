@@ -442,11 +442,19 @@ computers, so a new one takes over from a backup:
    an empty one first. Docker pulls the images the tag names when the steps
    first need them. `bun run melete status` then reports the stack.
 
+If the stack was started on the new VM before the restore, its own start-up
+files are in the file volumes, and `--keep-database` refuses to replace them
+until you add `--replace-files`. The restriction journal that start left, which
+holds no entry, is replaced by the backup's, as on a VM that never ran.
+
 The agents' computers come back as their volumes, but a new machine has none of
-their containers, and the service treats a computer without its container as
-gone: each agent gets a new computer, with each chat's files in `/work` back
-from the shared `/work` and an empty home folder, so browser sign-ins and tools
-installed there are lost. `restore` says so before it starts.
+their containers. A release whose service makes a computer's container again on
+its kept volumes (see [docs/sandbox-docker.md](sandbox-docker.md)) brings each
+computer back with its `/work` and home folder the next time the agent uses it.
+An earlier release treats a computer without its container as gone: each agent
+gets a new computer, with each chat's files in `/work` back from the shared
+`/work` and an empty home folder, so browser sign-ins and tools installed there
+are lost. `restore` says which computers have no container before it starts.
 
 ## Using prebuilt images
 
@@ -2279,7 +2287,8 @@ over SSH and keeps nothing on this disk, for a host short on space.
 database is dumped first and the files are copied after it, so every file the
 dump refers to is in the backup; a file written in between is in the backup
 without a reference, which is harmless. A file being written while it is
-copied can be caught halfway, and the backup still passes. Each agent computer
+copied can be caught halfway; the backup still passes, and warns
+(`backup.files_changed`) naming the archives it happened in. Each agent computer
 that is running is paused while its own two volumes are copied, a few seconds
 for a typical one, so its files, the browser profile among them, are from one
 moment; a command it runs waits meanwhile, and it is resumed even when the
@@ -2300,9 +2309,10 @@ way first, then runs the steps in order: it stops the writers, `melete-cells`
 and the attempt containers it started, and every agent computer whose container
 is on the machine, running or not; takes the stack down without touching its
 volumes; replaces the database volume and loads the dump; puts the newest
-restriction journal back on a machine that never ran the installation (keeping
-its file ownership); empties each file volume and unpacks its archive into it,
-after asking the engine that no running container uses that volume; makes any
+restriction journal back where the journal volume is missing or holds no entry,
+as on a machine that never ran the installation or after a restore that stopped
+before that step (keeping its file ownership); empties each file volume and
+unpacks its archive into it, after asking the engine that no running container uses that volume; makes any
 missing computer volume with its labels; and only then starts the stack.
 
 A step that fails stops the restore there, and the report says what that left:
@@ -2320,8 +2330,10 @@ names what uses it. On this machine the restriction journal stays as it is,
 since it is newer than any backup, and the service replays it at startup, so
 nothing forgotten since the backup comes back. With an external database, the
 restore loads into an empty one (it refuses one that holds tables), or
-`--keep-database` leaves the database as it is. With the bundled database,
-`--keep-database` is refused: the files are put back as the backup's database
+`--keep-database` leaves the database as it is; then, if the file volumes here
+already hold files, which may be newer than the backup's, it refuses unless
+`--replace-files` is given too. With the bundled database, `--keep-database` is
+refused: the files are put back as the backup's database
 knows them, so that database comes back with them. An agent computer whose
 container is still on the machine starts on its restored volumes when it is
 next used; for one whose container is gone, see

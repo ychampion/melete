@@ -1,5 +1,5 @@
 /**
- * `melete restore <backup> [--plan | --verify | --yes] [--keep-database]`
+ * `melete restore <backup> [--plan | --verify | --yes] [--keep-database [--replace-files]]`
  *
  * Checks a backup made by `melete backup` against its SHA256SUMS and its list
  * of parts (contents.json), then:
@@ -12,13 +12,16 @@
  *   step that fails stops the restore there, with the stack left stopped.
  *
  * The restriction journal is never rolled back. On this machine its volume is
- * kept as it is, because it is newer than any backup; on a machine that has
- * never run this installation, the newest journal archive beside the backups
- * is put back before the service starts. Either way the service replays the
- * journal at startup, so nothing forgotten comes back.
+ * kept as it is, because it is newer than any backup; where it is missing or
+ * holds no entry (a machine that has never run this installation, or a restore
+ * that stopped before it put the journal back), the newest journal archive
+ * beside the backups is put back before the service starts. Either way the
+ * service replays the journal at startup, so nothing forgotten comes back.
  *
  * `--keep-database` leaves the database alone, for an external database that
- * already holds the data, as on a replaced VM.
+ * already holds the data, as on a replaced VM. When the file volumes here
+ * already hold files, which may be newer than the backup's, it is refused
+ * unless `--replace-files` says to put the backup's in their place.
  */
 import {
   existsSync,
@@ -38,13 +41,17 @@ import {
   CELLS_SERVICE,
   CONTENTS_FILE,
   type Contents,
+  composeVolume,
   computerExists,
+  FILE_PARTS,
   fileSettings,
   helperImage,
+  journalOnEngine,
   legacyMembers,
   ownComputer,
   parseContents,
   volumeOnEngine,
+  volumesHoldingFiles,
 } from '../files.ts';
 import {
   type Installation,
@@ -69,7 +76,7 @@ import { EXIT, type ExitCode, type Result, renderReport, report } from '../schem
 import { BACKUP_NAME, expandHome, writersOf } from './backup.ts';
 
 export const RESTORE_USAGE =
-  'Usage: bun run melete restore <backup directory> [--plan | --verify | --yes] [--keep-database]';
+  'Usage: bun run melete restore <backup directory> [--plan | --verify | --yes] [--keep-database [--replace-files]]';
 
 /**
  * Whether the operator has supplied the master key this backup was made with:
@@ -389,11 +396,17 @@ function externalDatabaseEmpty(
   return output.code === 0 && /^\d+$/.test(text) ? Number(text) === 0 : null;
 }
 
-type Options = { path: string; mode: 'plan' | 'verify' | 'yes'; keepDatabase: boolean };
+type Options = {
+  path: string;
+  mode: 'plan' | 'verify' | 'yes';
+  keepDatabase: boolean;
+  replaceFiles: boolean;
+};
 
 function restoreOptions(args: readonly string[]): Options | null {
   let mode: Options['mode'] | null = null;
   let keepDatabase = false;
+  let replaceFiles = false;
   const paths: string[] = [];
   for (const arg of args) {
     const wanted =
@@ -408,11 +421,13 @@ function restoreOptions(args: readonly string[]): Options | null {
       if (mode !== null && mode !== wanted) return null;
       mode = wanted;
     } else if (arg === '--keep-database') keepDatabase = true;
+    else if (arg === '--replace-files') replaceFiles = true;
     else if (arg.startsWith('-')) return null;
     else paths.push(arg);
   }
-  if (paths.length !== 1) return null;
-  return { path: paths[0] ?? '', mode: mode ?? 'plan', keepDatabase };
+  // Only a kept database can be newer than the files; otherwise both come back together.
+  if (paths.length !== 1 || (replaceFiles && !keepDatabase)) return null;
+  return { path: paths[0] ?? '', mode: mode ?? 'plan', keepDatabase, replaceFiles };
 }
 
 /** What the backup holds besides the database, as the steps need it. */
@@ -496,14 +511,15 @@ function filesToRestore(
       level: 'warn',
       detail: `${leftOut.size} agent computer(s) in this backup are not this installation's${sandboxProject ? ` (MELETE_SANDBOX_PROJECT=${sandboxProject})` : ', which has no MELETE_SANDBOX_PROJECT'}, or a volume of the same name on this engine belongs to something else: they are left out, and nothing of theirs here is touched.`,
     });
-  // The service starts a computer again on its volumes only while its container
-  // is still here; one whose container is gone, it counts as gone.
+  // What becomes of a computer whose container is gone is the service's to say:
+  // one that makes the container again on kept volumes brings the computer back
+  // whole; an earlier one gives the agent a new computer.
   const absent = names.filter((computer) => !files.containers.includes(computer));
   if (absent.length > 0)
     results.push({
       id: 'restore.computers_without_container',
       level: 'warn',
-      detail: `${absent.length} of the ${names.length} agent computer(s) have no container on this machine (a new machine, or one removed). Their volumes are put back, but the service treats a computer without its container as gone: those agents get a new computer, with each chat's files in /work back from the shared /work and an empty home folder (browser sign-ins and installed tools are lost).`,
+      detail: `${absent.length} of the ${names.length} agent computer(s) have no container on this machine (a new machine, or one removed). Their volumes are put back. A service that makes a computer again on its kept volumes does so the next time the agent uses it, with its /work and home folder; an earlier one gives the agent a new computer instead, with each chat's files in /work back from the shared /work and an empty home folder (browser sign-ins and installed tools lost).`,
     });
   return { files, results };
 }
@@ -577,28 +593,75 @@ export async function runRestore(
         "--keep-database is for an external database that already holds the data. This installation's database is the bundled one, which the restore replaces with the backup's, so the database and the files agree.",
       fix: 'Run the restore without --keep-database.',
     });
-  const freshHost =
-    context.run(['docker', 'volume', 'inspect', `${config.project}_restrictions`]).code !== 0;
+  // Kept, the files here may be newer than the backup's: putting the backup's in
+  // their place deletes what was added since, while the database still names it.
+  if (options.keepDatabase && config.database.external && files) {
+    const present = FILE_PARTS.map((part) => composeVolume(config.project, part)).filter(
+      (volume) =>
+        context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code === 0,
+    );
+    const held = volumesHoldingFiles(context, files.image, present);
+    if (held === null)
+      results.push({
+        id: 'restore.keep_database_files',
+        level: 'fail',
+        detail: `Whether ${present.join(', ')} already hold files could not be read, and with --keep-database the backup's files would replace newer ones. Nothing was changed.`,
+        fix: "Check that docker run works with the service's image, then run this again.",
+      });
+    else if (held.length > 0)
+      results.push(
+        options.replaceFiles
+          ? {
+              id: 'restore.keep_database_files',
+              level: 'warn',
+              detail: `${held.join(', ')} already hold files; --replace-files puts the backup's in their place, and any file added since the backup is deleted.`,
+            }
+          : {
+              id: 'restore.keep_database_files',
+              level: 'fail',
+              detail: `${held.join(', ')} already hold files. With --keep-database the database stays as it is, so putting the backup's files in their place would delete any file added since the backup while the database still names it.`,
+              fix: 'On a new machine whose stack started before the restore, the files there are only its own: add --replace-files. On the machine the backup came from, restore into a new, empty database instead of keeping this one.',
+            },
+      );
+  }
+  // Missing, or with no entry yet: a new machine, or a restore that stopped
+  // after `compose create` made the volume and before the journal went back.
+  const journalVolume = `${config.project}_restrictions`;
+  const journalState = journalOnEngine(context, helperImage(installation), journalVolume);
+  const freshHost = journalState === 'absent' || journalState === 'empty';
   const journal = freshHost ? newestJournal(backup) : null;
   results.push(
-    freshHost
-      ? journal
-        ? {
-            id: 'restore.journal',
-            level: 'ok',
-            detail: `This machine has no journal yet; the newest archive is ${journal}.`,
-          }
+    typeof journalState === 'object'
+      ? {
+          id: 'restore.journal',
+          level: 'fail',
+          detail: `${journalVolume} is on this machine but could not be read (${journalState.unreadable}), so whether it holds the journal is not known. Nothing was changed.`,
+          fix: "Check that docker run works with the service's image, then run this again.",
+        }
+      : freshHost
+        ? journal
+          ? {
+              id: 'restore.journal',
+              level: 'ok',
+              detail:
+                journalState === 'absent'
+                  ? `This machine has no journal yet; the newest archive is ${journal}.`
+                  : `${journalVolume} holds no entry yet (a new machine, or a restore that stopped before the journal went back); the newest archive, ${journal}, is put back.`,
+            }
+          : {
+              id: 'restore.journal',
+              level: 'fail',
+              detail:
+                journalState === 'absent'
+                  ? 'This machine has no restriction journal and the backup holds none.'
+                  : `${journalVolume} holds no entry and the backup holds no journal.`,
+              fix: 'Restore from a backup made by bun run melete backup, which keeps the journal.',
+            }
         : {
             id: 'restore.journal',
-            level: 'fail',
-            detail: 'This machine has no restriction journal and the backup holds none.',
-            fix: 'Restore from a backup made by bun run melete backup, which keeps the journal.',
-          }
-      : {
-          id: 'restore.journal',
-          level: 'ok',
-          detail: `${config.project}_restrictions stays as it is: it is newer than the backup.`,
-        },
+            level: 'ok',
+            detail: `${journalVolume} stays as it is: it is newer than the backup.`,
+          },
   );
   // The master key is supplied apart from the set; it must be the one the database was sealed with.
   const keyCheck = judgeMasterKey(backup, installation.env, context.environment);

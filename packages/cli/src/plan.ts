@@ -407,7 +407,10 @@ export type RestoreContext = {
   backupDir: string | null;
   /** Where to go back to: the image tag and, when known, the commit. */
   previous: { tag: string; revision: string | null } | null;
-  /** Restoring onto a machine that never ran this installation: no journal volume yet. */
+  /**
+   * The journal volume is missing or holds no entry: a machine that never ran
+   * this installation, or a restore that stopped before the journal went back.
+   */
   freshHost: boolean;
   /** The newest restriction journal archive, for a fresh host. */
   journalArchive: string | null;
@@ -545,7 +548,7 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
     context.freshHost && context.journalArchive
       ? [
           note(
-            'A new machine has no journal yet: put back the newest one before the service starts.',
+            'This machine has no journal with entries yet: put back the newest one before the service starts.',
           ),
           run(
             'Put back the newest restriction journal.',
