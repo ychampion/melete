@@ -421,6 +421,14 @@ export function assembleHistory(
   // A privacy decision resumes the turn the privacy question held back. That
   // turn's messages were never sent to a model, so they are new again.
   let messagesAfter = afterSeq;
+  // Words the person sent during an earlier attempt that it already read stay
+  // in the conversation, but are not new to this one.
+  const steersRead = new Set(
+    events.flatMap((row) => {
+      const steerId = (row.payload as { steer_id?: unknown } | null)?.steer_id;
+      return row.type === 'steer_delivered' && typeof steerId === 'string' ? [steerId] : [];
+    }),
+  );
   for (const row of events) {
     if (row.seq <= afterSeq || row.type !== 'notice') continue;
     const payload = jsonObject.safeParse(row.payload);
@@ -456,7 +464,11 @@ export function assembleHistory(
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
-      if (row.seq > messagesAfter) inputs.new_user_messages.push(message);
+      const readBefore =
+        payload.steer === true &&
+        typeof payload.steer_id === 'string' &&
+        steersRead.has(payload.steer_id);
+      if (row.seq > messagesAfter && !readBefore) inputs.new_user_messages.push(message);
     } else if (row.type === 'tool_result') {
       const result = toolResult.parse(payload);
       transcript.push({
@@ -821,7 +833,7 @@ async function historyRows(
     .where(
       and(
         eq(event.jobId, row.id),
-        inArray(event.type, ['notice', 'tool_result', 'approval_decided']),
+        inArray(event.type, ['notice', 'tool_result', 'approval_decided', 'steer_delivered']),
         upTo === undefined ? undefined : lte(event.seq, upTo),
       ),
     )

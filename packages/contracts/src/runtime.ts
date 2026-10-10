@@ -503,6 +503,11 @@ export const RUNTIME_EVENT_TYPES = [
    * runtime has asked it, without the person seeing, to report what it has.
    */
   'stalled',
+  /**
+   * Words the person sent while the turn was running reached the model: at a
+   * step's end, or as the input of the next run in the same attempt.
+   */
+  'steer_delivered',
 ] as const;
 export const runtimeEventType = z.enum(RUNTIME_EVENT_TYPES);
 export type RuntimeEventType = z.infer<typeof runtimeEventType>;
@@ -569,6 +574,12 @@ export const runtimeEvent = z.discriminatedUnion('type', [
   }),
   z.object({
     ...runtimeEventBase,
+    type: z.literal('steer_delivered'),
+    /** The id the service gave the message when it recorded it. */
+    steer_id: z.string().min(1).max(80),
+  }),
+  z.object({
+    ...runtimeEventBase,
     type: z.literal('gap'),
     reason: z.string().min(1).max(2000),
     /** Events after this durable sequence number and before this one may be missing. */
@@ -593,9 +604,20 @@ export interface EventSink {
   emit(event: RuntimeEvent): Promise<void>;
 }
 
+/** A message the person sent while a turn was running, already recorded by the service. */
+export type SteerMessage = { id: string; text: string };
+
 export interface RuntimeAdapter {
   capabilities(): Promise<RuntimeCapabilities>;
   start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal): Promise<AttemptOutcome>;
+  /**
+   * Hand a running attempt words the person sent after it started. False when
+   * this attempt can no longer take them here (it has ended, or is not this
+   * process's); the service then carries them to the next turn. A true answer
+   * is a promise to deliver: `steer_delivered` follows on the attempt's
+   * stream before its outcome, or the words are carried the same way.
+   */
+  steer?(attemptId: string, message: SteerMessage): Promise<boolean>;
 }
 
 /**

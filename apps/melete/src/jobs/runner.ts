@@ -3,6 +3,7 @@ import {
   attemptOutcome,
   attemptUsage,
   type CapabilityClaims,
+  CONTINUABLE_STATES,
   type CommittedOutcome,
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
@@ -85,6 +86,7 @@ import {
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
+import { carrySteers, pendingSteers, steersRead } from './steer.ts';
 import { namingSteps, stepName, UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
 import {
   attemptCause,
@@ -501,6 +503,8 @@ export class AttemptRunner {
           .update(experienceTurn)
           .set({ status: 'working' })
           .where(eq(experienceTurn.id, row.currentTurnId));
+      // Words sent while the job waited to start are this attempt's new messages.
+      await steersRead(tx, row.id, attemptId, Number(latest?.seq ?? 0));
       return { bundle, claims };
     });
   }
@@ -716,8 +720,58 @@ export class AttemptRunner {
       : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
     return this.jobs.transaction(async (tx) => {
       const active = await requireCurrentAttempt(tx, claims, { settling: true });
-      return this.finish(tx, active.job, claims.attempt_id, envelope.outcome, envelope.questions);
+      const row = await this.finish(
+        tx,
+        active.job,
+        claims.attempt_id,
+        envelope.outcome,
+        envelope.questions,
+      );
+      return (await this.carrySteers(tx, row)) ?? row;
     });
+  }
+
+  /**
+   * A conversation whose turn ended with words the person sent during it
+   * still unread: they become its next turn, queued now. A turn that rests on
+   * the person (an approval, a reconciliation) or will run again keeps them
+   * for that attempt, which reads them as new messages.
+   */
+  private async carrySteers(tx: Transaction, row: JobRow): Promise<JobRow | null> {
+    if (row.kind !== 'chat' || row.paused) return null;
+    const ended = row.state === 'waiting_for_input' || row.state === 'completed';
+    if (!ended) return null;
+    return carrySteers(tx, row, (current) =>
+      this.jobs.move(
+        tx,
+        current,
+        {
+          kind: (CONTINUABLE_STATES as readonly string[]).includes(current.state)
+            ? 'conversation_continued'
+            : 'user_input_received',
+        },
+        { reason: 'input' },
+      ),
+    );
+  }
+
+  /**
+   * Hand the conversation's running attempt the words the person sent during
+   * it, when this process runs that attempt. What it cannot take is carried
+   * when the turn ends (`carrySteers`).
+   */
+  async steer(jobId: string): Promise<void> {
+    const running = [...this.active.values()].find((entry) => entry.jobId === jobId);
+    if (!running || !this.runtime.steer) return;
+    const [current] = await this.jobs.db
+      .select({ cursor: attempt.inputCursor })
+      .from(attempt)
+      .where(eq(attempt.id, running.attemptId));
+    if (!current) return;
+    const waiting = await pendingSteers(this.jobs.db, jobId);
+    for (const message of waiting)
+      if (message.seq > current.cursor)
+        await this.runtime.steer(running.attemptId, { id: message.id, text: message.text });
   }
 
   /**
@@ -1708,6 +1762,8 @@ export class AttemptRunner {
         { emit: (event) => this.emit(claims, event) },
         controller.signal,
       );
+      // Words sent after this attempt was claimed and before it started reach it now.
+      void this.steer(claims.job_id).catch(() => undefined);
       // The attempt ends when the race does; the runtime may still be tearing
       // down, holding the job's workspace open, until the call itself returns.
       const returned = call.then(

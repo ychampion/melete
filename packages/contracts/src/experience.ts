@@ -586,6 +586,18 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
     /**
+     * Words the person sent while the turn was running. `queued` is shown at
+     * once; `delivered` once the agent has read them in this turn; `carried`
+     * when the turn ended first and they became the next message instead.
+     * Updates carry the id only.
+     */
+    z.strictObject({
+      type: z.literal('steer'),
+      id: z.string().min(1).max(80),
+      text: z.string().max(20_000).optional(),
+      state: z.enum(['queued', 'delivered', 'carried']),
+    }),
+    /**
      * The agent's working copy of the conversation before this point was
      * summarised to make room. Every message is still saved and shown; the
      * agent now works from the summary. It carries no words of the summary.
@@ -661,6 +673,11 @@ export const conversationMessage = z
 export const messageAcceptance = z.strictObject({
   turn_id: id,
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
+  /**
+   * Present when a turn was running: the words went to that turn, shown at
+   * once as `queued` and read at its next step. `turn_id` is the running turn.
+   */
+  steer: z.strictObject({ id, state: z.literal('queued') }).optional(),
 });
 export const conversationResponse = z.strictObject({ conversation });
 /** A new name for a chat. It changes only the title, not when the chat was last active. */

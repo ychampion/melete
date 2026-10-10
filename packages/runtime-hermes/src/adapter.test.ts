@@ -963,3 +963,158 @@ describe('a turn never hangs silently and never ends without a word', () => {
     expect(quietAllowanceMs(['web.search', 'terminal'], catalog)).toBe(810_000 + STALL_MARGIN_MS);
   });
 });
+
+describe('words the person sends while the turn runs', () => {
+  const frame = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
+  const encoder = new TextEncoder();
+
+  /**
+   * An engine whose runs are scripted frame by frame. A run may wait on a
+   * promise between frames, so a test can steer while a step is in flight.
+   */
+  function engine(runs: Array<Array<string | Promise<unknown>>>, refuseSteer = false) {
+    const inputs: string[] = [];
+    const steered: Array<{ run: string; input: string }> = [];
+    let started = 0;
+    const fetch: FetchLike = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1/runs' && init?.method === 'POST') {
+        inputs.push((JSON.parse(String(init.body)) as { input: string }).input);
+        started++;
+        return Response.json({ run_id: `run_${started}`, status: 'started' }, { status: 202 });
+      }
+      if (path.endsWith('/steer')) {
+        if (refuseSteer)
+          return Response.json({ error: { code: 'run_not_accepting_steer' } }, { status: 409 });
+        steered.push({
+          run: path.split('/')[3] ?? '',
+          input: (JSON.parse(String(init?.body)) as { input: string }).input,
+        });
+        return Response.json({ accepted: true });
+      }
+      if (path.endsWith('/events')) {
+        const script = runs[Number(path.split('/')[3]?.replace('run_', '')) - 1] ?? [];
+        const body = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (const piece of script) {
+              if (typeof piece === 'string') controller.enqueue(encoder.encode(piece));
+              else await piece;
+            }
+            controller.close();
+          },
+        });
+        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return Response.json({ ok: true });
+    };
+    const adapter = new HermesRuntimeAdapter({
+      baseUrl: 'http://runtime:8790',
+      parkedActions: async () => [],
+      fetch,
+    });
+    return { adapter, inputs, steered };
+  }
+
+  function gate() {
+    let open: () => void = () => {};
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { open, opened };
+  }
+
+  /** Until the attempt's first run is open, so a steer goes to it. */
+  async function runOpen(inputs: string[]) {
+    while (!inputs.length) await Bun.sleep(1);
+    await Bun.sleep(5);
+  }
+
+  test('words sent during a step reach the run, and are delivered at that step’s end', async () => {
+    const steeredIn = gate();
+    const { adapter, inputs, steered } = engine([
+      [
+        frame({ event: 'tool.started', tool: 'web.search', preview: '' }),
+        steeredIn.opened,
+        frame({ event: 'tool.completed', tool: 'web.search', duration: 0.1, error: false }),
+        frame({ event: 'run.completed', output: 'Here are three wireless keyboards.' }),
+      ],
+    ]);
+    const sink = new Collector();
+    const running = adapter.start(bundle, sink, new AbortController().signal);
+    await runOpen(inputs);
+    expect(await adapter.steer(ATTEMPT, { id: 'str_1', text: 'Wireless only, actually.' })).toBe(
+      true,
+    );
+    steeredIn.open();
+    const outcome = await running;
+    expect(steered).toHaveLength(1);
+    expect(steered[0]?.input).toContain('> Wireless only, actually.');
+    expect(steered[0]?.input).toContain('Take this into account and carry on');
+    expect(inputs).toHaveLength(1);
+    const kinds = sink.events.map((event) => event.type);
+    expect(kinds.filter((kind) => kind === 'steer_delivered')).toHaveLength(1);
+    expect(kinds.indexOf('steer_delivered')).toBeLessThan(kinds.indexOf('attempt_outcome'));
+    expect(outcome).toMatchObject({ kind: 'completed' });
+  });
+
+  test('words the run took but never read become the next run’s input, in the same attempt', async () => {
+    const steeredIn = gate();
+    const { adapter, inputs } = engine([
+      [
+        steeredIn.opened,
+        frame({
+          event: 'run.completed',
+          output: 'Here are three keyboards.',
+          pending_steer: 'Wireless only',
+        }),
+      ],
+      [frame({ event: 'run.completed', output: 'Here are three wireless keyboards.' })],
+    ]);
+    const sink = new Collector();
+    const running = adapter.start(bundle, sink, new AbortController().signal);
+    await runOpen(inputs);
+    await adapter.steer(ATTEMPT, { id: 'str_2', text: 'Wireless only, actually.' });
+    steeredIn.open();
+    const outcome = await running;
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toContain('> Wireless only, actually.');
+    expect(inputs[1]).toContain('> Here are three keyboards.');
+    expect(inputs[1]).toContain('Write your whole reply again');
+    expect(outcome).toMatchObject({ summary: 'Here are three wireless keyboards.' });
+    expect(sink.events.filter((event) => event.type === 'steer_delivered')).toHaveLength(1);
+  });
+
+  test('words a run refuses wait for the next run, and the same words are taken once', async () => {
+    const steeredIn = gate();
+    const { adapter, inputs, steered } = engine(
+      [
+        [
+          steeredIn.opened,
+          frame({ event: 'tool.started', tool: 'web.search', preview: '' }),
+          frame({ event: 'tool.completed', tool: 'web.search', duration: 0.1, error: false }),
+          frame({ event: 'run.completed', output: 'A.' }),
+        ],
+        [frame({ event: 'run.completed', output: 'B.' })],
+      ],
+      true,
+    );
+    const sink = new Collector();
+    const running = adapter.start(bundle, sink, new AbortController().signal);
+    await runOpen(inputs);
+    const message = { id: 'str_3', text: 'Make it under 50 dollars.' };
+    expect(await adapter.steer(ATTEMPT, message)).toBe(true);
+    expect(await adapter.steer(ATTEMPT, message)).toBe(true);
+    steeredIn.open();
+    expect(await running).toMatchObject({ summary: 'B.' });
+    expect(steered).toHaveLength(0);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]?.match(/Make it under 50 dollars/g)).toHaveLength(1);
+    expect(sink.events.filter((event) => event.type === 'steer_delivered')).toHaveLength(1);
+  });
+
+  test('once the attempt is over, words are refused here so the service can carry them', async () => {
+    const { adapter } = engine([[frame({ event: 'run.completed', output: 'Done.' })]]);
+    await adapter.start(bundle, new Collector(), new AbortController().signal);
+    expect(await adapter.steer(ATTEMPT, { id: 'str_4', text: 'One more thing.' })).toBe(false);
+  });
+});

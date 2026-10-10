@@ -199,6 +199,13 @@ export class SubmissionService {
     });
   }
 
+  /** Whether a submission with this key was already admitted or refused. */
+  async known(suppliedId: string): Promise<boolean> {
+    const id = submissionId.parse(suppliedId);
+    const previous = await this.jobs.transaction((tx) => this.read(tx, id));
+    return Boolean(previous.saved || previous.history || previous.marker);
+  }
+
   create(input: unknown, id?: string) {
     return this.submit('create', input, id);
   }

@@ -680,6 +680,36 @@ export class ExperienceService {
     const scopedKey = key
       ? `chat:${createHash('sha256').update(`${spaceId}:${id}:${key}`).digest('hex')}`
       : undefined;
+    // While a turn runs, plain words go to it instead of waiting for it to end.
+    // A message with files, or one that corrects an answer, starts its own turn.
+    // A retry of a message already taken as a turn replays that turn's receipt.
+    const replay = scopedKey ? await this.submissions.known(scopedKey) : false;
+    if (this.jobs && !replay && !value.attachments?.length && !value.corrects) {
+      const steered = await this.jobs.steer(id, {
+        id: scopedKey
+          ? `steer_${createHash('sha256').update(scopedKey).digest('hex').slice(0, 26)}`
+          : newId('steer'),
+        text: value.text,
+        clientTimeZone: value.time_zone,
+      });
+      if (steered) {
+        await this.runner?.steer(id).catch((error: unknown) => {
+          // Not taken now is not lost: the turn carries it when it ends.
+          process.stderr.write(
+            `steer: live_delivery_failed ${error instanceof Error ? error.name : 'error'}\n`,
+          );
+        });
+        return {
+          turn_id: steered.row.currentTurnId ?? steered.steer.id,
+          receipt: {
+            id: steered.steer.id,
+            status: 'accepted' as const,
+            received_at: steered.steer.at.toISOString(),
+          },
+          steer: { id: steered.steer.id, state: 'queued' as const },
+        };
+      }
+    }
     const result = await this.submissions.input(id, value, scopedKey);
     // A file the message named that it may not carry is said as itself.
     if (result.receipt.state !== 'accepted' && result.error?.code.startsWith('attachment'))

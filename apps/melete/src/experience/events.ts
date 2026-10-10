@@ -875,6 +875,30 @@ export class ExperienceEvents {
             // Messages too old to hand the agent whole were summarised for it.
             // The page marks where, as for the engine's own; the words stay out.
             await emit(source, { type: 'compacted' });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            payload.kind === 'user_message' &&
+            payload.steer === true &&
+            typeof payload.steer_id === 'string'
+          ) {
+            // Words sent while the turn ran show at once, waiting to be read.
+            await emit(source, {
+              type: 'steer',
+              id: payload.steer_id,
+              text: typeof payload.text === 'string' ? payload.text : '',
+              state: 'queued',
+            });
+          } else if (
+            (source.type === 'steer_delivered' || source.type === 'steer_carried') &&
+            source.jobId === id &&
+            typeof payload.steer_id === 'string'
+          ) {
+            await emit(source, {
+              type: 'steer',
+              id: payload.steer_id,
+              state: source.type === 'steer_delivered' ? 'delivered' : 'carried',
+            });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {
               type: 'note',

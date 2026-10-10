@@ -3921,6 +3921,23 @@
                             "received_at"
                           ],
                           "additionalProperties": false
+                        },
+                        "steer": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "$ref": "#/components/schemas/__schema303"
+                            },
+                            "state": {
+                              "type": "string",
+                              "const": "queued"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "state"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -36717,6 +36734,38 @@
                 "properties": {
                   "type": {
                     "type": "string",
+                    "const": "steer"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "queued",
+                      "delivered",
+                      "carried"
+                    ]
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "state"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
                     "const": "compacted"
                   }
                 },
@@ -47076,6 +47125,41 @@
               "at",
               "type",
               "silent_ms"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "attempt_id": {
+                "$ref": "#/components/schemas/__schema765"
+              },
+              "local_seq": {
+                "$ref": "#/components/schemas/__schema766"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema767"
+              },
+              "at": {
+                "$ref": "#/components/schemas/__schema216"
+              },
+              "type": {
+                "type": "string",
+                "const": "steer_delivered"
+              },
+              "steer_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "attempt_id",
+              "local_seq",
+              "dedup_key",
+              "at",
+              "type",
+              "steer_id"
             ],
             "additionalProperties": false
           },

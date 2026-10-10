@@ -4374,6 +4374,11 @@ export interface paths {
                                 /** @enum {string} */
                                 status: "accepted" | "failed_retry";
                             };
+                            steer?: {
+                                id: components["schemas"]["__schema303"];
+                                /** @constant */
+                                state: "queued";
+                            };
                             turn_id: components["schemas"]["__schema303"];
                         } | components["schemas"]["__schema309"];
                     };
@@ -24091,6 +24096,13 @@ export interface components {
                 /** @constant */
                 type: "tool";
             } | {
+                id: string;
+                /** @enum {string} */
+                state: "queued" | "delivered" | "carried";
+                text?: string;
+                /** @constant */
+                type: "steer";
+            } | {
                 /** @constant */
                 type: "compacted";
             };
@@ -26604,6 +26616,14 @@ export interface components {
             tool?: string;
             /** @constant */
             type: "stalled";
+        } | {
+            at: components["schemas"]["__schema216"];
+            attempt_id: components["schemas"]["__schema765"];
+            dedup_key: components["schemas"]["__schema767"];
+            local_seq: components["schemas"]["__schema766"];
+            steer_id: string;
+            /** @constant */
+            type: "steer_delivered";
         } | {
             after_seq: number;
             at: components["schemas"]["__schema216"];
