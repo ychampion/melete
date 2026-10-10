@@ -1594,7 +1594,11 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const target = await resolveFile(ctx, toArea, to);
         // Both directories are walked and held from here to the move, so
         // neither can be swapped for a link anywhere else meanwhile.
-        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1));
+        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1)).catch(
+          (error: unknown) => {
+            throw notInWorkspace(error, area, from);
+          },
+        );
         try {
           const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
           try {
@@ -1602,7 +1606,9 @@ export function createFilesConnector(options: FilesOptions): Connector {
             const targetName = path.basename(target.target);
             const sourceAt = fromDirectory.at(sourceName);
             const targetAt = toDirectory.at(targetName);
-            const content = await readOpened(fromDirectory, sourceName);
+            const content = await readOpened(fromDirectory, sourceName).catch((error: unknown) => {
+              throw notInWorkspace(error, area, from);
+            });
             hash = digest(content);
             if (payload.content_hash !== undefined && payload.content_hash !== hash) {
               // Nothing was moved. The file on disk is not the content this action
@@ -1885,6 +1891,18 @@ export function createFilesConnector(options: FilesOptions): Connector {
     },
   };
   return settledFromDisk(connector);
+}
+
+/**
+ * A move out of the workspace whose file is not there says where a file the
+ * agent's computer made comes from: it reaches the workspace only when a
+ * command's changes are read back, which a command's receipt reports.
+ */
+function notInWorkspace(error: unknown, area: Area, from: string): unknown {
+  if (area !== 'work' || !missing(error)) return error;
+  return new Error(
+    `there is no ${JSON.stringify(from)} in your workspace; a file made on your computer is there only once a command's changes were read back`,
+  );
 }
 
 /** The file steps whose result `verify` reads straight from what is on disk. */

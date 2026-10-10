@@ -126,7 +126,7 @@ databaseTest(
 );
 
 databaseTest(
-  'a write whose bytes are not there stays open, for the agent to check, and asks nobody',
+  'a write whose bytes are not there failed, says why, and asks nobody',
   async () => {
     const ctx = await setup((files) =>
       settledFromDisk({
@@ -137,9 +137,8 @@ databaseTest(
       }),
     );
     const result = await ctx.write({ path: 'never.txt', content: 'not written' });
-    expect(result.status).toBe('unknown');
-    expect(result.own_computer).toBe(true);
-    expect(result.message).toBe(OWN_COMPUTER_UNKNOWN);
+    expect(result.status).toBe('failed');
+    expect(JSON.stringify(result)).toContain('lost before anything was written');
     expect(await ctx.state()).toEqual({ job: 'running', questions: 0 });
   },
   SLOW,

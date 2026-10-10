@@ -202,8 +202,19 @@ describe('files.save_attachment', () => {
   });
 
   test('a move that could not happen fails with its reason', async () => {
+    // Made on the computer, but never read back into the workspace.
+    const result = await run('files.move', {
+      from: 'charts/missing.png',
+      to: 'chart.png',
+      to_area: 'artifacts',
+    });
+    expect(result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect((result as { reason: string }).reason).toBe(
+      `there is no "charts/missing.png" in your workspace; a file made on your computer is there only once a command's changes were read back`,
+    );
+    // Within the person's own Files, a missing file is just not found.
     expect(
-      await run('files.move', { from: 'missing.png', to: 'chart.png', to_area: 'artifacts' }),
+      await run('files.move', { area: 'artifacts', from: 'gone.png', to: 'old/gone.png' }),
     ).toMatchObject({ outcome: 'failed', reason: 'not found', retryable: false });
   });
 });

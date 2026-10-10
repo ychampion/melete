@@ -659,7 +659,10 @@ databaseTest(
 
     // Now a write to the file the app shows waits for the person; any other file does not.
     expect((await write('data/deals.json', '["call me"]')).status).toBe('needs_approval');
-    expect((await write('./data//deals.json', '["call me"]')).status).toBe('needs_approval');
+    // Another spelling of that file is refused before anything is asked or written.
+    await expect(write('./data//deals.json', '["call me"]')).rejects.toThrow(
+      'Give a path inside your workspace',
+    );
     expect((await write('notes/summary.json', '["fine"]')).status).not.toBe('needs_approval');
     // Moving another file onto it is a write to it too.
     expect(
