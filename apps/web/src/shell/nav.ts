@@ -31,13 +31,14 @@ export const NAV: {
     path: '/automations',
     match: (p) => p.startsWith('/automations'),
   },
+  { icon: 'files', label: 'Files', path: '/files', match: (p) => p.startsWith('/files') },
   { icon: 'apps', label: 'Apps', path: '/apps', match: (p) => p.startsWith('/apps') },
 ];
 
 /**
  * The sections a sign-in reaches. A guest reaches only the rooms they were
- * invited to: Home, chats, Companies, Work, Agents, Memory, Automations, Apps
- * and Settings are a person's own and stay out of their sidebar. Rooms are
+ * invited to: Home, chats, Companies, Work, Agents, Memory, Automations,
+ * Files, Apps and Settings are a person's own and stay out of their sidebar. Rooms are
  * listed only where the server has them switched on.
  */
 export const sidebarNav = (guest: boolean, multiplayer = true): typeof NAV =>
