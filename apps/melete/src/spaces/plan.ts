@@ -228,6 +228,8 @@ const SPACE_KEYED_OPERATIONAL = [
   // kept for them. They name connections and the space's owner.
   'triage_item',
   'triage_verdict',
+  // Texts to and from a connected Twilio number. They name connections.
+  'sms_text',
 ] as const;
 
 /**

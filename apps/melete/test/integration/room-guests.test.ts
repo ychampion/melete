@@ -197,6 +197,7 @@ const SIGNED_OUT_ROUTES = [
   /^GET \/(apps\/view|previews)\//,
   // The telephony provider's webhooks, believed only for their signature.
   /^POST \/reach\/twilio\//,
+  /^POST \/sms\/twilio\//,
 ];
 
 async function makeRoom(name: string) {

@@ -7,7 +7,12 @@ import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AppContext, type AppContextValue, NO_DECISIONS } from '../experience/hooks.ts';
 import type { Permission, Run } from '../experience/types.ts';
-import { permissionsFor, RunPermissions, runOfPermission } from './RunPermissions.tsx';
+import {
+  COMPACT_FACT_CHARS,
+  permissionsFor,
+  RunPermissions,
+  runOfPermission,
+} from './RunPermissions.tsx';
 
 const AT = '2026-10-08T23:38:00.000Z';
 const ask = (id: string, job: string, created_at = AT): Permission => ({
@@ -65,4 +70,42 @@ test('nothing asked draws nothing', () => {
       </AppContext.Provider>,
     ),
   ).toBe('');
+});
+
+test('an ask to run a command shows the command and where it runs, even on the chat card', () => {
+  const command = `curl -s http://127.0.0.1:40409/json; ${'x'.repeat(400)}`;
+  const asked: Permission = {
+    ...ask('apr_cmd', 'job_run'),
+    what: "Run a command on the agent's computer",
+    preview: {
+      id: 'apr_cmd',
+      title: "Run a command on the agent's computer",
+      meta: 'Computer',
+      facts: [
+        { label: 'Command', value: command },
+        { label: 'Runs in', value: '/work/flights' },
+        { label: 'Computer', value: "The agent's own computer, not yours" },
+      ],
+      primary_action: null,
+      secondary_actions: [],
+      source_connection: 'conn_sandbox',
+    },
+  } as Permission;
+  const app = {
+    decisions: { ...NO_DECISIONS, loaded: true, permissions: [asked] },
+    refreshConversations: () => {},
+  } as unknown as AppContextValue;
+  const draw = (compact: boolean) =>
+    renderToStaticMarkup(
+      <AppContext.Provider value={app}>
+        <RunPermissions run={run} compact={compact} />
+      </AppContext.Provider>,
+    );
+  const card = draw(true);
+  expect(card).toContain('curl -s http://127.0.0.1:40409/json');
+  expect(card).toContain(`${command.slice(0, COMPACT_FACT_CHARS)}…`);
+  expect(card).not.toContain(command);
+  expect(card).toContain('/work/flights');
+  // The work's own page shows the command whole.
+  expect(draw(false)).toContain(command);
 });

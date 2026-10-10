@@ -33,7 +33,8 @@ export function newId(
     | 'rho'
     | 'rch'
     | 'rcn'
-    | 'file',
+    | 'file'
+    | 'sms',
 ): string {
   let value = (BigInt(Date.now()) << 80n) | BigInt(`0x${randomBytes(10).toString('hex')}`);
   let encoded = '';

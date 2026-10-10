@@ -15,6 +15,7 @@ import {
   answerText,
   BACKEND_VOCABULARY,
   calendarReasons,
+  meantForPerson,
   plainText,
   projectActionGroup,
   projectArtifact,
@@ -968,4 +969,20 @@ test("a permission to change the version of an app shows that version's data and
     },
     { label: 'Responses it collects', value: 'feedback' },
   ]);
+});
+
+test('a browser step’s own captures are not cards under the answer; files made for the person are', () => {
+  for (const path of [
+    'browser/art_01M4GN2WMH5D4EM5701D8NJ7B4.txt',
+    'browser/art_01M4GN2WMH5D4EM5701D8NJ7B4.png',
+  ])
+    expect(meantForPerson({ path })).toBe(false);
+  for (const path of [
+    'packing_list_chicago.pdf',
+    'artifacts/speech.wav',
+    'browser/notes.txt',
+    'browser/art_01M4GN2WMH5D4EM5701D8NJ7B4.pdf',
+    'reports/browser/art_01M4GN2WMH5D4EM5701D8NJ7B4.png',
+  ])
+    expect(meantForPerson({ path })).toBe(true);
 });

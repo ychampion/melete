@@ -155,10 +155,12 @@ approvals:
   # Melete does not use Hermes's approval gate: this platform is unattended, so a
   # plugin-escalated approval hard-denies with nobody to ask. Broker tools return
   # a structured needs_approval result instead and the job parks on Melete's
-  # ledger. These two keys make the shell-command guard's behaviour explicit
-  # rather than inherited: deny rather than block, and if something ever does
-  # block, not for longer than five minutes.
-  unattended_mode: deny
+  # ledger. Commands run in the agent's own computer, through the sandbox
+  # backend, and the broker decides which of them the person is asked about,
+  # so the engine's own command guard is off (tools/approval.py
+  # check_all_command_guards). Its unconditional floors still apply. If
+  # something ever does block, not for longer than five minutes.
+  mode: "off"
   timeout: 300
 
 model:

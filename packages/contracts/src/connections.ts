@@ -18,6 +18,7 @@ import {
   mcpStdioConnectionConfig,
 } from './mcp.ts';
 import { MAX_DISCOVERED_TOOLS } from './mcp-catalog.ts';
+import { e164Number } from './reach.ts';
 
 export const CONNECTION_KINDS = [
   'mail',
@@ -27,6 +28,7 @@ export const CONNECTION_KINDS = [
   'mcp_stdio',
   'sandbox',
   'command_line',
+  'sms',
 ] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
@@ -286,6 +288,29 @@ export const awsCommandLineCredentials = z
     secret_access_key: z.string().regex(/^[A-Za-z0-9/+=]{16,128}$/),
   })
   .strict();
+/**
+ * Text messages through Twilio. The numbers here are the person's own phones:
+ * a text from one of them is the person talking to Melete, and a text from any
+ * other number is only kept for them to read. Left empty, nobody is.
+ */
+export const smsConnectionConfig = z
+  .object({ allowed_numbers: z.array(e164Number).max(10).default([]) })
+  .strict();
+export type SmsConnectionConfig = z.infer<typeof smsConnectionConfig>;
+
+/** The Twilio account, its auth token and the number texts come from, sealed together. */
+export const smsCredentials = z
+  .object({
+    account_sid: z.string().regex(/^AC[0-9a-fA-F]{32}$/, 'An account SID starts with AC'),
+    auth_token: z
+      .string()
+      .min(16)
+      .max(128)
+      .regex(/^[A-Za-z0-9]+$/),
+    from_number: e164Number,
+  })
+  .strict();
+export type SmsCredentials = z.infer<typeof smsCredentials>;
 
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
@@ -327,6 +352,7 @@ export const CONNECTION_KIND_SCOPES = {
     'egress.npm_read',
     'egress.npm_write',
   ],
+  sms: ['sms.send'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -348,6 +374,7 @@ export const createConnectionRequest = z.object({
   ics: icsConnectionConfig.optional(),
   sandbox: sandboxConnectionConfig.optional(),
   command_line: commandLineConnectionConfig.optional(),
+  sms: smsConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
 
@@ -395,6 +422,13 @@ export type ConnectionInstallation =
         | z.infer<typeof commandLineCredentials>
         | z.infer<typeof awsCommandLineCredentials>;
       scopes: string[];
+    }
+  | {
+      kind: 'sms';
+      provider: 'twilio';
+      config: SmsConnectionConfig;
+      credentials: SmsCredentials;
+      scopes: string[];
     };
 
 const KIND_PROVIDER = {
@@ -405,9 +439,10 @@ const KIND_PROVIDER = {
   mcp_stdio: 'mcp',
   sandbox: 'sandbox',
   command_line: 'command_line',
+  sms: 'twilio',
 } as const;
 const EXACTLY_ONE =
-  'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox or command_line.';
+  'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox, command_line or sms.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -500,6 +535,21 @@ export function connectionInstallation(
       config,
       credentials: credentials.data,
       scopes: granted,
+    });
+  }
+  if (kind === 'sms') {
+    if (!request.sms) return err('Supply the phone numbers in sms.');
+    const credentials = smsCredentials.safeParse(request.credentials);
+    if (!credentials.success)
+      return err(
+        'Texting needs credentials.account_sid, credentials.auth_token and credentials.from_number only.',
+      );
+    return ok({
+      kind,
+      provider: 'twilio',
+      config: request.sms,
+      credentials: credentials.data,
+      scopes,
     });
   }
   if (kind === 'ics') {
@@ -894,7 +944,7 @@ export const connectionCatalogEntry = z
     title: z.string(),
     description: z.string(),
     /** What a connection made from this entry can do. */
-    covers: z.array(z.enum(['mail', 'calendar', 'documents', 'tools', 'execution'])),
+    covers: z.array(z.enum(['mail', 'calendar', 'documents', 'tools', 'execution', 'texts'])),
     connect: z.discriminatedUnion('method', [
       z.object({
         method: z.literal('sign_in'),
@@ -949,12 +999,18 @@ export const connectionCatalogEntry = z
     /** When it is not available, why, in words for the person using this Melete. */
     unavailable_reason: z.string().optional(),
     /**
-     * When it is not available, what the operator has to set. Sent only to the
-     * installation's owner, who runs it; everyone else reads `unavailable_reason`.
+     * When it is not available, or offers less than it could, what the operator
+     * has to set. Sent only to the installation's owner, who runs it; everyone
+     * else reads `unavailable_reason` or `limited_reason`.
      */
     setup_hint: z.string().optional(),
     /** Something the person should know before connecting it, such as that it can move money. */
     warning: z.string().optional(),
+    /**
+     * When it is available but offers less than it could here, what is missing,
+     * in words for the person using this Melete.
+     */
+    limited_reason: z.string().optional(),
   })
   .meta({ id: 'ConnectionCatalogEntry' });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntry>;
@@ -964,6 +1020,25 @@ export const connectionKindListResponse = z.object({
   /** Everything a person can connect here, sign-ins first. Additive to `kinds`. */
   catalog: z.array(connectionCatalogEntry).optional(),
 });
+
+/** A text that reached a Twilio number, as the person reads it. */
+export const smsText = z
+  .object({
+    id: z.string(),
+    /** The number it came from. */
+    from: z.string(),
+    body: z.string(),
+    /** True when it came from one of the person's own numbers and went to their conversation. */
+    from_you: z.boolean(),
+    /**
+     * Where the text went: into the conversation; only kept here to be read;
+     * or not taken, when it was from you but the conversation could not take it.
+     */
+    handling: z.enum(['conversation', 'kept', 'not_taken']),
+    received_at: timestamp,
+  })
+  .meta({ id: 'SmsText' });
+export const smsTextListResponse = z.object({ texts: z.array(smsText) });
 
 /**
  * Account sign-ins: one consent connects the account's mail and calendar, and
@@ -1339,6 +1414,46 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       }),
     ],
     scopes: FEED_SCOPES,
+  },
+  {
+    id: 'sms',
+    kind: 'sms',
+    title: 'Text messages (Twilio)',
+    description:
+      'Text Melete from your phone and get its answer back by text, and send a text to someone else after you approve it. Texts from other numbers are kept for you to read, never followed.',
+    fixed: [{ path: 'provider', value: 'twilio' }],
+    fields: [
+      text('credentials.account_sid', 'Account SID', {
+        secret: true,
+        placeholder: 'AC…',
+        help: 'On the front page of the Twilio Console.',
+      }),
+      text('credentials.auth_token', 'Auth token', {
+        input: 'password',
+        secret: true,
+        help: 'Beside the account SID in the Twilio Console. It also proves that an incoming text came from Twilio.',
+      }),
+      text('credentials.from_number', 'Twilio number', {
+        secret: true,
+        placeholder: '+15551234567',
+        help: 'A number on this Twilio account that can send and receive texts, with + and the country code.',
+      }),
+      text('sms.allowed_numbers', 'Your phone numbers', {
+        input: 'string_list',
+        required: false,
+        placeholder: '+15557654321',
+        help: 'A text from one of these is you talking to Melete. Texts from any other number are only kept for you to read.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'sms.send',
+        label: 'Send a text to someone',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+    ],
   },
   {
     id: 'sandbox',

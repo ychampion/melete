@@ -48,6 +48,7 @@ import {
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
+import { withDeliveryNote } from '../experience/delivery-claims.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import { pagesVisited, withVisitedLinks } from '../experience/visited-links.ts';
@@ -771,6 +772,8 @@ export class AttemptRunner {
    * taken out, and named in a closing note (`experience/citations.ts`). An
    * answer that names results from pages the turn opened, and links none of
    * them, gets one short line of links to those pages (`visited-links.ts`).
+   * One that says a file is attached when the turn delivered none says so
+   * (`delivery-claims.ts`).
    */
   private async citedOnlyWhatWasRead(
     tx: Transaction,
@@ -795,7 +798,8 @@ export class AttemptRunner {
       );
     const checked = checkCitations(given.summary, sourcesRead(reads));
     // A result found on a page is linked to that page, when the answer links nothing.
-    const summary = withVisitedLinks(checked.text, pagesVisited(reads));
+    // A file said to be attached that no action in the turn delivered is named as missing.
+    const summary = withDeliveryNote(withVisitedLinks(checked.text, pagesVisited(reads)), reads);
     return summary !== given.summary ? { ...given, summary } : given;
   }
 

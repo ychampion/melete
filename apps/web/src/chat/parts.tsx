@@ -292,21 +292,53 @@ function SavedFileAction({
           </p>
         ) : shown === null ? (
           <p className="permission-why">Opening…</p>
-        ) : shown.kind === 'image' ? (
-          <img className="file-preview-image" src={shown.url} alt={name} />
-        ) : shown.kind === 'pdf' ? (
-          <iframe className="file-preview-pdf" src={shown.url} title={name} />
         ) : (
-          <>
-            <pre className="permission-file-text">{shown.text || 'This file is empty.'}</pre>
-            {shown.truncated ? (
-              <p className="permission-why">
-                This shows the first {OPEN_TEXT_LIMIT_BYTES / 1024} KB. Download to see all of it.
-              </p>
-            ) : null}
-          </>
+          <SavedFileShown shown={shown} name={name} href={href} />
         )}
       </Dialog>
+    </>
+  );
+}
+
+/**
+ * A saved file shown in place. A PDF is held at a local `blob:` address and
+ * shown in an `<object>` of the PDF type: Melete's pages frame only Melete
+ * (`frame-src 'self'`), which also keeps an app's sandboxed frame from moving
+ * to a page it made itself, so a frame of the local address stays blank.
+ * Only pictures and PDFs are ever held this way; anything else, a web page or
+ * an SVG among them, is shown as text and never rendered.
+ */
+export function SavedFileShown({
+  shown,
+  name,
+  href,
+}: {
+  shown: SavedFilePreview;
+  name: string;
+  href: string;
+}) {
+  if (shown.kind === 'image')
+    return <img className="file-preview-image" src={shown.url} alt={name} />;
+  if (shown.kind === 'pdf')
+    return (
+      <object className="file-preview-pdf" data={shown.url} type="application/pdf" title={name}>
+        <p className="permission-why">
+          This browser can’t show the PDF here.{' '}
+          <a href={href} download>
+            Download it
+          </a>{' '}
+          to read it.
+        </p>
+      </object>
+    );
+  return (
+    <>
+      <pre className="permission-file-text">{shown.text || 'This file is empty.'}</pre>
+      {shown.truncated ? (
+        <p className="permission-why">
+          This shows the first {OPEN_TEXT_LIMIT_BYTES / 1024} KB. Download to see all of it.
+        </p>
+      ) : null}
     </>
   );
 }

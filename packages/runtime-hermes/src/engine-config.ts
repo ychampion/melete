@@ -373,7 +373,12 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       background_review: { enabled: false },
       compression: { provider: GATEWAY_PROVIDER, fallback_chain: [] },
     },
-    approvals: { unattended_mode: 'deny', timeout: 300 },
+    // Read by tools/approval.py. The broker is the approval layer for commands
+    // in the agent's own computer; with the engine's guard on, a command there
+    // such as clearing the workspace was refused with nobody asked, and the
+    // model reported it as the person's refusal. The engine's unconditional
+    // floors (catastrophic commands, its deny list) still apply.
+    approvals: { mode: 'off', timeout: 300 },
     model: {
       provider: GATEWAY_PROVIDER,
       default: options.model,

@@ -90,6 +90,8 @@ export const CONNECTION_PROVIDERS = [
   'skills',
   /** A signed-in Google Drive: what changes in its files, read as metadata only. */
   'drive',
+  /** Text messages through Twilio Programmable Messaging. */
+  'twilio',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

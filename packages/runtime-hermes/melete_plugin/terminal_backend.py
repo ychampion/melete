@@ -513,6 +513,12 @@ _FLAGGED = re.compile(r"flagged as dangerous \(([^\n]{1,160}?)\)(?: but |\.|$)")
 #: How the engine's reviewer names what it refused when nobody can be asked.
 _SMART_DENIED = re.compile(r"^BLOCKED by smart approval: ([^\n]{1,160}?)\. The command")
 
+#: The engine's unconditional floor, which applies whatever its approval mode.
+_HARDLINE = re.compile(r"^BLOCKED \(hardline\): ([^\n]{1,160}?)\. This command")
+
+#: Advice the engine adds to a floor refusal of an oversized inline command.
+_RECOVERY = " RECOVERY:"
+
 
 def _safety_refusal(error: str) -> bool:
     """True only for the engine's safety gate refusing a command nobody could approve.
@@ -521,12 +527,14 @@ def _safety_refusal(error: str) -> bool:
     will not use; those are passed through as the engine wrote them.
     """
     return error.startswith("BLOCKED") and (
-        "approvals.unattended_mode" in error or error.startswith("BLOCKED by smart approval:")
+        "approvals.unattended_mode" in error
+        or error.startswith("BLOCKED by smart approval:")
+        or error.startswith("BLOCKED (hardline):")
     )
 
 
 def _blocked_reason(error: str) -> str:
-    found = _FLAGGED.search(error) or _SMART_DENIED.search(error)
+    found = _FLAGGED.search(error) or _SMART_DENIED.search(error) or _HARDLINE.search(error)
     return found.group(1).strip() if found else "it matched a safety rule"
 
 
@@ -542,7 +550,8 @@ def blocked_command_text(reason: str) -> str:
     return (
         f"NOT RUN. The engine's safety rules refused this command before it reached the sandbox ({reason}). "
         "No action was recorded and no approval was requested, so there is nothing for the person to approve: "
-        "do not ask them to approve it. Tell them plainly that the command was blocked by a safety rule. "
+        "do not ask them to approve it. The person did not refuse it; never say they denied or declined it. "
+        "If you mention it, say a safety rule blocked the command. "
         "If the task still needs it, use a narrower command that avoids what was flagged."
     )
 
@@ -570,7 +579,9 @@ def blocked_command_result(client: Any) -> Callable[..., Optional[str]]:
         if not _safety_refusal(error):
             return None
         reason = _blocked_reason(error)
-        body["error"] = blocked_command_text(reason)
+        # How to write an oversized command so it can run is kept: it is advice, not the refusal.
+        recovery = error.find(_RECOVERY)
+        body["error"] = blocked_command_text(reason) + (error[recovery:] if recovery >= 0 else "")
         body["exit_code"] = REFUSED_STATUS
         try:
             client.say(
