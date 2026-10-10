@@ -1,6 +1,6 @@
 ---
 name: melete-setup
-description: Install and set up Melete, the open-source self-hosted assistant, on this computer or a server with Docker. Use when the person asks to install, set up, start, check, update or extend a Melete installation (model, computer, voice, mail and calendar, public address, MCP server).
+description: Install and set up Melete, the source-available, self-hosted assistant, on this computer or a server with Docker. Use when the person asks to install, set up, start, check, update or extend a Melete installation (model, computer, voice, mail and calendar, public address, MCP server).
 ---
 
 # Set up Melete

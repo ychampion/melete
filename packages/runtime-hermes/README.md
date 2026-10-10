@@ -340,5 +340,6 @@ provider.
 
 ## Licence
 
-Melete is Apache-2.0. The engine is fetched at image build time; see
+Melete is licensed under the Apache License 2.0 with the Commons Clause; see
+[LICENSE](../../LICENSE). The engine is fetched at image build time; see
 [NOTICE](../../NOTICE) for the upstream attribution.

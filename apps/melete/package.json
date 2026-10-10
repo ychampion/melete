@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "description": "The Melete service: API, jobs, broker, gateway, connectors, knowledge, and events.",
   "main": "./src/index.ts",
   "scripts": {

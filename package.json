@@ -10,12 +10,12 @@
   "dependencies": {
     "yaml": "2.8.1"
   },
-  "description": "An open-source, self-hosted, model-agnostic personal assistant.",
+  "description": "A source-available, self-hosted, model-agnostic personal assistant.",
   "engines": {
     "node": ">=22",
     "bun": ">=1.3.0"
   },
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "private": true,
   "scripts": {
     "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",

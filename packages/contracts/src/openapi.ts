@@ -1283,12 +1283,15 @@ export function buildOpenApiDocument() {
       info: {
         title: 'Melete',
         version: OPENAPI_VERSION,
-        summary: 'An open-source, self-hosted, model-agnostic personal assistant.',
+        summary: 'A source-available, self-hosted, model-agnostic personal assistant.',
         description:
           'Give Melete a responsibility, close the tab, come back to progress, a result, or one precise question. ' +
           'This document describes the v0.1 HTTP surface. Nothing here is stable yet: the release is pre-release ' +
           'and endpoints may change until v0.1.0 is tagged.',
-        license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
+        license: {
+          name: 'Apache-2.0 with Commons Clause',
+          url: 'https://github.com/ychampion/melete/blob/main/LICENSE',
+        },
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
       components: {

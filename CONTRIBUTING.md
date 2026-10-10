@@ -125,4 +125,7 @@ how it behaves, and which suites you ran.
 
 ## Licence
 
-Contributions are licensed under Apache-2.0, as described in [LICENSE](LICENSE).
+Contributions are licensed under the same terms as Melete: the Apache License
+2.0 with the Commons Clause, as described in [LICENSE](LICENSE). By sending a
+contribution, you also allow the Melete Authors to license it under other terms,
+including commercial licences.

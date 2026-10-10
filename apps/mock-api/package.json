@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "description": "An in-memory Melete API for client development: every operation in openapi.json, jobs driven through the real state machine by a scripted scenario.",
   "main": "./src/index.ts",
   "scripts": {

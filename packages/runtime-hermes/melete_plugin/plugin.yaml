@@ -5,7 +5,7 @@ name: melete
 version: 0.1.0
 description: Forwards broker tools and captures redacted lifecycle observations.
 author: Melete
-license: Apache-2.0
+license: Apache-2.0 AND LicenseRef-Commons-Clause
 kind: standalone
 # Declared so `hermes plugins list` says what this is. Melete never overrides a
 # built-in tool: broker tool names are dotted and collide with nothing.

@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "description": "Zod schemas, TypeScript types, the job state machine, and the OpenAPI document for Melete.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

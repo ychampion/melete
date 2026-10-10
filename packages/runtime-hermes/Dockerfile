@@ -119,7 +119,7 @@ RUN useradd --uid 10001 --create-home --home-dir /home/runtime runtime \
     && chown -R runtime:runtime /work /var/lib/hermes
 
 LABEL org.opencontainers.image.title="melete-runtime" \
-      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.licenses="Apache-2.0 AND LicenseRef-Commons-Clause" \
       org.opencontainers.image.description="Pinned Hermes release configured thin behind Melete's RuntimeAdapter" \
       com.melete.hermes.tag="${HERMES_TAG}" \
       com.melete.hermes.commit="${HERMES_COMMIT}" \

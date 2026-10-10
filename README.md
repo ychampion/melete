@@ -222,7 +222,16 @@ in with ChatGPT.
 
 ## Licence and credits
 
-Melete is Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Melete is source-available under the Apache License 2.0 with the
+[Commons Clause](https://commonsclause.com/). You can use it for free, read the
+code and change it for your own use. You may not sell it: no selling copies,
+no hosting it for paying customers, and no paid product or service whose value
+comes mainly from Melete. For a commercial licence, contact
+[@ychampion](https://github.com/ychampion). See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
+
+"Melete" and its logo are trademarks. A fork must use another name; see
+[TRADEMARKS.md](TRADEMARKS.md).
 
 Melete's agent runtime is built on
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,

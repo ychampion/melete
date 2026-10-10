@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "description": "Connect your own computer to your Melete agent: run commands, use files in folders you choose, open pages and take screenshots, with your approval.",
   "bin": {
     "melete-device": "./src/cli.ts"

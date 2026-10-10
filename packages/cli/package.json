@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LicenseRef-Commons-Clause",
   "description": "The melete command: check, look after and configure a self-hosted installation.",
   "main": "./src/main.ts",
   "scripts": {

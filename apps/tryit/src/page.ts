@@ -737,7 +737,7 @@ export function page(config: PageConfig): string {
       <h2>Want Melete to run this for you, and find every other one in your inbox?</h2>
       <p>
         Connect an inbox and Melete maps every company in your life: what you pay, what you are
-        owed, what renews next. Then it handles them, over days, asking you once. Open source.
+        owed, what renews next. Then it handles them, over days, asking you once. Source available.
       </p>
       <div class="row">
         <a class="btn go" href="${escapeAttribute(config.landingUrl)}">See how it works</a>
