@@ -9,6 +9,10 @@
  * those raised after the person's first device subscribed: turning push on
  * never floods a phone with the past. A chase settling is recorded where the
  * ledger item is marked settled (see `recordSettled`).
+ *
+ * Conversations and jobs are read the same way (`collectStatus`): one that
+ * stopped on the person, or a conversation that answered while they were
+ * away, becomes one intent per change of state.
  */
 
 import { createHash } from 'node:crypto';
@@ -24,6 +28,7 @@ import type { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
+  clientFocus,
   experienceProfile,
   owner,
   pushIntent,
@@ -107,6 +112,24 @@ const view = (row: SubscriptionRow) => ({
 
 const clip = (text: string, length: number) =>
   text.length > length ? `${text.slice(0, length - 1)}…` : text;
+
+/** How far back a change of state is still news. */
+export const STATUS_LOOKBACK_MS = 60 * 60_000;
+/** One push per conversation and kind in this window; what changes inside it is recorded and not sent. */
+export const STATUS_THROTTLE_MINUTES = 10;
+/** A client focused this close to an answer, or after it, means the person saw it. */
+export const FOCUS_GRACE_MINUTES = 2;
+
+/** The answer's first words, as plain text, for a lock screen. */
+export function answerPreview(answer: string): string {
+  const plain = answer
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`#>|]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clip(plain, 200);
+}
 
 /**
  * A settled chase, recorded in the transaction that settled it. Only for a
@@ -311,8 +334,8 @@ export class PushService {
       .onConflictDoUpdate({ target: pushSetting.principalId, set: next });
     // A kind turned off stops what of it was still waiting.
     const off: IntentKind[] = [
-      ...(next.decisions ? [] : (['decision'] as const)),
-      ...(next.settled ? [] : (['settled', 'progress'] as const)),
+      ...(next.decisions ? [] : (['decision', 'needs_you'] as const)),
+      ...(next.settled ? [] : (['settled', 'progress', 'done'] as const)),
       ...(next.weeklySummary ? [] : (['weekly'] as const)),
     ];
     if (off.length) await this.dropWaiting(principalId, off);
@@ -419,6 +442,151 @@ export class PushService {
       );
   }
 
+  /** A client of this person is in front of them now. */
+  async focus(principalId: string): Promise<Date> {
+    const [row] = await this.db
+      .insert(clientFocus)
+      .values({ principalId, focusedAt: sql`now()` })
+      .onConflictDoUpdate({ target: clientFocus.principalId, set: { focusedAt: sql`now()` } })
+      .returning({ focusedAt: clientFocus.focusedAt });
+    if (!row) throw new Error('focus upsert lost');
+    return row.focusedAt;
+  }
+
+  /**
+   * Changes of state worth a push, read from the jobs and turns themselves.
+   *
+   * - `needs_you`: a conversation or job of this person stopped on them (a
+   *   hand-off, a deliverable it could not prove) and no open approval or
+   *   question already says so: those are decisions, pushed once by
+   *   `collectDecisions`. A conversation resting on a reminder's timer, or one
+   *   that finished and only waits for the next message, is not stopped.
+   * - `done`: a conversation's turn finished with an answer while no client of
+   *   the person had focus. Long work is told by its own run reports.
+   *
+   * One per change of state, by its dedup key. Within the throttle window a
+   * second change in the same conversation, of the same kind, is recorded as
+   * dropped, so it is never reconsidered and never sent. A `needs_you` whose
+   * job moved on, or a `done` the person has since looked at, is dropped
+   * before it goes out.
+   */
+  async collectStatus(principalId: string, subscribedSince: Date, now: Date): Promise<void> {
+    const pacing = await this.pacingOf(principalId);
+    const since = new Date(
+      Math.max(subscribedSince.getTime(), now.getTime() - STATUS_LOOKBACK_MS),
+    ).toISOString();
+    const candidates: Array<{
+      kind: IntentKind;
+      key: string;
+      job: string;
+      title: string;
+      body: string;
+      because: string;
+      url: string;
+    }> = [];
+    if (pacing.decisions) {
+      const stopped = (await this.db.execute(sql`
+        select j.id as job_id, j.title, j.state_version as version,
+               coalesce(nullif(trim(j.wait->>'question'), ''), 'It stopped and is waiting for you.') as reason,
+               ${pageOf(sql`j`)} as url
+        from job j
+        left join experience_turn t on t.id = j.current_turn_id
+        where j.principal_id = ${principalId}
+          and j.audience = 'principal'
+          and j.experience_parent_id is null
+          and j.state = 'waiting_for_input'
+          -- A conversation that finished waits for the next message; its turn says done.
+          and (j.kind <> 'chat' or t.status = 'needs_you')
+          and j.updated_at >= ${since}::timestamptz
+          and not exists (select 1 from question q where q.job_id = j.id and q.state = 'open')
+          and not exists (select 1 from approval a join action ac on ac.id = a.action_id
+            where ac.job_id = j.id and a.decided_at is null)
+        order by j.updated_at
+      `)) as unknown as Array<{
+        job_id: string;
+        title: string;
+        version: number;
+        reason: string;
+        url: string;
+      }>;
+      for (const row of stopped)
+        candidates.push({
+          kind: 'needs_you',
+          key: `status:needs_you:${row.job_id}:${row.version}`,
+          job: row.job_id,
+          title: clip(row.title.trim() || 'A conversation needs you', 120),
+          body: clip(row.reason, 300),
+          because: 'Because it can’t go on without you.',
+          url: row.url,
+        });
+      // Moved on while the push waited: nothing to tell any more.
+      const live = stopped.map((row) => `status:needs_you:${row.job_id}:${row.version}`);
+      await this.db.execute(sql`update push_intent set dropped_at = now()
+        where principal_id = ${principalId} and kind = 'needs_you'
+          and sent_at is null and dropped_at is null
+          ${
+            live.length
+              ? sql`and dedup_key not in (${sql.join(
+                  live.map((key) => sql`${key}`),
+                  sql`, `,
+                )})`
+              : sql``
+          }`);
+    }
+    if (pacing.settled) {
+      const answered = (await this.db.execute(sql`
+        select t.id as turn_id, j.id as job_id, j.title, t.answer, ${pageOf(sql`j`)} as url
+        from experience_turn t
+        join job j on j.id = t.job_id
+        where j.principal_id = ${principalId}
+          and j.kind = 'chat'
+          and j.audience = 'principal'
+          and j.experience_parent_id is null
+          and t.status = 'done'
+          and t.finished_at >= ${since}::timestamptz
+          and length(trim(t.answer)) > 0
+          and not exists (select 1 from client_focus f where f.principal_id = ${principalId}
+            and f.focused_at >= t.finished_at - make_interval(mins => ${FOCUS_GRACE_MINUTES}))
+        order by t.finished_at
+      `)) as unknown as Array<{
+        turn_id: string;
+        job_id: string;
+        title: string;
+        answer: string;
+        url: string;
+      }>;
+      for (const row of answered)
+        candidates.push({
+          kind: 'done',
+          key: `status:done:${row.job_id}:${row.turn_id}`,
+          job: row.job_id,
+          title: clip(row.title.trim() || 'Your answer is ready', 120),
+          body: answerPreview(row.answer),
+          because: 'Because it finished while you were away.',
+          url: row.url,
+        });
+      // Looked at since: the person has seen it.
+      await this.db.execute(sql`update push_intent p set dropped_at = now()
+        from client_focus f
+        where p.principal_id = ${principalId} and p.kind = 'done'
+          and p.sent_at is null and p.dropped_at is null
+          and f.principal_id = p.principal_id and f.focused_at >= p.created_at`);
+    }
+    for (const row of candidates) {
+      const prefix = `status:${row.kind}:${row.job}:`;
+      await this.db.execute(sql`
+        insert into push_intent (id, principal_id, kind, title, body, because, url, dedup_key, urgency, dropped_at)
+        values (${newId('pint')}, ${principalId}, ${row.kind}, ${row.title}, ${row.body}, ${row.because},
+          ${row.url}, ${row.key}, 'soon',
+          case when exists (select 1 from push_intent p
+            where p.principal_id = ${principalId} and p.kind = ${row.kind}
+              and starts_with(p.dedup_key, ${prefix}) and p.dropped_at is null
+              and p.created_at > now() - make_interval(mins => ${STATUS_THROTTLE_MINUTES}))
+          then now() end)
+        on conflict (dedup_key) do nothing`);
+    }
+  }
+
   /**
    * Once a week, on the person's Monday, what came back: chases settled and
    * replies received in the seven days before. A quiet week says nothing.
@@ -516,8 +684,8 @@ export class PushService {
     // Only the kinds turned on, whatever was recorded around the moment one went off.
     // What Melete noticed has no switch of its own: it is paced by its urgency.
     const on: IntentKind[] = [
-      ...(pacing.decisions ? (['decision'] as const) : []),
-      ...(pacing.settled ? (['settled', 'progress'] as const) : []),
+      ...(pacing.decisions ? (['decision', 'needs_you'] as const) : []),
+      ...(pacing.settled ? (['settled', 'progress', 'done'] as const) : []),
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
       'situation',
     ];
@@ -609,6 +777,7 @@ export class PushService {
     for (const { principalId, since } of await this.subscribers()) {
       try {
         await this.collectDecisions(principalId, since);
+        await this.collectStatus(principalId, since, now);
         await this.collectWeekly(principalId, now);
         results[principalId] = await this.dispatch(principalId, now);
       } catch (error) {

@@ -365,6 +365,36 @@
         }
       }
     },
+    "/push/focus": {
+      "post": {
+        "tags": [
+          "push"
+        ],
+        "summary": "Say that a client of this person is open in front of them now",
+        "description": "Sent when a client gains focus and while it stays visible. A conversation that finishes within a couple of minutes of it is not pushed.",
+        "responses": {
+          "200": {
+            "description": "Focus recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "focused_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "focused_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/situations": {
       "get": {
         "tags": [

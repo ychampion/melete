@@ -422,6 +422,8 @@ export const adapter = {
   removePushDevice: (id: string) =>
     guard<{ subscription: PushDevice }>(() => api.DELETE('/push/subscriptions/{id}', path(id))),
   pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
+  /** This window is in front of the person: an answer that comes now needs no push. */
+  pushFocus: () => guard<{ focused_at: string }>(() => api.POST('/push/focus')),
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   /* ---------- texts and calls to the person's own number ---------- */
