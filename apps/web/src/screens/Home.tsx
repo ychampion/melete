@@ -613,12 +613,12 @@ export function WaitingOnYou({
   // A permission long work asked for belongs to no conversation: the work is
   // read so its card can say which work asks, and open it.
   const [runs, setRuns] = useState<Run[]>([]);
+  // A permission or question from long work rather than a chat is shown with that work.
   const fromWork = queue
-    .filter(
-      (decision) =>
-        decision.kind === 'permission' &&
-        !conversations.some((conversation) => conversation.id === chatOf(decision)),
-    )
+    .filter((decision) => {
+      const from = chatOf(decision);
+      return Boolean(from) && !conversations.some((conversation) => conversation.id === from);
+    })
     .map((decision) => decision.id)
     .join(' ');
   useEffect(() => {
