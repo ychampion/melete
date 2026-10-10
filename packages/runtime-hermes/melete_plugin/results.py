@@ -78,6 +78,19 @@ def needs_approval(response: Dict[str, Any]) -> bool:
     return status == NEEDS_APPROVAL or (status in (None, "proposed") and bool(response.get("requires_approval")))
 
 
+def _with_reason(out: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    """The broker's own words on what happened, when it gave them.
+
+    For a step that failed, was denied or is held, they carry the reason, written
+    by the broker or the connector. Without them the model can only say the
+    step failed for no reason, and retry blind.
+    """
+    message = response.get("message")
+    if isinstance(message, str) and message.strip():
+        out["message"] = message
+    return out
+
+
 def from_response(response: Dict[str, Any], receipt: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Turn one `POST /actions` answer into the object the model sees."""
     action_id = response.get("action_id")
@@ -101,17 +114,23 @@ def from_response(response: Dict[str, Any], receipt: Optional[Dict[str, Any]] = 
         return out
 
     if status in (UNKNOWN, UNRESOLVED):
-        return {
-            "status": status,
-            "action_id": action_id,
-            "instruction": OWN_COMPUTER_INSTRUCTION if response.get("own_computer") else UNCERTAIN_INSTRUCTION,
-        }
+        return _with_reason(
+            {
+                "status": status,
+                "action_id": action_id,
+                "instruction": OWN_COMPUTER_INSTRUCTION if response.get("own_computer") else UNCERTAIN_INSTRUCTION,
+            },
+            response,
+        )
 
-    return {
-        "status": status or FAILED,
-        "action_id": action_id,
-        "instruction": FAILURE_INSTRUCTION,
-    }
+    return _with_reason(
+        {
+            "status": status or FAILED,
+            "action_id": action_id,
+            "instruction": FAILURE_INSTRUCTION,
+        },
+        response,
+    )
 
 
 def from_error(code: str, message: str, read: bool = False) -> Dict[str, Any]:
