@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
+import type { Commits } from '../ops/quiet-loop.ts';
 import { type CaptureOptions, startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } from './db.ts';
 import type { ExtractionGateway } from './extract.ts';
@@ -48,7 +49,7 @@ export async function startServiceMemory(
   boss: PgBoss,
   spacesRoot: string,
   onJobRecompute?: (jobId: string) => Promise<void>,
-  automatic:
+  automatic: (
     | { gateway?: ExtractionGateway; embedding?: EmbeddingProvider; captureChat?: false }
     | {
         gateway?: ExtractionGateway;
@@ -59,7 +60,11 @@ export async function startServiceMemory(
         privacyOrigin: CaptureOptions['privacyOrigin'];
         /** Why a message said in a room is private; left out, nothing said in a room is kept. */
         roomPrivacyOrigin?: CaptureOptions['roomPrivacyOrigin'];
-      } = {},
+      }
+  ) & {
+    /** Says when a change may have been committed; memory's loops look for work then. */
+    wakeOn?: Commits;
+  } = {},
 ) {
   const journal = new FileRestrictionJournal(join(spacesRoot, '.memory', 'restrictions.jsonl'));
   try {
@@ -88,9 +93,12 @@ export async function startServiceMemory(
     markdown,
     gateway: automatic.gateway,
     ...(automatic.embedding ? { embedding: automatic.embedding } : {}),
+    wakeOn: automatic.wakeOn,
     onError,
   });
-  const recompute = onJobRecompute ? startJobRecompute(sql, onJobRecompute) : undefined;
+  const recompute = onJobRecompute
+    ? startJobRecompute(sql, onJobRecompute, { wakeOn: automatic.wakeOn })
+    : undefined;
 
   /**
    * A space's memory as the service itself holds it, provisioned the first
@@ -151,17 +159,20 @@ export async function startServiceMemory(
   }
   // What a person says in chat is offered to their memory with no step of theirs.
   const stopCapture = automatic.captureChat
-    ? startChatCapture({
-        sql,
-        boss,
-        journal,
-        scopeForJob,
-        onError,
-        privacyOrigin: automatic.privacyOrigin,
-        ...(automatic.roomPrivacyOrigin
-          ? { roomScope: storageScope, roomPrivacyOrigin: automatic.roomPrivacyOrigin }
-          : {}),
-      })
+    ? startChatCapture(
+        {
+          sql,
+          boss,
+          journal,
+          scopeForJob,
+          onError,
+          privacyOrigin: automatic.privacyOrigin,
+          ...(automatic.roomPrivacyOrigin
+            ? { roomScope: storageScope, roomPrivacyOrigin: automatic.roomPrivacyOrigin }
+            : {}),
+        },
+        { wakeOn: automatic.wakeOn },
+      )
     : undefined;
   return {
     async stop() {

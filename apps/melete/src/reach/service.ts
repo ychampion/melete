@@ -26,6 +26,7 @@ import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import { type DayWindow, localTime } from '../push/policy.ts';
 import {
   agreedWording,
@@ -859,7 +860,7 @@ export class ReachService {
   async start(boss: PgBoss, queue: string): Promise<void> {
     if (this.started) return;
     this.boss = boss;
-    await boss.work(queue, { batchSize: 1, pollingIntervalSeconds: 1 }, async () => {
+    await workQuiet(boss, queue, { batchSize: 1, pollingIntervalSeconds: 1 }, async () => {
       try {
         await this.sweep();
       } catch {

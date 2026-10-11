@@ -1220,6 +1220,8 @@ export async function bootstrap(
         ...(memoryEmbedding ? { embedding: memoryEmbedding } : {}),
         privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
         roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
+        // Memory looks for new work when a change is committed, not every second.
+        wakeOn: events,
       });
     }
     if (jobs) {
@@ -1295,10 +1297,12 @@ export async function bootstrap(
                 captureChat: true,
                 privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
                 roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
+                wakeOn: events,
               }
             : {
                 gateway: memoryGateway?.gateway,
                 ...(memoryEmbedding ? { embedding: memoryEmbedding } : {}),
+                wakeOn: events,
               },
         );
       }
@@ -1545,6 +1549,7 @@ export async function bootstrap(
         modelSettings,
         () => leading(leases, 'learning-drain'),
         spending,
+        events,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
