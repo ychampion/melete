@@ -9,8 +9,9 @@
  *    linked sign-ins, reset links, assistant grants, push subscriptions and
  *    pending notification texts are deleted, and its paired computers are
  *    disconnected. The email is free again. The responses it sent to apps in
- *    other people's spaces stay with those apps, naming nobody, and it is no
- *    longer shown as having any room open.
+ *    other people's spaces stay with those apps, naming nobody; apps shared
+ *    with it are no longer shared with it; and it is no longer shown as
+ *    having any room open.
  * 2. It leaves the rooms other people own, as leaving one does: its place
  *    there ends and the work it started there stops. Its own chats there,
  *    which only it could read, are deleted as deleting each would delete it;
@@ -399,12 +400,14 @@ function summary(row: Account, setupOwner: string | null): AccountSummary {
  * responses it sent to their apps are those apps' records and stay, as sent,
  * from nobody: no account on the response, nor on an earlier one its own
  * newer save replaced. Apps never get the viewer's name or email to put in a
- * response, so a response names someone only if they typed it. Whether it had
- * a room open is nobody's record, and goes.
+ * response, so a response names someone only if they typed it. An app shared
+ * with it is no longer shared with it, and whether it had a room open is
+ * nobody's record: both go.
  */
 async function unlinkElsewhere(q: Sql | TransactionSql, principalId: string) {
   await q`update app_submission set principal_id = null where principal_id = ${principalId}`;
   await q`update app_submission set deleted_by = null where deleted_by = ${principalId}`;
+  await q`delete from app_grant where grantee_kind = 'principal' and grantee_id = ${principalId}`;
   await q`delete from room_presence where principal_id = ${principalId}`;
 }
 

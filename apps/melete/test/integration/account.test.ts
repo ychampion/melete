@@ -20,6 +20,7 @@ import {
   accountList,
   accountRemoval,
   accountRemovalPreview,
+  appDetail,
   appSubmissionList,
 } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
@@ -201,6 +202,9 @@ async function responsesInRoom(room: { spaceId: string; principalId: string; mem
   await h.sql`insert into app (id, space_id, slug, name, publisher_principal_id)
     values (${appId}, ${room.spaceId}, ${appId.slice(4)}, 'Bake sale', ${room.principalId})`;
   const manifest = {
+    entry: 'index.html',
+    files: {},
+    data: {},
     collections: { signups: { max_bytes: 4096 }, ticks: { max_bytes: 1024 } },
   };
   await h.sql`insert into app_version (id, app_id, manifest_hash, manifest, file_count,
@@ -553,6 +557,12 @@ withDb('deleting an account', () => {
     expect(
       (await responsesSeenBy(room.sessionToken, appId)).map((response) => response.by),
     ).toEqual([null, null]);
+    // Nor is the app still shared with it, under the address its row was left with.
+    const page = await h.call(`melete_session=${room.sessionToken}`, `/apps/${appId}`);
+    expect(appDetail.parse(await page.json()).grants).toEqual([]);
+    expect(await h.sql`select 1 from app_grant where grantee_id = ${room.memberId}`).toHaveLength(
+      0,
+    );
     // The room and its owner are untouched; the member is no longer in it.
     expect(await h.sql`select 1 from space where id = ${room.spaceId}`).toHaveLength(1);
     const [membership] = await h.sql`select revoked_at from space_membership
