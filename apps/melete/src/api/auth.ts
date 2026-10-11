@@ -4,6 +4,7 @@ import {
   ATTACHMENT_LIMITS,
   attachmentSize,
   ID_PREFIXES,
+  magicLinkCheckRequest,
   magicLinkConsume,
   magicLinkRequest,
   newPasswordInput,
@@ -41,6 +42,7 @@ import { viewPath } from '../viewer/headers.ts';
 import { mountAccountAccess, sessionLabel } from './account-access.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
+import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
 import { mountPassword } from './password.ts';
@@ -398,6 +400,7 @@ export function mountAuth(
           '/setup',
           '/login',
           '/signin/magic-link',
+          '/signin/magic-link/check',
           '/signin/magic-link/consume',
           '/signin/google',
           '/signin/apple',
@@ -503,6 +506,19 @@ export function mountAuth(
         ? await signIn.request(input.email)
         : unavailable('Email sign-in is not connected yet.'),
     );
+  });
+  // Opening a link only asks this; the link is spent by consume, when the person presses Sign in.
+  app.post('/signin/magic-link/check', async (c) => {
+    if (!signIn) return c.json(unavailable('Email sign-in is not connected yet.'));
+    // A token cut short in the mail reads the same as one that has expired.
+    const shaped = magicLinkCheckRequest.safeParse(await c.req.json().catch(() => null));
+    if (!shaped.success)
+      throw new ServiceError(
+        'invalid_signin_link',
+        'This sign-in link has expired or was already used.',
+        400,
+      );
+    return c.json({ status: 'ok' as const, masked_email: await signIn.check(shaped.data.token) });
   });
   app.post('/signin/magic-link/consume', async (c) => {
     const input = magicLinkConsume.parse(await c.req.json());
