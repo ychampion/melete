@@ -207,6 +207,22 @@ function roomDecisions(principalId: string, since: Date) {
  * Where a decision is answered: long work's own page (a helper's is its
  * run's), otherwise the conversation.
  */
+/**
+ * The job under `j` stopped on its person and nothing else already says so: it
+ * waits for them, its turn (for a conversation) says it needs them, and no open
+ * question or approval tells of it as a decision. True for as long as the stop
+ * lasts, however long ago it began.
+ */
+const STOPPED_ON_PERSON = sql`j.audience = 'principal'
+  and j.experience_parent_id is null
+  and j.state = 'waiting_for_input'
+  -- A conversation that finished waits for the next message; its turn says done.
+  and (j.kind <> 'chat' or exists (select 1 from experience_turn t
+    where t.id = j.current_turn_id and t.status = 'needs_you'))
+  and not exists (select 1 from question q where q.job_id = j.id and q.state = 'open')
+  and not exists (select 1 from approval a join action ac on ac.id = a.action_id
+    where ac.job_id = j.id and a.decided_at is null)`;
+
 function pageOf(alias: ReturnType<typeof sql>) {
   return sql`case ${alias}.kind
       when 'run' then '/#/runs/' || ${alias}.id
@@ -501,17 +517,9 @@ export class PushService {
                coalesce(nullif(trim(j.wait->>'question'), ''), 'It stopped and is waiting for you.') as reason,
                ${pageOf(sql`j`)} as url
         from job j
-        left join experience_turn t on t.id = j.current_turn_id
         where j.principal_id = ${principalId}
-          and j.audience = 'principal'
-          and j.experience_parent_id is null
-          and j.state = 'waiting_for_input'
-          -- A conversation that finished waits for the next message; its turn says done.
-          and (j.kind <> 'chat' or t.status = 'needs_you')
+          and ${STOPPED_ON_PERSON}
           and j.updated_at >= ${since}::timestamptz
-          and not exists (select 1 from question q where q.job_id = j.id and q.state = 'open')
-          and not exists (select 1 from approval a join action ac on ac.id = a.action_id
-            where ac.job_id = j.id and a.decided_at is null)
         order by j.updated_at
       `)) as unknown as Array<{
         job_id: string;
@@ -530,19 +538,14 @@ export class PushService {
           because: 'Because it can’t go on without you.',
           url: row.url,
         });
-      // Moved on while the push waited: nothing to tell any more.
-      const live = stopped.map((row) => `status:needs_you:${row.job_id}:${row.version}`);
-      await this.db.execute(sql`update push_intent set dropped_at = now()
-        where principal_id = ${principalId} and kind = 'needs_you'
-          and sent_at is null and dropped_at is null
-          ${
-            live.length
-              ? sql`and dedup_key not in (${sql.join(
-                  live.map((key) => sql`${key}`),
-                  sql`, `,
-                )})`
-              : sql``
-          }`);
+      // Moved on while the push waited: nothing to tell any more. A stop that
+      // still holds keeps its push, however old it is: only the job settles it.
+      await this.db.execute(sql`update push_intent p set dropped_at = now()
+        where p.principal_id = ${principalId} and p.kind = 'needs_you'
+          and p.sent_at is null and p.dropped_at is null
+          and not exists (select 1 from job j
+            where p.dedup_key = 'status:needs_you:' || j.id || ':' || j.state_version
+              and ${STOPPED_ON_PERSON})`);
     }
     if (pacing.settled) {
       const answered = (await this.db.execute(sql`
@@ -786,7 +789,8 @@ export class PushService {
    * Clears pushes that went out, were dropped, or never went, once they are
    * older than the keeping period. A decision still open, or a situation still
    * open, keeps its row: that row is what says it was already told, and without
-   * it the same news would be told again.
+   * it the same news would be told again. So does a stop still waiting on its
+   * person.
    */
   async sweep(now: Date = new Date()): Promise<number> {
     const before = new Date(now.getTime() - INTENT_KEEP_MS).toISOString();
@@ -800,6 +804,9 @@ export class PushService {
             and q.state = 'open'))
         and not (p.situation_id is not null and exists (select 1 from situation x
           where x.id = p.situation_id and x.state in ('open', 'routed')))
+        and not (p.kind = 'needs_you' and exists (select 1 from job j
+          where p.dedup_key = 'status:needs_you:' || j.id || ':' || j.state_version
+            and ${STOPPED_ON_PERSON}))
       returning p.id`)) as unknown as Array<{ id: string }>;
     return gone.length;
   }

@@ -289,6 +289,37 @@ const MINUTE = 60_000;
     expect(moved?.droppedAt).not.toBeNull();
   });
 
+  test('a stop that still holds keeps its push past the lookback, and past the keeping period', async () => {
+    const who = await person();
+    const { jobId } = await conversation(who, {
+      state: 'waiting_for_input',
+      status: 'needs_you',
+      wait: { kind: 'user_input', question: 'Sign in to the clinic site.' },
+    });
+    await push.collectStatus(who.principalId, who.since, new Date());
+    // Hours later the job has not moved: it still waits on the person.
+    await db
+      .update(job)
+      .set({ updatedAt: new Date(Date.now() - 3 * 60 * MINUTE) })
+      .where(eq(job.id, jobId));
+    await push.collectStatus(who.principalId, who.since, new Date());
+    const [waiting] = await intents(who);
+    expect(waiting?.droppedAt).toBeNull();
+    expect(waiting?.sentAt).toBeNull();
+    // A week on, the clearing pass leaves it too: only the job settles it.
+    await db
+      .update(pushIntent)
+      .set({ createdAt: new Date(Date.now() - 8 * 86_400_000) })
+      .where(eq(pushIntent.id, waiting?.id ?? ''));
+    await push.sweep(new Date());
+    const [kept] = await intents(who);
+    expect(kept?.id).toBe(waiting?.id);
+    // Once it moves on, the push is dropped and later cleared.
+    await db.update(job).set({ state: 'running', stateVersion: 1 }).where(eq(job.id, jobId));
+    await push.collectStatus(who.principalId, who.since, new Date());
+    expect((await intents(who))[0]?.droppedAt).not.toBeNull();
+  });
+
   test('the person’s switches are respected', async () => {
     const who = await person();
     await db
