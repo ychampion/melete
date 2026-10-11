@@ -250,6 +250,39 @@ withDb('disconnecting a Google account', () => {
       stop();
     }
   });
+
+  test('the sweep runs as the service starts, and keeps what is less than a day old', async () => {
+    if (!db) return;
+    const { claims } = await seedJob(db.sql);
+    const secrets = new SealedSecretStore(new PostgresSecretRepository(db.sql), () => MASTER_KEY);
+    const sql = db.sql;
+    const aged = async (age: string) => {
+      const id = await secrets.put(claims.space_id, 'left-behind');
+      await sql`update secret set created_at = now() - ${age}::interval where id = ${id}`;
+      return id;
+    };
+    const old = await aged('25 hours');
+    const recent = await aged('23 hours');
+    const fresh = await aged('0 seconds');
+    const present = async (id: string) =>
+      (await sql`select id from secret where id = ${id}`).length > 0;
+    // The service's own interval, a day: only the pass at start can run here.
+    const stop = startSecretSweep(
+      sql,
+      async () => true,
+      undefined,
+      () => {},
+    );
+    try {
+      for (let tries = 0; tries < 100 && (await present(old)); tries += 1)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await present(old)).toBe(false);
+      expect(await present(recent)).toBe(true);
+      expect(await present(fresh)).toBe(true);
+    } finally {
+      stop();
+    }
+  });
 });
 
 describe('a read that took a reference a refresh just replaced', () => {

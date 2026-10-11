@@ -34,9 +34,10 @@ async function seed() {
     values (${principal}, ${`${principal.toLowerCase()}@example.test`}, 'person')`;
   await sql`insert into space (id, name, kind, owner_principal_id, git_path)
     values (${space}, 'Personal', 'personal', ${principal}, ${join(spacesRoot, space)})`;
+  // Written last key first, so the order they are stored in is not their key order.
   await sql`insert into task (id, space_id, title)
     select 'task_' || ${space} || '_' || lpad(n::text, 5, '0'), ${space}, 'Errand ' || n
-    from generate_series(1, ${TASKS}) n`;
+    from generate_series(${TASKS}, 1, -1) n`;
   // A record keyed by six columns.
   await sql`insert into usage_day (day, principal_id, space_id, class, tier, purpose, calls,
       input_tokens, cached_input_tokens, cache_write_tokens, charged_input_tokens, output_tokens,
