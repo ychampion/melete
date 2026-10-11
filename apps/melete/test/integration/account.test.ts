@@ -25,7 +25,7 @@ import {
 } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { AccountRemovalService, removedEmail } from '../../src/account/removal.ts';
-import { submit } from '../../src/apps/submissions.ts';
+import { SubmissionRefused, submit } from '../../src/apps/submissions.ts';
 import { zipEntries } from '../../src/attachments/extract.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -648,7 +648,64 @@ withDb('deleting an account', () => {
     expect(await h.sql`select 1 from app_submission where app_id = ${appId}`).toHaveLength(3);
     expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(0);
   }, 120_000);
-  test('a response that lands while the deletion is under way names nobody by the next pass, though its spaces are not gone yet', async () => {
+  test('a save its app sends as the account is being deleted neither fails the deletion nor names the account', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const sql = h.sql;
+    const room = await seedSpace(sql, { kind: 'shared', name: 'Book club', spacesRoot, workRoot });
+    const appId = await responsesInRoom(room);
+    // Shared with everyone here too, so being able to open it is not what stops the save.
+    await sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role, granted_by)
+      values (${newId('apg')}, ${appId}, 'installation', 'installation', 'view', ${room.principalId})`;
+    const [{ email } = { email: '' }] = await sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    const waiting = async (count: number) => {
+      for (let tries = 0; tries < 400; tries++) {
+        const [row] = await sql<{ n: number }[]>`select count(*)::int as n from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`;
+        if ((row?.n ?? 0) >= count) return;
+        await Bun.sleep(25);
+      }
+      throw new Error(`fewer than ${count} waiting`);
+    };
+    // Hold the deletion once it has the account's row, before it reaches the responses.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const holding = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = sql.begin(async (tx) => {
+      await tx`select 1 from session where principal_id = ${room.memberId} for update`;
+      locked();
+      await held;
+    });
+    await holding;
+    const deletion = h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', {
+      confirm_email: email,
+    });
+    await waiting(1);
+    // The tracker saves, replacing the earlier save, while the deletion holds the row.
+    const save = submit(sql, {
+      appId,
+      principalId: room.memberId,
+      collection: 'ticks',
+      record: { ticked: ['jam'] },
+      replace: true,
+    }).then(
+      () => 'stored',
+      (error: unknown) => (error instanceof SubmissionRefused ? 'refused' : String(error)),
+    );
+    await waiting(2);
+    release();
+    await holder;
+    expect((await deletion).status).toBe(202);
+    expect(await save).toBe('refused');
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    await h.settle(room.memberId);
+  }, 120_000);
+  test('a response still naming an account being deleted names nobody by the next pass, though its spaces are not gone yet', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const room = await seedSpace(h.sql, {
       kind: 'shared',
@@ -663,8 +720,9 @@ withDb('deleting an account', () => {
       (await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', { confirm_email: email }))
         .status,
     ).toBe(202);
-    // A save the app sent just before, accepted as the deletion began, and a
-    // space of its own whose removal has not finished.
+    // A response still naming it, as a save that raced its deletion could
+    // leave one before saves waited for it, and a space of its own whose
+    // removal has not finished.
     await h.sql`insert into app_submission (id, app_id, version_id, collection, principal_id, data, size)
       select ${recordId('asub')}, ${appId}, version_id, 'ticks', ${room.memberId},
         '{"ticked":["sugar"]}'::jsonb, 20
