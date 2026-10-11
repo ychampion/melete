@@ -300,6 +300,7 @@ test('the line names its buttons and draws the step', () => {
       onTakeOver={() => {}}
       onOpen={() => {}}
       onError={() => {}}
+      chatAgentId="nova"
     />,
   );
   expect(html).toContain('Choosing seats on flights.example');
@@ -316,6 +317,7 @@ test('the line names its buttons and draws the step', () => {
         onTakeOver={() => {}}
         onOpen={() => {}}
         onError={() => {}}
+        chatAgentId="nova"
       />,
     ),
   ).toBe('');
@@ -371,6 +373,7 @@ test('Stop and Take over call the conversation’s own stop and take-over', asyn
     onError: () => {
       throw new Error('no error expected');
     },
+    chatAgentId: 'nova',
     calls: fakeCalls('bs_1'),
   });
   button(pill, /^Stop Nova$/)();
@@ -408,6 +411,7 @@ test('take-over finds the desktop’s session, and with none running shows the c
     onError: () => {
       throw new Error('no error expected');
     },
+    chatAgentId: 'nova',
     calls: fakeCalls(null),
   });
   button(pill, /^Take over the browser$/)();
@@ -451,6 +455,7 @@ test('a message waiting for the answer, or one with a file, leaves the line with
         onTakeOver={() => {}}
         onOpen={() => {}}
         onError={() => {}}
+        chatAgentId="nova"
       />,
     );
     expect(html).toContain('Uploading 8 receipts');
@@ -687,6 +692,7 @@ test('the line names the agent whose turn is at work, not the chat’s own', () 
       onTakeOver={() => {}}
       onOpen={() => {}}
       onError={() => {}}
+      chatAgentId="nova"
     />,
   );
   expect(html).toContain('Scout is using the browser');
@@ -696,4 +702,88 @@ test('the line names the agent whose turn is at work, not the chat’s own', () 
     'Scout (removed)',
   );
   expect(workerName(null, agents, [], agents[0])).toBe('Nova');
+});
+
+test('a turn handed to an @mentioned agent takes over the chat agent’s desktop', async () => {
+  // Every turn in Nova's chat works on Nova's computer, Scout's included.
+  const scouting = browsing(() => [
+    tool(
+      entry('call:click', {
+        kind: 'sandbox',
+        title: 'Clicking in its computer',
+        status: 'running',
+      }),
+    ),
+  ]);
+  const turn = { ...scouting, turn: { ...scouting.turn, agent_id: 'scout' } };
+  const taken: CardAction[] = [];
+  let opened = 0;
+  const pill = WorkPill({
+    turn,
+    conversationId: 'job_1',
+    agentName: 'Scout',
+    onStop: () => {},
+    onTakeOver: (action) => taken.push(action),
+    onOpen: () => {
+      opened += 1;
+    },
+    onError: () => {
+      throw new Error('no error expected');
+    },
+    chatAgentId: 'nova',
+    calls: {
+      computer: async () => ok(computerWith(null)),
+      sandboxComputers: async () => ok({ computers: [desktopNamed('sbd_chat', 'nova')] }),
+    },
+  });
+  button(pill, /^Take over the computer$/)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(taken.map((action) => action.handle)).toEqual(['sbd_chat']);
+  expect(opened).toBe(0);
+});
+
+test('a look for a picture never takes the answer of a read begun before it', async () => {
+  const turn = browsing(() => [
+    tool(entry('call:seat', { title: 'Chose seats 14A and 14B', ended_at: at(20) })),
+    event({ type: 'status', status: 'done', composer: 'send' }),
+  ]);
+  const tools = computerTools(turn);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let newer = 0;
+  const olderCalls = {
+    computer: async () => {
+      await gate;
+      return ok({ ...computerWith('bs_1'), browser: seenBrowser(at(2), 'art_before_last') });
+    },
+    artifactUrl,
+  };
+  const newerCalls = {
+    computer: async () => {
+      newer += 1;
+      return ok({ ...computerWith('bs_1'), browser: seenBrowser(at(19), 'art_last') });
+    },
+    artifactUrl,
+  };
+  const first = lookUpFrame({ ...turn, id: 'turn_r3a' }, tools, olderCalls);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  const second = lookUpFrame({ ...turn, id: 'turn_r3b' }, tools, newerCalls);
+  release();
+  expect((await first)?.src).toBe('/artifacts/art_before_last/content');
+  // The second look began after the first read did, so it made its own.
+  expect(newer).toBe(1);
+  expect((await second)?.src).toBe('/artifacts/art_last/content');
+});
+
+test('once the stream says a turn ended, a picture seen after that is a later turn’s', () => {
+  const turn = browsing(() => [
+    tool(entry('call:seat', { title: 'Chose seats 14A and 14B', ended_at: at(10) })),
+    { ...event({ type: 'status', status: 'done', composer: 'send' }), created_at: at(11) },
+  ]);
+  expect(turn.ended_at).toBe(at(11));
+  const tools = computerTools(turn);
+  expect(frameFor(turn, tools, seenBrowser(at(15)), artifactUrl)).toBeNull();
+  expect(frameFor(turn, tools, seenBrowser(at(10)), artifactUrl)?.seenAt).toBe(at(10));
 });

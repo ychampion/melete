@@ -44,7 +44,7 @@ export function useComputer(
   conversationId: string | null,
   open: boolean,
   pulse: string,
-  /** The agent whose desktop to show, when the chat holds one for each of its agents. */
+  /** The chat's agent, whose desktop the chat's turns work on. */
   agentId: string | null = null,
 ) {
   const [computer, setComputer] = useState<AgentComputer | null>(null);
@@ -66,7 +66,9 @@ export function useComputer(
       setError(null);
     } else setError(result.error ?? result.unavailable);
     // No desktop is the common case (no sandbox, or one without a desktop), not an error.
-    setDesktop(displayFor(desktops.data?.computers ?? [], agentId));
+    const listed = desktops.data?.computers ?? [];
+    // Without one of the chat's own, the panel still shows what the chat holds.
+    setDesktop(displayFor(listed, agentId) ?? listed[0] ?? null);
   }, [conversationId, agentId]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pulse is the reload trigger
   useEffect(() => {

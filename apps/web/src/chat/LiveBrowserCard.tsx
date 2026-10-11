@@ -47,15 +47,40 @@ export const keepFrame = (turnId: string, frame: Frame) => {
 
 type Calls = Pick<typeof adapter, 'computer' | 'artifactUrl'>;
 
-/** One read of a conversation's computer at a time, shared by the pictures that ask together. */
-const reading = new Map<string, Promise<Result<AgentComputer>>>();
-function readComputer(conversationId: string, calls: Calls): Promise<Result<AgentComputer>> {
+const clock = () => (typeof performance === 'undefined' ? Date.now() : performance.now());
+
+/**
+ * A read of a conversation's computer in flight, shared only with callers whose
+ * change it can answer: one that began at or after `since`. An older read
+ * may show the page from before that change, so a new one is made instead.
+ */
+const reading = new Map<string, { started: number; result: Promise<Result<AgentComputer>> }>();
+function readComputer(
+  conversationId: string,
+  calls: Calls,
+  since: number,
+): Promise<Result<AgentComputer>> {
   const pending = reading.get(conversationId);
-  if (pending) return pending;
-  const read = calls.computer(conversationId).finally(() => reading.delete(conversationId));
-  reading.set(conversationId, read);
-  return read;
+  if (pending && pending.started >= since) return pending.result;
+  const started = clock();
+  const result = calls.computer(conversationId).finally(() => {
+    if (reading.get(conversationId)?.result === result) reading.delete(conversationId);
+  });
+  reading.set(conversationId, { started, result });
+  return result;
 }
+
+/** When this tab first saw each turn ended, so a look for its picture asks after that. */
+const endSeen = new Map<string, number>();
+const ENDS_KEPT = 200;
+const sawEnd = (turnId: string) => {
+  if (endSeen.has(turnId)) return;
+  endSeen.set(turnId, clock());
+  if (endSeen.size > ENDS_KEPT) {
+    const oldest = endSeen.keys().next().value;
+    if (oldest !== undefined) endSeen.delete(oldest);
+  }
+};
 
 /**
  * Looks once for the picture of an ended turn this tab never kept, as after a
@@ -65,8 +90,10 @@ export async function lookUpFrame(
   turn: TranscriptTurn,
   tools: ToolEntry[],
   calls: Calls = adapter,
+  /** When the turn was seen ended; a read begun before then cannot answer for it. */
+  since: number = endSeen.get(turn.id) ?? clock(),
 ): Promise<Frame | null> {
-  const result = await readComputer(turn.turn.conversation_id, calls);
+  const result = await readComputer(turn.turn.conversation_id, calls, since);
   const found = frameFor(turn, tools, result.data?.browser, calls.artifactUrl);
   if (found) keepFrame(turn.id, found);
   return found;
@@ -125,6 +152,7 @@ export function LiveBrowserCard({
   calls?: Calls;
 }) {
   const live = atWork(turn.status);
+  if (!live) sawEnd(turn.id);
   const surface = surfaceOf(tools);
   const [frame, setFrame] = useState<Frame | null>(() => lastFrames.get(turn.id) ?? null);
   const box = useRef<HTMLButtonElement>(null);
@@ -151,7 +179,8 @@ export function LiveBrowserCard({
   const refresh = useRef(
     createRefresher(() => {
       const mine = ++ticket.current;
-      return readComputer(conversationId, calls).then((result) => {
+      // A change on the stream is answered by a read begun after it, never one already under way.
+      return readComputer(conversationId, calls, clock()).then((result) => {
         if (!result.data) {
           // Tried again shortly, a couple of times; after that, at the next step.
           if (retries.current < RETRIES) {

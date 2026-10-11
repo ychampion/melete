@@ -43,6 +43,7 @@ export function WorkPill({
   onTakeOver,
   onOpen,
   onError,
+  chatAgentId,
   calls = adapter,
 }: {
   /** The running turn; the line shows only while it is at work on the computer. */
@@ -55,6 +56,8 @@ export function WorkPill({
   onOpen: () => void;
   /** Says a take-over could not be started, with the service's reason. */
   onError: (reason: string) => void;
+  /** The chat's agent: whatever agent the turn is, it works on this agent's computer. */
+  chatAgentId: string | null;
   calls?: Pick<typeof adapter, 'computer' | 'sandboxComputers'>;
 }) {
   const step = workStep(turn, agentName);
@@ -81,7 +84,7 @@ export function WorkPill({
           void takeOverFromPill(
             conversationId,
             step.surface,
-            turn?.turn.agent_id ?? null,
+            chatAgentId,
             { onTakeOver, onOpen, onError },
             calls,
           )

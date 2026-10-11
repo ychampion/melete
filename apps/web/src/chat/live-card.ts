@@ -111,15 +111,17 @@ export function frameFor(
   const began = Math.min(...steps.map((tool) => Date.parse(tool.started_at)));
   if (!(seen >= began)) return null;
   if (!atWork(turn.status)) {
-    // The latest end anyone recorded: the stream's for the turn, and every step's once all ended.
     const ends = steps.map((tool) => tool.ended_at);
-    const known = [
-      ...(turn.ended_at ? [turn.ended_at] : []),
-      ...(ends.every((end) => end !== null) ? ends : []),
-    ]
-      .map((end) => Date.parse(end ?? ''))
-      .filter((end) => !Number.isNaN(end));
-    if (known.length && seen > Math.max(...known) + END_SLACK_MS) return null;
+    const stepEnd = ends.every((end) => end !== null)
+      ? Math.max(...ends.map((end) => Date.parse(end ?? '')))
+      : Number.NaN;
+    const turnEnd = turn.ended_at ? Date.parse(turn.ended_at) : Number.NaN;
+    // The stream's end of the turn comes after its last step, so nothing seen later is this
+    // turn's; without it, the steps' own ends are the bound, with a little room.
+    const bound = !Number.isNaN(turnEnd)
+      ? Math.max(turnEnd, Number.isNaN(stepEnd) ? turnEnd : stepEnd)
+      : stepEnd + END_SLACK_MS;
+    if (!Number.isNaN(bound) && seen > bound) return null;
   }
   return {
     src: artifactUrl(browser.screenshot.artifact_id),
@@ -233,9 +235,11 @@ export function createRefresher(read: () => unknown) {
 type Calls = Pick<typeof adapter, 'computer' | 'sandboxComputers'>;
 
 /**
- * The desktop that belongs to the agent at work: a chat can hold one for each
- * of its agents. One whose agent is not named may be anyone's; another
- * agent's is never taken for this one's.
+ * The chat's own desktop. Every turn in a chat, an @mentioned agent's too,
+ * works on the computer of the chat's agent, so `agentId` is the chat's agent,
+ * never the turn's. A chat can also list desktops of helper work run by other
+ * agents; one whose agent is not named may be anyone's, and another agent's is
+ * never taken for the chat's.
  */
 export const displayFor = (
   computers: SandboxComputer[],

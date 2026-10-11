@@ -1157,13 +1157,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     (count, turn) => count + turn.trail.length,
     0,
   )}`;
-  // The turn at work, not a message waiting behind it, is whose computer the pill and panel show.
+  // The turn at work, not a message waiting behind it, is what the pill speaks for.
   const atWorkTurn = runningTurn(transcript.turns);
+  // Every turn in the chat, a mentioned agent's too, works on the chat agent's computer.
+  const chatAgentId = conversation?.agent_id ?? agentId;
   const computer = useComputer(
     conversationId,
     computerOpen && Boolean(conversationId),
     toolPulse,
-    (atWorkTurn ?? last)?.turn.agent_id ?? agentId,
+    chatAgentId,
   );
   const showComputer = computerOpen && Boolean(conversationId);
   const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
@@ -1498,6 +1500,7 @@ ${words}`
                 }
                 onTakeOver={takeOver}
                 onOpen={openComputer}
+                chatAgentId={chatAgentId}
                 onError={(reason) =>
                   toast({ kind: 'err', title: 'Couldn’t take over', sub: reason })
                 }
