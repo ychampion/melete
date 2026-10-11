@@ -83,6 +83,7 @@ import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
+import { recordSteer } from '../jobs/steer.ts';
 import type { TriggerRow, TriggerService } from '../jobs/triggers.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import {
@@ -2476,9 +2477,15 @@ export class RunService {
    * resting between shifts starts its next one now; one in the middle of a
    * shift reads them at the next; a finished run takes them up again.
    */
-  async message(row: JobRow, text: string) {
+  /**
+   * Words for a run. Said while a shift runs, they reach that shift at its
+   * next step (the caller hands them over; returns true then); otherwise the
+   * next shift reads them.
+   */
+  async message(row: JobRow, text: string): Promise<boolean> {
     // The watchdog paused it and asked: the person's reply is the answer.
     let resume = false;
+    let steered = false;
     await this.jobs.transaction(async (tx) => {
       const locked = await this.jobs.lock(tx, row.id);
       if (!locked) throw missing();
@@ -2494,6 +2501,15 @@ export class RunService {
           'This work was stopped. Start it again instead.',
           409,
         );
+      if (locked.state === 'running' && !locked.paused) {
+        await recordSteer(tx, locked, {
+          id: newId('steer'),
+          text,
+          principalId: requestPrincipal() ?? locked.principalId ?? null,
+        });
+        steered = true;
+        return;
+      }
       await appendEvent(tx, {
         jobId: row.id,
         type: 'notice',
@@ -2545,6 +2561,7 @@ export class RunService {
       }
     });
     if (resume) await this.setPaused(row, false);
+    return steered;
   }
 
   // -------------------------------------------------------------------------

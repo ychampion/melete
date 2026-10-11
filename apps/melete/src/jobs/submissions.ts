@@ -199,6 +199,44 @@ export class SubmissionService {
     });
   }
 
+  /**
+   * An input that is first offered to `other`, in one transaction with the job
+   * locked, so a key is taken one way or the other and never both. `other` is
+   * told whether this key was already admitted or refused (its retry replays
+   * that), and returns what it took the input as, or null to admit it here.
+   */
+  async inputUnless<T>(
+    jobId: string,
+    raw: unknown,
+    suppliedId: string,
+    other: (tx: Transaction, row: JobRow, known: boolean) => Promise<T | null>,
+  ): Promise<{ other: T } | { result: SubmissionResult }> {
+    const id = submissionId.parse(suppliedId);
+    const digest = submissionDigest('input', raw, jobId);
+    const outcome = await this.jobs.transaction(
+      async (tx): Promise<{ other: T } | { result: SubmissionResult }> => {
+        const row = await this.jobs.lock(tx, jobId);
+        if (row) {
+          const previous = await this.read(tx, id);
+          const taken = await other(
+            tx,
+            row,
+            Boolean(previous.saved || previous.history || previous.marker),
+          );
+          if (taken !== null) return { other: taken };
+        }
+        return { result: await this.admit(tx, 'input', raw, id, digest, jobId) };
+      },
+    );
+    if (
+      'result' in outcome &&
+      !outcome.result.replayed &&
+      outcome.result.receipt.state === 'accepted'
+    )
+      await this.faults.afterAdmissionBeforeResponse?.(outcome.result.receipt);
+    return outcome;
+  }
+
   create(input: unknown, id?: string) {
     return this.submit('create', input, id);
   }
@@ -328,6 +366,7 @@ export class SubmissionService {
                 postMessageRequest.parse(parsed.data).corrects,
                 postMessageRequest.parse(parsed.data).attachments,
                 postMessageRequest.parse(parsed.data).pasted,
+                postMessageRequest.parse(parsed.data).time_zone,
               ),
         );
       } catch (error) {

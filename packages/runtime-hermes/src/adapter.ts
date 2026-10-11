@@ -20,11 +20,13 @@ import {
   type RuntimeAdapter,
   type RuntimeCapabilities,
   type RuntimeEvent,
+  type SteerMessage,
   type ToolSpec,
   toolSpec,
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
+import { claimsContinuation, unbackedClaims } from './claims.ts';
 import {
   HermesClient,
   type HermesRequest,
@@ -40,7 +42,9 @@ import {
   stalledContinuation,
   stalledNote,
 } from './liveness.ts';
+import { onlyNarration } from './narration.ts';
 import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
+import { steerContinuation, steerInput } from './steer.ts';
 import { RUNTIME_VERSION } from './version.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -72,6 +76,21 @@ type RunResult = {
   called?: string[];
   /** The engine sent nothing for longer than its step may take, and the run was stopped. */
   stalled?: { silentMs: number; tool?: string };
+  /** The run ended with steered words it never reached a step's end to read. */
+  pendingSteer?: boolean;
+};
+
+/**
+ * Words the person sent while one attempt runs. `queued` waits for the next
+ * run of the attempt; `sent` went to the run in progress and is delivered at
+ * its next step's end; once the attempt's loop is over, `closed` refuses more.
+ */
+type SteerState = {
+  seen: Set<string>;
+  queued: SteerMessage[];
+  sent: SteerMessage[];
+  runId?: string;
+  closed: boolean;
 };
 
 type RunBudget = { turns: number; outputTokens: number; deadline: number };
@@ -103,11 +122,16 @@ export type HermesAdapterOptions = {
 const DEFAULT_STREAM_IDLE_MS = 90_000;
 /** How long a stuck engine is given to take the request to stop its run. */
 const STOP_WAIT_MS = 5_000;
+/** How many ended attempts are remembered to refuse a late steer; far more than run at once. */
+const ENDED_KEPT = 1_000;
 
 export class HermesRuntimeAdapter implements RuntimeAdapter {
   private readonly client: HermesClient;
   private readonly fetch: FetchLike;
   private readonly options: HermesAdapterOptions;
+  private readonly steers = new Map<string, SteerState>();
+  /** Attempts whose loop is over, newest last, so a late steer is refused rather than queued. */
+  private readonly ended = new Set<string>();
 
   constructor(options: HermesAdapterOptions) {
     this.options = options;
@@ -142,6 +166,47 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       interrupt: parsed.features.run_stop !== false,
       version: parsed.model ? `${RUNTIME_VERSION} (${parsed.model})` : RUNTIME_VERSION,
     };
+  }
+
+  private steerState(attemptId: string): SteerState {
+    let state = this.steers.get(attemptId);
+    if (!state) {
+      state = { seen: new Set(), queued: [], sent: [], closed: false };
+      this.steers.set(attemptId, state);
+    }
+    return state;
+  }
+
+  /**
+   * Words the person sent while this attempt runs. A run in progress takes
+   * them at its next step's end; between runs, or when the run will not take
+   * them, they become the input of the attempt's next run. Once the attempt's
+   * loop is over nothing more is taken here, and the service carries the
+   * words to the next turn.
+   */
+  async steer(attemptId: string, message: SteerMessage): Promise<boolean> {
+    if (this.ended.has(attemptId)) return false;
+    const state = this.steerState(attemptId);
+    if (state.closed) return false;
+    if (state.seen.has(message.id)) return true;
+    state.seen.add(message.id);
+    const runId = state.runId;
+    if (runId) {
+      // A run that has ended, or will not take it, answers 409; it waits for the next run.
+      const taken = await this.send(this.client.steer(runId, steerInput([message]))).then(
+        (response) => response.ok,
+        () => false,
+      );
+      // Taken by the run that is still this attempt's: read at its next step's end.
+      if (taken && state.runId === runId && !state.closed) {
+        state.sent.push(message);
+        return true;
+      }
+      if (taken && state.closed) return true;
+    }
+    if (state.closed) return false;
+    state.queued.push(message);
+    return true;
   }
 
   async start(
@@ -181,6 +246,13 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     const started = this.now();
     let stalled: RunResult['stalled'];
     let delivered = false;
+    // A reply that claims a step no tool took gets one hidden chance to take
+    // it or say it again without the claim. Actions the person approved in
+    // this wake were carried out for it, so they back a claim as well.
+    let repaired = false;
+    const approvedKinds = bundle.inputs.approval_results.flatMap((entry) =>
+      entry.decision === 'approved' && entry.kind ? [entry.kind] : [],
+    );
     const stuck = (silentMs: number): AttemptOutcome => ({
       kind: 'completed',
       summary: stalledNote(silentMs, this.now() - started),
@@ -196,6 +268,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     );
     const stop = () => {
       if (runId) void this.send(this.client.stop(runId)).catch(() => undefined);
+    };
+    const steering = this.steerState(bundle.attempt.id);
+    const steerDelivered = async (messages: SteerMessage[]) => {
+      for (const message of messages)
+        await emitter.emit({ type: 'steer_delivered', steer_id: message.id });
     };
     controller.signal.addEventListener('abort', stop);
     try {
@@ -231,14 +308,29 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         );
         runId = accepted.run_id;
         if (controller.signal.aborted) stop();
-        const result = await this.consume(
-          runId,
-          bundle,
-          emitter,
-          controller.signal,
-          catalog,
-          budget,
-        );
+        steering.runId = runId;
+        let result: RunResult;
+        try {
+          result = await this.consume(
+            runId,
+            bundle,
+            emitter,
+            controller.signal,
+            catalog,
+            budget,
+            async () => {
+              // A step ended: whatever the run took by then was read with it.
+              const read = steering.sent.splice(0);
+              await steerDelivered(read);
+            },
+          );
+        } finally {
+          steering.runId = undefined;
+        }
+        // Taken but never read: the run ended before another step did.
+        if (result.pendingSteer || result.outcome.kind !== 'completed')
+          steering.queued.unshift(...steering.sent.splice(0));
+        else await steerDelivered(steering.sent.splice(0));
         budget.outputTokens += result.outputTokens;
         called.push(...(result.called ?? []));
         if (result.live) catalog = result.live;
@@ -288,11 +380,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         }
         // A run that ended on its tool calls with nothing said to the person
         // is asked once, out of their sight, to say it now.
+        // So is one that only said what it was about to do ("Let me check…").
         const wordless =
           !result.loaded &&
           final.kind === 'completed' &&
-          !final.summary.trim() &&
-          called.length > 0;
+          ((!final.summary.trim() && called.length > 0) || onlyNarration(final.summary));
         if (wordless && !delivered && !signal.aborted && !controller.signal.aborted) {
           if (
             (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
@@ -301,6 +393,39 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             break;
           delivered = true;
           input = DELIVER_CONTINUATION;
+          continue;
+        }
+        // Words the person sent while this ran become the next run's input,
+        // before anything else ends the attempt: they are answered in this turn.
+        if (
+          steering.queued.length > 0 &&
+          !result.loaded &&
+          (final.kind === 'completed' || final.kind === 'waiting_for_input') &&
+          !signal.aborted &&
+          !controller.signal.aborted
+        ) {
+          if (
+            (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+              .length > 0
+          )
+            break;
+          const taken = steering.queued.splice(0);
+          input = steerContinuation(taken, final.kind === 'completed' ? final.summary : '');
+          await steerDelivered(taken);
+          continue;
+        }
+        const claims =
+          !result.loaded && !repaired && final.kind === 'completed' && final.summary.trim()
+            ? unbackedClaims(final.summary, [...called, ...approvedKinds])
+            : [];
+        if (claims.length > 0 && !signal.aborted && !controller.signal.aborted) {
+          if (
+            (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+              .length > 0
+          )
+            break;
+          repaired = true;
+          input = claimsContinuation(claims);
           continue;
         }
         if (!result.loaded || signal.aborted || controller.signal.aborted) break;
@@ -333,6 +458,14 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       controller.signal.removeEventListener('abort', stop);
+      // Nothing more is taken here; what was never read is the service's to carry.
+      steering.closed = true;
+      this.steers.delete(bundle.attempt.id);
+      this.ended.add(bundle.attempt.id);
+      if (this.ended.size > ENDED_KEPT) {
+        const [oldest] = this.ended;
+        if (oldest) this.ended.delete(oldest);
+      }
     }
     // Either clock is enough to settle this: the timer fired, or the wall clock
     // says the deadline is behind us. Whichever notices first, the budget is
@@ -365,6 +498,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     signal: AbortSignal,
     catalog: ToolSpec[],
     budget: RunBudget,
+    stepEnded: () => Promise<void> = async () => {},
   ): Promise<RunResult> {
     const result = (outcome: AttemptOutcome): RunResult => ({
       outcome,
@@ -393,6 +527,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     const completedTools: string[] = [];
     let outputTokens = 0;
     let budgetStopped = false;
+    let pendingSteer = false;
     // The stream is read as it arrives and handled as fast as each frame can be
     // recorded. Whatever arrived while the last one was being recorded is taken
     // together, so a burst of text is recorded as one piece rather than one
@@ -472,6 +607,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             const at = open.lastIndexOf(String(event.tool ?? 'unknown'));
             if (at >= 0) open.splice(at, 1);
             completedTools.push(String(event.tool ?? 'unknown'));
+            await stepEnded();
             if (event.tool === 'load_tool' && this.options.catalogState) {
               // Whether a tool loaded is the broker's record, never the model's
               // words. The plugin first asks the engine to add a loaded tool to
@@ -505,6 +641,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
             await beforeDeadline(this.send(this.client.stop(runId)), budget.deadline);
           }
           if (isTerminalEvent(String(event.event))) {
+            if (event.pending_steer) pendingSteer = true;
             const usage = event.usage as Record<string, unknown> | undefined;
             outputTokens = Math.max(Math.ceil(text.length / 4), Number(usage?.output_tokens ?? 0));
             if (!completedTools.length || text) budget.turns++;
@@ -554,6 +691,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         outcome,
         ...(loaded && !budgetStopped && outcome.kind === 'completed' ? { loaded } : {}),
         ...(live ? { live } : {}),
+        ...(pendingSteer ? { pendingSteer } : {}),
         outputTokens,
         called: completedTools,
       };

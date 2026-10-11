@@ -11,10 +11,11 @@
  *   GET  /v1/runs/{id}/events      the SSE stream, consumed exactly once
  *   POST /v1/runs/{id}/approval    answer a shell-command notification
  *   POST /v1/runs/{id}/stop        cancel
+ *   POST /v1/runs/{id}/steer       words the person sent while it runs
  *
- * `/v1/runs/{id}/steer` exists and is deliberately not used: a mid-run
- * instruction that never reached the ledger is exactly the untracked side
- * channel the broker exists to prevent.
+ * A steer carries only what the person wrote, after the service recorded it
+ * as their message: it is never an untracked side channel. Every effect it
+ * leads to still goes through the broker.
  */
 import type { AttemptBundle } from '@melete/contracts';
 import { z } from 'zod';
@@ -26,6 +27,7 @@ export const HERMES_ROUTES = {
   events: (runId: string) => `/v1/runs/${runId}/events`,
   approval: (runId: string) => `/v1/runs/${runId}/approval`,
   stop: (runId: string) => `/v1/runs/${runId}/stop`,
+  steer: (runId: string) => `/v1/runs/${runId}/steer`,
 } as const;
 
 export type HermesRequest = {
@@ -181,6 +183,16 @@ export class HermesClient {
       method: 'POST',
       headers: this.headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({}),
+    };
+  }
+
+  /** Words for a running run, taken at its next step's end. */
+  steer(runId: string, input: string): HermesRequest {
+    return {
+      url: `${this.baseUrl}${HERMES_ROUTES.steer(runId)}`,
+      method: 'POST',
+      headers: this.headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ input }),
     };
   }
 

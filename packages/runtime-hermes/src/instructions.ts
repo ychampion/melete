@@ -148,7 +148,9 @@ export const DONE_WORDS: readonly string[] = [
   'to_area or area artifacts) before you say it is attached or here; a file left on your',
   'computer has not reached them.',
   'Say how you did something (in your browser, on the desktop, with a command) only when',
-  'that is how you did it; otherwise leave the method out.',
+  'that is how you did it; otherwise leave the method out. The browser and computer you',
+  'work in are your own: to the person they are "my browser" and "my computer", never',
+  '"your browser", which would mean theirs.',
 ];
 
 /**
@@ -233,6 +235,21 @@ export const CITING: readonly string[] = [
 ];
 
 /**
+ * Which source to trust. A weather answer once credited a look-alike site with
+ * a misspelt name after reading the national weather service, and closed with
+ * a second link to the same page under a vague label. The service also takes a
+ * repeated link out of a closing links line (`experience/visited-links.ts`).
+ */
+export const SOURCE_QUALITY: readonly string[] = [
+  'Prefer the authoritative or original source: the official body (a national weather',
+  'service, a government agency, a court), the maker or seller itself, or the outlet that',
+  'first reported a story. Do not rely on look-alike, mirror, scraper or aggregator sites',
+  'when the original is reachable; if a search shows only those, open the original before',
+  'you answer. Give each page once: never repeat a link, and label a link by the site or',
+  'page it is (weather.gov, "Dell S2725QS on dell.com"), not by a vague word.',
+];
+
+/**
  * When work belongs in the background. Asked for research "in the background",
  * a model read the pages itself in the conversation, so the person waited, a
  * step that needed their approval held the conversation, and nothing came back
@@ -280,6 +297,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     ...ASKING,
     ...LOOKING_UP,
     ...CITING,
+    ...SOURCE_QUALITY,
     ...PLAIN_WORDS,
     ...PROGRESS_NOTES,
     'Reusable corrections from the person go through learning.propose when it is in the catalog.',
@@ -314,6 +332,15 @@ export function renderConstraints(constraints: AttemptBundle['job']['constraints
 }
 
 /**
+ * A remembered allergy or dietary rule is a limit, not a taste. Both models
+ * once suggested a peanut-heavy kitchen to someone whose peanut allergy was in
+ * the recalled details. Recall carries those details first whatever was asked
+ * (`safetyCandidates` in the service's memory recall).
+ */
+export const HARD_LIMITS =
+  'An allergy, a dietary rule, a medical need or another limit the person stated is a hard constraint: every place, dish, product or plan you suggest must respect it, and leave out anything that breaks it rather than add a warning. When it matters, say in a few words that you kept to it.';
+
+/**
  * What Melete already knows that bears on this turn. It is recalled for the
  * latest message, so it changes from turn to turn and is rendered after the
  * prior conversation, never in the cached system prompt.
@@ -329,6 +356,7 @@ export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[]
     '## What Melete already knows',
     '',
     'Each line is a record, not a belief. Name a path only when asked where something came from or when it is disputed. These are the details recalled for this message, not everything Melete remembers.',
+    HARD_LIMITS,
     '',
     ...knowledge.map(
       (entry) =>
@@ -385,6 +413,8 @@ export function renderInput(bundle: AttemptBundle): string {
 
   // The durable delta must reach the run's prompt, not just its service-side bundle.
   lines.push('', renderSinceLast(bundle.since_last));
+  // The moment changes every wake, so it is said here and never in the cached prefix.
+  lines.push(...renderNow(bundle.local_now));
 
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.
@@ -422,6 +452,86 @@ export function renderInput(bundle: AttemptBundle): string {
   }
 
   return lines.join('\n');
+}
+
+/** How many days the calendar strip in the volatile input shows, today first. */
+export const CALENDAR_DAYS = 14;
+
+/**
+ * Each of `days` calendar days from the person's today, as "Sat 14 Nov 2026".
+ * Counted on the calendar, not in hours, so a clock change never skips or
+ * repeats a day.
+ */
+export function calendarStrip(at: string, timeZone: string, days: number): string[] {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(at));
+  const part = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const format = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  return Array.from({ length: days }, (_, offset) => {
+    // Assembled from its parts, so no runtime's punctuation changes the line.
+    const of = format.formatToParts(
+      new Date(Date.UTC(part('year'), part('month') - 1, part('day') + offset, 12)),
+    );
+    const named = (type: string) => of.find((p) => p.type === type)?.value ?? '';
+    const day = `${named('weekday')} ${named('day')} ${named('month')} ${named('year')}`;
+    return offset === 0 ? `${day} (today)` : day;
+  });
+}
+
+/**
+ * The person's own date, time and weekday, and where they probably are. A
+ * reminder once gave the weather for the city a stale profile zone was named
+ * for, and the model had no clock of its own to say "this evening" by.
+ */
+export function renderNow(now: AttemptBundle['local_now']): string[] {
+  if (!now) return [];
+  let said: string;
+  try {
+    said = new Intl.DateTimeFormat('en-US', {
+      timeZone: now.time_zone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(now.at));
+  } catch {
+    return [];
+  }
+  const lines = [
+    '',
+    '## Now',
+    '',
+    `It is ${said} for the person (${now.time_zone}).`,
+    `The next two weeks: ${calendarStrip(now.at, now.time_zone, CALENDAR_DAYS).join(', ')}.`,
+    'Take dates and weekdays from these lines; do not work them out or run a clock command for them.',
+  ];
+  if (now.city)
+    lines.push(
+      `They are probably in or near ${now.city}, the city their time zone is named for. A place they name, or one you know they are in, comes first; for anything local (weather, travel, opening hours) say which place you used.`,
+    );
+  const mismatch = now.zone_mismatch;
+  if (mismatch) {
+    const [used, other] =
+      mismatch.used === 'profile'
+        ? [`their profile's ${mismatch.profile}`, `their device's ${mismatch.device}`]
+        : [`their device's ${mismatch.device}`, `their profile's ${mismatch.profile}`];
+    lines.push(
+      `Their profile says ${mismatch.profile} but their device is set to ${mismatch.device}. Times here use ${used}, not ${other}. Mention the difference once, in one short sentence, and suggest they fix their time zone in Settings if it is wrong.`,
+    );
+  }
+  return lines;
 }
 
 /**

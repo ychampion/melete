@@ -13,6 +13,7 @@ import { recordingFetch } from '../feedback/diagnostics.ts';
 import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
+import { browserTimeZone } from './timezone.ts';
 import type { Seen } from './together.ts';
 import type {
   AccountAccess,
@@ -131,6 +132,12 @@ import type {
   VoiceTranscription,
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
+
+/** This browser's zone as a message field, or nothing when the browser does not say. */
+function deviceZone(): { time_zone?: string } {
+  const zone = browserTimeZone();
+  return zone && zone.length <= 64 ? { time_zone: zone } : {};
+}
 
 /** The account a sign-in or first setup answers with. */
 type SignedInOwner = { id: string; email: string; created_at: string };
@@ -358,6 +365,8 @@ export const adapter = {
           text,
           ...(attachments.length ? { attachments: [...attachments] } : {}),
           ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
+          // The service reads time in it until the person confirms their profile's zone.
+          ...deviceZone(),
         },
       }),
     ),
@@ -472,6 +481,8 @@ export const adapter = {
   removePushDevice: (id: string) =>
     guard<{ subscription: PushDevice }>(() => api.DELETE('/push/subscriptions/{id}', path(id))),
   pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
+  /** This window is in front of the person: an answer that comes now needs no push. */
+  pushFocus: () => guard<{ focused_at: string }>(() => api.POST('/push/focus')),
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   /* ---------- texts and calls to the person's own number ---------- */
