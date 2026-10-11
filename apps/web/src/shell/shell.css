@@ -203,6 +203,13 @@
 }
 .chat-all {
   color: var(--muted);
+  /* "All chats" stays in view at the foot of the list, however long it is. */
+  position: sticky;
+  bottom: 0;
+  background: var(--canvas);
+}
+.chat-all:hover {
+  background: var(--hover);
 }
 .chat-all-count {
   font-size: 12px;
@@ -615,6 +622,10 @@ label.approvals-row {
   }
   .sidebar .phone-only {
     display: inline-flex;
+  }
+  /* No keyboard shortcut to show on a phone. */
+  .sidebar-nav .kbd {
+    display: none;
   }
   .page {
     padding: 20px 16px 32px;

@@ -814,14 +814,14 @@ withDb('experience rows and authenticated scope', () => {
     const before = memoryItemList.parse(await (await request('/memory/items')).json());
     const item = required(before.items.find((value) => value.id === first.claim_id));
     expect(item).toMatchObject({
-      key: 'food: diet',
+      key: 'Food: diet',
       value: 'Vegetarian',
       source: 'onboarding',
       editable: true,
     });
     expect(item.last_used).not.toBeNull();
     const why = await (await request(`/memory/items/${item.id}/why`)).json();
-    expect(why).toMatchObject({ reasons: ['food: diet: Vegetarian'], output: 'Used for Dinner.' });
+    expect(why).toMatchObject({ reasons: ['Food: diet: Vegetarian'], output: 'Used for Dinner.' });
     expect(JSON.stringify(why)).not.toContain(first.claim_id);
     const edited = await request(`/memory/items/${item.id}`, 'PATCH', {
       value: 'Vegan',

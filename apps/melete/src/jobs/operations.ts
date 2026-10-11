@@ -17,6 +17,7 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { visibleJob } from '../principals/authority.ts';
 import { QUEUES } from './queue.ts';
+import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobService } from './service.ts';
 
@@ -346,7 +347,8 @@ export class OperationService {
     if (this.started) return;
     this.started = true;
     await this.recover();
-    await this.jobs.boss.work<OperationWake>(
+    await workQuiet<OperationWake>(
+      this.jobs.boss,
       QUEUES.operation,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async (wakes) => {

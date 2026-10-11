@@ -11,7 +11,16 @@ import type { Run } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { usePoll } from './poll.ts';
 import { RunPermissions } from './RunPermissions.tsx';
-import { ago, excerpt, isOpen, lastActivity, standingLine, statusOf, workOrder } from './words.ts';
+import {
+  ago,
+  excerpt,
+  isOpen,
+  lastActivity,
+  lineUnderStatus,
+  standingLine,
+  statusOf,
+  workOrder,
+} from './words.ts';
 import './runs.css';
 
 /**
@@ -52,6 +61,8 @@ export function RunChatCards({
       {workOrder(runs).map((run) => {
         const status = statusOf(run);
         const update = run.result ?? run.latest_report?.body ?? null;
+        // The update shows below, so the line only drops what repeats the pill.
+        const line = lineUnderStatus({ ...run, latest_report: null }, status.word);
         return (
           <div key={run.id} className="run-chat-item">
             <a
@@ -70,7 +81,7 @@ export function RunChatCards({
                   </Status>
                 </span>
                 <span className="run-chat-title">{run.title}</span>
-                <span className="run-chat-line">{run.status_line}</span>
+                {line ? <span className="run-chat-line">{line}</span> : null}
                 {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
                 {update ? <span className="run-chat-update clamp2">{excerpt(update)}</span> : null}
               </span>

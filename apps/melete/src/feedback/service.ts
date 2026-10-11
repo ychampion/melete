@@ -155,6 +155,15 @@ export class FeedbackStore {
     return row ? this.read(row) : null;
   }
 
+  /** Delete a report for good. Answers whether there was one to delete. */
+  async remove(scope: FeedbackScope, id: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(feedback)
+      .where(and(eq(feedback.id, normalizeFeedbackId(id)), ...this.within(scope)))
+      .returning({ id: feedback.id });
+    return rows.length > 0;
+  }
+
   private within(scope: FeedbackScope): SQL[] {
     return [
       eq(feedback.installationId, scope.installationId),

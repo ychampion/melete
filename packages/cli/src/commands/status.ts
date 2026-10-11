@@ -7,6 +7,7 @@ import {
   type Check,
   type DiskFloors,
   gatherStatus,
+  judgeAccount,
   judgeModel,
   judgeStatus,
   MIN_FREE_BYTES,
@@ -65,6 +66,8 @@ export type ImageStatusFacts = {
   health: { status?: string; database?: string } | null;
   /** Whether the owner account still has to be created; null when unknown. */
   setupNeeded: boolean | null;
+  /** Whether creating it needs a setup code; null or absent when unknown. */
+  setupCodeRequired?: boolean | null;
 };
 
 /** The service's own address inside its container: its API bind name and port. */
@@ -101,15 +104,8 @@ export function judgeStatusInImage(
       fix: 'Read docker compose -f deploy/docker-compose.yml logs --tail=100 melete postgres on the host.',
     });
   else checks.push({ level: 'ok', name: 'API', detail: `${facts.address} answers` });
-  if (facts.setupNeeded === true)
-    checks.push({
-      level: 'warn',
-      name: 'Account',
-      detail: 'No account yet.',
-      fix: 'Open the web app and create your account.',
-    });
-  else if (facts.setupNeeded === false)
-    checks.push({ level: 'ok', name: 'Account', detail: 'The owner account exists.' });
+  const account = judgeAccount(facts, settings, 'the web app');
+  if (account) checks.push(account);
   return [...HOST_STATUS_RULES.map(hostOnly), ...checks.map(asResult)];
 }
 
@@ -132,6 +128,7 @@ export async function gatherStatusInImage(context: Context): Promise<ImageStatus
     address,
     health: health as ImageStatusFacts['health'],
     setupNeeded: typeof setup?.needed === 'boolean' ? setup.needed : null,
+    setupCodeRequired: typeof setup?.code_required === 'boolean' ? setup.code_required : null,
   };
 }
 

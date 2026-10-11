@@ -35,6 +35,7 @@ import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 
@@ -477,7 +478,8 @@ export class CompanyReplyPoller {
   async start(): Promise<void> {
     if (this.started) return;
     const boss = this.deps.triggers.jobs.boss;
-    await boss.work(
+    await workQuiet(
+      boss,
       QUEUES.companyReplies,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async () => {

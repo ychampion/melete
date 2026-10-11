@@ -55,6 +55,8 @@ const app =
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: root,
           MELETE_PUBLIC_URL: PUBLIC,
+          // Claimed by its first visitor here, as a test install is, without a setup code.
+          MELETE_SETUP_OPEN: 'true',
         }),
         jobs,
         memory: { sql: handle.sql, journal: { read: async () => [], append: async () => {} } },

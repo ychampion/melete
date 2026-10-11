@@ -138,6 +138,35 @@ describe('the because line', () => {
       expect(payload.because.startsWith('Because')).toBe(true);
     }
   });
+
+  test('stopped conversations and answers fold into a batch that counts them, a stop leading', () => {
+    const stop: Waiting = {
+      id: 'n1',
+      kind: 'needs_you',
+      title: 'Book the dentist',
+      body: 'The site wants a code sent to your phone.',
+      because: 'Because it can’t go on without you.',
+      url: '/#/chat/job_n1',
+      createdAt: at('2026-09-27T09:00:00Z'),
+      urgency: 'soon',
+    };
+    const answer = (id: string): Waiting => ({
+      ...stop,
+      id,
+      kind: 'done',
+      body: `Booked (${id})`,
+      because: 'Because it finished while you were away.',
+      url: `/#/chat/job_${id}`,
+    });
+    const both = pushPayload.parse(composeBatch([answer('a1'), stop]));
+    expect(both.title).toBe('One conversation needs you');
+    expect(both.because).toBe(
+      'Because one conversation stopped and one answer came since the last one.',
+    );
+    expect(both.url).toBe('/#/chat/job_n1');
+    const answers = pushPayload.parse(composeBatch([answer('a1'), answer('a2')]));
+    expect(answers.title).toBe('Two answers are ready');
+  });
 });
 
 describe('urgency lanes', () => {

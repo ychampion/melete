@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { memoryKeyLabel } from '../experience/evidence.ts';
 import {
   beliefCategoryOf,
   beliefLabel,
@@ -155,6 +156,12 @@ describe('labels', () => {
   test('a registry key reads as a name', () => {
     expect(subjectLabel('contact.maya.email', 'contact.maya.email')).toBe("Maya's email");
     expect(subjectLabel('pref.coffee.order', 'pref.coffee.order')).toBe('Coffee: order');
+    // Answers given while setting up read as words, the same on every screen.
+    expect(subjectLabel('pref.checkins.style', 'pref.checkins.style')).toBe('Check-ins: style');
+    expect(subjectLabel('pref.home.city', 'pref.home.city')).toBe('Home: city');
+    expect(memoryKeyLabel(null, 'fact.home_city')).toBe('Home city');
+    expect(memoryKeyLabel('contact.maya.email')).toBe("Maya's email");
+    expect(memoryKeyLabel(null)).toBe('Something you shared');
   });
   test('a subject reads as words, with the person first when it names one', () => {
     expect(subjectLabel(null, 'person.maya.birthday')).toBe("Maya's birthday");
@@ -169,6 +176,19 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.landlord.patel')).toBe('Landlord Patel');
     expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
     expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
+  });
+  test('a detail about the person themself reads as theirs, never as "the owner"', () => {
+    expect(subjectLabel('contact.owner.availability', 'contact.owner.availability')).toBe(
+      'Your availability',
+    );
+    expect(subjectLabel(null, 'person.owner.city')).toBe('Your city');
+    expect(beliefLabel(null, 'person.owner', "The owner's landlord is Mr. Patel")).toBe(
+      'Your landlord is Mr. Patel',
+    );
+    // Someone else who owns something stays as written.
+    expect(beliefLabel(null, 'person.cafe', 'The owner of the café is Ana')).toBe(
+      'The owner of the café is Ana',
+    );
   });
   test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {
     expect(beliefLabel(null, 'person.sister.lena.city', 'Sister Lena lives in Seattle.')).toBe(

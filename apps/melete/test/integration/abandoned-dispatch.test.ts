@@ -344,7 +344,10 @@ withDb('an action its tool call stopped waiting for', () => {
     expect(starts).toHaveLength(1);
     const job = await jobs.get(row.id);
     expect(job.state).toBe('waiting_for_input');
-    expect(job.wait).toMatchObject({ kind: 'user_input', question: STILL_RUNNING_NOTE });
+    expect(job.wait).toMatchObject({
+      kind: 'user_input',
+      question: `Step: Used Sandbox. ${STILL_RUNNING_NOTE}`,
+    });
     expect(await attempts(row.id)).toHaveLength(1);
   });
 
@@ -373,7 +376,10 @@ withDb('an action its tool call stopped waiting for', () => {
     expect(starts).toHaveLength(1);
     const job = await jobs.get(row.id);
     expect(job.state).toBe('waiting_for_input');
-    expect(job.wait).toMatchObject({ kind: 'user_input', question: STILL_RUNNING_NOTE });
+    expect(job.wait).toMatchObject({
+      kind: 'user_input',
+      question: `Step: Used Sandbox. ${STILL_RUNNING_NOTE}`,
+    });
     const [only] = await attempts(row.id);
     expect(only?.outcome).toBe('waiting_for_input');
     expect(await attempts(row.id)).toHaveLength(1);
@@ -400,7 +406,7 @@ withDb('an action its tool call stopped waiting for', () => {
     await runner(runtime, 300).handleWake(wake(row));
     expect((await jobs.get(row.id)).state).toBe('needs_reconciliation');
     const [open] = await handle.db.select().from(question).where(eq(question.jobId, row.id));
-    expect(open?.text).toBe(UNCONFIRMED_NOTE);
+    expect(open?.text).toBe(`Step: Used Sandbox. ${UNCONFIRMED_NOTE}`);
     expect(open?.options.map((option) => option.id)).toEqual(
       UNSETTLED_OPTIONS.map((option) => option.id),
     );
@@ -455,7 +461,7 @@ withDb('an action its tool call stopped waiting for', () => {
     }));
     const [open] = await handle.db.select().from(question).where(eq(question.jobId, row.id));
     if (!open) throw new Error('expected the turn to ask');
-    expect(open.text).toBe(STILL_RUNNING_NOTE);
+    expect(open.text).toBe(`Step: Used Sandbox. ${STILL_RUNNING_NOTE}`);
     expect(open.options.map((option) => option.label)).toEqual([
       'Keep waiting',
       'Check again',
@@ -485,5 +491,67 @@ withDb('an action its tool call stopped waiting for', () => {
     expect(after?.status).toBe('succeeded');
     // The conversation carries on, with the person's choice as what they said.
     expect((await jobs.get(row.id)).state).toBe('queued');
+  });
+
+  test('the question names the step the person approved, by the title they read', async () => {
+    const { handle, jobs } = fixture();
+    const { connectionId, row } = await setup();
+    const { runtime } = impatientRuntime(async (bundle) => {
+      await handle.db.insert(action).values({
+        id: newId('act'),
+        jobId: bundle.attempt.job_id,
+        attemptId: bundle.attempt.id,
+        connectionId,
+        kind: 'test.slow',
+        effectClass: 'write_reversible',
+        canonicalPayload: { summary: { title: 'Comment on issue #9' } },
+        payloadHash: 'e'.repeat(64),
+        idempotencyKey: newId('act'),
+        status: 'dispatched',
+        dispatchedAt: new Date(),
+      });
+    }, 1_000);
+    await runner(runtime, 300).handleWake(wake(row));
+    expect((await jobs.get(row.id)).wait).toMatchObject({
+      question: `Step: Comment on issue #9. ${STILL_RUNNING_NOTE}`,
+    });
+  });
+
+  test('a step already asked about neither holds a later turn nor asks again', async () => {
+    const { handle, jobs } = fixture();
+    const { connectionId, row } = await setup();
+    let first = true;
+    const { runtime, starts } = impatientRuntime(async (bundle) => {
+      if (!first) return;
+      first = false;
+      await handle.db.insert(action).values({
+        id: newId('act'),
+        jobId: bundle.attempt.job_id,
+        attemptId: bundle.attempt.id,
+        connectionId,
+        kind: 'test.slow',
+        effectClass: 'write_reversible',
+        canonicalPayload: { command: 'make' },
+        payloadHash: 'f'.repeat(64),
+        idempotencyKey: newId('act'),
+        status: 'dispatched',
+        dispatchedAt: new Date(),
+      });
+    }, 1_000);
+    await runner(runtime, 300).handleWake(wake(row));
+    expect((await jobs.get(row.id)).state).toBe('waiting_for_input');
+
+    // The person writes again while that step is still out. A long wait would
+    // hold this turn's end for as long as the step stays out, if it counted.
+    const asked = await jobs.input(row.id, 'Also, how long did it take?');
+    const began = Date.now();
+    await runner(runtime, 5_000).handleWake(wake(asked));
+    expect(Date.now() - began).toBeLessThan(4_000);
+    expect(starts).toHaveLength(2);
+    const after = await jobs.get(row.id);
+    expect(after.state).toBe('completed');
+    // Asked once: the person's message answered it, and nothing asks again.
+    const asked2 = await handle.db.select().from(question).where(eq(question.jobId, row.id));
+    expect(asked2).toHaveLength(1);
   });
 });

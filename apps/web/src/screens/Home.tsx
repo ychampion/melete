@@ -25,14 +25,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
-import {
-  clockTime,
-  displayZone,
-  hourOfDay,
-  isYesterday,
-  sameDay,
-  weekday,
-} from '../experience/clock.ts';
+import { clockTime, displayZone, hourOfDay, sameDay, weekday } from '../experience/clock.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
 import {
   agentById,
@@ -43,6 +36,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { pastDay } from '../experience/past-day.ts';
 import { givenName } from '../experience/profile.ts';
 import { shortTitle } from '../experience/title.ts';
 import { foldedOptions, foldTogether, seenTogether } from '../experience/together.ts';
@@ -243,8 +237,7 @@ export function relative(iso: string, now: number, zone: string = displayZone())
   const date = new Date(iso);
   if (now - date.getTime() < 5 * 60_000) return 'now';
   if (sameDay(date, new Date(now), zone)) return clockTime(date, zone);
-  if (isYesterday(date, new Date(now), zone)) return 'Yesterday';
-  return weekday(date, zone);
+  return pastDay(date, now, zone);
 }
 
 /* ---------- the queue ---------- */
@@ -310,7 +303,7 @@ function Face({ agent, size, state }: { agent: Agent | null; size: number; state
   return <AgentAvatar agent={agent} size={size} state={state ?? 'idle'} />;
 }
 
-function DecisionCard({
+export function DecisionCard({
   decision,
   conversation,
   run,
@@ -321,6 +314,7 @@ function DecisionCard({
   cardRef,
   onDecide,
   onAnswer,
+  onDismiss,
 }: {
   cardRef?: Ref<HTMLDivElement>;
   decision: Decision;
@@ -335,6 +329,8 @@ function DecisionCard({
   onDecide: (permission: Permission, option: 'allow_once' | 'deny') => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
   onAnswer: (question: Question, answer: string | { text: string }) => void;
+  /** Stop waiting for an answer to the question. */
+  onDismiss: (question: Question) => void;
 }) {
   const [own, setOwn] = useState('');
   const chatId =
@@ -436,9 +432,9 @@ function DecisionCard({
         <Face agent={agent} size={22} />
         <span className="decision-agent">{agent?.name ?? 'Melete'}</span>
         {conversation ? (
-          <span className="decision-for clamp1">for {conversation.title}</span>
+          <span className="decision-for clamp1">from “{conversation.title}”</span>
         ) : run ? (
-          <span className="decision-for clamp1">for {run.title}</span>
+          <span className="decision-for clamp1">from “{run.title}”</span>
         ) : null}
         <div className="grow" />
         {amount && state ? (
@@ -550,10 +546,28 @@ function DecisionCard({
             Deny
           </Button>
         ) : null}
+        {question && !question.needs_answer ? (
+          <Button
+            className="btn-card"
+            variant="ghost"
+            disabled={busy}
+            aria-label={`${run && !conversation ? 'Dismiss and stop' : 'Dismiss'}: ${question.text}`}
+            onClick={() => onDismiss(question)}
+          >
+            {/* Long work that stopped to ask has nothing else to wait for, so it stops too. */}
+            {run && !conversation ? 'Dismiss and stop' : 'Dismiss'}
+          </Button>
+        ) : null}
       </div>
     </div>
   );
 }
+
+/** The long work a decision came from, when it came from long work rather than a chat. */
+export const runOfDecision = (runs: readonly Run[], decision: Decision) =>
+  decision.kind === 'permission'
+    ? runOfPermission(runs, decision.permission)
+    : (runs.find((run) => run.id === decision.question.conversation_id) ?? null);
 
 export function WaitingOnYou({
   decisions,
@@ -599,12 +613,12 @@ export function WaitingOnYou({
   // A permission long work asked for belongs to no conversation: the work is
   // read so its card can say which work asks, and open it.
   const [runs, setRuns] = useState<Run[]>([]);
+  // A permission or question from long work rather than a chat is shown with that work.
   const fromWork = queue
-    .filter(
-      (decision) =>
-        decision.kind === 'permission' &&
-        !conversations.some((conversation) => conversation.id === chatOf(decision)),
-    )
+    .filter((decision) => {
+      const from = chatOf(decision);
+      return Boolean(from) && !conversations.some((conversation) => conversation.id === from);
+    })
     .map((decision) => decision.id)
     .join(' ');
   useEffect(() => {
@@ -666,6 +680,15 @@ export function WaitingOnYou({
       }
       settled(question.id);
     });
+  const dismiss = (question: Question) =>
+    void flight.run(question.id, async () => {
+      const result = await adapter.dismissQuestion(question.id);
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t dismiss it' });
+        return;
+      }
+      settled(question.id);
+    });
 
   return (
     <section className="home-section" aria-labelledby="home-waiting">
@@ -695,7 +718,7 @@ export function WaitingOnYou({
             key={front.id}
             decision={front}
             conversation={conversationOf(front)}
-            run={front.kind === 'permission' ? runOfPermission(runs, front.permission) : null}
+            run={runOfDecision(runs, front)}
             agent={agentOf(front)}
             linked={linkedOf(front)}
             now={now}
@@ -705,6 +728,7 @@ export function WaitingOnYou({
               decide(permission, option, front.kind === 'permission' ? front.together : [])
             }
             onAnswer={answer}
+            onDismiss={dismiss}
           />
           {next ? (
             <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>

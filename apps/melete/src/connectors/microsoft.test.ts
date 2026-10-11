@@ -198,7 +198,7 @@ describe('a Microsoft connection keeps its access current', () => {
     const row = { secret_ref: 'sealed-1', status: 'active' };
     const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
       if (values.length > 2) row.secret_ref = String(values[0]);
-      return values.length > 2 ? [] : [row];
+      return values.length > 2 ? [{ id: 'conn_1' }] : [row];
     }) as unknown as Sql;
     let serial = 1;
     const secrets = {
@@ -208,6 +208,9 @@ describe('a Microsoft connection keeps its access current', () => {
         const id = `sealed-${++serial}`;
         stored.set(id, value);
         return id;
+      },
+      forget: async (id: string) => {
+        stored.delete(id);
       },
     } as unknown as SealedSecretStore;
     const access = signedInAccess({
@@ -224,6 +227,8 @@ describe('a Microsoft connection keeps its access current', () => {
     const again = JSON.parse(stored.get(row.secret_ref) ?? '{}');
     stored.set(row.secret_ref, JSON.stringify({ ...again, expires_at: Date.now() - 1 }));
     expect(await access.token()).not.toBe(first.access_token);
+    // Each refresh keeps one sealed copy, not one more.
+    expect([...stored.keys()]).toEqual([row.secret_ref]);
   });
 });
 

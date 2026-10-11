@@ -31,10 +31,12 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from './queue.ts';
+import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
 import { personStarted } from './wake-guard.ts';
+import { openWakeTurn } from './wake-turn.ts';
 
 export const eventDelivery = z.object({
   connection_id: prefixedId(ID_PREFIXES.connection),
@@ -626,6 +628,9 @@ export class TriggerService {
           text: row.objective,
         });
     }
+    // A conversation's own schedule answers each occurrence in a new message.
+    if (row.kind === 'chat' && registration.kind === 'schedule')
+      row = await openWakeTurn(tx, row, `schedule:${registration.id}:${received.seq}`);
     return this.jobs.move(
       tx,
       row,
@@ -849,14 +854,16 @@ export class TriggerService {
   async start(): Promise<void> {
     if (this.started) return;
     await this.syncSchedules();
-    await this.jobs.boss.work<{ trigger_id: string }>(
+    await workQuiet<{ trigger_id: string }>(
+      this.jobs.boss,
       QUEUES.triggerSchedule,
       { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
       async (wakes) => {
         for (const wake of wakes) await this.fireSchedule(wake.data.trigger_id, wake.id);
       },
     );
-    await this.jobs.boss.work<WatchScan>(
+    await workQuiet<WatchScan>(
+      this.jobs.boss,
       QUEUES.triggerScan,
       { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
       async (wakes) => {

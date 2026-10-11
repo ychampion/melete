@@ -86,6 +86,7 @@ import {
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
 import { takeOverFromCard } from './take-over.ts';
+import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
@@ -314,8 +315,11 @@ function TurnView({
   busy,
   onRetry,
   conversationAgentId,
+  waitingUntil,
 }: {
   turn: TranscriptTurn;
+  /** When the conversation rests on a time it set itself (the latest turn only). */
+  waitingUntil?: string | null;
   now: number;
   touch: boolean;
   latest: boolean;
@@ -444,7 +448,7 @@ function TurnView({
         reactions={reactions.filter((r) => r.by === 'assistant')}
         onRetry={onRetry ? () => onRetry(turn.id) : undefined}
       />
-      <div className="turn">
+      <div className="turn" data-turn={turn.id}>
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
           <div className="turn-main">
@@ -457,6 +461,7 @@ function TurnView({
             <WorkLog
               turn={turn}
               now={now}
+              until={waitingUntil}
               items={layout.log}
               finished={layout.finished}
               renderBlock={renderBlock}
@@ -637,7 +642,11 @@ export function ChatScreen({ id }: { id: string | null }) {
     conversationId,
     agentId: conversationId ? null : (agentId ?? fallback?.id ?? null),
   };
-  const voice = useVoiceStatus(voicePlace);
+  // A routine's thread takes no messages, so voice is not offered or asked about there; an
+  // existing chat is asked about once it is read and known to be an ordinary one.
+  const voice = useVoiceStatus(
+    conversationId && (!conversation || conversation.automation_id) ? null : voicePlace,
+  );
   const [voiceOpen, setVoiceOpen] = useState(() => {
     const arriving = conversationId !== null && voiceOnArrival === conversationId;
     if (arriving) voiceOnArrival = null;
@@ -662,6 +671,12 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
   const working = WORKING.includes(transcript.status);
+  // Messages that waited for the running turn go once it ends.
+  const heldForTurn = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    if (working) return;
+    for (const go of heldForTurn.current.splice(0)) go();
+  }, [working]);
   // A message held before sending counts down on its receipt.
   const holding = transcript.turns.some((turn) =>
     turn.blocks.some(
@@ -765,6 +780,28 @@ export function ChatScreen({ id }: { id: string | null }) {
     node.scrollTop = node.scrollHeight;
   }, [transcript, stuck]);
 
+  // A link to one answer (`?turn=`, a routine run's "Open result") opens on that answer,
+  // unfolding the earlier turns when it is one of them. It is shown once; after that the
+  // chat scrolls as usual.
+  const focusTurn = route.query.get('turn');
+  const focusedTurn = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusTurn || focusedTurn.current === focusTurn) return;
+    const index = transcript.turns.findIndex((turn) => turn.id === focusTurn);
+    if (index < 0) return;
+    if (index < hidden) {
+      setShowAll(true);
+      return;
+    }
+    const node = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-turn="${CSS.escape(focusTurn)}"]`,
+    );
+    if (!node) return;
+    focusedTurn.current = focusTurn;
+    setStuck(false);
+    node.scrollIntoView({ block: 'start' });
+  }, [focusTurn, transcript, hidden]);
+
   const onScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
@@ -828,10 +865,41 @@ export function ChatScreen({ id }: { id: string | null }) {
         return accepted.data !== null;
       }
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
-      const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
-      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline', [
-        ...attached,
-      ]);
+      const mentioned = mentionedAgent(clean, agents);
+      const speaker = mentioned?.id ?? agent ?? '';
+      // While a turn runs, plain words go to it at its next step, drawn inside it.
+      if (joinsRunningTurn(clean, working, attached.length) && navigator.onLine) {
+        const steerId = state.steer(clean);
+        const accepted = await adapter.send(conversationId, clean, messageKey(), [], pasted);
+        if (accepted.data === null) {
+          state.steered(steerId, null);
+          changeDraft(clean);
+          pasteMarks.current = wholeDraft(pasted, clean);
+          toast({
+            kind: 'err',
+            title: 'Couldn’t send',
+            sub: accepted.error ?? accepted.unavailable ?? '',
+          });
+          return false;
+        }
+        const taken = accepted.data.steer;
+        state.steered(steerId, taken?.id ?? null);
+        if (!taken) {
+          // The turn ended as they were sent: they are the next turn's message.
+          const next = state.local(clean, speaker, 'sending');
+          state.accepted(next, accepted.data.turn_id, accepted.data.receipt.received_at);
+        }
+        refreshConversations();
+        return true;
+      }
+      // Words naming an agent while a turn runs wait for it to end, then go as their own turn.
+      const wait = waitsForTurn(clean, working) && navigator.onLine;
+      const localId = state.local(
+        clean,
+        speaker,
+        wait ? 'waiting_turn' : navigator.onLine ? 'sending' : 'queued_offline',
+        [...attached],
+      );
       // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
       const box = outbox.current;
@@ -854,6 +922,10 @@ export function ChatScreen({ id }: { id: string | null }) {
         refreshConversations();
         return true;
       };
+      if (wait) {
+        heldForTurn.current.push(() => void box.send(localId, post));
+        return true;
+      }
       if (!navigator.onLine) {
         const onOnline = () => {
           window.removeEventListener('online', onOnline);
@@ -875,6 +947,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       clearFiles,
       restoreFiles,
       changeDraft,
+      working,
     ],
   );
 
@@ -1248,6 +1321,9 @@ export function ChatScreen({ id }: { id: string | null }) {
                       now={now}
                       touch={touch}
                       latest={turn.id === lastId}
+                      waitingUntil={
+                        turn.id === lastId ? (conversation?.waiting_until ?? null) : null
+                      }
                       onDecide={decide}
                       onSendDraft={sendDraft}
                       onUndo={undo}

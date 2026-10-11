@@ -58,6 +58,9 @@ export type PushSettings = z.infer<typeof pushSettings>;
 export const pushSettingsUpdate = pushSettings.omit({ quiet_hours: true }).partial().strict();
 export const pushSettingsResponse = z.strictObject({ settings: pushSettings });
 
+/** A client in front of the person: what finishes while one has focus needs no push. */
+export const pushFocusResponse = z.strictObject({ focused_at: z.string() });
+
 /** What the service worker receives: every proactive message says why it was sent. */
 export const pushPayload = z.strictObject({
   title: z.string().min(1).max(120),

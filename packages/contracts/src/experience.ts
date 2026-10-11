@@ -52,7 +52,8 @@ export const unavailable = (reason: string): NotAvailable =>
 export const experienceOk = z.strictObject({ status: z.literal('ok') });
 export const experienceResult = <T extends z.ZodType>(shape: T) => z.union([shape, notAvailable]);
 
-export const deliveryState = z.enum(['sending', 'queued_offline', 'failed_retry']);
+/** `waiting_turn`: it names an agent while a turn runs, so it is sent once that turn ends. */
+export const deliveryState = z.enum(['sending', 'queued_offline', 'failed_retry', 'waiting_turn']);
 export const turnStatus = z.enum([
   'idle',
   'queued',
@@ -173,6 +174,12 @@ export const experienceQuestion = z.strictObject({
    * conversation may leave the device, takes one of its options only.
    */
   free_text: z.boolean(),
+  /**
+   * Only an answer settles it, so it cannot be dismissed: a memory question,
+   * or one about something that may already have gone out. Absent reads as
+   * false.
+   */
+  needs_answer: z.boolean().optional(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });
@@ -519,7 +526,15 @@ export const trailStep = z.discriminatedUnion('type', [
     /** Present when the step is one tool entry: the same copy the `tool` item carries. */
     tool: toolCall.optional(),
   }),
-  z.strictObject({ type: z.literal('note'), text }),
+  z.strictObject({
+    type: z.literal('note'),
+    text,
+    /**
+     * True for a line about the work in progress (waiting for a free slot, a
+     * break in the stream): shown while the turn runs, and not once it ended.
+     */
+    transient: z.literal(true).optional(),
+  }),
   z.strictObject({
     type: z.literal('done'),
     summary: text,
@@ -587,6 +602,18 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
     /**
+     * Words the person sent while the turn was running. `queued` is shown at
+     * once; `delivered` once the agent has read them in this turn; `carried`
+     * when the turn ended first and they became the next message instead.
+     * Updates carry the id only.
+     */
+    z.strictObject({
+      type: z.literal('steer'),
+      id: z.string().min(1).max(80),
+      text: z.string().max(20_000).optional(),
+      state: z.enum(['queued', 'delivered', 'carried']),
+    }),
+    /**
      * The agent's working copy of the conversation before this point was
      * summarised to make room. Every message is still saved and shown; the
      * agent now works from the summary. It carries no words of the summary.
@@ -621,6 +648,11 @@ export const conversation = z.strictObject({
    * schedule adds to it; a message from the person starts a chat instead.
    */
   automation_id: id.optional(),
+  /**
+   * Set while the conversation rests on a time it set itself, such as a
+   * reminder or a check later: nothing is asked of the person until then.
+   */
+  waiting_until: date.optional(),
 });
 export type Conversation = z.infer<typeof conversation>;
 export const conversationTurn = z.strictObject({
@@ -652,6 +684,8 @@ export const conversationMessage = z
     attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message_ceiling).optional(),
     /** Stretches of `text` the person pasted rather than typed, when the composer can tell. */
     pasted: z.array(messageSpan).max(MESSAGE_SPAN_LIMIT).optional(),
+    /** The time zone the sender's device is set to, by name, when it says. */
+    time_zone: z.string().min(1).max(64).optional(),
   })
   .refine((value) => value.text.trim().length > 0 || (value.attachments?.length ?? 0) > 0, {
     message: 'A message needs words or a file.',
@@ -660,6 +694,11 @@ export const conversationMessage = z
 export const messageAcceptance = z.strictObject({
   turn_id: id,
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
+  /**
+   * Present when a turn was running: the words went to that turn, shown at
+   * once as `queued` and read at its next step. `turn_id` is the running turn.
+   */
+  steer: z.strictObject({ id, state: z.literal('queued') }).optional(),
 });
 export const conversationResponse = z.strictObject({ conversation });
 /** A new name for a chat. It changes only the title, not when the chat was last active. */
@@ -1111,6 +1150,16 @@ export const automationRun = z.strictObject({
   summary: z.string().max(600).nullable(),
   /** Why a run failed or stopped, or what it is waiting for, in a sentence. */
   reason: z.string().max(600).nullable(),
+  /**
+   * The run finished, but every step it tried (a page read, an app, a
+   * command) failed or was refused, so it has nothing new to show.
+   */
+  empty: z.literal(true).optional(),
+  /**
+   * The run finished with something, but some of its steps were held back or
+   * refused; `reason` names them.
+   */
+  partial: z.literal(true).optional(),
 });
 /** The newest run of a routine, for the place the person looks first. */
 export const routineResult = z.strictObject({
@@ -1378,6 +1427,12 @@ export const experienceOperations = {
     request: quickAnswerRequest,
     response: experienceOk,
   },
+  /**
+   * Stops waiting for an answer: the question leaves every list and the
+   * conversation waits for the person's next message. Refused for a question
+   * about something that may already have gone out.
+   */
+  'POST /quick-answers/{id}/dismiss': { response: experienceOk },
   'GET /agents': { response: agentList },
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },
