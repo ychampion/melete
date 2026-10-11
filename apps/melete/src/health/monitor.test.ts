@@ -1,13 +1,17 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { Hono } from 'hono';
+import nodemailer from 'nodemailer';
+import { plainSmtpAvailable, plainSmtpServer } from '../../test/helpers/plain-smtp.ts';
 import { mountHealthDetail } from '../api/usage.ts';
 import { loadEnv } from '../env.ts';
+import { smtpTransportOptions } from '../experience/account-mail.ts';
 import { failureCode } from '../memory/gateway.ts';
 import {
   type Alert,
   alertSendersFromEnv,
   cellsProbe,
   diskCheck,
+  emailSender,
   type HealthDetail,
   HealthMonitor,
   healthDetail,
@@ -132,6 +136,50 @@ describe('operator alerts', () => {
     await expect(
       failing({ kind: 'unhealthy', subject: 's', text: 't', detail: unhealthy }),
     ).rejects.toThrow('webhook answered 500');
+  });
+
+  test.skipIf(!plainSmtpAvailable)(
+    'alert mail is never sent to a server that cannot take TLS, unless its URL allows that',
+    async () => {
+      const server = plainSmtpServer();
+      try {
+        const alert: Alert = { kind: 'unhealthy', subject: 's', text: 't', detail: unhealthy };
+        const options = { to: 'ops@example.test', from: 'melete@example.test' };
+        await expect(emailSender({ smtpUrl: server.url, ...options })(alert)).rejects.toThrow(
+          /TLS/,
+        );
+        expect(server.received).toEqual([]);
+        await emailSender({ smtpUrl: `${server.url}?requireTLS=false`, ...options })(alert);
+        expect(server.received).toContain('Subject: s');
+      } finally {
+        server.stop();
+      }
+    },
+  );
+
+  test("alert mail's timeouts are connection settings, not message defaults", async () => {
+    const opened = spyOn(nodemailer, 'createTransport').mockImplementation(
+      () => ({ sendMail: async () => ({}), close: () => {} }) as never,
+    );
+    try {
+      await emailSender({
+        smtpUrl: 'smtps://user:pw@smtp.example.com:465',
+        to: 'ops@example.test',
+        from: 'melete@example.test',
+      })({ kind: 'unhealthy', subject: 's', text: 't', detail: unhealthy });
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(opened.mock.calls[0]).toEqual([
+        smtpTransportOptions('smtps://user:pw@smtp.example.com:465'),
+      ]);
+      expect(opened.mock.calls[0]?.[0]).toMatchObject({
+        requireTLS: true,
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 15_000,
+      });
+    } finally {
+      opened.mockRestore();
+    }
   });
 
   test('alerts are off until a webhook or an email address is configured', () => {

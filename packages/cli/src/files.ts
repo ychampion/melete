@@ -131,6 +131,26 @@ export function archiveCommand(image: string, volume: string, online: boolean): 
 /** The service's restriction journal, in its volume (MELETE_RESTRICTIONS_DIR). */
 export const JOURNAL_FILE = 'restrictions.jsonl';
 
+/** The last line of a failed command's stderr, or its exit code when it printed none. */
+const failure = (output: { code: number; stderr: string }) =>
+  output.stderr.trim().split('\n').at(-1) || `exit ${output.code}`;
+
+/**
+ * Whether a volume is on the engine. Only the engine saying it has no such
+ * volume makes it absent: any other failure (an engine that did not answer, a
+ * permission refused) leaves it unknown, with why, so nothing that would
+ * overwrite a volume is planned on a guess.
+ */
+export function volumePresence(
+  context: Context,
+  volume: string,
+): 'present' | 'absent' | { unreadable: string } {
+  const inspected = context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]);
+  if (inspected.code === 0) return 'present';
+  if (/no such volume/i.test(inspected.stderr)) return 'absent';
+  return { unreadable: failure(inspected) };
+}
+
 /**
  * The restriction journal volume as the engine has it: absent; there but with
  * no entry (no journal file, or only its header line), as `compose create`
@@ -142,8 +162,8 @@ export function journalOnEngine(
   image: string | null,
   volume: string,
 ): 'absent' | 'empty' | 'kept' | { unreadable: string } {
-  if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
-    return 'absent';
+  const presence = volumePresence(context, volume);
+  if (presence !== 'present') return presence;
   if (!image) return { unreadable: 'the Compose files name no image for the melete service' };
   const read = context.run(
     helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'sh', [
@@ -332,13 +352,14 @@ export function ownComputer(volume: ComputerVolume, sandboxProject: string | nul
 
 /**
  * A computer volume as the engine has it now: absent, this installation's (its
- * labels name the computer and the project), or someone else's.
+ * labels name the computer and the project), someone else's, or unreadable,
+ * with why. As with volumePresence, only "no such volume" is absent.
  */
 export function volumeOnEngine(
   context: Context,
   volume: ComputerVolume,
   sandboxProject: string,
-): 'absent' | 'ours' | 'foreign' {
+): 'absent' | 'ours' | 'foreign' | { unreadable: string } {
   const read = context.run([
     'docker',
     'volume',
@@ -347,7 +368,8 @@ export function volumeOnEngine(
     '{{json .Labels}}',
     volume.volume,
   ]);
-  if (read.code !== 0) return 'absent';
+  if (read.code !== 0)
+    return /no such volume/i.test(read.stderr) ? 'absent' : { unreadable: failure(read) };
   let labels: Record<string, string> = {};
   try {
     labels = JSON.parse(read.stdout.trim()) ?? {};

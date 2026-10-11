@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { unavailable } from '@melete/contracts';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { issuePasswordReset, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { EmailConnector } from '../connectors/email.ts';
@@ -37,6 +37,40 @@ async function mailableAccount(sql: Sql, email: string) {
 const tooSoon = (count: { n?: unknown; latest?: unknown } | undefined, perHour: number) =>
   Number(count?.n ?? 0) >= perHour ||
   Boolean(count?.latest && Date.parse(String(count.latest)) > Date.now() - 60000);
+
+/**
+ * An address with most of its name hidden: the first character, then dots, and
+ * the domain. Enough for a person to see which of their accounts a link opens.
+ */
+export function maskEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  if (at <= 0) return '•••';
+  return `${email.slice(0, 1)}•••${email.slice(at)}`;
+}
+
+const invalidLink = () =>
+  new ServiceError(
+    'invalid_signin_link',
+    'This sign-in link has expired or was already used.',
+    400,
+  );
+
+/**
+ * The link a token names, when it can still sign in: unused, unexpired, for an
+ * account the operator has not disabled. A link from the owner's mailbox also
+ * needs that mailbox, at the generation it had; one from the installation's
+ * sender needs only its account. `lock` holds the row for the one who spends it.
+ */
+function usableLink(sql: Sql | TransactionSql, token: string, lock: boolean) {
+  return sql`select m.*, p.email as account_email from magic_link m
+    left join connection c on c.id = m.connection_id
+    join principal p on p.id = coalesce(m.principal_id, m.owner_id)
+    where m.token_hash = ${hash(token)} and m.used_at is null and m.expires_at > now()
+    and p.disabled_at is null
+    and (m.connection_id is null or (c.status = 'active' and c.space_id = m.space_id
+      and c.generation = m.connection_generation))
+    ${lock ? sql`for update of m` : sql``}`;
+}
 
 type SessionMaker = (
   ownerId: string,
@@ -242,24 +276,20 @@ export class ExperienceSignIn {
     }
   }
 
+  /**
+   * Whose account an unused link opens, its address masked. It spends nothing,
+   * so the page a link opens can ask before the person chooses to sign in.
+   */
+  async check(token: string): Promise<string> {
+    const [link] = await usableLink(this.sql, token, false);
+    if (!link) throw invalidLink();
+    return maskEmail(String(link.account_email));
+  }
+
   async consume(token: string, createSession: SessionMaker) {
     return this.sql.begin(async (tx) => {
-      // A mailbox link still needs the mailbox that sent it, at the generation
-      // it had; a link from the installation's sender needs only its account.
-      const [link] = await tx`select m.* from magic_link m
-        left join connection c on c.id = m.connection_id
-        join principal p on p.id = coalesce(m.principal_id, m.owner_id)
-        where m.token_hash = ${hash(token)} and m.used_at is null and m.expires_at > now()
-        and p.disabled_at is null
-        and (m.connection_id is null or (c.status = 'active' and c.space_id = m.space_id
-          and c.generation = m.connection_generation))
-        for update of m`;
-      if (!link)
-        throw new ServiceError(
-          'invalid_signin_link',
-          'This sign-in link has expired or was already used.',
-          400,
-        );
+      const [link] = await usableLink(tx, token, true);
+      if (!link) throw invalidLink();
       const principalId = String(link.principal_id ?? link.owner_id);
       const spaceId = link.space_id === null ? undefined : String(link.space_id);
       const authenticated = createSession(String(link.owner_id), principalId, spaceId);

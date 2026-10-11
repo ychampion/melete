@@ -75,6 +75,13 @@ test('the mock keeps setup answers, welcomes the person, and requires sign-in af
   expect((await app.request('/profile')).status).toBe(401);
   expect((await post('/memory/items', answers[0])).status).toBe(401);
   expect((await post('/signout')).status).toBe(401);
+  // Opening a sign-in link only checks it; the session starts when it is used.
+  const checked = await post('/signin/magic-link/check', {
+    token: 'fixture-token-0123456789abcdef0123456789abcdef',
+  });
+  expect(checked.status).toBe(200);
+  expect(await checked.json()).toEqual({ status: 'ok', masked_email: 'y•••@example.com' });
+  expect((await app.request('/profile')).status).toBe(401);
   expect(
     (
       await post('/signin/magic-link/consume', {

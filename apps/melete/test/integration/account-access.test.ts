@@ -189,10 +189,16 @@ describeWithDb('account access', () => {
       await until(() => mail.length === 1);
       expect(mail[0]?.to).toBe(OWNER);
       const token = linkIn(mail[0], 'welcome');
+      // Opening it, as a mail scanner may, only asks whose account it opens.
+      const checked = await api.request('/signin/magic-link/check', json({ token }));
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('Set-Cookie')).toBeNull();
+      expect(await checked.json()).toEqual({ status: 'ok', masked_email: 'o•••@example.test' });
       const used = await api.request('/signin/magic-link/consume', json({ token }));
       expect(used.status).toBe(200);
       expect((await api.request('/me', as(cookieOf(used)))).status).toBe(200);
       expect((await api.request('/signin/magic-link/consume', json({ token }))).status).toBe(400);
+      expect((await api.request('/signin/magic-link/check', json({ token }))).status).toBe(400);
       // An address with no account gets the same answer, and no mail.
       expect(
         (await api.request('/signin/magic-link', json({ email: 'nobody@example.test' }))).status,
