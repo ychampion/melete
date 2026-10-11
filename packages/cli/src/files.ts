@@ -113,13 +113,39 @@ export function helperCommand(
 export const CHANGED_WHILE_READ = 'melete-backup: a file changed while it was read';
 
 /**
- * Archives a volume to stdout. Taken online, a file written during the copy
- * makes GNU tar exit 1 ("file changed as we read it"); the archive is whole and
- * that one file may be from mid-write, so 1 is accepted there and nowhere else,
- * and CHANGED_WHILE_READ on stderr says it happened.
+ * What each part leaves out, as paths in its volume where `*` is one folder.
+ * Each space's search index (`.index/`) and its staged writes (`.proposed/`)
+ * are derived: the service rebuilds the index from the space's files the first
+ * time the space is used after a restore, and staged writes are previews made
+ * again from the database or expire. Left out, a backup is smaller and holds no
+ * copy of an index file, where a removed record's words could linger.
  */
-export function archiveCommand(image: string, volume: string, online: boolean): string[] {
-  const tar = 'tar -C /v --numeric-owner -cf - .';
+export const LEFT_OUT: Record<FilePart, readonly string[]> = {
+  spaces: ['./*/.index', './*/.proposed'],
+  artifacts: [],
+  work: [],
+};
+
+/**
+ * Archives a volume to stdout, without the paths `leaveOut` names (see
+ * LEFT_OUT). Taken online, a file written during the copy makes GNU tar exit 1
+ * ("file changed as we read it"); the archive is whole and that one file may be
+ * from mid-write, so 1 is accepted there and nowhere else, and
+ * CHANGED_WHILE_READ on stderr says it happened.
+ */
+export function archiveCommand(
+  image: string,
+  volume: string,
+  online: boolean,
+  leaveOut: readonly string[] = [],
+): string[] {
+  // Anchored at the volume's top, and `*` never crosses a `/`: `./*/.index` is a
+  // space's own index, never a folder of that name deeper in someone's files.
+  const exclude =
+    leaveOut.length === 0
+      ? ''
+      : ` --anchored --no-wildcards-match-slash ${leaveOut.map((path) => `--exclude='${path}'`).join(' ')}`;
+  const tar = `tar -C /v --numeric-owner${exclude} -cf - .`;
   return helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'sh', [
     '-c',
     online

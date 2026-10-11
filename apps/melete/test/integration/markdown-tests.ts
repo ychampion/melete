@@ -227,12 +227,27 @@ export function registerMarkdownTests(db: TestDatabase | null) {
         expect(evidence?.source_type).toBe('owner_edit');
         await writeFile(join(f.space, 'personal.txt'), 'preserve this staged edit');
         await exec('git', ['-C', f.space, 'add', '--', 'personal.txt']);
+        // A write staged for the view outside memory's own previews holds the value too.
+        const stagedForView = join(f.space, '.proposed', 'prop_01J8ZP3QWABCDEFGHJKMNPQRS9.json');
+        await mkdir(join(f.space, '.proposed'), { recursive: true });
+        await writeFile(
+          stagedForView,
+          JSON.stringify({
+            id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS9',
+            path: `knowledge/${id}.md`,
+            rationale: 'staged through the knowledge API',
+            content: serializeRecord(frontmatter, 'August, and the hotel is the Larkspur'),
+            proposedBy: 'agent',
+            proposedAt: '2026-08-01T00:00:00.000Z',
+          }),
+        );
         const forgotten = await f.request('/memory/forget', 'POST', { claim_id: id });
         expect(forgotten.status).toBe(200);
         await cleanupMemory(db.sql, f.scope.spaceId, (spaceId, ids) =>
           f.markdown.cleanup(spaceId, ids),
         );
         expect(await Bun.file(path).exists()).toBe(false);
+        expect(await Bun.file(stagedForView).exists()).toBe(false);
         expect(
           (await exec('git', ['-C', f.space, 'diff', '--cached', '--name-only'])).stdout.trim(),
         ).toBe('personal.txt');

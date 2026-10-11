@@ -10,6 +10,7 @@ import { lintStatusTransition } from '@melete/contracts';
 import { serializeRecord } from './frontmatter.ts';
 import type { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
+import { discardProposalsFor } from './mediation.ts';
 import { type CommitAttribution, commitRecord, commitRemoval, type SpaceCommit } from './space.ts';
 import {
   type LoadedRecord,
@@ -81,6 +82,8 @@ export async function retract(
   const commit = await commitRecord(paths, record.path, content, attribution);
   index.remove(record.frontmatter.id);
   markIndexFresh(paths, index);
+  // A write still waiting to change it would bring back what was just retracted.
+  discardProposalsFor(paths, { ids: [record.frontmatter.id], paths: [record.path] });
   return { commit, content };
 }
 
@@ -108,6 +111,8 @@ export async function hardDelete(
   });
   index.remove(record.frontmatter.id);
   const contents = rebuild(paths, index);
+  // Staged writes hold the record's text too, and would write it back.
+  discardProposalsFor(paths, { ids: [record.frontmatter.id], paths: [record.path] });
   return { commit, contents };
 }
 

@@ -305,7 +305,7 @@ complete file, and `init` writes each one out:
   "profiles": [],
   "overlays": [],
   "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
-  "backup": { "dir": "~/melete-backups", "keep": 3 },
+  "backup": { "dir": "~/melete-backups", "keep": 3, "max_age_days": 30 },
   "public_ports": false,
   "database": { "external": false },
   "blobs": { "store": "local" },
@@ -326,8 +326,10 @@ complete file, and `init` writes each one out:
   `status` report the machine short of disk. A small host sets its own, below
   1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
   images it pulls.
-- `backup.dir` is where backups are written, and `backup.keep` how many are
-  kept there.
+- `backup.dir` is where backups are written, `backup.keep` how many are
+  kept there, and `backup.max_age_days` the most days any of them is kept
+  (`null` keeps them by number alone); see
+  [How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
 - `blobs.store` is `local`, or `s3` with a non-secret `bucket`, an `endpoint`
   (left out for AWS S3) and an optional `region`; the storage keys stay in
   `deploy/.env`. With `s3`, every Compose command adds
@@ -355,7 +357,9 @@ sign-in and reset links, invites, Google, Microsoft and MCP sign-ins and
 texting; the web origin that matches it (`MELETE_WEB_ORIGIN`), or the web app
 refuses sign-in there; an alert target (`MELETE_ALERT_WEBHOOK_URL`, or
 `MELETE_ALERT_EMAIL_TO` with `MELETE_ALERT_SMTP_URL`, see [Alerts](#alerts));
-and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`.
+and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`. Say in your
+privacy terms how long backups keep what people remove; see
+[How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
 
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
@@ -2537,17 +2541,22 @@ while it is written; the restriction journal on its own, under a timestamped
 name; `deploy/.env` without the master key, the key's fingerprint
 (`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
 then the files, one archive per volume, with ownership and modes kept:
-`spaces.tar` (each space's files), `artifacts.tar` (uploads and Files, kept by
+`spaces.tar` (each space's files, without its search index, `.index/`, or the
+writes staged in `.proposed/`: the index is rebuilt from the files the first
+time a restored space is searched), `artifacts.tar` (uploads and Files, kept by
 their content, unless they are in an S3 bucket), `work.tar` (the shared
 `/work`), and for each agent computer of this installation its two volumes,
 `computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
 home folder, browser profile included); `contents.json`, which lists those
 archives and each computer volume's labels; and a `SHA256SUMS` list. The
 runtime's attempt homes are left out: they are disposable, and jobs recover
-from the database into fresh attempts. The newest `backup.keep` backups are
-kept, each holding the files, so the disk they take is about `backup.keep`
-times what `--estimate` reports. `--to` streams every part to another machine
-over SSH and keeps nothing on this disk, for a host short on space.
+from the database into fresh attempts. Each new backup removes the older ones
+beyond the newest `backup.keep` (3 by default), and every one older than
+`backup.max_age_days` (30 by default), from `backup.dir`; the one just made
+always stays. Each holds the files, so the disk they take is at most about
+`backup.keep` times what `--estimate` reports. `--to` streams every part to
+another machine over SSH and keeps nothing on this disk, for a host short on
+space; nothing is removed there.
 
 **What "online" means for the files.** By default the stack keeps running. The
 database is dumped first and the files are copied after it, so every file the
@@ -2610,7 +2619,9 @@ report says so. A backup made by `--with-volumes` before backups held their
 list of parts restores its `data.tar` and `work.tar` the same way, without
 their copy of the journal; each is checked first to hold the folders put back
 from it. A backup counts as whole only when `SHA256SUMS` lists every file in it
-and each matches. `backup.keep` never removes the backup the last deploy took.
+and each matches. `backup.keep` never removes the backup the last deploy took,
+which `rollback` restores from; `backup.max_age_days` does, once it is that old,
+and says so.
 
 The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
@@ -2677,6 +2688,29 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+### How long backups keep what was removed
+
+Forgetting a memory or deleting a record removes it from the running
+installation at once: from what it shows and searches, and from the space's
+files and search index. (A file deleted in a conversation waits in the trash
+for `MELETE_TRASH_DAYS` first.) Backups made before that still hold it. A
+backup is removed only when a newer one is made, so what was removed stays in
+this installation's backups until the last backup made before the removal is
+older than `backup.max_age_days` (30 days by default) and another backup is
+made. Taken on a schedule, for example daily from cron, that bounds it to about
+30 days. When no new backup is made, older ones stay where they are; copies kept
+elsewhere (`--to`, a copy of `backup.dir`, the provider's disk snapshots, an S3
+bucket's old versions) are yours to expire on the same schedule; and the
+directories `melete upgrade` leaves (`upgrade-<tag>-<time>`) are not removed by
+this rule, so remove them once the release has run as it should.
+
+An operator who offers Melete to other people should say this in their privacy
+terms: what someone removes is gone from the service at once, and from its
+backups within the period they are kept, 30 days unless you set another
+`backup.max_age_days`. Restoring an older backup does not bring back a memory
+forgotten after it was made, because the newest restriction journal is replayed
+at startup; a record or file deleted after it was made does come back with it.
 
 ## Remove it completely
 

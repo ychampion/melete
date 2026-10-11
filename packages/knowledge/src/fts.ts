@@ -87,6 +87,13 @@ DROP TABLE IF EXISTS meta;
 /** Ids per DELETE statement, well under SQLite's limit on bound parameters. */
 const DELETE_CHUNK = 500;
 
+/**
+ * The row in `meta` that says removed words may still be in the file: written
+ * in the same transaction as the delete, and cleared only once VACUUM has run
+ * and the write-ahead log has been emptied into the file.
+ */
+const ERASE_PENDING = 'erase_pending';
+
 const userVersion = (db: Database): number =>
   db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
 
@@ -184,7 +191,10 @@ export class SpaceIndex {
     if (wiped) wipeOlderIndex(db);
     db.run(SCHEMA);
     const index = new SpaceIndex(db, space, eraseTermsOnDelete(db));
-    if (wiped) index.flush();
+    // A removal whose rewrite failed (a full disk) or never ran (the process
+    // stopped) is finished now.
+    if (index.erasePending()) index.finishPendingErase();
+    else if (wiped) index.flush();
     return index;
   }
 
@@ -197,16 +207,35 @@ export class SpaceIndex {
    * worse than one that admits it does not know.
    */
   rebuild(records: readonly IndexedRecord[]): void {
+    // Dropping `meta` would drop an erase still owed; it is carried over.
+    const pending = this.erasePending();
     this.db.transaction(() => {
       // The tables are dropped rather than emptied row by row. Their pages are
       // zeroed either way, and FTS5's secure-delete makes a row-by-row delete
       // of a large space take minutes.
       this.db.run(DROP);
       this.db.run(SCHEMA);
+      if (pending) this.markErasePending();
       this.erasesTerms = eraseTermsOnDelete(this.db);
       for (const record of records) this.insert(record);
     })();
-    this.flush();
+    if (pending) this.finishPendingErase();
+    else this.flush();
+  }
+
+  /**
+   * Finish an erase a removal still owes, where the caller only wants the
+   * index usable: opening it, or rebuilding it. If the rewrite fails again,
+   * the mark stays for the next removal or open to try once more, and search
+   * keeps working meanwhile. A removal that fails this way throws to its own
+   * caller, whose retry is what reports it.
+   */
+  private finishPendingErase(): void {
+    try {
+      this.afterRemoval();
+    } catch {
+      // Still owed; see above.
+    }
   }
 
   /** What the files looked like when this index was last known to match them. */
@@ -226,12 +255,11 @@ export class SpaceIndex {
   }
 
   upsert(record: IndexedRecord): void {
-    const replaced = this.db.transaction(() => {
-      const removed = this.deleteRows([record.id]);
+    this.db.transaction(() => {
+      this.deleteRows([record.id]);
       this.insert(record);
-      return removed;
     })();
-    if (replaced) this.afterRemoval();
+    if (this.erasePending()) this.afterRemoval();
   }
 
   /**
@@ -250,7 +278,19 @@ export class SpaceIndex {
    * minute, with nothing else able to run, into a second or two.
    */
   removeMany(ids: readonly string[]): void {
-    if (this.db.transaction(() => this.deleteRows(ids))()) this.afterRemoval();
+    this.db.transaction(() => this.deleteRows(ids))();
+    // Also when nothing was left to delete: a retry after a rewrite that failed
+    // finds the rows gone, and the rewrite still owed.
+    if (this.erasePending()) this.afterRemoval();
+  }
+
+  /** Whether a removal's words may still be in the file, waiting for a rewrite. */
+  erasePending(): boolean {
+    return Boolean(
+      this.db
+        .query<{ value: string }, [string]>('SELECT value FROM meta WHERE key = ?')
+        .get(ERASE_PENDING),
+    );
   }
 
   /** Search this space. There is no parameter that could reach another one. */
@@ -341,7 +381,17 @@ export class SpaceIndex {
       changes += this.db.run(`DELETE FROM record WHERE id IN (${list})`, chunk).changes;
       changes += this.db.run(`DELETE FROM record_fts WHERE id IN (${list})`, chunk).changes;
     }
+    // In the caller's transaction, so the mark commits with the delete or not at all.
+    if (changes > 0) this.markErasePending();
     return changes > 0;
+  }
+
+  private markErasePending(): void {
+    this.db.run(
+      `INSERT INTO meta (key, value) VALUES (?, '1')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [ERASE_PENDING],
+    );
   }
 
   /**
@@ -355,19 +405,28 @@ export class SpaceIndex {
    *
    * VACUUM costs time in proportion to the index, under a second for tens of
    * thousands of records, and this runs only when something is taken out.
+   *
+   * The erase-pending mark is cleared only when all of that is done. A VACUUM
+   * that fails throws and leaves it set; a log another process is still
+   * reading cannot be emptied, and leaves it set too. Either way the next
+   * removal or open of the index runs this again.
    */
   private afterRemoval(): void {
     if (!this.erasesTerms) this.db.run("INSERT INTO record_fts (record_fts) VALUES ('optimize')");
     this.db.run('VACUUM');
+    if (!this.flush()) return;
+    this.db.run('DELETE FROM meta WHERE key = ?', [ERASE_PENDING]);
     this.flush();
   }
 
   /**
    * Copy the write-ahead log into the file and truncate it. Closing the last
    * handle does the same; this covers a handle another request still holds.
+   * False when another connection kept it from finishing.
    */
-  private flush(): void {
-    this.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+  private flush(): boolean {
+    const result = this.db.query<{ busy: number }, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    return result?.busy === 0;
   }
 
   /**

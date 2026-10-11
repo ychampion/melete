@@ -369,4 +369,151 @@ describe('forgetting at scale', () => {
     }
     expect(copiesOnDisk()).toBe(0);
   });
+
+  /**
+   * Makes the first `failures` VACUUMs any index runs fail as a full disk does,
+   * and counts every VACUUM, until restored.
+   */
+  const failVacuums = (failures: number) => {
+    const original = Database.prototype.run;
+    let count = 0;
+    Database.prototype.run = function (this: Database, ...args: Parameters<Database['run']>) {
+      if (/^\s*VACUUM\b/i.test(String(args[0]))) {
+        count += 1;
+        if (count <= failures) throw new Error('database or disk is full');
+      }
+      return original.apply(this, args);
+    } as Database['run'];
+    return {
+      count: () => count,
+      restore: () => {
+        Database.prototype.run = original;
+      },
+    };
+  };
+
+  const kept = Array.from({ length: 200 }, (_, i) =>
+    indexed(`k_kept_${i}`, `Note ${i}`, `ordinary words number${i}`),
+  );
+  const forgotten = Array.from({ length: 20 }, (_, i) =>
+    indexed(`k_gone_${i}`, `Gone ${i}`, `the code is ${MARKER}${i}`),
+  );
+  const forgottenIds = forgotten.map((record) => record.id);
+
+  test('a removal whose rewrite fails is finished by its retry', () => {
+    const index = SpaceIndex.open(paths);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      const vacuums = failVacuums(1);
+      try {
+        expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+        // The rows are gone, but the file still holds what they said.
+        expect(index.search(MARKER)).toEqual([]);
+        expect(copiesOnDisk()).toBeGreaterThan(0);
+        // The retry finds nothing left to delete, and still owes the rewrite.
+        index.removeMany(forgottenIds);
+        expect(vacuums.count()).toBe(2);
+      } finally {
+        vacuums.restore();
+      }
+      expect(copiesOnDisk()).toBe(0);
+      expect(index.erasePending()).toBe(false);
+      expect(index.search('number7')).toHaveLength(1);
+    } finally {
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a removal cut short before its rewrite is finished when the index is next opened', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      const before = vacuums.count();
+      const reopened = SpaceIndex.open(paths);
+      try {
+        expect(vacuums.count()).toBe(before + 1);
+        expect(reopened.erasePending()).toBe(false);
+        expect(reopened.search('number7')).toHaveLength(1);
+      } finally {
+        reopened.close();
+      }
+      // Once finished, an open does no more work.
+      SpaceIndex.open(paths).close();
+      expect(vacuums.count()).toBe(before + 1);
+    } finally {
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('an open that cannot finish the rewrite still searches, and the next removal finishes it', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(2);
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      const reopened = SpaceIndex.open(paths);
+      try {
+        expect(reopened.erasePending()).toBe(true);
+        expect(reopened.search('number7')).toHaveLength(1);
+        reopened.removeMany(['k_kept_0']);
+        expect(reopened.erasePending()).toBe(false);
+      } finally {
+        reopened.close();
+      }
+      expect(vacuums.count()).toBe(3);
+    } finally {
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a rebuild keeps an erase still owed, and finishes it', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = failVacuums(2);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // Its own try fails too: the rebuild still lands, and the erase is still owed.
+      index.rebuild(kept);
+      expect(index.count()).toBe(kept.length);
+      expect(index.erasePending()).toBe(true);
+      index.rebuild(kept);
+      expect(vacuums.count()).toBe(3);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a log another reader holds keeps the mark until a later removal can empty it',
+    () => {
+      const index = SpaceIndex.open(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        index.rebuild([...kept, ...forgotten]);
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        // The checkpoint waits out the busy timeout, then gives up while the reader holds on.
+        index.removeMany(forgottenIds);
+        expect(index.erasePending()).toBe(true);
+        reader.run('COMMIT');
+        index.removeMany([]);
+        expect(index.erasePending()).toBe(false);
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
 });

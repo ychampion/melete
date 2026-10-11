@@ -9269,7 +9269,7 @@ export interface paths {
         put?: never;
         /**
          * Propose a knowledge write
-         * @description The only write path an agent has. The proposal is validated and rendered as a diff the owner applies or discards; applying is a git commit.
+         * @description The only write path an agent has. The proposal is validated, staged in the space and rendered as a diff. A staged write is discarded when the record it names is retracted, deleted or forgotten, and after seven days if nothing has applied it.
          */
         post: {
             parameters: {

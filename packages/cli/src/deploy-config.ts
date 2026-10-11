@@ -37,6 +37,12 @@ export const PROFILES = ['sandbox'] as const;
 /** The default registry, the one deploy/docker-compose.yml names when MELETE_IMAGE_REGISTRY is empty. */
 export const DEFAULT_REGISTRY = 'ghcr.io/ychampion';
 
+/**
+ * How long a backup is kept by default, in days: the period hosted services
+ * commonly give for deleted data to leave their backups.
+ */
+export const DEFAULT_BACKUP_DAYS = 30;
+
 const unique = <T>(values: readonly T[]) => new Set(values).size === values.length;
 
 const images = z.strictObject({
@@ -64,7 +70,14 @@ const disk = z.strictObject({
 
 const backup = z.strictObject({
   dir: z.string().min(1).default('~/melete-backups'),
+  /** How many backups `dir` keeps; each new one removes the oldest beyond this. */
   keep: z.number().int().min(1).default(3),
+  /**
+   * The most days a backup in `dir` is kept, whatever `keep` says, so what was
+   * forgotten or deleted leaves the backups within this many days of a backup
+   * made after it. Null keeps them by `keep` alone.
+   */
+  max_age_days: z.number().int().min(1).max(3650).nullable().default(DEFAULT_BACKUP_DAYS),
 });
 
 const blobs = z.discriminatedUnion('store', [
@@ -110,7 +123,11 @@ export const deployConfigSchema = z
     profiles: z.array(z.enum(PROFILES)).refine(unique, 'each profile once').default([]),
     overlays: z.array(z.enum(OVERLAYS)).refine(unique, 'each overlay once').default([]),
     disk: disk.default({ min_free_mb: 4096, pull_margin_mb: 512 }),
-    backup: backup.default({ dir: '~/melete-backups', keep: 3 }),
+    backup: backup.default({
+      dir: '~/melete-backups',
+      keep: 3,
+      max_age_days: DEFAULT_BACKUP_DAYS,
+    }),
     /** Whether a port may be published on an address other than loopback. */
     public_ports: z.boolean().default(false),
     /**
