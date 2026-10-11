@@ -96,10 +96,33 @@ const FIELDS = new Set(
 );
 
 /**
+ * Words that say what a detail is about, or join such words ("lives_in",
+ * "work_from_home"). A subject under a person heading made only of these is
+ * a topic an earlier extraction filed the person's own detail under
+ * ("person.diet.vegetarian"); any other word there is someone's name.
+ */
+const TOPICS = new Set([
+  ...FIELDS,
+  ...(
+    'allergic diets dietary food foods meal meals eating drink drinks health medical medication ' +
+    'medications condition conditions locations cities hometown residence lives live living based ' +
+    'country neighborhood neighbourhood travel travels trip trips flight flights flying seat seats ' +
+    'seating aisle window airline airlines hotel hotels preference preferences pref prefs likes ' +
+    'dislikes favorite favorites favourite favourites style tone language languages communication ' +
+    'jobs career office schedule availability available routine routines habit habits hours ' +
+    'calendar commute contact pronouns instruction instructions rule rules note notes info ' +
+    'details detail general profile personal background status away absence vacation holiday ' +
+    'leave budget money bank finance finances payment payments interest interests hobby hobbies ' +
+    'sport sports music in on at of from to for the and with'
+  ).split(' '),
+]);
+
+/**
  * Whose detail a subject holds: the person's own; someone in their life,
- * named by the subject and by what was said ("person.maya.city" for "My
- * sister Maya lives in Lisbon"); or a subject under a person heading that
- * names nobody it says, so it cannot be told ("person.allergy.peanuts").
+ * named by the subject ("person.maya.city", "person.sam.diet" for "my friend
+ * sam is vegetarian", "family.sister.allergy"); or a subject under a person
+ * heading that names a topic, not someone, which an earlier extraction gave
+ * the person's own detail ("person.allergy.peanuts"), so it cannot be told.
  */
 export type Whose =
   | { kind: 'self' }
@@ -130,19 +153,18 @@ function names(text: string, who: string): boolean {
   return name.length > 0 && name.every((word) => said.has(word));
 }
 
-/** Whose detail a subject holds, read from its heading and the words it was said in. */
-export function whoseDetail(
-  domainKey: string,
-  content: string,
-  quotes: readonly string[] = [],
-): Whose {
+/**
+ * Whose detail a subject holds, read from its heading. A name is read as one
+ * however it is written: "sam" in "my friend sam" is someone, not a topic.
+ */
+export function whoseDetail(domainKey: string): Whose {
   const [head = '', subject = ''] = (domainKey.split(':exception:')[0] ?? domainKey).split('.');
   if (!PERSON_HEADS.has(head)) return { kind: 'self' };
   if (SELF.has(subject)) return { kind: 'self' };
   const who = subject.replace(/[_-]+/g, ' ').trim();
-  if (who && (RELATIONS.has(subject) || [content, ...quotes].some((text) => names(text, who))))
-    return { kind: 'other', who };
-  return { kind: 'unknown', who };
+  if (!who || (!RELATIONS.has(subject) && textWords(who).every((word) => TOPICS.has(word))))
+    return { kind: 'unknown', who };
+  return { kind: 'other', who };
 }
 
 /**
@@ -151,32 +173,15 @@ export function whoseDetail(
  * person.lena and family.sister). The person's own detail and someone
  * else's never are, nor two different people's, however alike their words;
  * a detail under a topic that names that someone is theirs ("Priya owns the
- * Atlas project" under project.atlas). A subject that names nobody it says
- * is not told apart.
+ * Atlas project" under project.atlas). A subject that names a topic, not
+ * someone, may be the person's own.
  */
 export function sameWhose(a: Whose, aText: string, b: Whose, bText: string): boolean {
-  if (a.kind === 'unknown') return b.kind === 'unknown' || meetsUnknown(b, bText, a, aText);
-  if (b.kind === 'unknown') return meetsUnknown(a, aText, b, bText);
+  if (a.kind === 'unknown') return b.kind !== 'other' || names(aText, b.who);
+  if (b.kind === 'unknown') return a.kind !== 'other' || names(bText, a.who);
   if (a.kind === 'self') return b.kind === 'self' || names(aText, b.who);
   if (b.kind === 'self') return names(bText, a.who);
   return a.who === b.who || names(bText, a.who) || names(aText, b.who);
-}
-
-/**
- * A subject that names nobody may be anyone's (an older "person.allergy" is
- * the person's own), but not a second someone's: it meets someone else's
- * detail only under their name, or when one names the other.
- */
-function meetsUnknown(
-  known: Whose,
-  knownText: string,
-  unknown: Extract<Whose, { kind: 'unknown' }>,
-  unknownText: string,
-): boolean {
-  if (known.kind !== 'other' || !unknown.who) return true;
-  return (
-    known.who === unknown.who || names(knownText, unknown.who) || names(unknownText, known.who)
-  );
 }
 
 /**

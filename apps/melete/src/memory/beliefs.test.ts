@@ -154,6 +154,16 @@ describe('grouping', () => {
     expect(group('contact.owner.email', 'me@example.test', 'contact.owner.email')).not.toBe(
       'people',
     );
+    // Where a real model put the person's city and absence on an install
+    // before this change.
+    expect(group('person.location.city', 'Lives in Delhi')).not.toBe('people');
+    expect(group('person.home_city', 'Lives in Pune')).not.toBe('people');
+    expect(
+      group(
+        'person.travel.away_goa:exception:2026-10-11T08:41:41.896Z:2026-10-12T00:00:00Z',
+        'Away in Goa until Sunday',
+      ),
+    ).not.toBe('people');
     // As they are filed now.
     expect(group('self.allergy.peanuts', 'Allergic to peanuts')).toBe('preferences');
     expect(group('self.flight_seating.prefers_aisle', 'Prefers aisle seats when flying')).toBe(
@@ -164,6 +174,9 @@ describe('grouping', () => {
     expect(group('person.maya.allergy', 'Allergic to peanuts')).toBe('people');
     expect(group('person.landlord.mr_patel', 'Landlord is Mr. Patel')).toBe('people');
     expect(group('contact.maya.email', 'maya@example.test', 'contact.maya.email')).toBe('people');
+    // A name is someone's however it was written, and whatever the words say.
+    expect(group('person.lena.allergy', 'Allergic to peanuts')).toBe('people');
+    expect(group('person.sam.diet', 'Vegetarian')).toBe('people');
   });
   test('a receipt is about accounts and bills', () => {
     expect(

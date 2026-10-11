@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ExtractionProposal } from '@melete/contracts';
 import {
+  EXTRACTION_INSTRUCTIONS,
   fileOwnDetails,
   type HeldClaim,
   mergeIntoHeld,
@@ -244,6 +245,13 @@ const subjects = (proposals: ExtractionProposal[]) =>
   proposals.map((item) => (item.op === 'add' ? item.domain_key : item.op));
 
 describe("the person's own details are filed under them, never as someone in their life", () => {
+  test('a change keeps the subject of the detail it changes', () => {
+    // Told to file the person's details under topics, real models moved a
+    // change to a detail saved earlier under a person heading onto the new
+    // topic, and the whole message was refused.
+    expect(EXTRACTION_INSTRUCTIONS).toContain("a supersede keeps that claim's domain_key");
+  });
+
   /** Read a model's answer the way extraction does, and file what it proposed. */
   const filed = (entries: unknown[], heldSubjects: string[] = []) => {
     const reply = readExtractionReply(JSON.stringify({ proposals: entries }));
@@ -432,12 +440,18 @@ describe('a detail is the same only when it is about the same someone', () => {
   });
 
   test('a temporary exception said again is the one memory holds', () => {
-    const away = { kind: 'exception', valid_until: '2026-10-18T23:59:59Z' };
+    const away = {
+      kind: 'exception',
+      valid_from: '2026-10-13T09:00:00Z',
+      valid_until: '2026-10-18T23:59:59Z',
+    };
     const held: HeldClaim = {
       id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA6',
       domain_key: 'self.away.goa:exception:2026-10-11T02:15:09.921Z:2026-10-18T23:59:59Z',
       key: null,
       content: 'Away in Goa until Sunday',
+      valid_from: '2026-10-11T02:15:09.921Z',
+      valid_until: '2026-10-18T23:59:59Z',
     };
     const [again] = mergeIntoHeld(
       [said('self.travel.away', 'Away in Goa until Sunday', 'in Goa until Sunday', away)],
@@ -477,5 +491,90 @@ describe('a detail is the same only when it is about the same someone', () => {
       [held],
     );
     expect(other?.op).toBe('add');
+  });
+
+  test('the same words for another stretch of time are another absence', () => {
+    const held: HeldClaim = {
+      id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA8',
+      domain_key: 'travel.away:exception:2026-10-01T10:00:00Z:2026-10-05T00:00:00Z',
+      key: null,
+      content: 'Away in Goa until Sunday',
+      valid_from: '2026-10-01T10:00:00Z',
+      valid_until: '2026-10-05T00:00:00Z',
+    };
+    // Said again weeks later, for a later trip, it is kept.
+    const [later] = mergeIntoHeld(
+      [
+        said('travel.away', 'Away in Goa until Sunday', 'in Goa until Sunday', {
+          kind: 'exception',
+          valid_from: '2026-10-20T10:00:00Z',
+          valid_until: '2026-10-26T00:00:00Z',
+        }),
+      ],
+      [held],
+    );
+    expect(later).toMatchObject({ op: 'add', valid_until: '2026-10-26T00:00:00Z' });
+    // Two stretches in one message, in the same words, are both kept.
+    const both = mergeIntoHeld(
+      [
+        said('travel.away', 'Away for work', 'away for work this week', {
+          kind: 'exception',
+          valid_from: '2026-10-01T10:00:00Z',
+          valid_until: '2026-10-05T00:00:00Z',
+        }),
+        said('travel.away.later', 'Away for work', 'and the week of the 20th', {
+          kind: 'exception',
+          valid_from: '2026-10-20T00:00:00Z',
+          valid_until: '2026-10-26T00:00:00Z',
+        }),
+      ],
+      [],
+    );
+    expect(both.map((item) => item.op)).toEqual(['add', 'add']);
+  });
+
+  test('a name written in lowercase, or not written at all, is still someone else', () => {
+    const own = (domain_key: string, content: string): HeldClaim => ({
+      id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA9',
+      domain_key,
+      key: null,
+      content,
+    });
+    // "My sister Lena is visiting. She's allergic to peanuts."
+    const [lena] = mergeIntoHeld(
+      [said('person.lena.allergy', 'Allergic to peanuts', "She's allergic to peanuts")],
+      [own('health.allergy', 'Allergic to peanuts')],
+    );
+    expect(lena).toMatchObject({ op: 'add', domain_key: 'person.lena.allergy' });
+    const [sam] = mergeIntoHeld(
+      [said('person.sam.diet', 'Vegetarian', 'my friend sam is vegetarian')],
+      [own('food.diet', 'Vegetarian')],
+    );
+    expect(sam).toMatchObject({ op: 'add', domain_key: 'person.sam.diet' });
+    // Two people's details are two, however their names were written.
+    const [lenaDiet] = mergeIntoHeld(
+      [said('person.lena.diet', 'Vegetarian', "she's vegetarian")],
+      [own('person.sam.diet', 'Vegetarian')],
+    );
+    expect(lenaDiet).toMatchObject({ op: 'add', domain_key: 'person.lena.diet' });
+    // Nor is it filed as the person's own when the model calls it theirs.
+    const reply = readExtractionReply(
+      JSON.stringify({
+        proposals: [
+          said('person.maya.allergy', 'Allergic to peanuts', 'maya is allergic to peanuts', {
+            about: 'the_person',
+          }),
+          said('person.sam.diet', 'Vegetarian', 'sam is vegetarian', { about: 'preference' }),
+          said('person.will.city', 'Lives in Berlin', 'will lives in Berlin', {
+            about: 'the_person',
+          }),
+        ],
+      }),
+    );
+    expect(subjects(fileOwnDetails(reply.proposals, reply.about, []))).toEqual([
+      'person.maya.allergy',
+      'person.sam.diet',
+      'person.will.city',
+    ]);
   });
 });

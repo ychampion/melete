@@ -14,7 +14,6 @@ import {
   historyInTransaction,
   publishRevision,
   revisionTrustFor,
-  sourceExcerpts,
 } from './claims.ts';
 import { keyPrecedence, recordContradiction, resolveKeyedHead } from './contradictions.ts';
 import {
@@ -29,9 +28,9 @@ import {
   stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
-import { listKey, sameWording } from './extract.ts';
+import { detailWords, listKey, sameWording } from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
-import { olderOwnSubjects, sameWhose, whoseDetail } from './labels.ts';
+import { olderOwnSubjects, PERSON_HEADS, SELF, sameWhose, whoseDetail } from './labels.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { memorySeams } from './seams.ts';
 import { type Tier1Rejection, validateTier1 } from './validate.ts';
@@ -74,20 +73,39 @@ async function heldInTheseWords(
         join memory_sources p on p.id = ref.source_id
         where ref.claim_id = c.id and ref.revision = c.head_revision and p.private_origin is not null))
     order by c.id limit 8`;
-  const whose = whoseDetail(
-    proposal.domain_key,
-    proposal.content,
-    proposal.sources.map((span) => span.quote),
-  );
+  const whose = whoseDetail(proposal.domain_key);
   for (const row of rows) {
     const head = await getHead(tx, scope, String(row.id));
     const content = head?.current.content;
     if (!head || !content || listKey(head.domain_key)) continue;
-    const quotes = await sourceExcerpts(tx, head.id, head.head_revision).catch(() => []);
-    if (sameWhose(whoseDetail(head.domain_key, content, quotes), content, whose, proposal.content))
-      return head;
+    if (sameWhose(whoseDetail(head.domain_key), content, whose, proposal.content)) return head;
   }
   return null;
+}
+
+/** The words of what a subject is about, past its heading: "person.location.city" is location and city. */
+const subjectWords = (domainKey: string) =>
+  detailWords(
+    domainKey
+      .split('.')
+      .filter((part, index) => !SELF.has(part) && (index > 0 || !PERSON_HEADS.has(part)))
+      .join(' ')
+      .replace(/[_-]+/g, ' '),
+  );
+
+/**
+ * Whether a change proposed under a topic is to the person's own detail held
+ * under the subject an older extraction gave it: "Lives in Delhi" proposed as
+ * home.city for the claim held as person.location.city. Both subjects must be
+ * about the same thing (city), and the held one must not name someone else.
+ */
+function ownDetailRenamed(held: string, proposed: string): boolean {
+  if (held.includes(':exception:') || proposed.includes(':exception:')) return false;
+  if (!PERSON_HEADS.has(held.split('.')[0] ?? '') || whoseDetail(held).kind === 'other')
+    return false;
+  if (whoseDetail(proposed).kind !== 'self') return false;
+  const before = subjectWords(held);
+  return [...subjectWords(proposed)].some((word) => before.has(word));
 }
 
 /** The claim that holds the person's own detail under an older subject (see `olderOwnSubjects`). */
@@ -122,11 +140,15 @@ async function validateProposal(
       !batch.claims.some((c) => c.id === head?.id && c.head_revision === proposal.expected_revision)
     )
       throw new MemoryError('target_not_in_snapshot');
-    if (
-      proposal.op === 'supersede' &&
-      (head.domain_key !== proposal.domain_key || head.audience !== batch.source.audience)
-    )
+    if (proposal.op === 'supersede' && head.audience !== batch.source.audience)
       throw new MemoryError('target_mismatch');
+    if (proposal.op === 'supersede' && head.domain_key !== proposal.domain_key) {
+      if (!ownDetailRenamed(head.domain_key, proposal.domain_key))
+        throw new MemoryError('target_mismatch');
+      // The person's own detail, changed under the topic it is filed under
+      // now: the change lands on the claim, under the subject it is held as.
+      filed = { ...proposal, domain_key: head.domain_key };
+    }
     if (proposal.op === 'retract' && head.current.protected)
       throw new MemoryError('protected_correction');
   }
@@ -505,7 +527,7 @@ export async function commitExtraction(
         failedIndex = Math.max(0, parsed.proposals.indexOf(proposal));
         failedKey = 'key' in proposal && typeof proposal.key === 'string' ? proposal.key : null;
         const item = await validateProposal(tx, scope, batch, proposal);
-        if (item.proposal !== proposal) restated.push(validated.length);
+        if (item.proposal !== proposal && proposal.op === 'add') restated.push(validated.length);
         else if (proposal.op !== 'no-op') {
           const target =
             proposal.op === 'add' ? `key:${proposal.domain_key}` : `id:${proposal.claim_id}`;

@@ -113,7 +113,7 @@ export const PROPOSAL_ABOUT = [
 export const EXTRACTION_INSTRUCTIONS = `Return only JSON, with no prose and no code fence, in exactly this shape:
 {"proposals":[{"op":"add","claim_id":null,"expected_revision":null,"domain_key":"person.maya.city","content":"Sister Maya lives in Lisbon","kind":"user_statement","factual_status":"attributed","valid_from":"2026-09-30T10:00:00Z","valid_until":null,"lasting":true,"about":"someone_they_know","sources":[{"quote":"My sister Maya lives in Lisbon"}]},{"op":"add","claim_id":null,"expected_revision":null,"domain_key":"health.allergy","content":"Allergic to peanuts","kind":"user_statement","factual_status":"attributed","valid_from":"2026-09-30T10:00:00Z","valid_until":null,"lasting":true,"about":"the_person","sources":[{"quote":"I'm allergic to peanuts"}]}]}
 Every proposal has an "op" field: "add", "supersede", "retract" or "no-op".
-An add has "expected_revision": null. A supersede or retract has "claim_id" and "expected_revision" from a supplied claim's id and head_revision.
+An add has "expected_revision": null. A supersede or retract has "claim_id" and "expected_revision" from a supplied claim's id and head_revision, and a supersede keeps that claim's domain_key.
 Add and supersede also require domain_key (dot-separated lowercase words naming the subject), content, kind, factual_status, valid_from, valid_until, lasting, about and sources.
 domain_key says whose detail it is. The person's own details are filed under what they are about, never under person, people or contact: health.allergy, food.diet, travel.seat, home.city. person.<name>.<what> is only for someone in their life: person.maya.city.
 content is one short sentence in plain words, as the person would write it in their own notes: "Sister Maya lives in Lisbon", "Allergic to shellfish", "Prefers aisle seats on flights". Never write "the user" or "the person", and never write it like a key.
@@ -288,6 +288,8 @@ export async function proposeExtraction(
       domain_key: claim.domain_key,
       key: claim.key ?? null,
       content: claim.current.content,
+      valid_from: claim.current.valid_from,
+      valid_until: claim.current.valid_until,
     })),
   );
 }
@@ -363,21 +365,17 @@ const OWN_ABOUT = new Set([
  * `person.diet.vegetarian` and `contact.owner.availability`, so they read as
  * someone else in their life. A subject under a person heading is the
  * person's own when it names them ("user", "owner", "me"), or when the model
- * said the detail is about them and the subject names nobody it says. It is
- * filed under `self.` with what it is about. A subject naming someone the
- * person mentioned, a relation ("landlord"), or a detail the model said is
- * about someone they know is never moved.
+ * said the detail is about them and the subject names a topic, not someone
+ * (see `whoseDetail`). It is filed under `self.` with what it is about. A
+ * subject naming someone, however written ("maya", "Sam"), a relation
+ * ("landlord"), or a detail the model said is about someone they know is
+ * never moved.
  */
-export function ownSubject(
-  domainKey: string,
-  about: string | null,
-  content: string,
-  quotes: readonly string[] = [],
-): string {
+export function ownSubject(domainKey: string, about: string | null): string {
   const parts = domainKey.split('.');
   const [head = '', subject = ''] = parts;
   if (!PERSON_HEADS.has(head) || about === 'someone_they_know') return domainKey;
-  const whose = whoseDetail(domainKey, content, quotes);
+  const whose = whoseDetail(domainKey);
   const own =
     whose.kind === 'self' || (whose.kind === 'unknown' && about !== null && OWN_ABOUT.has(about));
   if (!own) return domainKey;
@@ -404,18 +402,10 @@ export function fileOwnDetails(
       held.has(proposal.domain_key)
     )
       return proposal;
-    const subject = ownSubject(
-      proposal.domain_key,
-      about[index] ?? null,
-      proposal.content,
-      quotesOf(proposal),
-    );
+    const subject = ownSubject(proposal.domain_key, about[index] ?? null);
     return subject === proposal.domain_key ? proposal : { ...proposal, domain_key: subject };
   });
 }
-
-const quotesOf = (proposal: ExtractionProposal) =>
-  proposal.sources.map((span) => span.quote).filter((quote) => typeof quote === 'string');
 
 /** A detail memory already holds, with what a change to it needs. */
 export type HeldClaim = {
@@ -423,6 +413,20 @@ export type HeldClaim = {
   domain_key: string;
   key: string | null;
   content: string | null;
+  /** When it holds; a temporary exception is only the same absence while these overlap. */
+  valid_from?: string | null;
+  valid_until?: string | null;
+};
+
+type Validity = { valid_from?: string | null; valid_until?: string | null };
+/**
+ * Whether two stretches of time overlap. "Away in Goa until Sunday" said in
+ * October and again in December is two absences, not one said twice.
+ */
+const overlaps = (a: Validity, b: Validity) => {
+  // An unknown or unreadable time is NaN, which overlaps nothing.
+  const time = (at: string | null | undefined) => (at ? Date.parse(at) : Number.NaN);
+  return time(a.valid_from) < time(b.valid_until) && time(b.valid_from) < time(a.valid_until);
 };
 
 /**
@@ -453,35 +457,41 @@ export function mergeIntoHeld(
     ),
   );
   const subjects = new Set<string>();
-  const added: { content: string; whose: Whose }[] = [];
+  /** What this message adds; an exception keeps when it holds. */
+  const added: { content: string; whose: Whose; exception: Validity | null }[] = [];
   return proposals.map((proposal) => {
     if (proposal.op !== 'add') return proposal;
     const skip: ExtractionProposal = { op: 'no-op', sources: proposal.sources };
     const keyed = typeof (proposal as { key?: unknown }).key === 'string';
-    const whose = whoseDetail(proposal.domain_key, proposal.content, quotesOf(proposal));
+    const whose = whoseDetail(proposal.domain_key);
     /** Whether a held or earlier detail says this one again, about the same someone. */
-    const saysAgain = (
-      domainKey: string,
-      content: string,
-      other = whoseDetail(domainKey, content),
-    ) =>
+    const saysAgain = (domainKey: string, content: string, other = whoseDetail(domainKey)) =>
       sameDetail(content, proposal.content) && sameWhose(other, content, whose, proposal.content);
     if (proposal.kind === 'exception' || proposal.kind === 'historical') {
       // A temporary exception keeps its own subject, apart from the lasting
-      // detail it pauses. Said again, in this message or one before, it is
-      // the exception memory holds, not a second one.
+      // detail it pauses. Said again for the same stretch of time, in this
+      // message or one before, it is the exception memory holds, not a second
+      // one. The same words for another stretch are another absence.
       if (proposal.kind === 'exception' && !keyed) {
-        if (added.some((item) => saysAgain('', item.content, item.whose))) return skip;
+        if (
+          added.some(
+            (item) =>
+              saysAgain('', item.content, item.whose) &&
+              (item.exception === null || overlaps(item.exception, proposal)),
+          )
+        )
+          return skip;
         if (
           held.some(
             (claim) =>
               claim.content !== null &&
               claim.domain_key.includes(':exception:') &&
-              saysAgain(claim.domain_key, claim.content),
+              saysAgain(claim.domain_key, claim.content) &&
+              overlaps(claim, proposal),
           )
         )
           return skip;
-        added.push({ content: proposal.content, whose });
+        added.push({ content: proposal.content, whose, exception: proposal });
       }
       return proposal;
     }
@@ -513,7 +523,7 @@ export function mergeIntoHeld(
     }
     if (subjects.has(target)) return skip;
     subjects.add(target);
-    added.push({ content, whose });
+    added.push({ content, whose, exception: null });
     return target === proposal.domain_key && content === proposal.content
       ? proposal
       : { ...proposal, domain_key: target, content };

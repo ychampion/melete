@@ -167,20 +167,13 @@ const CATEGORY_WORDS: [BeliefCategory, RegExp][] = [
 /**
  * What a detail of the person's own is about, when an earlier extraction
  * saved it under a person heading: "person.user.allergy.peanuts" and
- * "person.diet.vegetarian" are the person's allergy and diet, not someone in
+ * "person.location.city" are the person's allergy and city, not someone in
  * their life. A subject naming a person, or a relation, is left as it is.
  */
-function ownTopic(domainKey: string, content: string): string {
+function ownTopic(domainKey: string): string {
   const parts = domainKey.split('.');
   const [head = '', subject = ''] = parts;
-  if (!PERSON_HEADS.has(head)) return domainKey;
-  const whose = whoseDetail(domainKey, content);
-  const topic =
-    whose.kind === 'unknown' &&
-    CATEGORY_WORDS.some(
-      ([category, pattern]) => category !== 'people' && pattern.test(words(subject)),
-    );
-  if (whose.kind !== 'self' && !topic) return domainKey;
+  if (!PERSON_HEADS.has(head) || whoseDetail(domainKey).kind === 'other') return domainKey;
   return parts.slice(SELF.has(subject) ? 2 : 1).join('.');
 }
 
@@ -193,13 +186,12 @@ export function beliefCategoryOf(input: {
   sourceKinds?: readonly BeliefSource['kind'][];
 }): BeliefCategory {
   const key = input.key ?? '';
-  if (key.startsWith('contact.') && whoseDetail(key, input.content).kind !== 'self')
-    return 'people';
+  if (key.startsWith('contact.') && whoseDetail(key).kind !== 'self') return 'people';
   if (key.startsWith('pref.')) return 'preferences';
   if (key.startsWith('event.')) return 'routines';
   if (key.startsWith('constraint.')) return 'work';
   if (input.sourceKinds?.includes('receipt')) return 'accounts';
-  const subject = words(ownTopic(input.domainKey, input.content));
+  const subject = words(ownTopic(input.domainKey));
   for (const [category, pattern] of CATEGORY_WORDS) if (pattern.test(subject)) return category;
   if (input.kind === 'preference') return 'preferences';
   const content = input.content.toLowerCase();

@@ -247,6 +247,168 @@ withDb('extraction keeps what matters once', () => {
     ]);
   });
 
+  test('a name written in lowercase, or not written in the words, never joins the person’s own detail', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const lena = await said(
+      db,
+      scope,
+      'lena',
+      "My sister Lena is visiting. She's allergic to peanuts.",
+    );
+    await commitExtraction(db.sql, scope, lena, {
+      proposals: [
+        unkeyed(lena, 'person.lena.allergy', "She's allergic to peanuts", 'Allergic to peanuts'),
+      ],
+    });
+    const sam = await said(db, scope, 'sam', 'my friend sam is vegetarian.');
+    await commitExtraction(db.sql, scope, sam, {
+      proposals: [unkeyed(sam, 'person.sam.diet', 'sam is vegetarian', 'Vegetarian')],
+    });
+    const mine = await said(
+      db,
+      scope,
+      'mine',
+      "I'm allergic to peanuts and I'm vegetarian.",
+      '2026-08-11T09:00:00Z',
+    );
+    // Extraction was shown neither detail, and filed the person's own under topics.
+    const result = await commitExtraction(
+      db.sql,
+      scope,
+      { ...mine, claims: [] },
+      {
+        proposals: [
+          unkeyed(mine, 'health.allergy', 'allergic to peanuts', 'Allergic to peanuts'),
+          unkeyed(mine, 'food.diet', 'vegetarian', 'Vegetarian'),
+        ],
+      },
+    );
+    expect(result.status).toBe('committed');
+    expect(await heldNow(db, scope)).toEqual([
+      ['food.diet', 'Vegetarian', 1, 1],
+      ['health.allergy', 'Allergic to peanuts', 1, 1],
+      ['person.lena.allergy', 'Allergic to peanuts', 1, 1],
+      ['person.sam.diet', 'Vegetarian', 1, 1],
+    ]);
+  });
+
+  test('a detail learned in a private conversation is never matched from an ordinary one', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const hidden = await said(db, scope, 'private', 'I am allergic to peanuts.');
+    await commitExtraction(db.sql, scope, hidden, {
+      proposals: [unkeyed(hidden, 'health.allergy', 'allergic to peanuts', 'Allergic to peanuts')],
+    });
+    await db.sql`update memory_sources set private_origin = 'health' where id = ${hidden.source.source_id}`;
+    const ordinary = await said(
+      db,
+      scope,
+      'ordinary',
+      "I'm allergic to peanuts.",
+      '2026-08-11T09:00:00Z',
+    );
+    expect(ordinary.private_origin).toBeNull();
+    const result = await commitExtraction(
+      db.sql,
+      scope,
+      { ...ordinary, claims: [] },
+      {
+        proposals: [
+          unkeyed(ordinary, 'food.allergy', 'allergic to peanuts', 'Allergic to peanuts'),
+        ],
+      },
+    );
+    expect(result.status).toBe('committed');
+    expect(await heldNow(db, scope)).toEqual([
+      ['food.allergy', 'Allergic to peanuts', 1, 1],
+      ['health.allergy', 'Allergic to peanuts', 1, 1],
+    ]);
+  });
+
+  test('a change to the person’s own detail, proposed under its topic, updates the claim under its older subject', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    // Saved, as a real model filed them, before the person's details were filed under them.
+    const before = await said(
+      db,
+      scope,
+      'before',
+      'I live in Pune. My sister Maya lives in Lisbon.',
+    );
+    await commitExtraction(db.sql, scope, before, {
+      proposals: [
+        unkeyed(before, 'person.location.city', 'I live in Pune', 'Lives in Pune'),
+        unkeyed(
+          before,
+          'person.maya.city',
+          'My sister Maya lives in Lisbon',
+          'Sister Maya lives in Lisbon',
+        ),
+      ],
+    });
+    const supersede = (
+      batch: NonNullable<Awaited<ReturnType<typeof claimWork>>>,
+      held: string,
+      domain_key: string,
+      quote: string,
+      content: string,
+    ): ExtractionProposal => {
+      const claim = batch.claims.find((item) => item.domain_key === held);
+      if (!claim) throw new Error(`${held} was not shown`);
+      const {
+        op: _op,
+        expected_revision: _revision,
+        ...rest
+      } = unkeyed(batch, domain_key, quote, content) as Extract<ExtractionProposal, { op: 'add' }>;
+      return {
+        ...rest,
+        op: 'supersede',
+        claim_id: claim.id,
+        expected_revision: claim.head_revision,
+        valid_from: '2026-08-12T09:00:00Z',
+      } as ExtractionProposal;
+    };
+    const moved = await said(
+      db,
+      scope,
+      'moved',
+      'I have moved to Delhi now.',
+      '2026-08-12T09:00:00Z',
+    );
+    const result = await commitExtraction(db.sql, scope, moved, {
+      proposals: [
+        supersede(moved, 'person.location.city', 'home.city', 'moved to Delhi', 'Lives in Delhi'),
+      ],
+    });
+    expect(result.status).toBe('committed');
+    expect(await heldNow(db, scope)).toEqual([
+      ['person.location.city', 'Lives in Delhi', 1, 2],
+      ['person.maya.city', 'Sister Maya lives in Lisbon', 1, 1],
+    ]);
+    // Someone else's detail, or the person's own about another thing, is still not changed under another subject.
+    for (const [held, proposed] of [
+      ['person.maya.city', 'home.city'],
+      ['person.location.city', 'food.diet'],
+    ] as const) {
+      const again = await said(
+        db,
+        scope,
+        `again-${held}-${proposed}`,
+        'It is Berlin now.',
+        '2026-08-13T09:00:00Z',
+      );
+      const refused = await commitExtraction(db.sql, scope, again, {
+        proposals: [supersede(again, held, proposed, 'Berlin', 'Lives in Berlin')],
+      });
+      expect(refused).toMatchObject({ status: 'rejected', reason: 'target_mismatch' });
+    }
+    expect((await heldNow(db, scope)).map(([, content]) => content)).toEqual([
+      'Lives in Delhi',
+      'Sister Maya lives in Lisbon',
+    ]);
+  });
+
   test('a changed value is the next revision of its detail, with the old one in its history', async () => {
     if (!db) return;
     const scope = await createScope(db);
