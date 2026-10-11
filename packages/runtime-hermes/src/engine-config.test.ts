@@ -90,8 +90,8 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     enabled: true,
     in_place: true,
     abort_on_summary_failure: false,
-    // The default model reads images, so room for its pictures comes off the body first.
-    threshold_tokens: 131_072,
+    // The default model reads images; with room for its pictures set aside, the cap still decides.
+    threshold_tokens: 200_000,
   });
   expect(config.auxiliary).toEqual({
     title_generation: { enabled: false },
@@ -158,7 +158,7 @@ test('the numbers handed to a container are the numbers the renderer computed', 
   expect(engineConfigEnvironment(base)).toEqual({
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '1000000',
-    MELETE_ENGINE_COMPACTION_THRESHOLD: '131072',
+    MELETE_ENGINE_COMPACTION_THRESHOLD: '200000',
     MELETE_ENGINE_SUPPORTS_VISION: '1',
   });
   // Read as text, the same window leaves the owner's cap on the trigger to decide.
@@ -176,16 +176,31 @@ test('the numbers handed to a container are the numbers the renderer computed', 
   });
 });
 
+test('a million-token model that reads images compacts by its window and the cap, not the body', () => {
+  // The body once capped such a model at 131,072 tokens: the screenshot reserve
+  // took 384 KiB of a 1 MiB body.
+  for (const contextWindow of [1_000_000, 1_050_000]) {
+    expect(compactionThresholdTokens({ contextWindow, vision: true })).toBe(200_000);
+    // An owner who raises the cap gets the engine's own trigger: half the window.
+    expect(
+      compactionThresholdTokens({ contextWindow, vision: true, compactionMaxTokens: 600_000 }),
+    ).toBe(Math.floor(contextWindow / 2));
+  }
+  // The pictures at their largest plus the text at that trigger still fit the body.
+  expect(525_000 * 4 + VISION_IMAGE_RESERVE_BYTES).toBeLessThan(GATEWAY_MAX_REQUEST_BYTES);
+});
+
 test('a model that reads images is told so, and compacts with room left for its pictures', () => {
   const vision = { ...base, provider: 'openai', model: 'gpt-6-astra' };
   const config = renderEngineConfig(vision) as Record<string, Record<string, unknown>>;
   expect(config.model?.supports_vision).toBe(true);
   // The engine counts each kept picture as a flat 1,500 tokens, not its bytes,
-  // so the bytes its pictures can take come off the body limit first.
+  // so the bytes its pictures can take come off the body limit first. What is
+  // left still holds more than the owner's cap, which therefore decides.
   const textBytes = GATEWAY_MAX_REQUEST_BYTES - VISION_IMAGE_RESERVE_BYTES;
-  const threshold = Math.floor((0.8 * textBytes) / 4);
+  expect(Math.floor((0.8 * textBytes) / 4)).toBeGreaterThan(200_000);
+  const threshold = 200_000;
   expect(config.compression?.threshold_tokens).toBe(threshold);
-  expect(threshold).toBeLessThan(200_000);
   // The retained pictures at their largest plus the text at the trigger fit.
   expect(threshold * 4 + VISION_IMAGE_RESERVE_BYTES).toBeLessThan(GATEWAY_MAX_REQUEST_BYTES);
   expect(engineConfigEnvironment(vision)).toEqual({

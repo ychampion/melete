@@ -6,9 +6,10 @@ const LARGE = 'accounts/fireworks/models/deepseek-v4p1-flash';
 const defaults = { maxTurns: 150, compactionMaxTokens: 200_000, contextWindowLimit: undefined };
 
 test("an attempt's budget is held to the job's input ceiling, the stated window and the trigger", () => {
-  // Four tenths of the trigger the engine is configured with once pictures have
-  // their reserve in the gateway's body: 0.4 x 131,072.
-  expect(attemptContextBudget(LARGE, {}, defaults).transcript_tokens).toBe(52_428);
+  // With pictures given their reserve in the gateway's body, the trigger is the
+  // owner's 200,000 cap; four tenths of it (80,000) is above the transcript
+  // share the window itself gives, which decides.
+  expect(attemptContextBudget(LARGE, {}, defaults).transcript_tokens).toBe(62_500);
   // What ran before with a 60,000-token ceiling runs the same now.
   expect(attemptContextBudget(LARGE, { max_input_tokens: 60_000 }, defaults)).toMatchObject({
     ...BASELINE_CONTEXT_BUDGET,

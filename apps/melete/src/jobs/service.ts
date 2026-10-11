@@ -39,7 +39,9 @@ import {
   spaceAuthority,
   visibleJob,
 } from '../principals/authority.ts';
+import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
+import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
 export type JobRow = typeof job.$inferSelect;
@@ -450,7 +452,10 @@ export class JobService {
     attachments: readonly string[] = [],
     /** Stretches of `text` the person pasted rather than typed, as their composer saw them. */
     pasted: readonly MessageSpan[] = [],
+    /** The zone the sender's device reported; time is read in it until the profile's is confirmed. */
+    clientTimeZone?: string,
   ): Promise<JobRow> {
+    const deviceZone = knownZone(clientTimeZone);
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
     // Words in a job are its own principal's. Membership of the job's space lets
@@ -522,10 +527,51 @@ export class JobService {
         ...(corrects ? { corrects } : {}),
         ...(files.length ? { attachments: files } : {}),
         ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
+        ...(deviceZone ? { client_time_zone: deviceZone } : {}),
       },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });
     return updated;
+  }
+
+  /**
+   * Words for a conversation's turn that is still running: recorded at once,
+   * shown at once, and delivered to that turn (`steer.ts`). Null when no turn
+   * is running, so the words go as an ordinary next message instead. A paused
+   * turn and a room's request are not steered.
+   */
+  async steer(
+    id: string,
+    input: { id: string; text: string; clientTimeZone?: string | undefined },
+  ): Promise<{ row: JobRow; steer: { id: string; seq: number; at: Date } } | null> {
+    return this.transaction(async (tx) => {
+      const row = await this.lock(tx, id);
+      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      return this.steerWithin(tx, row, input);
+    });
+  }
+
+  /** `steer`, for a job the caller has locked, inside the caller's transaction. */
+  async steerWithin(
+    tx: Transaction,
+    row: JobRow,
+    input: { id: string; text: string; clientTimeZone?: string | undefined },
+  ): Promise<{ row: JobRow; steer: { id: string; seq: number; at: Date } } | null> {
+    if (row.kind !== 'chat' || row.audience === 'room' || row.paused || !input.text.trim())
+      return null;
+    if (opensWithMention(input.text)) return null;
+    const speaker = requestPrincipal();
+    if (speaker) await requireJobAccess(tx, row.id, speaker);
+    // Only a turn that is running or about to: a conversation the broker
+    // parked refuses new words until it is settled.
+    if (row.state !== 'running' && row.state !== 'queued') return null;
+    const steer = await recordSteer(tx, row, {
+      id: input.id,
+      text: input.text,
+      principalId: speaker ?? row.principalId ?? null,
+      clientTimeZone: knownZone(input.clientTimeZone),
+    });
+    return { row, steer };
   }
 
   async cancel(id: string, reason?: string): Promise<JobRow> {

@@ -21,8 +21,20 @@
  */
 import type { PushPayload, Urgency } from '@melete/contracts';
 
-/** `progress` is news from long work: a report, or that it is done. `situation` is something noticed. */
-export type IntentKind = 'decision' | 'settled' | 'weekly' | 'progress' | 'situation';
+/**
+ * `progress` is news from long work: a report, or that it is done. `situation`
+ * is something noticed. `needs_you` is a conversation or job that stopped on
+ * the person for a reason no decision card names; `done` is a conversation
+ * that answered while they were away.
+ */
+export type IntentKind =
+  | 'decision'
+  | 'settled'
+  | 'weekly'
+  | 'progress'
+  | 'situation'
+  | 'needs_you'
+  | 'done';
 
 /** The faster lanes' own pacing. */
 export const SOON_PACING = { dailyCap: 6, batchMinutes: 1 } as const;
@@ -123,6 +135,8 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
   const weekly = waiting.filter((w) => w.kind === 'weekly');
   const progress = waiting.filter((w) => w.kind === 'progress');
   const noticed = waiting.filter((w) => w.kind === 'situation');
+  const needs = waiting.filter((w) => w.kind === 'needs_you');
+  const done = waiting.filter((w) => w.kind === 'done');
   const title =
     noticed.length > 0 && noticed.length === waiting.length
       ? `${counted(noticed.length, 'thing needs', 'things need')} you`
@@ -130,17 +144,23 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
         ? decisions.length === 1
           ? 'One decision is waiting'
           : `${counted(decisions.length, 'decision', 'decisions')} are waiting`
-        : settled.length > 0
-          ? settled.length === 1
-            ? 'A chase settled'
-            : `${counted(settled.length, 'chase', 'chases')} settled`
-          : progress.length > 0
-            ? progress.length === 1
-              ? (progress[0]?.title ?? first.title)
-              : `${counted(progress.length, 'update', 'updates')} on your work`
-            : (weekly[0]?.title ?? first.title);
+        : needs.length > 0
+          ? `${counted(needs.length, 'conversation needs', 'conversations need')} you`
+          : settled.length > 0
+            ? settled.length === 1
+              ? 'A chase settled'
+              : `${counted(settled.length, 'chase', 'chases')} settled`
+            : progress.length > 0
+              ? progress.length === 1
+                ? (progress[0]?.title ?? first.title)
+                : `${counted(progress.length, 'update', 'updates')} on your work`
+              : done.length > 0
+                ? `${counted(done.length, 'answer is', 'answers are')} ready`
+                : (weekly[0]?.title ?? first.title);
   const reasons = [
     decisions.length ? counted(decisions.length, 'decision waits', 'decisions wait') : null,
+    needs.length ? counted(needs.length, 'conversation stopped', 'conversations stopped') : null,
+    done.length ? counted(done.length, 'answer came', 'answers came') : null,
     settled.length ? counted(settled.length, 'chase settled', 'chases settled') : null,
     progress.length ? counted(progress.length, 'work update', 'work updates') : null,
     noticed.length ? counted(noticed.length, 'thing came up', 'things came up') : null,
@@ -150,7 +170,7 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
   const listed =
     said.length > 1 ? `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]}` : said[0];
   const because = `Because ${listed} since the last one.`;
-  const lead = decisions[0] ?? settled[0] ?? progress[0] ?? first;
+  const lead = decisions[0] ?? needs[0] ?? settled[0] ?? progress[0] ?? done[0] ?? first;
   return {
     title,
     body: waiting

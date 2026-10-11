@@ -18,6 +18,7 @@ import {
 } from './experience/hooks.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
+import { useFocusBeat } from './push-focus.ts';
 import { roomsApi } from './rooms/api.ts';
 import { InviteScreen } from './rooms/InviteScreen.tsx';
 import { RoomsRoute } from './rooms/RoomsScreen.tsx';
@@ -222,6 +223,7 @@ export function App() {
   useEffect(() => {
     if (signedIn) refreshAgentsSoon();
   }, [route.path, signedIn, refreshAgentsSoon]);
+  useFocusBeat(signedIn);
   useEffect(() => {
     if (!signedIn) return;
     const back = () => {

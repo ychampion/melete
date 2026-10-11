@@ -86,6 +86,7 @@ import {
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
 import { takeOverFromCard } from './take-over.ts';
+import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
@@ -314,8 +315,11 @@ function TurnView({
   busy,
   onRetry,
   conversationAgentId,
+  waitingUntil,
 }: {
   turn: TranscriptTurn;
+  /** When the conversation rests on a time it set itself (the latest turn only). */
+  waitingUntil?: string | null;
   now: number;
   touch: boolean;
   latest: boolean;
@@ -457,6 +461,7 @@ function TurnView({
             <WorkLog
               turn={turn}
               now={now}
+              until={waitingUntil}
               items={layout.log}
               finished={layout.finished}
               renderBlock={renderBlock}
@@ -662,6 +667,12 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
   const working = WORKING.includes(transcript.status);
+  // Messages that waited for the running turn go once it ends.
+  const heldForTurn = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    if (working) return;
+    for (const go of heldForTurn.current.splice(0)) go();
+  }, [working]);
   // A message held before sending counts down on its receipt.
   const holding = transcript.turns.some((turn) =>
     turn.blocks.some(
@@ -828,10 +839,41 @@ export function ChatScreen({ id }: { id: string | null }) {
         return accepted.data !== null;
       }
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
-      const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
-      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline', [
-        ...attached,
-      ]);
+      const mentioned = mentionedAgent(clean, agents);
+      const speaker = mentioned?.id ?? agent ?? '';
+      // While a turn runs, plain words go to it at its next step, drawn inside it.
+      if (joinsRunningTurn(clean, working, attached.length) && navigator.onLine) {
+        const steerId = state.steer(clean);
+        const accepted = await adapter.send(conversationId, clean, messageKey(), [], pasted);
+        if (accepted.data === null) {
+          state.steered(steerId, null);
+          changeDraft(clean);
+          pasteMarks.current = wholeDraft(pasted, clean);
+          toast({
+            kind: 'err',
+            title: 'Couldn’t send',
+            sub: accepted.error ?? accepted.unavailable ?? '',
+          });
+          return false;
+        }
+        const taken = accepted.data.steer;
+        state.steered(steerId, taken?.id ?? null);
+        if (!taken) {
+          // The turn ended as they were sent: they are the next turn's message.
+          const next = state.local(clean, speaker, 'sending');
+          state.accepted(next, accepted.data.turn_id, accepted.data.receipt.received_at);
+        }
+        refreshConversations();
+        return true;
+      }
+      // Words naming an agent while a turn runs wait for it to end, then go as their own turn.
+      const wait = waitsForTurn(clean, working) && navigator.onLine;
+      const localId = state.local(
+        clean,
+        speaker,
+        wait ? 'waiting_turn' : navigator.onLine ? 'sending' : 'queued_offline',
+        [...attached],
+      );
       // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
       const box = outbox.current;
@@ -854,6 +896,10 @@ export function ChatScreen({ id }: { id: string | null }) {
         refreshConversations();
         return true;
       };
+      if (wait) {
+        heldForTurn.current.push(() => void box.send(localId, post));
+        return true;
+      }
       if (!navigator.onLine) {
         const onOnline = () => {
           window.removeEventListener('online', onOnline);
@@ -875,6 +921,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       clearFiles,
       restoreFiles,
       changeDraft,
+      working,
     ],
   );
 
@@ -1248,6 +1295,9 @@ export function ChatScreen({ id }: { id: string | null }) {
                       now={now}
                       touch={touch}
                       latest={turn.id === lastId}
+                      waitingUntil={
+                        turn.id === lastId ? (conversation?.waiting_until ?? null) : null
+                      }
                       onDecide={decide}
                       onSendDraft={sendDraft}
                       onUndo={undo}
