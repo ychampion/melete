@@ -756,6 +756,25 @@ describe('the life of a sandbox', () => {
     expect(engine.containers.has(NAME)).toBe(false);
   });
 
+  test('a computer with its volumes and no container is stopped, not gone, and can be suspended', async () => {
+    const { engine, host } = setup();
+    await host.create(spec(), signal());
+    // A restore onto a new machine brings back the volumes, never the container.
+    engine.containers.delete(NAME);
+    expect(await host.inspect(handleOf(NAME), signal())).toBe('paused');
+    expect(await host.pause(handleOf(NAME), signal())).toEqual({ resumeRef: NAME });
+    // Asking made nothing and removed nothing.
+    expect(engine.containers.has(NAME)).toBe(false);
+    expect([...engine.volumes.keys()].sort()).toEqual([`${NAME}-home`, `${NAME}-work`]);
+    // Without both volumes, or with volumes made for another computer, it is gone.
+    const labels = engine.volumes.get(`${NAME}-home`) ?? {};
+    engine.volumes.set(`${NAME}-home`, { ...labels, 'com.melete.sandbox.name': 'melete-sbx-x' });
+    expect(await host.inspect(handleOf(NAME), signal())).toBe('gone');
+    engine.volumes.delete(`${NAME}-home`);
+    expect(await host.inspect(handleOf(NAME), signal())).toBe('gone');
+    await expect(host.pause(handleOf(NAME), signal())).rejects.toBeInstanceOf(SandboxGone);
+  });
+
   test('destroying removes the container, its network and both volumes, and ends its grant', async () => {
     const { engine, host, guard } = setup({ open: true });
     await host.create(spec('sbx_one', { kind: 'open' }), signal());
@@ -967,6 +986,33 @@ describe('the desktop', () => {
       ['melete-desktop', 'key', 'ctrl+l', 'Return'],
       ['melete-desktop', 'scroll', '1', '2', '-3'],
     ]);
+  });
+
+  test("a chat's display is named before the command, and only a valid one is sent", async () => {
+    const { engine, host } = setup();
+    await host.create(spec(), signal());
+    const seen: string[][] = [];
+    engine.onExec = (cmd) => {
+      seen.push(cmd);
+      return { stdout: '{"ok":true}' };
+    };
+    const handle = handleOf(NAME);
+    const display = { number: 2, id: 'sbd_01J0DISPLAY0000000000000' };
+    await host.computer(handle, { kind: 'key', keys: ['Return'] }, signal(), display);
+    await host.endDisplay(handle, display, signal());
+    expect(seen).toEqual([
+      ['melete-desktop', '--display', '2', '--owner', display.id, 'key', 'Return'],
+      ['melete-desktop', '--display', '2', '--owner', display.id, 'stop'],
+    ]);
+    for (const wrong of [
+      { number: 64, id: display.id },
+      { number: -1, id: display.id },
+      { number: 1, id: 'sbd; reboot' },
+    ])
+      await expect(
+        host.computer(handle, { kind: 'key', keys: ['Return'] }, signal(), wrong),
+      ).rejects.toBeInstanceOf(SandboxAdapterRefusal);
+    expect(seen).toHaveLength(2);
   });
 
   test('what the desktop cannot take is refused before it is sent', async () => {

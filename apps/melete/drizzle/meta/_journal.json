@@ -813,6 +813,13 @@
       "when": 1789232400095,
       "tag": "0115_client_focus",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1789232400096,
+      "tag": "0116_sandbox_displays",
+      "breakpoints": true
     }
   ]
 }

@@ -85,7 +85,11 @@ describe('reading a model’s extraction answer', () => {
   });
 
   test('an empty answer list is a good answer', () => {
-    expect(readExtractionReply('{"proposals": []}')).toEqual({ proposals: [], dropped: [] });
+    expect(readExtractionReply('{"proposals": []}')).toEqual({
+      proposals: [],
+      dropped: [],
+      about: [],
+    });
   });
 });
 

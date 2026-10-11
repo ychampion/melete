@@ -34,6 +34,8 @@ export interface ComputerControls {
   ): Promise<ComputerControlState | null>;
   /** The holder's live view is open now. */
   seen(sandbox: string): Promise<void>;
+  /** Whether a person holds any display of this computer. */
+  heldAnywhere(sandbox: string): Promise<boolean>;
   /** Hands back every computer whose holder has had no live view open for `afterMs`. */
   handBackUnwatched(afterMs?: number): Promise<string[]>;
   /** Told of each change made through this object, in this process. */
@@ -43,13 +45,16 @@ export interface ComputerControls {
 const AGENT: ComputerControlState = { control: 'agent', epoch: 0 };
 
 /**
- * A condition on `sandbox_session` rows: the computer is not held by a
- * person. Used in the statement that settles, suspends or expires a session,
- * so the check and the act are one.
+ * A condition on `sandbox_session` rows: no display of the computer is held
+ * by a person. Display 0's key is the computer's own id, and display n's is
+ * `<id>#n` (`displays.ts`). Used in the statement that settles, suspends or
+ * expires a session, so the check and the act are one.
  */
 export function notHeldByPerson(sql: Sql | TransactionSql) {
   return sql`not exists (select 1 from sandbox_control c
-    where c.provider_sandbox_id = sandbox_session.provider_sandbox_id and c.control = 'human')`;
+    where c.control = 'human'
+      and (c.provider_sandbox_id = sandbox_session.provider_sandbox_id
+        or starts_with(c.provider_sandbox_id, sandbox_session.provider_sandbox_id || '#')))`;
 }
 
 /**
@@ -108,6 +113,14 @@ export class PostgresComputerControls implements ComputerControls {
       where provider_sandbox_id = ${sandbox} and control = 'human'`;
   }
 
+  async heldAnywhere(sandbox: string): Promise<boolean> {
+    const [row] = await this.sql`select 1 from sandbox_control
+      where control = 'human'
+        and (provider_sandbox_id = ${sandbox} or starts_with(provider_sandbox_id, ${`${sandbox}#`}))
+      limit 1`;
+    return Boolean(row);
+  }
+
   async handBackUnwatched(afterMs = UNWATCHED_HOLD_MS): Promise<string[]> {
     const rows = await this.sql`update sandbox_control
       set control = 'agent', epoch = epoch + 1, principal_id = null, changed_at = now(),
@@ -149,6 +162,13 @@ export class MemoryComputerControls implements ComputerControls {
   }
 
   async seen(): Promise<void> {}
+
+  async heldAnywhere(sandbox: string): Promise<boolean> {
+    for (const [key, state] of this.held)
+      if (state.control === 'human' && (key === sandbox || key.startsWith(`${sandbox}#`)))
+        return true;
+    return false;
+  }
 
   async handBackUnwatched(): Promise<string[]> {
     return [];

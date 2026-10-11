@@ -39,7 +39,16 @@ const ENTER: LiveInput[] = [
   { k: 'key', down: false, key: 'Enter', code: 'Enter', vk: 13, mods: 0 },
 ];
 
-if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
+/**
+ * Where this proof is asked for, a missing browser or database fails it: a quiet skip is how it
+ * went unproven. Elsewhere it is reported as not run.
+ */
+const asked = process.env.MELETE_BROWSER_SITES_PROOF === '1';
+if (asked && !(database && chromiumAvailable))
+  test('the signed-in sites proof has a real browser and database to run on', () => {
+    throw new Error(chromiumAvailable ? 'Postgres unavailable' : chromiumMissingReason);
+  });
+else if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
 const suite = database && chromiumAvailable ? describe : describe.skip;
 
 suite('the sites a space is signed in to', () => {
@@ -286,6 +295,11 @@ suite('the sites a space is signed in to', () => {
     expect(before.tree).toContain('is remembered');
     // A second site is recorded, to show that signing out of one leaves the others alone.
     await sessions.sites.record(spaceId, 'other.example');
+    // While signed in, the list names the site and nothing the browser holds for it.
+    const signedIn = await (await call('/browser/sites')).text();
+    expect(signedIn).toContain('127.0.0.1');
+    for (const held of ['signed-in', 'session=', 'remembered', 'cookie'])
+      expect([held, signedIn.includes(held)]).toEqual([held, false]);
     // The person takes control and hands back without leaving the page, so the agent's looks at
     // it are filtered until it moves on. Signing out closes this browser.
     await control('takeover');
@@ -296,6 +310,15 @@ suite('the sites a space is signed in to', () => {
     expect(await forgotten.json()).toEqual({ domain: '127.0.0.1', forgotten: true });
     const kept = await sql`select domain from browser_site_profile where space_id = ${spaceId}`;
     expect(kept.map((row) => row.domain)).toEqual(['other.example']);
+    // The list no longer shows the site, and it never carries what the cookies held.
+    const listed = await call('/browser/sites');
+    expect(listed.status).toBe(200);
+    const sites = await listed.text();
+    expect(
+      (JSON.parse(sites) as { sites: { domain: string }[] }).sites.map((site) => site.domain),
+    ).toEqual(['other.example']);
+    for (const held of ['signed-in', 'session=', 'remembered', 'cookie'])
+      expect([held, sites.includes(held)]).toEqual([held, false]);
 
     // The browser was closed to clear the profile, so the agent leases it again and looks: the
     // page no longer knows this browser, and the sign-in page is refused as it was at the start.

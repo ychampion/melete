@@ -85,7 +85,7 @@ export async function handComputerToPerson(
   input: {
     spaceId: string;
     jobId: string;
-    /** The sandbox session whose desktop shows the check. */
+    /** The computer whose screen shows the check: the chat's display, or a session without one. */
     sessionId: string;
     /** The attempt that met it; a job already on another attempt is left alone. */
     attemptId: string;
@@ -98,7 +98,8 @@ export async function handComputerToPerson(
   const steps = await sql`select kind, canonical_payload from action
     where job_id = ${input.jobId} and status = 'succeeded'
       and kind like 'computer.%' and kind <> 'computer.screenshot'
-      and receipt->'detail'->>'session_id' = ${input.sessionId}
+      and coalesce(receipt->'detail'->>'computer_id', receipt->'detail'->>'session_id')
+        = ${input.sessionId}
     order by created_at desc, id desc limit 12`;
   const done = told([
     ...[...steps]

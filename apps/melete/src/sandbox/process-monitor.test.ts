@@ -60,6 +60,41 @@ afterAll(async () => {
   await handle?.close();
 }, 30_000);
 
+/** Until `done` holds, or fail after `ms`. */
+async function until(done: () => boolean, ms: number): Promise<void> {
+  const by = Date.now() + ms;
+  while (!done()) {
+    if (Date.now() > by) throw new Error(`still waiting after ${ms} ms`);
+    await Bun.sleep(10);
+  }
+}
+
+test('a monitor with nothing to watch does not look again every few seconds', async () => {
+  let passes = 0;
+  const empty = (() => Promise.resolve(Object.assign([], { count: 0 }))) as unknown;
+  const monitor = new ProcessMonitor({
+    sql: Object.assign(empty as object, { unsafe: (text: string) => text }) as never,
+    processes: {} as never,
+    providers: () => new Map(),
+    wakes: { deliver: async () => undefined, processEnded: async () => 0 },
+    leads: () => {
+      passes += 1;
+      return true;
+    },
+    dockerMs: 20,
+    idleMs: 60_000,
+    log: () => {},
+  });
+  const running = monitor.start();
+  try {
+    await Bun.sleep(400);
+    // One look finds nothing; the next waits for the idle interval, not 20 ms.
+    expect(passes).toBe(1);
+  } finally {
+    running.stop();
+  }
+});
+
 test('the sandbox tools, process.wait among them, are still a manifest the service accepts', () => {
   for (const manifest of [sandboxTerminalManifest, sandboxExecManifest])
     expect(connectorManifest.safeParse(manifest).success).toBe(true);
@@ -250,6 +285,7 @@ withDb('waking a job from its background process', () => {
       job,
       scope,
       provider,
+      providers,
       sessions,
       processes,
       computers,
@@ -717,5 +753,44 @@ withDb('waking a job from its background process', () => {
     const read = s.detail(await s.run(woken.claims, 'process.read', { process_id: id, cursor: 0 }));
     expect(String(read.output)).toContain('all passed');
     expect(s.provider.calls.resume).toBe(1);
+  }, 60_000);
+
+  test('a resting monitor wakes when a watch is made, and keeps asking while it is watched', async () => {
+    const s = await setup();
+    let passes = 0;
+    const monitor = new ProcessMonitor({
+      sql: s.sql,
+      processes: s.processes,
+      providers: s.providers,
+      wakes: s.triggers,
+      leads: () => {
+        passes += 1;
+        return true;
+      },
+      dockerMs: 50,
+      idleMs: 60_000,
+      log: () => {},
+    });
+    const running = monitor.start();
+    try {
+      await until(() => passes >= 1, 5_000);
+      await Bun.sleep(300);
+      // Nothing is watched: it rests rather than looking every 50 ms.
+      expect(passes).toBe(1);
+
+      const row = await s.conversation();
+      const first = await s.claim(row);
+      s.detail(
+        await s.run(first.claims, 'process.start', { command: 'npm test', notify: { on: 'exit' } }),
+      );
+      // Woken by the new watch long before its minute of rest is up.
+      await until(() => passes >= 2, 5_000);
+      const woke = passes;
+      await Bun.sleep(400);
+      // Watched: a pass every 50 ms again.
+      expect(passes - woke).toBeGreaterThanOrEqual(3);
+    } finally {
+      running.stop();
+    }
   }, 60_000);
 });

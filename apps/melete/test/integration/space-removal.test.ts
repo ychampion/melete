@@ -384,6 +384,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   triage_item: 'operational',
   triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
+  sandbox_display: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -698,6 +699,11 @@ describe.if(handle !== null)('removing a space', () => {
         command_redacted, command_digest, cwd, name, state, expires_at, ended_at)
       values (${`prc_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId},
         ${`sbx_${seeded.spaceId}`}, 'npm test', 'digest', '.', 'tests', 'stopped', now(), now())`;
+    // A chat's display on that computer, ended with it.
+    await sql`insert into sandbox_display (id, space_id, connection_id, adapter, provider_sandbox_id,
+        display, owner_job_id, ended_at, end_reason)
+      values (${`sbd_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.connectionId}, 'fake',
+        ${`sbx_provider_${seeded.spaceId}`}, 1, ${seeded.jobId}, now(), 'its computer closed')`;
     // The time that process kept the computer running after its turn ended.
     await sql`insert into sandbox_awake_day (space_id, day, seconds)
       values (${seeded.spaceId}, current_date, 600)`;

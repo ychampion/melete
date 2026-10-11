@@ -36,9 +36,13 @@ the desktop and the browser. Every space then has a sandbox connection called
 needs one.
 
 To use another image, build it and set `MELETE_SANDBOX_DOCKER_IMAGE`; it must
-already be on the engine. A space's owner can also add a docker sandbox by hand
-in Settings → Connections → Sandbox, choosing "This server (Docker)" and leaving
-the key empty.
+already be on the engine. Every space's **Computer** follows that setting when
+the service starts, after an update or a restore onto another machine too, and
+an agent's computer is made again from the new image, keeping its files, the
+next time it is used with nothing running in it.
+
+A space's owner can also add a docker sandbox by hand in Settings → Connections
+→ Sandbox, choosing "This server (Docker)" and leaving the key empty.
 
 ## One container per agent
 
@@ -60,8 +64,9 @@ Removing a space, or the connection, removes its containers and their volumes.
   ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github), [AWS](COMMAND-LINE-ACCESS.md#aws)).
   `pip install` falls back to the user's own directory, and `npm install -g` installs
   there too; both persist.
-- A 1024x768 virtual display with a light window manager and Chromium, the same
-  size as the live view.
+- 1024x768 virtual displays with a light window manager and Chromium, the same
+  size as the live view: one for each conversation or run using the computer
+  (see "A display for each conversation" below).
 - `/work`, the job's workspace. Files the agent writes with its file tools are
   copied in before each command and copied back after it, so the shell and the
   file tools see the same files.
@@ -181,6 +186,12 @@ see them ended with that reason.
 Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
 lost is still reported from that record after an idle stop.
+
+A computer whose container is gone but whose two volumes are still there, as
+after a restore onto a new machine, is stopped rather than lost: its next use
+makes the container again on those volumes, with its files and home folder.
+Its volumes go when the computer or its space is removed, when the retention
+below runs out, or once no session refers to them.
 
 A suspended workspace nobody resumes is removed after
 `MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS`, as with the other providers.
@@ -336,6 +347,28 @@ inside Melete.
   a new one shortly before then and reloads the page. It ends at once when the
   process stops or the browser session that opened it signs out.
 
+## A display for each conversation
+
+An agent's computer is shared by the agent's conversations and runs. Each one
+works on a display of its own, with its own browser window, at the same time
+as the others: a run checking prices overnight and a conversation planning a
+trip each see only their own page. Files in `/work` and `/home/agent` are the
+same for all of them, and so are the sites you signed in to: display 0 uses
+the computer's browser profile, and each other display starts its browser from
+a copy of it, since one browser profile is open in one browser at a time.
+
+- A display is made the first time a conversation or run uses the computer,
+  and stays with it between turns.
+- It ends when its conversation or run ends, or when nothing has used it for
+  half an hour. Stopping a conversation ends its display and leaves the others
+  running.
+- `MELETE_SANDBOX_MAX_DISPLAYS` (6 by default, up to 64) is how many run on one
+  computer at once. One more is told plainly that the computer is full, and
+  nothing runs; the agent says so and carries on without the computer, or
+  tries again once one has finished.
+- The computer is suspended, or made again from a new image, only when no
+  conversation or run is using any of its displays.
+
 ## Watching and taking over
 
 The service exposes the desktop with the same wire shapes as the browser
@@ -343,13 +376,18 @@ worker's live view:
 
 | Route | Purpose |
 |---|---|
-| `GET /sandbox/computers?job_id=` | the job's computer, who controls it, and whether it is running |
+| `GET /sandbox/computers?job_id=` | the conversation's display of the computer, who controls it, and whether it is running |
 | `POST /sandbox/sessions/{id}/takeover` | take control; the job waits for you |
 | `POST /sandbox/sessions/{id}/handback` | give control back |
 | `POST /sandbox/sessions/{id}/live` | open a live view |
 | `GET /sandbox/sessions/{id}/live/frames` | the desktop as a stream of frames |
 | `POST /sandbox/sessions/{id}/live/input` | pointer and keyboard input, only while you hold control |
 | `POST /sandbox/sessions/{id}/live/close` | close the live view |
+
+Each display is watched and taken over on its own: `{id}` is the
+`session_id` the list gives, which names the conversation's display. Taking
+over one conversation's display parks that conversation only, and the others
+keep working on theirs.
 
 Only the job's owner may watch or take over. Taking over parks the job until
 you hand the computer back and answer it. Frames are never stored, and nothing you type

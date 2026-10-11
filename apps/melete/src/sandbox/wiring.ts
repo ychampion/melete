@@ -14,13 +14,21 @@
  * it once they have ended. Where the provider cannot, suspending would end
  * them, so they are stopped first, each with that reason on its record.
  *
+ * A computer with displays is shared by the chats using it: when the attempt
+ * holding it ends, it passes to another chat's attempt still on it rather than
+ * being suspended. A chat's display is ended when the chat or run ends, when
+ * it has gone unused for a while, and when the chat is stopped; only that
+ * display's browser and screen end, never another chat's.
+ *
  * A provider belongs to the connection that holds its key, so everything here
  * is resolved by connection: two spaces may use the same provider with
  * different accounts, and one account's reconciliation must never judge the
  * other's sandboxes.
  */
 import type { Sql } from 'postgres';
+import { isDesktopProvider } from './adapters/docker.ts';
 import { notHeldByPerson } from './computer-control.ts';
+import { type DisplayRow, displayKey, passToJoiners } from './displays.ts';
 import { END_REASONS, LIVE_STATES, type SandboxProcesses } from './processes.ts';
 import { reconcileSandboxes } from './reconcile.ts';
 import { type SandboxSessions, sessionHandle } from './sessions.ts';
@@ -64,9 +72,14 @@ export type SandboxWiring = {
   afterAttempt(attemptId: string): void;
   /**
    * Called when a person stops a conversation's turn: the processes that turn
-   * started are ended at once. Never blocks the stop that called it.
+   * started are ended at once, and so is the conversation's display on the
+   * computer. Never blocks the stop that called it.
    */
   afterStop(jobId: string): void;
+  /** Ends the displays of a stopped job's chat or run; another chat's are left alone. */
+  endStoppedDisplays(jobId: string, signal: AbortSignal): Promise<string[]>;
+  /** Ends the displays whose chat or run ended, or that nobody used for a while. */
+  reapDisplays(signal: AbortSignal): Promise<string[]>;
   /** Ends the processes a stopped turn of this job started; see `SandboxProcesses.endStopped`. */
   endStopped(jobId: string, signal: AbortSignal): Promise<string[]>;
   /** Ends the attempt's session: suspended if it is a workspace, closed if not. */
@@ -116,6 +129,40 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     for (const each of live)
       await processes.end(each, computer, 'stopped', END_REASONS.suspended, signal);
   };
+  /**
+   * End displays: recorded first, then the browser and screen on each are
+   * stopped inside its computer, when the computer is running. A display a
+   * person holds is theirs and is left alone; with `reaping`, so is one a chat
+   * came back to after it was listed.
+   */
+  const endDisplays = async (
+    rows: DisplayRow[],
+    reason: string,
+    signal: AbortSignal,
+    reaping = false,
+  ): Promise<string[]> => {
+    const ended: string[] = [];
+    for (const row of rows) {
+      const key = displayKey(row.providerSandboxId, row.display);
+      if ((await sessions.controls.state(key)).control === 'human') continue;
+      const [gone] = await sessions.displays.end([row.id], reason, { reaping });
+      if (!gone) continue;
+      ended.push(row.id);
+      try {
+        const provider = providerFor(row.adapter, row.connectionId);
+        if (!provider || !isDesktopProvider(provider)) continue;
+        await provider.endDisplay(
+          { providerSandboxId: row.providerSandboxId, imageDigest: null, region: null },
+          { number: row.display, id: row.id },
+          signal,
+        );
+      } catch (error) {
+        // The next chat given this number starts it clean in any case.
+        say(`display ${row.display} of ${row.providerSandboxId} was not stopped: ${String(error)}`);
+      }
+    }
+    return ended;
+  };
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   const pending = new Set<Promise<void>>();
@@ -142,11 +189,30 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       return reports;
     },
 
-    sweep(signal) {
-      return sessions.sweep(providerFor, signal);
+    async sweep(signal) {
+      const swept = await sessions.sweep(providerFor, signal);
+      await wiring.reapDisplays(signal).catch((error: unknown) => {
+        say(`sandbox displays were not reaped: ${String(error)}`);
+      });
+      return swept;
+    },
+
+    async reapDisplays(signal) {
+      const ended: string[] = [];
+      for (const row of await sessions.displays.reapable()) {
+        if (signal.aborted) break;
+        ended.push(...(await endDisplays([row], row.reason, signal, true)));
+      }
+      return ended;
+    },
+
+    async endStoppedDisplays(jobId, signal) {
+      return endDisplays(await sessions.displays.ofStopped(jobId), 'its chat was stopped', signal);
     },
 
     async settleAttempt(attemptId, signal) {
+      // Its displays stay with their chats, for the next turn.
+      await sessions.displays.release(attemptId);
       const rows = await sql`select id, agent_id, persistence, connection_id, adapter,
           provider_sandbox_id, space_id, image_digest, region, status
         from sandbox_session
@@ -159,6 +225,13 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         // once they hand it back. Their sessions are not selected above.
         const workspace = row.agent_id !== null && row.persistence !== 'ephemeral';
         try {
+          // Another chat still on the computer keeps it, under its own attempt.
+          if (
+            workspace &&
+            (await passToJoiners(sql, sessions.leaseSeconds, { sessionId: id, ended: attemptId }))
+              .length
+          )
+            continue;
           const provider = providerFor(String(row.adapter), String(row.connection_id));
           if (!provider) continue;
           if (workspace && row.status === 'ready' && (await sessions.hasLiveProcesses(id))) {
@@ -198,8 +271,10 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     },
 
     afterStop(jobId) {
-      const work = wiring
-        .endStopped(jobId, AbortSignal.timeout(120_000))
+      const work = Promise.all([
+        wiring.endStopped(jobId, AbortSignal.timeout(120_000)),
+        wiring.endStoppedDisplays(jobId, AbortSignal.timeout(60_000)),
+      ])
         .then(
           () => undefined,
           (error: unknown) => {

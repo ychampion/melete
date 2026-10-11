@@ -52,9 +52,11 @@ import {
   sandboxSpecFor,
   sandboxTimeZone,
 } from '../sandbox/connection.ts';
+import { type DisplayRow, ownerJobOf } from '../sandbox/displays.ts';
 import { checkHandOffs, handComputerToPerson, MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
+import { describeSkipped } from '../sandbox/move-out.ts';
 import type { SandboxProcesses } from '../sandbox/processes.ts';
 import {
   NOT_STARTED,
@@ -96,9 +98,9 @@ const NAMED_PATHS = 50;
 /**
  * What a command did to the workspace that the agent and the person must
  * hear: how many files it deleted (now in the trash, with how to put them
- * back), which it deleted that were put back and why, or a read-back that
- * failed. Said on the command's receipt, or in its reason when it failed,
- * never left silent.
+ * back), which it deleted that were put back and why, what the read-back
+ * left on the computer over a cap, or a read-back that failed. Said on the
+ * command's receipt, or in its reason when it failed, never left silent.
  */
 export function workspaceNote(report: SyncOutReport | Error): Record<string, JsonValue> {
   if (report instanceof Error)
@@ -132,6 +134,17 @@ export function workspaceNote(report: SyncOutReport | Error): Record<string, Jso
         .join(
           '; ',
         )}${report.kept.length > 3 ? '; ...' : ''}. To delete ${report.kept.length === 1 ? 'it' : 'them'}, use files.delete, which asks the person where it has to.`,
+    );
+  }
+  if (report.skipped.length) {
+    note.workspace_skipped_count = report.skipped.length;
+    note.workspace_skipped = report.skipped
+      .slice(0, NAMED_PATHS)
+      .map((entry) => ({ ...entry }) as Record<string, JsonValue>);
+    const named = report.skipped.slice(0, 3).map(describeSkipped).join('; ');
+    const more = report.skipped.length > 3 ? `; and ${report.skipped.length - 3} more` : '';
+    sentences.push(
+      `Not all of /work was read back into your workspace: ${named}${more}. What was skipped is still on your computer, but a file move or read cannot reach it. Make it smaller, move what you need out of a large folder, or delete what you no longer need; your next command reads it back.`,
     );
   }
   if (report.evicted?.length) {
@@ -372,6 +385,23 @@ export const sandboxExecManifest: ConnectorManifest = {
 export const sandboxManifestFor = (provider: SandboxProvider): ConnectorManifest =>
   isDesktopProvider(provider) ? sandboxExecManifest : sandboxTerminalManifest;
 
+/**
+ * Why nothing ran, as the model reads it: a full computer is said in plain
+ * words, and is not tried again by itself.
+ */
+function refusedBefore(error: unknown) {
+  if (error instanceof SandboxRefusal && error.code === 'computer_full')
+    return { outcome: 'failed' as const, reason: error.message, retryable: false };
+  return {
+    outcome: 'failed' as const,
+    reason:
+      error instanceof SandboxRefusal
+        ? `${error.code}: ${error.message}`
+        : (error as Error).message,
+    retryable: true,
+  };
+}
+
 /** How long one computer action may take, the desktop's own wait for a page included. */
 const COMPUTER_BUDGET_MS = 60_000;
 
@@ -509,8 +539,19 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       where attempt_id = ${action.attempt_id} and adapter = ${provider.capabilities.adapter}
         and connection_id = ${options.connectionId} and status = 'ready'
       limit 1`;
-    if (existing) {
-      const row = await sessions.get(existing.id as string);
+    // Or the computer this attempt joined, on a display of its own chat.
+    const [joined] = existing
+      ? []
+      : await sql`select s.* from sandbox_display d
+          join sandbox_session s on s.provider_sandbox_id = d.provider_sandbox_id
+            and s.connection_id = d.connection_id and s.adapter = ${provider.capabilities.adapter}
+            and s.status = 'ready'
+          where d.attempt_id = ${action.attempt_id} and d.connection_id = ${options.connectionId}
+            and d.ended_at is null
+          limit 1`;
+    const found = existing ?? joined;
+    if (found) {
+      const row = await sessions.get(found.id as string);
       if (row) {
         // A session opened by an earlier command, possibly in another process.
         await provider.connect(sessionHandle(row), signal);
@@ -552,8 +593,17 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     if (facts.agentId && options.config.persistence !== 'ephemeral') {
       const agentId = facts.agentId;
       const persistence = options.config.persistence;
+      // A computer with displays is shared: each chat or run works on its own.
+      const share = isDesktopProvider(provider)
+        ? { ownerJobId: await ownerJobOf(sql, ctx.job_id) }
+        : undefined;
       const row = await waitForWorkspace(ctx, agentId, signal, () =>
-        sessions.openWorkspace({ ...opening, agentId, persistence }, provider, specFor, signal),
+        sessions.openWorkspace(
+          { ...opening, agentId, persistence, ...(share ? { share } : {}) },
+          provider,
+          specFor,
+          signal,
+        ),
       );
       await noteRecreated(ctx, row);
       return { row, reused: false };
@@ -799,20 +849,31 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         retryable: false,
       };
     let session: SessionRow;
+    let display: DisplayRow | null = null;
     try {
       const opened = await sessionFor(action, ctx, signal);
       const renewed = await sessions.renew(opened.row.id);
       if (!renewed) throw new Error('the sandbox session ended before the action was sent');
       session = renewed;
+      // A workspace's computer is shared, one display per chat or run; a
+      // computer of one attempt alone keeps its single screen.
+      if (session.agentId) {
+        const owner = await ownerJobOf(sql, ctx.job_id);
+        const current = session;
+        display = await sql.begin((tx) =>
+          sessions.displays.acquire(tx, {
+            spaceId: current.spaceId,
+            connectionId: current.connectionId,
+            adapter: current.adapter,
+            providerSandboxId: current.providerSandboxId,
+            ownerJobId: owner,
+            jobId: ctx.job_id,
+            attemptId: action.attempt_id,
+          }),
+        );
+      }
     } catch (error) {
-      return {
-        outcome: 'failed' as const,
-        reason:
-          error instanceof SandboxRefusal
-            ? `${error.code}: ${error.message}`
-            : (error as Error).message,
-        retryable: true,
-      };
+      return refusedBefore(error);
     }
     try {
       const detail = await runComputerAction({
@@ -823,6 +884,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         provider,
         controls: sessions.controls,
         signal,
+        display: display ? { number: display.display, id: display.id } : null,
         ...(options.challengeWaitMs !== undefined
           ? { challengeWaitMs: options.challengeWaitMs }
           : {}),
@@ -865,7 +927,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           : await handComputerToPerson(sql, {
               spaceId: ctx.space_id,
               jobId: ctx.job_id,
-              sessionId: session.id,
+              // The person takes over this chat's display, not the computer.
+              sessionId: display?.id ?? session.id,
               attemptId: action.attempt_id,
               service:
                 serviceOfUrl(typeof screen.url === 'string' ? screen.url : '') ?? 'this site',
@@ -1048,14 +1111,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       } catch (error) {
         // Nothing was dispatched: no sandbox took a command, so this is a
         // plain failure and the same action may be sent again.
-        return {
-          outcome: 'failed',
-          reason:
-            error instanceof SandboxRefusal
-              ? `${error.code}: ${error.message}`
-              : (error as Error).message,
-          retryable: true,
-        };
+        return refusedBefore(error);
       }
       const forget = settled.get(session.providerSandboxId) ?? [];
       settled.delete(session.providerSandboxId);
