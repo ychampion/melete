@@ -250,9 +250,10 @@ function Sidebar({
     profile,
     refreshConversations,
     guest,
+    member,
     capabilities,
   } = useApp();
-  const nav = sidebarNav(guest === true, capabilities.multiplayer);
+  const nav = sidebarNav(guest === true, capabilities.multiplayer, member === true);
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -753,7 +754,7 @@ export function Shell({
   // What the person chose with the toggle, kept while they move between pages.
   const [railChoice, setRailChoice] = useState<boolean | null>(railPreference);
   const [palette, setPalette] = useState(false);
-  const { agents, guest } = useApp();
+  const { agents, guest, member } = useApp();
   const route = useRoute();
   const agent = agentById(agents, agentId);
 
@@ -775,7 +776,8 @@ export function Shell({
     setDrawer(false);
   }, [route.path]);
 
-  const showRail = rail && !panel;
+  // The day is the owner's calendar and tasks: a member's pages have no rail.
+  const showRail = rail && !panel && !member;
   const day: Day = {
     home: useLoad(() => (showRail ? adapter.home() : off<Home>()), [showRail]),
     tasks: useLoad(() => (showRail ? adapter.tasks() : off<{ tasks: Task[] }>()), [showRail]),
@@ -795,7 +797,7 @@ export function Shell({
     setRailOpen(false);
     openerRef.current?.focus();
   }, []);
-  const overlay = narrow && railOpen && rail && !panel;
+  const overlay = narrow && railOpen && showRail;
   useEffect(() => {
     if (!overlay) return;
     railRef.current?.focus();
@@ -909,7 +911,8 @@ export function Shell({
           ) : null}
           <div className="shell-body">
             <main id="main" className="shell-content" tabIndex={-1}>
-              <UsageNotice />
+              {/* A guest's sign-in has no usage of its own to read. */}
+              {guest ? null : <UsageNotice />}
               {children}
             </main>
             {panel}

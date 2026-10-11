@@ -197,6 +197,7 @@ export function App() {
 
   // A guest is signed in to rooms alone; every personal surface stays closed to them.
   const signedIn = profile.data !== null && !signedOut && !guest;
+  const member = signedIn && profile.data?.profile.role === 'member';
   const refreshProfile = useCallback(() => {
     profile.reload();
   }, [profile.reload]);
@@ -332,10 +333,12 @@ export function App() {
       refreshAgents,
       signOut,
       guest: guest && !signedOut,
+      member,
     }),
     [
       signOut,
       guest,
+      member,
       signedOut,
       signedIn,
       refreshProfile,
@@ -402,7 +405,7 @@ export function App() {
     screen = <ChatsScreen />;
   } else if (head === 'chat') {
     screen = <ChatScreen key={second ?? 'new'} id={second ?? null} />;
-  } else if (head === 'agents') {
+  } else if (head === 'agents' && !member) {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {
     screen = <PlansScreen selected={second ?? null} />;

@@ -11,8 +11,8 @@ import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
-import { adapter } from '../experience/adapter.ts';
-import { type Loaded, useLoad } from '../experience/hooks.ts';
+import { adapter, type Result } from '../experience/adapter.ts';
+import { type Loaded, useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
@@ -420,18 +420,43 @@ const TABS = [
   'feedback',
 ] as const;
 type Tab = (typeof TABS)[number] | 'memory';
+/**
+ * The tabs that set up the space itself: its apps, computers, approvals,
+ * rules, models and privacy. They are its owner's, so a member does not see them.
+ */
+const OWNER_TABS: ReadonlySet<string> = new Set([
+  'connections',
+  'devices',
+  'approvals',
+  'rules',
+  'models',
+  'privacy',
+]);
+/** Whether Settings lists this tab: every tab for an owner, none of the owner's for a member. */
+export const showsTab = (tab: string, member: boolean): boolean => !(member && OWNER_TABS.has(tab));
+/** The tab an address opens; one of the owner's opens a member's account instead. */
+export function settingsTab(tab: string, member: boolean): Tab {
+  const asked =
+    tab === 'memory'
+      ? 'memory'
+      : (((TABS as readonly string[]).includes(tab) ? tab : 'account') as Tab);
+  return showsTab(asked, member) ? asked : 'account';
+}
+const off = <T,>(): Promise<Result<T>> =>
+  Promise.resolve({ data: null, error: null, unavailable: 'The space’s owner keeps this.' });
 
 export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
-  const connections = useLoad(() => adapter.connections(), []);
-  const rules = useLoad(() => adapter.rules(), []);
+  const { member } = useApp();
+  const connections = useLoad(
+    () => (member ? off<{ connections: Connection[] }>() : adapter.connections()),
+    [member],
+  );
+  const rules = useLoad(() => (member ? off<{ rules: Rule[] }>() : adapter.rules()), [member]);
   const model = useLoad(() => models.settings(), []);
   const people = useLoad(() => adapter.spaceMembers(), []);
   // People is a shared space's page; a personal space has only its owner.
   const shared = people.data?.space.kind === 'shared';
-  const current: Tab =
-    tab === 'memory'
-      ? 'memory'
-      : (((TABS as readonly string[]).includes(tab) ? tab : 'account') as Tab);
+  const current = settingsTab(tab, member === true);
   const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -509,7 +534,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 { value: 'models', label: 'Models' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
-              ]}
+              ].filter((item) => showsTab(item.value, member === true))}
             />
           </div>
         )}

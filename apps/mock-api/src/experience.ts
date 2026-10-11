@@ -1782,6 +1782,7 @@ export class ExperienceMock {
       onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
+      role: 'owner' as const,
     };
   }
   fill(text: string) {

@@ -25275,6 +25275,8 @@ export interface components {
                 };
                 name: string;
                 onboarded: boolean;
+                /** @enum {string} */
+                role: "owner" | "member";
                 sending_address: string | null;
                 time_zone: string;
                 time_zone_confirmed: boolean;

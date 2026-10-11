@@ -1136,6 +1136,12 @@ export const profileView = profileInput.extend({
    * there is one. It is read from the connection, not set here.
    */
   sending_address: z.string().max(4000).nullable(),
+  /**
+   * Whether the signed-in person owns this space or is a member of it. A
+   * member's view carries their own name and the space's clock, and none of
+   * the owner's details: setup and the time zone are the owner's to change.
+   */
+  role: z.enum(['owner', 'member']),
 });
 export const profileResponse = z.strictObject({ profile: profileView });
 export const automationRun = z.strictObject({
