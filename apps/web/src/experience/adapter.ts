@@ -162,6 +162,26 @@ export type Result<T> =
   | { data: null; error: null; unavailable: string };
 
 /**
+ * Whether the service has a browser, from its answer for the signed-in sites.
+ * A list says yes, and so does a refusal from that route itself, such as its
+ * browser being out of reach for a moment: the sites section then shows the
+ * error with a way to try again, rather than disappearing. No such route, a
+ * sign-in that has ended, or no answer at all says no; so does a space whose
+ * signed-in sites are not this person's (they are its owner's), which no
+ * retry would change.
+ */
+export function servesBrowser(result: Result<unknown>): boolean {
+  if (result.data !== null) return true;
+  if (result.error === null) return false;
+  return (
+    !result.unauthorized &&
+    result.code !== undefined &&
+    result.code !== 'not_found' &&
+    result.code !== 'space_not_found'
+  );
+}
+
+/**
  * Where the API is when the build was not told. Development runs against the
  * local mock on its own port; any other build is served beside the service,
  * so it uses the same origin's /api. Vite fixes `DEV` at build time, so the
@@ -507,6 +527,9 @@ export const adapter = {
         body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
       }),
     ).then(worthHearing),
+  /** Stop waiting for an answer to a question the person no longer wants to answer. */
+  dismissQuestion: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/quick-answers/{id}/dismiss', path(id))),
 
   /* ---------- phone presence ---------- */
   pushPublicKey: () => guard<{ public_key: string | null }>(() => api.GET('/push/public-key')),
@@ -578,6 +601,9 @@ export const adapter = {
     ),
   revokeDevice: (id: string) =>
     guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
+  /** Take a disconnected computer off the list. */
+  removeDevice: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/devices/{id}', path(id))),
   /* ---------- other assistants connected over MCP ---------- */
   assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
   /** Ends every token the assistant holds for this person; answered with 204 and no body. */

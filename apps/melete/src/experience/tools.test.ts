@@ -308,6 +308,9 @@ describe('runtime tools, the model and traces', () => {
     for (const name of ['email.send', 'mcp_linear.create_issue', 'say', 'load_tool', 'skills.read'])
       expect(runtimeTool(name)).toBeNull();
     expect(runtimeTool('web_search')?.done).toBe('Searched the web');
+    // Managing skills is shown by the broker's own entry, never as "Used the skill: List".
+    for (const name of ['skills.list', 'skills.create', 'skills.update', 'skills.delete'])
+      expect(runtimeTool(name)).toBeNull();
     // A cell's terminal is told by its `terminal.run` action, once.
     expect(runtimeTool('terminal')).toBeNull();
     expect(runtimeTool('process')).toBeNull();

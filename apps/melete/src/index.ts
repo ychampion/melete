@@ -81,11 +81,7 @@ import { startTrashSweep } from './connectors/files-trash.ts';
 import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
-import {
-  connectionRevocation,
-  mcpIssuerFetch,
-  sweepUnreferencedSecrets,
-} from './connectors/revocation.ts';
+import { connectionRevocation, mcpIssuerFetch, startSecretSweep } from './connectors/revocation.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
@@ -913,6 +909,7 @@ export async function bootstrap(
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
+  let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
@@ -967,6 +964,7 @@ export async function bootstrap(
     stopUsageRollup?.();
     stopTrashSweep?.();
     stopAccessSweep?.();
+    stopSecretSweep?.();
     stopManagedRemovals?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
@@ -1086,6 +1084,8 @@ export async function bootstrap(
       stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
       // Sessions, links and codes that expired go, so the tables do not grow for ever.
       stopAccessSweep = startAccessSweep(handle.sql, () => leading(leases, 'access-sweep'));
+      // Sealed tokens that refreshes and disconnections left behind go now and once a day.
+      stopSecretSweep = startSecretSweep(handle.sql, () => leading(leases, 'secret-sweep'));
       // Deleted files are kept in the trash for MELETE_TRASH_DAYS, then go.
       stopTrashSweep = startTrashSweep(
         { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
@@ -1662,17 +1662,6 @@ export async function bootstrap(
         ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
         ...(releaseCredential ? { afterRevoke: releaseCredential } : {}),
       });
-      // Sealed tokens an earlier version left behind on refreshes and disconnections go now.
-      if (handle)
-        void sweepUnreferencedSecrets(handle.sql)
-          .then((count) => {
-            if (count) console.error(`connections: deleted ${count} sealed tokens nothing used`);
-          })
-          .catch((error: unknown) =>
-            console.error(
-              `connections: unused sealed tokens were not checked (${error instanceof Error ? error.message : 'error'})`,
-            ),
-          );
       // Revocations a stopped process left part way finish now, in the
       // background: each can reach a provider, and its connection stays
       // inactive until it does.

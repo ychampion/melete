@@ -387,6 +387,32 @@ withDb('long work in shifts', () => {
     expect((await row(helper.helper_id)).state).toBe('cancelled');
   });
 
+  test('a question the person dismisses stops the run that waits on it', async () => {
+    const run = await start({ goal: 'Quote the order' });
+    const shift = await claim(run.id);
+    await required(runner).commitOutcome(shift.claims, {
+      kind: 'waiting_for_input',
+      question: 'Which currency should I quote in?',
+    });
+    expect((await view(run.id)).status).toBe('needs_you');
+    const listed = (await (await request('/quick-answers')).json()) as {
+      questions: { id: string; conversation_id: string | null; needs_answer?: boolean }[];
+    };
+    const card = required(listed.questions.find((entry) => entry.conversation_id === run.id));
+    expect(card.needs_answer).toBe(false);
+    expect((await request(`/quick-answers/${card.id}/dismiss`, 'POST')).status).toBe(200);
+    // It does not sit on a question nobody is shown any more: it stops, as Stop would.
+    const after = await view(run.id);
+    expect(after.status).toBe('stopped');
+    expect(after.question).toBeNull();
+    expect((await row(run.id)).state).toBe('cancelled');
+    const left = (await (await request('/quick-answers')).json()) as {
+      questions: { id: string }[];
+    };
+    expect(left.questions.some((entry) => entry.id === card.id)).toBe(false);
+    expect((await request(`/quick-answers/${card.id}/dismiss`, 'POST')).status).toBe(200);
+  });
+
   test('a helper never waits on the person: where it would ask, it ends and its run hears why', async () => {
     const run = await start({ goal: 'Compare three suppliers' });
     const lead = await claim(run.id);

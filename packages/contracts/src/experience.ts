@@ -174,6 +174,12 @@ export const experienceQuestion = z.strictObject({
    * conversation may leave the device, takes one of its options only.
    */
   free_text: z.boolean(),
+  /**
+   * Only an answer settles it, so it cannot be dismissed: a memory question,
+   * or one about something that may already have gone out. Absent reads as
+   * false.
+   */
+  needs_answer: z.boolean().optional(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });
@@ -1429,6 +1435,12 @@ export const experienceOperations = {
     request: quickAnswerRequest,
     response: experienceOk,
   },
+  /**
+   * Stops waiting for an answer: the question leaves every list and the
+   * conversation waits for the person's next message. Refused for a question
+   * about something that may already have gone out.
+   */
+  'POST /quick-answers/{id}/dismiss': { response: experienceOk },
   'GET /agents': { response: agentList },
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },

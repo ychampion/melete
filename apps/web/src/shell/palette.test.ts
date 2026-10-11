@@ -4,7 +4,7 @@
  */
 import { expect, test } from 'bun:test';
 import type { SearchResult } from '../experience/types.ts';
-import { secondaryOf, withoutBuiltins } from './palette.ts';
+import { SEARCH_PAUSE_MS, searchAfterPause, secondaryOf, withoutBuiltins } from './palette.ts';
 
 const hit = (over: Partial<SearchResult>): SearchResult => ({
   id: 'x_1',
@@ -47,4 +47,28 @@ test('built-in connections are dropped and everything else is kept', () => {
     'connection:c_mail',
     'conversation:c_files',
   ]);
+});
+
+test('typing a word searches once, for the whole word, after typing pauses', async () => {
+  const searched: string[] = [];
+  let cancel = () => {};
+  // Each key replaces the box's value; the palette cancels the last wait, as its effect does.
+  for (const typed of ['w', 'we', 'wea', 'weat', 'weath', 'weathe', 'weather']) {
+    cancel();
+    cancel = searchAfterPause(typed, (query) => searched.push(query));
+  }
+  expect(searched).toEqual([]);
+  await Bun.sleep(SEARCH_PAUSE_MS + 50);
+  expect(searched).toEqual(['weather']);
+});
+
+test('opening the palette lists everything at once, and closing it searches nothing', async () => {
+  const searched: string[] = [];
+  searchAfterPause('  ', (query) => searched.push(query));
+  await Bun.sleep(5);
+  expect(searched).toEqual([' ']);
+  const cancel = searchAfterPause('roth', (query) => searched.push(query));
+  cancel();
+  await Bun.sleep(SEARCH_PAUSE_MS + 50);
+  expect(searched).toEqual([' ']);
 });

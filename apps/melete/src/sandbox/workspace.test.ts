@@ -108,21 +108,34 @@ test('a symbolic link anywhere in the listing refuses the whole synchronisation'
   await nothingWritten();
 });
 
-test('the file count, per-file size and total size caps refuse the synchronisation', async () => {
-  const many = Array.from({ length: 4 }, (_, index) => file(`f${index}.txt`));
-  expect(((await out(listing(many), { maxFiles: 3 })) as SyncRefusal).code).toBe('too_many_files');
+test('a file or folder over the count, per-file size or total size cap is left on the computer and named', async () => {
+  const many = Array.from({ length: 4 }, (_, index) => file(`many/f${index}.txt`));
+  expect(await out(listing([...many, file('kept.txt', 'safe')]), { maxFiles: 3 })).toMatchObject({
+    files: 1,
+    skipped: [{ path: 'many/', reason: 'too many files', files: 4 }],
+  });
   expect(
-    ((await out(listing([file('big.bin', 'x'.repeat(20))]), { maxFileBytes: 10 })) as SyncRefusal)
-      .code,
-  ).toBe('file_too_large');
+    await out(listing([file('big.bin', 'x'.repeat(20)), file('kept.txt', 'safe')]), {
+      maxFileBytes: 10,
+    }),
+  ).toMatchObject({
+    files: 1,
+    skipped: [{ path: 'big.bin', reason: '20 bytes, over the 10 bytes limit' }],
+  });
   expect(
-    (
-      (await out(listing([file('a.txt', 'x'.repeat(8)), file('b.txt', 'x'.repeat(8))]), {
-        maxTotalBytes: 10,
-      })) as SyncRefusal
-    ).code,
-  ).toBe('too_large');
-  await nothingWritten();
+    await out(listing([file('a.txt', 'x'.repeat(8)), file('b.txt', 'x'.repeat(9))]), {
+      maxTotalBytes: 10,
+    }),
+  ).toMatchObject({
+    files: 1,
+    skipped: [{ path: 'b.txt', reason: 'over the total limit of 10 bytes' }],
+  });
+  expect(await readFile(path.join(root, 'work', JOB, 'kept.txt'), 'utf8')).toBe('safe');
+  expect(await readFile(path.join(root, 'work', JOB, 'a.txt'), 'utf8')).toBe('xxxxxxxx');
+  expect(existsSync(path.join(root, 'work', JOB, 'many'))).toBe(false);
+  expect(existsSync(path.join(root, 'work', JOB, 'big.bin'))).toBe(false);
+  expect(existsSync(path.join(root, 'work', JOB, 'b.txt'))).toBe(false);
+  expect(await readdir(path.join(root, 'outside'))).toEqual([]);
 });
 
 test('a file that grew between listing and fetching refuses the synchronisation', async () => {

@@ -544,6 +544,7 @@ export function createMockApp(deps: AppDeps) {
         id,
         trash_id: trash,
         restorable_until: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        evicted: 0,
       }),
     );
   });

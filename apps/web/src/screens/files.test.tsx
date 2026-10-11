@@ -5,9 +5,10 @@
  */
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { servesBrowser } from '../experience/adapter.ts';
 import { AppContext, type AppContextValue } from '../experience/hooks.ts';
 import type { PersonFile } from '../experience/types.ts';
-import { FileRow, opensHere, whereLine } from './Files.tsx';
+import { deletedNote, FileRow, opensHere, whereLine } from './Files.tsx';
 import { lastUsed, SignedInSites } from './Privacy.tsx';
 
 const NOW = Date.parse('2026-10-10T15:00:00.000Z');
@@ -92,4 +93,49 @@ test('signed-in sites say when each was last used, and are not shown without a b
       </AppContext.Provider>,
     ),
   ).toBe('');
+});
+
+test('a delete says until when it can be undone, and when the trash had to make room', () => {
+  const until = '2026-10-18T15:00:00.000Z';
+  expect(deletedNote(until, 0)).toBe('It’s in the trash until Oct 18.');
+  expect(deletedNote(until, 1)).toBe(
+    'It’s in the trash until Oct 18. The trash was full, so an earlier delete was taken out of it to make room and can no longer be put back.',
+  );
+  expect(deletedNote(until, 3)).toContain('3 earlier deletes were taken out of it');
+});
+
+test('a browser out of reach for a moment keeps the sites section; no browser route hides it', () => {
+  expect(servesBrowser({ data: { sites: [] }, error: null, unavailable: null })).toBe(true);
+  // The sites route answered, refusing for now: there is a browser, and Retry can reach it.
+  expect(
+    servesBrowser({
+      data: null,
+      error: 'Out of reach',
+      unavailable: null,
+      code: 'worker_unavailable',
+    }),
+  ).toBe(true);
+  expect(
+    servesBrowser({ data: null, error: 'No endpoint', unavailable: null, code: 'not_found' }),
+  ).toBe(false);
+  // A member of a shared space: its signed-in sites are its owner's, and no retry changes that.
+  expect(
+    servesBrowser({
+      data: null,
+      error: 'Not this space',
+      unavailable: null,
+      code: 'space_not_found',
+    }),
+  ).toBe(false);
+  expect(
+    servesBrowser({
+      data: null,
+      error: 'Signed out',
+      unavailable: null,
+      unauthorized: true,
+      code: 'unauthorized',
+    }),
+  ).toBe(false);
+  expect(servesBrowser({ data: null, error: 'Offline', unavailable: null })).toBe(false);
+  expect(servesBrowser({ data: null, error: null, unavailable: 'Not here' })).toBe(false);
 });

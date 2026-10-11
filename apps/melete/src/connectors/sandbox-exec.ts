@@ -56,6 +56,7 @@ import { type DisplayRow, ownerJobOf } from '../sandbox/displays.ts';
 import { checkHandOffs, handComputerToPerson, MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
+import { describeSkipped } from '../sandbox/move-out.ts';
 import type { SandboxProcesses } from '../sandbox/processes.ts';
 import {
   NOT_STARTED,
@@ -106,9 +107,9 @@ const NAMED_PATHS = 50;
 /**
  * What a command did to the workspace that the agent and the person must
  * hear: how many files it deleted (now in the trash, with how to put them
- * back), which it deleted that were put back and why, or a read-back that
- * failed. Said on the command's receipt, or in its reason when it failed,
- * never left silent.
+ * back), which it deleted that were put back and why, what the read-back
+ * left on the computer over a cap, or a read-back that failed. Said on the
+ * command's receipt, or in its reason when it failed, never left silent.
  */
 export function workspaceNote(report: SyncOutReport | Error): Record<string, JsonValue> {
   if (report instanceof Error)
@@ -142,6 +143,17 @@ export function workspaceNote(report: SyncOutReport | Error): Record<string, Jso
         .join(
           '; ',
         )}${report.kept.length > 3 ? '; ...' : ''}. To delete ${report.kept.length === 1 ? 'it' : 'them'}, use files.delete, which asks the person where it has to.`,
+    );
+  }
+  if (report.skipped.length) {
+    note.workspace_skipped_count = report.skipped.length;
+    note.workspace_skipped = report.skipped
+      .slice(0, NAMED_PATHS)
+      .map((entry) => ({ ...entry }) as Record<string, JsonValue>);
+    const named = report.skipped.slice(0, 3).map(describeSkipped).join('; ');
+    const more = report.skipped.length > 3 ? `; and ${report.skipped.length - 3} more` : '';
+    sentences.push(
+      `Not all of /work was read back into your workspace: ${named}${more}. What was skipped is still on your computer, but a file move or read cannot reach it. Make it smaller, move what you need out of a large folder, or delete what you no longer need; your next command reads it back.`,
     );
   }
   if (report.evicted?.length) {

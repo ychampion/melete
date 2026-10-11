@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { memoryKeyLabel } from '../experience/evidence.ts';
 import {
   beliefCategoryOf,
   beliefLabel,
@@ -138,6 +139,45 @@ describe('grouping', () => {
     expect(group('misc.fact', 'Likes window seats', null, 'preference')).toBe('preferences');
     expect(group('misc.fact', 'The car is blue')).toBe('other');
   });
+  test("the person's own details are grouped by what they are about, never under people", () => {
+    // Subjects a model gave the person's own details, saved before they were
+    // filed under the person.
+    expect(group('person.user.allergy.peanuts', 'Allergic to peanuts')).toBe('preferences');
+    expect(group('person.allergy.peanuts', 'Allergic to peanuts')).toBe('preferences');
+    expect(group('person.diet.vegetarian', 'Vegetarian')).toBe('preferences');
+    expect(group('person.user.preference.aisle_seat', 'Prefers aisle seats on flights')).toBe(
+      'preferences',
+    );
+    expect(
+      group('contact.owner.availability', 'Can be home Thursday afternoon if that works'),
+    ).not.toBe('people');
+    expect(group('contact.owner.email', 'me@example.test', 'contact.owner.email')).not.toBe(
+      'people',
+    );
+    // Where a real model put the person's city and absence on an install
+    // before this change.
+    expect(group('person.location.city', 'Lives in Delhi')).not.toBe('people');
+    expect(group('person.home_city', 'Lives in Pune')).not.toBe('people');
+    expect(
+      group(
+        'person.travel.away_goa:exception:2026-10-11T08:41:41.896Z:2026-10-12T00:00:00Z',
+        'Away in Goa until Sunday',
+      ),
+    ).not.toBe('people');
+    // As they are filed now.
+    expect(group('self.allergy.peanuts', 'Allergic to peanuts')).toBe('preferences');
+    expect(group('self.flight_seating.prefers_aisle', 'Prefers aisle seats when flying')).toBe(
+      'preferences',
+    );
+    // Someone in their life stays there, the same detail included.
+    expect(group('person.maya.allergy', 'Sister Maya is allergic to peanuts')).toBe('people');
+    expect(group('person.maya.allergy', 'Allergic to peanuts')).toBe('people');
+    expect(group('person.landlord.mr_patel', 'Landlord is Mr. Patel')).toBe('people');
+    expect(group('contact.maya.email', 'maya@example.test', 'contact.maya.email')).toBe('people');
+    // A name is someone's however it was written, and whatever the words say.
+    expect(group('person.lena.allergy', 'Allergic to peanuts')).toBe('people');
+    expect(group('person.sam.diet', 'Vegetarian')).toBe('people');
+  });
   test('a receipt is about accounts and bills', () => {
     expect(
       beliefCategoryOf({
@@ -155,6 +195,12 @@ describe('labels', () => {
   test('a registry key reads as a name', () => {
     expect(subjectLabel('contact.maya.email', 'contact.maya.email')).toBe("Maya's email");
     expect(subjectLabel('pref.coffee.order', 'pref.coffee.order')).toBe('Coffee: order');
+    // Answers given while setting up read as words, the same on every screen.
+    expect(subjectLabel('pref.checkins.style', 'pref.checkins.style')).toBe('Check-ins: style');
+    expect(subjectLabel('pref.home.city', 'pref.home.city')).toBe('Home: city');
+    expect(memoryKeyLabel(null, 'fact.home_city')).toBe('Home city');
+    expect(memoryKeyLabel('contact.maya.email')).toBe("Maya's email");
+    expect(memoryKeyLabel(null)).toBe('Something you shared');
   });
   test('a subject reads as words, with the person first when it names one', () => {
     expect(subjectLabel(null, 'person.maya.birthday')).toBe("Maya's birthday");
@@ -169,6 +215,21 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.landlord.patel')).toBe('Landlord Patel');
     expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
     expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
+  });
+  test('a detail about the person themself reads as theirs, never as "the owner"', () => {
+    expect(subjectLabel('contact.owner.availability', 'contact.owner.availability')).toBe(
+      'Your availability',
+    );
+    expect(subjectLabel(null, 'person.owner.city')).toBe('Your city');
+    expect(beliefLabel(null, 'person.owner', "The owner's landlord is Mr. Patel")).toBe(
+      'Your landlord is Mr. Patel',
+    );
+    expect(subjectLabel(null, 'self.diet.vegetarian')).toBe('Your diet vegetarian');
+    expect(beliefLabel(null, 'self.diet', 'Vegetarian')).toBe('Your diet');
+    // Someone else who owns something stays as written.
+    expect(beliefLabel(null, 'person.cafe', 'The owner of the café is Ana')).toBe(
+      'The owner of the café is Ana',
+    );
   });
   test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {
     expect(beliefLabel(null, 'person.sister.lena.city', 'Sister Lena lives in Seattle.')).toBe(

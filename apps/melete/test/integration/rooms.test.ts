@@ -740,6 +740,11 @@ withDb('rooms', () => {
     // Alice owns the room, and even working in the room's space she sees no room request.
     const [membership] = await sql`select generation from space_membership
       where space_id = ${roomId} and principal_id = ${world.alice.id}`;
+    // A question the room's request is waiting on.
+    const asked = newId('qst');
+    await sql`insert into question (id, source, job_id, text, because, if_ignored)
+      values (${asked}, 'job', ${request}, 'Saturday or Sunday?', '["Both are free."]'::jsonb,
+        'The surprise waits for your answer.')`;
     const inRoom = randomBytes(32).toString('base64url');
     const [installation] = await sql`select id from owner limit 1`;
     await sql`insert into session (token_hash, owner_id, principal_id, space_id,
@@ -791,11 +796,16 @@ withDb('rooms', () => {
         [`/jobs/${request}/input`, 'POST', { text: 'x' }],
         [`/jobs/${request}/cancel`, 'POST'],
         [`/actions?job_id=${request}`, 'GET'],
+        [`/quick-answers/${asked}`, 'POST', { text: 'Saturday' }],
+        [`/quick-answers/${asked}/dismiss`, 'POST'],
       ] as Array<[string, string, unknown?]>) {
         const response = await send(cookie, path, method, body);
         expect([method, path, [403, 404].includes(response.status)]).toEqual([method, path, true]);
       }
     }
+    // Nobody answered or dismissed it from outside the room.
+    const [still] = await sql`select state from question where id = ${asked}`;
+    expect(still?.state).toBe('open');
     // The room's own routes show it to the people in the room.
     const view = roomThreadView.parse(
       await ok(send(world.alice.cookie, `/rooms/${roomId}/threads/${opened.thread.id}`)),

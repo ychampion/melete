@@ -663,10 +663,12 @@ docker builder prune -af
 docker image rm melete-service:local melete-web:local melete-runtime:local
 ```
 
-Keep `melete-sandbox:local` when spaces already have a **Computer**: their
-connections name that image, and `melete deploy` (with the `sandbox` profile)
-and `update.sh` point it at the pulled sandbox image on every update so those
-computers stay current.
+Each space's **Computer** follows `MELETE_SANDBOX_DOCKER_IMAGE` when the
+service starts, so its computers are made from the pulled sandbox image from
+then on. Keep `melete-sandbox:local` when someone added a docker sandbox by
+hand that names it: `melete deploy` (with the `sandbox` profile) and
+`update.sh` point that name at the pulled sandbox image on every update so
+those computers stay current.
 
 ### Package visibility
 
@@ -1163,9 +1165,10 @@ empty or out. An empty value counts as no code. What happens then depends on
 the addresses in `deploy/.env`:
 
 - **Every address is on this machine** (`MELETE_PUBLIC_URL` and
-  `MELETE_WEB_ORIGIN` unset, or naming `localhost`, `127.x.x.x` or `::1`). The
-  first visitor creates the account, as before. That is the default loopback
-  setup, where only this machine reaches the page.
+  `MELETE_WEB_ORIGIN` unset, or naming `localhost`, a name under it such as
+  `melete.localhost`, `127.x.x.x` or `::1`). The first visitor creates the
+  account, as before. That is the default loopback setup, where only this
+  machine reaches the page.
 - **Either names another machine** (a domain, a Tailscale name, a LAN or
   public address). The installation refuses to create the first account:
   `POST /setup` answers 403 `setup_code_required`, `GET /setup` says
@@ -1173,6 +1176,12 @@ the addresses in `deploy/.env`:
   `bun run melete account setup-code` on the host for one, then open the link
   it prints. The service says so in its log at start, and `melete check` and
   `melete status` say so too.
+
+Only these two settings are read; a reverse proxy or a published port in
+front of the installation is not seen. An installation reached that way must
+set `MELETE_WEB_ORIGIN` (or `MELETE_PUBLIC_URL`) to the address people use, or
+have a setup code, before it is reachable. With neither, its first visitor can
+claim it.
 
 Set `MELETE_SETUP_OPEN=true` only if the first visitor should be allowed to
 create the owner without a code: it turns that refusal off, and whoever opens

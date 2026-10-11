@@ -26,6 +26,7 @@ import { FILE_TOOLS, mimeForName, savedFile } from '../artifact/shown.ts';
 import { attachment } from '../attachments/schema.ts';
 import {
   filesTrash,
+  hasTrash,
   latestTrash,
   moveToTrash,
   restoreFromTrash,
@@ -34,7 +35,7 @@ import {
 } from '../connectors/files-trash.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
-import { ownJob } from '../principals/authority.ts';
+import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { artifactLocation, openArtifact, type Stored } from './artifacts.ts';
 import { ServiceError } from './errors.ts';
@@ -54,10 +55,19 @@ const LIST_LIMIT = 500;
  */
 const BROWSER_STEP = /^browser\/art_[A-Za-z0-9]+\.(?:txt|png)$/;
 
-/** Melete's own working folder in a chat's workspace. */
+/**
+ * Melete's own working folder in a chat's workspace. In the person's Files a
+ * folder of that name is theirs, like any other.
+ */
 const WORKING_FOLDER = /^\.melete\//;
 
 const noFile = () => new ServiceError('not_found', 'There is no such file.', 404);
+const notTheirs = (what: string) =>
+  new ServiceError(
+    'scope_denied',
+    `Only the owner of this space can ${what} a file that no chat of yours made.`,
+    403,
+  );
 
 type Scope = { spaceId: string; principalId: string | undefined };
 type JobRow = typeof job.$inferSelect;
@@ -156,13 +166,16 @@ function fromAction(row: { action: typeof action.$inferSelect; job: JobRow }): F
   };
 }
 
+/** Whether a record's file is in a conversation's own folder, as `artifactLocation` decides. */
+const inChatFolder = (row: Stored) => row.area === 'work' && row.sourceJobId !== null;
+
 /**
  * A record of Melete's own working, rather than the person's file: a browser
- * step's capture, or anything under the `.melete/` folder, such as the full
- * output of a command kept beside a chat.
+ * step's capture, or anything under a chat folder's `.melete/` folder, such as
+ * the full output of a command kept beside a chat.
  */
 const workingRecord = (found: Found) =>
-  WORKING_FOLDER.test(found.row.path) ||
+  (inChatFolder(found.row) && WORKING_FOLDER.test(found.row.path)) ||
   (found.id.startsWith(`${ID_PREFIXES.artifact}_`) &&
     found.row.sourceJobId === null &&
     BROWSER_STEP.test(found.row.path));
@@ -180,19 +193,52 @@ async function oneRecord(db: Database, scope: Scope, id: string): Promise<Found 
   return null;
 }
 
-/** The trash a delete of this record's file uses: the one the files tools use for it. */
-async function trashFor(
+/**
+ * The trash a delete of this record's file uses, the one the files tools use
+ * for it, first; then any other an earlier delete of it may have used.
+ */
+async function trashesFor(
+  db: Database,
+  scope: Scope,
   roots: ArtifactRoots,
-  spaceId: string,
   found: Found,
-): Promise<{ place: TrashPlace; path: string }> {
-  const where = placeOf(roots, spaceId, found.row);
+): Promise<{ places: TrashPlace[]; path: string }> {
+  const where = placeOf(roots, scope.spaceId, found.row);
   if (where.job !== null)
-    return { place: await new LocalWorkspaceFs(roots.workRoot).trash(where.job), path: where.path };
-  // A file in the space's folder goes into the trash of the conversation that
-  // saved it, where Melete can also restore it; one saved with none, into the space's.
-  const owner = found.job?.id ?? SPACE_FILES_TRASH;
-  return { place: filesTrash(await realpath(roots.spacesRoot), spaceId, owner), path: where.path };
+    return {
+      places: [await new LocalWorkspaceFs(roots.workRoot).trash(where.job)],
+      path: where.path,
+    };
+  // A file in the space's folder goes into the trash of the chat that saved
+  // it, or that the run which saved it was started from, where Melete can
+  // also restore it by asking in that chat; one saved with none, into the
+  // space's. Files a run saved went into the run's own trash before.
+  const owners: string[] = [];
+  if (found.job) {
+    const chat = (await chatsFor(db, scope, [found.job])).get(found.job.id);
+    if (chat) owners.push(chat.id);
+    owners.push(found.job.id);
+  } else owners.push(SPACE_FILES_TRASH);
+  const base = await realpath(roots.spacesRoot);
+  return {
+    places: [...new Set(owners)].map((owner) => filesTrash(base, scope.spaceId, owner)),
+    path: where.path,
+  };
+}
+
+/**
+ * Whether this person may delete what the space holds with no chat of theirs
+ * behind it: in a space of their own, always; in a shared one, only its owner.
+ */
+async function managesSpaceFiles(db: Database, scope: Scope): Promise<boolean> {
+  if (!scope.principalId) return true;
+  const access = await spaceAuthority(db, scope.spaceId, scope.principalId).catch(
+    (error: unknown) => {
+      if (error instanceof ServiceError) return null;
+      throw error;
+    },
+  );
+  return access?.role === 'owner';
 }
 
 /** The chats files came from, by job: a run reports into the chat it was started from. */
@@ -294,6 +340,9 @@ export function mountFiles(
       ...kept.flatMap((entry) => entry.found.job ?? []),
       ...sent.map((row) => row.job),
     ]);
+    const managesSpace = kept.some((entry) => entry.found.job === null)
+      ? await managesSpaceFiles(db, scope)
+      : false;
     const files: PersonFile[] = [
       ...kept.map((entry) => ({
         id: entry.found.id,
@@ -304,7 +353,8 @@ export function mountFiles(
         size: entry.size,
         saved_at: entry.found.savedAt.toISOString(),
         chat: entry.found.job ? (chats.get(entry.found.job.id) ?? null) : null,
-        deletable: true,
+        // What the space holds with no chat behind it is its owner's to delete.
+        deletable: entry.found.job !== null || managesSpace,
       })),
       ...sent.map((row) => ({
         id: row.attachment.id,
@@ -328,31 +378,47 @@ export function mountFiles(
     const id = c.req.param('id');
     const found = await oneRecord(db, scope, id);
     if (!found || workingRecord(found)) throw noFile();
-    let target: { place: TrashPlace; path: string };
+    if (found.job === null && !(await managesSpaceFiles(db, scope))) throw notTheirs('delete');
+    let target: { places: TrashPlace[]; path: string };
     try {
-      target = await trashFor(roots, scope.spaceId, found);
+      target = await trashesFor(db, scope, roots, found);
     } catch {
       throw noFile();
     }
-    // Only a file that is there, and is a file: never a folder, never through a link.
+    const place = target.places[0];
+    if (!place) throw noFile();
+    // Only a file that is there, and is a file: never a folder, never through
+    // a link. The one checked here is the one that goes: anything put at its
+    // name since stays where it is. It is held open until the move is done,
+    // so a file made at its name after it was deleted there cannot be given
+    // its number on the disk and pass for it.
+    let opened: Awaited<ReturnType<typeof openArtifact>>;
     try {
-      const opened = await openArtifact(roots, scope.spaceId, found.row);
+      opened = await openArtifact(roots, scope.spaceId, found.row);
+    } catch {
+      throw noFile();
+    }
+    let trashed: Awaited<ReturnType<typeof moveToTrash>>;
+    try {
+      const checked = await opened.handle.stat().catch(() => {
+        throw noFile();
+      });
+      const file = { dev: checked.dev, ino: checked.ino };
+      trashed = await moveToTrash(place, [{ path: target.path, hash: null, file }], {
+        days: trash.days,
+        maxBytes: trash.maxBytes,
+      }).catch((error: unknown) => {
+        throw new ServiceError(
+          'file_not_deleted',
+          error instanceof Error
+            ? `The file was not deleted: ${error.message}.`
+            : 'The file was not deleted.',
+          409,
+        );
+      });
+    } finally {
       await opened.handle.close();
-    } catch {
-      throw noFile();
     }
-    const trashed = await moveToTrash(target.place, [{ path: target.path, hash: null }], {
-      days: trash.days,
-      maxBytes: trash.maxBytes,
-    }).catch((error: unknown) => {
-      throw new ServiceError(
-        'file_not_deleted',
-        error instanceof Error
-          ? `The file was not deleted: ${error.message}.`
-          : 'The file was not deleted.',
-        409,
-      );
-    });
     if (!trashed.trash_id || !trashed.moved.length)
       throw new ServiceError(
         'file_not_deleted',
@@ -364,6 +430,7 @@ export function mountFiles(
         id: found.id,
         trash_id: trashed.trash_id,
         restorable_until: trashed.restorable_until,
+        evicted: trashed.evicted.length,
       }),
     );
   });
@@ -375,18 +442,26 @@ export function mountFiles(
       throw new ServiceError('invalid_request', 'Name the trash to restore from.', 400);
     const found = await oneRecord(db, scope, c.req.param('id'));
     if (!found || workingRecord(found)) throw noFile();
-    let target: { place: TrashPlace; path: string };
+    if (found.job === null && !(await managesSpaceFiles(db, scope))) throw notTheirs('restore');
+    let target: { places: TrashPlace[]; path: string };
     try {
-      target = await trashFor(roots, scope.spaceId, found);
+      target = await trashesFor(db, scope, roots, found);
     } catch {
       throw noFile();
     }
     let restored: Awaited<ReturnType<typeof restoreFromTrash>>;
     try {
+      let place: TrashPlace | undefined;
+      for (const candidate of target.places)
+        if (await hasTrash(candidate, body.data.trash_id)) {
+          place = candidate;
+          break;
+        }
+      if (!place) throw noFile();
       // Only the latest delete that took this file: never another file's trash.
-      const latest = await latestTrash(target.place, target.path);
+      const latest = await latestTrash(place, target.path);
       if (latest?.id !== body.data.trash_id) throw noFile();
-      restored = await restoreFromTrash(target.place, body.data.trash_id);
+      restored = await restoreFromTrash(place, body.data.trash_id);
     } catch {
       throw new ServiceError('not_found', 'There is nothing in the trash to put back.', 404);
     }

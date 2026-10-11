@@ -5,7 +5,7 @@
 import { expect, test } from 'bun:test';
 import type { ExperienceEvent } from '@melete/contracts';
 import type { Database } from '../db/client.ts';
-import { EXPERIENCE_POLL_MS, ExperienceEvents } from './events.ts';
+import { EXPERIENCE_POLL_MS, EXPERIENCE_READ_GAP_MS, ExperienceEvents } from './events.ts';
 
 const AT = '2026-09-30T09:00:00.000Z';
 const event = (seq: number): ExperienceEvent => ({
@@ -20,6 +20,7 @@ const event = (seq: number): ExperienceEvent => ({
 function harness(options: { notify: boolean }) {
   const store: ExperienceEvent[] = [];
   const listeners = new Set<() => void>();
+  let reads = 0;
   const changes = {
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -28,6 +29,7 @@ function harness(options: { notify: boolean }) {
   };
   class Events extends ExperienceEvents {
     override async page(_spaceId: string, after: number) {
+      reads++;
       const events = store.filter((item) => item.seq > after);
       return { events, next_cursor: events.at(-1)?.seq ?? after, has_more: false };
     }
@@ -41,7 +43,7 @@ function harness(options: { notify: boolean }) {
     store.push(event(seq));
     for (const listener of listeners) listener();
   };
-  return { events, commit, listeners };
+  return { events, commit, listeners, reads: () => reads };
 }
 
 async function firstEvent(response: Response): Promise<number> {
@@ -86,3 +88,34 @@ test('without notifications the stream still finds the event on its poll', async
   expect(await reading).toBe(1);
   controller.abort();
 }, 5_000);
+
+/** Reads the stream until it is cancelled, so the stream keeps being asked for more. */
+function drain(response: Response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('no body');
+  void (async () => {
+    while (!(await reader.read()).done);
+  })().catch(() => {});
+}
+
+test('an idle stream with notifications does not read again until one comes', async () => {
+  const { events, commit, reads } = harness({ notify: true });
+  const controller = new AbortController();
+  drain(await events.response('space_1', 0, controller.signal, 'job_1', 'own_1'));
+  await Bun.sleep(EXPERIENCE_POLL_MS * 2.5);
+  // The opening page only: nothing said there was anything to read.
+  expect(reads()).toBe(1);
+  commit(1);
+  await Bun.sleep(EXPERIENCE_READ_GAP_MS * 4);
+  expect(reads()).toBe(2);
+  controller.abort();
+}, 10_000);
+
+test('an idle stream without notifications reads on every poll', async () => {
+  const { events, reads } = harness({ notify: false });
+  const controller = new AbortController();
+  drain(await events.response('space_1', 0, controller.signal, 'job_1', 'own_1'));
+  await Bun.sleep(EXPERIENCE_POLL_MS * 2.5);
+  expect(reads()).toBeGreaterThanOrEqual(3);
+  controller.abort();
+}, 10_000);

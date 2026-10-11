@@ -10,6 +10,15 @@
  * A refusal refuses the whole synchronisation; a partial copy of a workspace is
  * a wrong answer that looks like a right one.
  *
+ * The caps are the exception on the way back. The computer's `/work` is shared
+ * by every conversation in a space, so one leftover archive or unpacked tree
+ * would otherwise stop every read-back there. A file over the per-file cap is
+ * left on the computer, and so is a folder that does not fit the count and
+ * size caps; the report names each (`SyncOutReport.skipped`), so the copy is
+ * partial in a way that is said, never silent. The files the workspace here
+ * already holds are read back first, then loose files and small folders before
+ * large ones.
+ *
  * Files arrive with mode 0o644 or 0o755 and nothing else: an executable bit is
  * kept, and set-id, sticky, group- and world-writable bits never cross.
  *
@@ -57,11 +66,20 @@ export type SyncInReport = SyncReport & {
   /** Every file sent, by its path under the workspace. */
   sent: Map<string, SentFile>;
 };
+/**
+ * What a read-back left on the computer because it is over a bound: one file
+ * (`path`), or every file under a folder (`path` ends in `/`, `files` says how
+ * many). `reason` is the bound, in words.
+ */
+export type SkippedPath = { path: string; reason: string; files?: number };
+
 export type SyncOutReport = SyncReport & {
   /** Every file read back, by its path under the workspace, with its content hash. */
   hashes: Map<string, string>;
-  /** The listing's change stamp of each file read back, where the adapter gives one. */
+  /** The listing's change stamp of each file listed, read back or left there, where the adapter gives one. */
   stamps: Map<string, string>;
+  /** What stayed on the computer, over a bound; everything else was read back. */
+  skipped: SkippedPath[];
   /** Files the command deleted that went to the trash here too. */
   deleted: string[];
   /** Files the command deleted that are kept here, and go back on the next sync-in. */
@@ -270,10 +288,12 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const listing = await options.provider.listFiles(options.handle, SANDBOX_WORKDIR, options.signal);
   const seen = new Set<string>();
   const stale: string[] = [];
-  const directories: string[][] = [];
-  const files: { relative: string; segments: string[]; size: number; mode: number }[] = [];
+  const listedFolders: string[][] = [];
+  const candidates: ListedFile[] = [];
+  const skipped: SkippedPath[] = [];
+  // Every file the computer has, read back or not: one left there is not lost.
+  const listed = new Set<string>();
   const stamps = new Map<string, string>();
-  let declared = 0;
   for (const entry of listing) {
     if (entry.symlink)
       throw new SyncRefusal(
@@ -294,23 +314,26 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
       continue;
     }
     if (entry.directory) {
-      directories.push(segments);
-      if (directories.length > limits.maxFiles)
-        throw new SyncRefusal('too_many_files', 'the sandbox workspace has too many directories');
+      listedFolders.push(segments);
       continue;
     }
     if (!Number.isSafeInteger(entry.size) || entry.size < 0)
       throw new SyncRefusal('not_regular', `an entry has no usable size: ${entry.path}`);
-    if (entry.size > limits.maxFileBytes)
-      throw new SyncRefusal('file_too_large', `a file above the per-file cap: ${entry.path}`);
-    declared += entry.size;
-    if (declared > limits.maxTotalBytes)
-      throw new SyncRefusal('too_large', 'the sandbox workspace is above the total size cap');
-    files.push({ relative: segments.join('/'), segments, size: entry.size, mode: entry.mode });
-    if (entry.stamp !== undefined) stamps.set(segments.join('/'), entry.stamp);
-    if (files.length > limits.maxFiles)
-      throw new SyncRefusal('too_many_files', 'the sandbox workspace has more files than the cap');
+    const relative = segments.join('/');
+    listed.add(relative);
+    if (entry.stamp !== undefined) stamps.set(relative, entry.stamp);
+    if (entry.size > limits.maxFileBytes) {
+      skipped.push({
+        path: relative,
+        reason: `${plainSize(entry.size)}, over the ${plainSize(limits.maxFileBytes)} limit`,
+      });
+      continue;
+    }
+    candidates.push({ relative, segments, size: entry.size, mode: entry.mode });
   }
+  const admitted = withinCaps(candidates, listedFolders, limits, options.deletions?.sent);
+  const { files, directories } = admitted;
+  skipped.push(...admitted.skipped);
   // Fetch everything before writing anything, so a file that changed or grew
   // refuses the synchronisation instead of leaving half of it behind.
   const fetched: { relative: string; bytes: Uint8Array; mode: number }[] = [];
@@ -362,12 +385,11 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
     await folders.close();
   }
   const hashes = new Map(fetched.map((file) => [file.relative, digest(file.bytes)]));
-  const listed = new Set(files.map((file) => file.relative));
   const lost = [...(options.deletions?.sent.keys() ?? [])]
     .filter((relative) => !listed.has(relative))
     .sort();
   const outcome = options.deletions
-    ? await deleteLost(options, lost, new Set(directories.map((segments) => segments.join('/'))))
+    ? await deleteLost(options, lost, new Set(listedFolders.map((segments) => segments.join('/'))))
     : { deleted: [], kept: [], trash_id: null, restorable_until: null };
   return {
     files: fetched.length,
@@ -375,8 +397,154 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
     bytes,
     hashes,
     stamps,
+    skipped,
     ...outcome,
   };
+}
+
+type ListedFile = { relative: string; segments: string[]; size: number; mode: number };
+
+/** A folder of the listing, with what is under it that is still to be decided. */
+type Folder = {
+  path: string;
+  /** Listed as a folder itself, rather than only on the way to a file. */
+  listed: boolean;
+  /** Holds a file the workspace here has: opened up rather than left whole. */
+  held: boolean;
+  files: ListedFile[];
+  folders: Map<string, Folder>;
+  count: number;
+  bytes: number;
+  dirs: number;
+};
+
+/** A size in plain words: "8.4 MB", "12 KB", "100 bytes". */
+const plainSize = (bytes: number) =>
+  bytes >= MiB
+    ? `${Math.round((bytes / MiB) * 10) / 10} MB`
+    : bytes >= 1024
+      ? `${Math.round((bytes / 1024) * 10) / 10} KB`
+      : `${bytes} bytes`;
+
+/**
+ * Which files and folders of a listing fit the count and size caps, and what
+ * is left on the computer. The files the workspace here already holds come
+ * first: the command may have changed them, and one left there is sent back
+ * over the computer's copy next time. The rest are taken folder by folder,
+ * loose files and small folders before large ones, and a folder that does
+ * not fit is left whole: a leftover unpacked tree stays out as one, rather
+ * than filling the caps with part of it. A folder that holds the workspace's
+ * own files is opened up instead, so they and their neighbours still come.
+ */
+function withinCaps(
+  candidates: ListedFile[],
+  listedFolders: string[][],
+  limits: WorkspaceLimits,
+  held: ReadonlyMap<string, unknown> | undefined,
+): { files: ListedFile[]; directories: string[][]; skipped: SkippedPath[] } {
+  const folder = (at: string): Folder => ({
+    path: at,
+    listed: false,
+    held: false,
+    files: [],
+    folders: new Map(),
+    count: 0,
+    bytes: 0,
+    dirs: 0,
+  });
+  const root = folder('');
+  /** The folder at `segments`, made on the way; each one passed is marked when `hold`. */
+  const folderAt = (segments: string[], hold = false): Folder => {
+    let node = root;
+    for (let depth = 0; depth < segments.length; depth += 1) {
+      const name = segments[depth] as string;
+      let next = node.folders.get(name);
+      if (!next) {
+        next = folder(segments.slice(0, depth + 1).join('/'));
+        node.folders.set(name, next);
+      }
+      if (hold) next.held = true;
+      node = next;
+    }
+    return node;
+  };
+  const files: ListedFile[] = [];
+  const directories: string[][] = [];
+  const skipped: SkippedPath[] = [];
+  const used = { files: 0, bytes: 0, dirs: 0 };
+  const over = (count: number, bytes: number, dirs: number): string | null =>
+    used.files + count > limits.maxFiles
+      ? 'too many files'
+      : used.bytes + bytes > limits.maxTotalBytes
+        ? `over the total limit of ${plainSize(limits.maxTotalBytes)}`
+        : used.dirs + dirs > limits.maxFiles
+          ? 'too many folders'
+          : null;
+  const take = (file: ListedFile) => {
+    files.push(file);
+    used.files += 1;
+    used.bytes += file.size;
+  };
+  for (const segments of listedFolders) folderAt(segments).listed = true;
+  const byPath = (a: ListedFile, b: ListedFile) =>
+    a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0;
+  for (const file of [...candidates].sort(byPath)) {
+    if (!held?.has(file.relative)) {
+      folderAt(file.segments.slice(0, -1)).files.push(file);
+      continue;
+    }
+    folderAt(file.segments.slice(0, -1), true);
+    const reason = over(1, file.size, 0);
+    if (reason) skipped.push({ path: file.relative, reason });
+    else take(file);
+  }
+  const total = (node: Folder): void => {
+    node.count = node.files.length;
+    node.bytes = node.files.reduce((sum, file) => sum + file.size, 0);
+    node.dirs = node.listed ? 1 : 0;
+    for (const inner of node.folders.values()) {
+      total(inner);
+      node.count += inner.count;
+      node.bytes += inner.bytes;
+      node.dirs += inner.dirs;
+    }
+  };
+  total(root);
+  const takeAll = (node: Folder): void => {
+    if (node.listed) {
+      directories.push(node.path.split('/'));
+      used.dirs += 1;
+    }
+    for (const file of node.files) take(file);
+    for (const inner of node.folders.values()) takeAll(inner);
+  };
+  const size = (item: ListedFile | Folder) =>
+    'relative' in item ? { count: 1, bytes: item.size } : item;
+  const smallestFirst = (a: ListedFile | Folder, b: ListedFile | Folder) => {
+    const [left, right] = [size(a), size(b)];
+    if (left.count !== right.count) return left.count - right.count;
+    if (left.bytes !== right.bytes) return left.bytes - right.bytes;
+    const [x, y] = ['relative' in a ? a.relative : a.path, 'relative' in b ? b.relative : b.path];
+    return x < y ? -1 : x > y ? 1 : 0;
+  };
+  const walk = (node: Folder): void => {
+    for (const item of [...node.files, ...node.folders.values()].sort(smallestFirst)) {
+      if ('relative' in item) {
+        const reason = over(1, item.size, 0);
+        if (reason) skipped.push({ path: item.relative, reason });
+        else take(item);
+        continue;
+      }
+      const reason = over(item.count, item.bytes, item.dirs);
+      if (!reason) takeAll(item);
+      // A folder holding the workspace's own files is here already: opened
+      // up, and not counted again.
+      else if (item.held) walk(item);
+      else skipped.push({ path: `${item.path}/`, reason, files: item.count });
+    }
+  };
+  walk(root);
+  return { files, directories, skipped };
 }
 
 /**
