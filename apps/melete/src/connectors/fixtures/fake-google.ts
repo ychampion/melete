@@ -48,6 +48,8 @@ export type FakeGoogle = {
   tokenRequests: URLSearchParams[];
   /** Every token handed out, to search logs and answers for. */
   issued: string[];
+  /** Every token an app asked to have revoked (RFC 7009), in order. */
+  revoked: string[];
   sent: Stored[];
   events: Map<string, Event>;
   /** The `sendUpdates` each event create asked for (null: guests not told). */
@@ -95,6 +97,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
     authorizeRequests: [] as URLSearchParams[],
     tokenRequests: [] as URLSearchParams[],
     issued: [] as string[],
+    revoked: [] as string[],
     sent: [] as Stored[],
     events: new Map<string, Event>(),
     notified: [] as (string | null)[],
@@ -197,7 +200,17 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
         }
         return Response.json({ error: 'unsupported_grant_type' }, { status: 400 });
       }
-      if (at === '/revoke') return new Response(null, { status: 200 });
+      if (at === '/revoke') {
+        // As Google does: the grant behind the token is gone, refresh and access alike.
+        const value = new URLSearchParams(await request.text()).get('token') ?? '';
+        const granted = refresh.get(value) ?? access.get(value);
+        if (granted === undefined)
+          return Response.json({ error: 'invalid_token' }, { status: 400 });
+        state.revoked.push(value);
+        refresh.delete(value);
+        access.delete(value);
+        return new Response(null, { status: 200 });
+      }
 
       const bearer = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
       const scopes = access.get(bearer);

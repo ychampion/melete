@@ -2,7 +2,8 @@
  * Settings › Account: the name Melete uses, the time zone routines run on, the
  * password, and where the account is signed in. Changing the password signs
  * out every other device. Signing out of this one is in the account menu, at
- * the foot of the sidebar.
+ * the foot of the sidebar. Below them, your data: download it, erase it, or
+ * delete the account (`AccountData.tsx`).
  */
 import { useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
@@ -13,6 +14,7 @@ import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
 import { toast } from '../shell/Shell.tsx';
+import { AccountData } from './AccountData.tsx';
 import { SignedIn } from './SignedIn.tsx';
 
 function TimeZoneField() {
@@ -224,6 +226,7 @@ export function AccountSettings() {
         <PasswordForm />
       </div>
       <SignedIn />
+      <AccountData />
     </div>
   );
 }

@@ -88,6 +88,32 @@ export async function runGit(cwd: string, args: readonly string[]): Promise<GitR
   return { code, stdout, stderr };
 }
 
+/**
+ * Run git with bytes on its standard input, and its output kept as bytes:
+ * `fast-export` and `fast-import` streams carry file names and commit
+ * messages that need not be text. Throws when git fails.
+ */
+export async function gitBytes(
+  cwd: string,
+  args: readonly string[],
+  input?: Uint8Array,
+): Promise<Uint8Array> {
+  const proc = Bun.spawn(['git', ...FORCED_CONFIG, ...args], {
+    cwd,
+    stdin: input ?? 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, ...CLEAN_ENV },
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).arrayBuffer(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new GitError(args, { code, stdout: '', stderr });
+  return new Uint8Array(stdout);
+}
+
 /** Run git and throw when it fails, for the paths where failure is a bug. */
 export async function git(cwd: string, args: readonly string[]): Promise<string> {
   const run = await runGit(cwd, args);

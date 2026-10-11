@@ -259,8 +259,19 @@ export class SpaceRemovalService {
    * Nothing after this may create work in the space, which is what makes the
    * rest of the sweep terminate. A write that lands anyway is caught by the
    * verification pass, and the removal reports blocked rather than finished.
+   *
+   * An account being deleted removes its spaces this way too, its own space
+   * included, which then goes rather than being emptied: nothing will sign in
+   * to use it again. Its deletion was confirmed by its own words, so no space
+   * name is typed for it.
    */
-  async fence(actor: string, spaceId: string, confirmName: string): Promise<SpaceRemovalRow> {
+  async fence(
+    actor: string,
+    spaceId: string,
+    confirmName: string,
+    options: { forAccountDeletion?: boolean } = {},
+  ): Promise<SpaceRemovalRow> {
+    const forAccount = options.forAccountDeletion === true;
     const jobs = this.deps.jobs;
     const result = await jobs.transaction(async (tx) => {
       const [parent] = await tx.select().from(space).where(eq(space.id, spaceId)).for('update');
@@ -304,7 +315,7 @@ export class SpaceRemovalService {
           409,
         );
 
-      if (confirmName !== parent.name)
+      if (!forAccount && confirmName !== parent.name)
         throw new ServiceError(
           'confirmation_mismatch',
           'That is not the name of this space. Type the name exactly as it is shown.',
@@ -321,8 +332,9 @@ export class SpaceRemovalService {
           gitPath: parent.gitPath,
           providers: closed.providers,
           // A space of one's own is recreated the moment its account asks for
-          // one, so it is emptied in place rather than removed.
-          kind: parent.kind === 'personal' ? 'emptied' : 'removed',
+          // one, so it is emptied in place rather than removed, unless the
+          // account itself is going.
+          kind: parent.kind === 'personal' && !forAccount ? 'emptied' : 'removed',
           requestedBy: actor,
           state: 'pending',
           // The fence is done by the time the row exists; a removal the

@@ -1,5 +1,14 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -11,6 +20,7 @@ import {
 } from '@melete/contracts';
 import {
   discardProposal,
+  eraseFromHistory,
   listProposals,
   type MediationContext,
   parseRecord,
@@ -34,6 +44,13 @@ import { type ExtractionBatch, finishWork } from './work.ts';
 
 const exec = promisify(execFile);
 const pathFor = (id: string) => `knowledge/${id}.md`;
+/**
+ * Memory views are never committed. They are rebuilt from Postgres whenever
+ * memory changes, and a committed view would keep every value it ever held in
+ * the space's history, where forgetting could not reach it.
+ */
+const VIEW_GLOB = 'knowledge/k_*.md';
+const isView = (path: string) => /^knowledge\/k_[0-7][0-9A-HJKMNP-TV-Z]{25}\.md$/.test(path);
 type ReviewPayload = { batch: ExtractionBatch; proposals: ExtractionProposal[] };
 
 /** Legacy day-level fields coexist with the exact revision and source-version mapping. */
@@ -130,10 +147,12 @@ export async function prepareSpaceRepository(spacesRoot: string, spaceId: string
 
 /** Only server-configured roots and server-derived space/claim IDs can name files. */
 export class MarkdownViews {
+  /** Spaces whose history this process has already checked for views. */
+  private readonly untracked = new Set<string>();
+
   constructor(
     readonly sql: MemorySql,
     readonly spacesRoot: string,
-    private readonly gitIdentity: { name: string; email: string },
   ) {}
 
   private async paths(spaceId: string) {
@@ -160,7 +179,28 @@ export class MarkdownViews {
     const gitRoot = (await this.git(paths.root, ['rev-parse', '--show-toplevel'])).trim();
     if (resolve(gitRoot).toLowerCase() !== resolve(paths.root).toLowerCase())
       throw new MemoryError('unsafe_view_repository');
+    await this.keepViewsUncommitted(spaceId, paths.root);
     return paths;
+  }
+
+  /**
+   * Views stay out of the repository: git is told to ignore them, and views an
+   * earlier version committed are erased from the history, once per space.
+   */
+  private async keepViewsUncommitted(spaceId: string, root: string) {
+    if (this.untracked.has(spaceId)) return;
+    const exclude = join(root, '.git', 'info', 'exclude');
+    await this.rejectLink(join(root, '.git', 'info'));
+    await this.rejectLink(exclude);
+    await mkdir(join(root, '.git', 'info'), { recursive: true });
+    const listed = await readFile(exclude, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return '';
+    });
+    if (!listed.split(/\r?\n/).includes(VIEW_GLOB))
+      await appendFile(exclude, `${listed && !listed.endsWith('\n') ? '\n' : ''}${VIEW_GLOB}\n`);
+    await eraseFromHistory(spacePaths(resolve(this.spacesRoot), spaceId), VIEW_GLOB, isView);
+    this.untracked.add(spaceId);
   }
   private async rejectLink(path: string) {
     const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -172,25 +212,6 @@ export class MarkdownViews {
   private async git(root: string, args: string[]) {
     return (await exec('git', ['-C', root, ...args], { timeout: 15000, windowsHide: true })).stdout;
   }
-  private async commitFiles(root: string, paths: string[], message: string) {
-    if (!paths.length) return;
-    await this.git(root, ['add', '--', ...paths]);
-    if (!(await this.git(root, ['diff', '--cached', '--name-only', '--', ...paths])).trim()) return;
-    // --only preserves unrelated staged work in an owner's space repository.
-    await this.git(root, [
-      '-c',
-      `user.name=${this.gitIdentity.name}`,
-      '-c',
-      `user.email=${this.gitIdentity.email}`,
-      'commit',
-      '--only',
-      '-m',
-      `${message}\n\nMelete-Proposed-By: view-builder`,
-      '--',
-      ...paths,
-    ]);
-  }
-
   async build(scope: MemoryScope) {
     const paths = await this.paths(scope.spaceId);
     return this.sql.begin(async (tx) => {
@@ -209,7 +230,7 @@ export class MarkdownViews {
       );
       const rows =
         await tx`select id from memory_claims where space_id = ${scope.spaceId} and not hidden order by id`;
-      const changed: string[] = [];
+      let changed = 0;
       await mkdir(paths.knowledge, { recursive: true });
       for (const row of rows) {
         const head = await getHead(tx, scope, row.id);
@@ -242,13 +263,12 @@ export class MarkdownViews {
           await writeFile(temporary, content, { flag: 'w', mode: 0o600 });
           await rename(temporary, absolute);
         }
-        changed.push(path);
+        changed += 1;
         await tx`insert into memory_derivations (space_id, input_kind, input_id, input_version, output_kind, output_id, output_version)
           values (${scope.spaceId}, 'claim', ${head.id}, ${String(head.head_revision)}, 'markdown', ${path}, ${stableId(content)}) on conflict do nothing`;
       }
-      await this.commitFiles(paths.root, changed, 'Refresh memory inspection records');
       await tx`update memory_outbox set completed_at = clock_timestamp() where space_id = ${scope.spaceId} and kind = 'markdown' and completed_at is null`;
-      return changed.length;
+      return changed;
     });
   }
 
@@ -455,16 +475,18 @@ export class MarkdownViews {
         discardProposal(paths, proposal.id);
     }
   }
+  /**
+   * A forgotten view leaves the disk and the index. It was never committed, and
+   * one an earlier version committed was erased from the history when `paths`
+   * first opened the space, so no copy of it is left in the repository.
+   */
   async cleanup(spaceId: string, claimIds: string[]) {
     const paths = await this.paths(spaceId);
-    const removed: string[] = [];
     for (const id of claimIds) {
       if (!/^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(id)) throw new MemoryError('unsafe_view_path');
       const path = pathFor(id);
       await this.rejectLink(join(paths.root, path));
       await rm(join(paths.root, path), { force: true });
-      const tracked = (await this.git(paths.root, ['ls-files', '--', path])).trim();
-      if (tracked) removed.push(path);
     }
     if (await lstat(paths.indexDb).catch(() => null)) {
       const index = SpaceIndex.open(paths);
@@ -475,6 +497,5 @@ export class MarkdownViews {
       }
     }
     await this.removeProposalFiles(spaceId);
-    await this.commitFiles(paths.root, removed, 'Remove restricted memory inspection records');
   }
 }

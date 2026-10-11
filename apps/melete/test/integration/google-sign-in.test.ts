@@ -3,6 +3,7 @@ import {
   accountSignInAvailability,
   accountSignInStart,
   accountSignInStatus,
+  connectionGeneration,
   connectionListResponse,
   DRIVE_CONSENT_WORDS,
 } from '@melete/contracts';
@@ -14,8 +15,10 @@ import { GoogleCalendarConnector } from '../../src/connectors/google-calendar.ts
 import { GoogleDriveConnector } from '../../src/connectors/google-drive.ts';
 import { mailAction, mailContext } from '../../src/connectors/mail-fixtures.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { connectionRevocation, sweepUnreferencedSecrets } from '../../src/connectors/revocation.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -45,6 +48,7 @@ async function harness() {
     google: { client: google.client, endpoints: google.endpoints },
   });
   useConnectorFactory(registry, factory);
+  const jobs = new JobService(fixture.db, queue.boss);
   const app = createApp({
     env: loadEnv({
       NODE_ENV: 'test',
@@ -54,7 +58,14 @@ async function harness() {
     db: fixture.db,
     sql: fixture.sql,
     registry,
-    jobs: new JobService(fixture.db, queue.boss),
+    jobs,
+    policy: new PolicyService(jobs, undefined, {
+      afterRevoke: connectionRevocation({
+        sql: fixture.sql,
+        secrets: factory.secrets,
+        google: { client: google.client, endpoints: google.endpoints },
+      }),
+    }),
     checkDatabase: async () => 'ok',
   });
   const as = (cookie: string, body?: unknown): RequestInit => ({
@@ -182,6 +193,9 @@ withDb('signing in with Google', () => {
       expect(row.status).toBe('active');
       expect(row.secret_ref).not.toBe(before[index]?.secret_ref);
     }
+    // The replaced sealed copies are gone, not kept beside the new ones.
+    const replaced = before.map((row) => String(row.secret_ref));
+    expect(await h.sql`select id from secret where id = any(${replaced})`).toHaveLength(0);
   }, 60_000);
 
   test('the Drive step adds Drive beside an account’s mail and calendar, which keep their ids', async () => {
@@ -207,6 +221,72 @@ withDb('signing in with Google', () => {
     if (again.status.state !== 'connected') throw new Error('Drive step failed');
     expect(again.status.connection_ids).toEqual([drive?.id]);
   }, 60_000);
+
+  test('disconnecting deletes every sealed copy and withdraws the grant once nothing else uses it', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const rows = await h.sql`select id, secret_ref, generation from connection
+      where configuration->>'account' = 'person@example.test' and status <> 'revoked' order by id`;
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    const refs = rows.map((row) => String(row.secret_ref));
+    const sealedCopies = async () =>
+      Number((await h.sql`select count(*)::int as n from secret where id = any(${refs})`)[0]?.n);
+    expect(await sealedCopies()).toBe(rows.length);
+    const disconnect = async (row: (typeof rows)[number]) => {
+      const answer = await h.app.request(
+        `/connections/${row.id}/lifecycle`,
+        h.as(h.cookie, { kind: 'revoke', expected_generation: row.generation }),
+      );
+      expect(answer.status).toBe(200);
+      return connectionGeneration.parse(await answer.json());
+    };
+    // While another connection still signs in as this account, Google's grant stays.
+    for (const row of rows.slice(0, -1)) {
+      const answer = await disconnect(row);
+      expect(answer.status).toBe('revoked');
+      expect(answer.provider_access).toBe('kept_for_other_connections');
+    }
+    expect(google.revoked).toEqual([]);
+    const last = rows.at(-1);
+    if (!last) throw new Error('no connection');
+    const refreshToken = await h.factory.secrets.withSecret(
+      String(last.secret_ref),
+      h.spaceId,
+      async (value) => String(JSON.parse(value).refresh_token),
+    );
+    expect((await disconnect(last)).provider_access).toBe('withdrawn');
+    expect(google.revoked).toEqual([refreshToken]);
+    // No sealed copy of any of them is left, and Google no longer honours the token.
+    expect(await sealedCopies()).toBe(0);
+    const refused = await fetch(google.endpoints.token, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: google.client.clientId,
+        client_secret: google.client.clientSecret,
+      }),
+    });
+    expect(refused.status).toBe(400);
+  }, 60_000);
+
+  test('sealed tokens nothing points at are swept once a day old, and nothing else', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const old = await h.factory.secrets.put(h.spaceId, 'left behind by an old refresh');
+    const fresh = await h.factory.secrets.put(h.spaceId, 'a sign-in still saving its connection');
+    const used = await h.factory.secrets.put(h.spaceId, 'held by a connection');
+    await h.sql`update secret set created_at = now() - interval '2 days' where id = any(${[old, used]})`;
+    const [row] = await h.sql`select id from connection order by id limit 1`;
+    const [previous] = await h.sql`select secret_ref from connection where id = ${row?.id}`;
+    await h.sql`update connection set secret_ref = ${used} where id = ${row?.id}`;
+    try {
+      expect(await sweepUnreferencedSecrets(h.sql)).toBeGreaterThanOrEqual(1);
+      const left = await h.sql`select id from secret where id = any(${[old, fresh, used]})`;
+      expect(left.map((entry) => entry.id).sort()).toEqual([fresh, used].sort());
+    } finally {
+      await h.sql`update connection set secret_ref = ${previous?.secret_ref ?? null} where id = ${row?.id}`;
+    }
+  }, 30_000);
 
   test('someone who may not install in a space is refused', async () => {
     if (!h) throw new Error('Postgres unavailable');
