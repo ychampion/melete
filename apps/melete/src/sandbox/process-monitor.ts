@@ -23,6 +23,9 @@
  * line or a port that never came wakes its job with how the process ended,
  * and the watches go (`TriggerService.processEnded`).
  *
+ * While nothing is watched it rests, looking again only every half minute,
+ * and a watch made in this process wakes it at once (`onProcessWatch`).
+ *
  * It is background work for one instance at a time: `leads` says whether this
  * instance is the one.
  */
@@ -39,6 +42,7 @@ import type { Sql } from 'postgres';
 import { terminalText } from '../experience/computer.ts';
 import {
   type EventDelivery,
+  onProcessWatch,
   PROCESS_EVENTS,
   PROCESS_WATCH_SQL,
   watchedProcess,
@@ -56,6 +60,8 @@ import type { SandboxHandle } from './types.ts';
 /** How often a computer is asked: Docker is local and cheap, remote providers bill per call. */
 export const MONITOR_DOCKER_MS = 5_000;
 export const MONITOR_REMOTE_MS = 30_000;
+/** How often the monitor looks while nothing is watched; a new watch wakes it sooner. */
+export const MONITOR_IDLE_MS = 30_000;
 /** How long one computer may take to answer before the pass moves on. */
 const COMPUTER_BUDGET_MS = 20_000;
 /** How much one read of a watch's output takes. */
@@ -77,6 +83,7 @@ export type ProcessMonitorOptions = {
   leads?: () => boolean | Promise<boolean>;
   dockerMs?: number;
   remoteMs?: number;
+  idleMs?: number;
   now?: () => Date;
   log?: (line: string) => void;
 };
@@ -202,12 +209,15 @@ export class ProcessMonitor {
     });
   }
 
-  /** One pass: ask the computers that are due, then settle the watches of processes that ended. */
-  async pass(signal: AbortSignal): Promise<void> {
-    if (!(await (this.options.leads?.() ?? true))) return;
+  /**
+   * One pass: ask the computers that are due, then settle the watches of
+   * processes that ended. Says whether anything was watched.
+   */
+  async pass(signal: AbortSignal): Promise<boolean> {
+    if (!(await (this.options.leads?.() ?? true))) return false;
     const found = await this.watched();
     // Nothing is watched: nothing to ask and nothing to settle.
-    if (found.size === 0) return;
+    if (found.size === 0) return false;
     // A finished job can no longer be woken, so its watches go now rather than
     // keeping its computer asked and its events delivered until the process ends.
     const finished = [...found.values()].flatMap((each) =>
@@ -225,7 +235,7 @@ export class ProcessMonitor {
     }
     const now = this.now().getTime();
     for (const [key, members] of computers) {
-      if (signal.aborted) return;
+      if (signal.aborted) return true;
       const first = members[0];
       if (!first) continue;
       const adapter = this.options.providers().get(first.row.connectionId)?.adapter;
@@ -242,7 +252,7 @@ export class ProcessMonitor {
       }
     }
     for (const each of (await this.watched()).values()) {
-      if (signal.aborted) return;
+      if (signal.aborted) return true;
       if (LIVE_STATES.includes(each.row.state)) continue;
       try {
         await this.ended(each, signal);
@@ -250,6 +260,7 @@ export class ProcessMonitor {
         this.say(`the watches on process ${each.row.id} were not settled: ${String(error)}`);
       }
     }
+    return true;
   }
 
   private async poll(members: Watched[], signal: AbortSignal): Promise<void> {
@@ -454,25 +465,53 @@ export class ProcessMonitor {
     }
   }
 
-  /** Run a pass every few seconds until stopped. */
+  /**
+   * Run a pass every few seconds while something is watched, and every
+   * `idleMs` while nothing is, until stopped. A watch made in this process
+   * starts a pass at once.
+   */
   start(everyMs = Math.min(this.options.dockerMs ?? MONITOR_DOCKER_MS, MONITOR_DOCKER_MS)): {
     stop(): void;
   } {
+    const idleMs = Math.max(this.options.idleMs ?? MONITOR_IDLE_MS, everyMs);
     let running = false;
+    let woken = false;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const stopping = new AbortController();
-    const timer = setInterval(() => {
-      if (running) return;
+    const schedule = (ms: number) => {
+      if (stopped) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(run, ms);
+      timer.unref?.();
+    };
+    const run = () => {
+      timer = undefined;
+      if (stopped) return;
+      if (running) {
+        woken = true;
+        return;
+      }
       running = true;
+      woken = false;
       void this.pass(stopping.signal)
-        .catch((error) => this.say(`process monitor pass failed: ${String(error)}`))
-        .finally(() => {
+        .catch((error) => {
+          this.say(`process monitor pass failed: ${String(error)}`);
+          // A failed pass may have missed a watch; look again soon.
+          return true;
+        })
+        .then((watching) => {
           running = false;
+          schedule(woken ? 0 : watching ? everyMs : idleMs);
         });
-    }, everyMs);
-    timer.unref?.();
+    };
+    const unlisten = onProcessWatch(() => schedule(0));
+    schedule(everyMs);
     return {
       stop: () => {
-        clearInterval(timer);
+        stopped = true;
+        unlisten();
+        if (timer !== undefined) clearTimeout(timer);
         stopping.abort();
       },
     };
