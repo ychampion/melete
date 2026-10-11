@@ -29,6 +29,7 @@ import {
   pointerButton,
   shownAddress,
 } from './live.ts';
+import { displayFor } from './live-card.ts';
 import { ProcessesPanel } from './ProcessesPanel.tsx';
 import './computer.css';
 
@@ -39,7 +40,13 @@ const POLL_MS = 3000;
  * whenever `pulse` changes (a tool entry arrived on the stream), and every few
  * seconds besides, so a page that changes without a tool entry still shows.
  */
-export function useComputer(conversationId: string | null, open: boolean, pulse: string) {
+export function useComputer(
+  conversationId: string | null,
+  open: boolean,
+  pulse: string,
+  /** The agent whose desktop to show, when the chat holds one for each of its agents. */
+  agentId: string | null = null,
+) {
   const [computer, setComputer] = useState<AgentComputer | null>(null);
   const [desktop, setDesktop] = useState<SandboxComputer | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,8 +66,8 @@ export function useComputer(conversationId: string | null, open: boolean, pulse:
       setError(null);
     } else setError(result.error ?? result.unavailable);
     // No desktop is the common case (no sandbox, or one without a desktop), not an error.
-    setDesktop(desktops.data?.computers[0] ?? null);
-  }, [conversationId]);
+    setDesktop(displayFor(desktops.data?.computers ?? [], agentId));
+  }, [conversationId, agentId]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pulse is the reload trigger
   useEffect(() => {
     if (!open || !conversationId) return;

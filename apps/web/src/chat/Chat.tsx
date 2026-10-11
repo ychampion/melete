@@ -69,6 +69,7 @@ import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { runningTurn } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
@@ -1156,7 +1157,14 @@ export function ChatScreen({ id }: { id: string | null }) {
     (count, turn) => count + turn.trail.length,
     0,
   )}`;
-  const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
+  // The turn at work, not a message waiting behind it, is whose computer the pill and panel show.
+  const atWorkTurn = runningTurn(transcript.turns);
+  const computer = useComputer(
+    conversationId,
+    computerOpen && Boolean(conversationId),
+    toolPulse,
+    (atWorkTurn ?? last)?.turn.agent_id ?? agentId,
+  );
   const showComputer = computerOpen && Boolean(conversationId);
   const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
   const openComputer = () => setComputerOpen(true);
@@ -1482,7 +1490,7 @@ ${words}`
                 </div>
               ) : null}
               <WorkPill
-                turn={last}
+                turn={atWorkTurn}
                 conversationId={conversationId}
                 agentName={agent?.name ?? 'Melete'}
                 onStop={() =>
@@ -1490,6 +1498,9 @@ ${words}`
                 }
                 onTakeOver={takeOver}
                 onOpen={openComputer}
+                onError={(reason) =>
+                  toast({ kind: 'err', title: 'Couldn’t take over', sub: reason })
+                }
               />
               {conversation?.automation_id ? (
                 <RoutineThreadNote />

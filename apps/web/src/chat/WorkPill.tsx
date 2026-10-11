@@ -11,17 +11,28 @@ import type { CardAction } from '../experience/types.ts';
 import { takeOverAction, workStep } from './live-card.ts';
 import './live-card.css';
 
-/** Asks which session to take over, then takes it; with none running, shows the computer. */
+/**
+ * Asks which session to take over, then takes it. With none running it shows
+ * the computer, which says why; when the service could not be asked, the
+ * person is told the take-over did not happen.
+ */
 export async function takeOverFromPill(
   conversationId: string,
   surface: 'browser' | 'computer',
-  onTakeOver: (action: CardAction) => void,
-  onOpen: () => void,
+  agentId: string | null,
+  handlers: {
+    onTakeOver: (action: CardAction) => void;
+    onOpen: () => void;
+    onError: (reason: string) => void;
+  },
   calls: Pick<typeof adapter, 'computer' | 'sandboxComputers'> = adapter,
 ): Promise<void> {
-  const action = await takeOverAction(conversationId, surface, calls);
-  if (action) onTakeOver(action);
-  else onOpen();
+  const { action, error } = await takeOverAction(conversationId, surface, agentId, calls);
+  if (action) handlers.onTakeOver(action);
+  else {
+    if (error) handlers.onError(error);
+    handlers.onOpen();
+  }
 }
 
 export function WorkPill({
@@ -31,9 +42,10 @@ export function WorkPill({
   onStop,
   onTakeOver,
   onOpen,
+  onError,
   calls = adapter,
 }: {
-  /** The newest turn; the line shows only while it is at work on the computer. */
+  /** The running turn; the line shows only while it is at work on the computer. */
   turn: TranscriptTurn | null | undefined;
   conversationId: string | null;
   agentName: string;
@@ -41,6 +53,8 @@ export function WorkPill({
   onTakeOver: (action: CardAction) => void;
   /** Shows the agent's computer. */
   onOpen: () => void;
+  /** Says a take-over could not be started, with the service's reason. */
+  onError: (reason: string) => void;
   calls?: Pick<typeof adapter, 'computer' | 'sandboxComputers'>;
 }) {
   const step = workStep(turn, agentName);
@@ -64,7 +78,13 @@ export function WorkPill({
         className="work-pill-btn"
         aria-label={`Take over the ${where}`}
         onClick={() =>
-          void takeOverFromPill(conversationId, step.surface, onTakeOver, onOpen, calls)
+          void takeOverFromPill(
+            conversationId,
+            step.surface,
+            turn?.turn.agent_id ?? null,
+            { onTakeOver, onOpen, onError },
+            calls,
+          )
         }
       >
         <Icon name="hand" size={14} />

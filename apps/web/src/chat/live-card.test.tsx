@@ -8,7 +8,13 @@ import { expect, test } from 'bun:test';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Result } from '../experience/adapter.ts';
-import { applyEvents, fromTurns, type TranscriptTurn } from '../experience/reduce.ts';
+import {
+  addLocalTurn,
+  applyEvents,
+  fromTurns,
+  latestTurn,
+  type TranscriptTurn,
+} from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type {
   AgentComputer,
@@ -17,17 +23,21 @@ import type {
   SandboxComputer,
   Turn,
 } from '../experience/types.ts';
-import { keepFrame, LiveCardView } from './LiveBrowserCard.tsx';
+import { keepFrame, LiveCardView, lookUpFrame } from './LiveBrowserCard.tsx';
 import {
   cardHost,
   computerTools,
   createRefresher,
+  displayFor,
+  frameFor,
+  frameIsFresh,
   isComputerTool,
+  runningTurn,
   takeOverAction,
   workStep,
 } from './live-card.ts';
 import { WorkLog } from './WorkLog.tsx';
-import { WorkPill } from './WorkPill.tsx';
+import { takeOverFromPill, WorkPill } from './WorkPill.tsx';
 import { layoutTurn, logItems } from './worklog.ts';
 
 const AT = '2026-10-11T09:00:00.000Z';
@@ -143,7 +153,9 @@ test('during a computer turn the live picture sits under that turn’s browser r
   const html = renderLog(turn);
   expect(html.match(/class="live-card"/g)?.length).toBe(1);
   expect(html).toContain('data-live="true"');
-  expect(html).toContain('Nova’s browser, live. Open the computer to watch or take over.');
+  // No picture has been read yet, so nothing is called live.
+  expect(html).toContain('Nova’s browser, at work. Open the computer to watch or take over.');
+  expect(html).not.toContain('>Live<');
   // After the browser rows, not before them.
   expect(html.indexOf('live-card')).toBeGreaterThan(html.indexOf('Choosing seats'));
   expect(cardHost(logItems(turn))).toBe('work-call:open');
@@ -173,6 +185,7 @@ test('when the turn ends the picture stays in view, frozen on its last frame', (
     src: 'http://localhost:3210/artifacts/art_last/content',
     url: 'https://flights.example/seats',
     title: 'Choose your seats',
+    seenAt: AT,
   });
   const html = renderLog(turn);
   // The log folds, and the picture is kept under its summary line.
@@ -184,7 +197,7 @@ test('when the turn ends the picture stays in view, frozen on its last frame', (
   expect(html).toContain('Nova’s browser when the work ended, on flights.example/seats.');
 });
 
-test('on the desktop, the newest screenshot the work took is the picture', () => {
+test('on the desktop, the newest screenshot the work took is the picture, last seen once it clicks on', () => {
   const transcript = applyEvents(fromTurns([TURN], 'pause', 'working'), [
     tool(
       entry('call:shot', {
@@ -197,7 +210,10 @@ test('on the desktop, the newest screenshot the work took is the picture', () =>
   ]);
   const html = renderLog(only(transcript.turns[0]));
   expect(html).toContain('/screenshots/act_shot');
-  expect(html).toContain('Nova’s computer, live.');
+  // The picture was taken before the click under way: it is the screen as last seen.
+  expect(html).toContain('Nova’s computer, last seen.');
+  expect(html).toContain('>Last seen<');
+  expect(html).not.toContain('>Live<');
 });
 
 test('tapping the picture opens the computer, live or ended', () => {
@@ -206,6 +222,7 @@ test('tapping the picture opens the computer, live or ended', () => {
     const view = LiveCardView({
       src: null,
       live,
+      fresh: false,
       surface: 'browser',
       address: '',
       agentName: 'Nova',
@@ -280,6 +297,7 @@ test('the line names its buttons and draws the step', () => {
       onStop={() => {}}
       onTakeOver={() => {}}
       onOpen={() => {}}
+      onError={() => {}}
     />,
   );
   expect(html).toContain('Choosing seats on flights.example');
@@ -295,6 +313,7 @@ test('the line names its buttons and draws the step', () => {
         onStop={() => {}}
         onTakeOver={() => {}}
         onOpen={() => {}}
+        onError={() => {}}
       />,
     ),
   ).toBe('');
@@ -316,10 +335,10 @@ const computerWith = (session: string | null): AgentComputer => ({
   available: { browser: true, terminal: true },
 });
 const ok = <T,>(data: T): Result<T> => ({ data, error: null, unavailable: null });
-const desktopNamed = (session: string): SandboxComputer => ({
+const desktopNamed = (session: string, agent: string | null = 'nova'): SandboxComputer => ({
   session_id: session,
   job_id: 'job_1',
-  agent_id: 'nova',
+  agent_id: agent,
   status: 'ready',
   running: true,
   control: 'agent',
@@ -347,6 +366,9 @@ test('Stop and Take over call the conversation’s own stop and take-over', asyn
     onOpen: () => {
       opened += 1;
     },
+    onError: () => {
+      throw new Error('no error expected');
+    },
     calls: fakeCalls('bs_1'),
   });
   button(pill, /^Stop Nova$/)();
@@ -361,13 +383,14 @@ test('Stop and Take over call the conversation’s own stop and take-over', asyn
 });
 
 test('take-over finds the desktop’s session, and with none running shows the computer', async () => {
-  expect(await takeOverAction('job_1', 'computer', fakeCalls(null, 'sbx_1'))).toEqual({
-    label: 'Take over',
-    kind: 'take_over',
-    handle: 'sbx_1',
-    surface: 'computer',
+  expect(await takeOverAction('job_1', 'computer', 'nova', fakeCalls(null, 'sbx_1'))).toEqual({
+    action: { label: 'Take over', kind: 'take_over', handle: 'sbx_1', surface: 'computer' },
+    error: null,
   });
-  expect(await takeOverAction('job_1', 'browser', fakeCalls(null))).toBeNull();
+  expect(await takeOverAction('job_1', 'browser', 'nova', fakeCalls(null))).toEqual({
+    action: null,
+    error: null,
+  });
   let opened = 0;
   const pill = WorkPill({
     turn: browsing(),
@@ -380,6 +403,9 @@ test('take-over finds the desktop’s session, and with none running shows the c
     onOpen: () => {
       opened += 1;
     },
+    onError: () => {
+      throw new Error('no error expected');
+    },
     calls: fakeCalls(null),
   });
   button(pill, /^Take over the browser$/)();
@@ -389,4 +415,254 @@ test('take-over finds the desktop’s session, and with none running shows the c
 
 test('the turn’s computer work is listed oldest first', () => {
   expect(computerTools(browsing()).map((t) => t.id)).toEqual(['call:open', 'call:seat']);
+});
+
+/* ---------- whose turn, whose desktop, and which picture ---------- */
+
+const at = (seconds: number) => new Date(Date.parse(AT) + seconds * 1000).toISOString();
+const seenBrowser = (seenAt: string | null, artifact = 'art_seen'): AgentComputer['browser'] => ({
+  session_id: 'bs_1',
+  control: 'agent',
+  url: 'https://flights.example/seats',
+  title: 'Seats',
+  screenshot: { artifact_id: artifact },
+  seen_at: seenAt,
+});
+const artifactUrl = (id: string) => `/artifacts/${id}/content`;
+
+test('a message waiting for the answer, or one with a file, leaves the line with the running turn', () => {
+  const running = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    tool(entry('call:up', { title: 'Uploading 8 receipts', status: 'running', ended_at: null })),
+  ]);
+  for (const delivery of ['waiting_turn', null] as const) {
+    const transcript = addLocalTurn(running, '@Scout check the totals', 'scout', 'job_1', delivery);
+    // The newest turn is the message waiting to go; it has not begun.
+    expect(workStep(latestTurn(transcript), 'Nova')).toBeNull();
+    const turn = runningTurn(transcript.turns);
+    expect(turn?.id).toBe('turn_1');
+    const html = renderToStaticMarkup(
+      <WorkPill
+        turn={turn}
+        conversationId="job_1"
+        agentName="Nova"
+        onStop={() => {}}
+        onTakeOver={() => {}}
+        onOpen={() => {}}
+        onError={() => {}}
+      />,
+    );
+    expect(html).toContain('Uploading 8 receipts');
+    expect(html).toContain('aria-label="Take over the browser"');
+  }
+  // With no turn at work, there is no line.
+  const ended = applyEvents(fromTurns([{ ...TURN, status: 'done' }], 'send', 'done'), []);
+  expect(runningTurn(ended.turns)).toBeNull();
+});
+
+test('what a command sent out and a measured try are not screen work, so they draw no picture and no line', () => {
+  const sent = entry('sent:act_1:api.example', {
+    kind: 'sandbox',
+    title: 'Sent 2.1 KB to api.example from its computer',
+    parent: 'action:act_1',
+  });
+  expect(isComputerTool(sent)).toBe(false);
+  for (const title of ['Trying something and measuring it', 'Tried something and measured it'])
+    expect(isComputerTool(entry('try', { kind: 'sandbox', title }))).toBe(false);
+  for (const title of [
+    'Running `pip install requests` in its computer',
+    'Proposed running a command in its computer — waiting for you',
+    'Ran code',
+  ])
+    expect(isComputerTool(entry('cmd', { kind: 'sandbox', title }))).toBe(false);
+  const transcript = applyEvents(fromTurns([TURN], 'pause', 'working'), [
+    tool(entry('action:act_1', { kind: 'sandbox', title: 'Ran `curl` in its computer' })),
+    tool(sent),
+  ]);
+  const turn = only(transcript.turns[0]);
+  expect(cardHost(logItems(turn))).toBeNull();
+  expect(renderLog(turn)).not.toContain('live-card');
+  expect(workStep(turn, 'Nova')).toBeNull();
+});
+
+test('every way the service names desktop work counts as screen work', () => {
+  for (const title of [
+    'Opening flights.example in its computer',
+    'Opened a page in its computer',
+    'Tried to open a page in its computer; the window did not change',
+    'Looking at the screen of its computer',
+    'Took a screenshot of its computer',
+    'Clicking in its computer',
+    'Typed in its computer',
+    'Pressed Ctrl+L in its computer',
+    'Scrolling in its computer',
+    'Did a few steps in its computer',
+    'Proposed clicking in its computer — waiting for you',
+  ])
+    expect(isComputerTool(entry('screen', { kind: 'sandbox', title }))).toBe(true);
+});
+
+test('take-over picks the desktop of the agent at work, never another agent’s', async () => {
+  const both = [desktopNamed('sbd_scout', 'scout'), desktopNamed('sbd_nova', 'nova')];
+  expect(displayFor(both, 'nova')?.session_id).toBe('sbd_nova');
+  expect(displayFor([desktopNamed('sbd_scout', 'scout')], 'nova')).toBeNull();
+  expect(displayFor([desktopNamed('sbd_any', null)], 'nova')?.session_id).toBe('sbd_any');
+  const calls = {
+    computer: async () => ok(computerWith(null)),
+    sandboxComputers: async () => ok({ computers: both }),
+  };
+  expect((await takeOverAction('job_1', 'computer', 'nova', calls)).action?.handle).toBe(
+    'sbd_nova',
+  );
+});
+
+test('an ended browser turn this tab kept no picture of looks for it once, and says so when there is none', async () => {
+  const turn = browsing(() => [
+    tool(entry('call:seat', { title: 'Chose seats 14A and 14B', ended_at: at(20) })),
+    event({ type: 'status', status: 'done', composer: 'send' }),
+  ]);
+  const tools = computerTools(turn);
+  let reads = 0;
+  const calls = (seenAt: string | null) => ({
+    computer: async () => {
+      reads += 1;
+      return ok({ ...computerWith('bs_1'), browser: seenBrowser(seenAt) });
+    },
+    artifactUrl,
+  });
+  // Seen during the turn: the picture is the record.
+  expect((await lookUpFrame(turn, tools, calls(at(10))))?.src).toBe('/artifacts/art_seen/content');
+  // Seen long after the turn ended, by a later turn: not this turn's.
+  expect(await lookUpFrame({ ...turn, id: 'turn_other' }, tools, calls(at(600)))).toBeNull();
+  expect(reads).toBe(2);
+  // With nothing kept, the card says so instead of showing an empty screen.
+  const none = renderToStaticMarkup(
+    <LiveCardView
+      src={null}
+      live={false}
+      fresh={false}
+      surface="browser"
+      address=""
+      agentName="Nova"
+      onOpen={() => {}}
+    />,
+  );
+  expect(none).toContain('No picture was kept');
+  expect(none).toContain('aria-label="Nova’s browser. No picture was kept. Open the computer."');
+  // An ended desktop turn that took no screenshot says the same, with nothing to ask.
+  const desk = (item: ExperienceEvent['item']) => ({ ...event(item), turn_id: 'turn_desk' });
+  const desktop = applyEvents(fromTurns([{ ...TURN, id: 'turn_desk' }], 'pause', 'working'), [
+    desk({
+      type: 'tool',
+      tool: entry('call:click', { kind: 'sandbox', title: 'Clicked in its computer' }),
+    }),
+    desk({ type: 'status', status: 'done', composer: 'send' }),
+  ]);
+  const html = renderLog(only(desktop.turns[0]));
+  expect(html).toContain('worklog-kept');
+  expect(html).toContain('No picture was kept');
+});
+
+test('the previous turn’s picture is never filed under a new turn', () => {
+  const turn = browsing();
+  const tools = computerTools(turn);
+  // Seen before this turn's first browser step began: an earlier turn's page.
+  expect(frameFor(turn, tools, seenBrowser(at(-30)), artifactUrl)).toBeNull();
+  expect(frameFor(turn, tools, seenBrowser(null), artifactUrl)).toBeNull();
+  expect(frameFor(turn, tools, seenBrowser(at(5)), artifactUrl)?.seenAt).toBe(at(5));
+  // A late read never puts an older picture over a newer one.
+  keepFrame('turn_race', { src: '/new', url: null, title: null, seenAt: at(9) });
+  keepFrame('turn_race', { src: '/old', url: null, title: null, seenAt: at(3) });
+  const kept = renderLog({ ...ended(), id: 'turn_race' });
+  expect(kept).toContain('/new');
+  expect(kept).not.toContain('/old');
+});
+
+test('a read that fails is tried again on the next look', async () => {
+  let reads = 0;
+  let answer = false;
+  const refresh = createRefresher(() => {
+    reads += 1;
+    return Promise.resolve(answer);
+  });
+  const state = { live: true, onScreen: true, tabVisible: true, pulse: 'working:2:dr' };
+  expect(refresh(state)).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Same change on the stream, but the read failed: it is read again.
+  answer = true;
+  expect(refresh(state)).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(refresh(state)).toBe(false);
+  expect(reads).toBe(2);
+});
+
+test('after a failed step the line does not claim the agent is using the browser', () => {
+  const failed = browsing(() => [
+    tool(entry('call:seat', { title: 'Choosing seats on flights.example', status: 'failed' })),
+  ]);
+  expect(workStep(failed, 'Nova')).toBeNull();
+});
+
+test('a take-over the service could not look up is reported, and the computer shown', async () => {
+  const errors: string[] = [];
+  let opened = 0;
+  const calls = {
+    computer: async (): Promise<Result<AgentComputer>> => ({
+      data: null,
+      error: 'Couldn’t reach the service',
+      unavailable: null,
+    }),
+    sandboxComputers: async () => ok({ computers: [] }),
+  };
+  await takeOverFromPill(
+    'job_1',
+    'browser',
+    'nova',
+    {
+      onTakeOver: () => {
+        throw new Error('nothing to take over');
+      },
+      onOpen: () => {
+        opened += 1;
+      },
+      onError: (reason) => errors.push(reason),
+    },
+    calls,
+  );
+  expect(errors).toEqual(['Couldn’t reach the service']);
+  expect(opened).toBe(1);
+});
+
+test('a picture from before the newest step is labelled last seen, not live', () => {
+  const turn = browsing();
+  const tools = computerTools(turn);
+  const frame = { src: '/p', url: null, title: null, seenAt: at(-1) };
+  // The step under way began at AT; a picture seen before it is not of it.
+  expect(frameIsFresh(frame, tools)).toBe(false);
+  expect(frameIsFresh({ ...frame, seenAt: at(1) }, tools)).toBe(true);
+  const view = (fresh: boolean) =>
+    renderToStaticMarkup(
+      <LiveCardView
+        src="/p"
+        live
+        fresh={fresh}
+        surface="browser"
+        address="flights.example"
+        agentName="Nova"
+        onOpen={() => {}}
+      />,
+    );
+  expect(view(false)).toContain('>Last seen<');
+  expect(view(false)).not.toContain('>Live<');
+  expect(view(false)).toContain('Nova’s browser, last seen on flights.example.');
+  expect(view(true)).toContain('Live<');
+});
+
+test('the line goes once the agent is writing its answer', () => {
+  const answering = browsing(() => [
+    tool(entry('call:seat', { title: 'Chose seats 14A and 14B' })),
+    say('Seats 14A and 14B are yours.'),
+    event({ type: 'status', status: 'streaming', composer: 'pause' }),
+  ]);
+  expect(answering.status).toBe('streaming');
+  expect(workStep(answering, 'Nova')).toBeNull();
 });

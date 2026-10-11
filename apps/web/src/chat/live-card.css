@@ -119,6 +119,29 @@
 .live-card:hover .live-card-open {
   color: var(--text);
 }
+/* An ended turn whose picture was not kept says so in a short strip, not an empty screen. */
+.live-card-screen[data-none] {
+  aspect-ratio: auto;
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+}
+.live-card-screen[data-none] .live-card-empty {
+  width: 28px;
+  height: 28px;
+}
+.live-card-none {
+  font-size: 12.5px;
+  line-height: 16px;
+  color: var(--muted);
+}
+/* A picture from before the newest step: the screen as last seen, without the beat. */
+.live-card-badge:not([data-fresh]) {
+  color: var(--muted);
+  font-weight: 500;
+}
 /* A turn that ended keeps its picture, a little quieter than a live one. */
 .live-card:not([data-live]) .live-card-screen img {
   filter: saturate(0.85);

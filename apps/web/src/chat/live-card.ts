@@ -8,10 +8,24 @@
 import { adapter } from '../experience/adapter.ts';
 import type { TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
-import type { CardAction, TurnStatus } from '../experience/types.ts';
+import type {
+  CardAction,
+  ComputerBrowser,
+  SandboxComputer,
+  TurnStatus,
+} from '../experience/types.ts';
 import type { LogItem } from './worklog.ts';
 
 export type ComputerSurface = 'browser' | 'computer';
+
+/**
+ * Work on the agent's own desktop, as the service names it: opening a page,
+ * looking at the screen, clicking, typing, pressing keys, scrolling, or a few
+ * of those at once, "in its computer". Commands it ran there, what they sent
+ * out, and measured tries are the terminal's, and are named otherwise.
+ */
+const SCREEN_WORK =
+  /^(?:proposed )?(?:opening|opened|tried to open|looking at the screen of|took a screenshot of|clicking|clicked|typing|typed|pressing|pressed|scrolling|scrolled|doing a few steps|did a few steps)\b.*\bits computer\b/i;
 
 /**
  * Whether a piece of work happened on the agent's own browser or desktop.
@@ -22,8 +36,7 @@ export function isComputerTool(tool: ToolEntry): boolean {
   if (/\byour (browser|computer|screen)\b/i.test(tool.title)) return false;
   if (tool.kind === 'browser') return true;
   if (tool.kind !== 'sandbox') return false;
-  // A command run in the sandbox is told by the terminal, not by a picture.
-  return !/^(Ran|Running)\b/.test(tool.title) && !tool.title.includes('`');
+  return tool.detail?.type === 'screenshot' || SCREEN_WORK.test(tool.title);
 }
 
 /** The browser and desktop work of a turn, oldest first. */
@@ -55,16 +68,70 @@ export function cardHost(items: LogItem[]): string | null {
   return null;
 }
 
-/** The newest picture the turn's own work took of the screen, when it took one. */
-export function turnStill(tools: ToolEntry[]): string | null {
+/**
+ * The newest picture the turn's own work took of the screen, when it took one,
+ * and whether it is of the newest step: a picture taken before later clicks
+ * is the screen as last seen, not as it is.
+ */
+export function turnStill(tools: ToolEntry[]): { src: string; newest: boolean } | null {
   for (let index = tools.length - 1; index >= 0; index--) {
     const detail = tools[index]?.detail;
-    if (detail?.type === 'screenshot') return adapter.screenshotUrl(detail.id);
+    const newest = index === tools.length - 1;
+    if (detail?.type === 'screenshot') return { src: adapter.screenshotUrl(detail.id), newest };
     if (detail?.type === 'artifact' && /screenshot|at the screen/i.test(tools[index]?.title ?? ''))
-      return adapter.artifactUrl(detail.id);
+      return { src: adapter.artifactUrl(detail.id), newest };
   }
   return null;
 }
+
+/** A picture of the agent's browser, with the page it shows and when the agent saw it. */
+export type Frame = { src: string; url: string | null; title: string | null; seenAt: string };
+
+/** Room for an action's end being written a moment after the agent saw the page. */
+const END_SLACK_MS = 5000;
+
+/**
+ * The browser's last picture, when it belongs to this turn. The service keeps
+ * one picture per conversation, the newest, so a picture seen before this
+ * turn's first browser step is an earlier turn's, and once the turn has ended
+ * a picture seen after its last step is a later turn's.
+ */
+export function frameFor(
+  turn: TranscriptTurn,
+  tools: ToolEntry[],
+  browser: ComputerBrowser | null | undefined,
+  artifactUrl: (id: string) => string,
+): Frame | null {
+  if (!browser?.screenshot || !browser.seen_at) return null;
+  const seen = Date.parse(browser.seen_at);
+  const steps = tools.filter((tool) => tool.kind === 'browser');
+  if (!steps.length || Number.isNaN(seen)) return null;
+  const began = Math.min(...steps.map((tool) => Date.parse(tool.started_at)));
+  if (!(seen >= began)) return null;
+  if (!atWork(turn.status)) {
+    // The latest end anyone recorded: the stream's for the turn, and every step's once all ended.
+    const ends = steps.map((tool) => tool.ended_at);
+    const known = [
+      ...(turn.ended_at ? [turn.ended_at] : []),
+      ...(ends.every((end) => end !== null) ? ends : []),
+    ]
+      .map((end) => Date.parse(end ?? ''))
+      .filter((end) => !Number.isNaN(end));
+    if (known.length && seen > Math.max(...known) + END_SLACK_MS) return null;
+  }
+  return {
+    src: artifactUrl(browser.screenshot.artifact_id),
+    url: browser.url,
+    title: browser.title,
+    seenAt: browser.seen_at,
+  };
+}
+
+/** Whether the browser's picture was seen once the newest step had begun, so it shows that step. */
+export const frameIsFresh = (frame: Frame, tools: ToolEntry[]): boolean => {
+  const newest = tools.at(-1);
+  return newest !== undefined && Date.parse(frame.seenAt) >= Date.parse(newest.started_at);
+};
 
 /**
  * What changes when the picture may have changed: a step added, or a step
@@ -79,9 +146,26 @@ const AT_WORK: TurnStatus[] = ['queued', 'working', 'streaming', 'stalled'];
 export const atWork = (status: TurnStatus): boolean => AT_WORK.includes(status);
 
 /**
+ * The turn the line over the composer speaks for: the newest one at work that
+ * has begun. A message waiting to be sent when the answer ends, or one with a
+ * file, is a turn of its own that has not begun, and the turn still running
+ * keeps the line.
+ */
+export function runningTurn(turns: TranscriptTurn[]): TranscriptTurn | null {
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index];
+    if (turn && atWork(turn.status) && (turn.status !== 'queued' || turn.trail.length > 0))
+      return turn;
+  }
+  return null;
+}
+
+/**
  * The line over the composer while the agent is at work on its computer: the
  * step under way in the service's words, or, between steps, which screen it is
- * on. Null when the turn is not at work there, so the line goes away.
+ * on. Null when the turn is not at work there, so the line goes away: once the
+ * agent moves to other work, once its last step there failed (the screen may
+ * not be there at all), and once it is writing its answer.
  */
 export function workStep(
   turn: TranscriptTurn | null | undefined,
@@ -98,6 +182,11 @@ export function workStep(
   const surface: ComputerSurface = latest.kind === 'browser' ? 'browser' : 'computer';
   const under = turn.live && turn.live.id === latest.id ? turn.live.title : null;
   const running = latest.status === 'running' || latest.status === 'needs_approval';
+  if (!under && !running) {
+    if (latest.status === 'failed' || latest.status === 'unknown') return null;
+    // Words written after its last step there: the agent is answering, not on its screen.
+    if (turn.flow.at(-1)?.type === 'text') return null;
+  }
   const words =
     under ??
     (running
@@ -111,15 +200,22 @@ export function workStep(
 /**
  * When the picture is read again: only while the turn is at work, the picture
  * is on screen and the tab is in view, and only once for each change on the
- * stream. Coming back on screen after changes it missed reads it once.
+ * stream. Coming back on screen after changes it missed reads it once. A read
+ * that fails leaves its change unread, so the next look reads it again: `read`
+ * answers a promise of true once the picture was read.
  */
-export function createRefresher(read: () => void) {
+export function createRefresher(read: () => unknown) {
   let last: string | null = null;
   return (state: { live: boolean; onScreen: boolean; tabVisible: boolean; pulse: string }) => {
     if (!state.live || !state.onScreen || !state.tabVisible) return false;
     if (state.pulse === last) return false;
-    last = state.pulse;
-    read();
+    const pulse = state.pulse;
+    last = pulse;
+    const reading = read();
+    if (reading instanceof Promise)
+      void reading.then((ok) => {
+        if (ok !== true && last === pulse) last = null;
+      });
     return true;
   };
 }
@@ -127,25 +223,50 @@ export function createRefresher(read: () => void) {
 type Calls = Pick<typeof adapter, 'computer' | 'sandboxComputers'>;
 
 /**
+ * The desktop that belongs to the agent at work: a chat can hold one for each
+ * of its agents. One whose agent is not named may be anyone's; another
+ * agent's is never taken for this one's.
+ */
+export const displayFor = (
+  computers: SandboxComputer[],
+  agentId: string | null | undefined,
+): SandboxComputer | null =>
+  agentId
+    ? (computers.find((computer) => computer.agent_id === agentId) ??
+      computers.find((computer) => computer.agent_id === null) ??
+      null)
+    : (computers[0] ?? null);
+
+/**
  * The take-over the line over the composer offers, for the screen the agent is
- * on: the same action a hand-off card carries. Null when no session of that
- * screen is running, so the computer is shown instead.
+ * on: the same action a hand-off card carries. No action when no session of
+ * that screen is running, so the computer is shown instead; the reason when
+ * the service could not be asked.
  */
 export async function takeOverAction(
   conversationId: string,
   surface: ComputerSurface,
+  agentId: string | null,
   calls: Calls = adapter,
-): Promise<CardAction | null> {
+): Promise<{ action: CardAction | null; error: string | null }> {
   if (surface === 'browser') {
     const result = await calls.computer(conversationId);
-    const session = result.data?.browser?.session_id;
-    return session
-      ? { label: 'Take over', kind: 'take_over', handle: session, surface: 'browser' }
-      : null;
+    if (!result.data) return { action: null, error: result.error ?? result.unavailable };
+    const session = result.data.browser?.session_id;
+    return {
+      action: session
+        ? { label: 'Take over', kind: 'take_over', handle: session, surface: 'browser' }
+        : null,
+      error: null,
+    };
   }
   const result = await calls.sandboxComputers(conversationId);
-  const session = result.data?.computers[0]?.session_id;
-  return session
-    ? { label: 'Take over', kind: 'take_over', handle: session, surface: 'computer' }
-    : null;
+  if (!result.data) return { action: null, error: result.error ?? result.unavailable };
+  const session = displayFor(result.data.computers, agentId)?.session_id;
+  return {
+    action: session
+      ? { label: 'Take over', kind: 'take_over', handle: session, surface: 'computer' }
+      : null,
+    error: null,
+  };
 }

@@ -2,25 +2,30 @@
  * A picture of the agent's browser or desktop in the conversation, under the
  * rows of the work it did there. While the turn is at work it follows the
  * screen; once the turn ends it keeps the last picture, so the transcript
- * shows what was done. Tapping it opens the agent's computer beside the chat.
+ * shows what was done, or says plainly that no picture was kept. Tapping it
+ * opens the agent's computer beside the chat.
  */
 import { type RefObject, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
-import { adapter } from '../experience/adapter.ts';
+import { adapter, type Result } from '../experience/adapter.ts';
 import type { TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
+import type { AgentComputer } from '../experience/types.ts';
 import { shownAddress } from './live.ts';
 import {
   atWork,
   type ComputerSurface,
   cardPulse,
   createRefresher,
+  type Frame,
+  frameFor,
+  frameIsFresh,
   surfaceOf,
   turnStill,
 } from './live-card.ts';
 import './live-card.css';
 
-export type Frame = { src: string; url: string | null; title: string | null };
+export type { Frame } from './live-card.ts';
 
 /**
  * The last picture each turn showed, kept past the card itself: a turn that
@@ -29,6 +34,9 @@ export type Frame = { src: string; url: string | null; title: string | null };
 const lastFrames = new Map<string, Frame>();
 const FRAMES_KEPT = 50;
 export const keepFrame = (turnId: string, frame: Frame) => {
+  // A read that lands late never puts an older picture over a newer one.
+  const kept = lastFrames.get(turnId);
+  if (kept && Date.parse(kept.seenAt) > Date.parse(frame.seenAt)) return;
   lastFrames.delete(turnId);
   lastFrames.set(turnId, frame);
   if (lastFrames.size > FRAMES_KEPT) {
@@ -36,6 +44,33 @@ export const keepFrame = (turnId: string, frame: Frame) => {
     if (oldest !== undefined) lastFrames.delete(oldest);
   }
 };
+
+type Calls = Pick<typeof adapter, 'computer' | 'artifactUrl'>;
+
+/** One read of a conversation's computer at a time, shared by the pictures that ask together. */
+const reading = new Map<string, Promise<Result<AgentComputer>>>();
+function readComputer(conversationId: string, calls: Calls): Promise<Result<AgentComputer>> {
+  const pending = reading.get(conversationId);
+  if (pending) return pending;
+  const read = calls.computer(conversationId).finally(() => reading.delete(conversationId));
+  reading.set(conversationId, read);
+  return read;
+}
+
+/**
+ * Looks once for the picture of an ended turn this tab never kept, as after a
+ * reload: the service's newest picture, when it was seen during this turn.
+ */
+export async function lookUpFrame(
+  turn: TranscriptTurn,
+  tools: ToolEntry[],
+  calls: Calls = adapter,
+): Promise<Frame | null> {
+  const result = await readComputer(turn.turn.conversation_id, calls);
+  const found = frameFor(turn, tools, result.data?.browser, calls.artifactUrl);
+  if (found) keepFrame(turn.id, found);
+  return found;
+}
 
 /** Whether the element is in view, while `watch` asks for it; nothing is observed otherwise. */
 function useOnScreen(ref: RefObject<HTMLElement | null>, watch: boolean): boolean {
@@ -70,6 +105,10 @@ function useTabVisible(): boolean {
   return visible;
 }
 
+/** How long a failed read waits before it is tried again, and how many times in a row. */
+const RETRY_MS = 3000;
+const RETRIES = 2;
+
 export function LiveBrowserCard({
   turn,
   tools,
@@ -83,7 +122,7 @@ export function LiveBrowserCard({
   agentName: string;
   /** Shows the agent's computer beside the chat. */
   onOpen: () => void;
-  calls?: Pick<typeof adapter, 'computer' | 'artifactUrl'>;
+  calls?: Calls;
 }) {
   const live = atWork(turn.status);
   const surface = surfaceOf(tools);
@@ -95,38 +134,74 @@ export function LiveBrowserCard({
   const conversationId = turn.turn.conversation_id;
   const turnId = turn.id;
   const ticket = useRef(0);
+  // A read is judged against the turn as it is when the answer lands, not as it was when asked.
+  const current = useRef({ turn, tools });
+  current.current = { turn, tools };
+  const [retry, setRetry] = useState(0);
+  const retries = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    },
+    [],
+  );
 
   // The browser's picture is read from the same place the computer panel reads it.
   const refresh = useRef(
     createRefresher(() => {
       const mine = ++ticket.current;
-      void calls.computer(conversationId).then((result) => {
-        const browser = result.data?.browser;
-        if (mine !== ticket.current || !browser?.screenshot) return;
-        const next = {
-          src: calls.artifactUrl(browser.screenshot.artifact_id),
-          url: browser.url,
-          title: browser.title,
-        };
-        keepFrame(turnId, next);
-        setFrame(next);
+      return readComputer(conversationId, calls).then((result) => {
+        if (!result.data) {
+          // Tried again shortly, a couple of times; after that, at the next step.
+          if (retries.current < RETRIES) {
+            retries.current += 1;
+            retryTimer.current = setTimeout(() => setRetry((count) => count + 1), RETRY_MS);
+          }
+          return false;
+        }
+        retries.current = 0;
+        const now = current.current;
+        const next = frameFor(now.turn, now.tools, result.data.browser, calls.artifactUrl);
+        if (next) keepFrame(turnId, next);
+        if (mine === ticket.current && next) setFrame(lastFrames.get(turnId) ?? next);
+        return true;
       });
     }),
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retry is the trigger for a read that failed
   useEffect(() => {
     if (surface !== 'browser') return;
     refresh.current({ live, onScreen, tabVisible, pulse });
-  }, [surface, live, onScreen, tabVisible, pulse]);
+  }, [surface, live, onScreen, tabVisible, pulse, retry]);
 
   // On the desktop, the newest screenshot the work took is the picture; it comes with the stream.
   const still = turnStill(tools);
-  const src = surface === 'browser' ? (frame?.src ?? still) : (still ?? frame?.src ?? null);
+  // An ended browser turn this tab kept no picture of asks the service once.
+  const lookUp = !live && surface === 'browser' && !frame && !still;
+  const [looking, setLooking] = useState(lookUp);
+  const looked = useRef(false);
+  useEffect(() => {
+    if (!lookUp || looked.current) return;
+    looked.current = true;
+    setLooking(true);
+    void lookUpFrame(current.current.turn, current.current.tools, calls).then((found) => {
+      if (found) setFrame(found);
+      setLooking(false);
+    });
+  }, [lookUp, calls]);
+
+  const fromFrame = surface === 'browser' ? Boolean(frame) : !still && Boolean(frame);
+  const src = fromFrame ? (frame?.src ?? null) : (still?.src ?? null);
+  const fresh = fromFrame ? Boolean(frame && frameIsFresh(frame, tools)) : Boolean(still?.newest);
   const address = surface === 'browser' && frame?.url ? shownAddress(frame.url) : '';
   return (
     <LiveCardView
       boxRef={box}
       src={src}
       live={live}
+      fresh={fresh}
+      looking={lookUp && (looking || !looked.current)}
       surface={surface}
       address={address}
       agentName={agentName}
@@ -140,6 +215,8 @@ export function LiveCardView({
   boxRef,
   src,
   live,
+  fresh,
+  looking = false,
   surface,
   address,
   agentName,
@@ -148,6 +225,10 @@ export function LiveCardView({
   boxRef?: RefObject<HTMLButtonElement | null>;
   src: string | null;
   live: boolean;
+  /** The picture shows the newest step, not the screen as it was before it. */
+  fresh: boolean;
+  /** An ended turn's picture is still being looked for. */
+  looking?: boolean;
   surface: ComputerSurface;
   /** The page's address, when the browser's picture was read with it. */
   address: string;
@@ -156,9 +237,14 @@ export function LiveCardView({
 }) {
   const where = surface === 'browser' ? `${agentName}’s browser` : `${agentName}’s computer`;
   const caption = address || (surface === 'browser' ? 'Browser' : 'Desktop');
+  const on = address ? ` on ${address}` : '';
+  const badge = live && src ? (fresh ? 'Live' : 'Last seen') : null;
+  const none = !live && !src && !looking;
   const label = live
-    ? `${where}, live${address ? ` on ${address}` : ''}. Open the computer to watch or take over.`
-    : `${where} when the work ended${address ? `, on ${address}` : ''}. Open the computer.`;
+    ? `${where}, ${src ? (fresh ? 'live' : 'last seen') : 'at work'}${on}. Open the computer to watch or take over.`
+    : none
+      ? `${where}. No picture was kept. Open the computer.`
+      : `${where} when the work ended${address ? `, on ${address}` : ''}. Open the computer.`;
   return (
     <button
       ref={boxRef}
@@ -169,7 +255,7 @@ export function LiveCardView({
       aria-label={label}
       onClick={onOpen}
     >
-      <span className="live-card-screen">
+      <span className="live-card-screen" data-none={none ? 'true' : undefined}>
         {src ? (
           <img src={src} alt="" draggable={false} />
         ) : (
@@ -177,10 +263,15 @@ export function LiveCardView({
             <Icon name={surface === 'browser' ? 'globe' : 'monitor'} size={20} />
           </span>
         )}
-        {live ? (
-          <span className="live-card-badge" aria-hidden="true">
-            <span className="live-card-dot" />
-            Live
+        {none ? <span className="live-card-none">No picture was kept</span> : null}
+        {badge ? (
+          <span
+            className="live-card-badge"
+            data-fresh={fresh ? 'true' : undefined}
+            aria-hidden="true"
+          >
+            {fresh ? <span className="live-card-dot" /> : null}
+            {badge}
           </span>
         ) : null}
       </span>
