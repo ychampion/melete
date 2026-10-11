@@ -21,8 +21,9 @@
  * first and checked after, in the trash, so nothing can change it between
  * the check and the delete; one that is not what was expected goes back to
  * its name. Restoring moves every file back to its own name, never over a
- * file that has taken that name since. The trash is swept after
- * `MELETE_TRASH_DAYS` (7 by default).
+ * file that has taken that name since. Deletes and restores in one job's
+ * trash run one at a time, so a delete is put back once however many ask.
+ * The trash is swept after `MELETE_TRASH_DAYS` (7 by default).
  *
  * Every open, rename and removal goes through held directories, as every
  * other file operation here does, so no name in a manifest or a path can
@@ -75,8 +76,17 @@ export const filesTrash = (base: string, spaceId: string, jobId: string): TrashP
   trash: [spaceId, TRASH_DIRECTORY, jobId],
 });
 
-/** One file a delete takes: its path under the area, and the content it must have (null: any). */
-export type TrashEntry = { path: string; hash: string | null };
+/**
+ * One file a delete takes: its path under the area, and the content it must
+ * have (null: any). With `file`, it must also still be that very file, the
+ * one the delete was decided on: anything else at the path, a folder or
+ * another file, stays where it is.
+ */
+export type TrashEntry = {
+  path: string;
+  hash: string | null;
+  file?: { dev: number; ino: number };
+};
 
 type Manifest = {
   version: 1;
@@ -169,13 +179,56 @@ async function trashUsage(place: TrashPlace) {
 const megabytes = (bytes: number) => `${Math.ceil(bytes / (1024 * 1024))} MB`;
 
 /**
+ * One delete or restore at a time in a job's trash, within this process:
+ * two restores of one delete would otherwise each put back part of it and
+ * each report the rest as lost, and a delete making room could take a trash
+ * folder out from under a restore.
+ */
+const trashQueues = new Map<string, Promise<unknown>>();
+
+/** Runs `work` in its turn in this trash: after every delete and restore asked of it before. */
+export function oneAtATime<T>(place: TrashPlace, work: () => Promise<T>): Promise<T> {
+  const key = [place.base, ...place.trash].join('\0');
+  const previous = trashQueues.get(key) ?? Promise.resolve();
+  // The queue carries on whether the one before succeeded or failed.
+  const result = previous.then(work, work);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  trashQueues.set(key, settled);
+  void settled.then(() => {
+    if (trashQueues.get(key) === settled) trashQueues.delete(key);
+  });
+  return result;
+}
+
+/** Whether what was moved into the trash is the very file the delete was decided on. */
+async function isDecidedFile(
+  directory: HeldDirectory,
+  name: string,
+  file: { dev: number; ino: number },
+): Promise<boolean> {
+  const there = await lstat(directory.at(name)).catch(() => null);
+  return Boolean(there?.isFile() && there.dev === file.dev && there.ino === file.ino);
+}
+
+/**
  * Move `entries` into a new trash folder. Each is renamed first, then checked
  * there against the hash it must have; one that differs goes back to its
  * name and is kept, with the reason. `folders` are removed afterwards, deepest
  * first, only where empty: a folder that gained a file since is left, with
  * that file in it, and said so.
  */
-export async function moveToTrash(
+export function moveToTrash(
+  place: TrashPlace,
+  entries: readonly TrashEntry[],
+  options: { days: number; folders?: readonly string[]; now?: Date; maxBytes?: number },
+): Promise<Trashed> {
+  return oneAtATime(place, () => moveToTrashNow(place, entries, options));
+}
+
+async function moveToTrashNow(
   place: TrashPlace,
   entries: readonly TrashEntry[],
   options: { days: number; folders?: readonly string[]; now?: Date; maxBytes?: number },
@@ -271,7 +324,10 @@ export async function moveToTrash(
       // or what the command's sync-in sent, is what goes.
       const there =
         entry.hash === null ? null : await hashIn(trash, item).catch(() => 'unreadable');
-      if (entry.hash !== null && there !== entry.hash) {
+      const changed =
+        (entry.hash !== null && there !== entry.hash) ||
+        (entry.file !== undefined && !(await isDecidedFile(trash, item, entry.file)));
+      if (changed) {
         try {
           await moveWithoutReplacing(trash.at(item), from.at(name));
           kept.push({ path: entry.path, reason: 'it changed after the delete was decided' });
@@ -420,7 +476,12 @@ export type Restored = {
  * own name only while that name is unused; one whose name was taken since
  * stays in the trash, with the reason, and can be restored again later.
  */
-export async function restoreFromTrash(place: TrashPlace, id: string): Promise<Restored> {
+export function restoreFromTrash(place: TrashPlace, id: string): Promise<Restored> {
+  // A second restore of the same delete waits for the first, then finds it gone.
+  return oneAtATime(place, () => restoreFromTrashNow(place, id));
+}
+
+async function restoreFromTrashNow(place: TrashPlace, id: string): Promise<Restored> {
   const manifest = await manifestHere(place, id);
   if (!manifest) throw new Error(`there is nothing in the trash under ${JSON.stringify(id)}`);
   if (Date.parse(manifest.expires_at) <= Date.now())
