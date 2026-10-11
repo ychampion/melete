@@ -4203,6 +4203,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            computer_files: {
+                                kept: components["schemas"]["__schema312"];
+                                removed: components["schemas"]["__schema312"];
+                            };
                             forgotten: components["schemas"]["__schema312"];
                             id: components["schemas"]["__schema307"];
                             stopped: boolean;

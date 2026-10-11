@@ -385,6 +385,9 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   triage_verdict: 'operational',
   sandbox_awake_day: 'operational',
   sandbox_display: 'operational',
+  sandbox_work_file: 'operational',
+  sandbox_work_read: 'operational',
+  sandbox_work_removal: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -704,6 +707,16 @@ describe.if(handle !== null)('removing a space', () => {
         display, owner_job_id, ended_at, end_reason)
       values (${`sbd_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.connectionId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 1, ${seeded.jobId}, now(), 'its computer closed')`;
+    // Who made a file in that computer's /work, when it was last read back,
+    // and a deleted chat's file still waiting to be removed there.
+    await sql`insert into sandbox_work_file (space_id, agent_id, connection_id, path, hash, writers)
+      values (${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId}, 'report.pdf',
+        ${'0'.repeat(64)}, ${[seeded.jobId]}::text[])`;
+    await sql`insert into sandbox_work_read (space_id, agent_id, connection_id)
+      values (${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId})`;
+    await sql`insert into sandbox_work_removal (id, space_id, agent_id, connection_id, job_id, path, hash)
+      values (${`wrm_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId},
+        ${seeded.jobId}, 'old.html', ${'0'.repeat(64)})`;
     // The time that process kept the computer running after its turn ended.
     await sql`insert into sandbox_awake_day (space_id, day, seconds)
       values (${seeded.spaceId}, current_date, 600)`;
