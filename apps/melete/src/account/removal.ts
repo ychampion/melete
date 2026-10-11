@@ -313,8 +313,6 @@ export class AccountRemovalService {
     await sql`delete from managed_call where principal_id = ${principalId}`;
     await sql`delete from space_membership where principal_id = ${principalId}
       and revoked_at is not null`;
-    // Again here, for an account whose deletion began before step 1 did this.
-    await unlinkElsewhere(sql, principalId);
     try {
       await sql`delete from principal where id = ${principalId}`;
       return true;
@@ -331,6 +329,11 @@ export class AccountRemovalService {
   async resume(): Promise<number> {
     const pending = await this.deps.sql<{ id: string }[]>`select id from principal
       where email = 'removed+' || lower(id) || '@removed.invalid'`;
+    if (!pending.length) return 0;
+    // Before any is finished, for all of them at once: a response that landed
+    // as a deletion began, and the links of an account whose deletion began
+    // before step 1 unlinked them, whether or not its spaces are gone yet.
+    await unlinkElsewhere(this.deps.sql, null);
     let finished = 0;
     for (const { id } of pending) {
       await this.carryOn(id);
@@ -403,12 +406,19 @@ function summary(row: Account, setupOwner: string | null): AccountSummary {
  * response, so a response names someone only if they typed it. An app shared
  * with it is no longer shared with it, and whether it had a room open is
  * nobody's record: both go.
+ *
+ * Given no account, it does this for every account being deleted, each table
+ * read once however many there are.
  */
-async function unlinkElsewhere(q: Sql | TransactionSql, principalId: string) {
-  await q`update app_submission set principal_id = null where principal_id = ${principalId}`;
-  await q`update app_submission set deleted_by = null where deleted_by = ${principalId}`;
-  await q`delete from app_grant where grantee_kind = 'principal' and grantee_id = ${principalId}`;
-  await q`delete from room_presence where principal_id = ${principalId}`;
+async function unlinkElsewhere(q: Sql | TransactionSql, principalId: string | null) {
+  const who = () =>
+    principalId === null
+      ? q`select id from principal where email = 'removed+' || lower(id) || '@removed.invalid'`
+      : q`select ${principalId}::text`;
+  await q`update app_submission set principal_id = null where principal_id in (${who()})`;
+  await q`update app_submission set deleted_by = null where deleted_by in (${who()})`;
+  await q`delete from app_grant where grantee_kind = 'principal' and grantee_id in (${who()})`;
+  await q`delete from room_presence where principal_id in (${who()})`;
 }
 
 const describe = (error: unknown) => (error instanceof Error ? error.message : 'unknown error');

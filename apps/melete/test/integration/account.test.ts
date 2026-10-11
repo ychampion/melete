@@ -648,6 +648,39 @@ withDb('deleting an account', () => {
     expect(await h.sql`select 1 from app_submission where app_id = ${appId}`).toHaveLength(3);
     expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(0);
   }, 120_000);
+  test('a response that lands while the deletion is under way names nobody by the next pass, though its spaces are not gone yet', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Garden club',
+      spacesRoot,
+      workRoot,
+    });
+    const appId = await responsesInRoom(room);
+    const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    expect(
+      (await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', { confirm_email: email }))
+        .status,
+    ).toBe(202);
+    // A save the app sent just before, accepted as the deletion began, and a
+    // space of its own whose removal has not finished.
+    await h.sql`insert into app_submission (id, app_id, version_id, collection, principal_id, data, size)
+      select ${recordId('asub')}, ${appId}, version_id, 'ticks', ${room.memberId},
+        '{"ticked":["sugar"]}'::jsonb, 20
+      from app_submission where app_id = ${appId} limit 1`;
+    const removalId = newId('rem');
+    await h.sql`insert into space_removal (id, space_id, space_name, git_path, kind, requested_by, state)
+      values (${removalId}, ${newId('sp')}, 'Personal', ${join(spacesRoot, 'gone')}, 'removed',
+        ${room.memberId}, 'blocked')`;
+    await h.accounts.resume();
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    expect(
+      (await responsesSeenBy(room.sessionToken, appId)).map((response) => response.by),
+    ).toEqual([null, null, null]);
+    await h.sql`delete from space_removal where id = ${removalId}`;
+    await h.settle(room.memberId);
+  }, 120_000);
   test('its paired computers and unused pairing codes stop at once, before any space is swept', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const hal = await h.person('hal@example.test');
