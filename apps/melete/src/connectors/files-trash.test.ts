@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { filesTrash, moveToTrash, restoreFromTrash } from './files-trash.ts';
+import { filesTrash, hasTrash, moveToTrash, restoreFromTrash } from './files-trash.ts';
 
 const root = await realpath(await mkdtemp(join(tmpdir(), 'melete-files-trash-')));
 const spaceId = 'sp_trashtest';
@@ -99,4 +99,36 @@ test('three restores of one delete at once put it back once; the others find not
   for (const name of ['a.md', 'b.md', 'c.md'])
     expect(await readFile(join(files, 'together', name), 'utf8')).toBe(`${name}\n`);
   expect(await readdir(join(root, spaceId, '.trash', 'job_together')).catch(() => [])).toEqual([]);
+});
+
+test('a delete that takes nothing takes no earlier delete out of a full trash', async () => {
+  const place = filesTrash(root, spaceId, 'job_fulltrash');
+  await writeFile(join(files, 'first.bin'), 'a'.repeat(600));
+  const first = await moveToTrash(place, [{ path: 'first.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+    now: new Date(Date.now() - 60_000),
+  });
+  expect(first.trash_id).not.toBeNull();
+  await writeFile(join(files, 'second.bin'), 'b'.repeat(600));
+  const decided = await identity(join(files, 'second.bin'));
+  // Rewritten after the delete was decided: this delete takes nothing.
+  await writeFile(join(files, 'second.bin.next'), 'c'.repeat(600));
+  await rename(join(files, 'second.bin.next'), join(files, 'second.bin'));
+  const trashed = await moveToTrash(place, [{ path: 'second.bin', hash: null, file: decided }], {
+    days: 7,
+    maxBytes: 1000,
+  });
+  expect(trashed).toMatchObject({ trash_id: null, moved: [], evicted: [] });
+  expect(await hasTrash(place, first.trash_id as string)).toBe(true);
+  // A delete that does go makes the room it needs, and says what it took.
+  await writeFile(join(files, 'third.bin'), 'd'.repeat(600));
+  const third = await moveToTrash(place, [{ path: 'third.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+  });
+  expect(third.moved).toEqual(['third.bin']);
+  expect(third.evicted).toEqual([first.trash_id as string]);
+  expect(await hasTrash(place, first.trash_id as string)).toBe(false);
+  expect(await hasTrash(place, third.trash_id as string)).toBe(true);
 });

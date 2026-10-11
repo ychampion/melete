@@ -15,9 +15,10 @@
  * written before the first file moves, naming every file the delete means to
  * take, and again once they have: a crash between leaves a trash that still
  * restores whatever reached it. Each job's trash holds at most
- * `MELETE_TRASH_MAX_MB`; a delete that would pass it first evicts the
- * oldest trash (expired first), and one larger than it alone is refused and
- * deletes nothing. A file is renamed
+ * `MELETE_TRASH_MAX_MB`; once a delete has moved something into it and it
+ * holds more, the oldest trash goes (expired first), and a delete larger than
+ * it alone is refused and deletes nothing. A delete that moves nothing takes
+ * no earlier delete out. A file is renamed
  * first and checked after, in the trash, so nothing can change it between
  * the check and the delete; one that is not what was expected goes back to
  * its name. Restoring moves every file back to its own name, never over a
@@ -100,7 +101,7 @@ type Manifest = {
 
 export type Trashed = {
   trash_id: string | null;
-  /** Earlier deletes taken out of the trash to make room for this one. */
+  /** Earlier deletes taken out of the trash to make room for this one, once it had moved something. */
   evicted: string[];
   restorable_until: string;
   moved: string[];
@@ -239,7 +240,7 @@ async function moveToTrashNow(
   const moved: { path: string; item: string }[] = [];
   const kept: { path: string; reason: string }[] = [];
   const evicted: string[] = [];
-  // Room first: what this delete would add, against what the trash may hold.
+  // A delete larger than the whole trash is refused before anything moves.
   const maxBytes = options.maxBytes ?? DEFAULT_TRASH_MAX_BYTES;
   let incoming = 0;
   const sizing = heldDirectories(place.base);
@@ -263,26 +264,6 @@ async function moveToTrashNow(
       moved: [],
       kept: entries.map((entry) => ({ path: entry.path, reason })),
     };
-  }
-  const held = await trashUsage(place);
-  let used = held.reduce((sum, folder) => sum + folder.bytes, 0);
-  if (used + incoming > maxBytes) {
-    const oldest = [...held].sort((a, b) => {
-      const expiredA = a.expires <= now.getTime() ? 0 : 1;
-      const expiredB = b.expires <= now.getTime() ? 0 : 1;
-      return expiredA - expiredB || madeAt(a.id) - madeAt(b.id);
-    });
-    const job = await holdBeneath(place.base, place.trash);
-    try {
-      for (const folder of oldest) {
-        if (used + incoming <= maxBytes) break;
-        await removeIn(job, folder.id);
-        used -= folder.bytes;
-        evicted.push(folder.id);
-      }
-    } finally {
-      await job.close();
-    }
   }
   const trash = await holdBeneath(place.base, [...place.trash, id, ITEMS], true);
   const origin = heldDirectories(place.base);
@@ -386,6 +367,7 @@ async function moveToTrashNow(
     } finally {
       await directory.close();
     }
+    evicted.push(...(await makeRoom(place, id, maxBytes, now)));
     return {
       trash_id: id,
       evicted,
@@ -397,6 +379,48 @@ async function moveToTrashNow(
     await origin.close();
     await trash.close();
   }
+}
+
+/**
+ * Take the oldest deletes (expired first) out of this trash until it holds no
+ * more than `maxBytes`, never `keep`, the delete just made. Answers what went.
+ * The delete is done by then: a trash that cannot be trimmed now stays over
+ * its size until its deletes expire.
+ */
+async function makeRoom(
+  place: TrashPlace,
+  keep: string,
+  maxBytes: number,
+  now: Date,
+): Promise<string[]> {
+  const evicted: string[] = [];
+  if (!Number.isFinite(maxBytes)) return evicted;
+  try {
+    const held = await trashUsage(place);
+    let used = held.reduce((sum, folder) => sum + folder.bytes, 0);
+    if (used <= maxBytes) return evicted;
+    const oldest = held
+      .filter((folder) => folder.id !== keep)
+      .sort((a, b) => {
+        const expiredA = a.expires <= now.getTime() ? 0 : 1;
+        const expiredB = b.expires <= now.getTime() ? 0 : 1;
+        return expiredA - expiredB || madeAt(a.id) - madeAt(b.id);
+      });
+    const job = await holdBeneath(place.base, place.trash);
+    try {
+      for (const folder of oldest) {
+        if (used <= maxBytes) break;
+        await removeIn(job, folder.id);
+        used -= folder.bytes;
+        evicted.push(folder.id);
+      }
+    } finally {
+      await job.close();
+    }
+  } catch {
+    // What went before the failure is still reported.
+  }
+  return evicted;
 }
 
 async function readManifest(place: TrashPlace, id: string): Promise<Manifest | null> {
