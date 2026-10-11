@@ -483,4 +483,38 @@ withDb('a detail is kept with the someone it is about', () => {
       await store.sql`select reason from memory_rejections where work_id = ${batch.work.id}`;
     expect(refused.map((row) => row.reason)).toEqual(['blocked_by_person', 'blocked_by_person']);
   });
+
+  test('a block saved under one run of words, "person.peanut_allergy", still holds', async () => {
+    const scope = await createScope(store);
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_peanut_run', ${scope.spaceId}, 'person.peanut_allergy', null, 'Peanut allergy'),
+      ('mb_aisle_run', ${scope.spaceId}, 'person.aisle_seat', null, 'Aisle seat'),
+      ('mb_sam_run', ${scope.spaceId}, 'person.sam_city', null, 'Sam city'),
+      ('mb_shellfish_run', ${scope.spaceId}, 'person.shellfish_allergy', null, 'Shellfish allergy')`;
+    const batch = await said(
+      scope,
+      'I am allergic to peanuts. Aisle seats only on flights. I love peanut butter cookies. I live in the same city as Sam. I am allergic to sesame.',
+    );
+    const result = await commitExtraction(store.sql, scope, batch, {
+      proposals: [
+        add(batch, 'health.allergy', 'allergic to peanuts', 'Allergic to peanuts'),
+        add(batch, 'travel.seat', 'Aisle seats only on flights', 'Aisle seats only on flights', {
+          kind: 'preference',
+        }),
+        add(batch, 'food.likes', 'I love peanut butter cookies', 'Loves peanut butter cookies'),
+        // Sam's city was blocked, not the person's: Sam is named here.
+        add(batch, 'home.city', 'live in the same city as Sam', 'Lives in the same city as Sam'),
+        add(batch, 'health.allergy.sesame', 'allergic to sesame', 'Allergic to sesame'),
+      ],
+    });
+    expect(result.status).toBe('committed');
+    expect((await heldNow(scope)).map(([subject]) => subject)).toEqual([
+      'food.likes',
+      'health.allergy.sesame',
+      'home.city',
+    ]);
+    const refused =
+      await store.sql`select reason from memory_rejections where work_id = ${batch.work.id}`;
+    expect(refused.map((row) => row.reason)).toEqual(['blocked_by_person', 'blocked_by_person']);
+  });
 });

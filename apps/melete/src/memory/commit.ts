@@ -34,6 +34,7 @@ import {
   GENERIC_HEADS,
   memberSubject,
   olderOwnSubjects,
+  ownTopicRun,
   PERSON_HEADS,
   relatedSubject,
   SELF,
@@ -203,8 +204,10 @@ const TOPIC_WORDS = detailWords([...TOPICS].join(' '));
  * blocked subject is about is in the new subject or its sentence. One word
  * saying what kind of detail it was may be missing when at least two others
  * are there: a block on person.preference.flights.aisle_seat holds for
- * "Always book aisle seats" under travel.seat. A shellfish allergy, someone
- * else's peanut allergy, or "Loves peanut butter" is not blocked by it.
+ * "Always book aisle seats" under travel.seat. A block on
+ * person.peanut_allergy holds for "Allergic to peanuts" under health.allergy.
+ * A shellfish allergy, someone else's peanut allergy, or "Loves peanut
+ * butter" is not blocked by it.
  */
 function blockedUnderOlderSubject(
   blocked: { domains: Set<string> },
@@ -213,7 +216,7 @@ function blockedUnderOlderSubject(
   if (whoseDetail(proposal.domain_key, proposal.content).kind !== 'self') return false;
   const said = new Set([...subjectWords(proposal.domain_key), ...detailWords(proposal.content)]);
   return [...blocked.domains].some((domain) => {
-    if (!olderOwnSubject(domain)) return false;
+    if (!olderOwnSubject(domain) && !ownTopicRun(domain, proposal.content)) return false;
     const words = [...subjectWords(domain)];
     const missing = words.filter((word) => !said.has(word));
     if (!words.length) return false;

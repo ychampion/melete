@@ -14,7 +14,7 @@ import {
   readExtractionReply,
   sameDetail,
 } from './extract.ts';
-import { twoPeople, whoseDetail } from './labels.ts';
+import { ownTopicRun, twoPeople, whoseDetail } from './labels.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -746,5 +746,18 @@ describe('people of one name, and words that only look like names', () => {
     expect(whoseDetail('person.owner.phone', "The café owner's number is 555 0101").kind).toBe(
       'other',
     );
+  });
+
+  test('a subject of one run of words that says what kind of detail it is names no one', () => {
+    expect(ownTopicRun('person.peanut_allergy', 'Allergic to peanuts')).toBe(true);
+    expect(ownTopicRun('contact.aisle_seat', 'Aisle seats only')).toBe(true);
+    // A name in the run, written as one in the sentence, is someone.
+    expect(ownTopicRun('person.sam_city', 'Lives in the same city as Sam')).toBe(false);
+    // No word of it says what kind of detail it is: it may be a name.
+    expect(ownTopicRun('person.maya_lena', 'Allergic to peanuts')).toBe(false);
+    expect(ownTopicRun('person.vegetarian', 'Vegetarian')).toBe(false);
+    // Only a run directly under a person heading.
+    expect(ownTopicRun('person.sam_city.notes', 'Lives in Lisbon')).toBe(false);
+    expect(ownTopicRun('travel.aisle_seat', 'Aisle seats only')).toBe(false);
   });
 });

@@ -234,6 +234,21 @@ function names(text: string, who: string): boolean {
 }
 
 /**
+ * A subject an older extraction gave one of the person's own details as one
+ * run of words under a person heading, such as "person.peanut_allergy": a
+ * word of it says what kind of detail it is ("allergy"), and the sentence it
+ * is compared with names no one by its other words. Read alone, as
+ * `whoseDetail` reads it, it would be someone called "peanut allergy".
+ */
+export function ownTopicRun(domainKey: string, text: string): boolean {
+  const [head = '', run = '', ...rest] = domainKey.split('.');
+  if (rest.length || !PERSON_HEADS.has(head)) return false;
+  const words = textWords(run);
+  if (words.length < 2 || !words.some((word) => TOPICS.has(word))) return false;
+  return words.every((word) => TOPICS.has(word) || !names(text, word));
+}
+
+/**
  * Whether a detail saved under "owner" is about the owner of something,
  * someone else: "The owner of my flat lives upstairs", "The café owner's
  * number". The person themself is the owner of their memory, and older
