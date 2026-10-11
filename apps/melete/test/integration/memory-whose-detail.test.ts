@@ -209,7 +209,7 @@ withDb('a detail is kept with the someone it is about', () => {
       ['self.diet', 'Vegan', bob, 1, 1],
     ]);
 
-    // A change Bob proposes to Alice's city, as a reviewed change saved
+    // A change Bob proposes to Alice's city, as a change saved
     // before this, is refused, and her city stays as she said it.
     const moved = await memberSaid(scope, bob, 'I moved to Delhi.');
     expect(moved.claims.map((claim) => claim.domain_key)).not.toContain('home.city');
