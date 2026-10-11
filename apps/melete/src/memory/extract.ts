@@ -368,14 +368,15 @@ const OWN_ABOUT = new Set([
  * said the detail is about them and the subject names a topic, not someone
  * (see `whoseDetail`). It is filed under `self.` with what it is about. A
  * subject naming someone, however written ("maya", "Sam"), a relation
- * ("landlord"), or a detail the model said is about someone they know is
- * never moved.
+ * ("landlord"), the owner of something ("The owner of my flat lives
+ * upstairs"), or a detail the model said is about someone they know is never
+ * moved.
  */
-export function ownSubject(domainKey: string, about: string | null): string {
+export function ownSubject(domainKey: string, about: string | null, content?: string): string {
   const parts = domainKey.split('.');
   const [head = '', subject = ''] = parts;
   if (!PERSON_HEADS.has(head) || about === 'someone_they_know') return domainKey;
-  const whose = whoseDetail(domainKey);
+  const whose = whoseDetail(domainKey, content);
   const own =
     whose.kind === 'self' || (whose.kind === 'unknown' && about !== null && OWN_ABOUT.has(about));
   if (!own) return domainKey;
@@ -402,7 +403,7 @@ export function fileOwnDetails(
       held.has(proposal.domain_key)
     )
       return proposal;
-    const subject = ownSubject(proposal.domain_key, about[index] ?? null);
+    const subject = ownSubject(proposal.domain_key, about[index] ?? null, proposal.content);
     return subject === proposal.domain_key ? proposal : { ...proposal, domain_key: subject };
   });
 }
@@ -463,9 +464,13 @@ export function mergeIntoHeld(
     if (proposal.op !== 'add') return proposal;
     const skip: ExtractionProposal = { op: 'no-op', sources: proposal.sources };
     const keyed = typeof (proposal as { key?: unknown }).key === 'string';
-    const whose = whoseDetail(proposal.domain_key);
+    const whose = whoseDetail(proposal.domain_key, proposal.content);
     /** Whether a held or earlier detail says this one again, about the same someone. */
-    const saysAgain = (domainKey: string, content: string, other = whoseDetail(domainKey)) =>
+    const saysAgain = (
+      domainKey: string,
+      content: string,
+      other = whoseDetail(domainKey, content),
+    ) =>
       sameDetail(content, proposal.content) && sameWhose(other, content, whose, proposal.content);
     if (proposal.kind === 'exception' || proposal.kind === 'historical') {
       // A temporary exception keeps its own subject, apart from the lasting
