@@ -44,8 +44,19 @@ export const QUEUES = {
  * Queues whose workers are woken by notices instead of polling (jobs/quiet.ts).
  * Their work arrives through the queue alone, so a notice or the due-job waker
  * always reaches it. Their workers start with `workQuiet`.
+ *
+ * An attempt's wake is sent in the transaction that makes it due, and its
+ * notice goes out when that commits; a wake due later (a timer, a scheduled
+ * start) is the waker's. A job whose wake never reached the queue is the
+ * recovery scan's, which is itself sent on its schedule and woken the same way.
  */
 export const QUIET_QUEUES: readonly string[] = [
+  QUEUES.attempt,
+  QUEUES.background,
+  QUEUES.quiet,
+  QUEUES.legacyAttempt,
+  QUEUES.recoveryScan,
+  QUEUES.pushDispatch,
   QUEUES.triggerPoll,
   QUEUES.triggerSchedule,
   QUEUES.triggerScan,
@@ -133,7 +144,14 @@ export const queueCreatesSchema = (env: { MELETE_EFFECTS_DATABASE_URL?: string |
  */
 export async function startQueue(
   connectionString: string,
-  { createSchema = true }: { createSchema?: boolean } = {},
+  {
+    createSchema = true,
+    dueScanMs,
+  }: {
+    createSchema?: boolean;
+    /** How long the due-job waker waits, at most, between looks (jobs/quiet.ts). */
+    dueScanMs?: number;
+  } = {},
 ): Promise<QueueHandle> {
   const boss = new PgBoss({
     ...queueConnection(connectionString),
@@ -155,7 +173,7 @@ export async function startQueue(
       await boss.createQueue(queue);
     }
     for (const queue of QUIET_QUEUES) await quietQueue(boss, queue);
-    waker = startDueWaker(boss);
+    waker = startDueWaker(boss, dueScanMs === undefined ? {} : { scanMs: dueScanMs });
   } catch (error) {
     await boss.stop({ graceful: false });
     throw error;
