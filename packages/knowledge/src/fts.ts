@@ -45,11 +45,16 @@ export type QueryOptions = {
 };
 
 /**
- * Bumped whenever the columns change. An index file written by an older build
- * is thrown away and rebuilt rather than migrated: it is derived from the
- * Markdown, so the cheapest correct thing to do is start again.
+ * Bumped whenever the columns change, or when an older file may hold something
+ * it should not. An index file written by an older build is thrown away and
+ * rebuilt rather than migrated: it is derived from the Markdown, so the
+ * cheapest correct thing to do is start again.
+ *
+ * Version 4 is the first that erases a removed record's words from the file
+ * itself. A version 3 file can still hold the words of anything forgotten or
+ * deleted while it was in use, so it is wiped, not just emptied.
  */
-const INDEX_SCHEMA_VERSION = 3;
+const INDEX_SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS record (
@@ -79,6 +84,52 @@ DROP TABLE IF EXISTS record_fts;
 DROP TABLE IF EXISTS meta;
 `;
 
+const userVersion = (db: Database): number =>
+  db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
+
+/**
+ * Wipe a file written by an older build. Dropping the tables zeroes their pages,
+ * because secure_delete is on by now; VACUUM then rewrites the file, which
+ * clears the pages freed before that, and those still hold old text.
+ *
+ * Two processes can open the same old file at once. The version is checked
+ * again under the write lock, so a file another process has already brought up
+ * to date, and perhaps refilled, is left alone. It is written only after VACUUM,
+ * so a wipe that is cut short runs again on the next open.
+ */
+function wipeOlderIndex(db: Database): void {
+  const dropped = db
+    .transaction(() => {
+      if (userVersion(db) === INDEX_SCHEMA_VERSION) return false;
+      db.run(DROP);
+      return true;
+    })
+    .immediate();
+  if (!dropped) return;
+  db.run('VACUUM');
+  db.run(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
+}
+
+/**
+ * Turn on FTS5's secure-delete, which takes a deleted record's words out of the
+ * segments that hold them instead of leaving them there until a later merge.
+ * The setting is stored with the table, so this writes only once. SQLite before
+ * 3.44 does not have it; the index then merges its segments after a removal
+ * instead, which costs more on a large space but leaves nothing behind either.
+ */
+function eraseTermsOnDelete(db: Database): boolean {
+  const row = db
+    .query<{ v: number }, []>("SELECT v FROM record_fts_config WHERE k = 'secure-delete'")
+    .get();
+  if (row?.v === 1) return true;
+  try {
+    db.run("INSERT INTO record_fts (record_fts, rank) VALUES ('secure-delete', 1)");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Tags are stored space-delimited and space-padded, so a filter is a whole-word match. */
 const packTags = (tags: readonly string[]): string =>
   tags.length === 0 ? ' ' : ` ${tags.join(' ')} `;
@@ -101,6 +152,8 @@ export class SpaceIndex {
     private readonly db: Database,
     /** The one space this handle can ever see. */
     readonly space: string,
+    /** Whether FTS5 erases a removed record's words itself; see `eraseTermsOnDelete`. */
+    private erasesTerms: boolean,
   ) {}
 
   /**
@@ -119,14 +172,17 @@ export class SpaceIndex {
   }
 
   private static attach(db: Database, space: string): SpaceIndex {
+    // Another process may hold the write lock for a moment; wait rather than fail.
+    db.run('PRAGMA busy_timeout = 5000');
     db.run('PRAGMA journal_mode = WAL');
-    const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
-    if ((row?.user_version ?? 0) !== INDEX_SCHEMA_VERSION) {
-      db.run(DROP);
-      db.run(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
-    }
+    // A deleted row is overwritten with zeros, not left in the file as free space.
+    db.run('PRAGMA secure_delete = ON');
+    const wiped = userVersion(db) !== INDEX_SCHEMA_VERSION;
+    if (wiped) wipeOlderIndex(db);
     db.run(SCHEMA);
-    return new SpaceIndex(db, space);
+    const index = new SpaceIndex(db, space, eraseTermsOnDelete(db));
+    if (wiped) index.flush();
+    return index;
   }
 
   /**
@@ -139,11 +195,15 @@ export class SpaceIndex {
    */
   rebuild(records: readonly IndexedRecord[]): void {
     this.db.transaction(() => {
-      this.db.run('DELETE FROM record');
-      this.db.run('DELETE FROM record_fts');
-      this.db.run('DELETE FROM meta');
+      // The tables are dropped rather than emptied row by row. Their pages are
+      // zeroed either way, and FTS5's secure-delete makes a row-by-row delete
+      // of a large space take minutes.
+      this.db.run(DROP);
+      this.db.run(SCHEMA);
+      this.erasesTerms = eraseTermsOnDelete(this.db);
       for (const record of records) this.insert(record);
     })();
+    this.flush();
   }
 
   /** What the files looked like when this index was last known to match them. */
@@ -163,19 +223,21 @@ export class SpaceIndex {
   }
 
   upsert(record: IndexedRecord): void {
-    this.db.transaction(() => {
-      this.deleteRows(record.id);
+    const replaced = this.db.transaction(() => {
+      const removed = this.deleteRows(record.id);
       this.insert(record);
+      return removed;
     })();
+    if (replaced) this.afterRemoval();
   }
 
   /**
    * Remove a record from the index. Retraction and hard deletion both call
    * this, which is why retrieval cannot return a retracted record after a
-   * restart: the row is gone, not filtered.
+   * restart: the row is gone, not filtered. Its words go from the file too.
    */
   remove(id: string): void {
-    this.db.transaction(() => this.deleteRows(id))();
+    if (this.db.transaction(() => this.deleteRows(id))()) this.afterRemoval();
   }
 
   /** Search this space. There is no parameter that could reach another one. */
@@ -253,9 +315,37 @@ export class SpaceIndex {
     this.db.close();
   }
 
-  private deleteRows(id: string): void {
-    this.db.run('DELETE FROM record WHERE id = ?', [id]);
-    this.db.run('DELETE FROM record_fts WHERE id = ?', [id]);
+  /** Whether there was anything to delete. */
+  private deleteRows(id: string): boolean {
+    const records = this.db.run('DELETE FROM record WHERE id = ?', [id]).changes;
+    const documents = this.db.run('DELETE FROM record_fts WHERE id = ?', [id]).changes;
+    return records + documents > 0;
+  }
+
+  /**
+   * Once words have left the index, make sure no copy of them is left in the
+   * file. First the segments are merged when FTS5 could not erase the words
+   * itself. Then VACUUM: secure_delete zeroes a row where it lies, but when
+   * SQLite moves rows between pages it leaves older copies in the unused part
+   * of a page, and only rewriting the file from what is live clears those.
+   * Last, the change goes into the file and the write-ahead log, which still
+   * holds the pages as they were, is emptied.
+   *
+   * VACUUM costs time in proportion to the index, under a second for tens of
+   * thousands of records, and this runs only when something is taken out.
+   */
+  private afterRemoval(): void {
+    if (!this.erasesTerms) this.db.run("INSERT INTO record_fts (record_fts) VALUES ('optimize')");
+    this.db.run('VACUUM');
+    this.flush();
+  }
+
+  /**
+   * Copy the write-ahead log into the file and truncate it. Closing the last
+   * handle does the same; this covers a handle another request still holds.
+   */
+  private flush(): void {
+    this.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
   }
 
   /**
