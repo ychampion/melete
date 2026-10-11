@@ -28,7 +28,7 @@
  */
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Sql } from 'postgres';
+import type { PendingQuery, Row, Sql } from 'postgres';
 import type { ZipEntry } from './zip.ts';
 
 export type AccountExportDeps = {
@@ -92,7 +92,15 @@ here. Chats and files members keep to themselves in your room are theirs, and
 are not.
 `;
 
-type Table = { name: string; columns: string[]; spaceKeyed: boolean };
+/**
+ * A table an export reads: the columns a person may take with them, and the
+ * columns that order its rows one after another (its primary key), by which
+ * it is read a page at a time.
+ */
+type Table = { name: string; columns: string[]; key: string[]; spaceKeyed: boolean };
+
+/** Rows read in one go. Each page is its own short query, so a slow download holds no connection. */
+const PAGE_ROWS = 200;
 
 /** The tables an export reads, with the columns a person may take with them. */
 async function readableTables(sql: Sql): Promise<Table[]> {
@@ -103,6 +111,17 @@ async function readableTables(sql: Sql): Promise<Table[]> {
       on t.table_schema = c.table_schema and t.table_name = c.table_name
     where c.table_schema = 'public' and t.table_type = 'BASE TABLE'
     order by c.table_name, c.ordinal_position`;
+  const keyRows = await sql<{ table_name: string; column_name: string }[]>`
+    select k.table_name, k.column_name
+    from information_schema.table_constraints c
+    join information_schema.key_column_usage k
+      on k.constraint_schema = c.constraint_schema and k.constraint_name = c.constraint_name
+        and k.table_name = c.table_name
+    where c.table_schema = 'public' and c.constraint_type = 'PRIMARY KEY'
+    order by k.table_name, k.ordinal_position`;
+  const keys = new Map<string, string[]>();
+  for (const row of keyRows)
+    keys.set(row.table_name, [...(keys.get(row.table_name) ?? []), row.column_name]);
   const tables = new Map<string, { all: string[]; kept: string[] }>();
   for (const row of rows) {
     const entry = tables.get(row.table_name) ?? { all: [], kept: [] };
@@ -116,7 +135,9 @@ async function readableTables(sql: Sql): Promise<Table[]> {
     if (WITHHELD_TABLES.has(name) || name.startsWith('__')) continue;
     const spaceKeyed = entry.all.includes('space_id');
     if (!spaceKeyed && !entry.all.includes('principal_id')) continue;
-    if (entry.kept.length) out.push({ name, columns: entry.kept, spaceKeyed });
+    // A table with no primary key is read in the order its rows are stored.
+    if (entry.kept.length)
+      out.push({ name, columns: entry.kept, key: keys.get(name) ?? ['ctid'], spaceKeyed });
   }
   return out;
 }
@@ -409,8 +430,47 @@ async function tryRows(
   } catch {
     return 'denied';
   }
-  const ordered = table.columns.includes('id') ? sql`order by id` : sql``;
-  const cursor = sql`select ${sql(table.columns)} from ${sql(table.name)}
-    where ${sql(key)} = ${value} ${ordered}`.cursor(200);
-  return rowsAsJson(cursor);
+  return rowsAsJson(pages(sql, table, key, value));
+}
+
+/**
+ * A table's rows for one key, a page at a time in the order of its primary
+ * key. Each page is a query of its own that ends before the page is handed
+ * on, so however slowly the archive is read, no database connection waits
+ * on it. The next page starts after the last key read, which is carried as
+ * text and read back as the column's own type, so nothing is lost to
+ * rounding. Key columns the export leaves out stay out.
+ */
+async function* pages(
+  sql: Sql,
+  table: Table,
+  key: 'space_id' | 'principal_id',
+  value: string,
+): AsyncGenerator<readonly Record<string, unknown>[]> {
+  const keyed = table.key.map((column, index) => ({ column, alias: `__export_key_${index}` }));
+  /** Fragments joined by commas: each one a column name, or a value as a parameter. */
+  const list = (parts: readonly PendingQuery<Row[]>[]) =>
+    parts.reduce((joined, part) => sql`${joined}, ${part}`);
+  const order = list(table.key.map((column) => sql`${sql(column)}`));
+  const selected = list([
+    ...table.columns.map((column) => sql`${sql(column)}`),
+    ...keyed.map(({ column, alias }) => sql`${sql(column)}::text as ${sql(alias)}`),
+  ]);
+  let after: string[] | null = null;
+  for (;;) {
+    const from: string[] | null = after;
+    const rows: Record<string, unknown>[] = await sql`select ${selected} from ${sql(table.name)}
+      where ${sql(key)} = ${value}
+        ${from ? sql`and (${order}) > (${list(from.map((text) => sql`${text}`))})` : sql``}
+      order by ${order} limit ${PAGE_ROWS}`;
+    if (!rows.length) return;
+    const last = rows.at(-1) as Record<string, unknown>;
+    after = keyed.map(({ alias }) => String(last[alias]));
+    yield rows.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const column of table.columns) out[column] = row[column];
+      return out;
+    });
+    if (rows.length < PAGE_ROWS) return;
+  }
 }
