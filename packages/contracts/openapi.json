@@ -2983,7 +2983,7 @@
           "spaces"
         ],
         "summary": "Delete this account and everything it owns",
-        "description": "The account email must be typed exactly. The account stops working at once: its email, name, password and passkey are wiped and every session ends. It leaves the rooms others own, and each space it owns is removed in the background, as removing a space is. The account that set Melete up cannot be deleted.",
+        "description": "The account email must be typed exactly. The account stops working at once: its email, name, password and passkey are wiped and every session ends. It leaves the rooms others own, and each space it owns is removed in the background, as removing a space is. Responses it sent to apps in other people’s spaces stay with those apps, no longer naming it. The account that set Melete up cannot be deleted.",
         "requestBody": {
           "content": {
             "application/json": {
