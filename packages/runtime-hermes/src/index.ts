@@ -5,7 +5,9 @@
  * the client and the adapter are the whole of it.
  */
 export * from './adapter.ts';
+export * from './claims.ts';
 export * from './client.ts';
 export * from './engine-config.ts';
 export * from './instructions.ts';
+export * from './narration.ts';
 export * from './version.ts';

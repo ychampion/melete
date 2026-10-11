@@ -19,8 +19,11 @@ import {
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
   BACKGROUND_WORDS,
+  CALENDAR_DAYS,
+  calendarStrip,
   DONE_WORDS,
   DUE_NOW_WORDS,
+  HARD_LIMITS,
   instructionTokens,
   MEMORY_WORDS,
   measureRenderedInput,
@@ -29,7 +32,9 @@ import {
   PROGRESS_NOTES,
   renderInput,
   renderInstructions,
+  renderNow,
   renderSoul,
+  SOURCE_QUALITY,
 } from './instructions.ts';
 import { UNPROPOSED_CONTINUATION } from './proposal.ts';
 
@@ -81,6 +86,11 @@ const bundle: AttemptBundle = {
 };
 
 const client = new HermesClient({ baseUrl: 'http://runtime:8790/', token: 'surrogate' });
+
+function required<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) throw new Error('fixture unavailable');
+  return value;
+}
 
 describe('request building', () => {
   test('start posts to /v1/runs with the surrogate token', () => {
@@ -242,6 +252,83 @@ describe('context assembly', () => {
       { role: 'user', content: 'Can you book Friday?', at: '2026-09-11T00:00:00Z' },
     ];
     expect(renderInput(room)).toContain('## From the person\n\nCan you book Friday?');
+  });
+
+  test('the moment is said in the person’s zone, with their likely city, in the volatile input', () => {
+    const grounded = structuredClone(bundle);
+    grounded.local_now = {
+      at: '2026-10-10T21:05:00.000Z',
+      time_zone: 'America/Los_Angeles',
+      city: 'Los Angeles',
+      zone_mismatch: null,
+    };
+    const input = renderInput(grounded);
+    expect(input).toContain(
+      '## Now\n\nIt is Saturday, October 10, 2026 at 2:05 PM for the person (America/Los_Angeles).',
+    );
+    expect(input).toContain('probably in or near Los Angeles');
+    expect(input.indexOf('## Now')).toBeLessThan(input.indexOf('## From the person'));
+    expect(renderInstructions(grounded)).not.toContain('2:05 PM');
+    expect(renderNow(undefined)).toEqual([]);
+    expect(renderNow({ ...required(grounded.local_now), time_zone: 'Mars/Olympus' })).toEqual([]);
+    const told = renderNow({
+      ...required(grounded.local_now),
+      city: null,
+      zone_mismatch: { profile: 'Asia/Kolkata', device: 'America/Los_Angeles', used: 'device' },
+    }).join('\n');
+    expect(told).not.toContain('probably in or near');
+    expect(told).toContain(
+      "Their profile says Asia/Kolkata but their device is set to America/Los_Angeles. Times here use their device's America/Los_Angeles, not their profile's Asia/Kolkata.",
+    );
+  });
+
+  test('two weeks of dates and weekdays come with the moment, counted in the person’s zone', () => {
+    // 05:30 UTC on 14 Nov is still the 13th in Los Angeles, and already the 14th in Kolkata.
+    const at = '2026-11-14T05:30:00.000Z';
+    const pacific = calendarStrip(at, 'America/Los_Angeles', CALENDAR_DAYS);
+    expect(pacific).toHaveLength(14);
+    expect(pacific[0]).toBe('Fri 13 Nov 2026 (today)');
+    expect(pacific[1]).toBe('Sat 14 Nov 2026');
+    expect(calendarStrip(at, 'Asia/Kolkata', 2)).toEqual([
+      'Sat 14 Nov 2026 (today)',
+      'Sun 15 Nov 2026',
+    ]);
+    // A clock change neither skips nor repeats a day.
+    expect(calendarStrip('2026-10-31T12:00:00.000Z', 'Europe/London', 3)).toEqual([
+      'Sat 31 Oct 2026 (today)',
+      'Sun 1 Nov 2026',
+      'Mon 2 Nov 2026',
+    ]);
+    const lines = renderNow({
+      at,
+      time_zone: 'Asia/Kolkata',
+      city: 'Kolkata',
+      zone_mismatch: null,
+    });
+    expect(lines.join('\n')).toContain(
+      'The next two weeks: Sat 14 Nov 2026 (today), Sun 15 Nov 2026,',
+    );
+    expect(lines.join('\n')).toContain('do not work them out or run a clock command');
+  });
+
+  test('a remembered allergy or dietary rule is read as a hard constraint', () => {
+    const fed = structuredClone(bundle);
+    fed.knowledge = [
+      {
+        ...required(bundle.knowledge[0]),
+        excerpt: 'Allergic to peanuts.',
+      },
+    ];
+    const input = renderInput(fed);
+    expect(input).toContain(HARD_LIMITS);
+    expect(input.indexOf(HARD_LIMITS)).toBeLessThan(input.indexOf('Allergic to peanuts.'));
+  });
+
+  test('the instructions ask for the original source and for each link once', () => {
+    const instructions = renderInstructions(bundle);
+    for (const line of SOURCE_QUALITY) expect(instructions).toContain(line);
+    expect(instructions).toContain('Prefer the authoritative or original source');
+    expect(instructions).toContain('never repeat a link');
   });
 
   test('earlier messages come summarised before the conversation, and a gap is never silent', () => {
@@ -480,6 +567,7 @@ describe('context assembly', () => {
     expect(text).toContain(
       'Say how you did something (in your browser, on the desktop, with a command) only when\nthat is how you did it; otherwise leave the method out.',
     );
+    expect(text).toContain('to the person they are "my browser" and "my computer", never');
   });
 
   test('a conversation offered background work is told when to start it, and others are not', () => {

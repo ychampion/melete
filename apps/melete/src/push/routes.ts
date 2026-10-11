@@ -15,6 +15,9 @@ export function mountPush(app: Hono, service: PushService) {
   app.delete('/push/subscriptions/:id', async (c) =>
     c.json({ subscription: await service.remove(c.get('owner').id, c.req.param('id')) }),
   );
+  app.post('/push/focus', async (c) =>
+    c.json({ focused_at: (await service.focus(c.get('owner').id)).toISOString() }),
+  );
   app.get('/push/settings', async (c) =>
     c.json({ settings: await service.settings(c.get('owner').id) }),
   );

@@ -231,6 +231,76 @@ export function linksFor(
 }
 
 /**
+ * One address in the form two spellings of the same page share: the host in
+ * lower case without `www.`, no fragment, no trailing slash. Null for what is
+ * not a web address.
+ */
+function samePage(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value.replace(/%28/gi, '(').replace(/%29/gi, ')'));
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  const path = parsed.pathname.replace(/\/+$/, '');
+  return `${parsed.hostname.toLowerCase().replace(/^www\./, '')}${path}${parsed.search}`;
+}
+
+const MARKDOWN_LINK =
+  /\[([^\]\n]{1,300})\]\(\s*(https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\s*\)/g;
+const BARE_ADDRESS = /https?:\/\/[^\s<>\]()]+/g;
+/** A closing list of links, as the agent or `withVisitedLinks` writes it. */
+const LINKS_LINE = /^(\s*(?:[*_]{1,2})?(?:links?|sources?)(?:[*_]{1,2})?\s*:\s*)(.+?)\s*$/i;
+/** What may sit between two links on that line. */
+const SEPARATOR = /^[\s·•|,;–—-]*$/;
+
+/**
+ * `answer` with its closing links line holding each page once: a link to a
+ * page the answer already links above that line, or one the line already
+ * gave, is taken out, and a line left with nothing is dropped. A line that
+ * says more than links is left as it is. The same input always gives the same
+ * output.
+ */
+export function withoutRepeatedLinks(answer: string): string {
+  const lines = answer.trimEnd().split('\n');
+  const last = lines.length - 1;
+  const match = LINKS_LINE.exec(lines[last] ?? '');
+  if (!match) return answer;
+  const [, lead = '', rest = ''] = match;
+  const links = [...rest.matchAll(MARKDOWN_LINK)];
+  if (!links.length) return answer;
+  // Only links and separators: anything else is the agent's own words, kept whole.
+  let cursor = 0;
+  for (const link of links) {
+    if (!SEPARATOR.test(rest.slice(cursor, link.index))) return answer;
+    cursor = (link.index ?? 0) + link[0].length;
+  }
+  if (!SEPARATOR.test(rest.slice(cursor))) return answer;
+  const seen = new Set<string>();
+  const above = lines.slice(0, last).join('\n');
+  const addresses = [
+    ...[...above.matchAll(MARKDOWN_LINK)].map((found) => found[2] ?? ''),
+    ...[...above.matchAll(BARE_ADDRESS)].map((found) => found[0].replace(/[.,;:!?'"]+$/, '')),
+  ];
+  for (const address of addresses) {
+    const page = samePage(address);
+    if (page) seen.add(page);
+  }
+  const kept: string[] = [];
+  for (const link of links) {
+    const page = samePage(link[2] ?? '');
+    if (page && seen.has(page)) continue;
+    if (page) seen.add(page);
+    kept.push(link[0]);
+  }
+  if (kept.length === links.length) return answer;
+  const body = lines.slice(0, last).join('\n').trimEnd();
+  if (!kept.length) return body;
+  return `${body}${body ? '\n\n' : ''}${lead}${kept.join(' · ')}`;
+}
+
+/**
  * `answer` with a closing "Links:" line when it names results from pages the
  * turn opened and links none of them; otherwise `answer` unchanged.
  */

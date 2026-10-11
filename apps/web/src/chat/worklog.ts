@@ -8,6 +8,7 @@ import {
   answerOf,
   blockId,
   type FlowEntry,
+  type SteerState,
   type TranscriptTurn,
   type TurnBlock,
 } from '../experience/reduce.ts';
@@ -27,9 +28,20 @@ export type LogItem =
   | { type: 'note'; key: string; text: string }
   /** Pages the work found or read, drawn as one quiet row that opens onto their links. */
   | { type: 'sources'; key: string; cards: ResultCard[] }
-  | { type: 'block'; key: string; block: TurnBlock };
+  | { type: 'block'; key: string; block: TurnBlock }
+  /** Words the person sent while the turn ran, where they were sent. */
+  | { type: 'steer'; key: string; text: string; state: SteerState };
 
 export const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
+
+/**
+ * A line about the work under way: waiting for a free slot, a break in the
+ * stream. Lines projected before they were marked are known by their words.
+ */
+export const transientNote = (step: { text: string; transient?: true }): boolean =>
+  step.transient === true ||
+  step.text.startsWith('Waiting for a free slot') ||
+  step.text === 'Part of the answer was interrupted. The saved progress is still here.';
 
 /* ---------- edits ---------- */
 
@@ -319,10 +331,22 @@ export function logItems(turn: TranscriptTurn): LogItem[] {
           close();
           items.push({ type: 'message', key: `say-${index}`, text: step.text });
         } else if (step.type === 'note') {
+          // A line about the work under way says nothing once the turn ended.
+          if (transientNote(step) && FINISHED.includes(turn.status)) return;
           close();
           items.push({ type: 'note', key: `note-${index}`, text: step.text });
         } else if (step.type === 'action' && !toldElsewhere(turn, step, hasTools))
           add({ type: 'group', step }, `group-${index}`);
+        return;
+      }
+      case 'steer': {
+        close();
+        items.push({
+          type: 'steer',
+          key: `steer-${entry.id}`,
+          text: entry.text,
+          state: entry.state,
+        });
         return;
       }
       case 'block': {

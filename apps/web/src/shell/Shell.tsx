@@ -354,7 +354,7 @@ function Sidebar({
                 <AgentAvatar agent={agent} size={16} state={live ? 'working' : 'idle'} />
               </span>
               <span className="clamp1 grow">{chat.title}</span>
-              {chat.status === 'needs_you' ? (
+              {chat.status === 'needs_you' && !chat.waiting_until ? (
                 <span className="chat-dot" data-tone="needs" title="Waiting for you">
                   <span className="sr-only">, waiting for you</span>
                 </span>

@@ -29,6 +29,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { pendingSteers } from '../../src/jobs/steer.ts';
 import { bestExperiment, textOf, valueShown } from '../../src/runs/record.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -513,6 +514,24 @@ withDb('long work in shifts', () => {
     const reopened = await row(run.id);
     expect(reopened.state).toBe('queued');
     expect(reopened.paused).toBe(false);
+  });
+
+  test('words sent while a shift runs go to that shift, and the next one reads what it did not', async () => {
+    const run = await start({ goal: 'Steered while working' });
+    const shift = await claim(run.id);
+    const said = await request(`/runs/${run.id}/message`, 'POST', { text: 'Try the cheap one.' });
+    expect(said.status).toBe(200);
+    // Taken for the running shift, not a reason to start another.
+    expect((await row(run.id)).state).toBe('running');
+    const [pending] = await pendingSteers(required(handle).db, run.id);
+    expect(pending?.text).toBe('Try the cheap one.');
+    await required(runner).commitOutcome(shift.claims, done());
+    const next = await claim(run.id);
+    expect(next.bundle.inputs.new_user_messages.map((message) => message.content)).toContain(
+      'Try the cheap one.',
+    );
+    expect(await pendingSteers(required(handle).db, run.id)).toEqual([]);
+    await required(runner).commitOutcome(next.claims, done());
   });
 
   test('stop also ends a helper started while it was stopping', async () => {

@@ -19,8 +19,21 @@ export function waitingOn(decisions: {
 
 /** Whether a conversation waits on the person: an open decision, or a turn that asked. */
 export function isWaiting(
-  conversation: Pick<Conversation, 'id' | 'status'>,
+  conversation: Pick<Conversation, 'id' | 'status' | 'waiting_until'>,
   waiting: ReadonlySet<string>,
 ): boolean {
-  return waiting.has(conversation.id) || conversation.status === 'needs_you';
+  return (
+    waiting.has(conversation.id) ||
+    (conversation.status === 'needs_you' && !conversation.waiting_until)
+  );
+}
+
+/** "Waiting until 10:50 PM", or with the day when it is not today. */
+export function waitingUntilWords(iso: string, now = Date.now()): string {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (at.toDateString() === new Date(now).toDateString()) return `Waiting until ${time}`;
+  if (at.toDateString() === new Date(now + 86_400_000).toDateString())
+    return `Waiting until tomorrow at ${time}`;
+  return `Waiting until ${at.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${time}`;
 }

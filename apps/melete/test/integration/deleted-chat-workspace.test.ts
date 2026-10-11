@@ -98,6 +98,31 @@ withDb('a deleted chat’s workspace', () => {
     expect(await readFile(join(workRoot, job, 'notes', 'o-test-note.txt'), 'utf8')).toBe('note');
   });
 
+  test('takes the pushes about the chat with it, sent or waiting', async () => {
+    if (!db || !jobs) return;
+    const { claims } = await seedJob(db.sql);
+    const { claims: other } = await seedJob(db.sql);
+    const intent = async (jobId: string, key: string, sent: boolean) => {
+      const who = newId('own');
+      await db.sql`insert into principal (id, email) values (${who}, ${`${who}@example.com`})`;
+      await db.sql`insert into push_intent (id, principal_id, kind, title, body, because, url,
+          dedup_key, sent_at)
+        values (${newId('pint')}, ${who}, 'done', 'Done', 'Done.',
+          'Because it finished while you were away.', ${`/#/chat/${jobId}`}, ${key},
+          ${sent ? new Date().toISOString() : null}::timestamptz)`;
+    };
+    await intent(claims.job_id, `status:done:${claims.job_id}:a`, true);
+    await intent(claims.job_id, `status:done:${claims.job_id}:b`, false);
+    await intent(other.job_id, `status:done:${other.job_id}:a`, false);
+
+    await removeJobs({ jobs, sql: db.sql }, [claims.job_id]);
+
+    const left = await db.sql`select dedup_key from push_intent
+      where dedup_key like ${'status:done:%'} and (url = ${`/#/chat/${claims.job_id}`}
+        or url = ${`/#/chat/${other.job_id}`})`;
+    expect(left.map((row) => row.dedup_key)).toEqual([`status:done:${other.job_id}:a`]);
+  });
+
   test('a chat with no workspace is deleted as before', async () => {
     if (!db || !jobs) return;
     const workRoot = join(root, 'work-empty');
