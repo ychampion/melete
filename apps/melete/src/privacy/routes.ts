@@ -122,7 +122,7 @@ export async function updateSettings(
     if (!providerUrl || !(await isLocalUrl(providerUrl, router.options.resolve)))
       throw new PrivacyError(
         'model_not_local',
-        'Your model’s address is not on this machine or your network, so it can’t be marked as yours.',
+        'Your model’s address is not on the same machine or private network as Melete, so it can’t be marked as yours.',
       );
     plain.model_on_device_url = providerUrl;
   }

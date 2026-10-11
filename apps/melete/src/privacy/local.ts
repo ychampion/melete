@@ -176,7 +176,7 @@ export async function assertLocalEndpoint(
   if (verdict !== 'local')
     throw new PrivacyError(
       'local_model_not_local',
-      'A local model has to run on this machine or your own network: use a loopback or private address.',
+      'A private model has to run on the same machine or private network as Melete: use a loopback or private address.',
     );
 }
 
@@ -201,7 +201,7 @@ export async function checkLocalModel(
       message:
         verdict === 'metadata'
           ? UNREACHABLE
-          : 'That address is not on this machine or your network.',
+          : 'That address is not on the same machine or private network as Melete.',
       models: [],
     };
   try {
