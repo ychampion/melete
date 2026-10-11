@@ -290,9 +290,14 @@ revoked or replaced. Requests are limited to one per minute and five per hour
 for each account.
 
 The link opens the sign-in screen with its token in the fragment's query:
-`https://melete.example.com/#/welcome?token=…`. Read it on the sign-in page,
-remove the fragment from browser history, and post `{ token }` to
-`/signin/magic-link/consume`; the response sets the normal session cookie.
+`https://melete.example.com/#/welcome?token=…`. Mail scanners open links
+too, so opening one must not use it. Read the token on the sign-in page and
+post `{ token }` to `/signin/magic-link/check`: it spends nothing, sets no
+cookie, and answers with the account's address mostly hidden (`masked_email`,
+such as `o•••@example.com`), or 400 `invalid_signin_link` for a link that no
+longer works. Show that address with a Sign in button, and post `{ token }` to
+`/signin/magic-link/consume` only when it is pressed; the response sets the
+normal session cookie. Then remove the fragment from browser history.
 Never place the token in a query string or store it in browser persistence.
 A reset link has the same shape on `#/reset`; `POST /password-reset/check`
 says whether its token is still good before a new password is asked for.

@@ -21,6 +21,7 @@ import { statfsSync } from 'node:fs';
 import nodemailer from 'nodemailer';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
+import { smtpTransportOptions } from '../experience/account-mail.ts';
 
 export type HealthCheck = { name: string; ok: boolean; detail: string };
 export type HealthDetail = {
@@ -393,13 +394,14 @@ export function webhookSender(
   };
 }
 
+/**
+ * Sends alerts over SMTP with the account mail's connection rules: the
+ * timeouts apply, and a server elsewhere must take TLS (STARTTLS on a plain
+ * `smtp://` URL) unless its URL says `?requireTLS=false`.
+ */
 export function emailSender(options: { smtpUrl: string; to: string; from: string }): AlertSender {
   return async (alert) => {
-    const smtp = nodemailer.createTransport(options.smtpUrl, {
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 15_000,
-    } as never);
+    const smtp = nodemailer.createTransport(smtpTransportOptions(options.smtpUrl));
     try {
       await smtp.sendMail({
         from: options.from,

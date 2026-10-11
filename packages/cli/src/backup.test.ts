@@ -16,7 +16,7 @@ import { runDeploy } from './commands/deploy.ts';
 import { runRestore } from './commands/restore.ts';
 import type { Source } from './context.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
-import { archiveCommand, CHANGED_WHILE_READ, parseContents } from './files.ts';
+import { archiveCommand, CHANGED_WHILE_READ, parseContents, volumePresence } from './files.ts';
 import { appendHistory } from './history.ts';
 import { masterKeyFingerprint } from './master-key.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
@@ -414,6 +414,9 @@ function filesRig(
     events.push(`run ${text}`);
     const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' });
     const no = (stderr = 'no such object') => ({ code: 1, stdout: '', stderr });
+    // What the engine says for a volume it does not have; any other failure is not "absent".
+    const missing = (volume: string) =>
+      no(`Error response from daemon: get ${volume}: no such volume`);
     if (fails.some((fail) => fail(text))) return no('failed in this test');
     if (text.includes('pg_database_size')) return ok(`${40 * MB}\n`);
     if (text.includes('du -sk /data/restrictions')) return ok('12\t/data/restrictions\n');
@@ -439,13 +442,15 @@ function filesRig(
       );
     if (text.startsWith('docker volume inspect --format {{json .Labels}} ')) {
       const volume = command.at(-1) ?? '';
-      if (!volumes.has(volume)) return no();
+      if (!volumes.has(volume)) return missing(volume);
       return ok(
         `${JSON.stringify(owners.get(volume) ?? labelsOf(volume.replace(/-(work|home)$/, '')))}\n`,
       );
     }
-    if (text.startsWith('docker volume inspect'))
-      return volumes.has(command.at(-1) ?? '') ? ok(`${command.at(-1)}\n`) : no();
+    if (text.startsWith('docker volume inspect')) {
+      const volume = command.at(-1) ?? '';
+      return volumes.has(volume) ? ok(`${volume}\n`) : missing(volume);
+    }
     if (text.startsWith('docker volume rm ')) {
       volumes.delete(command.at(-1) ?? '');
       return ok();
@@ -1023,9 +1028,91 @@ describe('restoring the files', () => {
     unreadable.fails.push((text) => text.includes('/v/restrictions.jsonl'));
     expect(await runRestore(unreadable.context, [unreadable.set, '--yes'], false)).toBe(2);
     expect(unreadable.context.printed()).toMatch(
-      /fail\s+restore\.journal\s+melete_restrictions is on this machine but could not be read/,
+      /fail\s+restore\.journal\s+melete_restrictions could not be read/,
     );
     expect(changes(unreadable.events)).toEqual([]);
+  });
+
+  test("only the engine's own answer that it has no such volume counts as absent", () => {
+    const answering = (code: number, stderr: string) =>
+      testContext(temporaryDeployDir(), [], { run: () => ({ code, stdout: '', stderr }) });
+    expect(volumePresence(answering(0, ''), 'v')).toBe('present');
+    // Docker's wording, and an older engine's.
+    expect(
+      volumePresence(answering(1, 'Error response from daemon: get v: no such volume\n'), 'v'),
+    ).toBe('absent');
+    expect(volumePresence(answering(1, 'Error: No such volume: v'), 'v')).toBe('absent');
+    expect(
+      volumePresence(
+        answering(1, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.'),
+        'v',
+      ),
+    ).toEqual({
+      unreadable: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.',
+    });
+    expect(volumePresence(answering(125, ''), 'v')).toEqual({ unreadable: 'exit 125' });
+  });
+
+  test('a volume is absent only when the engine says so: any other failure to look stops the restore before it changes anything', async () => {
+    const lookFails = (volume: string) => (text: string) =>
+      text.startsWith('docker volume inspect ') && text.endsWith(` ${volume}`);
+
+    // A journal with entries is never taken for a missing one and overwritten.
+    const journal = await backedUp();
+    journal.fails.push(lookFails('melete_restrictions'));
+    expect(await runRestore(journal.context, [journal.set, '--yes'], false)).toBe(2);
+    expect(journal.context.printed()).toMatch(
+      /fail\s+restore\.journal\s+melete_restrictions could not be read \(failed in this test\)/,
+    );
+    expect(changes(journal.events)).toEqual([]);
+    expect(journal.events.some((event) => event.includes('melete:/data'))).toBe(false);
+
+    // With --keep-database, files here are never replaced on a guess that their volume is gone.
+    const kept = filesRig({ contract: { database: { external: true } } });
+    expect(await runBackup(kept.context, [], false)).toBe(0);
+    kept.events.length = 0;
+    kept.held.add('melete_artifacts');
+    kept.fails.push(lookFails('melete_artifacts'));
+    expect(await runRestore(kept.context, [kept.set, '--keep-database', '--yes'], false)).toBe(2);
+    expect(kept.context.printed()).toMatch(
+      /fail\s+restore\.keep_database_files\s+Whether melete_artifacts \(failed in this test\) is on this machine could not be read/,
+    );
+    expect(changes(kept.events)).toEqual([]);
+
+    // A computer's volume the engine could not describe is neither absent nor ours.
+    const computer = await backedUp();
+    computer.fails.push(lookFails(`${COMPUTERS[0]}-work`));
+    expect(await runRestore(computer.context, [computer.set, '--yes'], false)).toBe(2);
+    expect(computer.context.printed()).toMatch(
+      /fail\s+restore\.files\s+Whether these agent computer volumes are on this machine/,
+    );
+    expect(changes(computer.events)).toEqual([]);
+
+    // The engine's own "no such volume" still means absent: a new machine restores as before.
+    const fresh = await backedUp();
+    fresh.volumes.delete('melete_restrictions');
+    expect(await runRestore(fresh.context, [fresh.set], false)).toBe(0);
+    expect(fresh.context.printed()).toMatch(
+      /ok\s+restore\.journal\s+This machine has no journal yet/,
+    );
+
+    // Asked again while the steps run, an engine that does not answer stops them there.
+    const midway = await backedUp();
+    let asked = 0;
+    midway.fails.push((text) => {
+      if (!lookFails('melete_pgdata')(text)) return false;
+      asked += 1;
+      return true;
+    });
+    expect(await runRestore(midway.context, [midway.set, '--yes'], false)).toBe(3);
+    expect(asked).toBeGreaterThan(0);
+    expect(midway.context.printed()).toContain(
+      'could not ask the engine whether melete_pgdata is here: failed in this test',
+    );
+    expect(
+      midway.events.some((event) => event.startsWith('run docker volume rm melete_pgdata')),
+    ).toBe(false);
+    expect(midway.events.some(startsStack)).toBe(false);
   });
 
   test('--keep-database never puts the files back over files here unless --replace-files says so', async () => {
