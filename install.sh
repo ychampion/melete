@@ -397,9 +397,20 @@ env_setting() {
 }
 
 # Whether deploy/.env says MELETE_SETUP_OPEN=true: the first visitor creates
-# the owner without a code, so no code is made.
+# the owner without a code, so no code is made. The service reads only `true`
+# and `false` there and will not start on anything else, so nothing else counts.
 setup_open() {
-  [ "$(env_setting MELETE_SETUP_OPEN | tr '[:upper:]' '[:lower:]')" = true ]
+  [ "$(env_setting MELETE_SETUP_OPEN)" = true ]
+}
+
+# Say so when MELETE_SETUP_OPEN holds something the service will refuse.
+check_setup_open() {
+  local value
+  value="$(env_setting MELETE_SETUP_OPEN)"
+  case "$value" in
+    '' | true | false) ;;
+    *) say "MELETE_SETUP_OPEN in deploy/.env is \"$value\"; Melete starts only with true or false there." ;;
+  esac
 }
 
 # A file's text, or a line of text, as one line of base64; `-` for a missing file.
@@ -617,6 +628,7 @@ main() {
     # or with the template's empty line, gets a code now, said once, as a first
     # install does. A hash already there is kept, and none is made while
     # MELETE_SETUP_OPEN=true.
+    check_setup_open
     if setup_open; then
       SETUP_OPEN=1
     elif [ "$(setup_code_state)" = missing ]; then

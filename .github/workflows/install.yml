@@ -179,7 +179,7 @@ jobs:
           before="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
           # Open setup: no code is made, even with no hash.
           sed -i 's/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=/' "$env_file"
-          printf 'MELETE_SETUP_OPEN="True"\n' >> "$env_file"
+          printf 'MELETE_SETUP_OPEN=true\n' >> "$env_file"
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/open.log"
           grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
           if grep -F 'welcome?code=' "$RUNNER_TEMP/open.log"; then exit 1; fi
