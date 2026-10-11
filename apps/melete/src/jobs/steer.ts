@@ -64,6 +64,26 @@ export async function recordSteer(
   return { id: input.id, seq: first.seq, at: first.at };
 }
 
+/** A steer already recorded on this job under this id, or null. */
+export async function recordedSteer(
+  tx: Pick<Transaction, 'select'>,
+  jobId: string,
+  id: string,
+): Promise<{ id: string; seq: number; at: Date } | null> {
+  const [first] = await tx
+    .select({ seq: event.seq, at: event.createdAt })
+    .from(event)
+    .where(eq(event.dedupKey, `${jobId}:steer:${id}`));
+  return first ? { id, seq: first.seq, at: first.at } : null;
+}
+
+/**
+ * Whether a message names an agent the way a mention does: it opens with `@`,
+ * with or without a space before the name. A mention is never steered into a
+ * running turn; it waits and starts its own turn with the agent it names.
+ */
+export const opensWithMention = (text: string): boolean => text.trimStart().startsWith('@');
+
 /** The job's steers no attempt has read and no turn has carried, oldest first. */
 export async function pendingSteers(
   tx: Pick<Transaction, 'execute'>,

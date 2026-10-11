@@ -265,6 +265,46 @@ withDb('words sent while a turn runs', () => {
     expect(await pendingSteers(required(handle).db, chat.id)).toHaveLength(1);
   });
 
+  test('retried with the same key after their turn ended are the same steer, never a new turn', async () => {
+    const chat = await conversation();
+    await send(chat.id, 'Find me a keyboard.');
+    localSeq = 0;
+    const running = await claim(chat.id);
+    const steered = await send(chat.id, 'Wireless only.', 'retried-key');
+    expect(steered.steer).toBeDefined();
+    // The turn ends before reading them; they become a turn of their own, which ends too.
+    await finish(running, 'Here are three keyboards.');
+    localSeq = 0;
+    await finish(await claim(chat.id), 'Here are the wireless ones.');
+    expect(await turns(chat.id)).toHaveLength(2);
+    const retried = await send(chat.id, 'Wireless only.', 'retried-key');
+    expect(retried.receipt.id).toBe(steered.receipt.id);
+    expect(retried.steer?.id).toBe(steered.steer?.id);
+    expect(await turns(chat.id)).toHaveLength(2);
+  });
+
+  test('that name an agent are never steered, with or without a space after the @', async () => {
+    const chat = await conversation();
+    const scout = agentResponse.parse(
+      await (await request('/agents', 'POST', freshAgent())).json(),
+    ).agent;
+    await send(chat.id, 'Find me a keyboard.');
+    localSeq = 0;
+    const running = await claim(chat.id);
+    for (const text of [`@${scout.name} check the reviews too`, `@ ${scout.name} and the prices`]) {
+      const response = await request(`/conversations/${chat.id}/messages`, 'POST', { text });
+      const body = (await response.json()) as { steer?: unknown };
+      expect(body.steer).toBeUndefined();
+    }
+    expect(await pendingSteers(required(handle).db, chat.id)).toHaveLength(0);
+    // They wait for the turn to end, and are answered by the agent they name.
+    await finish(running, 'Here are three keyboards.');
+    const later = await send(chat.id, `@ ${scout.name} and the prices`);
+    expect(later.steer).toBeUndefined();
+    const last = (await turns(chat.id)).at(-1);
+    expect(last?.agentId).toBe(scout.id);
+  });
+
   test('sent after the turn ended are an ordinary next message', async () => {
     const chat = await conversation();
     await send(chat.id, 'Find me a keyboard.');

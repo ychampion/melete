@@ -41,7 +41,7 @@ import {
 } from '../principals/authority.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
-import { recordSteer } from './steer.ts';
+import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
 export type JobRow = typeof job.$inferSelect;
@@ -547,21 +547,31 @@ export class JobService {
     return this.transaction(async (tx) => {
       const row = await this.lock(tx, id);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
-      if (row.kind !== 'chat' || row.audience === 'room' || row.paused || !input.text.trim())
-        return null;
-      const speaker = requestPrincipal();
-      if (speaker) await requireJobAccess(tx, id, speaker);
-      // Only a turn that is running or about to: a conversation the broker
-      // parked refuses new words until it is settled.
-      if (row.state !== 'running' && row.state !== 'queued') return null;
-      const steer = await recordSteer(tx, row, {
-        id: input.id,
-        text: input.text,
-        principalId: speaker ?? row.principalId ?? null,
-        clientTimeZone: knownZone(input.clientTimeZone),
-      });
-      return { row, steer };
+      return this.steerWithin(tx, row, input);
     });
+  }
+
+  /** `steer`, for a job the caller has locked, inside the caller's transaction. */
+  async steerWithin(
+    tx: Transaction,
+    row: JobRow,
+    input: { id: string; text: string; clientTimeZone?: string | undefined },
+  ): Promise<{ row: JobRow; steer: { id: string; seq: number; at: Date } } | null> {
+    if (row.kind !== 'chat' || row.audience === 'room' || row.paused || !input.text.trim())
+      return null;
+    if (opensWithMention(input.text)) return null;
+    const speaker = requestPrincipal();
+    if (speaker) await requireJobAccess(tx, row.id, speaker);
+    // Only a turn that is running or about to: a conversation the broker
+    // parked refuses new words until it is settled.
+    if (row.state !== 'running' && row.state !== 'queued') return null;
+    const steer = await recordSteer(tx, row, {
+      id: input.id,
+      text: input.text,
+      principalId: speaker ?? row.principalId ?? null,
+      clientTimeZone: knownZone(input.clientTimeZone),
+    });
+    return { row, steer };
   }
 
   async cancel(id: string, reason?: string): Promise<JobRow> {

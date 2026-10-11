@@ -37,6 +37,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
+import { recordedSteer } from '../jobs/steer.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
@@ -685,36 +686,63 @@ export class ExperienceService {
       ? `chat:${createHash('sha256').update(`${spaceId}:${id}:${key}`).digest('hex')}`
       : undefined;
     // While a turn runs, plain words go to it instead of waiting for it to end.
-    // A message with files, or one that corrects an answer, starts its own turn.
-    // A retry of a message already taken as a turn replays that turn's receipt.
-    const replay = scopedKey ? await this.submissions.known(scopedKey) : false;
-    if (this.jobs && !replay && !value.attachments?.length && !value.corrects) {
-      const steered = await this.jobs.steer(id, {
-        id: scopedKey
-          ? `steer_${createHash('sha256').update(scopedKey).digest('hex').slice(0, 26)}`
-          : newId('steer'),
-        text: value.text,
-        clientTimeZone: value.time_zone,
-      });
-      if (steered) {
+    // A message with files, one that corrects an answer, or one that names an
+    // agent starts its own turn. A key is taken once, as a steer or as a turn,
+    // decided under the job's lock, and a retry replays whichever it was.
+    const maySteer = Boolean(this.jobs) && !value.attachments?.length && !value.corrects;
+    const steerInput = {
+      id: scopedKey
+        ? `steer_${createHash('sha256').update(scopedKey).digest('hex').slice(0, 26)}`
+        : newId('steer'),
+      text: value.text,
+      clientTimeZone: value.time_zone,
+    };
+    const steeredReceipt = async (
+      steered: { row: JobRow; steer: { id: string; seq: number; at: Date } },
+      fresh: boolean,
+    ) => {
+      if (fresh)
         await this.runner?.steer(id).catch((error: unknown) => {
           // Not taken now is not lost: the turn carries it when it ends.
           process.stderr.write(
             `steer: live_delivery_failed ${error instanceof Error ? error.name : 'error'}\n`,
           );
         });
-        return {
-          turn_id: steered.row.currentTurnId ?? steered.steer.id,
-          receipt: {
-            id: steered.steer.id,
-            status: 'accepted' as const,
-            received_at: steered.steer.at.toISOString(),
-          },
-          steer: { id: steered.steer.id, state: 'queued' as const },
-        };
-      }
+      return {
+        turn_id: steered.row.currentTurnId ?? steered.steer.id,
+        receipt: {
+          id: steered.steer.id,
+          status: 'accepted' as const,
+          received_at: steered.steer.at.toISOString(),
+        },
+        steer: { id: steered.steer.id, state: 'queued' as const },
+      };
+    };
+    let result: Awaited<ReturnType<SubmissionService['input']>>;
+    if (scopedKey) {
+      const jobs = this.jobs;
+      const outcome = await this.submissions.inputUnless(
+        id,
+        value,
+        scopedKey,
+        async (tx, row, known) => {
+          // Already a turn: its retry replays the turn.
+          if (known) return null;
+          // Already a steer: its retry replays the steer, wherever the turn is now.
+          const before = await recordedSteer(tx, id, steerInput.id);
+          if (before) return { steered: { row, steer: before }, fresh: false };
+          if (!maySteer || !jobs) return null;
+          const steered = await jobs.steerWithin(tx, row, steerInput);
+          return steered ? { steered, fresh: true } : null;
+        },
+      );
+      if ('other' in outcome) return steeredReceipt(outcome.other.steered, outcome.other.fresh);
+      result = outcome.result;
+    } else {
+      const steered = maySteer && this.jobs ? await this.jobs.steer(id, steerInput) : null;
+      if (steered) return steeredReceipt(steered, true);
+      result = await this.submissions.input(id, value);
     }
-    const result = await this.submissions.input(id, value, scopedKey);
     // A file the message named that it may not carry is said as itself.
     if (result.receipt.state !== 'accepted' && result.error?.code.startsWith('attachment'))
       throw new ServiceError(result.error.code, result.error.message, result.status);

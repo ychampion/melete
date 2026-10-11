@@ -86,6 +86,7 @@ import {
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
 import { takeOverFromCard } from './take-over.ts';
+import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
@@ -666,6 +667,12 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
   const working = WORKING.includes(transcript.status);
+  // Messages that waited for the running turn go once it ends.
+  const heldForTurn = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    if (working) return;
+    for (const go of heldForTurn.current.splice(0)) go();
+  }, [working]);
   // A message held before sending counts down on its receipt.
   const holding = transcript.turns.some((turn) =>
     turn.blocks.some(
@@ -835,7 +842,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       const mentioned = mentionedAgent(clean, agents);
       const speaker = mentioned?.id ?? agent ?? '';
       // While a turn runs, plain words go to it at its next step, drawn inside it.
-      if (working && !attached.length && !mentioned && navigator.onLine) {
+      if (joinsRunningTurn(clean, working, attached.length) && navigator.onLine) {
         const steerId = state.steer(clean);
         const accepted = await adapter.send(conversationId, clean, messageKey(), [], pasted);
         if (accepted.data === null) {
@@ -859,9 +866,14 @@ export function ChatScreen({ id }: { id: string | null }) {
         refreshConversations();
         return true;
       }
-      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline', [
-        ...attached,
-      ]);
+      // Words naming an agent while a turn runs wait for it to end, then go as their own turn.
+      const wait = waitsForTurn(clean, working) && navigator.onLine;
+      const localId = state.local(
+        clean,
+        speaker,
+        wait ? 'waiting_turn' : navigator.onLine ? 'sending' : 'queued_offline',
+        [...attached],
+      );
       // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
       const box = outbox.current;
@@ -884,6 +896,10 @@ export function ChatScreen({ id }: { id: string | null }) {
         refreshConversations();
         return true;
       };
+      if (wait) {
+        heldForTurn.current.push(() => void box.send(localId, post));
+        return true;
+      }
       if (!navigator.onLine) {
         const onOnline = () => {
           window.removeEventListener('online', onOnline);

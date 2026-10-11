@@ -52,7 +52,8 @@ export const unavailable = (reason: string): NotAvailable =>
 export const experienceOk = z.strictObject({ status: z.literal('ok') });
 export const experienceResult = <T extends z.ZodType>(shape: T) => z.union([shape, notAvailable]);
 
-export const deliveryState = z.enum(['sending', 'queued_offline', 'failed_retry']);
+/** `waiting_turn`: it names an agent while a turn runs, so it is sent once that turn ends. */
+export const deliveryState = z.enum(['sending', 'queued_offline', 'failed_retry', 'waiting_turn']);
 export const turnStatus = z.enum([
   'idle',
   'queued',

@@ -21223,7 +21223,7 @@ export interface paths {
                             masked_email: string;
                             /** @constant */
                             status: "ok";
-                        } | components["schemas"]["__schema307"];
+                        } | components["schemas"]["__schema309"];
                     };
                 };
             };
@@ -24265,7 +24265,7 @@ export interface components {
             attachments?: components["schemas"]["__schema312"][];
             conversation_id: components["schemas"]["__schema303"];
             created_at: components["schemas"]["__schema307"];
-            delivery: ("sending" | "queued_offline" | "failed_retry") | null;
+            delivery: ("sending" | "queued_offline" | "failed_retry" | "waiting_turn") | null;
             id: components["schemas"]["__schema303"];
             status: components["schemas"]["__schema305"];
             text: string;

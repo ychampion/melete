@@ -9201,7 +9201,7 @@
                       "additionalProperties": false
                     },
                     {
-                      "$ref": "#/components/schemas/__schema307"
+                      "$ref": "#/components/schemas/__schema309"
                     }
                   ]
                 }
@@ -36708,7 +36708,8 @@
                 "enum": [
                   "sending",
                   "queued_offline",
-                  "failed_retry"
+                  "failed_retry",
+                  "waiting_turn"
                 ]
               },
               {
