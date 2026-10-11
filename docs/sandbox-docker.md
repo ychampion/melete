@@ -36,9 +36,13 @@ the desktop and the browser. Every space then has a sandbox connection called
 needs one.
 
 To use another image, build it and set `MELETE_SANDBOX_DOCKER_IMAGE`; it must
-already be on the engine. A space's owner can also add a docker sandbox by hand
-in Settings → Connections → Sandbox, choosing "This server (Docker)" and leaving
-the key empty.
+already be on the engine. Every space's **Computer** follows that setting when
+the service starts, after an update or a restore onto another machine too, and
+an agent's computer is made again from the new image, keeping its files, the
+next time it is used with nothing running in it.
+
+A space's owner can also add a docker sandbox by hand in Settings → Connections
+→ Sandbox, choosing "This server (Docker)" and leaving the key empty.
 
 ## One container per agent
 
@@ -181,6 +185,12 @@ see them ended with that reason.
 Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
 lost is still reported from that record after an idle stop.
+
+A computer whose container is gone but whose two volumes are still there, as
+after a restore onto a new machine, is stopped rather than lost: its next use
+makes the container again on those volumes, with its files and home folder.
+Its volumes go when the computer or its space is removed, when the retention
+below runs out, or once no session refers to them.
 
 A suspended workspace nobody resumes is removed after
 `MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS`, as with the other providers.
