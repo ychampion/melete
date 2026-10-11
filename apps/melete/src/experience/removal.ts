@@ -13,11 +13,14 @@
  * approvals, which the schema cascades from the job. Its workspace goes too,
  * into its trash, restorable for the trash period, and the pages the browser
  * captured in it are deleted (see `workspace-trash.ts`).
- * What stays is what was never only the job's: files it saved to the person's
- * Files or the space stay (their `job_id` is cleared), a computer it used
- * stays, and memory stays. Memory is the person's,
- * so it is forgotten only when they ask, through the same source deletion that
- * "forget that" uses; see `memorySourcesOf`.
+ * The files it alone made in its computer's shared `/work` go from there too:
+ * by the next sandbox sweep while the computer runs, and when it next starts
+ * if it is stopped (see `sandbox/work-files.ts`). What stays is what was
+ * never only the job's: files it saved to the person's Files or the space stay
+ * (their `job_id` is cleared), files in `/work` that another chat or the
+ * person also wrote stay, the computer itself stays, and memory stays. Memory
+ * is the person's, so it is forgotten only when they ask, through the same
+ * source deletion that "forget that" uses; see `memorySourcesOf`.
  */
 import { isTerminal, type JobState } from '@melete/contracts';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -32,6 +35,11 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import { roomAuthorityOf } from '../rooms/approvals.ts';
+import {
+  queueWorkRemovals,
+  trashOtherCopies,
+  type WorkFilesOutcome,
+} from '../sandbox/work-files.ts';
 import type { BlobKey, BlobStore } from '../storage/blob.ts';
 import {
   CAPTURED_PAGE,
@@ -59,6 +67,11 @@ export type JobRemoval = {
   withdrawn: number;
   /** Saved details forgotten with it, when the person asked. */
   forgotten: number;
+  /**
+   * Files in the computer's `/work`: those only these chats made are
+   * removed; those they changed that someone else also wrote stay.
+   */
+  computer_files: { removed: number; kept: number };
 };
 
 /**
@@ -233,7 +246,8 @@ export async function removeJobs(
 ): Promise<JobRemoval> {
   const { jobs } = deps;
   const list = [...new Set(ids)];
-  if (!list.length) return { stopped: false, withdrawn: 0, forgotten: 0 };
+  if (!list.length)
+    return { stopped: false, withdrawn: 0, forgotten: 0, computer_files: { removed: 0, kept: 0 } };
   const ended = await jobs.transaction(async (tx) => {
     let stopped = false;
     const cancelled: string[] = [];
@@ -297,6 +311,7 @@ export async function removeJobs(
   await deps.runner?.stopJobs(list);
   let fileKeys: BlobKey[] = [];
   let captured: { space_id: unknown; path: unknown }[] = [];
+  let workFiles: WorkFilesOutcome = { removed: 0, kept: 0, queued: [] };
   await deps.sql.begin(async (tx) => {
     await tx`select id from job where id = any(${list}) order by id for update`;
     await abandonUnsettled(tx, list);
@@ -338,6 +353,9 @@ export async function removeJobs(
           where job_id = any(${list}) and source_job_id is null
           and area = 'work' and path ~ ${CAPTURED_PAGE} returning space_id, path`),
       ];
+    // The files only these chats made in their computers' /work are queued to
+    // go from there; those someone else also wrote stay.
+    workFiles = await queueWorkRemovals(tx, list);
     // The privacy router's per-conversation records hold sealed private
     // values; they mean nothing without the conversation.
     await tx`delete from privacy_vault where conversation_id = any(${list})`;
@@ -386,6 +404,15 @@ export async function removeJobs(
           `the workspace of ${id} could not be moved to the trash yet: ${error instanceof Error ? error.message : 'unknown error'}`,
         ),
       );
+    // Other chats of the computer keep copies of /work here; the same files go
+    // from those too, or their next command would send them back.
+    if (workFiles.queued.length)
+      await trashOtherCopies(deps.sql, deps.workspaces, workFiles.queued, log).catch(
+        (error: unknown) =>
+          log(
+            `files deleted chats made were not taken out of other chats' copies: ${error instanceof Error ? error.message : 'unknown error'}`,
+          ),
+      );
   }
   // Forgotten only now, after the jobs are gone, so nothing captured from them
   // in between is left behind. Then the capture log stops naming them.
@@ -395,7 +422,12 @@ export async function removeJobs(
     if (sources.length) forgotten = await forget(sources);
   }
   await deps.sql`update memory_capture set job_id = null where job_id = any(${list})`;
-  return { stopped: ended.stopped, withdrawn: ended.withdrawn, forgotten };
+  return {
+    stopped: ended.stopped,
+    withdrawn: ended.withdrawn,
+    forgotten,
+    computer_files: { removed: workFiles.removed, kept: workFiles.kept },
+  };
 }
 
 /**

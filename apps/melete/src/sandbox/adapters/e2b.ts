@@ -130,6 +130,8 @@ type EnvdEntry = {
   size?: string | number;
   mode?: number;
   symlinkTarget?: string;
+  /** RFC 3339, when envd sends it. */
+  modifiedTime?: string;
 };
 
 const scrub = (text: string, secrets: readonly (string | undefined)[]) =>
@@ -755,6 +757,7 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
           mode: (entry.mode ?? 0) & 0o777,
           symlink,
           directory,
+          ...(typeof entry.modifiedTime === 'string' ? { stamp: `m:${entry.modifiedTime}` } : {}),
         };
       });
     },

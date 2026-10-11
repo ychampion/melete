@@ -74,6 +74,10 @@ export type SyncInReport = SyncReport & {
 export type SkippedPath = { path: string; reason: string; files?: number };
 
 export type SyncOutReport = SyncReport & {
+  /** Every file read back, by its path under the workspace, with its content hash. */
+  hashes: Map<string, string>;
+  /** The listing's change stamp of each file listed, read back or left there, where the adapter gives one. */
+  stamps: Map<string, string>;
   /** What stayed on the computer, over a bound; everything else was read back. */
   skipped: SkippedPath[];
   /** Files the command deleted that went to the trash here too. */
@@ -289,6 +293,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   const skipped: SkippedPath[] = [];
   // Every file the computer has, read back or not: one left there is not lost.
   const listed = new Set<string>();
+  const stamps = new Map<string, string>();
   for (const entry of listing) {
     if (entry.symlink)
       throw new SyncRefusal(
@@ -316,6 +321,7 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
       throw new SyncRefusal('not_regular', `an entry has no usable size: ${entry.path}`);
     const relative = segments.join('/');
     listed.add(relative);
+    if (entry.stamp !== undefined) stamps.set(relative, entry.stamp);
     if (entry.size > limits.maxFileBytes) {
       skipped.push({
         path: relative,
@@ -378,13 +384,22 @@ export async function syncOut(options: SyncOutOptions): Promise<SyncOutReport> {
   } finally {
     await folders.close();
   }
+  const hashes = new Map(fetched.map((file) => [file.relative, digest(file.bytes)]));
   const lost = [...(options.deletions?.sent.keys() ?? [])]
     .filter((relative) => !listed.has(relative))
     .sort();
   const outcome = options.deletions
     ? await deleteLost(options, lost, new Set(listedFolders.map((segments) => segments.join('/'))))
     : { deleted: [], kept: [], trash_id: null, restorable_until: null };
-  return { files: fetched.length, directories: directories.length, bytes, skipped, ...outcome };
+  return {
+    files: fetched.length,
+    directories: directories.length,
+    bytes,
+    hashes,
+    stamps,
+    skipped,
+    ...outcome,
+  };
 }
 
 type ListedFile = { relative: string; segments: string[]; size: number; mode: number };

@@ -190,6 +190,10 @@ const SPACE_KEYED_OPERATIONAL = [
   'sandbox_awake_day',
   // Which chat or run works on which display of the space's computers.
   'sandbox_display',
+  // Who made which file in the computers' /work, and what deleted chats left there to remove.
+  'sandbox_work_file',
+  'sandbox_work_read',
+  'sandbox_work_removal',
   // The privacy router's sealed vaults, its settings and its audit rows.
   'privacy_vault',
   'privacy_settings',
