@@ -1026,6 +1026,29 @@ withDb('a command in a remote sandbox', () => {
     expect(result.receipt.detail).toMatchObject({ egress: 'open', egress_hosts: null });
   }, 60_000);
 
+  // A scheduled run uses the same computer as a conversation: the same network,
+  // whether the agent keeps its computer or each run gets a fresh one.
+  for (const persistence of ['pause', 'ephemeral'] as const)
+    test(`a routine's command reaches the internet exactly as a conversation's does (${persistence})`, async () => {
+      if (!handle) throw new Error('Postgres is unavailable');
+      const reached: Record<string, unknown> = {};
+      const engine = new FakeSandboxEngine();
+      for (const kind of ['chat', 'routine'] as const) {
+        const s = await setup({ egress: 'open', persistence, engine });
+        await handle.sql`update job set kind = ${kind}, agent_id = ${s.scope.agentId}
+          where id = ${s.scope.jobId}`;
+        const { result } = await s.run({
+          command: "curl -s -o /dev/null -w '%{http_code}' https://example.com/",
+        });
+        if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+        expect(result.receipt.detail).toMatchObject({ exit_code: 0, output: '200' });
+        const { egress, egress_hosts, exit_code, output } = result.receipt.detail;
+        reached[kind] = { egress, egress_hosts, exit_code, output };
+      }
+      expect(reached.routine).toEqual(reached.chat);
+      expect(reached.routine).toMatchObject({ egress: 'open' });
+    }, 60_000);
+
   test('a receipt read back later takes its hosts from the egress records', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const s = await setup({ egress: 'open', provider: new GuardedFake() });
