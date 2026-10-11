@@ -23,7 +23,7 @@ import {
   newId,
 } from './db.ts';
 import { forgetMemory } from './forget.ts';
-import { subjectLabel } from './labels.ts';
+import { PERSON_HEADS, SELF, subjectLabel, whoseDetail } from './labels.ts';
 import type { RestrictionJournal } from './restore.ts';
 import { inPersonsWords } from './wording.ts';
 import { shortDate } from './zoned.ts';
@@ -164,6 +164,19 @@ const CATEGORY_WORDS: [BeliefCategory, RegExp][] = [
   ],
 ];
 
+/**
+ * What a detail of the person's own is about, when an earlier extraction
+ * saved it under a person heading: "person.user.allergy.peanuts" and
+ * "person.location.city" are the person's allergy and city, not someone in
+ * their life. A subject naming a person, or a relation, is left as it is.
+ */
+function ownTopic(domainKey: string): string {
+  const parts = domainKey.split('.');
+  const [head = '', subject = ''] = parts;
+  if (!PERSON_HEADS.has(head) || whoseDetail(domainKey).kind === 'other') return domainKey;
+  return parts.slice(SELF.has(subject) ? 2 : 1).join('.');
+}
+
 /** Which group a belief belongs in: people, preferences, accounts and bills, routines, work. */
 export function beliefCategoryOf(input: {
   key: string | null;
@@ -173,12 +186,12 @@ export function beliefCategoryOf(input: {
   sourceKinds?: readonly BeliefSource['kind'][];
 }): BeliefCategory {
   const key = input.key ?? '';
-  if (key.startsWith('contact.')) return 'people';
+  if (key.startsWith('contact.') && whoseDetail(key).kind !== 'self') return 'people';
   if (key.startsWith('pref.')) return 'preferences';
   if (key.startsWith('event.')) return 'routines';
   if (key.startsWith('constraint.')) return 'work';
   if (input.sourceKinds?.includes('receipt')) return 'accounts';
-  const subject = words(input.domainKey);
+  const subject = words(ownTopic(input.domainKey));
   for (const [category, pattern] of CATEGORY_WORDS) if (pattern.test(subject)) return category;
   if (input.kind === 'preference') return 'preferences';
   const content = input.content.toLowerCase();
