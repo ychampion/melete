@@ -193,8 +193,12 @@ import {
 } from './model-settings.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
+  accountList,
+  accountRemoval,
+  accountRemovalPreview,
   createPrincipalRequest,
   createSharedSpaceRequest,
+  deleteAccountRequest,
   grantMembershipRequest,
   principal,
   spaceMembership,
@@ -1900,7 +1904,95 @@ export function buildOpenApiDocument() {
             },
           ]),
         ),
+        '/account/export': {
+          get: {
+            tags: ['spaces'],
+            summary: 'Download everything this account holds, as one zip',
+            description:
+              'Chats as Markdown and JSON, runs as Markdown, memory, the original files, and ' +
+              'every record kept for each space the account owns and for the account itself, ' +
+              'one JSON file per kind. A README.md in the archive explains each part. ' +
+              'Passwords, passkeys, sessions and connection tokens are left out.',
+            responses: {
+              '200': {
+                description: 'The archive, written as it is read',
+                content: { 'application/zip': { schema: z.string().meta({ format: 'binary' }) } },
+              },
+            },
+          },
+        },
+        '/account/removal/preview': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What deleting this account takes with it, and what to type to confirm',
+            responses: {
+              '200': jsonResponse('Preview', z.object({ preview: accountRemovalPreview })),
+            },
+          },
+        },
+        '/account': {
+          delete: {
+            tags: ['spaces'],
+            summary: 'Delete this account and everything it owns',
+            description:
+              'The account email must be typed exactly. The account stops working at once: its ' +
+              'email, name, password and passkey are wiped and every session ends. It leaves the ' +
+              'rooms others own, and each space it owns is removed in the background, as removing ' +
+              'a space is. The account that set Melete up cannot be deleted.',
+            requestBody: json(deleteAccountRequest),
+            responses: {
+              '202': jsonResponse('Deletion started', z.object({ removal: accountRemoval })),
+              '400': problem('The email does not match the account'),
+              '409': problem('The account that set Melete up, or a space the browser worker uses'),
+            },
+          },
+        },
+        '/principals/{id}/removal/preview': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What deleting an account you made takes with it, for the setup owner',
+            requestParams: idParam('id', 'Account id'),
+            responses: {
+              '200': jsonResponse('Preview', z.object({ preview: accountRemovalPreview })),
+              '404': problem('No such account, or not one this person may delete'),
+            },
+          },
+        },
+        '/principals/{id}/removal': {
+          get: {
+            tags: ['spaces'],
+            summary: 'How far deleting an account has got, for the setup owner',
+            requestParams: idParam('id', 'Account id'),
+            responses: {
+              '200': jsonResponse('Deletion', z.object({ removal: accountRemoval })),
+              '404': problem('This account is not being deleted'),
+            },
+          },
+        },
+        '/principals/{id}': {
+          delete: {
+            tags: ['spaces'],
+            summary: 'Delete an account, for the setup owner',
+            description: 'As deleting one’s own account, asked by the account that set Melete up.',
+            requestParams: idParam('id', 'Account id'),
+            requestBody: json(deleteAccountRequest),
+            responses: {
+              '202': jsonResponse('Deletion started', z.object({ removal: accountRemoval })),
+              '400': problem('The email does not match the account'),
+              '404': problem('No such account, or not one this person may delete'),
+              '409': problem('The account that set Melete up, or a space the browser worker uses'),
+            },
+          },
+        },
         '/principals': {
+          get: {
+            tags: ['spaces'],
+            summary: 'The accounts on this Melete, for the account that set it up',
+            responses: {
+              '200': jsonResponse('Accounts', accountList),
+              '403': problem('Setup owner required'),
+            },
+          },
           post: {
             tags: ['spaces'],
             summary: 'Provision an additional account as the setup owner',
@@ -2450,8 +2542,10 @@ export function buildOpenApiDocument() {
               '`multiplayer` says whether rooms, shared spaces, guests and hand-offs are ' +
               'switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 ' +
               '`not_available`. `code_required` says whether setup needs the one-time setup ' +
-              'code, and `email_sign_in` whether this installation can email sign-in and ' +
-              'password reset links.',
+              'code: when one is configured or issued, and also when none exists but ' +
+              '`MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and ' +
+              '`MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation ' +
+              'can email sign-in and password reset links.',
             responses: {
               '200': jsonResponse('Whether setup is needed', setupStatusResponse),
               '503': problem('No database is configured'),
@@ -2466,7 +2560,10 @@ export function buildOpenApiDocument() {
               'is parsed. When the installation has a setup code (`MELETE_SETUP_CODE_HASH`, or ' +
               'one `melete account setup-code` issued), `setup_code` must be it; a missing or ' +
               'wrong code is 403 `setup_code_required` or `invalid_setup_code`, and counts ' +
-              'against the setup limit.',
+              'against the setup limit. An installation with no code that is configured for ' +
+              'an address other machines reach answers 403 `setup_code_required` to every ' +
+              'attempt until `melete account setup-code` issues one, unless ' +
+              '`MELETE_SETUP_OPEN=true`.',
             requestBody: json(setupRequest),
             responses: {
               '201': jsonResponse('The owner, signed in', ownerResponse),
@@ -4123,6 +4220,16 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Only the person who runs the installation changes a status'),
               '404': problem('No such report'),
+            },
+          },
+          delete: {
+            tags: ['feedback'],
+            summary:
+              'Delete a problem report, by the person who sent it or who runs the installation',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            responses: {
+              '200': jsonResponse('Deleted', z.object({ status: z.literal('ok') })),
+              '404': problem('No such report, or not one this person sent'),
             },
           },
         },

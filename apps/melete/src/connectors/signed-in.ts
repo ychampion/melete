@@ -86,15 +86,33 @@ export function signedInAccess(options: {
   const fetcher: OAuthFetch = options.fetcher ?? ((request) => fetch(request));
   let refreshing: Promise<string> | undefined;
 
-  const read = async () => {
+  const readOnce = async () => {
     const [row] = await options.sql`select secret_ref, status from connection
       where id = ${options.connectionId} and space_id = ${options.spaceId}`;
     if (!row?.secret_ref || row.status === 'revoked') throw new SignInEnded();
     const ref = String(row.secret_ref);
-    const credential = await options.secrets.withSecret(ref, options.spaceId, async (value) =>
-      signedInCredential.parse(JSON.parse(value)),
-    );
+    const credential = await options.secrets
+      .withSecret(ref, options.spaceId, async (value) =>
+        signedInCredential.parse(JSON.parse(value)),
+      )
+      .catch((error: unknown) => {
+        throw Object.assign(error instanceof Error ? error : new Error(String(error)), { ref });
+      });
     return { ref, credential };
+  };
+  // A refresh elsewhere removes the copy it replaced, so a read that took the
+  // old reference just before reads again once and finds the new one.
+  const read = async () => {
+    try {
+      return await readOnce();
+    } catch (error) {
+      const stale = (error as { ref?: string }).ref;
+      if (!stale) throw error;
+      const [row] = await options.sql`select secret_ref from connection
+        where id = ${options.connectionId} and space_id = ${options.spaceId}`;
+      if (!row?.secret_ref || String(row.secret_ref) === stale) throw error;
+      return readOnce();
+    }
   };
 
   const refresh = (): Promise<string> => {
@@ -117,9 +135,14 @@ export function signedInAccess(options: {
       };
       const sealed = await options.secrets.put(options.spaceId, JSON.stringify(next));
       // A sign-in that replaced the secret meanwhile wins; this token still serves this call.
-      await options.sql`update connection set secret_ref = ${sealed}
+      const swapped = await options.sql`update connection set secret_ref = ${sealed}
         where id = ${options.connectionId} and space_id = ${options.spaceId}
-          and secret_ref = ${ref} and status <> 'revoked'`;
+          and secret_ref = ${ref} and status <> 'revoked' returning id`;
+      // One sealed copy of the tokens is kept: the one the row points at. The
+      // other is removed, so refreshes never pile up copies of a refresh token.
+      await options.secrets
+        .forget(swapped.length ? ref : sealed, options.spaceId)
+        .catch(() => undefined);
       return next.access_token;
     })().finally(() => {
       refreshing = undefined;

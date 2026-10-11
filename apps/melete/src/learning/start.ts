@@ -4,6 +4,7 @@ import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import { type ModelSettingsService, serviceModelSource } from '../gateway/model-settings.ts';
 import type { JobService } from '../jobs/service.ts';
+import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { ProcedureService } from './procedures.ts';
 import { openProposalGateway } from './proposal-gateway.ts';
 import { ProcedureProposer } from './proposer.ts';
@@ -29,7 +30,11 @@ export async function applyLearned(proposer: ProcedureProposer, procedures: Proc
   return tried;
 }
 
-/** One durable drain; a second timer tick cannot overlap a bounded model call. */
+/**
+ * One durable drain; a second pass cannot overlap a bounded model call. It
+ * looks each second while corrections keep coming, as soon as a change is
+ * committed, and otherwise at most every half minute.
+ */
 export async function startLearning(
   jobs: JobService,
   env: Env,
@@ -41,6 +46,8 @@ export async function startLearning(
   /** Whether this instance drains now, when several share the database. */
   leads?: () => Promise<boolean>,
   spending?: GatewayOptions['spending'],
+  /** Says when a change may have been committed, such as a correction. */
+  wakeOn?: Commits,
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
@@ -71,29 +78,26 @@ export async function startLearning(
   });
   const proposer = new ProcedureProposer(jobs, gateway);
   const procedures = new ProcedureService(jobs);
-  let pending: Promise<void> | undefined;
-  let closed = false;
-  const tick = () => {
-    if (closed || pending) return;
-    pending = (leads ? leads() : Promise.resolve(true))
-      .then((leading) => (leading ? applyLearned(proposer, procedures) : undefined))
-      .then(() => undefined)
-      .catch(() => {
-        process.stderr.write('learning proposal drain failed\n');
-      })
-      .finally(() => {
-        pending = undefined;
-      });
-  };
-  const timer = workers ? setInterval(tick, 1000) : undefined;
-  timer?.unref();
-  if (workers) tick();
+  const loop = workers
+    ? quietLoop(
+        async () => {
+          if (leads && !(await leads())) return false;
+          return (await applyLearned(proposer, procedures)).length > 0;
+        },
+        {
+          busyMs: 1000,
+          idleMs: 30_000,
+          wakeOn,
+          onError: () => {
+            process.stderr.write('learning proposal drain failed\n');
+          },
+        },
+      )
+    : undefined;
   return {
     proposer,
     async close() {
-      closed = true;
-      clearInterval(timer);
-      await pending;
+      await loop?.stop();
       await gateway.close();
     },
   };

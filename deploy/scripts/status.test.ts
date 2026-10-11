@@ -120,6 +120,50 @@ describe('the installation report', () => {
     expect(render(fresh)).toContain('Running, with 1 thing(s) to finish.');
   });
 
+  test('while the account is missing, it says how it is claimed', () => {
+    const exposed = { ...env, MELETE_PUBLIC_URL: 'https://m.example.net' };
+    const withCode = find(
+      judgeStatus({ ...healthy, env: exposed, setupNeeded: true, setupCodeRequired: true }),
+      'Account',
+    );
+    expect(withCode).toMatchObject({
+      level: 'warn',
+      detail: expect.stringContaining('setup code'),
+    });
+    expect(withCode?.fix).toContain('bun run melete account setup-code');
+
+    // Open to the first visitor at an address other machines reach.
+    const open = find(
+      judgeStatus({
+        ...healthy,
+        env: { ...exposed, MELETE_SETUP_OPEN: 'true' },
+        setupNeeded: true,
+        setupCodeRequired: false,
+      }),
+      'Account',
+    );
+    expect(open).toMatchObject({ level: 'warn' });
+    expect(open?.detail).toContain('whoever opens https://m.example.net first becomes its owner');
+    expect(open?.detail).toContain('MELETE_SETUP_OPEN=true');
+    expect(open?.fix).toContain('MELETE_SETUP_OPEN=false');
+
+    // On this machine only, it is the plain first-account step.
+    const local = find(
+      judgeStatus({ ...healthy, setupNeeded: true, setupCodeRequired: false }),
+      'Account',
+    );
+    expect(local).toEqual({
+      level: 'warn',
+      name: 'Account',
+      detail: 'No account yet.',
+      fix: 'Open http://localhost:3101 and create your account.',
+    });
+    // Once it exists, none of that is said.
+    expect(
+      find(judgeStatus({ ...healthy, env: exposed, setupCodeRequired: false }), 'Account'),
+    ).toEqual({ level: 'ok', name: 'Account', detail: 'The owner account exists.' });
+  });
+
   test('the computer is checked only when it is turned on', () => {
     expect(find(judgeStatus(healthy), 'Computer')?.detail).toBe('Off (optional).');
     const on = { ...env, MELETE_SANDBOX_PROVIDER: 'docker' };

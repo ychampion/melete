@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadEnv } from '../../apps/melete/src/env.ts';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
 import {
@@ -9,6 +11,7 @@ import {
   databaseUrl,
   dockerSocketGroup,
   failureReport,
+  fillTemplate,
   providerSettings,
   sandboxProject,
   setupCodeNote,
@@ -414,6 +417,33 @@ describe('the database address configure writes', () => {
   test('falls back to the Compose defaults when the template leaves them empty', () => {
     expect(databaseUrl({ POSTGRES_USER: '', POSTGRES_DB: ' ' }, 'e5f6')).toBe(
       'postgres://melete:e5f6@postgres:5432/melete',
+    );
+  });
+});
+
+describe('the setup code configure writes', () => {
+  const template = readFileSync(join(import.meta.dir, '../.env.example'), 'utf8');
+  const hash = 'c'.repeat(64);
+
+  test('the template ships no hash line, only a commented one configure fills in', () => {
+    expect(template).not.toMatch(/^MELETE_SETUP_CODE_HASH=/m);
+    expect(template).toMatch(/^# MELETE_SETUP_CODE_HASH=$/m);
+    expect(template).not.toMatch(/^MELETE_SETUP_OPEN=/m);
+    const written = fillTemplate(template, { MELETE_SETUP_CODE_HASH: hash, WEB_PORT: '3201' });
+    expect(written.match(/^MELETE_SETUP_CODE_HASH=.*$/gm)).toEqual([
+      `MELETE_SETUP_CODE_HASH=${hash}`,
+    ]);
+    expect(written).not.toContain('# MELETE_SETUP_CODE_HASH=');
+    expect(written).toMatch(/^WEB_PORT=3201$/m);
+    // A commented line for a setting it was not given stays as it is.
+    expect(written).toMatch(/^# MELETE_SETUP_OPEN=$/m);
+    expect(loadEnv({ MELETE_SETUP_CODE_HASH: hash }).MELETE_SETUP_CODE_HASH).toBe(hash);
+  });
+
+  test('a line that sets the value wins over a commented one, and prose is left alone', () => {
+    const text = '# A=\nA=old\n# B=prose that names B=\n# C=\n';
+    expect(fillTemplate(text, { A: '1', B: '2', C: '3' })).toBe(
+      '# A=\nA=1\n# B=prose that names B=\nC=3\n',
     );
   });
 });

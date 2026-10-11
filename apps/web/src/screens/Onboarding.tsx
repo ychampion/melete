@@ -473,7 +473,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 {creating && codeRequired ? (
                   <Field
                     label="Setup code"
-                    hint="Whoever set up this Melete has it. The link they sent fills it in."
+                    hint="Whoever set up this Melete has it, and the link they sent fills it in. If that is you, run bun run melete account setup-code on the host for one."
                   >
                     <Input
                       icon="lock"

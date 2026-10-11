@@ -42,10 +42,7 @@ async function fixture(db: TestDatabase) {
   await mkdir(space);
   await exec('git', ['-C', space, 'init', '-b', 'memory-view'], { windowsHide: true });
   const journal = await createJournal();
-  const markdown = new MarkdownViews(db.sql, root, {
-    name: 'ychampion',
-    email: '68075205+ychampion@users.noreply.github.com',
-  });
+  const markdown = new MarkdownViews(db.sql, root);
   const readers = new Map<string, MemoryScope>([
     ['owner', scope],
     ['reader', { ...scope, role: 'reader' }],
@@ -81,6 +78,14 @@ async function fixture(db: TestDatabase) {
         await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
+}
+/** Every object in the repository, decompressed: what a person with the disk could read. */
+async function everyObject(space: string) {
+  return (
+    await exec('git', ['-C', space, 'cat-file', '--batch-all-objects', '--batch'], {
+      maxBuffer: 64 * 1024 * 1024,
+    })
+  ).stdout;
 }
 async function extract(db: TestDatabase, scope: MemoryScope, identity = 'first') {
   await ingest(db.sql, scope, source(identity));
@@ -181,12 +186,13 @@ export function registerMarkdownTests(db: TestDatabase | null) {
         expect(frontmatter.memory_revision).toBe(1);
         expect(frontmatter.source_refs).toHaveLength(1);
         expect(frontmatter.exact_valid_from).toBe('2026-07-01T00:00:00.000Z');
-        expect((await exec('git', ['-C', f.space, 'log', '-1', '--format=%B'])).stdout).toContain(
-          'Melete-Proposed-By: view-builder',
+        // A view is a file on disk, never a commit: nothing in the repository holds it.
+        expect((await exec('git', ['-C', f.space, 'ls-files'])).stdout).toBe('');
+        expect((await exec('git', ['-C', f.space, 'status', '--porcelain'])).stdout).not.toContain(
+          'knowledge',
         );
-        const before = (await exec('git', ['-C', f.space, 'rev-parse', 'HEAD'])).stdout;
         await f.markdown.build(f.scope);
-        expect((await exec('git', ['-C', f.space, 'rev-parse', 'HEAD'])).stdout).toBe(before);
+        expect(await everyObject(f.space)).not.toContain('July');
         await writeFile(path, serializeRecord(frontmatter, 'August'));
         expect(await f.markdown.build(f.scope).catch((error: Error) => error.message)).toBe(
           'owner_edit_pending',
@@ -230,6 +236,53 @@ export function registerMarkdownTests(db: TestDatabase | null) {
         expect(
           (await exec('git', ['-C', f.space, 'diff', '--cached', '--name-only'])).stdout.trim(),
         ).toBe('personal.txt');
+        // Erased, not hidden: no version of the value is anywhere in the repository.
+        const objects = await everyObject(f.space);
+        expect(objects).not.toContain('July');
+        expect(objects).not.toContain('August');
+      } finally {
+        await f.close();
+      }
+    });
+    test('views an earlier version committed are erased from the history, and the rest kept', async () => {
+      if (!db) return;
+      const f = await fixture(db);
+      try {
+        const { result } = await extract(db, f.scope);
+        const id = result.claim_ids[0];
+        await f.markdown.build(f.scope);
+        // How a space looked before views stopped being committed.
+        const git = (...args: string[]) => exec('git', ['-C', f.space, ...args]);
+        const commit = (message: string) =>
+          git(
+            '-c',
+            'user.name=Owner',
+            '-c',
+            'user.email=owner@localhost',
+            'commit',
+            '-q',
+            '-m',
+            message,
+          );
+        await writeFile(join(f.space, 'notes.md'), 'kept by the person');
+        await git('add', '--', 'notes.md');
+        await commit('A note of my own');
+        await git('add', '-f', '--', `knowledge/${id}.md`);
+        await commit('Refresh memory inspection records');
+        expect(await everyObject(f.space)).toContain('July');
+
+        // The next process to open the space erases the views from its history.
+        const later = new MarkdownViews(db.sql, f.root);
+        await later.build(f.scope);
+        expect(await everyObject(f.space)).not.toContain('July');
+        expect((await git('log', '--all', '--format=%s', '--', 'knowledge')).stdout).toBe('');
+        expect((await git('log', '--format=%s', '--', 'notes.md')).stdout.trim()).toBe(
+          'A note of my own',
+        );
+        expect((await git('show', 'HEAD:notes.md')).stdout).toBe('kept by the person');
+        // The view is still there to read, and still not tracked.
+        expect(await readFile(join(f.space, 'knowledge', `${id}.md`), 'utf8')).toContain('July');
+        expect((await git('ls-files', '--', 'knowledge')).stdout).toBe('');
       } finally {
         await f.close();
       }

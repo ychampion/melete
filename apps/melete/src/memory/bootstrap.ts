@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
+import type { Commits } from '../ops/quiet-loop.ts';
 import { type CaptureOptions, startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import type { ExtractionGateway } from './extract.ts';
@@ -36,6 +37,8 @@ type DeploymentMemoryOptions = {
   roomPrivacyOrigin?: CaptureOptions['roomPrivacyOrigin'];
   /** Semantic recall's embedder; left out, recall stays lexical. */
   embedding?: EmbeddingProvider;
+  /** Says when a change may have been committed; memory's loops look for work then. */
+  wakeOn?: Commits;
 };
 
 const spaceId = prefixedId('sp');
@@ -228,7 +231,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   const storageScope = resolveStorageScope(options.sql, journal);
   let stopCapture: (() => Promise<void>) | undefined;
   const markdown = options.spacesDir
-    ? new MarkdownViews(options.sql, options.spacesDir, { name: 'Owner', email: 'owner@localhost' })
+    ? new MarkdownViews(options.sql, options.spacesDir)
     : undefined;
   if (options.workers === false) await restoreMemory(options.sql, journal);
   else {
@@ -240,23 +243,27 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
       markdown,
       gateway: options.gateway,
       ...(options.embedding ? { embedding: options.embedding } : {}),
+      wakeOn: options.wakeOn,
       onError,
     });
     // What a person says in chat is offered to their memory with no step of theirs.
-    stopCapture = startChatCapture({
-      sql: options.sql,
-      boss: options.boss,
-      journal,
-      privacyOrigin: options.privacyOrigin,
-      scopeForJob,
-      onError,
-      ...(options.roomPrivacyOrigin
-        ? { roomScope: storageScope, roomPrivacyOrigin: options.roomPrivacyOrigin }
-        : {}),
-    });
+    stopCapture = startChatCapture(
+      {
+        sql: options.sql,
+        boss: options.boss,
+        journal,
+        privacyOrigin: options.privacyOrigin,
+        scopeForJob,
+        onError,
+        ...(options.roomPrivacyOrigin
+          ? { roomScope: storageScope, roomPrivacyOrigin: options.roomPrivacyOrigin }
+          : {}),
+      },
+      { wakeOn: options.wakeOn },
+    );
   }
   const recompute = options.onJobRecompute
-    ? startJobRecompute(options.sql, options.onJobRecompute)
+    ? startJobRecompute(options.sql, options.onJobRecompute, { wakeOn: options.wakeOn })
     : undefined;
   const routes: MemoryRouteOptions = {
     sql: options.sql,

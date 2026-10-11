@@ -1,4 +1,4 @@
-import type { Sql } from 'postgres';
+import type { Row, Sql } from 'postgres';
 import { z } from 'zod';
 import { ConnectorFaultError } from './faults.ts';
 import { jsonDepthWithin } from './mcp-transport.ts';
@@ -62,7 +62,7 @@ export function mcpCredentialAccess(
   fetcher: (url: string, init: RequestInit) => Promise<Response> = fetch,
 ) {
   let refreshing: Promise<boolean> | undefined;
-  async function read() {
+  async function read(again = true): Promise<{ row: Row; credential: Credential | undefined }> {
     const [row] = await sql`select secret_ref, generation, scopes, status from connection
       where id = ${binding.connectionId} and space_id = ${binding.spaceId} and provider = 'mcp'`;
     if (!row) throw revoked();
@@ -74,6 +74,13 @@ export function mcpCredentialAccess(
       if (credential.status === 'revoked') throw revoked();
       return { row, credential };
     } catch {
+      // A refresh elsewhere removes the copy it replaced; a read that took the
+      // old reference just before reads again once and finds the new one.
+      if (again) {
+        const [now] = await sql`select secret_ref from connection
+          where id = ${binding.connectionId} and space_id = ${binding.spaceId} and provider = 'mcp'`;
+        if (now?.secret_ref && now.secret_ref !== row.secret_ref) return read(false);
+      }
       throw revoked();
     }
   }
@@ -177,6 +184,10 @@ export function mcpCredentialAccess(
             and provider = 'mcp' and status = 'active' and generation = ${row.generation}
             and secret_ref = ${row.secret_ref} and scopes = ${JSON.stringify(row.scopes)}::jsonb
           returning id`;
+        // One sealed copy is kept: the one the row points at.
+        await store
+          .forget(changed.length === 1 ? String(row.secret_ref) : secret, binding.spaceId)
+          .catch(() => undefined);
         return changed.length === 1;
       })()
         .catch(() => false)

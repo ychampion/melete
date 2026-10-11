@@ -32,6 +32,7 @@
  */
 import type { PgBoss } from 'pg-boss';
 import { memoryKeyLabel } from '../experience/evidence.ts';
+import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory, mayForgetRoomClaim } from './forget.ts';
@@ -467,24 +468,29 @@ export async function traceChatExtraction(sql: MemorySql, sourceId: string) {
   );
 }
 
-/** A capture loop that never overlaps itself. */
-export function startChatCapture(options: CaptureOptions, intervalMs = 1000) {
-  let running: Promise<void> | undefined;
-  const timer = setInterval(() => {
-    if (running) return;
-    running = captureChat(options)
-      .then(() => captureRoom(options))
-      .then(() => undefined)
-      .catch(() => options.onError?.('memory_capture_failed'))
-      .finally(() => {
-        running = undefined;
-      });
-  }, intervalMs);
-  timer.unref();
-  return async () => {
-    clearInterval(timer);
-    await running;
-  };
+/**
+ * A capture loop that never overlaps itself. It looks each second while
+ * messages keep arriving and as soon as a message is committed; otherwise at
+ * most every `idleMs`, which also retries a capture whose lease ran out.
+ */
+export function startChatCapture(
+  options: CaptureOptions,
+  {
+    intervalMs = 1000,
+    idleMs = 30_000,
+    wakeOn,
+  }: { intervalMs?: number; idleMs?: number; wakeOn?: Commits } = {},
+) {
+  const loop = quietLoop(
+    async () => (await captureChat(options)) + (await captureRoom(options)) > 0,
+    {
+      busyMs: intervalMs,
+      idleMs,
+      wakeOn,
+      onError: () => options.onError?.('memory_capture_failed'),
+    },
+  );
+  return () => loop.stop();
 }
 
 export const ROOM_PUBLISHER = 'room';

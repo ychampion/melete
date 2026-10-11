@@ -409,11 +409,15 @@ current value came from elsewhere keeps it, and when the removed value was the
 current one, the latest remaining value still in force becomes current, or the
 detail is hidden when none is. In the same transaction, rewind snapshots and
 weekly digests drop the removed values, and undoing a rewind never brings one
-back. The knowledge files in a space's Git repository are rewritten from what
-remains, but a value committed there earlier stays in that repository's history.
-Old Git commits, backups, the external source account and copies
-already delivered elsewhere keep what they hold, and Postgres's data files and
-write-ahead log keep deleted rows until that space is reused. Rolling the
+back. Memory's own files in a space (`knowledge/k_*.md`) are rewritten from what
+remains and are never committed to the space's Git repository; copies an
+earlier version committed are erased from every commit the first time the
+space is opened, and the old objects are pruned, so the repository's history
+does not keep a forgotten value. Backups taken before that erase, the external
+source account and copies already delivered elsewhere keep what they hold: a
+restored backup brings the old history back until the space is next opened,
+when the erase runs again. Postgres's data files and write-ahead log keep
+deleted rows until that space is reused. Rolling the
 database and the journal back together also rolls back the removals made since,
 so retain the newest journal as [DEPLOYMENT](DEPLOYMENT.md#backup-and-restore)
 describes.

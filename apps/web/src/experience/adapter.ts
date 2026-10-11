@@ -17,8 +17,11 @@ import { browserTimeZone } from './timezone.ts';
 import type { Seen } from './together.ts';
 import type {
   AccountAccess,
+  AccountRemoval,
+  AccountRemovalPreview,
   AccountSignInStart,
   AccountSignInStatus,
+  AccountSummary,
   ActionResolution,
   ActivityList,
   Agent,
@@ -45,6 +48,7 @@ import type {
   ConnectionCreate,
   ConnectionInstalled,
   ConnectionKind,
+  ConnectionLifecycle,
   Conversation,
   ConversationCreate,
   ConversationDeleted,
@@ -121,6 +125,9 @@ import type {
   SensitiveTopic,
   SkillProhibition,
   SpaceMembers,
+  SpaceRemovalPreview,
+  SpaceRemovalReport,
+  SpaceRemovalStarted,
   StreamGap,
   Task,
   TaskInput,
@@ -258,6 +265,34 @@ function worthHearing<T>(result: Result<T>): Result<T> {
 const path = (id: string) => ({ params: { path: { id } } });
 
 export const adapter = {
+  /* ---------- your data: take it along, empty your space, delete the account ---------- */
+  /** Where the whole-account zip downloads from; a plain link carries the session. */
+  exportUrl: (): string => `${client.options.baseUrl}/account/export`,
+  accountRemovalPreview: () =>
+    guard<{ preview: AccountRemovalPreview }>(() => api.GET('/account/removal/preview')),
+  deleteAccount: (confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/account', { body: { confirm_email: confirmEmail } }),
+    ),
+  accounts: () => guard<{ accounts: AccountSummary[] }>(() => api.GET('/principals')),
+  otherAccountPreview: (id: string) =>
+    guard<{ preview: AccountRemovalPreview }>(() =>
+      api.GET('/principals/{id}/removal/preview', path(id)),
+    ),
+  removeOtherAccount: (id: string, confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
+    ),
+  spaceRemovalPreview: (id: string) =>
+    guard<{ preview: SpaceRemovalPreview }>(() =>
+      api.GET('/spaces/{id}/removal/preview', path(id)),
+    ),
+  removeSpace: (id: string, confirmName: string) =>
+    guard<{ removal: SpaceRemovalStarted }>(() =>
+      api.DELETE('/spaces/{id}', { ...path(id), body: { confirm_name: confirmName } }),
+    ),
+  spaceRemoval: (removalId: string) =>
+    guard<SpaceRemovalReport>(() => api.GET('/removals/{id}', path(removalId))),
   /* ---------- session ---------- */
   profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
   saveProfile: (profile: ProfileInput) =>
@@ -905,12 +940,13 @@ export const adapter = {
       }),
     ),
   /** Removal names the generation it read, so a change made elsewhere is not overwritten. */
-  removeConnection: async (id: string): Promise<Result<{ status: string }>> => {
+  /** Disconnects; the answer says whether the provider also withdrew Melete's access. */
+  removeConnection: async (id: string): Promise<Result<ConnectionLifecycle>> => {
     const current = await guard<ConnectionInstalled>(() =>
       api.GET('/connections/{connectionId}', { params: { path: { connectionId: id } } }),
     );
     if (current.data === null) return current;
-    return guard<{ status: string }>(() =>
+    return guard<ConnectionLifecycle>(() =>
       api.POST('/connections/{id}/lifecycle', {
         ...path(id),
         body: { kind: 'revoke', expected_generation: current.data.connection.generation ?? 0 },

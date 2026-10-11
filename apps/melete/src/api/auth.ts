@@ -47,7 +47,12 @@ import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
 import { mountPassword } from './password.ts';
 import { requireStrongPassword } from './password-policy.ts';
-import { setupCodeRequired, spendSetupCode } from './setup-code.ts';
+import {
+  openClaimRefused,
+  SETUP_CODE_NOT_ISSUED,
+  setupCodeRequired,
+  spendSetupCode,
+} from './setup-code.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -303,6 +308,8 @@ export function mountAuth(
   const { db, env, registry } = deps;
   const handle = deps.sql;
   const setupCodeHash = env.MELETE_SETUP_CODE_HASH;
+  // Reachable from other machines with no code to ask for: the first visitor is turned away.
+  const claimRefused = openClaimRefused(env);
   const multiplayer = multiplayerEnabled(env);
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
@@ -569,7 +576,9 @@ export function mountAuth(
     return c.json({
       needed,
       multiplayer,
-      code_required: needed && handle ? await setupCodeRequired(handle, setupCodeHash) : false,
+      code_required:
+        needed &&
+        (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
       email_sign_in: needed || !signIn ? false : await signIn.canSend(),
     });
   });
@@ -608,6 +617,11 @@ export function mountAuth(
     requireStrongPassword(input.password, input.email);
     // The code is checked before any work is done for whoever is asking.
     const codeNeeded = handle ? await setupCodeRequired(handle, setupCodeHash) : false;
+    if (!codeNeeded && claimRefused)
+      return c.json(
+        { error: { code: 'setup_code_required', message: SETUP_CODE_NOT_ISSUED } },
+        403,
+      );
     if (codeNeeded && !input.setup_code)
       return c.json(
         {
