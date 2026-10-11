@@ -14,6 +14,7 @@ import {
   historyInTransaction,
   publishRevision,
   revisionTrustFor,
+  sourceExcerpts,
 } from './claims.ts';
 import { keyPrecedence, recordContradiction, resolveKeyedHead } from './contradictions.ts';
 import {
@@ -28,7 +29,9 @@ import {
   stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
+import { listKey, sameWording } from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
+import { olderOwnSubjects, sameWhose, whoseDetail } from './labels.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { memorySeams } from './seams.ts';
 import { type Tier1Rejection, validateTier1 } from './validate.ts';
@@ -40,12 +43,76 @@ type Validated = {
   sources: SourceEvent[];
   refs: SourceRef[];
 };
+
+/**
+ * A claim that already says this new detail in the same words (ignoring case,
+ * spacing and a closing full stop), under another subject, about the same
+ * someone. The extractor is shown the details most related to a message, not
+ * all of them, so a detail it was not shown comes back under a subject of its
+ * own: "Can be home Thursday afternoon if that works for the repair" was kept
+ * twice. Only plain details are matched; a registry key, a list's item and a
+ * temporary exception keep their own rules. A message from an ordinary
+ * conversation never lands on a detail learned only in a private one.
+ */
+async function heldInTheseWords(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  proposal: Extract<ExtractionProposal, { op: 'add' }>,
+): Promise<ClaimHead | null> {
+  const wording = sameWording(proposal.content);
+  if (!wording) return null;
+  const fromPrivate = batch.private_origin !== null;
+  const rows = await tx`select c.id from memory_claims c
+    join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+    where c.space_id = ${scope.spaceId} and c.audience = ${batch.source.audience} and not c.hidden
+      and c.key is null and c.domain_key <> ${proposal.domain_key}
+      and position(':exception:' in c.domain_key) = 0
+      and lower(btrim(regexp_replace(regexp_replace(b.content, '[[:space:]]+', ' ', 'g'),
+        '[[:space:].!]+$', ''))) = ${wording}
+      and (${fromPrivate} or not exists (select 1 from memory_references ref
+        join memory_sources p on p.id = ref.source_id
+        where ref.claim_id = c.id and ref.revision = c.head_revision and p.private_origin is not null))
+    order by c.id limit 8`;
+  const whose = whoseDetail(
+    proposal.domain_key,
+    proposal.content,
+    proposal.sources.map((span) => span.quote),
+  );
+  for (const row of rows) {
+    const head = await getHead(tx, scope, String(row.id));
+    const content = head?.current.content;
+    if (!head || !content || listKey(head.domain_key)) continue;
+    const quotes = await sourceExcerpts(tx, head.id, head.head_revision).catch(() => []);
+    if (sameWhose(whoseDetail(head.domain_key, content, quotes), content, whose, proposal.content))
+      return head;
+  }
+  return null;
+}
+
+/** The claim that holds the person's own detail under an older subject (see `olderOwnSubjects`). */
+async function heldUnderOlderSubject(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  domainKey: string,
+): Promise<ClaimHead | null> {
+  const older = olderOwnSubjects(domainKey);
+  if (!older.length) return null;
+  const [row] = await tx`select id from memory_claims where space_id = ${scope.spaceId}
+    and audience = ${batch.source.audience} and not hidden and key is null
+    and domain_key = any(${older}) order by id limit 1`;
+  return row ? getHead(tx, scope, String(row.id)) : null;
+}
+
 async function validateProposal(
   tx: MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
   proposal: ExtractionProposal,
 ): Promise<Validated> {
+  /** The proposal as it is published: filed under a held detail it says again. */
+  let filed = proposal;
   let head: ClaimHead | null = null;
   if (proposal.op === 'supersede' || proposal.op === 'retract') {
     head = await getHead(tx, scope, proposal.claim_id);
@@ -85,6 +152,26 @@ async function validateProposal(
         if (existing) {
           head = await getHead(tx, scope, existing.id as string);
           if (!head) throw new MemoryError('stale_revision');
+        } else {
+          // The person's own detail, held under the subject an older
+          // extraction gave it: said again or changed, it lands on that claim.
+          const older = await heldUnderOlderSubject(tx, scope, batch, proposal.domain_key);
+          if (older) {
+            head = older;
+            filed = { ...proposal, domain_key: older.domain_key };
+          } else if (
+            proposal.kind !== 'exception' &&
+            proposal.kind !== 'historical' &&
+            !listKey(proposal.domain_key)
+          ) {
+            // Said again in the words of a detail held under another subject:
+            // it is more evidence for that detail, on that one claim.
+            const said = await heldInTheseWords(tx, scope, batch, proposal);
+            if (said?.current.content) {
+              head = said;
+              filed = { ...proposal, domain_key: said.domain_key, content: said.current.content };
+            }
+          }
         }
       }
     }
@@ -144,7 +231,7 @@ async function validateProposal(
     if (proposal.factual_status === 'checked' && proposal.kind !== 'checked_fact')
       throw new MemoryError('unsupported_checked_fact');
   }
-  return { proposal, head, sources, refs };
+  return { proposal: filed, head, sources, refs };
 }
 /**
  * Whether a source holds the person's own words, so a statement or preference
@@ -376,7 +463,14 @@ export async function commitExtraction(
       const proposals: ExtractionProposal[] = [];
       const refused: Tier1Rejection[] = [];
       for (const [index, proposal] of accepted.entries()) {
-        if ((proposal.op === 'add' || proposal.op === 'supersede') && isBlocked(blocked, proposal))
+        if (
+          (proposal.op === 'add' || proposal.op === 'supersede') &&
+          // A subject blocked under the name an earlier extraction gave it stays blocked.
+          [
+            proposal,
+            ...olderOwnSubjects(proposal.domain_key).map((domain_key) => ({ domain_key })),
+          ].some((subject) => isBlocked(blocked, subject))
+        )
           refused.push({
             index,
             key: typeof proposal.key === 'string' ? proposal.key : null,
@@ -405,17 +499,30 @@ export async function commitExtraction(
       if (source?.state !== 'active') throw new MemoryError('source_suppressed');
       const validated: Validated[] = [];
       const targets = new Set<string>();
+      /** Details said again in a held detail's words, filed under it (see `heldInTheseWords`). */
+      const restated: number[] = [];
       for (const proposal of proposals) {
         failedIndex = Math.max(0, parsed.proposals.indexOf(proposal));
         failedKey = 'key' in proposal && typeof proposal.key === 'string' ? proposal.key : null;
         const item = await validateProposal(tx, scope, batch, proposal);
-        if (proposal.op !== 'no-op') {
+        if (item.proposal !== proposal) restated.push(validated.length);
+        else if (proposal.op !== 'no-op') {
           const target =
             proposal.op === 'add' ? `key:${proposal.domain_key}` : `id:${proposal.claim_id}`;
           if (targets.has(target)) throw new MemoryError('conflicting_changeset');
           targets.add(target);
         }
         validated.push(item);
+      }
+      // A detail said again beside a change to that same detail, or twice in
+      // one message, adds nothing; it never refuses the rest of the message.
+      for (const index of restated) {
+        const item = validated[index];
+        if (item?.proposal.op !== 'add' || !item.head) continue;
+        const touched = [`key:${item.proposal.domain_key}`, `id:${item.head.id}`];
+        if (touched.some((target) => targets.has(target)))
+          validated[index] = { ...item, proposal: { op: 'no-op', sources: item.proposal.sources } };
+        else for (const target of touched) targets.add(target);
       }
       failedIndex = 0;
       failedKey = null;

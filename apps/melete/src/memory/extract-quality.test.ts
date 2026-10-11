@@ -6,7 +6,13 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { ExtractionProposal } from '@melete/contracts';
-import { type HeldClaim, mergeIntoHeld, readExtractionReply, sameDetail } from './extract.ts';
+import {
+  fileOwnDetails,
+  type HeldClaim,
+  mergeIntoHeld,
+  readExtractionReply,
+  sameDetail,
+} from './extract.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -228,5 +234,248 @@ describe('what memory already holds is merged, not added again', () => {
       held,
     );
     expect(away).toMatchObject({ op: 'add', domain_key: 'health.allergy.shellfish.away' });
+  });
+});
+
+/** A proposal citing the words the person said. */
+const said = (domain_key: string, content: string, quote: string, extra = {}) =>
+  proposal(domain_key, content, { sources: [{ ...span, end: quote.length, quote }], ...extra });
+const subjects = (proposals: ExtractionProposal[]) =>
+  proposals.map((item) => (item.op === 'add' ? item.domain_key : item.op));
+
+describe("the person's own details are filed under them, never as someone in their life", () => {
+  /** Read a model's answer the way extraction does, and file what it proposed. */
+  const filed = (entries: unknown[], heldSubjects: string[] = []) => {
+    const reply = readExtractionReply(JSON.stringify({ proposals: entries }));
+    return subjects(fileOwnDetails(reply.proposals, reply.about, heldSubjects));
+  };
+
+  test('the subjects a real model gave the person’s allergy, diet and seat', () => {
+    // As two real models filed them on a fresh install.
+    expect(
+      filed([
+        said('person.user.allergy.peanuts', 'Allergic to peanuts', 'I am allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.diet.vegetarian', 'Vegetarian', 'I am vegetarian', { about: 'preference' }),
+        said(
+          'person.flight_seating.prefers_aisle',
+          'Prefers aisle seats when flying',
+          'I prefer aisle seats when I fly',
+          { about: 'preference' },
+        ),
+        said(
+          'contact.owner.availability',
+          'Can be home Thursday afternoon if that works for the repair',
+          'I can be home Thursday afternoon if that works for the repair',
+        ),
+        said('person.job.title', 'Product designer', 'I work as a product designer', {
+          about: 'the_person',
+        }),
+        // Plain words in a subject are not a name, even where the detail says them.
+        said('person.lives_in.pune', 'Lives in Pune', 'I live in Pune', { about: 'the_person' }),
+        said('person.diet', 'Vegetarian', 'my diet is vegetarian', { about: 'preference' }),
+      ]),
+    ).toEqual([
+      'self.allergy.peanuts',
+      'self.diet.vegetarian',
+      'self.flight_seating.prefers_aisle',
+      'self.availability',
+      'self.job.title',
+      'self.lives_in.pune',
+      'self.diet',
+    ]);
+  });
+
+  test('someone in their life stays theirs, whatever the model said it is about', () => {
+    expect(
+      filed([
+        said('person.maya.city', 'Sister Maya lives in Lisbon', 'My sister Maya lives in Lisbon', {
+          about: 'someone_they_know',
+        }),
+        // The model called it the person's own, but the words name Maya.
+        said('person.maya.allergy', 'Allergic to peanuts', 'Maya is allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.landlord.mr_patel', 'Landlord is Mr. Patel', 'My landlord is Mr. Patel', {
+          about: 'the_person',
+        }),
+        // Said to be about someone they know, it stays theirs under any heading.
+        said(
+          'person.user.sister',
+          'Sister Maya lives in Lisbon',
+          'My sister Maya lives in Lisbon',
+          {
+            about: 'someone_they_know',
+          },
+        ),
+        // With no word on whose it is, a subject naming nobody said is left alone.
+        said('person.priya.role', 'Runs the design team', 'runs the design team'),
+      ]),
+    ).toEqual([
+      'person.maya.city',
+      'person.maya.allergy',
+      'person.landlord.mr_patel',
+      'person.user.sister',
+      'person.priya.role',
+    ]);
+  });
+
+  test('a subject memory already holds, and a registry key, are never moved', () => {
+    expect(
+      filed(
+        [
+          said('person.user.city', 'Lives in Delhi', 'I live in Delhi now', {
+            about: 'the_person',
+          }),
+        ],
+        ['person.user.city'],
+      ),
+    ).toEqual(['person.user.city']);
+    expect(
+      filed([
+        said('contact.owner.email', 'me@example.test', 'my email is me@example.test', {
+          key: 'contact.owner.email',
+          about: 'the_person',
+        }),
+      ]),
+    ).toEqual(['contact.owner.email']);
+  });
+});
+
+describe('a detail is the same only when it is about the same someone', () => {
+  const allergy: HeldClaim = {
+    id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA4',
+    domain_key: 'health.allergy',
+    key: null,
+    content: 'Allergic to peanuts',
+  };
+
+  test("someone else's detail in the same words is not merged into the person's own", () => {
+    const [sister] = mergeIntoHeld(
+      [said('person.maya.allergy', 'Allergic to peanuts', 'My sister Maya is allergic to peanuts')],
+      [allergy],
+    );
+    expect(sister).toMatchObject({ op: 'add', domain_key: 'person.maya.allergy' });
+  });
+
+  test('a detail about someone, filed under a topic that names them, is theirs', () => {
+    const [again] = mergeIntoHeld(
+      [
+        said(
+          'person.priya.project',
+          'Priya owns the Atlas project',
+          'Priya owns the Atlas project',
+        ),
+      ],
+      [
+        {
+          id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA7',
+          domain_key: 'project.atlas.owner',
+          key: null,
+          content: 'Priya owns the Atlas project',
+        },
+      ],
+    );
+    expect(again).toMatchObject({ op: 'add', domain_key: 'project.atlas.owner' });
+  });
+
+  test("two people's same-shaped details in one message are both kept", () => {
+    const both = mergeIntoHeld(
+      [
+        said('person.maya.city', 'Lives in Lisbon', 'My sister Maya lives in Lisbon'),
+        said('person.sam.city', 'Lives in Lisbon', 'My brother Sam lives in Lisbon too'),
+      ],
+      [],
+    );
+    expect(subjects(both)).toEqual(['person.maya.city', 'person.sam.city']);
+  });
+
+  test("the person's own detail said again under another subject is still merged", () => {
+    const [again] = mergeIntoHeld(
+      [said('self.food.peanut_allergy', 'Allergic to peanuts', 'peanuts, I am allergic')],
+      [allergy],
+    );
+    expect(again).toMatchObject({ op: 'add', domain_key: 'health.allergy' });
+    // An older subject naming nobody (saved before details were filed under
+    // the person) still takes the person's own detail said again.
+    const [older] = mergeIntoHeld(
+      [said('self.allergy', 'Allergic to peanuts', 'I am allergic to peanuts')],
+      [{ ...allergy, domain_key: 'person.allergy.peanuts' }],
+    );
+    expect(older).toMatchObject({ op: 'add', domain_key: 'person.allergy.peanuts' });
+  });
+
+  test('a changed value is not taken for the detail it changes', () => {
+    const city: HeldClaim = {
+      id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA5',
+      domain_key: 'self.city',
+      key: null,
+      content: 'Lives in Pune',
+    };
+    // The same subject with a new value is kept as written, so memory
+    // publishes it as the next revision of that claim (see the integration test).
+    const [moved] = mergeIntoHeld(
+      [said('self.city', 'Lives in Delhi', 'I have moved from Pune to Delhi')],
+      [city],
+    );
+    expect(moved).toMatchObject({ op: 'add', domain_key: 'self.city', content: 'Lives in Delhi' });
+    const [elsewhere] = mergeIntoHeld(
+      [said('home.city', 'Lives in Delhi', 'I live in Delhi now')],
+      [city],
+    );
+    expect(elsewhere).toMatchObject({
+      op: 'add',
+      domain_key: 'home.city',
+      content: 'Lives in Delhi',
+    });
+  });
+
+  test('a temporary exception said again is the one memory holds', () => {
+    const away = { kind: 'exception', valid_until: '2026-10-18T23:59:59Z' };
+    const held: HeldClaim = {
+      id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA6',
+      domain_key: 'self.away.goa:exception:2026-10-11T02:15:09.921Z:2026-10-18T23:59:59Z',
+      key: null,
+      content: 'Away in Goa until Sunday',
+    };
+    const [again] = mergeIntoHeld(
+      [said('self.travel.away', 'Away in Goa until Sunday', 'in Goa until Sunday', away)],
+      [held],
+    );
+    expect(again?.op).toBe('no-op');
+    // Said twice in one message, under two subjects, it is added once.
+    const twice = mergeIntoHeld(
+      [
+        said('self.availability', 'Can be home Thursday afternoon', 'home Thursday afternoon'),
+        said(
+          'self.availability.thursday',
+          'Can be home Thursday afternoon',
+          'home Thursday afternoon',
+          away,
+        ),
+      ],
+      [],
+    );
+    expect(twice.map((item) => item.op)).toEqual(['add', 'no-op']);
+    const exceptionFirst = mergeIntoHeld(
+      [
+        said(
+          'self.availability.thursday',
+          'Can be home Thursday afternoon',
+          'home Thursday afternoon',
+          away,
+        ),
+        said('self.availability', 'Can be home Thursday afternoon', 'home Thursday afternoon'),
+      ],
+      [],
+    );
+    expect(exceptionFirst.map((item) => item.op)).toEqual(['add', 'no-op']);
+    // A different exception is its own.
+    const [other] = mergeIntoHeld(
+      [said('self.travel.away', 'Away in Goa until Tuesday', 'Goa until Tuesday', away)],
+      [held],
+    );
+    expect(other?.op).toBe('add');
   });
 });
