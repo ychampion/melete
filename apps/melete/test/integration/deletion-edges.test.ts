@@ -19,7 +19,11 @@ import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { googleIssuer } from '../../src/connectors/google.ts';
 import { mcpCredentialAccess } from '../../src/connectors/mcp-credentials.ts';
-import { connectionRevocation, sweepUnreferencedSecrets } from '../../src/connectors/revocation.ts';
+import {
+  connectionRevocation,
+  startSecretSweep,
+  sweepUnreferencedSecrets,
+} from '../../src/connectors/revocation.ts';
 import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
 import { signedInAccess } from '../../src/connectors/signed-in.ts';
 import { removeOrphanedCaptures } from '../../src/experience/workspace-trash.ts';
@@ -195,6 +199,89 @@ withDb('disconnecting a Google account', () => {
     await db.sql`update secret set created_at = now() - interval '30 days' where id = ${paused.secretRef}`;
     await sweepUnreferencedSecrets(db.sql);
     expect(await db.sql`select id from secret where id = ${paused.secretRef}`).toHaveLength(1);
+  });
+
+  test('the sweep runs again on its timer, not only when the service starts', async () => {
+    if (!db) return;
+    const { claims } = await seedJob(db.sql);
+    const secrets = new SealedSecretStore(new PostgresSecretRepository(db.sql), () => MASTER_KEY);
+    const sql = db.sql;
+    const left = async () => {
+      // Left behind by a disconnection after the service started, and old enough to go.
+      const id = await secrets.put(claims.space_id, 'left-behind');
+      await sql`update secret set created_at = now() - interval '2 days' where id = ${id}`;
+      return id;
+    };
+    const present = async (id: string) =>
+      (await sql`select id from secret where id = ${id}`).length > 0;
+    const settle = async (until: () => Promise<boolean>) => {
+      for (let tries = 0; tries < 100 && !(await until()); tries += 1)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    // An instance that does not lead the sweep leaves it to the one that does.
+    const idle = startSecretSweep(
+      sql,
+      async () => false,
+      20,
+      () => {},
+    );
+    const waiting = await left();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    idle();
+    expect(await present(waiting)).toBe(true);
+    let passes = 0;
+    const stop = startSecretSweep(
+      sql,
+      async () => {
+        passes += 1;
+        return true;
+      },
+      20,
+      () => {},
+    );
+    try {
+      await settle(async () => passes >= 2 && !(await present(waiting)));
+      expect(await present(waiting)).toBe(false);
+      const later = await left();
+      const after = passes;
+      await settle(async () => passes > after + 1 && !(await present(later)));
+      expect(await present(later)).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
+  test('the sweep runs as the service starts, and keeps what is less than a day old', async () => {
+    if (!db) return;
+    const { claims } = await seedJob(db.sql);
+    const secrets = new SealedSecretStore(new PostgresSecretRepository(db.sql), () => MASTER_KEY);
+    const sql = db.sql;
+    const aged = async (age: string) => {
+      const id = await secrets.put(claims.space_id, 'left-behind');
+      await sql`update secret set created_at = now() - ${age}::interval where id = ${id}`;
+      return id;
+    };
+    const old = await aged('25 hours');
+    const recent = await aged('23 hours');
+    const fresh = await aged('0 seconds');
+    const present = async (id: string) =>
+      (await sql`select id from secret where id = ${id}`).length > 0;
+    // The service's own interval, a day: only the pass at start can run here.
+    const stop = startSecretSweep(
+      sql,
+      async () => true,
+      undefined,
+      () => {},
+    );
+    try {
+      for (let tries = 0; tries < 100 && (await present(old)); tries += 1)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await present(old)).toBe(false);
+      expect(await present(recent)).toBe(true);
+      expect(await present(fresh)).toBe(true);
+    } finally {
+      stop();
+    }
   });
 });
 

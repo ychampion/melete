@@ -162,6 +162,26 @@ export type Result<T> =
   | { data: null; error: null; unavailable: string };
 
 /**
+ * Whether the service has a browser, from its answer for the signed-in sites.
+ * A list says yes, and so does a refusal from that route itself, such as its
+ * browser being out of reach for a moment: the sites section then shows the
+ * error with a way to try again, rather than disappearing. No such route, a
+ * sign-in that has ended, or no answer at all says no; so does a space whose
+ * signed-in sites are not this person's (they are its owner's), which no
+ * retry would change.
+ */
+export function servesBrowser(result: Result<unknown>): boolean {
+  if (result.data !== null) return true;
+  if (result.error === null) return false;
+  return (
+    !result.unauthorized &&
+    result.code !== undefined &&
+    result.code !== 'not_found' &&
+    result.code !== 'space_not_found'
+  );
+}
+
+/**
  * Where the API is when the build was not told. Development runs against the
  * local mock on its own port; any other build is served beside the service,
  * so it uses the same origin's /api. Vite fixes `DEV` at build time, so the

@@ -491,7 +491,8 @@ export class MarkdownViews {
     if (await lstat(paths.indexDb).catch(() => null)) {
       const index = SpaceIndex.open(paths);
       try {
-        for (const id of claimIds) index.remove(id);
+        // One removal for the lot: the index file is rewritten once, not once per view.
+        index.removeMany(claimIds);
       } finally {
         index.close();
       }

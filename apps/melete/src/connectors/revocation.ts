@@ -176,6 +176,36 @@ export async function sweepUnreferencedSecrets(sql: Sql, now = Date.now()): Prom
     where secret_ref is not null`;
   return new PostgresSecretRepository(sql).forgetUnreferenced(
     inUse.map((row) => row.id),
-    new Date(now - 24 * 60 * 60 * 1000),
+    new Date(now - DAY_MS),
   );
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Sweep sealed tokens nothing uses now and once a day after, by whichever
+ * instance leads the work; the returned function stops it.
+ */
+export function startSecretSweep(
+  sql: Sql,
+  leads: () => Promise<boolean> = async () => true,
+  everyMs = DAY_MS,
+  say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): () => void {
+  const sweep = () => {
+    void leads()
+      .then((leading) => (leading ? sweepUnreferencedSecrets(sql) : 0))
+      .then((count) => {
+        if (count) say(`connections: deleted ${count} sealed tokens nothing used`);
+      })
+      .catch((error: unknown) =>
+        say(
+          `connections: unused sealed tokens were not checked (${error instanceof Error ? error.message : 'error'})`,
+        ),
+      );
+  };
+  sweep();
+  const timer = setInterval(sweep, everyMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
