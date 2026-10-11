@@ -1,22 +1,32 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
 import { parseSshTarget, runBackup } from './commands/backup.ts';
 import { runDeploy } from './commands/deploy.ts';
 import { runRestore } from './commands/restore.ts';
 import type { Source } from './context.ts';
+import { EXTERNAL_LOAD } from './database.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
-import { archiveCommand, CHANGED_WHILE_READ, parseContents, volumePresence } from './files.ts';
+import {
+  archiveCommand,
+  CHANGED_WHILE_READ,
+  parseContents,
+  stopCellsCommand,
+  volumePresence,
+} from './files.ts';
 import { appendHistory } from './history.ts';
 import { masterKeyFingerprint } from './master-key.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
@@ -52,7 +62,7 @@ function backupRig(options: { free?: number; contract?: object; volumes?: boolea
       return ok(`${command.at(-1)}\n`);
     if (text.startsWith('docker volume inspect')) return ok('[]');
     if (text.startsWith('docker volume ls ')) return ok('');
-    if (text.startsWith('sh -c docker ps ')) return ok();
+    if (text.startsWith('sh -c ids=$(docker ps ')) return ok();
     if (text.startsWith('docker compose')) return ok();
     return { code: 1, stdout: '', stderr: 'no such command in this test' };
   };
@@ -185,7 +195,7 @@ describe('melete backup', () => {
         (call) =>
           call.includes('--filter label=com.melete.attempt-supervisor=v1') &&
           call.includes("'label=com.melete.project=melete'") &&
-          call.endsWith('| xargs -r docker stop'),
+          call.endsWith('[ -z "$ids" ] || docker stop $ids'),
       );
       const start = rig.calls.findIndex((call) =>
         call.endsWith(
@@ -250,6 +260,7 @@ describe('melete restore', () => {
     const printed = context.printed();
     expect(printed).toMatch(/ok\s+restore\.checksums\s+10 file\(s\) match/);
     expect(printed).toContain('melete_restrictions stays as it is');
+    expect(printed).toContain('Keep melete_restrictions: the newer journal is');
     expect(printed).toContain('docker volume rm melete_pgdata');
     expect(printed).toContain('melete-20261002T100000Z/database.dump');
     expect(printed).not.toMatch(/volume rm \S*restrictions/);
@@ -270,6 +281,9 @@ describe('melete restore', () => {
     const journal = printed.indexOf('cp -a - melete:/data <');
     expect(journal).toBeGreaterThan(restore);
     expect(printed.lastIndexOf('up -d --no-build --wait ')).toBeGreaterThan(journal);
+    // A new machine has no journal to keep: only the step that puts one back is printed.
+    expect(printed).not.toContain('Keep melete_restrictions');
+    expect(printed).toContain('# Replace the database volume.\n');
   });
 
   test('a damaged backup fails its check', async () => {
@@ -409,6 +423,8 @@ function filesRig(
   const journal = { lines: '4' };
   /** Volumes that hold at least one file. */
   const held = new Set<string>();
+  /** The tables the external database holds. */
+  const tables = { count: 0 };
   const run = (command: readonly string[]): CommandOutput => {
     const text = command.join(' ');
     events.push(`run ${text}`);
@@ -485,7 +501,7 @@ function filesRig(
       const volume = (command[3] ?? '').slice('volume='.length);
       return ok((users.get(volume) ?? []).map((name) => `${name}\n`).join(''));
     }
-    if (text.startsWith('sh -c docker ps ')) return ok();
+    if (text.startsWith('sh -c ids=$(docker ps ')) return ok();
     if (text.includes('/v/restrictions.jsonl')) return ok(`lines ${journal.lines}\n`);
     if (text.includes('find "$d"'))
       return ok(
@@ -494,6 +510,8 @@ function filesRig(
           .map((mount) => `held ${mount[2]}\n`)
           .join('')}done\n`,
       );
+    // The external database's tables, counted before a restore loads into it.
+    if (text.includes(' exec psql ') && text.includes('pg_tables')) return ok(`${tables.count}\n`);
     // Compose makes the service's volumes, the journal's empty, on a machine without them.
     if (text.startsWith('docker compose') && text.endsWith(' create melete')) {
       if (!volumes.has('melete_restrictions')) {
@@ -534,6 +552,7 @@ function filesRig(
     fails,
     journal,
     held,
+    tables,
   };
 }
 
@@ -564,7 +583,7 @@ const changes = (events: readonly string[]) =>
     (event) =>
       /^run docker (pause|unpause|stop|volume rm|volume create) /.test(event) ||
       /^run docker compose .* (stop|down|up|create)( |$)/.test(event) ||
-      /-xpf -|pg_restore -U|cp -a - melete|xargs -r docker stop/.test(event),
+      /-xpf -|pg_restore -U|pg_restore --dbname|cp -a - melete|docker stop \$ids/.test(event),
   );
 
 describe('the people files and the agents computers in a backup', () => {
@@ -823,7 +842,7 @@ describe('restoring the files', () => {
     );
     // True whether or not the service makes the computer again on its kept volumes.
     expect(printed).toContain(
-      'A service that makes a computer again on its kept volumes does so the next time the agent uses it',
+      'the service makes each container again on them the next time the agent uses it, with its /work and home folder',
     );
     expect(printed).toContain('an empty home folder');
     expect(printed).toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
@@ -884,7 +903,7 @@ describe('restoring the files', () => {
     expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
     const order = [
       ' stop melete runtime web melete-cells',
-      'xargs -r docker stop',
+      '|| docker stop $ids',
       `run docker stop ${COMPUTERS.join(' ')}`,
       ' down',
       'run docker volume rm melete_pgdata',
@@ -1168,7 +1187,7 @@ describe('restoring the files', () => {
     const plan = await backedUp();
     expect(await runRestore(plan.context, [plan.set], false)).toBe(0);
     expect(plan.context.printed()).toContain('label=com.melete.attempt-supervisor=v1');
-    expect(plan.context.printed()).toContain('| xargs -r docker stop');
+    expect(plan.context.printed()).toContain('|| docker stop $ids');
 
     const busy = await backedUp();
     busy.users.set('melete_work', ['melete-att-1']);
@@ -1369,4 +1388,203 @@ describe('deploy backs up the files with the database', () => {
     expect(tight.context.printed()).toMatch(/fail\s+disk\.pull_estimate/);
     expect(tight.state.pulls).toEqual([]);
   });
+});
+
+describe('restoring with an external database', () => {
+  async function external() {
+    const rig = filesRig({ contract: { database: { external: true } } });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    rig.events.length = 0;
+    return rig;
+  }
+
+  test('the dump loads only into a database with no tables, in one transaction', async () => {
+    const rig = await external();
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toContain('pg_restore --dbname="$DATABASE_URL" --single-transaction');
+    expect(printed).toContain('already holds $n table(s)');
+    expect(printed).not.toContain('--clean');
+  });
+
+  test('a load that fails replaces nothing, so the same restore runs again', async () => {
+    const rig = await external();
+    rig.context.streamFails.push('pg_restore --dbname');
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+    const printed = rig.context.printed();
+    expect(printed).toContain('Nothing was replaced yet');
+    expect(printed).toMatch(
+      /fail\s+restore\.done\s+The restore stopped before it replaced anything/,
+    );
+    expect(indexOf(rig.events, 'src=melete_spaces,dst=/v ')).toBe(-1);
+    expect(rig.events.some(startsStack)).toBe(false);
+  });
+
+  test('a restore that stops after the dump is loaded says how to finish it, and that finishes it', async () => {
+    const rig = await external();
+    rig.context.streamFails.push('src=melete_artifacts,dst=/v ');
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+    const printed = rig.context.printed();
+    expect(printed).toContain(
+      'run the same restore with --keep-database --replace-files --yes, which keeps that database and puts back the rest.',
+    );
+    expect(printed).not.toContain('it starts over from the backup');
+
+    // The database now holds the backup's tables, and the spaces are back: the same
+    // restore is refused before it changes anything.
+    rig.tables.count = 40;
+    rig.held.add('melete_spaces');
+    rig.context.streamFails.length = 0;
+    rig.events.length = 0;
+    const again = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(await runRestore(again, [rig.set, '--yes'], false)).toBe(2);
+    expect(again.printed()).toMatch(
+      /fail\s+restore\.database\s+The database DATABASE_URL names already holds tables/,
+    );
+    expect(changes(rig.events)).toEqual([]);
+
+    // The way the report names puts back the rest without loading the dump again.
+    const finish = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(
+      await runRestore(finish, [rig.set, '--keep-database', '--replace-files', '--yes'], false),
+    ).toBe(0);
+    expect(rig.events.some((event) => event.includes('pg_restore'))).toBe(false);
+    expect(indexOf(rig.events, 'src=melete_artifacts,dst=/v ')).toBeGreaterThan(-1);
+    expect(indexOf(rig.events, `src=${COMPUTERS[1]}-home,dst=/v `)).toBeGreaterThan(-1);
+    expect(rig.events.some(startsStack)).toBe(true);
+  });
+
+  test("--keep-database counts the agents' computers' volumes as files here too", async () => {
+    const rig = await external();
+    rig.held.add(`${COMPUTERS[0]}-home`);
+    expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(1);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+restore\.keep_database_files\s+melete-sbx-proj-sbx_a-home already hold files\. With --keep-database/,
+    );
+    expect(await runRestore(rig.context, [rig.set, '--keep-database', '--yes'], false)).toBe(2);
+    expect(changes(rig.events)).toEqual([]);
+
+    const replace = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(await runRestore(replace, [rig.set, '--keep-database', '--replace-files'], false)).toBe(
+      0,
+    );
+    expect(replace.printed()).toMatch(
+      /warn\s+restore\.keep_database_files\s+melete-sbx-proj-sbx_a-home already hold files; --replace-files/,
+    );
+
+    // A computer volume this machine lacks is made by the restore, never mounted to look into.
+    for (const volume of [`${COMPUTERS[1]}-work`, `${COMPUTERS[1]}-home`])
+      rig.volumes.delete(volume);
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(1);
+    const look = rig.events.find((event) => event.includes('find "$d"')) ?? '';
+    expect(look).toContain(`src=${COMPUTERS[0]}-home,`);
+    expect(look).toContain('src=melete_spaces,');
+    expect(look).not.toContain(`src=${COMPUTERS[1]}-`);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'the load refuses a database that holds tables or does not answer, and otherwise loads in one transaction',
+    () => {
+      const bin = mkdtempSync(join(tmpdir(), 'melete-load-'));
+      try {
+        writeFileSync(
+          join(bin, 'psql'),
+          '#!/bin/sh\n[ "$PSQL_FAILS" = 1 ] && { echo "psql: could not connect" >&2; exit 2; }\necho "$TABLES"\n',
+        );
+        writeFileSync(
+          join(bin, 'pg_restore'),
+          `#!/bin/sh\necho "$*" > ${bin}/args\nwc -c > ${bin}/bytes\n`,
+        );
+        chmodSync(join(bin, 'psql'), 0o755);
+        chmodSync(join(bin, 'pg_restore'), 0o755);
+        const load = (tables: string, psqlFails = false) => {
+          rmSync(join(bin, 'args'), { force: true });
+          const run = Bun.spawnSync(['sh', '-c', EXTERNAL_LOAD], {
+            stdin: new TextEncoder().encode('the dump'),
+            env: {
+              PATH: `${bin}:${process.env.PATH ?? ''}`,
+              DATABASE_URL: 'postgres://u@db/x?sslmode=require',
+              TABLES: tables,
+              PSQL_FAILS: psqlFails ? '1' : '0',
+            },
+          });
+          return {
+            code: run.exitCode,
+            stderr: run.stderr.toString(),
+            loaded: existsSync(join(bin, 'args'))
+              ? readFileSync(join(bin, 'args'), 'utf8').trim()
+              : null,
+          };
+        };
+        const empty = load('0');
+        expect(empty.code).toBe(0);
+        expect(empty.loaded).toBe(
+          '--dbname=postgres://u@db/x?sslmode=require --single-transaction --no-owner --no-privileges --exit-on-error',
+        );
+        expect(readFileSync(join(bin, 'bytes'), 'utf8').trim()).toBe('8');
+
+        const full = load('12');
+        expect(full.code).toBe(1);
+        expect(full.loaded).toBeNull();
+        expect(full.stderr).toContain(
+          'already holds 12 table(s), and a restore loads only into an empty one. Nothing was loaded.',
+        );
+
+        const silent = load('0', true);
+        expect(silent.code).toBe(1);
+        expect(silent.loaded).toBeNull();
+        expect(silent.stderr).toContain('psql: could not connect');
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("stopping the runtime's attempt containers", () => {
+  test.skipIf(process.platform === 'win32')(
+    'an engine that cannot list them fails the step, and none listed stops nothing',
+    () => {
+      const bin = mkdtempSync(join(tmpdir(), 'melete-cells-'));
+      try {
+        writeFileSync(
+          join(bin, 'docker'),
+          `#!/bin/sh\nif [ "$1" = ps ]; then [ "$PS_FAILS" = 1 ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }; printf '%s' "$IDS"; exit 0; fi\necho "$*" >> ${bin}/calls\n`,
+        );
+        chmodSync(join(bin, 'docker'), 0o755);
+        const stop = (ids: string, psFails = false) => {
+          rmSync(join(bin, 'calls'), { force: true });
+          const command = stopCellsCommand('melete');
+          const run = Bun.spawnSync(command, {
+            env: {
+              PATH: `${bin}:${process.env.PATH ?? ''}`,
+              IDS: ids,
+              PS_FAILS: psFails ? '1' : '0',
+            },
+          });
+          return {
+            code: run.exitCode,
+            calls: existsSync(join(bin, 'calls'))
+              ? readFileSync(join(bin, 'calls'), 'utf8').trim()
+              : '',
+          };
+        };
+        expect(stop('', true)).toEqual({ code: 1, calls: '' });
+        expect(stop('')).toEqual({ code: 0, calls: '' });
+        expect(stop('a1\nb2\n')).toEqual({ code: 0, calls: 'stop a1 b2' });
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    },
+  );
 });

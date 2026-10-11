@@ -22,6 +22,22 @@ export const CLIENT_TLS =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
   'case "$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; ';
 
+/** How many tables the database holds outside Postgres's own schemas: none in an empty one. */
+export const TABLE_COUNT_SQL =
+  "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')";
+
+/**
+ * Loads the custom-format dump on stdin into the database DATABASE_URL names,
+ * run in the database-client container. It loads only into a database that
+ * holds no table yet, so it never mixes the backup's tables with tables
+ * already there (`pg_restore --clean` would drop only the backup's own, and
+ * leave a newer release's behind). It loads in one transaction, so a load that
+ * fails part way leaves the database as empty as it found it, ready for the
+ * same load again. A refused load reads the dump to its end before it exits,
+ * so the command streaming it in sees no broken pipe.
+ */
+export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; exec pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error`;
+
 /**
  * The connection arguments a psql, pg_dump or pg_restore line takes, read from
  * the container's environment when it runs.

@@ -61,6 +61,11 @@ export const UPGRADE_CLIENT_TLS =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
   'case "$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; ';
 const CLIENT_TLS = UPGRADE_CLIENT_TLS;
+/**
+ * packages/cli/src/database.ts's EXTERNAL_LOAD, repeated for the same reason: it
+ * loads a dump only into an empty database, in one transaction.
+ */
+export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; exec pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error`;
 
 export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
@@ -422,10 +427,18 @@ export function rollbackSteps(context: UpgradeContext): string[] {
     `cp -p ${quote(`${context.backupDir}/deploy.env`)} deploy/.env`,
     ...(context.externalDatabase
       ? [
-          `# Replace only the database's contents. Keep ${context.project}_restrictions and every`,
-          `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,
-          `# forgotten since the backup comes back. Do not unpack restrictions.tar over it.`,
-          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c ${quote(`${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --clean --if-exists --no-owner --no-privileges --exit-on-error`)} < ${quote(`${context.backupDir}/database.dump`)}`,
+          `# Load the backup into a new, empty database, and leave the one the release used as it is:`,
+          `# loading over it would keep the tables the release's migrations added, and the load refuses`,
+          `# a database that holds tables. Create an empty database at the provider (or use the`,
+          `# provider's restore to a time before the upgrade), then point DATABASE_URL at it.`,
+          'read -rs DATABASE_URL && export DATABASE_URL',
+          'bun run melete set --from-env DATABASE_URL',
+          'unset DATABASE_URL',
+          `# Keep ${context.project}_restrictions and every volume as they are now: the newer removal`,
+          `# journal is replayed at startup, so nothing forgotten since the backup comes back. Do not`,
+          `# unpack restrictions.tar over it. The load runs in one transaction: one that fails leaves`,
+          `# the new database empty, and can be run again.`,
+          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c ${quote(UPGRADE_EXTERNAL_LOAD)} < ${quote(`${context.backupDir}/database.dump`)}`,
         ]
       : [
           `# Replace only the database volume. Keep ${context.project}_restrictions and every other`,

@@ -9,7 +9,7 @@ import { databaseBytes, recordedMigrations } from './commands/deploy.ts';
 import { gatherDoctor, judgeDatabase, parseDatabaseAnswer } from './commands/doctor.ts';
 import { adoptedConfig } from './commands/init.ts';
 import { statusServices } from './commands/status.ts';
-import { CLIENT_TLS } from './database.ts';
+import { CLIENT_TLS, EXTERNAL_LOAD } from './database.ts';
 import {
   BLOBS_S3_FILE,
   composeCommand,
@@ -18,7 +18,7 @@ import {
   EXTERNAL_DB_FILE,
 } from './deploy-config.ts';
 import { parseCompose, readInstallation } from './installation.ts';
-import { restoreSteps } from './plan.ts';
+import { restoreSteps, shellLine } from './plan.ts';
 import { ok, REAL_DEPLOY_DIR, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 const PASSWORD = 'e'.repeat(32);
@@ -363,8 +363,15 @@ describe('reaching an external database', () => {
     expect(steps).not.toContain('docker volume rm');
     expect(steps).not.toContain('up -d --no-build --wait postgres');
     expect(steps).toContain(
-      `run --rm --no-deps -T database-client sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < /b/melete-20261002T024141Z/database.dump`,
+      `run --rm --no-deps -T database-client sh -c ${shellLine([EXTERNAL_LOAD])} < /b/melete-20261002T024141Z/database.dump`,
     );
+    // Only into an empty database, all at once: never --clean over tables already there.
+    expect(EXTERNAL_LOAD).toContain(
+      'exec pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error',
+    );
+    expect(steps).not.toContain('--clean');
+    // A new machine has no journal of its own to keep.
+    expect(steps).not.toContain('Keep the restriction journal volume');
     // The journal still comes back before the service starts on a new machine.
     expect(steps.indexOf('cp -a - melete:/data')).toBeLessThan(
       steps.indexOf('up -d --no-build --wait melete-cells melete runtime web\n'),

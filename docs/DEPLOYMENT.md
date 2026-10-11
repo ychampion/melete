@@ -505,8 +505,9 @@ computers, so a new one takes over from a backup:
    first need them. `bun run melete status` then reports the stack.
 
 If the stack was started on the new VM before the restore, its own start-up
-files are in the file volumes, and `--keep-database` refuses to replace them
-until you add `--replace-files`. The restriction journal that start left, which
+files are in the file volumes (and in an agent computer's, if one was used
+there), and `--keep-database` refuses to replace them until you add
+`--replace-files`. The restriction journal that start left, which
 holds no entry, is replaced by the backup's, as on a VM that never ran.
 
 The agents' computers come back as their volumes, but a new machine has none of
@@ -2587,7 +2588,10 @@ A step that fails stops the restore there, and the report says what that left:
   the stack as it was;
 - after something was replaced, the stack stays stopped, never started on a
   half-restored installation; run the same `restore --yes` again once the
-  cause is fixed, and it starts over from the backup;
+  cause is fixed, and it starts over from the backup. With an external
+  database whose dump was already loaded, the report says to run it with
+  `--keep-database --replace-files` instead: that keeps the loaded database
+  and puts back the rest;
 - when only the final start fails, every part is back; fix the cause and start
   the stack with the command it gives, without restoring again.
 
@@ -2595,9 +2599,11 @@ A volume still in use when its turn comes stops the restore the same way, and
 names what uses it. On this machine the restriction journal stays as it is,
 since it is newer than any backup, and the service replays it at startup, so
 nothing forgotten since the backup comes back. With an external database, the
-restore loads into an empty one (it refuses one that holds tables), or
-`--keep-database` leaves the database as it is; then, if the file volumes here
-already hold files, which may be newer than the backup's, it refuses unless
+restore loads into an empty one (it refuses one that holds tables, before it
+stops anything and again as it loads) in one transaction, so a load that fails
+leaves that database empty; or `--keep-database` leaves the database as it is.
+Then, if the file volumes or the agents' computers' volumes here already hold
+files, which may be newer than the backup's, it refuses unless
 `--replace-files` is given too. With the bundled database, `--keep-database` is
 refused: the files are put back as the backup's database
 knows them, so that database comes back with them. An agent computer whose

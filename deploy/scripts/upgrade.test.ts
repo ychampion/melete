@@ -199,6 +199,30 @@ describe('the rollback steps', () => {
     expect(rollbackSteps(context).join('\n')).not.toContain('browser');
   });
 
+  test('an external database is loaded into a new, empty one, never cleaned over the newer one', () => {
+    const external = rollbackSteps({ ...context, project: 'assistant', externalDatabase: true });
+    const commands = external.filter((line) => !line.startsWith('#')).join('\n');
+    // pg_restore --clean drops only the dump's own objects: the release's new tables would stay.
+    expect(commands).not.toContain('--clean');
+    expect(commands).not.toMatch(/volume rm|--volumes|down -v/);
+    const env = external.findIndex(
+      (line) => line.startsWith('cp -p ') && line.endsWith(' deploy/.env'),
+    );
+    const point = external.indexOf('bun run melete set --from-env DATABASE_URL');
+    const load = external.findIndex((line) => line.includes('pg_restore'));
+    const up = external.findIndex((line) => line.endsWith('up -d --wait --wait-timeout 300'));
+    expect(env).toBeGreaterThan(-1);
+    expect(env).toBeLessThan(point);
+    expect(point).toBeLessThan(load);
+    expect(load).toBeLessThan(up);
+    expect(external[load]).toContain(
+      '--single-transaction --no-owner --no-privileges --exit-on-error',
+    );
+    expect(external[load]).toContain('a restore loads only into an empty one');
+    expect(external[load]).toContain('< /srv/backups/melete-upgrade-v0.2.0/database.dump');
+    expect(external.join('\n')).toContain('assistant_restrictions');
+  });
+
   test('a detached start returns to the commit, not to a branch', () => {
     const detached = rollbackSteps({ ...context, fromBranch: null });
     expect(detached).toContain(`git checkout --detach ${'a'.repeat(40)}`);
