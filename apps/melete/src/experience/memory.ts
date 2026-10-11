@@ -119,7 +119,7 @@ export class ExperienceMemory {
         join memory_outputs o on o.id = u.output_row_id where u.claim_id = ${head.id} and o.space_id = ${spaceId}`;
     return memoryItem.parse({
       id: head.id,
-      key: memoryKeyLabel(head.key),
+      key: memoryKeyLabel(head.key, head.domain_key),
       value: plainText(head.current.content, 'Saved detail', 16000),
       source: source?.onboarding
         ? 'onboarding'

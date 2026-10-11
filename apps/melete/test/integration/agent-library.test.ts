@@ -142,10 +142,10 @@ withDb('adding an agent from the library', () => {
     ]);
     for (const detail of details) await json('/memory/items', 'POST', detail);
     const { items } = memoryItemList.parse(await json('/memory/items'));
-    const saved = items.filter((item) => item.key.startsWith('inbox: '));
+    const saved = items.filter((item) => item.key.startsWith('Inbox: '));
     expect(saved.map((item) => [item.key, item.value, item.source]).sort()).toEqual([
-      ['inbox: important senders', 'My manager and the school', 'onboarding'],
-      ['inbox: reply voice', 'Short and friendly', 'onboarding'],
+      ['Inbox: important senders', 'My manager and the school', 'onboarding'],
+      ['Inbox: reply voice', 'Short and friendly', 'onboarding'],
     ]);
 
     // Saying yes makes exactly one routine.

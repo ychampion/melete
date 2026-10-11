@@ -123,7 +123,17 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   if (deps.attachments) service.attachments = deps.attachments;
   if (deps.workspaces) service.workspaces = deps.workspaces;
-  const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
+  const longWork = deps.runs;
+  const questions = new ExperienceQuestions(
+    deps.db,
+    deps.questions,
+    deps.sql,
+    longWork
+      ? async (spaceId, runId) => {
+          await longWork.stop(await longWork.requireRun(spaceId, runId));
+        }
+      : undefined,
+  );
   const memory = deps.sql
     ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
     : undefined;
@@ -354,6 +364,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', input),
+    'POST /quick-answers/{id}/dismiss': (spaceId, c) =>
+      questions.dismiss(spaceId, c.req.param('id') ?? ''),
     'POST /memory/items': (spaceId, c, input) => {
       // Another assistant saving through the MCP endpoint is recorded as that assistant.
       const assistant = mcpActorOf(c.env);

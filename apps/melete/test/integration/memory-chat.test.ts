@@ -218,8 +218,8 @@ withDb('automatic memory from chat', () => {
         'pref.travel.seat=aisle seat',
       ]);
       expect(await traces(db, first)).toEqual([
-        { op: 'write', labels: ["maya's phone"], value: '+351 912 345 678' },
-        { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
+        { op: 'write', labels: ["Maya's phone"], value: '+351 912 345 678' },
+        { op: 'write', labels: ['Travel: seat'], value: 'aisle seat' },
       ]);
 
       // A new conversation, days later, is handed what it needs without asking.
@@ -232,7 +232,7 @@ withDb('automatic memory from chat', () => {
       await say(db, second, "That's wrong, Maya's number is now +351 911 111 111.");
       await settle();
       expect(await traces(db, second)).toEqual([
-        { op: 'correct', labels: ["maya's phone"], value: '+351 911 111 111' },
+        { op: 'correct', labels: ["Maya's phone"], value: '+351 911 111 111' },
       ]);
       const corrected = await handed('Call Maya');
       expect(corrected).toContain('contact.maya.phone=+351 911 111 111');
@@ -245,16 +245,16 @@ withDb('automatic memory from chat', () => {
       // that quoted it earlier keep their label and lose the quotation.
       expect((await traces(db, second)).at(-1)).toEqual({
         op: 'forget',
-        labels: ["maya's phone"],
+        labels: ["Maya's phone"],
         value: null,
       });
       expect(await traces(db, first)).toEqual([
-        { op: 'write', labels: ["maya's phone"], value: null },
-        { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
+        { op: 'write', labels: ["Maya's phone"], value: null },
+        { op: 'write', labels: ['Travel: seat'], value: 'aisle seat' },
       ]);
       expect((await traces(db, second))[0]).toEqual({
         op: 'correct',
-        labels: ["maya's phone"],
+        labels: ["Maya's phone"],
         value: null,
       });
       expect((await handed('Call Maya')).join()).not.toContain('maya');
@@ -765,7 +765,7 @@ withDb('asking to forget in plain words', () => {
       await captureChat(capture);
       expect(await kept()).toEqual(withoutMine);
       expect((await replies()).at(-1)).toBe(
-        "More than one saved detail matched: maya's email, maya's phone. Say which one to forget",
+        "More than one saved detail matched: Maya's email, Maya's phone. Say which one to forget",
       );
 
       // Nothing saved names Carol: it says so.
@@ -1102,7 +1102,7 @@ withDb('memory notices', () => {
     await appendMemoryNotices(db.sql, chat, [notice(new Date('2026-08-02T09:00:00Z'))]);
     await appendMemoryNotices(db.sql, chat, [notice(new Date('2026-08-02T09:00:05Z'))]);
     expect(await traces(db, chat)).toEqual([
-      { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
+      { op: 'write', labels: ['Travel: seat'], value: 'aisle seat' },
     ]);
   });
 });

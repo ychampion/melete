@@ -16,7 +16,7 @@ import { reanchorSpans } from '../privacy/memory.ts';
 import { findQuote, placeQuote } from '../quotes.ts';
 import { MemoryError, type MemoryScope, type MemorySql, stableId } from './db.ts';
 import { memorySeams } from './seams.ts';
-import { inPersonsWords } from './wording.ts';
+import { savedInPersonsWords } from './wording.ts';
 import {
   EXTRACTION_LIMITS,
   type ExtractionBatch,
@@ -747,7 +747,7 @@ function normalizeProposal(entry: unknown, evidence?: ExtractionEvidence): unkno
       typeof proposal.content === 'string' &&
       !memorySeams().keepNoisyProposals
     )
-      proposal.content = inPersonsWords(proposal.content);
+      proposal.content = savedInPersonsWords(proposal.content);
   }
   if (typeof proposal.expected_revision === 'string' && /^\d+$/.test(proposal.expected_revision))
     proposal.expected_revision = Number(proposal.expected_revision);
