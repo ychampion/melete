@@ -66,6 +66,26 @@ type FilesOptions = {
   privateContext?: PrivateContext;
   /** The files people sent in chat, which `files.save_attachment` copies into a job's workspace. */
   attachments?: SentFiles;
+  /** The agent's computer, where the workspace is also `/work` (sandbox/move-out.ts). */
+  computer?: ComputerFiles;
+};
+
+/** What the files tools need of the agent's computer. */
+export type ComputerFiles = {
+  /** Why the job's last read-back left `relative` on the computer, or null when it did not. */
+  leftThere(jobId: string, relative: string): Promise<string | null>;
+  /**
+   * Remove the computer's copy of a file moved into the person's Files, when
+   * it is still exactly those bytes. Null when the job has no computer.
+   */
+  removeMoved(input: {
+    attemptId: string;
+    jobId: string;
+    relative: string;
+    size: number;
+    hash: string;
+    signal: AbortSignal;
+  }): Promise<{ outcome: 'removed' | 'absent' } | { outcome: 'kept'; reason: string } | null>;
 };
 
 /** Where a chat's sent files are read from: only this job's own, or its conversation's. */
@@ -953,6 +973,72 @@ export function createFilesConnector(options: FilesOptions): Connector {
     }
   };
   /**
+   * A workspace file that is not here because the last read-back left it on
+   * the agent's computer, over a cap, is refused with that reason, rather
+   * than as a file that does not exist.
+   */
+  const notLeftOnComputer = async (ctx: ConnectorContext, source: Located): Promise<void> => {
+    if (!options.computer) return;
+    const there = await (async () => {
+      const folder = await holdBeneath(source.base, source.segments.slice(0, -1));
+      try {
+        await lstat(folder.at(path.basename(source.target)));
+      } finally {
+        await folder.close();
+      }
+    })().then(
+      () => true,
+      (error: unknown) => !missing(error),
+    );
+    if (there) return;
+    const reason = await options.computer
+      .leftThere(ctx.job_id, source.segments.join('/'))
+      .catch(() => null);
+    if (reason) throw new Error(reason);
+  };
+  /**
+   * Once a workspace file is in the person's Files, read back there and
+   * matching, the agent's computer's copy in `/work` is removed too, or the
+   * next read-back would bring it back. What happened to it goes on the
+   * receipt; the file in Files stays whatever happens there.
+   */
+  const removeFromComputer = async (
+    action: Action,
+    ctx: ConnectorContext,
+    source: Located,
+    target: Located,
+    hash: string | null,
+  ): Promise<Record<string, JsonValue>> => {
+    if (!options.computer || hash === null) return {};
+    const where = `/work/${source.segments.join('/')}`;
+    const kept = (reason: string) => ({
+      computer_copy: 'kept',
+      computer_note: `The copy at ${where} on your computer was not removed: ${reason}. The file in Files is the one to use; remove ${where} if it is no longer needed, or your next command reads it back into your workspace.`,
+    });
+    let landed: Buffer;
+    try {
+      landed = await read(target);
+    } catch {
+      return kept('the file in Files could not be read back to confirm it');
+    }
+    if (digest(landed) !== hash) return kept('the file in Files does not match what was moved');
+    try {
+      const copy = await options.computer.removeMoved({
+        attemptId: action.attempt_id,
+        jobId: ctx.job_id,
+        relative: source.segments.join('/'),
+        size: landed.byteLength,
+        hash,
+        signal: ctx.signal ?? AbortSignal.timeout(60_000),
+      });
+      if (!copy) return {};
+      if (copy.outcome === 'kept') return kept(copy.reason);
+      return { computer_copy: copy.outcome === 'removed' ? 'removed' : 'not_there' };
+    } catch (error) {
+      return kept(error instanceof Error ? error.message : String(error));
+    }
+  };
+  /**
    * A new file in a held directory (`HeldDirectory.at`) holding exactly
    * `content`. Nothing else has a name or a handle for it. A name already
    * taken refuses the write and is left alone.
@@ -1591,6 +1677,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const to = requiredString(payload, 'to');
         const toArea = areaFor(payload.to_area ?? area);
         const source = await resolveFile(ctx, area, from);
+        if (area === 'work') await notLeftOnComputer(ctx, source);
         const target = await resolveFile(ctx, toArea, to);
         // Both directories are walked and held from here to the move, so
         // neither can be swapped for a link anywhere else meanwhile.
@@ -1650,6 +1737,8 @@ export function createFilesConnector(options: FilesOptions): Connector {
           await fromDirectory.close();
         }
         detail = { from, to, area, to_area: toArea, content_hash: hash };
+        if (area === 'work' && toArea === 'artifacts')
+          detail = { ...detail, ...(await removeFromComputer(action, ctx, source, target, hash)) };
       } else {
         const relative = requiredString(payload, 'path');
         const elsewhere =
