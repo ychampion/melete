@@ -384,6 +384,12 @@ async function shownTool(tx: Transaction, jobId: string, id: string, item: 'tool
 export type EventChanges = { subscribe(listener: () => void): () => void };
 /** How long a stream waits for new events when nothing says one was committed. */
 export const EXPERIENCE_POLL_MS = 1000;
+/**
+ * How long a stream with commit notifications waits before it reads anyway,
+ * and the pace of its keepalive. The notifications say when to read; their
+ * source repairs any it missed, every second while its own listener is down.
+ */
+export const EXPERIENCE_REPAIR_MS = 15_000;
 /** The least time between two reads of one stream, so a burst of commits is read as one page. */
 export const EXPERIENCE_READ_GAP_MS = 50;
 
@@ -1207,6 +1213,7 @@ export class ExperienceEvents {
       changed = true;
       wake?.();
     });
+    const waitMs = unsubscribe ? EXPERIENCE_REPAIR_MS : EXPERIENCE_POLL_MS;
     let lastRead = Date.now();
     let lastWrite = Date.now();
     const close = () => {
@@ -1238,7 +1245,7 @@ export class ExperienceEvents {
             if (!changed)
               await new Promise<void>((resolve) => {
                 wake = resolve;
-                timer = setTimeout(resolve, EXPERIENCE_POLL_MS);
+                timer = setTimeout(resolve, waitMs);
               });
             wake = undefined;
             if (timer) clearTimeout(timer);
@@ -1250,8 +1257,8 @@ export class ExperienceEvents {
             const page = await self.page(spaceId, cursor, jobId, 100, principalId);
             buffered = page.events;
             // Another conversation's commits wake this stream too; a keepalive
-            // goes out at the polling pace, not on each of those.
-            if (!buffered.length && Date.now() - lastWrite >= EXPERIENCE_POLL_MS) {
+            // goes out at the waiting pace, not on each of those.
+            if (!buffered.length && Date.now() - lastWrite >= waitMs) {
               controller.enqueue(encoder.encode(': keepalive\n\n'));
               lastWrite = Date.now();
               return;

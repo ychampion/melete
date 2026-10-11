@@ -83,6 +83,7 @@ import {
   QUEUES,
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
+import { workQuiet } from './quiet.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
@@ -1947,7 +1948,8 @@ export class AttemptRunner {
     // waits here, in the scheduler's fair order, where its conversation can be
     // told so, rather than unseen in the queue.
     for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
-      await this.jobs.boss.work<AttemptWake>(
+      await workQuiet<AttemptWake>(
+        this.jobs.boss,
         queue,
         { batchSize: 1, localConcurrency: this.concurrency * 2, pollingIntervalSeconds: 0.5 },
         async (wakes) => {
@@ -1956,14 +1958,16 @@ export class AttemptRunner {
         },
       );
     // Existing queued hints can drain after an upgrade; all new and recovered hints use the persisted class.
-    await this.jobs.boss.work<AttemptWake>(
+    await workQuiet<AttemptWake>(
+      this.jobs.boss,
       QUEUES.legacyAttempt,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async (wakes) => {
         for (const wake of wakes) await this.scheduledWake('interactive', wake.data);
       },
     );
-    await this.jobs.boss.work(
+    await workQuiet(
+      this.jobs.boss,
       QUEUES.recoveryScan,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async () => this.recover(),

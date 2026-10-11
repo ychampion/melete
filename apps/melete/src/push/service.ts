@@ -39,6 +39,7 @@ import {
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import { workQuiet } from '../jobs/quiet.ts';
 import {
   type DayWindow,
   type IntentKind,
@@ -856,7 +857,8 @@ export class PushDispatcher {
 
   async start(): Promise<void> {
     if (this.started || !this.push.enabled) return;
-    await this.boss.work(
+    await workQuiet(
+      this.boss,
       QUEUES.pushDispatch,
       { batchSize: 1, pollingIntervalSeconds: 1 },
       async () => {
