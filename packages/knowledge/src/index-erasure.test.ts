@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
-import { SpaceIndex } from './fts.ts';
+import { type IndexedRecord, SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { hardDelete, retract } from './records.ts';
 import { commitRecord } from './space.ts';
@@ -195,6 +195,12 @@ describe('an index written before forgotten text was erased', () => {
     insert('k_two', 'Another', 'more ordinary words');
     db.run("DELETE FROM record WHERE id = 'k_secret'");
     db.run("DELETE FROM record_fts WHERE id = 'k_secret'");
+    // Enough of them to fill whole pages, which go back to the file's free
+    // list as they were when they are emptied.
+    for (let i = 0; i < 100; i += 1)
+      insert(`k_bulk_${i}`, `Bulk ${MARKER}`, `${MARKER} `.repeat(40));
+    db.run("DELETE FROM record WHERE id LIKE 'k_bulk_%'");
+    db.run("DELETE FROM record_fts WHERE id LIKE 'k_bulk_%'");
     db.close();
   };
 
@@ -228,5 +234,139 @@ describe('an index written before forgotten text was erased', () => {
     } finally {
       again.index.close();
     }
+  });
+});
+
+describe('forgetting at scale', () => {
+  /** A small fixed generator, so a failure is the same case on every run. */
+  const sequence = (seed: number) => {
+    let state = seed;
+    return (n: number): number => {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      return state % n;
+    };
+  };
+
+  const indexed = (id: string, title: string, body: string): IndexedRecord => ({
+    id,
+    path: `knowledge/${id}.md`,
+    title,
+    tags: ['x'],
+    body,
+    status: 'active',
+    type: 'fact',
+  });
+
+  /** Which of these words still appear in the index file or its log. */
+  const wordsOnDisk = (words: Iterable<string>): string[] => {
+    const files = [paths.indexDb, `${paths.indexDb}-wal`]
+      .filter((file) => existsSync(file))
+      .map((file) => readFileSync(file));
+    return [...words].filter((word) =>
+      files.some((bytes) => bytes.includes(word) || bytes.includes(word.toLowerCase())),
+    );
+  };
+
+  /** Counts the VACUUMs any index runs until restored. */
+  const countVacuums = () => {
+    const original = Database.prototype.run;
+    let count = 0;
+    Database.prototype.run = function (this: Database, ...args: Parameters<Database['run']>) {
+      if (/^\s*VACUUM\b/i.test(String(args[0]))) count += 1;
+      return original.apply(this, args);
+    } as Database['run'];
+    return {
+      count: () => count,
+      restore: () => {
+        Database.prototype.run = original;
+      },
+    };
+  };
+
+  test('forgetting many records at once rewrites the file once', () => {
+    const kept = Array.from({ length: 200 }, (_, i) =>
+      indexed(`k_kept_${i}`, `Note ${i}`, `ordinary words number${i}`),
+    );
+    const forgotten = Array.from({ length: 20 }, (_, i) =>
+      indexed(`k_gone_${i}`, `Gone ${i}`, `the code is ${MARKER}${i}`),
+    );
+    const index = SpaceIndex.open(paths);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      const vacuums = countVacuums();
+      try {
+        index.removeMany(forgotten.map((record) => record.id));
+        expect(vacuums.count()).toBe(1);
+      } finally {
+        vacuums.restore();
+      }
+      expect(index.count()).toBe(kept.length);
+      expect(index.search(MARKER)).toEqual([]);
+      expect(index.search('number7')).toHaveLength(1);
+    } finally {
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a long run of edits and removals leaves none of the old words behind', () => {
+    // Records of mixed sizes make SQLite move rows between pages, which
+    // leaves stale copies behind that only rewriting the file clears.
+    for (let seed = 1; seed <= 3; seed += 1) {
+      rmSync(dirname(paths.indexDb), { recursive: true, force: true });
+      const next = sequence(seed * 7919);
+      const live = new Map<string, string>();
+      const gone = new Set<string>();
+      const index = SpaceIndex.open(paths);
+      try {
+        for (let step = 0; step < 400; step += 1) {
+          const edit = next(10) < 6;
+          const id = `k${next(300)}`;
+          const old = live.get(id);
+          if (edit) {
+            const word = `Mk${step.toString(36)}zq`;
+            const length = 1 + next(60);
+            const body = Array.from({ length }, (_, j) => `w${j % 50} ${word}`).join(' ');
+            if (old) gone.add(old);
+            live.set(id, word);
+            index.upsert(indexed(id, `T ${word}`, body));
+          } else if (old) {
+            gone.add(old);
+            live.delete(id);
+            index.remove(id);
+          }
+        }
+        for (const word of live.values()) expect(index.search(word)).toHaveLength(1);
+      } finally {
+        index.close();
+      }
+      expect({ seed, left: wordsOnDisk(gone) }).toEqual({ seed, left: [] });
+    }
+  }, 60_000);
+
+  test('rebuilding leaves nothing of the records it dropped', () => {
+    const kept = Array.from({ length: 50 }, (_, i) =>
+      indexed(`k_kept_${i}`, `Note ${i}`, `ordinary words number${i}`),
+    );
+    // More than what is kept, so pages they used are still free after the
+    // rebuild rather than written over by it.
+    const dropped = Array.from({ length: 100 }, (_, i) =>
+      indexed(`k_drop_${i}`, `Title ${MARKER}`, `${MARKER}${i} `.repeat(40)),
+    );
+
+    const first = SpaceIndex.open(paths);
+    first.rebuild([...kept, ...dropped]);
+    first.close();
+    expect(copiesOnDisk()).toBeGreaterThan(0);
+
+    const second = SpaceIndex.open(paths);
+    try {
+      second.rebuild(kept);
+      expect(second.count()).toBe(kept.length);
+      expect(second.search('number7')).toHaveLength(1);
+    } finally {
+      second.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
   });
 });

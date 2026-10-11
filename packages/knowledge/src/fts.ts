@@ -84,6 +84,9 @@ DROP TABLE IF EXISTS record_fts;
 DROP TABLE IF EXISTS meta;
 `;
 
+/** Ids per DELETE statement, well under SQLite's limit on bound parameters. */
+const DELETE_CHUNK = 500;
+
 const userVersion = (db: Database): number =>
   db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
 
@@ -224,7 +227,7 @@ export class SpaceIndex {
 
   upsert(record: IndexedRecord): void {
     const replaced = this.db.transaction(() => {
-      const removed = this.deleteRows(record.id);
+      const removed = this.deleteRows([record.id]);
       this.insert(record);
       return removed;
     })();
@@ -237,7 +240,17 @@ export class SpaceIndex {
    * restart: the row is gone, not filtered. Its words go from the file too.
    */
   remove(id: string): void {
-    if (this.db.transaction(() => this.deleteRows(id))()) this.afterRemoval();
+    this.removeMany([id]);
+  }
+
+  /**
+   * Remove several records in one go. Their words leave the file before this
+   * returns, as with `remove`, but the file is rewritten once for the whole
+   * set rather than once per record. On a large space that turns most of a
+   * minute, with nothing else able to run, into a second or two.
+   */
+  removeMany(ids: readonly string[]): void {
+    if (this.db.transaction(() => this.deleteRows(ids))()) this.afterRemoval();
   }
 
   /** Search this space. There is no parameter that could reach another one. */
@@ -315,11 +328,20 @@ export class SpaceIndex {
     this.db.close();
   }
 
-  /** Whether there was anything to delete. */
-  private deleteRows(id: string): boolean {
-    const records = this.db.run('DELETE FROM record WHERE id = ?', [id]).changes;
-    const documents = this.db.run('DELETE FROM record_fts WHERE id = ?', [id]).changes;
-    return records + documents > 0;
+  /**
+   * Whether there was anything to delete. The id column of the full-text table
+   * is not indexed, so each statement reads the whole table once; a batch of
+   * ids goes in one statement rather than one per id.
+   */
+  private deleteRows(ids: readonly string[]): boolean {
+    let changes = 0;
+    for (let at = 0; at < ids.length; at += DELETE_CHUNK) {
+      const chunk = ids.slice(at, at + DELETE_CHUNK);
+      const list = chunk.map(() => '?').join(', ');
+      changes += this.db.run(`DELETE FROM record WHERE id IN (${list})`, chunk).changes;
+      changes += this.db.run(`DELETE FROM record_fts WHERE id IN (${list})`, chunk).changes;
+    }
+    return changes > 0;
   }
 
   /**
