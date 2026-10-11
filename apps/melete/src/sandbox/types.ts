@@ -141,6 +141,12 @@ export type FileEntry = {
   mode: number;
   symlink: boolean;
   directory: boolean;
+  /**
+   * Changes whenever the entry is written, replaced or has its metadata
+   * changed, even with the same content (its modification and change times
+   * and inode, where the adapter can read them). Absent when it cannot tell.
+   */
+  stamp?: string;
 };
 
 export type StreamSpec = {
