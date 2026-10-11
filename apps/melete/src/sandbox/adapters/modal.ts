@@ -70,7 +70,8 @@ const PLAIN = /^[A-Za-z0-9._-]{1,128}$/;
 const LAUNCHER = `cd "$1" 2>/dev/null || exit 112; shift; ${SOURCE_ENV_FILE}; exec env "$@"`;
 /** The command's environment, written where only the sandbox user can read it. */
 const ENV_WRITE = 'umask 077 && mkdir -p -- "$1" && cat > "$2"';
-const LIST = '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %P\\0"';
+const LIST =
+  '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %T@:%C@:%i %P\\0"';
 const READ = '[ -f "$1" ] || exit 3; exec head -c "$2" -- "$1"';
 const WRITE = 'mkdir -p -- "$1" && cat > "$2" && chmod "$3" -- "$2"';
 const PREPARE = 'mkdir -p -- "$1" && exec env';
@@ -457,9 +458,12 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
         throw new SandboxAdapterRefusal('the listing is larger than the adapter reads');
       const records = new TextDecoder().decode(listed.stdout).split('\0').filter(Boolean);
       return records.map((record) => {
-        const match = /^([a-z]) (\d+) ([0-7]+) (.+)$/s.exec(record);
+        const match = /^([a-z]) (\d+) ([0-7]+) (\d+(?:\.\d+)?:\d+(?:\.\d+)?:\d+) (.+)$/s.exec(
+          record,
+        );
         if (!match) throw new SandboxAdapterRefusal('the listing could not be read');
-        const [, type, size, mode, relative] = match as unknown as [
+        const [, type, size, mode, stamp, relative] = match as unknown as [
+          string,
           string,
           string,
           string,
@@ -476,6 +480,7 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
           mode: Number.parseInt(mode, 8) & 0o777,
           symlink: type === 'l',
           directory: type === 'd',
+          stamp,
         };
       });
     },

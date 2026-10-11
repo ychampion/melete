@@ -196,6 +196,8 @@ test('a command that never started still carries what the read-back found', () =
     files: 0,
     directories: 0,
     bytes: 0,
+    hashes: new Map(),
+    stamps: new Map(),
     skipped: [],
     deleted: ['a.txt'],
     kept: [],
