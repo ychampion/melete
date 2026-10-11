@@ -30,7 +30,14 @@ import {
 import { toSource } from './evidence.ts';
 import { detailWords, listKey, sameWording } from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
-import { olderOwnSubjects, PERSON_HEADS, SELF, sameWhose, whoseDetail } from './labels.ts';
+import {
+  GENERIC_HEADS,
+  olderOwnSubjects,
+  PERSON_HEADS,
+  SELF,
+  sameWhose,
+  whoseDetail,
+} from './labels.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { memorySeams } from './seams.ts';
 import { type Tier1Rejection, validateTier1 } from './validate.ts';
@@ -83,15 +90,46 @@ async function heldInTheseWords(
   return null;
 }
 
-/** The words of what a subject is about, past its heading: "person.location.city" is location and city. */
+/** Words in a subject that do not say what it is about: "person.preference.flights.aisle_seat". */
+const VAGUE = new Set([
+  ...GENERIC_HEADS,
+  ...'instruction instructions note notes status profile personal location current'.split(' '),
+]);
+/** The words of what a subject is about, past its heading: "person.location.city" is city. */
 const subjectWords = (domainKey: string) =>
   detailWords(
     domainKey
-      .split('.')
-      .filter((part, index) => !SELF.has(part) && (index > 0 || !PERSON_HEADS.has(part)))
-      .join(' ')
-      .replace(/[_-]+/g, ' '),
+      .split(/[._-]+/)
+      .filter(
+        (part, index) =>
+          !SELF.has(part) && !VAGUE.has(part) && (index > 0 || !PERSON_HEADS.has(part)),
+      )
+      .join(' '),
   );
+
+/** A subject an older extraction gave a detail of the person's own: a person heading naming no one. */
+const olderOwnSubject = (domainKey: string) =>
+  PERSON_HEADS.has(domainKey.split('.')[0] ?? '') && whoseDetail(domainKey).kind !== 'other';
+
+/**
+ * Whether the person blocked this detail of their own under the subject an
+ * older extraction gave it. A block on person.allergy.peanuts still holds
+ * when the allergy is proposed as health.allergy: every word of what the
+ * blocked subject is about is in the new subject or its sentence. A shellfish
+ * allergy, or someone else's peanut allergy, is not blocked by it.
+ */
+function blockedUnderOlderSubject(
+  blocked: { domains: Set<string> },
+  proposal: { domain_key: string; content: string },
+): boolean {
+  if (whoseDetail(proposal.domain_key).kind !== 'self') return false;
+  const said = new Set([...subjectWords(proposal.domain_key), ...detailWords(proposal.content)]);
+  return [...blocked.domains].some((domain) => {
+    if (!olderOwnSubject(domain)) return false;
+    const words = [...subjectWords(domain)];
+    return words.length > 0 && words.every((word) => said.has(word));
+  });
+}
 
 /**
  * Whether a change proposed under a topic is to the person's own detail held
@@ -101,9 +139,7 @@ const subjectWords = (domainKey: string) =>
  */
 function ownDetailRenamed(held: string, proposed: string): boolean {
   if (held.includes(':exception:') || proposed.includes(':exception:')) return false;
-  if (!PERSON_HEADS.has(held.split('.')[0] ?? '') || whoseDetail(held).kind === 'other')
-    return false;
-  if (whoseDetail(proposed).kind !== 'self') return false;
+  if (!olderOwnSubject(held) || whoseDetail(proposed).kind !== 'self') return false;
   const before = subjectWords(held);
   return [...subjectWords(proposed)].some((word) => before.has(word));
 }
@@ -488,10 +524,11 @@ export async function commitExtraction(
         if (
           (proposal.op === 'add' || proposal.op === 'supersede') &&
           // A subject blocked under the name an earlier extraction gave it stays blocked.
-          [
+          ([
             proposal,
             ...olderOwnSubjects(proposal.domain_key).map((domain_key) => ({ domain_key })),
-          ].some((subject) => isBlocked(blocked, subject))
+          ].some((subject) => isBlocked(blocked, subject)) ||
+            blockedUnderOlderSubject(blocked, proposal))
         )
           refused.push({
             index,

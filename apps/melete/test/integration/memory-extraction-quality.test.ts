@@ -293,6 +293,125 @@ withDb('extraction keeps what matters once', () => {
     ]);
   });
 
+  test('an absence said again for the same days is the one held, and for other days is another', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const first = await said(db, scope, 'goa', "I'm in Goa until Sunday.");
+    await commitExtraction(db.sql, scope, first, {
+      proposals: [
+        {
+          ...unkeyed(first, 'travel.away', 'in Goa until Sunday', 'Away in Goa until Sunday'),
+          kind: 'exception',
+          valid_until: '2026-08-16T23:59:59Z',
+        } as ExtractionProposal,
+      ],
+    });
+    /** What a model answered: the same words, for the days given. */
+    const answer = (valid_from: string, valid_until: string) => ({
+      chat: async () =>
+        JSON.stringify({
+          proposals: [
+            {
+              op: 'add',
+              claim_id: null,
+              expected_revision: null,
+              domain_key: 'travel.away',
+              content: 'Away in Goa until Sunday',
+              kind: 'exception',
+              factual_status: 'attributed',
+              valid_from,
+              valid_until,
+              lasting: true,
+              about: 'temporary_exception',
+              sources: [{ quote: 'in Goa until Sunday' }],
+            },
+          ],
+        }),
+    });
+    const again = await said(
+      db,
+      scope,
+      'goa-again',
+      "Reminder: I'm in Goa until Sunday.",
+      '2026-08-12T09:00:00Z',
+    );
+    const same = await proposeExtraction(
+      db.sql,
+      scope,
+      again,
+      answer('2026-08-12T09:00:00Z', '2026-08-16T23:59:59Z'),
+    );
+    expect(same.map((item) => item.op)).toEqual(['no-op']);
+    await commitExtraction(db.sql, scope, again, { proposals: same });
+    const later = await said(
+      db,
+      scope,
+      'goa-later',
+      "I'm in Goa until Sunday.",
+      '2026-09-14T09:00:00Z',
+    );
+    const other = await proposeExtraction(
+      db.sql,
+      scope,
+      later,
+      answer('2026-09-14T09:00:00Z', '2026-09-20T23:59:59Z'),
+    );
+    expect(other.map((item) => item.op)).toEqual(['add']);
+    await commitExtraction(db.sql, scope, later, { proposals: other });
+    const held = await db.sql`select c.domain_key from memory_claims c
+      where c.space_id = ${scope.spaceId} and not c.hidden order by c.domain_key`;
+    expect(held.map((row) => String(row.domain_key))).toEqual([
+      'travel.away:exception:2026-08-10T09:00:00Z:2026-08-16T23:59:59Z',
+      'travel.away:exception:2026-09-14T09:00:00Z:2026-09-20T23:59:59Z',
+    ]);
+  });
+
+  test('a lasting detail in the same words as an absence is not filed under the absence', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const away = await said(db, scope, 'away', 'I work from home on Thursdays this month.');
+    await commitExtraction(db.sql, scope, away, {
+      proposals: [
+        {
+          ...unkeyed(
+            away,
+            'work.location',
+            'work from home on Thursdays',
+            'Works from home on Thursdays',
+          ),
+          kind: 'exception',
+          valid_until: '2026-08-31T23:59:59Z',
+        } as ExtractionProposal,
+      ],
+    });
+    const lasting = await said(
+      db,
+      scope,
+      'lasting',
+      'I work from home on Thursdays.',
+      '2026-08-12T09:00:00Z',
+    );
+    const result = await commitExtraction(
+      db.sql,
+      scope,
+      { ...lasting, claims: [] },
+      {
+        proposals: [
+          unkeyed(
+            lasting,
+            'work.schedule',
+            'work from home on Thursdays',
+            'Works from home on Thursdays',
+          ),
+        ],
+      },
+    );
+    expect(result.status).toBe('committed');
+    expect(
+      (await heldNow(db, scope)).map(([domainKey]) => String(domainKey).split(':')[0]),
+    ).toEqual(['work.location', 'work.schedule']);
+  });
+
   test('a detail learned in a private conversation is never matched from an ordinary one', async () => {
     if (!db) return;
     const scope = await createScope(db);
@@ -334,7 +453,7 @@ withDb('extraction keeps what matters once', () => {
       db,
       scope,
       'before',
-      'I live in Pune. My sister Maya lives in Lisbon.',
+      'I live in Pune. My sister Maya lives in Lisbon. I am travelling until the 20th.',
     );
     await commitExtraction(db.sql, scope, before, {
       proposals: [
@@ -345,8 +464,19 @@ withDb('extraction keeps what matters once', () => {
           'My sister Maya lives in Lisbon',
           'Sister Maya lives in Lisbon',
         ),
+        {
+          ...unkeyed(
+            before,
+            'person.travel.away',
+            'travelling until the 20th',
+            'Travelling until the 20th',
+          ),
+          kind: 'exception',
+          valid_until: '2026-08-20T00:00:00Z',
+        } as ExtractionProposal,
       ],
     });
+    const away = 'exception:2026-08-10T09:00:00Z:2026-08-20T00:00:00Z';
     const supersede = (
       batch: NonNullable<Awaited<ReturnType<typeof claimWork>>>,
       held: string,
@@ -385,11 +515,15 @@ withDb('extraction keeps what matters once', () => {
     expect(await heldNow(db, scope)).toEqual([
       ['person.location.city', 'Lives in Delhi', 1, 2],
       ['person.maya.city', 'Sister Maya lives in Lisbon', 1, 1],
+      [`person.travel.away:${away}`, 'Travelling until the 20th', 1, 1],
     ]);
-    // Someone else's detail, or the person's own about another thing, is still not changed under another subject.
+    // Someone else's detail, the person's own about another thing or changed as
+    // someone else's, and an absence are still not changed under another subject.
     for (const [held, proposed] of [
       ['person.maya.city', 'home.city'],
       ['person.location.city', 'food.diet'],
+      ['person.location.city', 'person.maya.city'],
+      [`person.travel.away:${away}`, 'travel.away'],
     ] as const) {
       const again = await said(
         db,
@@ -406,7 +540,23 @@ withDb('extraction keeps what matters once', () => {
     expect((await heldNow(db, scope)).map(([, content]) => content)).toEqual([
       'Lives in Delhi',
       'Sister Maya lives in Lisbon',
+      'Travelling until the 20th',
     ]);
+    // Two changes to it in one message are refused together, as for any one detail.
+    const twice = await said(
+      db,
+      scope,
+      'twice',
+      'I live in Mumbai now, in Mumbai.',
+      '2026-08-14T09:00:00Z',
+    );
+    const doubled = await commitExtraction(db.sql, scope, twice, {
+      proposals: [
+        supersede(twice, 'person.location.city', 'home.city', 'Mumbai now', 'Lives in Mumbai'),
+        supersede(twice, 'person.location.city', 'location.city', 'in Mumbai', 'Lives in Mumbai'),
+      ],
+    });
+    expect(doubled).toMatchObject({ status: 'rejected', reason: 'conflicting_changeset' });
   });
 
   test('a changed value is the next revision of its detail, with the old one in its history', async () => {
@@ -473,6 +623,51 @@ withDb('extraction keeps what matters once', () => {
     const [refused] =
       await db.sql`select reason from memory_rejections where work_id = ${batch.work.id}`;
     expect(refused?.reason).toBe('blocked_by_person');
+  });
+
+  test('a detail the person blocked under an older subject is not learned again under its topic', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    // Blocked on an install where a real model filed the allergy under a person heading.
+    await db.sql`insert into memory_blocks (id, space_id, domain_key, key, label)
+      values ('mb_older_topic', ${scope.spaceId}, 'person.allergy.peanuts', null, 'Allergy peanuts')`;
+    const batch = await said(
+      db,
+      scope,
+      'again',
+      'I am allergic to peanuts, keep the peanut allergy in mind for dinner bookings. I am also allergic to shellfish. My sister Lena is allergic to peanuts.',
+    );
+    const result = await commitExtraction(db.sql, scope, batch, {
+      proposals: [
+        unkeyed(batch, 'health.allergy.peanuts', 'allergic to peanuts', 'Allergic to peanuts'),
+        unkeyed(
+          batch,
+          'food.instruction.dinner_bookings.allergy',
+          'keep the peanut allergy in mind for dinner bookings',
+          'Keep the peanut allergy in mind for dinner bookings',
+        ),
+        unkeyed(
+          batch,
+          'health.allergy.shellfish',
+          'allergic to shellfish',
+          'Allergic to shellfish',
+        ),
+        unkeyed(
+          batch,
+          'person.lena.allergy',
+          'My sister Lena is allergic to peanuts',
+          'Sister Lena is allergic to peanuts',
+        ),
+      ],
+    });
+    expect(result.status).toBe('committed');
+    expect(await heldNow(db, scope)).toEqual([
+      ['health.allergy.shellfish', 'Allergic to shellfish', 1, 1],
+      ['person.lena.allergy', 'Sister Lena is allergic to peanuts', 1, 1],
+    ]);
+    const refused =
+      await db.sql`select reason from memory_rejections where work_id = ${batch.work.id}`;
+    expect(refused.map((row) => row.reason)).toEqual(['blocked_by_person', 'blocked_by_person']);
   });
 
   test("the person's own allergy, diet and seat are filed under them, as a real model answered", async () => {

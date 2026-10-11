@@ -3,7 +3,8 @@
  * of other imports so every place that names a detail (the memory page, a
  * chat's work log, a room) can use it.
  */
-const GENERIC_HEADS = new Set([
+/** Subject heads that say nothing about what a detail is. */
+export const GENERIC_HEADS = new Set([
   'fact',
   'facts',
   'user',

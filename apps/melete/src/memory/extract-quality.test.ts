@@ -319,6 +319,7 @@ describe("the person's own details are filed under them, never as someone in the
         ),
         // With no word on whose it is, a subject naming nobody said is left alone.
         said('person.priya.role', 'Runs the design team', 'runs the design team'),
+        said('person.diet', 'Vegetarian', 'vegetarian'),
       ]),
     ).toEqual([
       'person.maya.city',
@@ -326,6 +327,7 @@ describe("the person's own details are filed under them, never as someone in the
       'person.landlord.mr_patel',
       'person.user.sister',
       'person.priya.role',
+      'person.diet',
     ]);
   });
 
@@ -557,6 +559,23 @@ describe('a detail is the same only when it is about the same someone', () => {
       [own('person.sam.diet', 'Vegetarian')],
     );
     expect(lenaDiet).toMatchObject({ op: 'add', domain_key: 'person.lena.diet' });
+    // A subject an older extraction gave the person's own detail is never someone else's.
+    const [maya] = mergeIntoHeld(
+      [said('person.maya.allergy', 'Allergic to peanuts', 'Maya is allergic to peanuts')],
+      [own('person.allergy.peanuts', 'Allergic to peanuts')],
+    );
+    expect(maya).toMatchObject({ op: 'add', domain_key: 'person.maya.allergy' });
+    const [older] = mergeIntoHeld(
+      [said('person.allergy.peanuts', 'Allergic to peanuts', 'I am allergic to peanuts')],
+      [own('person.maya.allergy', 'Allergic to peanuts')],
+    );
+    expect(older).toMatchObject({ op: 'add', domain_key: 'person.allergy.peanuts' });
+    // A word that is also someone's name names them only when written as a name.
+    const [mine] = mergeIntoHeld(
+      [said('food.diet', 'Vegetarian, may eat fish', 'I am vegetarian but may eat fish')],
+      [own('person.may.diet', 'Vegetarian, may eat fish')],
+    );
+    expect(mine).toMatchObject({ op: 'add', domain_key: 'food.diet' });
     // Nor is it filed as the person's own when the model calls it theirs.
     const reply = readExtractionReply(
       JSON.stringify({
