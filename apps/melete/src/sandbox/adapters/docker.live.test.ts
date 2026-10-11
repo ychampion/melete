@@ -590,6 +590,62 @@ if (!live) {
       expect(saved.address).toBe('http://127.0.0.1:8765/pic.png');
       expect(saved.reason).toBeString();
     });
+
+    test('two chats on one computer each have a display and a browser of their own', async () => {
+      const handle = await open();
+      async function* site() {
+        for (const name of ['flights', 'groceries'])
+          yield {
+            path: `/work/chats/${name}.html`,
+            bytes: new TextEncoder().encode(`<!doctype html><title>${name}</title><p>${name}</p>`),
+            mode: 0o644,
+          };
+      }
+      await host.putFiles(handle, site(), signal());
+      const served = await shell(
+        handle,
+        'cd /work/chats && (nohup python3 -m http.server 8766 --bind 127.0.0.1 >/tmp/http-chats.log 2>&1 &) ; sleep 1; echo up',
+      );
+      expect(served.text).toContain('up');
+      const first = { number: 0, id: 'sbd_01J0LIVEDISPLAY000000000A' };
+      const second = { number: 1, id: 'sbd_01J0LIVEDISPLAY000000000B' };
+      const windowOf = async (display: typeof first, want: string) => {
+        let last = '';
+        for (let tries = 0; tries < 40; tries += 1) {
+          last = (
+            JSON.parse(text(await host.computer(handle, { kind: 'info' }, signal(), display))) as {
+              window: string;
+            }
+          ).window;
+          if (last.startsWith(want)) return last;
+          await delay(250);
+        }
+        throw new Error(`display ${display.number} says ${JSON.stringify(last)}, not ${want}`);
+      };
+      await host.computer(
+        handle,
+        { kind: 'open', url: 'http://127.0.0.1:8766/flights.html' },
+        signal(),
+        first,
+      );
+      await host.computer(
+        handle,
+        { kind: 'open', url: 'http://127.0.0.1:8766/groceries.html' },
+        signal(),
+        second,
+      );
+      // Each display still shows its own page after the other opened one.
+      await windowOf(first, 'flights');
+      await windowOf(second, 'groceries');
+      const shot = await host.computer(handle, { kind: 'screenshot' }, signal(), second);
+      const size = new DataView(shot.buffer, shot.byteOffset, shot.byteLength);
+      expect([size.getUint32(16), size.getUint32(20)]).toEqual([1024, 768]);
+      // Ending one display leaves the other as it was.
+      await host.endDisplay(handle, second, signal());
+      const left = await shell(handle, 'test -e /tmp/.X11-unix/X1 && echo there || echo gone');
+      expect(left.text.trim()).toBe('gone');
+      await windowOf(first, 'flights');
+    });
   });
 
   // The computer's own git (curl with GnuTLS) holds the egress CA to its name
