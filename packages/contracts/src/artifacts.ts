@@ -384,7 +384,16 @@ export const personFileList = z
 export type PersonFileList = z.infer<typeof personFileList>;
 
 export const personFileDeleted = z
-  .strictObject({ id: z.string(), trash_id: trashId, restorable_until: timestamp })
+  .strictObject({
+    id: z.string(),
+    trash_id: trashId,
+    restorable_until: timestamp,
+    /**
+     * How many earlier deletes were taken out of the trash to make room for
+     * this one. They can no longer be put back.
+     */
+    evicted: z.number().int().nonnegative(),
+  })
   .meta({ id: 'PersonFileDeleted' });
 export type PersonFileDeleted = z.infer<typeof personFileDeleted>;
 

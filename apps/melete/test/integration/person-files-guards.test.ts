@@ -45,6 +45,7 @@ const env = loadEnv({
 const app = createApp({ env, db: fixture?.db ?? null, checkDatabase: async () => 'ok' });
 let cookie = '';
 let otherCookie = '';
+let otherPrincipal = '';
 let spaceId = '';
 let jobId = '';
 let attemptId = '';
@@ -77,6 +78,7 @@ if (fixture) {
   await fixture.sql`insert into session (token_hash, principal_id, owner_id, expires_at)
     values (${hash(token)}, ${someone?.id}, ${owner?.id}, now() + interval '1 day')`;
   otherCookie = `melete_session=${token}`;
+  otherPrincipal = String(someone?.id);
 }
 afterAll(async () => {
   await fixture?.close();
@@ -382,5 +384,139 @@ databaseTest(
     for (const name of await readdir(trashes))
       left.push(...(await readdir(join(trashes, name)).catch(() => [])));
     expect(left).not.toContain(again);
+  },
+);
+
+/** Another conversation in this space, of the same person: a chat, or a run started from one. */
+async function anotherJob(kind: 'chat' | 'run', parent: string | null = null): Promise<string> {
+  const id = recordId('job');
+  await sql()`insert into job (id, space_id, principal_id, kind, title, objective, state, lease_epoch,
+      budget, constraints, experience_parent_id)
+    select ${id}, space_id, principal_id, ${kind}, ${kind === 'chat' ? 'Another chat' : 'Weekly report'},
+      objective, state, lease_epoch, budget, constraints, ${parent}
+    from job where id = ${jobId}`;
+  return id;
+}
+
+databaseTest(
+  'three restores of one delete at once: one puts it back, the others find nothing to put back',
+  async () => {
+    const id = await savedInFiles('together/agenda.md', 'agenda\n');
+    const trash = await trashOf(await remove(id));
+    const results = await Promise.all([restore(id, trash), restore(id, trash), restore(id, trash)]);
+    expect(results.map((response) => response.status).sort()).toEqual([200, 404, 404]);
+    expect(await readFile(inFiles('together', 'agenda.md'), 'utf8')).toBe('agenda\n');
+    expect(await readdir(join(spacesRoot, spaceId, '.trash', jobId))).not.toContain(trash);
+  },
+);
+
+databaseTest(
+  'a file of the person’s own under .melete in Files is listed and deleted like any other',
+  async () => {
+    const id = await savedInFiles('.melete/plan.md', 'my plan\n');
+    expect((await list()).some((file) => file.id === id && file.deletable)).toBe(true);
+    const trash = await trashOf(await remove(id));
+    expect(await exists(inFiles('.melete', 'plan.md'))).toBe(false);
+    expect((await restore(id, trash)).status).toBe(200);
+    expect(await readFile(inFiles('.melete', 'plan.md'), 'utf8')).toBe('my plan\n');
+    // In a chat's own folder, .melete stays Melete's working folder.
+    await mkdir(inChat('.melete', 'exec'), { recursive: true });
+    await writeFile(inChat('.melete', 'exec', 'output.txt'), 'output\n');
+    const working = await fileAction({
+      path: '.melete/exec/output.txt',
+      area: 'work',
+      content_hash: hash('output\n'),
+    });
+    expect((await list()).some((file) => file.id === working)).toBe(false);
+    expect((await remove(working)).status).toBe(404);
+    expect(await readFile(inChat('.melete', 'exec', 'output.txt'), 'utf8')).toBe('output\n');
+  },
+);
+
+databaseTest(
+  'a delete that makes room in a full trash says how many earlier deletes it took out',
+  async () => {
+    const small = createApp({
+      env: loadEnv({
+        MELETE_SPACES_DIR: spacesRoot,
+        MELETE_WORK_DIR: workRoot,
+        MELETE_ENABLE_FAKE_PROVIDER: 'true',
+        MELETE_TRASH_MAX_MB: '1',
+      }),
+      db: fixture?.db ?? null,
+      checkDatabase: async () => 'ok',
+    });
+    const chat = await anotherJob('chat');
+    const big = 'x'.repeat(600 * 1024);
+    const first = await savedInFiles('big/first.bin', big, chat);
+    const second = await savedInFiles('big/second.bin', big, chat);
+    const removeHere = (id: string) =>
+      small.request(`/files/${id}`, { method: 'DELETE', headers: { cookie } });
+    const one = await removeHere(first);
+    expect(one.status).toBe(200);
+    const firstBody = (await one.json()) as { trash_id: string; evicted: number };
+    expect(firstBody.evicted).toBe(0);
+    const two = await removeHere(second);
+    expect(two.status).toBe(200);
+    expect(((await two.json()) as { evicted: number }).evicted).toBe(1);
+    // The first delete really is gone from the trash.
+    expect((await restore(first, firstBody.trash_id)).status).toBe(404);
+  },
+);
+
+databaseTest('a file a run saved goes into the trash of the chat it was started from', async () => {
+  const run = await anotherJob('run', jobId);
+  const id = await savedInFiles('reports/weekly.md', 'weekly\n', run);
+  const trash = await trashOf(await remove(id));
+  // Where the chat's own restore looks for it.
+  expect(await readdir(join(spacesRoot, spaceId, '.trash', jobId))).toContain(trash);
+  expect(await exists(join(spacesRoot, spaceId, '.trash', run, trash))).toBe(false);
+  expect((await restore(id, trash)).status).toBe(200);
+  expect(await readFile(inFiles('reports', 'weekly.md'), 'utf8')).toBe('weekly\n');
+});
+
+databaseTest(
+  'in a shared space, only its owner deletes a file no chat names; a member cannot',
+  async () => {
+    const digestOf = (value: string) => hash(value.split('=')[1] ?? '');
+    const [me] = await sql()`select principal_id from session
+      where token_hash = ${digestOf(cookie)}`;
+    // A room the first person owns, with the second as a member.
+    const shared = recordId('sp');
+    await sql()`insert into space (id, name, kind, owner_principal_id, audience, git_path)
+      values (${shared}, 'Household', 'shared', ${me?.principal_id}, 'space',
+        ${join(spacesRoot, shared)})`;
+    await sql()`insert into space_membership (principal_id, space_id, role)
+      values (${me?.principal_id}, ${shared}, 'owner'), (${otherPrincipal}, ${shared}, 'member')`;
+    const text = 'house rules\n';
+    const rules = join(spacesRoot, shared, 'artifacts', 'house', 'rules.md');
+    await mkdir(dirname(rules), { recursive: true });
+    await writeFile(rules, text);
+    const id = recordId('art');
+    await sql()`insert into artifact
+      (id, space_id, job_id, source_job_id, area, path, content_hash, mime, size)
+      values (${id}, ${shared}, null, null, 'artifacts', 'house/rules.md', ${hash(text)},
+        'text/markdown', ${Buffer.byteLength(text)})`;
+    const sessions = [digestOf(cookie), digestOf(otherCookie)];
+    const before = await sql()`select token_hash, space_id, membership_generation from session
+      where token_hash in ${sql()(sessions)}`;
+    try {
+      await sql()`update session set space_id = ${shared}, membership_generation = 0
+        where token_hash in ${sql()(sessions)}`;
+      const theirs = (await list({ cookie: otherCookie })).find((file) => file.id === id);
+      expect(theirs?.deletable).toBe(false);
+      expect((await remove(id, otherCookie)).status).toBe(403);
+      expect(await readFile(rules, 'utf8')).toBe(text);
+      const owners = (await list()).find((file) => file.id === id);
+      expect(owners?.deletable).toBe(true);
+      const trash = await trashOf(await remove(id));
+      expect((await restore(id, trash, otherCookie)).status).toBe(403);
+      expect((await restore(id, trash)).status).toBe(200);
+      expect(await readFile(rules, 'utf8')).toBe(text);
+    } finally {
+      for (const row of before)
+        await sql()`update session set space_id = ${row.space_id},
+          membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
+    }
   },
 );

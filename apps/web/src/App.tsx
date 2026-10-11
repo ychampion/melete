@@ -6,7 +6,7 @@ import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { stopPushHere } from './experience/account.ts';
-import { adapter, type Result, SESSION_ENDED_EVENT } from './experience/adapter.ts';
+import { adapter, type Result, SESSION_ENDED_EVENT, servesBrowser } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import { setDisplayZone } from './experience/clock.ts';
 import {
@@ -213,7 +213,7 @@ export function App() {
     });
     // The signed-in sites are served only where the service has a browser.
     void adapter.browserSites().then((sites) => {
-      setCapabilities((c) => ({ ...c, browser: sites.data !== null }));
+      setCapabilities((c) => ({ ...c, browser: servesBrowser(sites) }));
     });
   }, [signedIn, refreshAgentsSoon, refreshConversations]);
 
