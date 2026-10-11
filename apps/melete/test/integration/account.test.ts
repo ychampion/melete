@@ -598,6 +598,11 @@ withDb('deleting an account', () => {
     });
     await h.sql`update principal set display_name = 'Nina Baker' where id = ${room.memberId}`;
     const appId = await responsesInRoom(room);
+    // The app is shared with someone else too, and that share is the owner's to keep.
+    const otherId = newId('own');
+    await h.sql`insert into principal (id, email) values (${otherId}, ${`${otherId}@example.test`})`;
+    await h.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role, granted_by)
+      values (${newId('apg')}, ${appId}, 'principal', ${otherId}, 'view', ${room.principalId})`;
     const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
       from principal where id = ${room.memberId}`;
     const before = await responsesSeenBy(room.sessionToken, appId);
@@ -627,6 +632,10 @@ withDb('deleting an account', () => {
       await h.sql`select 1 from room_presence where principal_id = ${room.memberId}`,
     ).toHaveLength(0);
     expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(0);
+    expect(
+      await h.sql`select 1 from app_grant where app_id = ${appId} and grantee_id = ${otherId}
+        and revoked_at is null`,
+    ).toHaveLength(1);
   }, 120_000);
   test('an account deleted before its responses were unlinked is unlinked, and goes, on the next pass', async () => {
     if (!h) throw new Error('Postgres unavailable');
