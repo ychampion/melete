@@ -6,9 +6,11 @@
  * without a screen.
  */
 import { adapter } from '../experience/adapter.ts';
+import { turnAgent } from '../experience/hooks.ts';
 import type { TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type {
+  Agent,
   CardAction,
   ComputerBrowser,
   SandboxComputer,
@@ -159,6 +161,14 @@ export function runningTurn(turns: TranscriptTurn[]): TranscriptTurn | null {
   }
   return null;
 }
+
+/** Who the line over the composer names: the running turn's agent, else the chat's. */
+export const workerName = (
+  turn: TranscriptTurn | null | undefined,
+  agents: Agent[],
+  removed: Agent[] | undefined,
+  chatAgent: Agent | null | undefined,
+): string => (turnAgent(agents, removed, turn?.turn.agent_id) ?? chatAgent)?.name ?? 'Melete';
 
 /**
  * The line over the composer while the agent is at work on its computer: the

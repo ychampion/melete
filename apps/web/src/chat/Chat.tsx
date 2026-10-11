@@ -69,7 +69,7 @@ import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
-import { runningTurn } from './live-card.ts';
+import { runningTurn, workerName } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
@@ -571,7 +571,7 @@ function useTranscript() {
 let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
-  const { agents, refreshConversations } = useApp();
+  const { agents, removedAgents, refreshConversations } = useApp();
   const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
   // A new chat started from an agent (Home, the sidebar) begins with that agent.
@@ -1492,7 +1492,7 @@ ${words}`
               <WorkPill
                 turn={atWorkTurn}
                 conversationId={conversationId}
-                agentName={agent?.name ?? 'Melete'}
+                agentName={workerName(atWorkTurn, agents, removedAgents, agent)}
                 onStop={() =>
                   conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
                 }

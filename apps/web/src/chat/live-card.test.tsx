@@ -17,6 +17,7 @@ import {
 } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type {
+  Agent,
   AgentComputer,
   CardAction,
   ExperienceEvent,
@@ -34,6 +35,7 @@ import {
   isComputerTool,
   runningTurn,
   takeOverAction,
+  workerName,
   workStep,
 } from './live-card.ts';
 import { WorkLog } from './WorkLog.tsx';
@@ -665,4 +667,33 @@ test('the line goes once the agent is writing its answer', () => {
   ]);
   expect(answering.status).toBe('streaming');
   expect(workStep(answering, 'Nova')).toBeNull();
+});
+
+test('the line names the agent whose turn is at work, not the chat’s own', () => {
+  const agent = (id: string, name: string) => ({ id, name }) as Agent;
+  const agents = [agent('nova', 'Nova'), agent('scout', 'Scout')];
+  const scouting = {
+    ...browsing(() => [tool(entry('call:seat', { title: 'Chose seats 14A and 14B' }))]),
+  };
+  const turn = { ...scouting, turn: { ...scouting.turn, agent_id: 'scout' } };
+  const name = workerName(turn, agents, [], agents[0]);
+  expect(name).toBe('Scout');
+  const html = renderToStaticMarkup(
+    <WorkPill
+      turn={turn}
+      conversationId="job_1"
+      agentName={name}
+      onStop={() => {}}
+      onTakeOver={() => {}}
+      onOpen={() => {}}
+      onError={() => {}}
+    />,
+  );
+  expect(html).toContain('Scout is using the browser');
+  expect(html).toContain('aria-label="Stop Scout"');
+  // An agent no longer listed is still named; with no turn, the chat’s agent is.
+  expect(workerName(turn, [agents[0] as Agent], [agent('scout', 'Scout')], agents[0])).toBe(
+    'Scout (removed)',
+  );
+  expect(workerName(null, agents, [], agents[0])).toBe('Nova');
 });
