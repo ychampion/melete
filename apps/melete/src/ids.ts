@@ -13,6 +13,7 @@ export function newId(
     | 'qst'
     | 'agent'
     | 'turn'
+    | 'steer'
     | 'pause'
     | 'task'
     | 'mile'

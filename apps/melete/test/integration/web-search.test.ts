@@ -409,6 +409,21 @@ withDb('web search', () => {
         },
       });
       expect(JSON.stringify(traces[0]?.payload)).not.toContain('clinics');
+      // Its attempt is told the step was refused, so the run never counts it as one that worked.
+      const notes = await handle.sql`select attempt_id, payload from event
+        where job_id = ${sensitive.job_id} and type = 'notice'
+          and payload->>'phase' = 'proposal_refused'`;
+      expect(notes.map((note) => [note.attempt_id, note.payload])).toEqual([
+        [
+          sensitive.attempt_id,
+          {
+            phase: 'proposal_refused',
+            kind: 'web.search',
+            code: 'scope_denied',
+            reason: SEARCH_KEPT_PRIVATE,
+          },
+        ],
+      ]);
 
       await store.saveSettings(spaceId, { private_space: true }, null);
       try {

@@ -36,6 +36,7 @@ import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
 import { personStarted } from './wake-guard.ts';
+import { openWakeTurn } from './wake-turn.ts';
 
 export const eventDelivery = z.object({
   connection_id: prefixedId(ID_PREFIXES.connection),
@@ -627,6 +628,9 @@ export class TriggerService {
           text: row.objective,
         });
     }
+    // A conversation's own schedule answers each occurrence in a new message.
+    if (row.kind === 'chat' && registration.kind === 'schedule')
+      row = await openWakeTurn(tx, row, `schedule:${registration.id}:${received.seq}`);
     return this.jobs.move(
       tx,
       row,

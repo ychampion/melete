@@ -311,13 +311,14 @@ describe('Docker attempt supervision', () => {
     const cases = [
       // A million-token window read as text, so the owner's cap on the trigger decides.
       ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', false, '1000000', '200000'],
-      // The same window with pictures: the body limit, less their room, decides.
+      // The same window with pictures: the body still holds more than the cap
+      // once their room is set aside, so the cap decides here too.
       [
         'fireworks',
         'accounts/fireworks/models/deepseek-v4p1-flash',
         undefined,
         '1000000',
-        '131072',
+        '200000',
       ],
       // A model the catalog does not name: the documented fallback and the
       // engine's own trigger for it.

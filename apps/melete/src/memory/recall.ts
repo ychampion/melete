@@ -403,7 +403,7 @@ export const SAFETY_SIZE = 4;
 export const PROFILE_RESERVED = 3;
 /** Words that make a saved detail one about what the person must not eat or must eat. */
 const SAFETY_WORDS =
-  '(allerg|anaphyla|epipen|intoleran|celiac|coeliac|gluten|lactose|dairy.free|nut.free|vegan|vegetarian|pescatarian|halal|kosher|diet)';
+  '(allerg|anaphyla|epipen|intoleran|celiac|coeliac|gluten|lactose|dairy.free|nut.free|vegan|vegetarian|pescatarian|halal|kosher|diet|can.?t eat|cannot eat|never eat)';
 /**
  * Allergies and dietary needs, newest first: what must never be missed when
  * the person asks about food, a restaurant or a trip, however they word it.

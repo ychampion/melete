@@ -556,6 +556,18 @@ def test_a_failed_dispatch_says_so(client, broker):
     assert "did not happen" in result["instruction"]
 
 
+def test_a_failed_or_denied_step_carries_the_brokers_reason(client, broker):
+    for status, message in (
+        ("failed", "This read failed: the mailbox refused the sign-in. It changed nothing."),
+        ("denied", "You denied this effect. It was not sent, and it will not be."),
+    ):
+        broker.propose_response = {"action_id": ACTION, "status": status, "message": message}
+        result = build_handler(client, CATALOG[0])(to=["a@example.com"], subject="s", body="b")
+        assert result["status"] == status
+        assert result["message"] == message
+        assert "did not happen" in result["instruction"]
+
+
 def test_a_broker_refusal_keeps_the_brokers_own_code(client, broker):
     broker.status_code = 403
     broker.error_body = {"error": {"code": "scope_denied", "message": "out of scope"}}

@@ -221,6 +221,7 @@ import {
   startSignInResponse,
 } from './provider-signin.ts';
 import {
+  pushFocusResponse,
   pushPublicKeyResponse,
   pushSettingsResponse,
   pushSettingsUpdate,
@@ -1396,6 +1397,15 @@ export function buildOpenApiDocument() {
             summary: 'Change what Melete pushes and how often',
             requestBody: json(pushSettingsUpdate),
             responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+        },
+        '/push/focus': {
+          post: {
+            tags: ['push'],
+            summary: 'Say that a client of this person is open in front of them now',
+            description:
+              'Sent when a client gains focus and while it stays visible. A conversation that finishes within a couple of minutes of it is not pushed.',
+            responses: { '200': jsonResponse('Focus recorded', pushFocusResponse) },
           },
         },
         '/situations': {

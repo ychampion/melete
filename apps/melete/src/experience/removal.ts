@@ -303,6 +303,11 @@ export async function removeJobs(
     await tx`delete from acceptance_journal where job_id = any(${list})`;
     await tx`delete from reply_obligation where job_id = any(${list})`;
     await tx`delete from notification where job_id = any(${list})`;
+    // Pushes about these chats and runs, sent or waiting, would open nothing now.
+    await tx`delete from push_intent where url = any(${list.flatMap((id) => [
+      `/#/chat/${id}`,
+      `/#/runs/${id}`,
+    ])})`;
     await tx`update plan_milestone set child_job_id = null where child_job_id = any(${list})`;
     // Pointers from other rows to these jobs' actions, which go with them.
     await tx`update experience_undo set reversal_action_id = null
