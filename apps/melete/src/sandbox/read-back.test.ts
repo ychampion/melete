@@ -142,20 +142,23 @@ test('a move into Files of a path the read-back left on the computer fails with 
       removeMoved: async () => null,
     });
 
-  // What a move ends as, so a move that should have been refused shows what it did instead.
+  // A refused move ends as a failed outcome whose reason says why; anything else is shown whole.
   const ended = (from: string) =>
     move(connector(ledger()), from).then(
-      (result) => `succeeded: ${JSON.stringify(result)}; skipped: ${JSON.stringify(report.skipped)}`,
-      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      (result) =>
+        result.outcome === 'failed'
+          ? result.reason
+          : `${result.outcome}: ${JSON.stringify(result)}; skipped: ${JSON.stringify(report.skipped)}`,
+      (error: unknown) => `threw: ${error instanceof Error ? error.message : String(error)}`,
     );
-  expect(await ended('big.bin')).toBe(
+  expect(await ended('big.bin')).toStartWith(
     '"big.bin" is not in your workspace: the last read-back from your computer left it there (8 MB, over the 8 MB limit)',
   );
-  expect(await ended('tree/f1.txt')).toBe(
+  expect(await ended('tree/f1.txt')).toStartWith(
     '"tree/f1.txt" is not in your workspace: it is under tree/, which the last read-back from your computer left there (too many files)',
   );
   // A path no read-back skipped is still just not there.
-  await expect(move(connector(ledger()), 'never.txt')).rejects.toThrow(/ENOENT|no such file/);
+  expect(await ended('never.txt')).toStartWith('there is no "never.txt" in your workspace');
   // And what did come back moves.
   const moved = await move(connector(ledger()), 'made.txt');
   expect(moved.outcome).toBe('succeeded');

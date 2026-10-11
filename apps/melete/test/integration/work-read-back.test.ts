@@ -111,7 +111,10 @@ databaseTest(
         });
       };
 
-      await expect(move('Python-3.15.0.tar.xz', attempt)).rejects.toThrow(
+      const refused = await move('Python-3.15.0.tar.xz', attempt);
+      if (refused.outcome !== 'failed')
+        throw new Error(`expected a refusal, got ${refused.outcome}`);
+      expect(refused.reason).toContain(
         'the last read-back from your computer left it there (9 MB, over the 8 MB limit)',
       );
       const moved = await move('report.md', attempt);
