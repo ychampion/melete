@@ -390,6 +390,10 @@ export const EVENT_TYPES = [
   'hook_error',
   /** The agent went quiet for longer than its step may take, and was asked to report. */
   'stalled',
+  /** Words the person sent while a turn ran were read: by its attempt, live or at its start. */
+  'steer_delivered',
+  /** The turn ended before reading them, so they became a turn of their own. */
+  'steer_carried',
 ] as const;
 export const eventType = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof eventType>;

@@ -164,6 +164,8 @@ export function UserBubble({
           </span>
         ) : delivery === 'queued_offline' ? (
           <span>Will send when you’re back online</span>
+        ) : delivery === 'waiting_turn' ? (
+          <span>Sends when this answer ends</span>
         ) : delivery === 'failed_retry' ? (
           <>
             <span className="row" style={{ gap: 6, color: 'var(--danger)' }}>

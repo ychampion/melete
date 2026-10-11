@@ -6,22 +6,19 @@
  * with Open and Download. A reply that says "attached" before that is untrue,
  * so the turn's answer gets one plain line saying the file is not there yet.
  */
+import { CLAIMS_ATTACHED } from '@melete/runtime-hermes';
 import { savedFile } from '../artifact/shown.ts';
 
 export const NOT_ATTACHED_NOTE =
   'No file is attached to this reply yet. Ask me and I’ll put it in your Files.';
 
-/**
- * The agent saying it attached a file to this reply: "I've attached the list",
- * "The PDF is attached", "attached below". A file the person attached ("the
- * PDF you attached") is theirs, and other things called attached (a draft's
- * "the invoice is attached") are not claims about this reply.
+/*
+ * The agent saying it attached a file to this reply ("I've attached the list",
+ * "The PDF is attached", "attached below") is matched the way the runtime's
+ * claims check matches it (`CLAIMS_ATTACHED`). A file the person attached
+ * ("the PDF you attached") is theirs, and other things called attached (a
+ * draft's "the invoice is attached") are not claims about this reply.
  */
-const CLAIMS_ATTACHED = [
-  /\bI(?:'ve|’ve| have)? attached\b/i,
-  /\b(?:file|pdf|document|spreadsheet|image|picture|chart|copy|list|report|it)s? (?:is|are|has been|have been) attached\b/i,
-  /\battached (?:below|here|above|to this (?:reply|message))\b/i,
-];
 
 /** Work whose own text may say "attached": a message drafted or sent in the turn. */
 const WRITES_MESSAGES = /^(?:email|mail|message|slack|chat)\./;

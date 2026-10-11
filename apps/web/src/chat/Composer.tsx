@@ -168,10 +168,13 @@ export function Composer({
     onSend();
   };
 
+  // While the agent works, Enter still sends: the words reach it at its next
+  // step. Files wait for the turn to end; they start a turn of their own.
+  const steering = working && (state === 'stop' || state === 'pause') && !files.length;
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (state === 'send' && canSend) send();
+      if ((state === 'send' || steering) && canSend) send();
     }
   };
 
@@ -301,7 +304,11 @@ export function Composer({
             ref={textRef}
             rows={1}
             value={value}
-            placeholder={working && state !== 'send' ? `${agentName} is working…` : placeholder}
+            placeholder={
+              working && state !== 'send'
+                ? `${agentName} is working. Add something, or press Stop`
+                : placeholder
+            }
             disabled={disabled}
             aria-label={placeholder}
             onChange={(event) => onChange(event.target.value)}

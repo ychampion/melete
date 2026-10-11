@@ -350,7 +350,11 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
     const notes = page.events.filter((event) => event.item.type === 'note');
     expect(notes.map((event) => event.item)).toEqual([
-      { type: 'note', text: 'Waiting for a free slot — 2 other tasks are running' },
+      {
+        type: 'note',
+        text: 'Waiting for a free slot — 2 other tasks are running',
+        transient: true,
+      },
     ]);
     expect(notes[0]?.turn_id).toBeTruthy();
     expect(waitingForSlotNote(1)).toBe('Waiting for a free slot — 1 other task is running');

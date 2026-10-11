@@ -1959,6 +1959,7 @@ export class BrokerService implements BrokerOperations {
           request.kind === 'web.search'
         )
           await this.traceHeldSearch(claims, request.payload, error.message);
+        if (error instanceof BrokerFault) await this.traceRefusal(claims, request.kind, error);
         throw error;
       });
     const { key, repeated } = proposal;
@@ -1974,6 +1975,32 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  /**
+   * A step refused before any action was recorded leaves a note on its attempt,
+   * so what the run made of its steps counts it as held back rather than as one
+   * that worked. A fenced attempt has nothing to note. Like the search trace,
+   * writing it is never worth more than the refusal itself.
+   */
+  private async traceRefusal(claims: CapabilityClaims, kind: string, error: BrokerFault) {
+    if (error.code === 'stale_epoch' || error.code === 'revision_mismatch') return;
+    try {
+      await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, claims.job_id);
+        await checkAttempt(tx, job, claims);
+        await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
+          phase: 'proposal_refused',
+          kind,
+          code: error.code,
+          reason: error.message.slice(0, 500),
+        });
+      });
+    } catch (failure) {
+      process.stderr.write(
+        `broker: could not note a refused step: ${failure instanceof Error ? failure.message : String(failure)}\n`,
+      );
+    }
   }
 
   /**
