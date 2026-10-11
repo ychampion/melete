@@ -9484,7 +9484,7 @@
                       "additionalProperties": false
                     },
                     {
-                      "$ref": "#/components/schemas/__schema307"
+                      "$ref": "#/components/schemas/__schema311"
                     }
                   ]
                 }

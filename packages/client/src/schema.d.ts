@@ -21559,7 +21559,7 @@ export interface paths {
                             masked_email: string;
                             /** @constant */
                             status: "ok";
-                        } | components["schemas"]["__schema307"];
+                        } | components["schemas"]["__schema311"];
                     };
                 };
             };
