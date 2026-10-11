@@ -118,6 +118,15 @@ test('a browser out of reach for a moment keeps the sites section; no browser ro
   expect(
     servesBrowser({ data: null, error: 'No endpoint', unavailable: null, code: 'not_found' }),
   ).toBe(false);
+  // A member of a shared space: its signed-in sites are its owner's, and no retry changes that.
+  expect(
+    servesBrowser({
+      data: null,
+      error: 'Not this space',
+      unavailable: null,
+      code: 'space_not_found',
+    }),
+  ).toBe(false);
   expect(
     servesBrowser({
       data: null,

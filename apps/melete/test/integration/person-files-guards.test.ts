@@ -12,6 +12,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   realpath,
   rm,
   stat,
@@ -22,7 +23,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { PersonFile } from '@melete/contracts';
 import { recordId } from '../../src/broker/records.ts';
-import { sweepTrash } from '../../src/connectors/files-trash.ts';
+import {
+  filesTrash,
+  moveToTrash,
+  oneAtATime,
+  sweepTrash,
+} from '../../src/connectors/files-trash.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { seedJob } from '../helpers/broker.ts';
@@ -520,3 +526,52 @@ databaseTest(
     }
   },
 );
+
+/** Whether this process holds `path` open, looked for until it does or `ms` pass (Linux). */
+async function heldOpen(path: string, ms = 2000): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    for (const fd of await readdir('/proc/self/fd').catch(() => []))
+      if ((await readlink(`/proc/self/fd/${fd}`).catch(() => '')) === path) return true;
+    await Bun.sleep(10);
+  }
+  return false;
+}
+
+databaseTest(
+  'a file deleted and made again at its name after the delete was decided stays',
+  async () => {
+    const id = await savedInFiles('again/notes.md', 'first\n');
+    const place = filesTrash(await realpath(spacesRoot), spaceId, jobId);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The chat's trash is busy with something else while this delete waits its turn.
+    const busy = oneAtATime(place, () => gate);
+    const pending = remove(id);
+    await heldOpen(inFiles('again', 'notes.md'));
+    // Deleted and written again under the same name: on most disks the new
+    // file can be given the old one's number.
+    await rm(inFiles('again', 'notes.md'));
+    await writeFile(inFiles('again', 'notes.md'), 'second\n');
+    release();
+    await busy;
+    expect((await pending).status).toBe(409);
+    expect(await readFile(inFiles('again', 'notes.md'), 'utf8')).toBe('second\n');
+  },
+);
+
+databaseTest('a delete that went into a run’s own trash can still be put back', async () => {
+  const run = await anotherJob('run', jobId);
+  const id = await savedInFiles('reports/monthly.md', 'monthly\n', run);
+  // Where a delete of a file a run saved used to go.
+  const earlier = await moveToTrash(
+    filesTrash(await realpath(spacesRoot), spaceId, run),
+    [{ path: 'reports/monthly.md', hash: null }],
+    { days: 7 },
+  );
+  expect(await exists(inFiles('reports', 'monthly.md'))).toBe(false);
+  expect((await restore(id, earlier.trash_id as string)).status).toBe(200);
+  expect(await readFile(inFiles('reports', 'monthly.md'), 'utf8')).toBe('monthly\n');
+});

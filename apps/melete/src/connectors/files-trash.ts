@@ -186,7 +186,8 @@ const megabytes = (bytes: number) => `${Math.ceil(bytes / (1024 * 1024))} MB`;
  */
 const trashQueues = new Map<string, Promise<unknown>>();
 
-function oneAtATime<T>(place: TrashPlace, work: () => Promise<T>): Promise<T> {
+/** Runs `work` in its turn in this trash: after every delete and restore asked of it before. */
+export function oneAtATime<T>(place: TrashPlace, work: () => Promise<T>): Promise<T> {
   const key = [place.base, ...place.trash].join('\0');
   const previous = trashQueues.get(key) ?? Promise.resolve();
   // The queue carries on whether the one before succeeded or failed.

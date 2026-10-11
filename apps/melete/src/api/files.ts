@@ -389,31 +389,36 @@ export function mountFiles(
     if (!place) throw noFile();
     // Only a file that is there, and is a file: never a folder, never through
     // a link. The one checked here is the one that goes: anything put at its
-    // name since stays where it is.
-    let file: { dev: number; ino: number };
+    // name since stays where it is. It is held open until the move is done,
+    // so a file made at its name after it was deleted there cannot be given
+    // its number on the disk and pass for it.
+    let opened: Awaited<ReturnType<typeof openArtifact>>;
     try {
-      const opened = await openArtifact(roots, scope.spaceId, found.row);
-      try {
-        const checked = await opened.handle.stat();
-        file = { dev: checked.dev, ino: checked.ino };
-      } finally {
-        await opened.handle.close();
-      }
+      opened = await openArtifact(roots, scope.spaceId, found.row);
     } catch {
       throw noFile();
     }
-    const trashed = await moveToTrash(place, [{ path: target.path, hash: null, file }], {
-      days: trash.days,
-      maxBytes: trash.maxBytes,
-    }).catch((error: unknown) => {
-      throw new ServiceError(
-        'file_not_deleted',
-        error instanceof Error
-          ? `The file was not deleted: ${error.message}.`
-          : 'The file was not deleted.',
-        409,
-      );
-    });
+    let trashed: Awaited<ReturnType<typeof moveToTrash>>;
+    try {
+      const checked = await opened.handle.stat().catch(() => {
+        throw noFile();
+      });
+      const file = { dev: checked.dev, ino: checked.ino };
+      trashed = await moveToTrash(place, [{ path: target.path, hash: null, file }], {
+        days: trash.days,
+        maxBytes: trash.maxBytes,
+      }).catch((error: unknown) => {
+        throw new ServiceError(
+          'file_not_deleted',
+          error instanceof Error
+            ? `The file was not deleted: ${error.message}.`
+            : 'The file was not deleted.',
+          409,
+        );
+      });
+    } finally {
+      await opened.handle.close();
+    }
     if (!trashed.trash_id || !trashed.moved.length)
       throw new ServiceError(
         'file_not_deleted',

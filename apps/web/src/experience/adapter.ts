@@ -166,12 +166,19 @@ export type Result<T> =
  * A list says yes, and so does a refusal from that route itself, such as its
  * browser being out of reach for a moment: the sites section then shows the
  * error with a way to try again, rather than disappearing. No such route, a
- * sign-in that has ended, or no answer at all says no.
+ * sign-in that has ended, or no answer at all says no; so does a space whose
+ * signed-in sites are not this person's (they are its owner's), which no
+ * retry would change.
  */
 export function servesBrowser(result: Result<unknown>): boolean {
   if (result.data !== null) return true;
   if (result.error === null) return false;
-  return !result.unauthorized && result.code !== undefined && result.code !== 'not_found';
+  return (
+    !result.unauthorized &&
+    result.code !== undefined &&
+    result.code !== 'not_found' &&
+    result.code !== 'space_not_found'
+  );
 }
 
 /**
