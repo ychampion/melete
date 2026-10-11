@@ -14,7 +14,7 @@
  * day never takes back a later day's change, least of all the person's own.
  */
 import type { BeliefChange, ClaimRevision, MemoryRewind, RewindTarget } from '@melete/contracts';
-import { beliefVersion, subjectLabel } from './beliefs.ts';
+import { beliefLabel, beliefVersion, subjectLabel } from './beliefs.ts';
 import {
   type ClaimHead,
   eligibleRevision,
@@ -34,6 +34,7 @@ import {
   newId,
 } from './db.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
+import { inPersonsWords } from './wording.ts';
 import { dayWindow, localDay, shortDate } from './zoned.ts';
 
 /** What one revision held, enough to publish it again exactly. */
@@ -470,10 +471,11 @@ export async function memoryTimeline(
             : 'changed';
       bucket(localDay(at, timeZone)).changes.push({
         belief_id: String(row.claim_id),
-        label: subjectLabel(row.key as string | null, String(row.domain_key)),
+        // The detail's own sentence names it when it is one, as on the beliefs list.
+        label: beliefLabel(row.key as string | null, String(row.domain_key), String(row.content)),
         change,
-        value: String(row.content),
-        previous: row.previous === null ? null : String(row.previous),
+        value: inPersonsWords(String(row.content)),
+        previous: row.previous === null ? null : inPersonsWords(String(row.previous)),
         at: at.toISOString(),
       });
     }

@@ -278,6 +278,11 @@ Browser mutations must originate from the same origin as the API.
 `code_required` (creating it needs the installation's setup code, sent to
 `POST /setup` as `setup_code`) and `email_sign_in` (whether an emailed sign-in
 link can be sent). Offer the link only when `email_sign_in` is true.
+`code_required` is also true on an installation that has no code yet but is
+configured for an address other machines reach; there `POST /setup` answers
+403 `setup_code_required` until the operator issues a code
+([Claiming a new installation](DEPLOYMENT.md#claiming-a-new-installation)),
+so ask for the code whenever `code_required` is true.
 
 For email sign-in, configure `MELETE_PUBLIC_URL` and either the installation's
 account mail sender (`MELETE_SMTP_URL` and `MELETE_MAIL_FROM`; see
@@ -290,9 +295,14 @@ revoked or replaced. Requests are limited to one per minute and five per hour
 for each account.
 
 The link opens the sign-in screen with its token in the fragment's query:
-`https://melete.example.com/#/welcome?token=…`. Read it on the sign-in page,
-remove the fragment from browser history, and post `{ token }` to
-`/signin/magic-link/consume`; the response sets the normal session cookie.
+`https://melete.example.com/#/welcome?token=…`. Mail scanners open links
+too, so opening one must not use it. Read the token on the sign-in page and
+post `{ token }` to `/signin/magic-link/check`: it spends nothing, sets no
+cookie, and answers with the account's address mostly hidden (`masked_email`,
+such as `o•••@example.com`), or 400 `invalid_signin_link` for a link that no
+longer works. Show that address with a Sign in button, and post `{ token }` to
+`/signin/magic-link/consume` only when it is pressed; the response sets the
+normal session cookie. Then remove the fragment from browser history.
 Never place the token in a query string or store it in browser persistence.
 A reset link has the same shape on `#/reset`; `POST /password-reset/check`
 says whether its token is still good before a new password is asked for.

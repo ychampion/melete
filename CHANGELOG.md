@@ -2,6 +2,33 @@
 
 What each version ships.
 
+## Unreleased
+
+### Ships
+
+- **A new installation others can reach is claimed with a code.** An
+  installation with no setup code whose `MELETE_PUBLIC_URL` or
+  `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor
+  become the owner. It asks for a code from `bun run melete account setup-code`,
+  and the service log, `melete check` and `melete status` say so. Installs that
+  stay on this machine are claimed as before.
+
+### Upgrading from v0.2.1
+
+1. Alert email (`MELETE_ALERT_SMTP_URL`) now needs TLS unless the mail server
+   is on this machine (`localhost`, `127.0.0.1` or `::1`): an `smtps://` URL,
+   or a plain `smtp://` server that upgrades with STARTTLS. An installation
+   that sends alerts through a relay on another host without TLS must add
+   `?requireTLS=false` to that URL, or its alert email stops after the upgrade
+   and the service logs `alert not sent`. See
+   [Alerts](docs/DEPLOYMENT.md#alerts).
+2. An installation with no account yet, no setup code and a public address
+   now refuses its first account until you run
+   `bun run melete account setup-code`. Set `MELETE_SETUP_OPEN=true` to keep
+   the old open claim; the service, `melete check` and `melete status` then
+   warn about it. Installations that already have an account are unaffected.
+   See [Claiming a new installation](docs/DEPLOYMENT.md#claiming-a-new-installation).
+
 ## v0.2.1 — 2026-10-05
 
 ### Ships

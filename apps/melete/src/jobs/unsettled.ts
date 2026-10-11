@@ -11,6 +11,7 @@
  */
 import type { QuestionSpec } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { actionLabel } from '../experience/projectors.ts';
 import type { OfferedChoice } from './questions.ts';
 
 export const UNSETTLED_WAIT = 'unsettled_wait';
@@ -29,6 +30,32 @@ export const UNSETTLED_OPTIONS: OfferedChoice[] = [
 /** What the person is asked when something a turn sent has not been confirmed. */
 export const UNCONFIRMED_NOTE =
   'Melete could not confirm whether something this turn sent went through. Check where it went, then say which, or have Melete check again.';
+
+/**
+ * The step a question is about, in the words its card used: the summary the
+ * person approved when there was one ("Comment on issue #9"), otherwise what
+ * the step does. A question that named no step was answered as if it were
+ * about the whole turn.
+ */
+export function stepName(
+  row: Parameters<typeof actionLabel>[0],
+  connection?: Parameters<typeof actionLabel>[1],
+): string {
+  const payload = row.canonicalPayload as { summary?: { title?: unknown } } | null;
+  const title = payload?.summary?.title;
+  const name =
+    typeof title === 'string' && title.trim() ? title.trim() : actionLabel(row, connection);
+  return name.length > 120 ? `${name.slice(0, 119)}…` : name;
+}
+
+/** The question's words, naming the steps still open (at most three). */
+export function namingSteps(note: string, names: readonly string[]): string {
+  const unique = [...new Set(names)];
+  if (unique.length === 0) return note;
+  const listed = unique.slice(0, 3).join('; ');
+  const more = unique.length > 3 ? ` and ${unique.length - 3} more` : '';
+  return `${unique.length === 1 ? 'Step' : 'Steps'}: ${listed}${more}. ${note}`;
+}
 
 /** The question, with its answers, for an attempt that left something unsettled. */
 export function unsettledQuestion(attemptId: string, text: string): QuestionSpec {

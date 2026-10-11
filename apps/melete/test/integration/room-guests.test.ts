@@ -61,6 +61,8 @@ const app =
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: directory,
           MELETE_PUBLIC_URL: PUBLIC_URL,
+          // Claimed by its first visitor here, as a test install is, without a setup code.
+          MELETE_SETUP_OPEN: 'true',
         }),
         db: handle.db,
         sql: handle.sql,
@@ -187,7 +189,7 @@ const GUEST_ROUTES = [
 const SIGNED_OUT_ROUTES = [
   /^GET \/(health|health\/detail|setup)$/,
   /^POST \/(setup|login|password-reset|password-reset\/check|password-reset\/consume)$/,
-  /^POST \/signin\/[a-z-]+(\/consume)?$/,
+  /^POST \/signin\/[a-z-]+(\/check|\/consume)?$/,
   /^POST \/invites\/(view|accept)$/,
   /^GET \/oauth\/client-metadata\.json$/,
   /^GET \/\.well-known\//,

@@ -57,6 +57,30 @@ describe('GET /setup', () => {
     });
   });
 
+  test('at an address other machines reach, the first account needs a code unless opened', async () => {
+    const exposed = { MELETE_PUBLIC_URL: 'https://melete.example.test' };
+    const ask = async (settings: Record<string, string>) =>
+      setupStatusResponse.parse(await (await appWith([], settings).request('/setup')).json());
+    expect(await ask(exposed)).toMatchObject({ needed: true, code_required: true });
+    expect(await ask({ MELETE_WEB_ORIGIN: 'https://melete.example.test' })).toMatchObject({
+      code_required: true,
+    });
+    expect(await ask({ ...exposed, MELETE_SETUP_CODE_HASH: '' })).toMatchObject({
+      code_required: true,
+    });
+    expect(await ask({ ...exposed, MELETE_SETUP_OPEN: 'true' })).toMatchObject({
+      code_required: false,
+    });
+    expect(await ask({ MELETE_PUBLIC_URL: 'http://127.0.0.1:3101' })).toMatchObject({
+      code_required: false,
+    });
+    // Once the owner exists, there is nothing to claim.
+    const installed = await appWith([{ id: 'own_01M2000000000000000000000A' }], exposed).request(
+      '/setup',
+    );
+    expect(await installed.json()).toMatchObject({ needed: false, code_required: false });
+  });
+
   test('once an owner exists, setup is no longer needed', async () => {
     const response = await appWith([{ id: 'own_01M2000000000000000000000A' }]).request('/setup');
     expect(response.status).toBe(200);

@@ -5,13 +5,16 @@ import {
   agentResponse,
   automationResponse,
   conversationResponse,
+  dedupKey,
   experienceOperations,
   homeResponse,
   profileResponse,
+  type RuntimeEvent,
   triggerSpec,
   turnList,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { appendEvent } from '../../src/broker/records.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -85,6 +88,10 @@ async function run(
   outcome:
     | { kind: 'completed'; summary: string; evidence: [] }
     | { kind: 'failed'; reason: string; retryable: false },
+  /** Whether each step the run tries works. */
+  steps: boolean[] = [],
+  /** Kinds of step the broker refused before any action was recorded. */
+  refused: string[] = [],
 ) {
   expect((await request(`/automations/${routineId}/test`, 'POST')).status).toBe(200);
   const [registration] = await required(handle)
@@ -100,6 +107,28 @@ async function run(
       reason: 'event',
     }),
   );
+  let local = 0;
+  for (const [index, ok] of steps.entries())
+    for (const body of [
+      { type: 'tool_call_proposed', tool: 'web_read', call_id: `call_${index}`, arguments: {} },
+      { type: 'tool_result', call_id: `call_${index}`, ok, result: {} },
+    ]) {
+      const seq = local++;
+      await required(runner).emit(claimed.claims, {
+        ...body,
+        attempt_id: claimed.claims.attempt_id,
+        local_seq: seq,
+        dedup_key: dedupKey(claimed.claims.attempt_id, seq),
+        at: new Date().toISOString(),
+      } as RuntimeEvent);
+    }
+  for (const kind of refused)
+    await appendEvent(required(handle).sql, row.id, claimed.claims.attempt_id, 'notice', {
+      phase: 'proposal_refused',
+      kind,
+      code: 'scope_denied',
+      reason: 'Not in this routine.',
+    });
   await required(runner).commitOutcome(claimed.claims, outcome);
   return row.id;
 }
@@ -133,6 +162,67 @@ withDb('routines, time zone and setup as the person sees them', () => {
     // A later save that leaves the flags out never forgets them.
     await request('/profile', 'PATCH', { name: 'Sam D', time_zone: 'UTC', day_hours: hours });
     expect(await profile()).toMatchObject({ onboarded: true, time_zone_confirmed: true });
+  });
+
+  test('a run that finished with every step it tried failing says it has nothing', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', freshAgent())).json(),
+    ).agent;
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations/morning-brief', 'POST', { agent_id: persona.id, at: '07:30' })
+      ).json(),
+    ).automation;
+    const latest = async () =>
+      required(
+        experienceOperations['GET /automations'].response
+          .parse(await (await request('/automations')).json())
+          .automations.find((row) => row.id === routine.id)?.runs[0],
+      );
+    await run(
+      routine.id,
+      {
+        kind: 'completed',
+        summary: 'I could not reach any of my sources this morning.',
+        evidence: [],
+      },
+      [false, false, false],
+    );
+    const empty = await latest();
+    expect(empty).toMatchObject({ status: 'done', empty: true });
+    expect(empty.reason).toContain('nothing new');
+    // One step that worked is a result.
+    await run(routine.id, { kind: 'completed', summary: 'Sunny, 24 degrees.', evidence: [] }, [
+      false,
+      true,
+    ]);
+    const fine = await latest();
+    expect(fine).toMatchObject({ status: 'done', reason: null });
+    expect(fine.empty).toBeUndefined();
+    expect(fine.partial).toBeUndefined();
+    // Every read it tried was refused: the tool answered, with a refusal, which is not a result.
+    await run(
+      routine.id,
+      { kind: 'completed', summary: 'Here is your brief.', evidence: [] },
+      [true, true],
+      ['web.read', 'web.search'],
+    );
+    const refused = await latest();
+    expect(refused).toMatchObject({ status: 'done', empty: true });
+    expect(refused.reason).toContain('held back (web read and web search)');
+    // Some worked and one was held back: partly done, and it says which.
+    await run(
+      routine.id,
+      { kind: 'completed', summary: 'Sunny, 24 degrees.', evidence: [] },
+      [true, true, true],
+      ['web.search'],
+    );
+    const partly = await latest();
+    expect(partly).toMatchObject({ status: 'done', partial: true });
+    expect(partly.empty).toBeUndefined();
+    expect(partly.reason).toBe(
+      'Partly done: some steps worked, and web search was held back or refused.',
+    );
   });
 
   test('each run writes its answer into the routine thread, the list and Home', async () => {

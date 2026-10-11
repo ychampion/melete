@@ -13,11 +13,15 @@ import { recordingFetch } from '../feedback/diagnostics.ts';
 import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
+import { browserTimeZone } from './timezone.ts';
 import type { Seen } from './together.ts';
 import type {
   AccountAccess,
+  AccountRemoval,
+  AccountRemovalPreview,
   AccountSignInStart,
   AccountSignInStatus,
+  AccountSummary,
   ActionResolution,
   ActivityList,
   Agent,
@@ -44,6 +48,7 @@ import type {
   ConnectionCreate,
   ConnectionInstalled,
   ConnectionKind,
+  ConnectionLifecycle,
   Conversation,
   ConversationCreate,
   ConversationDeleted,
@@ -120,6 +125,9 @@ import type {
   SensitiveTopic,
   SkillProhibition,
   SpaceMembers,
+  SpaceRemovalPreview,
+  SpaceRemovalReport,
+  SpaceRemovalStarted,
   StreamGap,
   Task,
   TaskInput,
@@ -131,6 +139,12 @@ import type {
   VoiceTranscription,
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
+
+/** This browser's zone as a message field, or nothing when the browser does not say. */
+function deviceZone(): { time_zone?: string } {
+  const zone = browserTimeZone();
+  return zone && zone.length <= 64 ? { time_zone: zone } : {};
+}
 
 /** The account a sign-in or first setup answers with. */
 type SignedInOwner = { id: string; email: string; created_at: string };
@@ -146,6 +160,26 @@ export type Result<T> =
       code?: string;
     }
   | { data: null; error: null; unavailable: string };
+
+/**
+ * Whether the service has a browser, from its answer for the signed-in sites.
+ * A list says yes, and so does a refusal from that route itself, such as its
+ * browser being out of reach for a moment: the sites section then shows the
+ * error with a way to try again, rather than disappearing. No such route, a
+ * sign-in that has ended, or no answer at all says no; so does a space whose
+ * signed-in sites are not this person's (they are its owner's), which no
+ * retry would change.
+ */
+export function servesBrowser(result: Result<unknown>): boolean {
+  if (result.data !== null) return true;
+  if (result.error === null) return false;
+  return (
+    !result.unauthorized &&
+    result.code !== undefined &&
+    result.code !== 'not_found' &&
+    result.code !== 'space_not_found'
+  );
+}
 
 /**
  * Where the API is when the build was not told. Development runs against the
@@ -251,6 +285,34 @@ function worthHearing<T>(result: Result<T>): Result<T> {
 const path = (id: string) => ({ params: { path: { id } } });
 
 export const adapter = {
+  /* ---------- your data: take it along, empty your space, delete the account ---------- */
+  /** Where the whole-account zip downloads from; a plain link carries the session. */
+  exportUrl: (): string => `${client.options.baseUrl}/account/export`,
+  accountRemovalPreview: () =>
+    guard<{ preview: AccountRemovalPreview }>(() => api.GET('/account/removal/preview')),
+  deleteAccount: (confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/account', { body: { confirm_email: confirmEmail } }),
+    ),
+  accounts: () => guard<{ accounts: AccountSummary[] }>(() => api.GET('/principals')),
+  otherAccountPreview: (id: string) =>
+    guard<{ preview: AccountRemovalPreview }>(() =>
+      api.GET('/principals/{id}/removal/preview', path(id)),
+    ),
+  removeOtherAccount: (id: string, confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
+    ),
+  spaceRemovalPreview: (id: string) =>
+    guard<{ preview: SpaceRemovalPreview }>(() =>
+      api.GET('/spaces/{id}/removal/preview', path(id)),
+    ),
+  removeSpace: (id: string, confirmName: string) =>
+    guard<{ removal: SpaceRemovalStarted }>(() =>
+      api.DELETE('/spaces/{id}', { ...path(id), body: { confirm_name: confirmName } }),
+    ),
+  spaceRemoval: (removalId: string) =>
+    guard<SpaceRemovalReport>(() => api.GET('/removals/{id}', path(removalId))),
   /* ---------- session ---------- */
   profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
   saveProfile: (profile: ProfileInput) =>
@@ -277,6 +339,12 @@ export const adapter = {
     guard<{ owner: SignedInOwner }>(() => api.POST('/login', { body: { email, password } })),
   magicLink: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
+  /** Whether a sign-in link still works, and whose account it opens. Spends nothing. */
+  checkMagicLink: (token: string) =>
+    guard<{ status: 'ok'; masked_email: string }>(() =>
+      api.POST('/signin/magic-link/check', { body: { token } }),
+    ),
+  /** Uses a sign-in link once: only when the person presses Sign in. */
   consumeMagicLink: (token: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   /** Ends the session; the next request needs a new sign-in. */
@@ -352,6 +420,8 @@ export const adapter = {
           text,
           ...(attachments.length ? { attachments: [...attachments] } : {}),
           ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
+          // The service reads time in it until the person confirms their profile's zone.
+          ...deviceZone(),
         },
       }),
     ),
@@ -457,6 +527,9 @@ export const adapter = {
         body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
       }),
     ).then(worthHearing),
+  /** Stop waiting for an answer to a question the person no longer wants to answer. */
+  dismissQuestion: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/quick-answers/{id}/dismiss', path(id))),
 
   /* ---------- phone presence ---------- */
   pushPublicKey: () => guard<{ public_key: string | null }>(() => api.GET('/push/public-key')),
@@ -466,6 +539,8 @@ export const adapter = {
   removePushDevice: (id: string) =>
     guard<{ subscription: PushDevice }>(() => api.DELETE('/push/subscriptions/{id}', path(id))),
   pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
+  /** This window is in front of the person: an answer that comes now needs no push. */
+  pushFocus: () => guard<{ focused_at: string }>(() => api.POST('/push/focus')),
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   /* ---------- texts and calls to the person's own number ---------- */
@@ -526,6 +601,9 @@ export const adapter = {
     ),
   revokeDevice: (id: string) =>
     guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
+  /** Take a disconnected computer off the list. */
+  removeDevice: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/devices/{id}', path(id))),
   /* ---------- other assistants connected over MCP ---------- */
   assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
   /** Ends every token the assistant holds for this person; answered with 204 and no body. */
@@ -882,12 +960,13 @@ export const adapter = {
       }),
     ),
   /** Removal names the generation it read, so a change made elsewhere is not overwritten. */
-  removeConnection: async (id: string): Promise<Result<{ status: string }>> => {
+  /** Disconnects; the answer says whether the provider also withdrew Melete's access. */
+  removeConnection: async (id: string): Promise<Result<ConnectionLifecycle>> => {
     const current = await guard<ConnectionInstalled>(() =>
       api.GET('/connections/{connectionId}', { params: { path: { connectionId: id } } }),
     );
     if (current.data === null) return current;
-    return guard<{ status: string }>(() =>
+    return guard<ConnectionLifecycle>(() =>
       api.POST('/connections/{id}/lifecycle', {
         ...path(id),
         body: { kind: 'revoke', expected_generation: current.data.connection.generation ?? 0 },

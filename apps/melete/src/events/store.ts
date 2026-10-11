@@ -9,13 +9,21 @@ export type EventWrite = {
   type: ResponsibilityEvent['type'];
   payload?: JsonObject;
   dedupKey: string;
+  /**
+   * The job's lease epoch, when the caller holds the job row and has it;
+   * otherwise it is read here.
+   */
+  epoch?: number | null;
 };
 
 /** Called inside serviceTransaction; PostgreSQL delivers NOTIFY only after commit. */
 export async function appendEvent(tx: Transaction, value: EventWrite) {
-  const [current] = value.jobId
-    ? await tx.select({ epoch: job.leaseEpoch }).from(job).where(eq(job.id, value.jobId))
-    : [];
+  const [current] =
+    value.epoch !== undefined
+      ? [{ epoch: value.epoch }]
+      : value.jobId
+        ? await tx.select({ epoch: job.leaseEpoch }).from(job).where(eq(job.id, value.jobId))
+        : [];
   const [row] = await tx
     .insert(event)
     .values({ ...value, epoch: current?.epoch ?? null, payload: value.payload ?? {} })

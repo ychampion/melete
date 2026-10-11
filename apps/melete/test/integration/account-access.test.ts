@@ -11,7 +11,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAccount } from '../../src/account/cli.ts';
 import { purgeExpiredAccess } from '../../src/api/account-access.ts';
-import { issueSetupCode, newSetupCode, setupCodeHash } from '../../src/api/setup-code.ts';
+import {
+  issueSetupCode,
+  newSetupCode,
+  SETUP_CODE_NOT_ISSUED,
+  setupCodeHash,
+} from '../../src/api/setup-code.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import type { AccountMail } from '../../src/experience/account-mail.ts';
@@ -40,6 +45,9 @@ function app(options: { env?: Record<string, string>; mail?: AccountMail[] } = {
     env: loadEnv({
       NODE_ENV: 'test',
       MELETE_PUBLIC_URL: PUBLIC_URL,
+      // Most tests here are about what comes after the claim, at a public
+      // address; the claiming tests below say how the first account is made.
+      MELETE_SETUP_OPEN: 'true',
       MELETE_SPACES_DIR: join(files, 'spaces'),
       MELETE_WORK_DIR: join(files, 'work'),
       MELETE_VAPID_PUBLIC_KEY: vapid.publicKey,
@@ -100,6 +108,10 @@ const linkIn = (mail: AccountMail | undefined, route: 'welcome' | 'reset') => {
   return token;
 };
 
+/** An installation at PUBLIC_URL that has not opted out of the setup code, unless `env` says otherwise. */
+const claimable = (env: Record<string, string> = {}) =>
+  app({ env: { MELETE_SETUP_OPEN: 'false', ...env } });
+
 async function claim(api: Api, extra: object = {}) {
   const setup = await api.request('/setup', json({ email: OWNER, password: PASSWORD, ...extra }));
   expect(setup.status).toBe(201);
@@ -122,7 +134,7 @@ describeWithDb('account access', () => {
   describe('claiming a new installation', () => {
     test('an installation made with a setup code takes the first account only with it', async () => {
       const code = newSetupCode();
-      const api = app({ env: { MELETE_SETUP_CODE_HASH: setupCodeHash(code) } });
+      const api = claimable({ MELETE_SETUP_CODE_HASH: setupCodeHash(code) });
       const status = (await (await api.request('/setup')).json()) as Record<string, unknown>;
       expect(status).toMatchObject({ needed: true, code_required: true });
 
@@ -154,7 +166,11 @@ describeWithDb('account access', () => {
     });
 
     test('without a code configured, a local install is claimed as before', async () => {
-      const api = app();
+      // Every address it names is on this machine, so nobody else can reach the page.
+      const api = claimable({
+        MELETE_PUBLIC_URL: 'http://127.0.0.1:3101',
+        MELETE_WEB_ORIGIN: 'http://localhost:3101',
+      });
       expect(await (await api.request('/setup')).json()).toMatchObject({
         needed: true,
         code_required: false,
@@ -162,8 +178,96 @@ describeWithDb('account access', () => {
       await claim(api);
     });
 
+    test('with no address configured at all, the first visitor claims it as before', async () => {
+      const api = claimable({ MELETE_PUBLIC_URL: '' });
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: false });
+      await claim(api);
+    });
+
+    test('at a public address with no code, the first visitor is turned away', async () => {
+      const api = claimable();
+      expect(await (await api.request('/setup')).json()).toMatchObject({
+        needed: true,
+        code_required: true,
+      });
+      for (const extra of [{}, { setup_code: newSetupCode() }]) {
+        const refused = await api.request(
+          '/setup',
+          json({ email: OWNER, password: PASSWORD, ...extra }),
+        );
+        expect(refused.status).toBe(403);
+        expect(await refused.json()).toEqual({
+          error: { code: 'setup_code_required', message: SETUP_CODE_NOT_ISSUED },
+        });
+      }
+      expect(SETUP_CODE_NOT_ISSUED).toContain('bun run melete account setup-code');
+      expect(await database().sql`select 1 from owner`).toHaveLength(0);
+    });
+
+    test('a web origin on another machine turns the first visitor away too', async () => {
+      const api = claimable({
+        MELETE_PUBLIC_URL: '',
+        MELETE_WEB_ORIGIN: 'https://melete.tail1a2b3.ts.net',
+      });
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: true });
+      const refused = await api.request('/setup', json({ email: OWNER, password: PASSWORD }));
+      expect(refused.status).toBe(403);
+      expect(await codeOf(refused)).toBe('setup_code_required');
+    });
+
+    test('MELETE_SETUP_OPEN=true lets the first visitor in at a public address', async () => {
+      const api = claimable({ MELETE_SETUP_OPEN: 'true' });
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: false });
+      await claim(api);
+    });
+
+    test('MELETE_SETUP_OPEN=true does not skip a code that exists', async () => {
+      const api = claimable({ MELETE_SETUP_OPEN: 'true' });
+      const issued = await issueSetupCode(database().sql);
+      if (!issued) throw new Error('No setup code was issued');
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: true });
+      const without = await api.request('/setup', json({ email: OWNER, password: PASSWORD }));
+      expect(await codeOf(without)).toBe('setup_code_required');
+      await claim(api, { setup_code: issued.code });
+    });
+
+    test('at a public address, a code from melete account setup-code claims it', async () => {
+      const api = claimable();
+      const issued = await issueSetupCode(database().sql);
+      if (!issued) throw new Error('No setup code was issued');
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: true });
+      const without = await api.request('/setup', json({ email: OWNER, password: PASSWORD }));
+      expect(without.status).toBe(403);
+      expect(await codeOf(without)).toBe('setup_code_required');
+      const cookie = await claim(api, { setup_code: issued.code });
+      expect((await api.request('/me', as(cookie))).status).toBe(200);
+      expect(await (await api.request('/setup')).json()).toMatchObject({
+        needed: false,
+        code_required: false,
+      });
+    });
+
+    test('a blank MELETE_SETUP_CODE_HASH is no code: refused in public, open on loopback', async () => {
+      const exposed = claimable({ MELETE_SETUP_CODE_HASH: '' });
+      expect(await (await exposed.request('/setup')).json()).toMatchObject({
+        code_required: true,
+      });
+      const refused = await exposed.request('/setup', json({ email: OWNER, password: PASSWORD }));
+      expect(refused.status).toBe(403);
+      expect(await codeOf(refused)).toBe('setup_code_required');
+      const local = claimable({
+        MELETE_SETUP_CODE_HASH: '',
+        MELETE_SETUP_OPEN: '',
+        MELETE_PUBLIC_URL: 'http://localhost:3101',
+      });
+      expect(await (await local.request('/setup')).json()).toMatchObject({
+        code_required: false,
+      });
+      await claim(local);
+    });
+
     test('a code the operator issued works once, and replaces the one before it', async () => {
-      const api = app();
+      const api = claimable();
       const first = await issueSetupCode(database().sql);
       const second = await issueSetupCode(database().sql);
       if (!first || !second) throw new Error('No setup code was issued');
@@ -189,10 +293,16 @@ describeWithDb('account access', () => {
       await until(() => mail.length === 1);
       expect(mail[0]?.to).toBe(OWNER);
       const token = linkIn(mail[0], 'welcome');
+      // Opening it, as a mail scanner may, only asks whose account it opens.
+      const checked = await api.request('/signin/magic-link/check', json({ token }));
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('Set-Cookie')).toBeNull();
+      expect(await checked.json()).toEqual({ status: 'ok', masked_email: 'o•••@example.test' });
       const used = await api.request('/signin/magic-link/consume', json({ token }));
       expect(used.status).toBe(200);
       expect((await api.request('/me', as(cookieOf(used)))).status).toBe(200);
       expect((await api.request('/signin/magic-link/consume', json({ token }))).status).toBe(400);
+      expect((await api.request('/signin/magic-link/check', json({ token }))).status).toBe(400);
       // An address with no account gets the same answer, and no mail.
       expect(
         (await api.request('/signin/magic-link', json({ email: 'nobody@example.test' }))).status,

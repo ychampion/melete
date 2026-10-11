@@ -51,6 +51,7 @@ import {
   ownComputer,
   parseContents,
   volumeOnEngine,
+  volumePresence,
   volumesHoldingFiles,
 } from '../files.ts';
 import {
@@ -291,10 +292,6 @@ export async function readThrough(
   return { problems, archives };
 }
 
-/** Whether a Docker volume is on this engine. */
-const volumeExists = (context: Context, volume: string) =>
-  context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code === 0;
-
 /** The running containers that use a volume; null when the engine did not answer. */
 function usersOf(context: Context, volume: string): string[] | null {
   const listed = context.run([
@@ -334,10 +331,15 @@ async function runSteps(
   let changed = false;
   for (const action of actions) {
     if (action.kind !== 'run') continue;
-    if (action.ifVolume && !volumeExists(context, action.ifVolume)) continue;
-    if (action.unlessVolume && volumeExists(context, action.unlessVolume)) continue;
     let detail: string | null = null;
-    for (const volume of action.unused ?? []) {
+    // A step that depends on whether a volume is here runs only on a clear answer.
+    const asked = action.ifVolume ?? action.unlessVolume;
+    const presence = asked ? volumePresence(context, asked) : null;
+    if (presence !== null && typeof presence === 'object')
+      detail = `could not ask the engine whether ${asked} is here: ${presence.unreadable}`;
+    else if (action.ifVolume && presence === 'absent') continue;
+    else if (action.unlessVolume && presence === 'present') continue;
+    for (const volume of detail === null ? (action.unused ?? []) : []) {
       const users = usersOf(context, volume);
       if (users === null) detail = `could not ask the engine what uses ${volume}`;
       else if (users.length > 0)
@@ -476,6 +478,23 @@ function filesToRestore(
         : 'foreign',
     ]),
   );
+  // Unknown is neither absent nor ours: a volume the engine could not describe might be
+  // another installation's, so nothing is planned into it.
+  const unknown = [...states].flatMap(([volume, state]) =>
+    typeof state === 'object' ? [`${volume} (${state.unreadable})`] : [],
+  );
+  if (unknown.length > 0)
+    return {
+      files: null,
+      results: [
+        {
+          id: 'restore.files',
+          level: 'fail',
+          detail: `Whether these agent computer volumes are on this machine, and whose they are, could not be read: ${unknown.join('; ')}. Nothing was changed.`,
+          fix: 'Check that docker volume inspect answers for them, then run this again.',
+        },
+      ],
+    };
   const leftOut = new Set(
     listed
       .filter((volume) => states.get(volume.volume) === 'foreign')
@@ -596,12 +615,21 @@ export async function runRestore(
   // Kept, the files here may be newer than the backup's: putting the backup's in
   // their place deletes what was added since, while the database still names it.
   if (options.keepDatabase && config.database.external && files) {
-    const present = FILE_PARTS.map((part) => composeVolume(config.project, part)).filter(
-      (volume) =>
-        context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code === 0,
+    const volumes = FILE_PARTS.map((part) => composeVolume(config.project, part));
+    const presence = volumes.map((volume) => ({ volume, state: volumePresence(context, volume) }));
+    const present = presence.filter((each) => each.state === 'present').map((each) => each.volume);
+    const unknown = presence.flatMap(({ volume, state }) =>
+      typeof state === 'object' ? [`${volume} (${state.unreadable})`] : [],
     );
-    const held = volumesHoldingFiles(context, files.image, present);
-    if (held === null)
+    const held = unknown.length > 0 ? null : volumesHoldingFiles(context, files.image, present);
+    if (unknown.length > 0)
+      results.push({
+        id: 'restore.keep_database_files',
+        level: 'fail',
+        detail: `Whether ${unknown.join('; ')} ${unknown.length === 1 ? 'is' : 'are'} on this machine could not be read, and with --keep-database the backup's files would replace newer ones. Nothing was changed.`,
+        fix: 'Check that docker volume inspect answers for them, then run this again.',
+      });
+    else if (held === null)
       results.push({
         id: 'restore.keep_database_files',
         level: 'fail',
@@ -635,8 +663,8 @@ export async function runRestore(
       ? {
           id: 'restore.journal',
           level: 'fail',
-          detail: `${journalVolume} is on this machine but could not be read (${journalState.unreadable}), so whether it holds the journal is not known. Nothing was changed.`,
-          fix: "Check that docker run works with the service's image, then run this again.",
+          detail: `${journalVolume} could not be read (${journalState.unreadable}), so whether it holds the journal is not known. Nothing was changed.`,
+          fix: "Check that docker volume inspect answers for it and docker run works with the service's image, then run this again.",
         }
       : freshHost
         ? journal

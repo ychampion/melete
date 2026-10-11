@@ -6,6 +6,8 @@ import { recordId } from '../broker/records.ts';
 export interface SecretRepository {
   put(id: string, spaceId: string, ciphertext: string): Promise<void>;
   get(id: string, spaceId: string): Promise<string | null>;
+  /** Removes one sealed secret. A repository without it keeps nothing worth removing. */
+  forget?(id: string, spaceId: string): Promise<void>;
 }
 
 /**
@@ -50,6 +52,18 @@ export class PostgresSecretRepository implements SecretRepository {
   /** Removes every sealed secret of a space, and says how many went. */
   async forgetSpace(spaceId: string): Promise<number> {
     const rows = await this.sql`delete from secret where space_id = ${spaceId}`;
+    return rows.count;
+  }
+
+  /**
+   * Removes sealed secrets nothing has pointed at since before `before`: copies
+   * an earlier version left behind on every token refresh and disconnection.
+   * The effects role cannot read `connection`, so the caller says which ids are
+   * still in use. Answers how many went.
+   */
+  async forgetUnreferenced(inUse: readonly string[], before: Date): Promise<number> {
+    const rows = await this.sql`delete from secret
+      where created_at < ${before.toISOString()}::timestamptz and not (id = any(${[...inUse]}))`;
     return rows.count;
   }
 
@@ -158,6 +172,11 @@ export class SealedSecretStore implements SecretAccess {
       if (plaintext) sodium.memzero(plaintext);
       sodium.memzero(keys.privateKey);
     }
+  }
+
+  /** Removes a sealed secret for good, once nothing points at it. */
+  async forget(id: string, spaceId: string): Promise<void> {
+    await this.repository.forget?.(id, spaceId);
   }
 
   async withSecret<T>(id: string, spaceId: string, use: (value: string) => Promise<T>): Promise<T> {

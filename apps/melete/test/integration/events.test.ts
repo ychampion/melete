@@ -333,4 +333,55 @@ withDb('persisted event streams', () => {
     const committed = await write(jobA, { text: 'After keepalive' });
     expect((await readEvent(subscribed)).id).toBe(committed?.seq);
   });
+
+  test('while LISTEN is up, subscribers hear of commits, not of every polling tick', async () => {
+    const { events } = stream({ pollIntervalMs: 20, repairMs: 60_000 });
+    await events.start();
+    let heard = 0;
+    const unsubscribe = events.subscribe(() => {
+      heard++;
+    });
+    try {
+      await Bun.sleep(600);
+      // One repair when the first subscriber arrives, not thirty polling ticks.
+      expect(heard).toBeLessThanOrEqual(1);
+      const before = heard;
+      await write(jobA, { text: 'Heard at once' }, { secondConnection: true });
+      await eventually(() => heard > before);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test('a LISTEN reconnect tells subscribers to look, without waiting for the repair', async () => {
+    const { events } = stream({ pollIntervalMs: 20, repairMs: 60_000 });
+    await events.start();
+    let heard = 0;
+    const unsubscribe = events.subscribe(() => {
+      heard++;
+    });
+    try {
+      await Bun.sleep(100);
+      const before = heard;
+      const { handle } = database();
+      const terminated =
+        await handle.sql`select pg_terminate_backend(pid) as terminated from pg_stat_activity where datname = current_database() and application_name = 'melete-events'`;
+      expect(terminated.some((row) => row.terminated)).toBe(true);
+      // Nothing is written: a commit made while LISTEN was down would be heard only this way.
+      await eventually(() => heard > before);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test('a quiet stream sends its keepalive on time without polling ticks', async () => {
+    const { app } = stream({ pollIntervalMs: 10, repairMs: 60_000, keepaliveMs: 300 });
+    const subscribed = await reader(app.request('/events'));
+    const started = Date.now();
+    expect(await readChunk(subscribed)).toBe(': keepalive\n\n');
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(await readChunk(subscribed)).toBe(': keepalive\n\n');
+    const committed = await write(jobA, { text: 'After two keepalives' });
+    expect((await readEvent(subscribed)).id).toBe(committed?.seq);
+  });
 });

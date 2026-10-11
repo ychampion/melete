@@ -28,11 +28,15 @@ function held(tokenUrl: string, extra: Record<string, string> = {}) {
       rotated.push(value);
       return 'sealed-2';
     },
+    forget: async (ref: string) => {
+      forgotten.push(ref);
+    },
   } as unknown as SealedSecretStore;
   return { sql, store };
 }
 
 const rotated: string[] = [];
+const forgotten: string[] = [];
 let hits = 0;
 const inside = Bun.serve({
   hostname: '127.0.0.1',
@@ -72,6 +76,8 @@ describe('refreshing an MCP credential', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.url).toBe('https://auth.example.test/token');
     expect(sent[0]?.body).toContain('grant_type=refresh_token');
+    // The copy the refresh replaced is removed, not left beside the new one.
+    expect(forgotten).toContain('sealed-1');
   });
 
   test('asks for the resource the sign-in was granted for, and keeps it with the new token', async () => {

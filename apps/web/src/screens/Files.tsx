@@ -195,6 +195,16 @@ export function FileRow({
   );
 }
 
+/**
+ * What a delete says: until when the file can be put back, and, when the
+ * trash had to make room for it, that earlier deletes can no longer be.
+ */
+export function deletedNote(restorableUntil: string, evicted: number): string {
+  const until = `It’s in the trash until ${new Date(restorableUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`;
+  if (evicted <= 0) return until;
+  return `${until} The trash was full, so ${evicted === 1 ? 'an earlier delete was' : `${evicted} earlier deletes were`} taken out of it to make room and can no longer be put back.`;
+}
+
 export function FilesScreen() {
   const loaded = useLoad(() => adapter.files(), []);
   const [filter, setFilter] = useState<Filter>('all');
@@ -222,7 +232,7 @@ export function FilesScreen() {
     toast({
       kind: 'ok',
       title: `Deleted ${file.name}`,
-      sub: `It’s in the trash until ${new Date(result.data.restorable_until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`,
+      sub: deletedNote(result.data.restorable_until, result.data.evicted),
       action: 'Undo',
       onAction: () =>
         void adapter.restoreFile(file.id, trash).then((restored) => {

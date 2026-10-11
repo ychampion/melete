@@ -137,7 +137,7 @@ withDb('setup answers as saved details', () => {
       'onboarding',
     ]);
     expect(created.map((item) => item.value)).toEqual(answers.map((answer) => answer.value));
-    expect(created[0]?.key).toBe('home: city');
+    expect(created[0]?.key).toBe('Home: city');
 
     const listed = memoryItemList.parse(await (await request('/memory/items')).json());
     expect(listed.items).toHaveLength(4);

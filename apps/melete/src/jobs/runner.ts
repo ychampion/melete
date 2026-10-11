@@ -3,6 +3,7 @@ import {
   attemptOutcome,
   attemptUsage,
   type CapabilityClaims,
+  CONTINUABLE_STATES,
   type CommittedOutcome,
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
@@ -30,6 +31,7 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
+import { withoutNarration, withoutUnbackedClaims } from '@melete/runtime-hermes';
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
@@ -39,6 +41,7 @@ import {
   action,
   attempt,
   budgetLedger,
+  connection,
   event,
   experienceTurn,
   job,
@@ -51,7 +54,11 @@ import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { withDeliveryNote } from '../experience/delivery-claims.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
-import { pagesVisited, withVisitedLinks } from '../experience/visited-links.ts';
+import {
+  pagesVisited,
+  withoutRepeatedLinks,
+  withVisitedLinks,
+} from '../experience/visited-links.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
@@ -76,10 +83,12 @@ import {
   QUEUES,
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
+import { workQuiet } from './quiet.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
-import { UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
+import { carrySteers, pendingSteers, steersRead } from './steer.ts';
+import { namingSteps, stepName, UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
 import {
   attemptCause,
   emptyWakes,
@@ -90,6 +99,7 @@ import {
   WAKE_GUARD_LIMIT,
   WAKE_GUARD_QUESTION,
 } from './wake-guard.ts';
+import { openWakeTurn } from './wake-turn.ts';
 import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -268,8 +278,11 @@ export class AttemptRunner {
         row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime()
       )
         return null;
+      // The state version the timer's own transition made: one per firing.
+      let timerFired: number | null = null;
       if (row.state === 'waiting_for_event_or_time') {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
+        timerFired = row.stateVersion;
       }
       if (row.state !== 'queued') return null;
       const [previous] = await tx
@@ -288,6 +301,8 @@ export class AttemptRunner {
         await pauseForWakes(tx, row);
         return null;
       }
+      // A conversation's own timer answers in a new message, at the time it fired.
+      if (timerFired) row = await openWakeTurn(tx, row, `timer:${timerFired}`);
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
@@ -489,6 +504,8 @@ export class AttemptRunner {
           .update(experienceTurn)
           .set({ status: 'working' })
           .where(eq(experienceTurn.id, row.currentTurnId));
+      // Words sent while the job waited to start are this attempt's new messages.
+      await steersRead(tx, row.id, attemptId, Number(latest?.seq ?? 0));
       return { bundle, claims };
     });
   }
@@ -704,8 +721,58 @@ export class AttemptRunner {
       : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
     return this.jobs.transaction(async (tx) => {
       const active = await requireCurrentAttempt(tx, claims, { settling: true });
-      return this.finish(tx, active.job, claims.attempt_id, envelope.outcome, envelope.questions);
+      const row = await this.finish(
+        tx,
+        active.job,
+        claims.attempt_id,
+        envelope.outcome,
+        envelope.questions,
+      );
+      return (await this.carrySteers(tx, row)) ?? row;
     });
+  }
+
+  /**
+   * A conversation whose turn ended with words the person sent during it
+   * still unread: they become its next turn, queued now. A turn that rests on
+   * the person (an approval, a reconciliation) or will run again keeps them
+   * for that attempt, which reads them as new messages.
+   */
+  private async carrySteers(tx: Transaction, row: JobRow): Promise<JobRow | null> {
+    if (row.kind !== 'chat' || row.paused) return null;
+    const ended = row.state === 'waiting_for_input' || row.state === 'completed';
+    if (!ended) return null;
+    return carrySteers(tx, row, (current) =>
+      this.jobs.move(
+        tx,
+        current,
+        {
+          kind: (CONTINUABLE_STATES as readonly string[]).includes(current.state)
+            ? 'conversation_continued'
+            : 'user_input_received',
+        },
+        { reason: 'input' },
+      ),
+    );
+  }
+
+  /**
+   * Hand the conversation's running attempt the words the person sent during
+   * it, when this process runs that attempt. What it cannot take is carried
+   * when the turn ends (`carrySteers`).
+   */
+  async steer(jobId: string): Promise<void> {
+    const running = [...this.active.values()].find((entry) => entry.jobId === jobId);
+    if (!running || !this.runtime.steer) return;
+    const [current] = await this.jobs.db
+      .select({ cursor: attempt.inputCursor })
+      .from(attempt)
+      .where(eq(attempt.id, running.attemptId));
+    if (!current) return;
+    const waiting = await pendingSteers(this.jobs.db, jobId);
+    for (const message of waiting)
+      if (message.seq > current.cursor)
+        await this.runtime.steer(running.attemptId, { id: message.id, text: message.text });
   }
 
   /**
@@ -773,7 +840,9 @@ export class AttemptRunner {
    * answer that names results from pages the turn opened, and links none of
    * them, gets one short line of links to those pages (`visited-links.ts`).
    * One that says a file is attached when the turn delivered none says so
-   * (`delivery-claims.ts`).
+   * (`delivery-claims.ts`), and a sentence that says it sent, saved, added,
+   * booked or closed something, or worked in the browser, with no action in
+   * the turn that did, is taken out (`claims.ts` in the runtime package).
    */
   private async citedOnlyWhatWasRead(
     tx: Transaction,
@@ -799,7 +868,18 @@ export class AttemptRunner {
     const checked = checkCitations(given.summary, sourcesRead(reads));
     // A result found on a page is linked to that page, when the answer links nothing.
     // A file said to be attached that no action in the turn delivered is named as missing.
-    const summary = withDeliveryNote(withVisitedLinks(checked.text, pagesVisited(reads)), reads);
+    // A closing links line names each page once.
+    // A sentence that still claims a step no action in the turn took is taken out,
+    // and so is a line about the agent's own workings ("Let me check…").
+    const summary = withoutNarration(
+      withoutUnbackedClaims(
+        withDeliveryNote(
+          withoutRepeatedLinks(withVisitedLinks(checked.text, pagesVisited(reads))),
+          reads,
+        ),
+        reads.map((read) => read.kind),
+      ),
+    );
     return summary !== given.summary ? { ...given, summary } : given;
   }
 
@@ -907,7 +987,13 @@ export class AttemptRunner {
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
-        const facts = await completionFacts(tx, row, outcome, this.options.artifactRoots);
+        const facts = await completionFacts(
+          tx,
+          row,
+          outcome,
+          this.options.artifactRoots,
+          attemptId,
+        );
         artifactFailures = facts.artifact_failures;
         input = {
           kind: 'attempt_completed',
@@ -962,8 +1048,9 @@ export class AttemptRunner {
         !brokerParked) ||
       (brokerParked && row.state === 'needs_reconciliation');
     if (unconfirmed) {
-      if (!brokerParked) wait = { kind: 'user_input', question: UNCONFIRMED_NOTE };
-      carried = [unsettledQuestion(attemptId, UNCONFIRMED_NOTE), ...carried];
+      const asked = namingSteps(UNCONFIRMED_NOTE, await this.openSteps(tx, attemptId));
+      if (!brokerParked) wait = { kind: 'user_input', question: asked };
+      carried = [unsettledQuestion(attemptId, asked), ...carried];
     }
     const completionVerified =
       outcome.kind === 'completed' &&
@@ -1687,6 +1774,8 @@ export class AttemptRunner {
         { emit: (event) => this.emit(claims, event) },
         controller.signal,
       );
+      // Words sent after this attempt was claimed and before it started reach it now.
+      void this.steer(claims.job_id).catch(() => undefined);
       // The attempt ends when the race does; the runtime may still be tearing
       // down, holding the job's workspace open, until the call itself returns.
       const returned = call.then(
@@ -1718,13 +1807,17 @@ export class AttemptRunner {
         // the turn rests on its answer until that action reports back.
         // The person is asked what to do about it, with answers to press.
         const draft = completed.summary;
+        const asked = namingSteps(
+          STILL_RUNNING_NOTE,
+          await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
+        );
         await this.commitOutcome(claims, {
           outcome: {
             kind: 'waiting_for_input',
-            question: STILL_RUNNING_NOTE,
+            question: asked,
             ...(draft.trim() ? { draft } : {}),
           },
-          questions: [unsettledQuestion(claims.attempt_id, STILL_RUNNING_NOTE)],
+          questions: [unsettledQuestion(claims.attempt_id, asked)],
         }).catch(async (failure: unknown) => {
           await this.loseAttempt(
             claims.attempt_id,
@@ -1784,6 +1877,21 @@ export class AttemptRunner {
     return earlier ? 'none' : answerJoin(tx, attemptId);
   }
 
+  /** What this attempt's steps that have not settled are, in the person's words. */
+  private async openSteps(tx: Transaction, attemptId: string): Promise<string[]> {
+    const rows = await tx
+      .select({ action, connection })
+      .from(action)
+      .leftJoin(connection, eq(connection.id, action.connectionId))
+      .where(
+        and(
+          eq(action.attemptId, attemptId),
+          inArray(action.status, ['dispatched', 'unknown', 'unresolved']),
+        ),
+      );
+    return rows.map((row) => stepName(row.action, row.connection ?? undefined));
+  }
+
   /**
    * Before a finished attempt commits, the actions it dispatched settle. One
    * whose tool call already returned has no sender left and is settled now;
@@ -1806,7 +1914,15 @@ export class AttemptRunner {
       const [pending] = await this.jobs.db
         .select({ id: action.id })
         .from(action)
-        .where(and(eq(action.jobId, claims.job_id), eq(action.status, 'dispatched')))
+        // Only this attempt's own: a step an earlier one left out is already a
+        // question to the person, and waiting on it held every later turn.
+        .where(
+          and(
+            eq(action.jobId, claims.job_id),
+            eq(action.attemptId, claims.attempt_id),
+            eq(action.status, 'dispatched'),
+          ),
+        )
         .limit(1);
       const left = deadline - Date.now();
       if (!pending || signal.aborted || left <= 0) return;
@@ -1832,7 +1948,8 @@ export class AttemptRunner {
     // waits here, in the scheduler's fair order, where its conversation can be
     // told so, rather than unseen in the queue.
     for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
-      await this.jobs.boss.work<AttemptWake>(
+      await workQuiet<AttemptWake>(
+        this.jobs.boss,
         queue,
         { batchSize: 1, localConcurrency: this.concurrency * 2, pollingIntervalSeconds: 0.5 },
         async (wakes) => {
@@ -1841,14 +1958,16 @@ export class AttemptRunner {
         },
       );
     // Existing queued hints can drain after an upgrade; all new and recovered hints use the persisted class.
-    await this.jobs.boss.work<AttemptWake>(
+    await workQuiet<AttemptWake>(
+      this.jobs.boss,
       QUEUES.legacyAttempt,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async (wakes) => {
         for (const wake of wakes) await this.scheduledWake('interactive', wake.data);
       },
     );
-    await this.jobs.boss.work(
+    await workQuiet(
+      this.jobs.boss,
       QUEUES.recoveryScan,
       { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async () => this.recover(),

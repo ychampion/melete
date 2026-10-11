@@ -1,19 +1,24 @@
+import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import type { MemorySql } from './db.ts';
 
 /**
  * Delivers the jobs memory invalidated to the job service. Whichever runtime
  * carries attempts, an invalidation writes a `job_recompute` outbox row; this is
- * what turns that row into a wake and marks it done.
+ * what turns that row into a wake and marks it done. It looks every quarter
+ * second while rows keep arriving, when a change is committed, and otherwise
+ * at most every `idleMs`.
  */
 export function startJobRecompute(
   sql: MemorySql,
   onJobRecompute: (jobId: string) => Promise<void>,
-  intervalMs = 250,
+  {
+    intervalMs = 250,
+    idleMs = 5_000,
+    wakeOn,
+  }: { intervalMs?: number; idleMs?: number; wakeOn?: Commits } = {},
 ) {
-  let pending: Promise<void> | undefined;
-  const timer = setInterval(() => {
-    if (pending) return;
-    pending = (async () => {
+  const loop = quietLoop(
+    async () => {
       const rows = await sql`select id, target_id from memory_outbox
         where kind = 'job_recompute' and completed_at is null order by created_at, id limit 20`;
       for (const row of rows) {
@@ -22,19 +27,16 @@ export function startJobRecompute(
         await onJobRecompute(row.target_id as string);
         await sql`update memory_outbox set completed_at = clock_timestamp() where id = ${row.id}`;
       }
-    })()
-      .catch(() => {
-        process.stderr.write('memory: job_recompute_delivery_failed\n');
-      })
-      .finally(() => {
-        pending = undefined;
-      });
-  }, intervalMs);
-  timer.unref();
-  return {
-    async stop() {
-      clearInterval(timer);
-      await pending;
+      return rows.length > 0;
     },
-  };
+    {
+      busyMs: intervalMs,
+      idleMs,
+      wakeOn,
+      onError: () => {
+        process.stderr.write('memory: job_recompute_delivery_failed\n');
+      },
+    },
+  );
+  return { stop: () => loop.stop() };
 }

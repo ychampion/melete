@@ -384,6 +384,12 @@ async function shownTool(tx: Transaction, jobId: string, id: string, item: 'tool
 export type EventChanges = { subscribe(listener: () => void): () => void };
 /** How long a stream waits for new events when nothing says one was committed. */
 export const EXPERIENCE_POLL_MS = 1000;
+/**
+ * How long a stream with commit notifications waits before it reads anyway,
+ * and the pace of its keepalive. The notifications say when to read; their
+ * source repairs any it missed, every second while its own listener is down.
+ */
+export const EXPERIENCE_REPAIR_MS = 15_000;
 /** The least time between two reads of one stream, so a burst of commits is read as one page. */
 export const EXPERIENCE_READ_GAP_MS = 50;
 
@@ -428,7 +434,13 @@ export class ExperienceEvents {
           eq(job.spaceId, spaceId),
           // A routine's thread is read like a chat, so its runs project the same way.
           inArray(job.kind, ['chat', 'routine']),
-          jobId ? eq(job.id, jobId) : gt(job.updatedAt, recentSince),
+          jobId
+            ? eq(job.id, jobId)
+            : // A routine thread changes through its runs, so a run moving counts too.
+              sql`(${job.updatedAt} > ${recentSince.toISOString()}::timestamptz or ${job.id} in (select child.experience_parent_id
+                from job child where child.space_id = ${spaceId}
+                  and child.updated_at > ${recentSince.toISOString()}::timestamptz
+                  and child.experience_parent_id is not null))`,
           ownJob(job.principalId, principalId),
         ),
       );
@@ -485,20 +497,38 @@ export class ExperienceEvents {
           }
           return found;
         };
+        // What the conversation last showed for each tool entry, read once per
+        // entry and kept as this pass shows more: the read scans the job's events.
+        const shownTools = new Map<string, ToolCall | undefined>();
+        const shown = async (toolId: string, kind: 'tool' | 'action') => {
+          const key = `${kind}:${toolId}`;
+          if (!shownTools.has(key)) shownTools.set(key, await shownTool(tx, id, toolId, kind));
+          return shownTools.get(key);
+        };
+        // Every event of an attempt belongs to the same turn: asked once per attempt.
+        const turns = new Map<string, { turnId: string | null } | undefined>();
+        const turnOf = async (attemptId: string) => {
+          if (turns.has(attemptId)) return turns.get(attemptId);
+          const [found] = await tx
+            .select({ turnId: attempt.turnId })
+            .from(attempt)
+            .where(eq(attempt.id, attemptId));
+          turns.set(attemptId, found);
+          return found;
+        };
         const emit = async (
           source: typeof event.$inferSelect,
           item: ExperienceEvent['item'],
           suffix: string = item.type,
         ) => {
-          const [execution] = source.attemptId
-            ? await tx
-                .select({ turnId: attempt.turnId })
-                .from(attempt)
-                .where(eq(attempt.id, source.attemptId))
-            : [];
+          const execution = source.attemptId ? await turnOf(source.attemptId) : undefined;
+          if ((item.type === 'tool' || item.type === 'action') && item.tool)
+            shownTools.set(`${item.type}:${item.tool.id}`, item.tool);
           await appendEvent(tx, {
             jobId: id,
             attemptId: source.attemptId,
+            // The row is locked for this whole transaction, so its epoch holds.
+            epoch: row.leaseEpoch,
             type: 'notice',
             payload: {
               kind: 'experience',
@@ -549,14 +579,14 @@ export class ExperienceEvents {
             }
           }
           for (const tool of await toolCalls(tx, source, jobs, spaceId, lookups.arguments)) {
-            const shown = await shownTool(tx, id, tool.id, 'tool');
-            if (JSON.stringify(shown) !== JSON.stringify(tool))
+            const before = await shown(tool.id, 'tool');
+            if (JSON.stringify(before) !== JSON.stringify(tool))
               await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
             // The trail keeps one finished step for each entry it does not already tell.
             if (
               ['done', 'failed', 'unknown'].includes(tool.status) &&
               !offTrail(tool) &&
-              !(await shownTool(tx, id, tool.id, 'action'))
+              !(await shown(tool.id, 'action'))
             )
               await emit(
                 source,
@@ -857,7 +887,11 @@ export class ExperienceEvents {
             source.jobId === id &&
             typeof payload.running === 'number'
           ) {
-            await emit(source, { type: 'note', text: waitingForSlotNote(payload.running) });
+            await emit(source, {
+              type: 'note',
+              text: waitingForSlotNote(payload.running),
+              transient: true,
+            });
           } else if (
             source.type === 'hook_event' &&
             source.jobId === id &&
@@ -875,10 +909,35 @@ export class ExperienceEvents {
             // Messages too old to hand the agent whole were summarised for it.
             // The page marks where, as for the engine's own; the words stay out.
             await emit(source, { type: 'compacted' });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            payload.kind === 'user_message' &&
+            payload.steer === true &&
+            typeof payload.steer_id === 'string'
+          ) {
+            // Words sent while the turn ran show at once, waiting to be read.
+            await emit(source, {
+              type: 'steer',
+              id: payload.steer_id,
+              text: typeof payload.text === 'string' ? payload.text : '',
+              state: 'queued',
+            });
+          } else if (
+            (source.type === 'steer_delivered' || source.type === 'steer_carried') &&
+            source.jobId === id &&
+            typeof payload.steer_id === 'string'
+          ) {
+            await emit(source, {
+              type: 'steer',
+              id: payload.steer_id,
+              state: source.type === 'steer_delivered' ? 'delivered' : 'carried',
+            });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {
               type: 'note',
               text: 'Part of the answer was interrupted. The saved progress is still here.',
+              transient: true,
             });
           } else if (source.type === 'notice' && payload.kind === 'handed_to_person') {
             // The work came to a check, a sign-in or a page only the person can get past: a
@@ -1154,6 +1213,7 @@ export class ExperienceEvents {
       changed = true;
       wake?.();
     });
+    const waitMs = unsubscribe ? EXPERIENCE_REPAIR_MS : EXPERIENCE_POLL_MS;
     let lastRead = Date.now();
     let lastWrite = Date.now();
     const close = () => {
@@ -1185,7 +1245,7 @@ export class ExperienceEvents {
             if (!changed)
               await new Promise<void>((resolve) => {
                 wake = resolve;
-                timer = setTimeout(resolve, EXPERIENCE_POLL_MS);
+                timer = setTimeout(resolve, waitMs);
               });
             wake = undefined;
             if (timer) clearTimeout(timer);
@@ -1197,8 +1257,8 @@ export class ExperienceEvents {
             const page = await self.page(spaceId, cursor, jobId, 100, principalId);
             buffered = page.events;
             // Another conversation's commits wake this stream too; a keepalive
-            // goes out at the polling pace, not on each of those.
-            if (!buffered.length && Date.now() - lastWrite >= EXPERIENCE_POLL_MS) {
+            // goes out at the waiting pace, not on each of those.
+            if (!buffered.length && Date.now() - lastWrite >= waitMs) {
               controller.enqueue(encoder.encode(': keepalive\n\n'));
               lastWrite = Date.now();
               return;

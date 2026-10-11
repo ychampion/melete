@@ -26,6 +26,7 @@ import {
   isPaused,
   keepsMoving,
   lastActivity,
+  lineUnderStatus,
   recordFileName,
   standingLine,
   statusOf,
@@ -126,6 +127,7 @@ function StartDialog({
 
 function WorkCard({ run, now }: { run: Run; now: number }) {
   const status = statusOf(run);
+  const line = lineUnderStatus(run, status.word);
   const needs = run.status === 'needs_you';
   return (
     <a className="run-card" href={href(`/runs/${run.id}`)} data-needs={needs ? 'true' : undefined}>
@@ -135,7 +137,7 @@ function WorkCard({ run, now }: { run: Run; now: number }) {
           {status.word}
         </Status>
       </div>
-      <span className="run-card-line">{run.status_line}</span>
+      {line ? <span className="run-card-line">{line}</span> : null}
       {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
       <span className="run-card-meta">
         Started {ago(run.started_at, now)} · updated {ago(lastActivity(run), now)}

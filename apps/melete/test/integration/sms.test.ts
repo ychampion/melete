@@ -101,6 +101,8 @@ async function harness() {
       NODE_ENV: 'test',
       MELETE_MASTER_KEY: MASTER_KEY,
       MELETE_PUBLIC_URL: PUBLIC_URL,
+      // Claimed by its first visitor here, as a test install is, without a setup code.
+      MELETE_SETUP_OPEN: 'true',
     }),
     db: fixture.db,
     sql: fixture.sql,

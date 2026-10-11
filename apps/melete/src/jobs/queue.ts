@@ -10,6 +10,7 @@ import { sql } from 'drizzle-orm';
 import { fromDrizzle, PgBoss } from 'pg-boss';
 import { type VerifyingTls, verifyingTls } from '../db/tls.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { quietQueue, startDueWaker } from './quiet.ts';
 
 /** The only queues v0.1 uses. Naming them here keeps the set closed. */
 export const QUEUES = {
@@ -38,6 +39,33 @@ export const QUEUES = {
   /** Texts and calls to a person's own number that are due: the reach-me ladder. */
   reachSweep: 'melete.reach-sweep',
 } as const;
+
+/**
+ * Queues whose workers are woken by notices instead of polling (jobs/quiet.ts).
+ * Their work arrives through the queue alone, so a notice or the due-job waker
+ * always reaches it. Their workers start with `workQuiet`.
+ *
+ * An attempt's wake is sent in the transaction that makes it due, and its
+ * notice goes out when that commits; a wake due later (a timer, a scheduled
+ * start) is the waker's. A job whose wake never reached the queue is the
+ * recovery scan's, which is itself sent on its schedule and woken the same way.
+ */
+export const QUIET_QUEUES: readonly string[] = [
+  QUEUES.attempt,
+  QUEUES.background,
+  QUEUES.quiet,
+  QUEUES.legacyAttempt,
+  QUEUES.recoveryScan,
+  QUEUES.pushDispatch,
+  QUEUES.triggerPoll,
+  QUEUES.triggerSchedule,
+  QUEUES.triggerScan,
+  QUEUES.reconcile,
+  QUEUES.operation,
+  QUEUES.companyReplies,
+  QUEUES.clockSweep,
+  QUEUES.reachSweep,
+];
 
 export const ATTEMPT_QUEUES: Record<SchedulingClass, string> = {
   interactive: QUEUES.attempt,
@@ -116,25 +144,47 @@ export const queueCreatesSchema = (env: { MELETE_EFFECTS_DATABASE_URL?: string |
  */
 export async function startQueue(
   connectionString: string,
-  { createSchema = true }: { createSchema?: boolean } = {},
+  {
+    createSchema = true,
+    dueScanMs,
+  }: {
+    createSchema?: boolean;
+    /** How long the due-job waker waits, at most, between looks (jobs/quiet.ts). */
+    dueScanMs?: number;
+  } = {},
 ): Promise<QueueHandle> {
   const boss = new PgBoss({
     ...queueConnection(connectionString),
     schema: 'pgboss',
     max: 4,
     createSchema,
+    useListenNotify: true,
   });
   boss.on('error', (error) => process.stderr.write(`pg-boss: ${error.message}\n`));
+  // Without notices the quiet queues poll again; say so, once per failure.
+  boss.on('warning', (warning) => {
+    if ((warning.data as { type?: string } | undefined)?.type === 'listen_notify_unavailable')
+      process.stderr.write(`pg-boss: ${warning.message}\n`);
+  });
+  let waker: ReturnType<typeof startDueWaker> | undefined;
   try {
     await boss.start();
     for (const queue of Object.values(QUEUES)) {
       await boss.createQueue(queue);
     }
+    for (const queue of QUIET_QUEUES) await quietQueue(boss, queue);
+    waker = startDueWaker(boss, dueScanMs === undefined ? {} : { scanMs: dueScanMs });
   } catch (error) {
     await boss.stop({ graceful: false });
     throw error;
   }
-  return { boss, stop: () => boss.stop({ graceful: true, timeout: 1000 }) };
+  return {
+    boss,
+    stop: async () => {
+      await waker?.stop();
+      await boss.stop({ graceful: true, timeout: 1000 });
+    },
+  };
 }
 
 /** The Drizzle adapter executes enqueue SQL on the very same transaction client. */

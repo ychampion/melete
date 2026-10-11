@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type Check,
+  gatherStatus,
   getJson,
   judgeModel,
   judgeStatus,
@@ -120,6 +124,50 @@ describe('the installation report', () => {
     expect(render(fresh)).toContain('Running, with 1 thing(s) to finish.');
   });
 
+  test('while the account is missing, it says how it is claimed', () => {
+    const exposed = { ...env, MELETE_PUBLIC_URL: 'https://m.example.net' };
+    const withCode = find(
+      judgeStatus({ ...healthy, env: exposed, setupNeeded: true, setupCodeRequired: true }),
+      'Account',
+    );
+    expect(withCode).toMatchObject({
+      level: 'warn',
+      detail: expect.stringContaining('setup code'),
+    });
+    expect(withCode?.fix).toContain('bun run melete account setup-code');
+
+    // Open to the first visitor at an address other machines reach.
+    const open = find(
+      judgeStatus({
+        ...healthy,
+        env: { ...exposed, MELETE_SETUP_OPEN: 'true' },
+        setupNeeded: true,
+        setupCodeRequired: false,
+      }),
+      'Account',
+    );
+    expect(open).toMatchObject({ level: 'warn' });
+    expect(open?.detail).toContain('whoever opens https://m.example.net first becomes its owner');
+    expect(open?.detail).toContain('MELETE_SETUP_OPEN=true');
+    expect(open?.fix).toContain('MELETE_SETUP_OPEN=false');
+
+    // On this machine only, it is the plain first-account step.
+    const local = find(
+      judgeStatus({ ...healthy, setupNeeded: true, setupCodeRequired: false }),
+      'Account',
+    );
+    expect(local).toEqual({
+      level: 'warn',
+      name: 'Account',
+      detail: 'No account yet.',
+      fix: 'Open http://localhost:3101 and create your account.',
+    });
+    // Once it exists, none of that is said.
+    expect(
+      find(judgeStatus({ ...healthy, env: exposed, setupCodeRequired: false }), 'Account'),
+    ).toEqual({ level: 'ok', name: 'Account', detail: 'The owner account exists.' });
+  });
+
   test('the computer is checked only when it is turned on', () => {
     expect(find(judgeStatus(healthy), 'Computer')?.detail).toBe('Off (optional).');
     const on = { ...env, MELETE_SANDBOX_PROVIDER: 'docker' };
@@ -195,4 +243,65 @@ test('/health answering 503 while the database is down still gives its report', 
   } finally {
     server.stop(true);
   }
+});
+
+describe('what the service says about its account reaches the report', () => {
+  /** An installation whose deploy/.env names a public address and opts out of the code. */
+  async function gathered(setup: Record<string, unknown>) {
+    const root = mkdtempSync(join(tmpdir(), 'melete-status-'));
+    try {
+      mkdirSync(join(root, 'deploy'));
+      writeFileSync(
+        join(root, 'deploy/.env'),
+        'WEB_PORT=3101\nMELETE_PUBLIC_URL=https://m.example.net\nMELETE_SETUP_OPEN=true\n',
+      );
+      const asked: string[] = [];
+      const facts = await gatherStatus(
+        root,
+        [],
+        () => ({ code: 1, stdout: '', stderr: 'no engine' }),
+        async (url) => {
+          asked.push(url);
+          if (url.endsWith('/health')) return { status: 'ok', database: 'ok' };
+          if (url.endsWith('/setup')) return setup;
+          return null;
+        },
+      );
+      // No engine answers here, so what was gathered is judged on an otherwise healthy, configured stack.
+      const { env: settings, health, setupNeeded, setupCodeRequired } = facts;
+      const printed = render(
+        judgeStatus({
+          ...healthy,
+          env: { ...env, ...settings },
+          health,
+          setupNeeded,
+          setupCodeRequired,
+        }),
+      );
+      return { facts, asked, printed };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test('a code is required: the report says to enter it or make one', async () => {
+    const { facts, asked, printed } = await gathered({ needed: true, code_required: true });
+    expect(asked).toEqual(['http://127.0.0.1:3101/api/health', 'http://127.0.0.1:3101/api/setup']);
+    expect(facts.setupCodeRequired).toBe(true);
+    expect(printed).toContain('Creating it needs this installation’s setup code.');
+    expect(printed).toContain('bun run melete account setup-code');
+  });
+
+  test('no code is required at a public address: the report warns who becomes the owner', async () => {
+    const { facts, printed } = await gathered({ needed: true, code_required: false });
+    expect(facts.setupCodeRequired).toBe(false);
+    expect(printed).toContain('whoever opens https://m.example.net first becomes its owner');
+  });
+
+  test('a service that does not say leaves it unknown', async () => {
+    const { facts, printed } = await gathered({ needed: true });
+    expect(facts.setupCodeRequired).toBeNull();
+    expect(printed).not.toContain('setup code');
+    expect(printed).not.toContain('whoever opens');
+  });
 });

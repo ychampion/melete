@@ -1,4 +1,6 @@
 import type { PgBoss } from 'pg-boss';
+import { workQuiet } from '../jobs/quiet.ts';
+import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
 import { type CommitResult, commitExtraction } from './commit.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql, stableId } from './db.ts';
@@ -30,6 +32,8 @@ export type MemoryServiceOptions = {
   /** Semantic recall's embedder; left out, recall and notes stay lexical. */
   embedding?: EmbeddingProvider;
   markdown?: MarkdownViews;
+  /** Says when a change may have been committed, so derived work is looked for then. */
+  wakeOn?: Commits;
   onError?: (code: string) => void;
 };
 export const NO_GATEWAY_ATTEMPT_LIMIT = 3;
@@ -133,7 +137,8 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     options.onError?.(code);
   }
 }
-export async function runDerivedWork(options: MemoryServiceOptions) {
+/** Builds what memory derives from its writes. Resolves to whether there was any to build. */
+export async function runDerivedWork(options: MemoryServiceOptions): Promise<boolean> {
   const markdown = options.markdown;
   const spaces =
     await options.sql`select distinct p.* from memory_spaces p join memory_outbox o on o.space_id = p.space_id
@@ -158,12 +163,16 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
   }
   // A note is embedded shortly after it is written. A failing provider is
   // asked again after a growing pause, up to five minutes, not every tick.
+  let embedded = 0;
   const embedding = options.embedding;
   if (embedding) {
     const pause = notePauses.get(embedding);
     if (!pause || Date.now() >= pause.until)
       await embedNotes(options.sql, embedding)
-        .then(() => notePauses.delete(embedding))
+        .then((count) => {
+          embedded = count;
+          notePauses.delete(embedding);
+        })
         .catch(() => {
           const failures = (pause?.failures ?? 0) + 1;
           notePauses.set(embedding, {
@@ -173,6 +182,7 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
           options.onError?.('memory_note_embedding_failed');
         });
   }
+  return spaces.length > 0 || embedded > 0;
 }
 const notePauses = new WeakMap<EmbeddingProvider, { failures: number; until: number }>();
 /**
@@ -203,10 +213,11 @@ export async function startMemoryService(options: MemoryServiceOptions) {
     await queueEmbeddingBackfill(options.sql, options.embedding).catch(() =>
       options.onError?.('memory_embedding_backfill_failed'),
     );
-  await options.boss.createQueue(MEMORY_EXTRACT_QUEUE);
+  // Extraction is sent when evidence arrives, so its workers wait for that notice.
   // Structured observations use Tier 0 without a model. Other evidence has a
   // durable attempt cap when no extraction gateway is configured.
-  await options.boss.work<{ work_id: string }>(
+  await workQuiet<{ work_id: string }>(
+    options.boss,
     MEMORY_EXTRACT_QUEUE,
     { localConcurrency: 2, batchSize: 1 },
     async (jobs) => {
@@ -216,16 +227,14 @@ export async function startMemoryService(options: MemoryServiceOptions) {
   await repairQueue(options.sql, options.boss);
   const onError = options.onError ?? (() => {});
   const stopRecovery = startRecoveryScan(options.sql, options.boss, onError);
-  let running: Promise<void> | undefined;
-  const timer = setInterval(() => {
-    if (running) return;
-    running = runDerivedWork(options)
-      .catch(() => onError('memory_derived_work_failed'))
-      .finally(() => {
-        running = undefined;
-      });
-  }, 2000);
-  timer.unref();
+  // Every two seconds while there is derived work, when a change is committed,
+  // and otherwise at most every half minute.
+  const derived = quietLoop(() => runDerivedWork(options), {
+    busyMs: 2000,
+    idleMs: 30_000,
+    wakeOn: options.wakeOn,
+    onError: () => onError('memory_derived_work_failed'),
+  });
   // The weekly digest: checked every ten minutes, written once a space's Sunday
   // morning has come in its own time zone and outside its quiet hours.
   let digesting: Promise<void> | undefined;
@@ -239,11 +248,10 @@ export async function startMemoryService(options: MemoryServiceOptions) {
   digest();
   return {
     async stop() {
-      clearInterval(timer);
       clearInterval(digestTimer);
       stopRecovery();
       // Git projection and cleanup must settle before the caller closes SQL.
-      await running;
+      await derived.stop();
       await digesting;
       // The worker runs with or without a gateway; Tier 0 needs none.
       await options.boss.offWork(MEMORY_EXTRACT_QUEUE);

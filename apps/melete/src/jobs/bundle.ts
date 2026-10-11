@@ -80,8 +80,10 @@ import {
   type StoredSummary,
   storedSummary,
 } from './history-summary.ts';
+import { localNow } from './local-now.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
+import { UNSETTLED_WAIT } from './unsettled.ts';
 
 /**
  * The transcript bound at the baseline window. A model with a larger window
@@ -419,6 +421,14 @@ export function assembleHistory(
   // A privacy decision resumes the turn the privacy question held back. That
   // turn's messages were never sent to a model, so they are new again.
   let messagesAfter = afterSeq;
+  // Words the person sent during an earlier attempt that it already read stay
+  // in the conversation, but are not new to this one.
+  const steersRead = new Set(
+    events.flatMap((row) => {
+      const steerId = (row.payload as { steer_id?: unknown } | null)?.steer_id;
+      return row.type === 'steer_delivered' && typeof steerId === 'string' ? [steerId] : [];
+    }),
+  );
   for (const row of events) {
     if (row.seq <= afterSeq || row.type !== 'notice') continue;
     const payload = jsonObject.safeParse(row.payload);
@@ -454,7 +464,11 @@ export function assembleHistory(
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
-      if (row.seq > messagesAfter) inputs.new_user_messages.push(message);
+      const readBefore =
+        payload.steer === true &&
+        typeof payload.steer_id === 'string' &&
+        steersRead.has(payload.steer_id);
+      if (row.seq > messagesAfter && !readBefore) inputs.new_user_messages.push(message);
     } else if (row.type === 'tool_result') {
       const result = toolResult.parse(payload);
       transcript.push({
@@ -819,7 +833,7 @@ async function historyRows(
     .where(
       and(
         eq(event.jobId, row.id),
-        inArray(event.type, ['notice', 'tool_result', 'approval_decided']),
+        inArray(event.type, ['notice', 'tool_result', 'approval_decided', 'steer_delivered']),
         upTo === undefined ? undefined : lte(event.seq, upTo),
       ),
     )
@@ -1089,6 +1103,8 @@ export async function buildAttemptSkeleton(
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
+  // The zone the attempt reads time in, which may be the device's (see local-now.ts).
+  const moment = await localNow(tx, row, await databaseNow(tx));
   return responsibilityAttemptBundle.parse({
     ...(persona
       ? {
@@ -1097,7 +1113,8 @@ export async function buildAttemptSkeleton(
             : agentIdentity(agentView(persona)),
         }
       : {}),
-    ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
+    ...(profile?.timeZone ? { time_zone: canonicalTimeZone(moment.time_zone) } : {}),
+    local_now: moment,
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
       : {}),
@@ -1379,7 +1396,16 @@ export async function completionFacts(
   row: JobRow,
   outcomeCompleted: CompletedOutcome,
   artifactRoots?: ArtifactRoots,
+  /** The attempt finishing; an earlier one's open step already asked about is not its to hold. */
+  attemptId?: string,
 ): Promise<CompletionFacts> {
+  // A step an earlier attempt left open, that the person was already asked
+  // about, is theirs to settle from that question. It neither holds a later
+  // turn open nor asks again: one lost result once became the same question
+  // after every turn, each turn held at its end waiting for it.
+  const askedAbout = sql`exists (select 1 from ${question} q
+    where q.job_id = ${action.jobId} and q.attempt_id = ${action.attemptId}
+      and q.options @> ${JSON.stringify([{ id: UNSETTLED_WAIT }])}::jsonb)`;
   const actions = await tx
     .select({
       id: action.id,
@@ -1395,7 +1421,12 @@ export async function completionFacts(
     })
     .from(action)
     .leftJoin(connection, eq(connection.id, action.connectionId))
-    .where(eq(action.jobId, row.id));
+    .where(
+      and(
+        eq(action.jobId, row.id),
+        attemptId ? sql`(${action.attemptId} = ${attemptId} or not ${askedAbout})` : undefined,
+      ),
+    );
   const artifactIds = outcomeCompleted.evidence.flatMap((ref) =>
     ref.kind === 'artifact' ? [ref.artifact_id] : [],
   );

@@ -910,6 +910,17 @@ export const pushSetting = pgTable('push_setting', {
 });
 
 /**
+ * When a person last had Melete open in front of them, on any device. A
+ * conversation that finishes while they are looking needs no push.
+ */
+export const clientFocus = pgTable('client_focus', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  focusedAt: timestamp('focused_at', { withTimezone: true }).notNull(),
+});
+
+/**
  * One thing worth saying, recorded once by its dedup key. It goes out alone or
  * folded into a batch, and it cannot exist without saying why.
  */

@@ -16,7 +16,10 @@ import { EventProtocol } from './protocol.ts';
 export const EVENT_CHANNEL = 'melete_events';
 export type EventStreamOptions = {
   pageSize?: number;
+  /** How often the polling tick repairs missed notifications while LISTEN is down. */
   pollIntervalMs?: number;
+  /** How often it still repairs while LISTEN is up, for a notification lost in transit. */
+  repairMs?: number;
   keepaliveMs?: number;
 };
 export type EventSubscription = {
@@ -39,8 +42,10 @@ export function persistedFrame(value: ApiEvent | ResponsibilityEvent): string {
 
 /**
  * One LISTEN connection signals all clients; Postgres remains their only event
- * queue. Polling repairs missed notifications, including LISTEN reconnect gaps.
- * Each consumer owns a cursor and at most one page, independent of other clients.
+ * queue. Polling repairs missed notifications: every `pollIntervalMs` while
+ * LISTEN is down, and only every `repairMs` while it is up, since a LISTEN
+ * reconnect signals clients itself. Each consumer owns a cursor and at most
+ * one page, independent of other clients.
  */
 export class EventStream {
   readonly protocol: EventProtocol;
@@ -53,6 +58,8 @@ export class EventStream {
   private stopped = false;
   private readonly pageSize: number;
   private readonly pollIntervalMs: number;
+  private readonly repairMs: number;
+  private repairedAt = 0;
   private readonly keepaliveMs: number;
 
   constructor(
@@ -62,6 +69,7 @@ export class EventStream {
     this.protocol = new EventProtocol(handle.db);
     this.pageSize = options.pageSize ?? 200;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
+    this.repairMs = options.repairMs ?? 30_000;
     this.keepaliveMs = options.keepaliveMs ?? 20_000;
     if (!Number.isInteger(this.pageSize) || this.pageSize < 1 || this.pageSize > 1000) {
       throw new Error('event page size must be between 1 and 1000');
@@ -72,6 +80,9 @@ export class EventStream {
       this.pollIntervalMs > 1000
     ) {
       throw new Error('event polling interval must be between 1 and 1000 ms');
+    }
+    if (!Number.isFinite(this.repairMs) || this.repairMs < this.pollIntervalMs) {
+      throw new Error('event repair interval must be at least the polling interval');
     }
     if (!Number.isFinite(this.keepaliveMs) || this.keepaliveMs < 1) {
       throw new Error('event keepalive interval must be positive');
@@ -150,7 +161,13 @@ export class EventStream {
     this.clients.add(client);
     if (this.pollTimer !== undefined) return;
     this.pollTimer = setInterval(() => {
-      this.notify();
+      // While LISTEN is up, notifications say when to look; nobody is asked to
+      // look again every second for nothing.
+      const now = Date.now();
+      if (!this.listening || now - this.repairedAt >= this.repairMs) {
+        this.repairedAt = now;
+        this.notify();
+      }
       if (!this.listener && !this.starting && !this.stopped) void this.start().catch(() => {});
     }, this.pollIntervalMs);
     this.pollTimer.unref();
@@ -240,10 +257,26 @@ export class EventStream {
     };
     const onAbort = () => cleanup(true);
     const client: Client = { notify, close: () => cleanup(true), buffered: () => buffered.length };
+    // A quiet stream wakes for its keepalive on time, whether or not a polling
+    // tick comes; after a failed read it waits at least one polling interval.
     const waitForChange = (observed: number) =>
       new Promise<void>((resolve) => {
-        if (closed || change !== observed) resolve();
-        else waiting = resolve;
+        if (closed || change !== observed) {
+          resolve();
+          return;
+        }
+        const keepalive = setTimeout(
+          () => {
+            if (waiting === wake) waiting = undefined;
+            resolve();
+          },
+          Math.max(this.pollIntervalMs, lastWrite + this.keepaliveMs - Date.now()),
+        );
+        const wake = () => {
+          clearTimeout(keepalive);
+          resolve();
+        };
+        waiting = wake;
       });
     const body = new ReadableStream<Uint8Array>(
       {

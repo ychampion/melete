@@ -1155,12 +1155,43 @@ before. An operator who provisions an installation for someone else can also
 skip the code and create that person's account directly with
 `bun run melete account create <email>` (see [Accounts](#accounts)).
 
-An installation with no code configured and none issued, such as one set up
-before codes existed or a local install whose `deploy/.env` has an empty
-`MELETE_SETUP_CODE_HASH`, keeps the old behaviour: the first visitor creates
-the account. That is fine on the default loopback ports, where only this
-machine reaches the page; give an installation a code before it is reachable
-from anywhere else.
+### With no code: decided by the address
+
+An installation can have no code configured and none issued: one set up
+before codes existed, or one whose `deploy/.env` leaves `MELETE_SETUP_CODE_HASH`
+empty or out. An empty value counts as no code. What happens then depends on
+the addresses in `deploy/.env`:
+
+- **Every address is on this machine** (`MELETE_PUBLIC_URL` and
+  `MELETE_WEB_ORIGIN` unset, or naming `localhost`, a name under it such as
+  `melete.localhost`, `127.x.x.x` or `::1`). The first visitor creates the
+  account, as before. That is the default loopback setup, where only this
+  machine reaches the page.
+- **Either names another machine** (a domain, a Tailscale name, a LAN or
+  public address). The installation refuses to create the first account:
+  `POST /setup` answers 403 `setup_code_required`, `GET /setup` says
+  `code_required: true`, and the sign-in page asks for a code. Run
+  `bun run melete account setup-code` on the host for one, then open the link
+  it prints. The service says so in its log at start, and `melete check` and
+  `melete status` say so too.
+
+Only these two settings are read; a reverse proxy or a published port in
+front of the installation is not seen. An installation reached that way must
+set `MELETE_WEB_ORIGIN` (or `MELETE_PUBLIC_URL`) to the address people use, or
+have a setup code, before it is reachable. With neither, its first visitor can
+claim it.
+
+Set `MELETE_SETUP_OPEN=true` only if the first visitor should be allowed to
+create the owner without a code: it turns that refusal off, and whoever opens
+the page first becomes the owner. You'd rarely want this. On an address other
+people can reach, a scanner or a stranger can get there before you do, and
+they then own the installation and everything you connect to it. It is only
+for a page that is reachable but private in practice, such as one behind
+your own sign-in proxy, and only until your account exists. While it is on,
+the service logs a warning at start, and `melete check` and `melete status`
+warn that the claim is open. Set it back to `false` once the account exists.
+It never skips a code that exists: with a configured or issued code, the code
+is still required.
 
 ## Accounts
 
@@ -2126,7 +2157,7 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | --- | --- |
 | `MELETE_ALERT_WEBHOOK_URL` | Receives a JSON POST: `text` (a sentence chat webhooks show), `status` (`unhealthy` or `recovered`), `service`, `version`, `checks` and `time` |
 | `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
-| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465` |
+| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
@@ -2138,6 +2169,13 @@ Alerts are off until a webhook or an email address is set. One alert is sent
 when the service turns unhealthy, again every repeat interval while it stays
 so, and one more when it is healthy again. With several instances on one
 database, the instance holding the `health-alerts` lease sends them.
+
+Alert email needs TLS unless the mail server is on this machine
+(`localhost`, `127.0.0.1` or `::1`). Releases up to v0.2.1 also sent it in
+plain text, so an installation upgraded from one that sends alerts through a
+relay on another host without TLS must add `?requireTLS=false` to
+`MELETE_ALERT_SMTP_URL`. Otherwise its alert email stops, and the service
+logs `alert not sent` each time.
 
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
 each check with what it found, `200` while all pass and `503` while any fails:

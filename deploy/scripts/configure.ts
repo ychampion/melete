@@ -370,6 +370,23 @@ export function setupCodeNote(code: string, webUrl: string): string {
   ].join('\n');
 }
 
+/**
+ * deploy/.env from the template: each setting's line takes its value. A setting
+ * the template has only as an empty commented line, such as
+ * `# MELETE_SETUP_CODE_HASH=`, is written in that line's place.
+ */
+export function fillTemplate(template: string, values: Record<string, string>): string {
+  const written = new Set<string>();
+  const filled = template.replace(/^([A-Z_]+)=(.*)$/gm, (line, name: string) => {
+    if (!(name in values)) return line;
+    written.add(name);
+    return `${name}=${values[name]}`;
+  });
+  return filled.replace(/^# ?([A-Z_]+)=[ \t]*$/gm, (line, name: string) =>
+    name in values && !written.has(name) ? `${name}=${values[name]}` : line,
+  );
+}
+
 /** The line and exit code for a failed run: a refusal is its message alone. */
 export function failureReport(error: unknown): { text: string; code: number } | null {
   return error instanceof ConfigureRefusal ? { text: `${error.message}\n`, code: 1 } : null;
@@ -429,9 +446,7 @@ async function configure(root: string) {
     // the Tailscale admin console and nothing here can invent one.
     ...(nodeName === null ? {} : { TS_HOSTNAME: nodeName }),
   };
-  const content = template.replace(/^([A-Z_]+)=(.*)$/gm, (line, name: string) =>
-    name in values ? `${name}=${values[name]}` : line,
-  );
+  const content = fillTemplate(template, values);
   try {
     await writeFile(target, content, { flag: 'wx', mode: 0o600 });
   } catch (error) {

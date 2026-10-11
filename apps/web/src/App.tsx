@@ -6,7 +6,7 @@ import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { stopPushHere } from './experience/account.ts';
-import { adapter, type Result, SESSION_ENDED_EVENT } from './experience/adapter.ts';
+import { adapter, type Result, SESSION_ENDED_EVENT, servesBrowser } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import { setDisplayZone } from './experience/clock.ts';
 import {
@@ -18,6 +18,7 @@ import {
 } from './experience/hooks.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
+import { useFocusBeat } from './push-focus.ts';
 import { roomsApi } from './rooms/api.ts';
 import { InviteScreen } from './rooms/InviteScreen.tsx';
 import { RoomsRoute } from './rooms/RoomsScreen.tsx';
@@ -212,7 +213,7 @@ export function App() {
     });
     // The signed-in sites are served only where the service has a browser.
     void adapter.browserSites().then((sites) => {
-      setCapabilities((c) => ({ ...c, browser: sites.data !== null }));
+      setCapabilities((c) => ({ ...c, browser: servesBrowser(sites) }));
     });
   }, [signedIn, refreshAgentsSoon, refreshConversations]);
 
@@ -222,6 +223,7 @@ export function App() {
   useEffect(() => {
     if (signedIn) refreshAgentsSoon();
   }, [route.path, signedIn, refreshAgentsSoon]);
+  useFocusBeat(signedIn);
   useEffect(() => {
     if (!signedIn) return;
     const back = () => {

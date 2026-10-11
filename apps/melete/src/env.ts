@@ -794,6 +794,24 @@ const variables = z.object({
       .regex(/^[0-9a-fA-F]{64}$/, 'the SHA-256 of the setup code, in hex')
       .optional(),
   ),
+  /**
+   * Lets the first visitor create the owner without a setup code even when
+   * MELETE_PUBLIC_URL or MELETE_WEB_ORIGIN names another machine. Off, such an
+   * installation with no code refuses its first account until the operator
+   * runs `melete account setup-code`. A blank or missing code never turns this on.
+   */
+  MELETE_SETUP_OPEN: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  ),
+  /**
+   * The web app's own origin when it sits behind a proxy (the web server reads
+   * it too). Here it only says whether the sign-in page is reachable from
+   * other machines, for the setup code.
+   */
+  MELETE_WEB_ORIGIN: unsetWhenBlank(z.string().max(2000).optional()),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
