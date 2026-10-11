@@ -61,6 +61,8 @@ const app =
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: directory,
           MELETE_PUBLIC_URL: PUBLIC_URL,
+          // Claimed by its first visitor here, as a test install is, without a setup code.
+          MELETE_SETUP_OPEN: 'true',
         }),
         db: handle.db,
         sql: handle.sql,

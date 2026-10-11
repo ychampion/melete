@@ -146,6 +146,48 @@ describe('melete check', () => {
     );
   });
 
+  test('how the first account is claimed, and a warning when strangers can claim it', () => {
+    const claim = (overrides: Record<string, string>) => {
+      const deployDir = temporaryDeployDir();
+      writeEnv(deployDir, overrides);
+      contract(deployDir, {});
+      return find(deployDir, 'setup.claim');
+    };
+    expect(claim({})).toMatchObject({
+      level: 'ok',
+      detail: expect.stringContaining('without a code'),
+    });
+    expect(claim({ MELETE_PUBLIC_URL: 'http://127.0.0.1:3101' })?.level).toBe('ok');
+    expect(claim({ MELETE_SETUP_CODE_HASH: 'e'.repeat(64) })).toMatchObject({
+      level: 'ok',
+      detail: expect.stringContaining('needs the setup code'),
+    });
+    const refused = claim({ MELETE_PUBLIC_URL: 'https://melete.example.com' });
+    expect(refused?.level).toBe('ok');
+    expect(refused?.detail).toContain('needs a setup code');
+    expect(refused?.detail).toContain('bun run melete account setup-code');
+    // A blank hash is no code.
+    expect(
+      claim({ MELETE_WEB_ORIGIN: 'https://melete.example.com', MELETE_SETUP_CODE_HASH: '' })
+        ?.detail,
+    ).toContain('needs a setup code');
+    const open = claim({
+      MELETE_PUBLIC_URL: 'https://melete.example.com',
+      MELETE_SETUP_OPEN: 'true',
+    });
+    expect(open).toMatchObject({ level: 'warn' });
+    expect(open?.detail).toContain('whoever opens https://melete.example.com first');
+    expect(open?.fix).toContain('MELETE_SETUP_OPEN=false');
+    // A code that exists is asked for, opt-out or not.
+    expect(
+      claim({
+        MELETE_PUBLIC_URL: 'https://melete.example.com',
+        MELETE_SETUP_OPEN: 'true',
+        MELETE_SETUP_CODE_HASH: 'e'.repeat(64),
+      })?.level,
+    ).toBe('ok');
+  });
+
   test('an overlay adds its own required settings', () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir, { TS_AUTHKEY: '' });

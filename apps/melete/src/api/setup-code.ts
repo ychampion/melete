@@ -8,7 +8,9 @@
  * `MELETE_SETUP_CODE_HASH` in deploy/.env. `melete account setup-code` issues a
  * new one into the database, for an operator who lost the first or provisions
  * installs without `init`. An installation with neither is open to its first
- * visitor, as a local install on 127.0.0.1 always has been.
+ * visitor only while every address it is configured with is on this machine,
+ * as a local install on 127.0.0.1 always has been, or when its operator sets
+ * MELETE_SETUP_OPEN=true on purpose.
  */
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
@@ -41,6 +43,74 @@ export function setupLink(webUrl: string, code: string): string {
 
 const sameDigest = (a: string, b: string) =>
   a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+/** The settings that say who can reach the sign-in page, as the service or deploy/.env has them. */
+export type ClaimSettings = {
+  MELETE_PUBLIC_URL?: string | undefined;
+  MELETE_WEB_ORIGIN?: string | undefined;
+  /** True only when the operator chose to let the first visitor in without a code. */
+  MELETE_SETUP_OPEN?: boolean | undefined;
+};
+
+/** A host only this machine reaches: localhost (and names under it), 127.0.0.0/8 or ::1. */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '::1' ||
+    /^127(\.\d{1,3}){3}$/.test(host)
+  );
+}
+
+/**
+ * The first configured address that names another machine, MELETE_PUBLIC_URL
+ * before MELETE_WEB_ORIGIN, or null when each is unset or on this machine. An
+ * address that is not a URL counts as another machine's.
+ */
+export function publicAddress(settings: ClaimSettings): string | null {
+  for (const value of [settings.MELETE_PUBLIC_URL, settings.MELETE_WEB_ORIGIN]) {
+    const address = value?.trim();
+    if (!address) continue;
+    let hostname: string;
+    try {
+      hostname = new URL(address).hostname;
+    } catch {
+      return address;
+    }
+    if (!isLoopbackHost(hostname)) return address;
+  }
+  return null;
+}
+
+/**
+ * Whether an installation with no setup code still turns its first visitor
+ * away: it names an address other machines reach, and the operator has not
+ * set MELETE_SETUP_OPEN=true.
+ */
+export const openClaimRefused = (settings: ClaimSettings): boolean =>
+  settings.MELETE_SETUP_OPEN !== true && publicAddress(settings) !== null;
+
+/** The answer to a first account attempted where no code exists and none may be skipped. */
+export const SETUP_CODE_NOT_ISSUED =
+  'This installation can be reached from other machines, so its first account needs a setup code, and none has been made yet. Whoever runs it can make one on the host with `bun run melete account setup-code`, or set MELETE_SETUP_OPEN=true to let the first visitor in without one.';
+
+/**
+ * What the operator is told at start while no account exists and the claim is
+ * decided by the address alone; null when there is nothing to say.
+ */
+export async function claimNotice(
+  sql: Sql,
+  settings: ClaimSettings & { MELETE_SETUP_CODE_HASH?: string | undefined },
+): Promise<string | null> {
+  const address = publicAddress(settings);
+  if (address === null) return null;
+  const [installed] = await sql`select 1 from owner limit 1`;
+  if (installed || (await setupCodeRequired(sql, settings.MELETE_SETUP_CODE_HASH))) return null;
+  return settings.MELETE_SETUP_OPEN === true
+    ? `WARNING: MELETE_SETUP_OPEN=true and no account exists yet, so whoever opens ${address} first becomes this installation's owner. Create your account now, or run bun run melete account setup-code and set MELETE_SETUP_OPEN=false.`
+    : `No account exists yet, and ${address} can be reached from other machines, so creating it needs a setup code. Run bun run melete account setup-code on this host to make one.`;
+}
 
 /** Whether creating the first account needs a code here. */
 export async function setupCodeRequired(

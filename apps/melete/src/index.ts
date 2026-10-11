@@ -39,6 +39,7 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
+import { claimNotice } from './api/setup-code.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
@@ -973,6 +974,9 @@ export async function bootstrap(
         await assertMigrated(handle);
         await checkRoles({ api: env.DATABASE_URL, effects: env.MELETE_EFFECTS_DATABASE_URL });
       } else await migrateDatabase(handle);
+      // An installation others can reach, with no account and no code yet, says how it is claimed.
+      const claim = await claimNotice(handle.sql, env);
+      if (claim) process.stderr.write(`${claim}\n`);
       // Recorded before this instance starts anything another could remove.
       instances = new InstanceRegistry(handle.sql, instanceId(env.MELETE_INSTANCE_ID));
       await instances.start();

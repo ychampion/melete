@@ -5,6 +5,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { publicAddress } from '../../../../apps/melete/src/api/setup-code.ts';
 import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
@@ -129,6 +130,7 @@ export function judgeCheck(installation: Installation): Result[] {
   results.push(...judgeHosted(installation.config, env));
   results.push(...judgeBrowser(installation));
   results.push(judgePorts(installation));
+  results.push(judgeClaim(installation));
 
   const base = installation.compose[0]?.raw;
   if (base) {
@@ -468,6 +470,48 @@ export function judgeBlobs(config: DeployConfig, env: Record<string, string>): R
       fix: 'Use the https:// address, unless the store runs on this machine or a private network.',
     });
   return results;
+}
+
+/**
+ * How the first account is created, from the settings the service would run
+ * with: these files cannot say whether it exists yet, so the rule describes
+ * the claim and warns only when a page other machines reach takes the first
+ * visitor without a code.
+ */
+export function judgeClaim(installation: Installation): Result {
+  const composed = serviceEnvironment(installation, 'melete');
+  const settings = Object.keys(composed).length > 0 ? composed : (installation.env ?? {});
+  const value = (name: string) => settings[name]?.trim() ?? '';
+  if (value('MELETE_SETUP_CODE_HASH'))
+    return {
+      id: 'setup.claim',
+      level: 'ok',
+      detail:
+        'Creating the first account needs the setup code made with this installation (MELETE_SETUP_CODE_HASH).',
+    };
+  const exposed = publicAddress({
+    MELETE_PUBLIC_URL: value('MELETE_PUBLIC_URL'),
+    MELETE_WEB_ORIGIN: value('MELETE_WEB_ORIGIN'),
+  });
+  if (exposed === null)
+    return {
+      id: 'setup.claim',
+      level: 'ok',
+      detail:
+        'Every configured address is on this machine, so whoever opens the page here first creates the account, without a code.',
+    };
+  if (value('MELETE_SETUP_OPEN') === 'true')
+    return {
+      id: 'setup.claim',
+      level: 'warn',
+      detail: `MELETE_SETUP_OPEN=true and there is no setup code, so until an account exists, whoever opens ${exposed} first becomes its owner.`,
+      fix: 'Create your account now and then run bun run melete set MELETE_SETUP_OPEN=false, or set it to false first and run bun run melete account setup-code for a code.',
+    };
+  return {
+    id: 'setup.claim',
+    level: 'ok',
+    detail: `${exposed} can be reached from other machines, so creating the first account needs a setup code, and deploy/.env has none. Until the account exists, run bun run melete account setup-code for one.`,
+  };
 }
 
 /** Every published port stays on loopback unless the contract allows otherwise. */

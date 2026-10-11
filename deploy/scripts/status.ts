@@ -18,6 +18,7 @@
  */
 import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { publicAddress } from '../../apps/melete/src/api/setup-code.ts';
 import {
   type CommandOutput,
   readHostDocker,
@@ -48,6 +49,8 @@ export type StatusFacts = {
   health: { status?: string; database?: string } | null;
   /** Whether the owner account still has to be created; null when unknown. */
   setupNeeded: boolean | null;
+  /** Whether creating it needs a setup code, as the service says; null or absent when unknown. */
+  setupCodeRequired?: boolean | null;
 };
 
 export const SERVICES = ['postgres', 'melete-cells', 'melete', 'runtime', 'web'] as const;
@@ -235,15 +238,8 @@ export function judgeStatus(
     });
   else checks.push({ level: 'ok', name: 'API', detail: `${address} answers` });
 
-  if (facts.setupNeeded === true)
-    checks.push({
-      level: 'warn',
-      name: 'Account',
-      detail: 'No account yet.',
-      fix: `Open ${address} and create your account.`,
-    });
-  else if (facts.setupNeeded === false)
-    checks.push({ level: 'ok', name: 'Account', detail: 'The owner account exists.' });
+  const account = judgeAccount(facts, env, address);
+  if (account) checks.push(account);
 
   if (sandboxOn(env)) {
     const sandbox = facts.images?.find((image) => /melete-sandbox:/.test(image.name));
@@ -275,6 +271,45 @@ export function judgeStatus(
   });
 
   return checks;
+}
+
+/**
+ * The owner account, and while it is missing, how it is claimed: with a setup
+ * code, or by whoever comes first. The second is a warning of its own when the
+ * settings name an address other machines reach. `open` is where to create it.
+ */
+export function judgeAccount(
+  facts: Pick<StatusFacts, 'setupNeeded' | 'setupCodeRequired'>,
+  settings: Record<string, string | undefined>,
+  open: string,
+): Check | null {
+  if (facts.setupNeeded === false)
+    return { level: 'ok', name: 'Account', detail: 'The owner account exists.' };
+  if (facts.setupNeeded !== true) return null;
+  if (facts.setupCodeRequired === true)
+    return {
+      level: 'warn',
+      name: 'Account',
+      detail: 'No account yet. Creating it needs this installation’s setup code.',
+      fix: `Open ${open} and enter the setup code you were given. No code, or lost it? Run bun run melete account setup-code for a new one.`,
+    };
+  const exposed = publicAddress({
+    MELETE_PUBLIC_URL: settings.MELETE_PUBLIC_URL,
+    MELETE_WEB_ORIGIN: settings.MELETE_WEB_ORIGIN,
+  });
+  if (facts.setupCodeRequired === false && exposed !== null)
+    return {
+      level: 'warn',
+      name: 'Account',
+      detail: `No account yet, and no setup code is asked for, so whoever opens ${exposed} first becomes its owner${settings.MELETE_SETUP_OPEN?.trim() === 'true' ? ' (MELETE_SETUP_OPEN=true)' : ''}.`,
+      fix: 'Create your account now, or run bun run melete account setup-code and set MELETE_SETUP_OPEN=false.',
+    };
+  return {
+    level: 'warn',
+    name: 'Account',
+    detail: 'No account yet.',
+    fix: `Open ${open} and create your account.`,
+  };
 }
 
 /** The model as deploy/.env sets it. A key pasted into the app is not visible from here. */
@@ -446,6 +481,7 @@ export async function gatherStatus(
     services,
     health: health as StatusFacts['health'],
     setupNeeded: typeof setup?.needed === 'boolean' ? setup.needed : null,
+    setupCodeRequired: typeof setup?.code_required === 'boolean' ? setup.code_required : null,
   };
 }
 

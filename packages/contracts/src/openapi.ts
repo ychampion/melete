@@ -2436,8 +2436,10 @@ export function buildOpenApiDocument() {
               '`multiplayer` says whether rooms, shared spaces, guests and hand-offs are ' +
               'switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 ' +
               '`not_available`. `code_required` says whether setup needs the one-time setup ' +
-              'code, and `email_sign_in` whether this installation can email sign-in and ' +
-              'password reset links.',
+              'code: when one is configured or issued, and also when none exists but ' +
+              '`MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and ' +
+              '`MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation ' +
+              'can email sign-in and password reset links.',
             responses: {
               '200': jsonResponse('Whether setup is needed', setupStatusResponse),
               '503': problem('No database is configured'),
@@ -2452,7 +2454,10 @@ export function buildOpenApiDocument() {
               'is parsed. When the installation has a setup code (`MELETE_SETUP_CODE_HASH`, or ' +
               'one `melete account setup-code` issued), `setup_code` must be it; a missing or ' +
               'wrong code is 403 `setup_code_required` or `invalid_setup_code`, and counts ' +
-              'against the setup limit.',
+              'against the setup limit. An installation with no code that is configured for ' +
+              'an address other machines reach answers 403 `setup_code_required` to every ' +
+              'attempt until `melete account setup-code` issues one, unless ' +
+              '`MELETE_SETUP_OPEN=true`.',
             requestBody: json(setupRequest),
             responses: {
               '201': jsonResponse('The owner, signed in', ownerResponse),
