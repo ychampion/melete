@@ -4,20 +4,16 @@ import { numericDate } from '../dates.ts';
 import { memoryScopeForSpace } from '../memory/broker-trust.ts';
 import { eligibleRevision } from '../memory/claims.ts';
 import type { MemoryTx } from '../memory/db.ts';
+import { subjectLabel } from '../memory/labels.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { plainText } from './projectors.ts';
 
-export const memoryKeyLabel = (key: string | null) => {
-  if (!key) return 'Something you shared';
-  const [kind, subject, field] = key.split('.');
-  const name = (subject ?? '').replaceAll('-', ' ');
-  const leaf = (field ?? '').replaceAll('-', ' ');
-  if (kind === 'contact') return `${name}'s ${leaf}`;
-  if (kind === 'event') return `${name} ${leaf}`;
-  if (kind === 'pref') return `${name}: ${leaf}`;
-  if (kind === 'constraint') return `${name}: ${leaf}`;
-  return plainText(key.replaceAll(/[._-]/g, ' '), 'Something you shared');
-};
+/**
+ * A saved detail's name, as the memory page shows it: "Maya's email", "Your
+ * home city". Without a key, its subject names it.
+ */
+export const memoryKeyLabel = (key: string | null, domainKey?: string | null) =>
+  subjectLabel(key, domainKey ?? key ?? '');
 
 /** Only evidence still visible in this space may become an explanation. */
 export async function explainHandles(

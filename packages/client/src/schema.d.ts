@@ -5513,7 +5513,54 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Remove a disconnected computer from the list
+         * @description Only a computer already disconnected can be removed. Its connection stays revoked and the receipts of what it did are kept.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Device id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            status: "ok";
+                        };
+                    };
+                };
+                /** @description Device not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Device still connected */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         /** Change what a connected computer may do */
@@ -17645,6 +17692,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/quick-answers/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /quick-answers/{id}/dismiss
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema344"] | components["schemas"]["__schema313"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reach": {
         parameters: {
             query?: never;
@@ -24946,6 +25034,7 @@ export interface components {
             free_text: boolean;
             id: components["schemas"]["__schema307"];
             if_ignored: components["schemas"]["__schema308"];
+            needs_answer?: boolean;
             options: components["schemas"]["__schema336"];
             text: components["schemas"]["__schema308"];
             why: components["schemas"]["__schema308"][];

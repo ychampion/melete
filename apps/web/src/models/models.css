@@ -237,6 +237,10 @@
   gap: 4px 12px;
   min-width: 0;
 }
+.models-usage-name {
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
 
 /* The secondary model and which work runs on it. */
 .models-secondary {

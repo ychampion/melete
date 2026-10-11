@@ -339,6 +339,74 @@ withDb('the device token', () => {
   }, 30_000);
 });
 
+withDb('removing a computer', () => {
+  test('only a disconnected computer comes off the list, and its connection stays revoked', async () => {
+    const s = need();
+    const { config } = await s.computer();
+    const connectionId = String(
+      (await s.sql`select connection_id from paired_device where id = ${config.device_id}`)[0]
+        ?.connection_id,
+    );
+    const remove = (cookie: string) =>
+      s.app.request(`/devices/${config.device_id}`, s.as(cookie, 'DELETE'));
+
+    expect((await remove('')).status).toBe(401);
+    const stillConnected = await remove(s.cookie);
+    expect(stillConnected.status).toBe(409);
+    expect(((await stillConnected.json()) as { error: { code: string } }).error.code).toBe(
+      'device_connected',
+    );
+
+    const revoked = await s.app.request(
+      `/devices/${config.device_id}/revoke`,
+      s.as(s.cookie, 'POST'),
+    );
+    expect(revoked.status).toBe(200);
+    const removed = await remove(s.cookie);
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ status: 'ok' });
+
+    const listed = (await (await s.app.request('/devices', s.as(s.cookie))).json()) as {
+      devices: { id: string }[];
+    };
+    expect(listed.devices.some((device) => device.id === config.device_id)).toBe(false);
+    const [connection] = await s.sql`select status from connection where id = ${connectionId}`;
+    expect(connection?.status).toBe('revoked');
+    expect((await remove(s.cookie)).status).toBe(404);
+    // Its token stays dead: nothing is left for it to sign in as.
+    const hello = await s.app.request('/device/hello', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ companion_version: 'test', capabilities: ALL, folders: [] }),
+    });
+    expect(hello.status).toBe(401);
+  }, 30_000);
+
+  test('a computer shown as disconnected can be removed, and a disconnect left part way is finished', async () => {
+    const s = need();
+    const remove = (id: string) => s.app.request(`/devices/${id}`, s.as(s.cookie, 'DELETE'));
+    const connectionOf = async (id: string) =>
+      String(
+        (await s.sql`select connection_id from paired_device where id = ${id}`)[0]?.connection_id,
+      );
+
+    // Its connection was revoked on its own: the list says disconnected, so it comes off.
+    const first = (await s.computer()).config;
+    const firstConnection = await connectionOf(first.device_id);
+    await s.sql`update connection set status = 'revoked', generation = generation + 1
+      where id = ${firstConnection}`;
+    expect((await remove(first.device_id)).status).toBe(200);
+
+    // Its own row was marked but its connection still stands: removing finishes the disconnect.
+    const second = (await s.computer()).config;
+    const secondConnection = await connectionOf(second.device_id);
+    await s.sql`update paired_device set revoked_at = now() where id = ${second.device_id}`;
+    expect((await remove(second.device_id)).status).toBe(200);
+    const [left] = await s.sql`select status from connection where id = ${secondConnection}`;
+    expect(left?.status).toBe('revoked');
+  }, 30_000);
+});
+
 withDb('the agent uses the computer through the broker', () => {
   const tools = [
     'device.status',

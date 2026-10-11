@@ -97,7 +97,13 @@ test('a detail is written about the person, never about "the user"', () => {
   expect(contentOf(proposal('person.sam', 'Sam calls the user on Sundays'))).toBe(
     'Sam calls you on Sundays',
   );
-  // "the user" only: another person is left alone.
+  // "the user" only: another person is left alone, an owner included.
+  expect(contentOf(proposal('home.rent', 'The owner said the rent goes up in March'))).toBe(
+    'The owner said the rent goes up in March',
+  );
+  expect(contentOf(proposal('person.lena', "The owner's dog bit Lena"))).toBe(
+    "The owner's dog bit Lena",
+  );
   expect(contentOf(proposal('person.baker', 'Met the person who runs the bakery'))).toBe(
     'Met the person who runs the bakery',
   );
