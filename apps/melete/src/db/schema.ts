@@ -1506,3 +1506,30 @@ export const spendingNotice = pgTable(
   },
   (t) => [primaryKey({ columns: [t.scope, t.period, t.level] })],
 );
+
+/**
+ * A person's own spending caps, set by the installation's owner in place of
+ * the installation's per-person caps (`MELETE_SPEND_PERSON_*`). A column left
+ * null keeps the installation's cap for that period. Dollars only: token
+ * caps stay installation-wide.
+ */
+export const personSpendLimit = pgTable(
+  'person_spend_limit',
+  {
+    principalId: text('principal_id')
+      .primaryKey()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    dayUsd: doublePrecision('day_usd'),
+    monthUsd: doublePrecision('month_usd'),
+    backgroundDayUsd: doublePrecision('background_day_usd'),
+    backgroundMonthUsd: doublePrecision('background_month_usd'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'person_spend_limit_positive',
+      sql`coalesce(${t.dayUsd}, 1) > 0 and coalesce(${t.monthUsd}, 1) > 0
+        and coalesce(${t.backgroundDayUsd}, 1) > 0 and coalesce(${t.backgroundMonthUsd}, 1) > 0`,
+    ),
+  ],
+);
