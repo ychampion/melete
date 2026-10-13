@@ -824,6 +824,11 @@ withDb('each account acts only inside its own space', () => {
         day_start = excluded.day_start, day_end = excluded.day_end`;
     await sql`insert into task (id, space_id, title)
       values (${recordId('task')}, ${studio}, 'Owner studio errand')`;
+    // The mailbox the space sends from is the owner's too.
+    const mailbox = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
+      values (${mailbox}, ${studio}, 'imap', 'Mail', '["email.search","email.send"]'::jsonb,
+        '{"mail":{"from":"studio-owner@example.test"}}'::jsonb)`;
     const cookie = await login('second@example.test');
     expect((await call(cookie, '/me', 'PATCH', { display_name: 'Sam' })).status).toBe(200);
     const digest = createHash('sha256')
@@ -845,6 +850,7 @@ withDb('each account acts only inside its own space', () => {
       role: 'member',
     });
     expect(profileText).not.toContain('Studio Owner Name');
+    expect(profileText).not.toContain('studio-owner@example.test');
     const day = await call(cookie, '/home');
     expect(day.status).toBe(200);
     const dayText = await day.text();
@@ -853,8 +859,10 @@ withDb('each account acts only inside its own space', () => {
       tasks: [],
       open_task_count: 0,
       routine_results: [],
+      upcoming: { status: 'not_available', reason: 'The calendar here is the space owner’s.' },
     });
     expect(dayText).not.toContain('Owner studio errand');
+    expect(dayText).not.toContain('studio-owner@example.test');
     expect(dayText).not.toContain('Studio Owner Name');
     // What only the owner may read or change stays theirs.
     expect(
@@ -872,6 +880,24 @@ withDb('each account acts only inside its own space', () => {
     // The owner still reads their own profile, and is told it is theirs.
     const own = await json<{ profile: { role: string } }>(await call(first.cookie, '/profile'));
     expect(own.profile.role).toBe('owner');
+    // In the shared space itself, its owner sees what the member does not.
+    const ownerInStudio = await login('first@example.test');
+    const [owned] = await sql`select generation from space_membership
+      where space_id = ${studio} and principal_id = ${first.principalId} and revoked_at is null`;
+    await sql`update session set space_id = ${studio}, membership_generation = ${owned?.generation}
+      where token_hash = ${createHash('sha256')
+        .update(ownerInStudio.split('=')[1] ?? '')
+        .digest('hex')}`;
+    const ownersView = await json<{
+      profile: { name: string; role: string; sending_address: string | null };
+    }>(await call(ownerInStudio, '/profile'));
+    expect(ownersView.profile).toMatchObject({
+      name: 'Studio Owner Name',
+      role: 'owner',
+      sending_address: 'studio-owner@example.test',
+    });
+    expect(await (await call(ownerInStudio, '/home')).text()).toContain('Owner studio errand');
+    await sql`delete from connection where id = ${mailbox}`;
     await call(first.cookie, `/spaces/${studio}/memberships/${second.principalId}`, 'DELETE');
   }, 60_000);
 
