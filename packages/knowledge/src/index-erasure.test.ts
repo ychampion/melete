@@ -542,6 +542,32 @@ describe('forgetting at scale', () => {
     expect(copiesOnDisk()).toBe(0);
   });
 
+  test('retrying a removal never fails, nor tries the rewrite, while the disk has no room for it', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    const free = indexDisk.free;
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // A forget's cleanup retries until it succeeds; each failing retry would hold up the
+      // work queued behind it and fill what is left of the disk again.
+      indexDisk.free = () => 4096;
+      index.removeMany(forgottenIds);
+      index.removeMany(forgottenIds);
+      expect(vacuums.count()).toBe(1);
+      expect(index.erasePending()).toBe(true);
+      indexDisk.free = free;
+      index.removeMany(forgottenIds);
+      expect(vacuums.count()).toBe(2);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      indexDisk.free = free;
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
   test('an open never tries a rewrite the disk has no room for', () => {
     const first = SpaceIndex.open(paths);
     const vacuums = failVacuums(1);

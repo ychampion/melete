@@ -243,10 +243,11 @@ export class SpaceIndex {
 
   /**
    * Finish an erase a removal still owes, where the caller only wants the
-   * index usable: opening it, rebuilding it, or adding a record. If the
-   * rewrite fails again, the mark stays for the next removal or open to try
-   * once more, and search keeps working meanwhile. A removal that fails this
-   * way throws to its own caller, whose retry is what reports it.
+   * index usable: opening it, rebuilding it, adding a record, or a removal
+   * that found nothing left to delete. If the rewrite fails again, the mark
+   * stays for a later removal or open to try once more, and search keeps
+   * working meanwhile. A removal that deleted rows and then fails this way
+   * throws to its own caller.
    *
    * Here it is only tried when it can work. VACUUM writes a new copy of the
    * whole file, so on a disk without room for one, each try would fill the disk
@@ -324,10 +325,13 @@ export class SpaceIndex {
    * minute, with nothing else able to run, into a second or two.
    */
   removeMany(ids: readonly string[]): void {
-    this.db.transaction(() => this.deleteRows(ids))();
-    // Also when nothing was left to delete: a retry after a rewrite that failed
-    // finds the rows gone, and the rewrite still owed.
-    if (this.erasePending()) this.afterRemoval();
+    const removed = this.db.transaction(() => this.deleteRows(ids))();
+    // This removal's own erase: a failure reaches the caller. With nothing left
+    // to delete (a retry after a rewrite that failed finds the rows gone), the
+    // erase still owed is finished as an open finishes it, so a retry neither
+    // fails nor fills the disk again for as long as there is no room for it.
+    if (removed) this.afterRemoval();
+    else if (this.erasePending()) this.finishPendingErase();
   }
 
   /** Whether a removal's words may still be in the file, waiting for a rewrite. */
@@ -455,8 +459,8 @@ export class SpaceIndex {
    * The erase-pending mark is cleared only when all of that is done. A VACUUM
    * that fails throws and leaves it set; a log another process is still
    * reading cannot be emptied, and leaves it set too. Either way the next
-   * removal runs this again, and so does an open or an added record when the
-   * disk has room for it (finishPendingErase).
+   * removal that deletes rows runs this again, and anything else that uses the
+   * index does when the disk has room for it (finishPendingErase).
    */
   private afterRemoval(): void {
     if (!this.erasesTerms) this.db.run("INSERT INTO record_fts (record_fts) VALUES ('optimize')");
