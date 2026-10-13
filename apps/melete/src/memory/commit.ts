@@ -32,10 +32,15 @@ import { detailWords, listKey, sameWording } from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import {
   GENERIC_HEADS,
+  memberSubject,
   olderOwnSubjects,
+  ownTopicRun,
   PERSON_HEADS,
+  relatedSubject,
   SELF,
   sameWhose,
+  TOPICS,
+  twoPeople,
   whoseDetail,
 } from './labels.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
@@ -51,6 +56,79 @@ type Validated = {
 };
 
 /**
+ * Who said the words a change rests on: in a room, the member who said them;
+ * otherwise the person, recorded as no one.
+ */
+type Author = { id: string | null; part: string };
+async function authorOf(tx: MemoryTx, batch: ExtractionBatch): Promise<Author> {
+  const [row] =
+    await tx`select author_principal_id from memory_sources where id = ${batch.source.source_id}`;
+  const id = (row?.author_principal_id as string | null | undefined) ?? null;
+  return { id, part: stableId('member', id ?? 'owner').slice(0, 12) };
+}
+
+/**
+ * The claim held under a subject, and whether everything it rests on was said
+ * by this author. One room member's detail is never taken as another's.
+ */
+async function heldUnder(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  author: Author,
+  domainKey: string,
+): Promise<{ head: ClaimHead; theirs: boolean } | null> {
+  const [row] = await tx`select c.id, not exists (select 1 from memory_references said
+      join memory_sources who on who.id = said.source_id
+      where said.claim_id = c.id and said.revision = c.head_revision
+        and who.author_principal_id is distinct from ${author.id}) as theirs
+    from memory_claims c where c.space_id = ${scope.spaceId} and c.audience = ${batch.source.audience}
+      and c.domain_key = ${domainKey} and not c.hidden`;
+  if (!row) return null;
+  const head = await getHead(tx, scope, String(row.id));
+  if (!head) throw new MemoryError('stale_revision');
+  return { head, theirs: Boolean(row.theirs) };
+}
+
+/** Whether everything a claim's current wording rests on was said by this author. */
+async function saidBy(tx: MemoryTx, head: ClaimHead, author: Author): Promise<boolean> {
+  const [other] = await tx`select 1 from memory_references said
+    join memory_sources who on who.id = said.source_id
+    where said.claim_id = ${head.id} and said.revision = ${head.head_revision}
+      and who.author_principal_id is distinct from ${author.id} limit 1`;
+  return !other;
+}
+
+/**
+ * The subject a change is kept under when the claim held where it was
+ * proposed is about someone else: another person of the same name ("Brother
+ * Sam" where "Friend Sam" is held) or the owner of something ("The owner of
+ * my flat lives in Porto", where the person's own city was proposed). Null
+ * when it is about the same someone, or memory cannot tell.
+ */
+function apartFrom(
+  held: ClaimHead,
+  proposed: { domain_key: string; content: string },
+): string | null {
+  const content = held.current.content;
+  if (!content || held.domain_key.includes(':exception:')) return null;
+  const before = whoseDetail(held.domain_key, content);
+  const now = whoseDetail(proposed.domain_key, proposed.content);
+  if (before.kind === 'other' && now.kind === 'other') {
+    if (!twoPeople(before, content, now, proposed.content)) return null;
+    const subject = relatedSubject(proposed.domain_key, now, proposed.content);
+    return subject && subject !== held.domain_key ? subject : null;
+  }
+  // The person's own detail, where the owner of something is held.
+  if (before.kind === 'other' && before.who === 'owner' && now.kind === 'self') {
+    const parts = proposed.domain_key.split('.');
+    if (!PERSON_HEADS.has(parts[0] ?? '') || parts.length < 3) return null;
+    return ['self', ...parts.slice(2)].join('.');
+  }
+  return null;
+}
+
+/**
  * A claim that already says this new detail in the same words (ignoring case,
  * spacing and a closing full stop), under another subject, about the same
  * someone. The extractor is shown the details most related to a message, not
@@ -64,6 +142,7 @@ async function heldInTheseWords(
   tx: MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
+  author: Author,
   proposal: Extract<ExtractionProposal, { op: 'add' }>,
 ): Promise<ClaimHead | null> {
   const wording = sameWording(proposal.content);
@@ -79,13 +158,17 @@ async function heldInTheseWords(
       and (${fromPrivate} or not exists (select 1 from memory_references ref
         join memory_sources p on p.id = ref.source_id
         where ref.claim_id = c.id and ref.revision = c.head_revision and p.private_origin is not null))
+      and not exists (select 1 from memory_references said join memory_sources who
+        on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+          and who.author_principal_id is distinct from ${author.id})
     order by c.id limit 8`;
-  const whose = whoseDetail(proposal.domain_key);
+  const whose = whoseDetail(proposal.domain_key, proposal.content);
   for (const row of rows) {
     const head = await getHead(tx, scope, String(row.id));
     const content = head?.current.content;
     if (!head || !content || listKey(head.domain_key)) continue;
-    if (sameWhose(whoseDetail(head.domain_key), content, whose, proposal.content)) return head;
+    if (sameWhose(whoseDetail(head.domain_key, content), content, whose, proposal.content))
+      return head;
   }
   return null;
 }
@@ -111,23 +194,35 @@ const subjectWords = (domainKey: string) =>
 const olderOwnSubject = (domainKey: string) =>
   PERSON_HEADS.has(domainKey.split('.')[0] ?? '') && whoseDetail(domainKey).kind !== 'other';
 
+/** Words that say what kind of detail something is ("flights", "health"), as a subject's words are compared. */
+const TOPIC_WORDS = detailWords([...TOPICS].join(' '));
+
 /**
  * Whether the person blocked this detail of their own under the subject an
  * older extraction gave it. A block on person.allergy.peanuts still holds
  * when the allergy is proposed as health.allergy: every word of what the
- * blocked subject is about is in the new subject or its sentence. A shellfish
- * allergy, or someone else's peanut allergy, is not blocked by it.
+ * blocked subject is about is in the new subject or its sentence. One word
+ * saying what kind of detail it was may be missing when at least two others
+ * are there: a block on person.preference.flights.aisle_seat holds for
+ * "Always book aisle seats" under travel.seat. A block on
+ * person.peanut_allergy holds for "Allergic to peanuts" under health.allergy.
+ * A shellfish allergy, someone else's peanut allergy, or "Loves peanut
+ * butter" is not blocked by it.
  */
 function blockedUnderOlderSubject(
   blocked: { domains: Set<string> },
   proposal: { domain_key: string; content: string },
 ): boolean {
-  if (whoseDetail(proposal.domain_key).kind !== 'self') return false;
+  if (whoseDetail(proposal.domain_key, proposal.content).kind !== 'self') return false;
   const said = new Set([...subjectWords(proposal.domain_key), ...detailWords(proposal.content)]);
   return [...blocked.domains].some((domain) => {
-    if (!olderOwnSubject(domain)) return false;
+    if (!olderOwnSubject(domain) && !ownTopicRun(domain, proposal.content)) return false;
     const words = [...subjectWords(domain)];
-    return words.length > 0 && words.every((word) => said.has(word));
+    const missing = words.filter((word) => !said.has(word));
+    if (!words.length) return false;
+    if (!missing.length) return true;
+    const [only = ''] = missing;
+    return missing.length === 1 && words.length >= 3 && TOPIC_WORDS.has(only);
   });
 }
 
@@ -137,37 +232,90 @@ function blockedUnderOlderSubject(
  * home.city for the claim held as person.location.city. Both subjects must be
  * about the same thing (city), and the held one must not name someone else.
  */
-function ownDetailRenamed(held: string, proposed: string): boolean {
+function ownDetailRenamed(held: string, proposed: string, heldContent: string | null): boolean {
   if (held.includes(':exception:') || proposed.includes(':exception:')) return false;
   if (!olderOwnSubject(held) || whoseDetail(proposed).kind !== 'self') return false;
+  if (whoseDetail(held, heldContent).kind === 'other') return false;
   const before = subjectWords(held);
   return [...subjectWords(proposed)].some((word) => before.has(word));
 }
 
-/** The claim that holds the person's own detail under an older subject (see `olderOwnSubjects`). */
+/**
+ * The claim that holds the person's own detail under an older subject (see
+ * `olderOwnSubjects`), said by this author. A detail about the owner of
+ * something, saved under "owner", is not theirs.
+ */
 async function heldUnderOlderSubject(
   tx: MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
+  author: Author,
   domainKey: string,
 ): Promise<ClaimHead | null> {
   const older = olderOwnSubjects(domainKey);
   if (!older.length) return null;
-  const [row] = await tx`select id from memory_claims where space_id = ${scope.spaceId}
-    and audience = ${batch.source.audience} and not hidden and key is null
-    and domain_key = any(${older}) order by id limit 1`;
-  return row ? getHead(tx, scope, String(row.id)) : null;
+  const rows = await tx`select c.id from memory_claims c where c.space_id = ${scope.spaceId}
+    and c.audience = ${batch.source.audience} and not c.hidden and c.key is null
+    and c.domain_key = any(${older})
+    and not exists (select 1 from memory_references said join memory_sources who
+      on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+        and who.author_principal_id is distinct from ${author.id})
+    order by c.id limit 8`;
+  for (const row of rows) {
+    const head = await getHead(tx, scope, String(row.id));
+    if (head && whoseDetail(head.domain_key, head.current.content).kind !== 'other') return head;
+  }
+  return null;
 }
 
 async function validateProposal(
   tx: MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
+  author: Author,
   proposal: ExtractionProposal,
 ): Promise<Validated> {
   /** The proposal as it is published: filed under a held detail it says again. */
   let filed = proposal;
   let head: ClaimHead | null = null;
+  /**
+   * Keep a new detail under its own subject, apart from the claim held where
+   * it was proposed: on this author's claim already held there, or as a new one.
+   */
+  const keepApart = async (
+    change: Extract<ExtractionProposal, { op: 'add' | 'supersede' }>,
+    subject: string,
+  ) => {
+    const {
+      key: _key,
+      claim_id: _claim,
+      ...rest
+    } = change as typeof change & {
+      key?: string;
+      claim_id?: string;
+    };
+    let domainKey = subject;
+    let at = await heldUnder(tx, scope, batch, author, domainKey);
+    // Another room member's detail holds that subject too ("Brother Sam" of
+    // theirs): this member's is kept under their own, not dropped.
+    if (at && !at.theirs && memberSubject(subject, author.part) !== subject) {
+      domainKey = memberSubject(subject, author.part);
+      at = await heldUnder(tx, scope, batch, author, domainKey);
+    }
+    // A claim held there that rests on someone else's words is not added to.
+    if (at && !at.theirs) {
+      filed = { op: 'no-op', sources: change.sources };
+      head = null;
+      return;
+    }
+    filed = {
+      ...rest,
+      op: 'add',
+      expected_revision: null,
+      domain_key: domainKey,
+    } as ExtractionProposal;
+    head = at?.head ?? null;
+  };
   if (proposal.op === 'supersede' || proposal.op === 'retract') {
     head = await getHead(tx, scope, proposal.claim_id);
     if (!head || head.head_revision !== proposal.expected_revision)
@@ -178,12 +326,18 @@ async function validateProposal(
       throw new MemoryError('target_not_in_snapshot');
     if (proposal.op === 'supersede' && head.audience !== batch.source.audience)
       throw new MemoryError('target_mismatch');
+    // One room member never changes or takes back another's detail.
+    if (!(await saidBy(tx, head, author))) throw new MemoryError('target_mismatch');
     if (proposal.op === 'supersede' && head.domain_key !== proposal.domain_key) {
-      if (!ownDetailRenamed(head.domain_key, proposal.domain_key))
+      if (!ownDetailRenamed(head.domain_key, proposal.domain_key, head.current.content))
         throw new MemoryError('target_mismatch');
       // The person's own detail, changed under the topic it is filed under
       // now: the change lands on the claim, under the subject it is held as.
       filed = { ...proposal, domain_key: head.domain_key };
+    } else if (proposal.op === 'supersede') {
+      // Brother Sam is not Friend Sam: the change is a detail of his own.
+      const apart = apartFrom(head, proposal);
+      if (apart) await keepApart(proposal, apart);
     }
     if (proposal.op === 'retract' && head.current.protected)
       throw new MemoryError('protected_correction');
@@ -193,6 +347,8 @@ async function validateProposal(
     if (proposal.valid_until && new Date(proposal.valid_until) < new Date(proposal.valid_from))
       throw new MemoryError('invalid_validity');
     const key = typeof proposal.key === 'string' && isMemoryKey(proposal.key) ? proposal.key : null;
+    /** Where this room member's detail is kept apart from another member's under the same subject. */
+    const theirs = (domainKey: string) => memberSubject(domainKey, author.part);
     if (proposal.op === 'add') {
       if (key) {
         // A second candidate for an occupied key is a contradiction to resolve,
@@ -201,19 +357,40 @@ async function validateProposal(
         const [occupant] =
           await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and key = ${key} and not hidden`;
         if (occupant) head = await getHead(tx, scope, occupant.id as string);
+        // Another room member's detail holds the key: this one is kept apart,
+        // as this member's own, never weighed against theirs.
+        if (head && !(await saidBy(tx, head, author))) await keepApart(proposal, theirs(key));
       } else {
         // Saying something already recorded is the commonest thing a person
         // does. The existing claim is loaded so meaning resolution can attach,
         // ignore or update it, rather than failing the whole change set.
-        const [existing] =
-          await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and domain_key = ${proposal.domain_key} and not hidden`;
-        if (existing) {
-          head = await getHead(tx, scope, existing.id as string);
-          if (!head) throw new MemoryError('stale_revision');
+        const own =
+          author.id === null
+            ? null
+            : await heldUnder(tx, scope, batch, author, theirs(proposal.domain_key));
+        const existing =
+          own?.theirs === true
+            ? own
+            : await heldUnder(tx, scope, batch, author, proposal.domain_key);
+        if (existing?.theirs) {
+          head = existing.head;
+          if (head.domain_key !== proposal.domain_key)
+            filed = { ...proposal, domain_key: head.domain_key };
+          // Someone of the same name the person relates differently, or the
+          // owner of something, is held there: this is a detail of another one.
+          const apart = apartFrom(head, proposal);
+          if (apart)
+            await keepApart(
+              proposal,
+              head.domain_key === proposal.domain_key ? apart : theirs(apart),
+            );
+        } else if (existing) {
+          // Another room member's detail holds this subject.
+          await keepApart(proposal, theirs(proposal.domain_key));
         } else {
           // The person's own detail, held under the subject an older
           // extraction gave it: said again or changed, it lands on that claim.
-          const older = await heldUnderOlderSubject(tx, scope, batch, proposal.domain_key);
+          const older = await heldUnderOlderSubject(tx, scope, batch, author, proposal.domain_key);
           if (older) {
             head = older;
             filed = { ...proposal, domain_key: older.domain_key };
@@ -224,7 +401,7 @@ async function validateProposal(
           ) {
             // Said again in the words of a detail held under another subject:
             // it is more evidence for that detail, on that one claim.
-            const said = await heldInTheseWords(tx, scope, batch, proposal);
+            const said = await heldInTheseWords(tx, scope, batch, author, proposal);
             if (said?.current.content) {
               head = said;
               filed = { ...proposal, domain_key: said.domain_key, content: said.current.content };
@@ -556,6 +733,7 @@ export async function commitExtraction(
       const [source] =
         await tx`select state from memory_sources where id = ${batch.source.source_id}`;
       if (source?.state !== 'active') throw new MemoryError('source_suppressed');
+      const author = await authorOf(tx, batch);
       const validated: Validated[] = [];
       const targets = new Set<string>();
       /** Details said again in a held detail's words, filed under it (see `heldInTheseWords`). */
@@ -563,8 +741,9 @@ export async function commitExtraction(
       for (const proposal of proposals) {
         failedIndex = Math.max(0, parsed.proposals.indexOf(proposal));
         failedKey = 'key' in proposal && typeof proposal.key === 'string' ? proposal.key : null;
-        const item = await validateProposal(tx, scope, batch, proposal);
-        if (item.proposal !== proposal && proposal.op === 'add') restated.push(validated.length);
+        const item = await validateProposal(tx, scope, batch, author, proposal);
+        if (item.proposal !== proposal && item.proposal.op === 'add')
+          restated.push(validated.length);
         else if (proposal.op !== 'no-op') {
           const target =
             proposal.op === 'add' ? `key:${proposal.domain_key}` : `id:${proposal.claim_id}`;
@@ -577,8 +756,11 @@ export async function commitExtraction(
       // one message, adds nothing; it never refuses the rest of the message.
       for (const index of restated) {
         const item = validated[index];
-        if (item?.proposal.op !== 'add' || !item.head) continue;
-        const touched = [`key:${item.proposal.domain_key}`, `id:${item.head.id}`];
+        if (item?.proposal.op !== 'add') continue;
+        const touched = [
+          `key:${item.proposal.domain_key}`,
+          ...(item.head ? [`id:${item.head.id}`] : []),
+        ];
         if (touched.some((target) => targets.has(target)))
           validated[index] = { ...item, proposal: { op: 'no-op', sources: item.proposal.sources } };
         else for (const target of touched) targets.add(target);

@@ -430,12 +430,13 @@ export function volumeOnEngine(
 /**
  * Stops the runtime's attempt containers of this Compose project. They mount
  * its shared /work, and stopping melete-cells leaves them running; it removes
- * them at its next start.
+ * them at its next start. An engine that cannot list them fails the step, so a
+ * restore stops while nothing is replaced yet.
  */
 export const stopCellsCommand = (project: string): string[] => [
   'sh',
   '-c',
-  `docker ps -q --filter label=com.melete.attempt-supervisor=v1 --filter 'label=com.melete.project=${project.replace(/[^A-Za-z0-9_.-]/g, '')}' | xargs -r docker stop`,
+  `ids=$(docker ps -q --filter label=com.melete.attempt-supervisor=v1 --filter 'label=com.melete.project=${project.replace(/[^A-Za-z0-9_.-]/g, '')}') || exit 1; [ -z "$ids" ] || docker stop $ids`,
 ];
 
 /** What an archive made by an earlier `backup --with-volumes` must hold to be put back. */

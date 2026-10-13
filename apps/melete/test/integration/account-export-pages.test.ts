@@ -4,6 +4,7 @@
  * once, in order, without the columns an export leaves out.
  */
 import { afterAll, expect, test } from 'bun:test';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -126,3 +127,30 @@ databaseTest(
     }
   },
 );
+
+databaseTest('a role that may only read the tables still reads them in key order', async () => {
+  if (!handle) return;
+  const { principal, space } = await seed();
+  const role = `export_reader_${randomBytes(4).toString('hex')}`;
+  const password = randomBytes(12).toString('hex');
+  await handle.sql.unsafe(`create role ${role} login password '${password}'`);
+  const url = new URL(handle.url);
+  url.username = role;
+  url.password = password;
+  const reader = openDatabase(url.toString(), 2);
+  try {
+    await handle.sql.unsafe(`grant usage on schema public to ${role}`);
+    await handle.sql.unsafe(`grant select on all tables in schema public to ${role}`);
+    let tasks: { id: string; space_id: string }[] = [];
+    for await (const entry of accountExport({ sql: reader.sql, spacesRoot }, principal))
+      if (entry.name.endsWith('/records/task.json')) tasks = JSON.parse(await text(entry.data));
+    expect(tasks).toHaveLength(TASKS);
+    expect(tasks.every((row) => row.space_id === space)).toBe(true);
+    // Written last key first: only reading by the key puts them in its order.
+    expect(tasks.map((row) => row.id)).toEqual([...tasks.map((row) => row.id)].sort());
+  } finally {
+    await reader.close();
+    await handle.sql.unsafe(`drop owned by ${role}`);
+    await handle.sql.unsafe(`drop role ${role}`);
+  }
+});
