@@ -65,6 +65,12 @@ const disk = z.strictObject({
 const backup = z.strictObject({
   dir: z.string().min(1).default('~/melete-backups'),
   keep: z.number().int().min(1).default(3),
+  /**
+   * Whether backups run on a schedule (docs/DEPLOYMENT.md, "Backups on a
+   * schedule"). `check` and `status` then fail when the newest backup is more
+   * than 26 hours old, as they do on a hosted installation.
+   */
+  scheduled: z.boolean().optional(),
 });
 
 const blobs = z.discriminatedUnion('store', [

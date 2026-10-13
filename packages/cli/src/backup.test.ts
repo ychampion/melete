@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
+import { lastBackupPath } from './backup-age.ts';
 import { parseSshTarget, runBackup } from './commands/backup.ts';
 import { runDeploy } from './commands/deploy.ts';
 import { runRestore } from './commands/restore.ts';
@@ -157,6 +158,22 @@ describe('melete backup', () => {
     expect(await runBackup(rig.context, [], false)).toBe(1);
     expect(readdirSync(rig.backups)).toEqual([]);
     expect(rig.context.printed()).toContain('No backup was kept');
+    // A backup that was not kept is not noted as the newest.
+    expect(existsSync(lastBackupPath(rig.deployDir))).toBe(false);
+  });
+
+  test('a finished backup, here or on another machine, is noted with its time and place', async () => {
+    const rig = backupRig();
+    expect(await runBackup(rig.context, ['--to', 'ssh://vault:/srv/melete'], false)).toBe(0);
+    expect(JSON.parse(readFileSync(lastBackupPath(rig.deployDir), 'utf8'))).toEqual({
+      at: '2026-10-02T10:00:00.000Z',
+      location: 'ssh://vault:/srv/melete/melete-20261002T100000Z',
+    });
+    const local = backupRig();
+    expect(await runBackup(local.context, [], false)).toBe(0);
+    expect(JSON.parse(readFileSync(lastBackupPath(local.deployDir), 'utf8')).location).toBe(
+      join(local.backups, 'melete-20261002T100000Z'),
+    );
   });
 
   test('keep removes the oldest backups only, and nothing else in the directory', async () => {

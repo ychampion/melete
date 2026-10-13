@@ -9,6 +9,7 @@ import { publicAddress } from '../../../../apps/melete/src/api/setup-code.ts';
 import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
+import { judgeBackupAge } from '../backup-age.ts';
 import { judgeBrowser } from '../browser.ts';
 import { type Context, inServiceImage } from '../context.ts';
 import { ROLE_SETTINGS } from '../database.ts';
@@ -561,7 +562,10 @@ export function runCheck(context: Context, json: boolean): ExitCode {
     'check',
     inServiceImage(context.environment)
       ? judgeCheckInImage(installation, context.environment)
-      : judgeCheck(installation),
+      : [
+          ...judgeCheck(installation),
+          ...judgeBackupAge(context.deployDir, installation.config, context.now()),
+        ],
   );
   context.out(json ? `${JSON.stringify(value, null, 2)}\n` : renderReport(value));
   return value.ok ? EXIT.ok : EXIT.failed;

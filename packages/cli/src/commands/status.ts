@@ -13,6 +13,7 @@ import {
   MIN_FREE_BYTES,
   SERVICES,
 } from '../../../../deploy/scripts/status.ts';
+import { judgeBackupAge } from '../backup-age.ts';
 import { type Context, inServiceImage } from '../context.ts';
 import { composeFiles, type DeployConfig } from '../deploy-config.ts';
 import { judgeHosted } from '../hosted.ts';
@@ -148,6 +149,7 @@ export async function runStatus(context: Context, json: boolean): Promise<ExitCo
           statusServices(installation.config),
         ).map(asResult),
         ...(installation.env ? judgeHosted(installation.config, installation.env) : []),
+        ...judgeBackupAge(context.deployDir, installation.config, context.now()),
       ];
   const value = report('status', results);
   context.out(

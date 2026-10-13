@@ -412,6 +412,10 @@ bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_U
 bun run melete check
 ```
 
+A hosted installation also needs a daily backup that leaves the machine:
+`check` and `status` fail once the newest backup is more than 26 hours old
+([Backups on a schedule](#backups-on-a-schedule)).
+
 People you invite should be able to read your terms and privacy notice and
 reach you for help. Host those pages yourself and name them; each is linked on
 the sign-in page, in setup and in Settings › Account only when it is set:
@@ -2754,6 +2758,42 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+### Backups on a schedule
+
+A backup that stays on the same disk goes when that disk goes. Run one every
+day, encrypted, to another machine, and have something tell you when a day is
+missed. `deploy/backup-schedule/` holds an example: `melete-backup.sh` takes
+the backup with `--to` and `--encrypt-to`, then calls a check-in address you
+choose, with `/fail` added when the backup did not finish; the systemd
+`melete-backup.timer` runs it every night, and runs a missed night as soon as
+the machine is back. Any monitor that alerts you when its pings stop arriving
+will do.
+
+```bash
+age-keygen -o melete-backup.key   # on another machine; keep this file off the server
+sudo cp deploy/backup-schedule/melete-backup.{service,timer} /etc/systemd/system/
+sudoedit /etc/systemd/system/melete-backup.service   # the account, the paths, the destination, the public key, the check-in address
+sudo systemctl daemon-reload && sudo systemctl enable --now melete-backup.timer
+```
+
+With cron instead, one line in the installation account's crontab does the same:
+
+```cron
+30 3 * * * cd /home/melete/melete && MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1... MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
+```
+
+Then say that backups run on a schedule, in `deploy/melete.deploy.json`:
+
+```json
+"backup": { "dir": "~/melete-backups", "keep": 3, "scheduled": true }
+```
+
+Every backup `melete backup` finishes, here or over SSH, is noted in
+`deploy/.melete/last-backup.json`. With `"scheduled": true`, and always on a
+hosted installation, `check` and `status` fail (`backup.age`) when the newest
+backup is more than 26 hours old, or when there is none yet. They read only the
+newest backup's time, so pruning old backups never changes the answer.
 
 ## Remove it completely
 

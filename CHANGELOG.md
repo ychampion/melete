@@ -62,6 +62,12 @@ What each version ships.
   `MELETE_PRIVACY_URL` and `MELETE_SUPPORT_URL` (an https page, or `mailto:`
   for support) are linked on the sign-in page, in setup and in Settings ›
   Account, each only when it is set. Melete ships no legal text of its own.
+- A daily backup schedule to copy: `deploy/backup-schedule/` runs `melete
+  backup` encrypted to another machine every night and calls a check-in
+  address you choose, so a missed night is noticed. Every finished backup is
+  noted, and on a hosted installation, or with `"backup": { "scheduled": true }`,
+  `check` and `status` fail once the newest backup is more than 26 hours old.
+  See [Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule).
 
 ### Upgrading from v0.2.1
 
@@ -81,6 +87,9 @@ What each version ships.
 3. An installation marked `"hosted": true` fails `check` and `status` until its
    cost guards are set; each `hosted.*` rule names the setting and a starting
    value. See [Hosting for other people](docs/DEPLOYMENT.md#hosting-for-other-people).
+4. A hosted installation's `check` and `status` now fail until a backup has
+   been taken in the last 26 hours. Run `bun run melete backup`, then schedule
+   it ([Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule)).
 
 ## v0.2.1 — 2026-10-05
 

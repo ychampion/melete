@@ -48,6 +48,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { recordBackup } from '../backup-age.ts';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
@@ -527,7 +528,8 @@ export async function takeBackup(
 ): Promise<BackupRun> {
   const compose = composeCommand(context.deployDir, config);
   const suffix = encryptedSuffix(encryption);
-  const name = `melete-${stamp(context.now())}`;
+  const started = context.now();
+  const name = `melete-${stamp(started)}`;
   const results: Result[] = [];
   const sums: string[] = [];
   /** Archives taken online in which a file changed while it was read. */
@@ -726,6 +728,8 @@ export async function takeBackup(
         detail: `Kept the newest ${config.backup.keep}; removed ${removed.join(', ')}.`,
       });
   }
+  // Noted for check and status, which judge how old the newest backup is.
+  recordBackup(context.deployDir, started, location);
   return { ok: true, location, results };
 }
 
