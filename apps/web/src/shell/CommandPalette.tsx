@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Kbd } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { useApp } from '../experience/hooks.ts';
 import type { SearchResult } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { searchAfterPause, secondaryOf, withoutBuiltins } from './palette.ts';
@@ -62,6 +63,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [tab, setTab] = useState<(typeof TABS)[number][0]>('all');
   const [hits, setHits] = useState<SearchResult[] | null>(null);
   const [builtins, setBuiltins] = useState<ReadonlySet<string>>(new Set());
+  const { member } = useApp();
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -75,7 +77,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    // The space's apps are its owner's; a member's search does not list them.
+    if (!open || member) return;
     let live = true;
     void adapter.connections().then((result) => {
       if (live && result.data)
@@ -84,7 +87,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     return () => {
       live = false;
     };
-  }, [open]);
+  }, [open, member]);
 
   useEffect(() => {
     if (!open) return;

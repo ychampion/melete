@@ -39844,6 +39844,13 @@
                     "type": "null"
                   }
                 ]
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "member"
+                ]
               }
             },
             "required": [
@@ -39852,7 +39859,8 @@
               "day_hours",
               "onboarded",
               "time_zone_confirmed",
-              "sending_address"
+              "sending_address",
+              "role"
             ],
             "additionalProperties": false
           }
