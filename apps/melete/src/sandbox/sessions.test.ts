@@ -544,6 +544,34 @@ withDb('sandbox sessions', () => {
     );
     expect(resumed.resumed).toBe(true);
   });
+
+  test("a deleted agent's computer is destroyed, once a person holding it lets go", async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const opened = await sessions.openWorkspace(
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
+      where id = ${opened.id}`;
+    // A live agent's computer is suspended and kept.
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+    expect((await sessions.get(opened.id))?.status).toBe('paused');
+    await sql`update agent set deleted_at = now() where id = ${scope.agentId}`;
+    await sql`insert into sandbox_control (provider_sandbox_id, control, epoch, seen_at)
+      values (${opened.providerSandboxId}, 'human', 1, now())
+      on conflict (provider_sandbox_id) do update set control = 'human', seen_at = now()`;
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+    expect((await sessions.get(opened.id))?.status).toBe('paused');
+    expect(provider.calls.destroy).toBe(0);
+    await sql`update sandbox_control set control = 'agent'
+      where provider_sandbox_id = ${opened.providerSandboxId}`;
+    expect(await sessions.sweep(() => provider, signal())).toEqual([opened.id]);
+    expect((await sessions.get(opened.id))?.status).toBe('closed');
+    expect(provider.calls.destroy).toBe(1);
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+  });
 });
 
 /** The fake, suspending the way a provider does, and refusing once when told to. */

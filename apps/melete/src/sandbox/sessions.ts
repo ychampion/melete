@@ -1408,9 +1408,9 @@ export class SandboxSessions {
 
   /**
    * Destroy the sandboxes of sessions whose lease has run out, suspend
-   * workspaces whose attempt stopped renewing them, and destroy workspaces
-   * suspended for longer than the retention period. Returns the sessions it
-   * closed.
+   * workspaces whose attempt stopped renewing them, destroy workspaces
+   * suspended for longer than the retention period, and destroy the
+   * computers of deleted agents. Returns the sessions it closed.
    */
   async sweep(providerFor: ProviderFor, signal: AbortSignal, only?: string[]): Promise<string[]> {
     const swept: string[] = [];
@@ -1511,6 +1511,36 @@ export class SandboxSessions {
       try {
         const finished = await this.finish(row, 'paused', provider, signal);
         if (finished.status === 'closed') swept.push(row.id);
+      } catch {
+        // Recorded on the row, which is now `closing`; the next sweep retries it.
+      }
+    }
+    // A deleted agent's computer goes with it: its chats moved to Melete, so
+    // nothing opens it again. One a person is holding waits until they let go.
+    const unowned = await this.sql`select s.id, s.adapter, s.connection_id, s.status
+      from sandbox_session s join agent a on a.id = s.agent_id
+      where a.deleted_at is not null and s.status in ('opening', 'ready', 'paused')
+      order by s.opened_at limit 100`;
+    for (const candidate of unowned) {
+      const provider = await this.reachable(
+        {
+          id: candidate.id as string,
+          adapter: candidate.adapter as string,
+          connectionId: candidate.connection_id as string,
+          status: candidate.status as SessionStatus,
+        },
+        providerFor,
+      );
+      if (!provider) continue;
+      const claimed = await this.claim(
+        candidate.id as string,
+        ['opening', 'ready', 'paused'],
+        true,
+      );
+      if (!claimed) continue;
+      try {
+        const finished = await this.finish(claimed.row, claimed.from, provider, signal);
+        if (finished.status === 'closed') swept.push(claimed.row.id);
       } catch {
         // Recorded on the row, which is now `closing`; the next sweep retries it.
       }
