@@ -12,6 +12,7 @@ import {
   composeVolume,
   extractCommand,
   type FilePart,
+  LEFT_OUT,
   legacyExtractCommand,
   stopCellsCommand,
 } from './files.ts';
@@ -566,7 +567,11 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
         ...files.parts.map((part) =>
           run(
             `Put back ${part.file} into ${composeVolume(context.project, part.part)}.`,
-            extractCommand(files.image, composeVolume(context.project, part.part)),
+            extractCommand(
+              files.image,
+              composeVolume(context.project, part.part),
+              LEFT_OUT[part.part],
+            ),
             {
               input: inSet(part.file),
               unused: [composeVolume(context.project, part.part)],

@@ -2543,7 +2543,8 @@ name; `deploy/.env` without the master key, the key's fingerprint
 then the files, one archive per volume, with ownership and modes kept:
 `spaces.tar` (each space's files, without its search index, `.index/`, or the
 writes staged in `.proposed/`: the index is rebuilt from the files the first
-time a restored space is searched), `artifacts.tar` (uploads and Files, kept by
+time a restored space is searched, and a restore leaves both out of a backup
+made before they were), `artifacts.tar` (uploads and Files, kept by
 their content, unless they are in an S3 bucket), `work.tar` (the shared
 `/work`), and for each agent computer of this installation its two volumes,
 `computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its

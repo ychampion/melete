@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
-import { type IndexedRecord, SpaceIndex } from './fts.ts';
+import { type IndexedRecord, indexDisk, SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { hardDelete, retract } from './records.ts';
 import { commitRecord } from './space.ts';
@@ -508,6 +508,94 @@ describe('forgetting at scale', () => {
         reader.run('COMMIT');
         index.removeMany([]);
         expect(index.erasePending()).toBe(false);
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
+
+  test('adding a record while an erase is owed never fails the write', () => {
+    const index = SpaceIndex.open(paths);
+    // The removal's own rewrite, the one the added record tries, and the replacement's.
+    const vacuums = failVacuums(3);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // The new record owes no erase of its own; the older one stays owed.
+      index.upsert(indexed('k_new', 'New', 'a note written while the disk was full'));
+      expect(index.has('k_new')).toBe(true);
+      expect(index.erasePending()).toBe(true);
+      // Replacing a record is a removal of its old words, and its failure is reported.
+      expect(() => index.upsert(indexed('k_kept_1', 'Note 1', 'changed words'))).toThrow(
+        'database or disk is full',
+      );
+      expect(vacuums.count()).toBe(3);
+      index.upsert(indexed('k_newer', 'Newer', 'and now the disk has room'));
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('an open never tries a rewrite the disk has no room for', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    const free = indexDisk.free;
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      // VACUUM would fill what is left of the disk, for everything on it, at every open.
+      indexDisk.free = () => 4096;
+      for (let i = 0; i < 3; i++) {
+        const reopened = SpaceIndex.open(paths);
+        try {
+          expect(reopened.erasePending()).toBe(true);
+          expect(reopened.search('number7')).toHaveLength(1);
+        } finally {
+          reopened.close();
+        }
+      }
+      expect(vacuums.count()).toBe(1);
+      indexDisk.free = free;
+      const roomy = SpaceIndex.open(paths);
+      expect(roomy.erasePending()).toBe(false);
+      roomy.close();
+      expect(vacuums.count()).toBe(2);
+    } finally {
+      indexDisk.free = free;
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'an open does not wait for another reader to finish an owed erase',
+    () => {
+      const index = SpaceIndex.open(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        index.rebuild([...kept, ...forgotten]);
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        index.removeMany(forgottenIds);
+        expect(index.erasePending()).toBe(true);
+        // A search opens the index: it must not sit out the lock timeout each time.
+        const started = performance.now();
+        const reopened = SpaceIndex.open(paths);
+        const waited = performance.now() - started;
+        expect(reopened.erasePending()).toBe(true);
+        reopened.close();
+        expect(waited).toBeLessThan(2000);
+        reader.run('COMMIT');
+        const later = SpaceIndex.open(paths);
+        expect(later.erasePending()).toBe(false);
+        later.close();
         expect(copiesOnDisk()).toBe(0);
       } finally {
         reader.close();

@@ -14,7 +14,8 @@ What each version ships.
   stay on this machine are claimed as before.
 - **Removed things leave backups on a schedule.** `melete backup` no longer
   copies each space's search index (`.index/`) or its staged writes
-  (`.proposed/`); the index is rebuilt from the space's files on the first
+  (`.proposed/`), and `melete restore` leaves them out of a backup made before
+  this version; the index is rebuilt from the space's files on the first
   search after a restore. Each new backup also removes backups older than
   `backup.max_age_days` (30 by default; `null` keeps them by number alone), so
   what someone forgets or deletes is gone from a scheduled backup set within
@@ -26,8 +27,9 @@ What each version ships.
   it.
 - **An erase that could not finish is finished later.** If compacting a space's
   search index fails after something was removed from it (for example, a full
-  disk), the index remembers that and finishes the job on its next removal or
-  the next time it is opened, so removed text does not stay in its free pages.
+  disk), the index remembers that and finishes the job on its next removal, or
+  the next time it is opened once the disk has room for it, so removed text
+  does not stay in its free pages.
 
 ### Upgrading from v0.2.1
 
@@ -45,8 +47,10 @@ What each version ships.
    warn about it. Installations that already have an account are unaffected.
    See [Claiming a new installation](docs/DEPLOYMENT.md#claiming-a-new-installation).
 3. Backups made before this version still hold each space's search index, and
-   any forgotten text in it, until they age out. The first `melete backup`
-   after upgrading removes backups in `backup.dir` older than 30 days,
+   any forgotten text in it, until they age out; restoring one leaves the
+   index out and rebuilds it. The first backup after upgrading (`melete
+   backup`, or the one `melete deploy` takes) removes backups in `backup.dir`
+   older than 30 days,
    including the one the last deploy took; set `backup.max_age_days` to a
    larger number, or to `null`, in `melete.deploy.json` to keep them. Say how
    long backups are kept in your privacy terms if you host Melete for others.

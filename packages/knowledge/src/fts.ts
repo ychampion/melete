@@ -10,7 +10,7 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statfsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isRetrievable, type KnowledgeRecordStatus, type KnowledgeType } from '@melete/contracts';
 import type { SpacePaths } from './layout.ts';
@@ -93,6 +93,24 @@ const DELETE_CHUNK = 500;
  * and the write-ahead log has been emptied into the file.
  */
 const ERASE_PENDING = 'erase_pending';
+
+/** How long a statement waits for another connection's lock before it fails. */
+const BUSY_MS = 5000;
+
+/**
+ * Free bytes on the disk an index file is on, or null when that cannot be
+ * told. An object so a test can stand in for a disk that is almost full.
+ */
+export const indexDisk = {
+  free(file: string): number | null {
+    try {
+      const disk = statfsSync(dirname(file));
+      return disk.bavail * disk.bsize;
+    } catch {
+      return null;
+    }
+  },
+};
 
 const userVersion = (db: Database): number =>
   db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
@@ -183,7 +201,7 @@ export class SpaceIndex {
 
   private static attach(db: Database, space: string): SpaceIndex {
     // Another process may hold the write lock for a moment; wait rather than fail.
-    db.run('PRAGMA busy_timeout = 5000');
+    db.run(`PRAGMA busy_timeout = ${BUSY_MS}`);
     db.run('PRAGMA journal_mode = WAL');
     // A deleted row is overwritten with zeros, not left in the file as free space.
     db.run('PRAGMA secure_delete = ON');
@@ -225,17 +243,40 @@ export class SpaceIndex {
 
   /**
    * Finish an erase a removal still owes, where the caller only wants the
-   * index usable: opening it, or rebuilding it. If the rewrite fails again,
-   * the mark stays for the next removal or open to try once more, and search
-   * keeps working meanwhile. A removal that fails this way throws to its own
-   * caller, whose retry is what reports it.
+   * index usable: opening it, rebuilding it, or adding a record. If the
+   * rewrite fails again, the mark stays for the next removal or open to try
+   * once more, and search keeps working meanwhile. A removal that fails this
+   * way throws to its own caller, whose retry is what reports it.
+   *
+   * Here it is only tried when it can work. VACUUM writes a new copy of the
+   * whole file, so on a disk without room for one, each try would fill the disk
+   * for everything else on it, at every open. And it never waits for another
+   * connection: one still reading the log keeps the mark for a later try,
+   * rather than holding up every open for the lock timeout.
    */
   private finishPendingErase(): void {
+    if (!this.roomToRewrite()) return;
+    this.db.run('PRAGMA busy_timeout = 0');
     try {
       this.afterRemoval();
     } catch {
       // Still owed; see above.
+    } finally {
+      this.db.run(`PRAGMA busy_timeout = ${BUSY_MS}`);
     }
+  }
+
+  /** Whether the index's disk has room for VACUUM's copies of the file: twice its size. */
+  private roomToRewrite(): boolean {
+    const file = this.db.filename;
+    if (!file || file === ':memory:') return true;
+    const pages = this.db
+      .query<{ size: number }, []>(
+        'SELECT page_count * page_size AS size FROM pragma_page_count(), pragma_page_size()',
+      )
+      .get();
+    const free = indexDisk.free(file);
+    return free === null || free >= 2 * (pages?.size ?? 0);
   }
 
   /** What the files looked like when this index was last known to match them. */
@@ -255,11 +296,16 @@ export class SpaceIndex {
   }
 
   upsert(record: IndexedRecord): void {
-    this.db.transaction(() => {
-      this.deleteRows([record.id]);
+    const replaced = this.db.transaction(() => {
+      const removed = this.deleteRows([record.id]);
       this.insert(record);
+      return removed;
     })();
-    if (this.erasePending()) this.afterRemoval();
+    // Replacing a record takes its old words out, and that erase is this
+    // write's own. Adding one owes nothing: it only finishes an older erase
+    // when it can, and is never failed by one.
+    if (replaced) this.afterRemoval();
+    else if (this.erasePending()) this.finishPendingErase();
   }
 
   /**
@@ -409,7 +455,8 @@ export class SpaceIndex {
    * The erase-pending mark is cleared only when all of that is done. A VACUUM
    * that fails throws and leaves it set; a log another process is still
    * reading cannot be emptied, and leaves it set too. Either way the next
-   * removal or open of the index runs this again.
+   * removal runs this again, and so does an open or an added record when the
+   * disk has room for it (finishPendingErase).
    */
   private afterRemoval(): void {
     if (!this.erasesTerms) this.db.run("INSERT INTO record_fts (record_fts) VALUES ('optimize')");

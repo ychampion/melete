@@ -126,6 +126,14 @@ export const LEFT_OUT: Record<FilePart, readonly string[]> = {
   work: [],
 };
 
+// GNU tar's options that leave out these paths, archiving or unpacking.
+// Anchored at the archive's top, and `*` never crosses a `/`: `./*/.index` is a
+// space's own index, never a folder of that name deeper in someone's files.
+const excluding = (leaveOut: readonly string[]): string =>
+  leaveOut.length === 0
+    ? ''
+    : ` --anchored --no-wildcards-match-slash ${leaveOut.map((path) => `--exclude='${path}'`).join(' ')}`;
+
 /**
  * Archives a volume to stdout, without the paths `leaveOut` names (see
  * LEFT_OUT). Taken online, a file written during the copy makes GNU tar exit 1
@@ -139,13 +147,7 @@ export function archiveCommand(
   online: boolean,
   leaveOut: readonly string[] = [],
 ): string[] {
-  // Anchored at the volume's top, and `*` never crosses a `/`: `./*/.index` is a
-  // space's own index, never a folder of that name deeper in someone's files.
-  const exclude =
-    leaveOut.length === 0
-      ? ''
-      : ` --anchored --no-wildcards-match-slash ${leaveOut.map((path) => `--exclude='${path}'`).join(' ')}`;
-  const tar = `tar -C /v --numeric-owner${exclude} -cf - .`;
+  const tar = `tar -C /v --numeric-owner${excluding(leaveOut)} -cf - .`;
   return helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'sh', [
     '-c',
     online
@@ -236,13 +238,25 @@ export function volumesHoldingFiles(
   return volumes.filter((_, index) => new RegExp(`^held /m/${index}$`, 'm').test(read.stdout));
 }
 
-/** Empties a volume and unpacks the archive on stdin into it, keeping owners and modes. */
-export function extractCommand(image: string, volume: string): string[] {
+/**
+ * Empties a volume and unpacks the archive on stdin into it, keeping owners and
+ * modes, without the paths `leaveOut` names (see LEFT_OUT): a backup made before
+ * they were left out still holds them, and an old search index can hold the
+ * words of records removed before that backup was made.
+ */
+export function extractCommand(
+  image: string,
+  volume: string,
+  leaveOut: readonly string[] = [],
+): string[] {
   return helperCommand(
     image,
     [{ volume, path: '/v', readOnly: false }],
     'sh',
-    ['-c', 'find /v -mindepth 1 -delete && exec tar -C /v --numeric-owner -xpf -'],
+    [
+      '-c',
+      `find /v -mindepth 1 -delete && exec tar -C /v --numeric-owner${excluding(leaveOut)} -xpf -`,
+    ],
     true,
   );
 }
@@ -260,6 +274,10 @@ export function legacyExtractCommand(
   const parts: FilePart[] = file === 'data.tar' ? ['spaces', 'artifacts'] : ['work'];
   const path = (part: FilePart) => (part === 'work' ? '/r/work' : `/r/data/${part}`);
   const members = parts.map((part) => path(part).slice('/r/'.length));
+  // What LEFT_OUT names, at where each part sits in this archive.
+  const leaveOut = parts.flatMap((part) =>
+    LEFT_OUT[part].map((left) => `${path(part).slice('/r/'.length)}/${left.replace(/^\.\//, '')}`),
+  );
   return helperCommand(
     image,
     parts.map((part) => ({
@@ -270,7 +288,7 @@ export function legacyExtractCommand(
     'sh',
     [
       '-c',
-      `${parts.map((part) => `find ${path(part)} -mindepth 1 -delete`).join(' && ')} && exec tar -C /r --numeric-owner -xpf - ${members.join(' ')}`,
+      `${parts.map((part) => `find ${path(part)} -mindepth 1 -delete`).join(' && ')} && exec tar -C /r --numeric-owner${excluding(leaveOut)} -xpf - ${members.join(' ')}`,
     ],
     true,
   );
