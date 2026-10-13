@@ -58,6 +58,13 @@ export async function submit(
     // One person's responses to one app are counted one at a time.
     await tx`select pg_advisory_xact_lock(hashtextextended(
       ${`app-submission:${input.appId}:${input.principalId}`}, 0))`;
+    // Only from an account still in use, held so before any response is
+    // touched: a deletion under way is waited for and then refuses this, and
+    // one that starts now waits for it, so either way no response is left
+    // naming a deleted account.
+    const [sender] = await tx`select 1 from principal
+      where id = ${input.principalId} and disabled_at is null for key share`;
+    if (!sender) throw new SubmissionRefused('No such app.', 404);
     if (!(await appRoleFor(tx, input.appId, input.principalId)))
       throw new SubmissionRefused('No such app.', 404);
     const [current] = await tx<{ version_id: string; manifest: AppManifest }[]>`select

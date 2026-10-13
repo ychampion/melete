@@ -1938,7 +1938,8 @@ export function buildOpenApiDocument() {
               'The account email must be typed exactly. The account stops working at once: its ' +
               'email, name, password and passkey are wiped and every session ends. It leaves the ' +
               'rooms others own, and each space it owns is removed in the background, as removing ' +
-              'a space is. The account that set Melete up cannot be deleted.',
+              'a space is. Responses it sent to apps in other people’s spaces stay with those ' +
+              'apps, no longer naming it. The account that set Melete up cannot be deleted.',
             requestBody: json(deleteAccountRequest),
             responses: {
               '202': jsonResponse('Deletion started', z.object({ removal: accountRemoval })),
