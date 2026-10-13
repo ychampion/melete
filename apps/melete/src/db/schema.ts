@@ -132,6 +132,68 @@ export const browserSiteProfile = pgTable(
 );
 
 /**
+ * A person's saved sign-in for one site, kept for Melete's browser to sign in
+ * with. The password and the one-time code secret are one sealed `secret`
+ * (`secret_ref`), bound to this row, its person and its site; `key_id` names
+ * the installation key it was sealed under. This row holds only what a list
+ * shows. Each person's are their own, even in a space they share.
+ */
+export const savedSignIn = pgTable(
+  'saved_sign_in',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    /** `https://host[:port]`, exactly as filled; never a path. */
+    origin: text('origin').notNull(),
+    label: text('label').notNull(),
+    username: text('username').notNull(),
+    secretRef: text('secret_ref').notNull(),
+    keyId: text('key_id').notNull(),
+    hasCode: boolean('has_code').notNull().default(false),
+    /** `whenever_needed` or `ask_first`. */
+    policy: text('policy').notNull().default('whenever_needed'),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    lastOutcome: text('last_outcome'),
+  },
+  (t) => [
+    uniqueIndex('saved_sign_in_person_site_idx').on(t.spaceId, t.principalId, t.origin, t.username),
+    check('saved_sign_in_policy', sql`${t.policy} in ('whenever_needed', 'ask_first')`),
+    check('saved_sign_in_origin_lower', sql`${t.origin} = lower(${t.origin})`),
+  ],
+);
+
+/**
+ * Each time Melete's browser used a saved sign-in: which, where, for which
+ * work and what came of it. Never what was typed.
+ */
+export const savedSignInUse = pgTable(
+  'saved_sign_in_use',
+  {
+    id: text('id').primaryKey(),
+    signInId: text('sign_in_id')
+      .notNull()
+      .references(() => savedSignIn.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id').notNull(),
+    jobId: text('job_id'),
+    actionId: text('action_id'),
+    origin: text('origin').notNull(),
+    outcome: text('outcome').notNull(),
+    createdAt: created(),
+  },
+  (t) => [index('saved_sign_in_use_sign_in_idx').on(t.signInId, t.createdAt)],
+);
+
+/**
  * Sealed with MELETE_MASTER_KEY. Nothing outside the connectors module reads
  * this table, and no API response carries a row from it.
  */
@@ -1370,6 +1432,8 @@ export const schema = {
   spaceMembership,
   space,
   secret,
+  savedSignIn,
+  savedSignInUse,
   connection,
   job,
   attempt,

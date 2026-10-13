@@ -42,6 +42,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
 import { claimNotice } from './api/setup-code.ts';
+import { mountSignIns } from './api/sign-ins.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
@@ -82,7 +83,12 @@ import { managedRevocation, startManagedRemovalSweep } from './connectors/manage
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { connectionRevocation, mcpIssuerFetch, startSecretSweep } from './connectors/revocation.ts';
-import { useEffectsPool } from './connectors/secrets.ts';
+import {
+  PostgresSecretRepository,
+  SealedSecretStore,
+  useEffectsPool,
+} from './connectors/secrets.ts';
+import { SignInVault } from './connectors/sign-in-vault.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { assertMigrated, migrateDatabase } from './db/migrate.ts';
@@ -287,6 +293,8 @@ export type AppDeps = {
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
+  /** Saved sign-ins. Left out, built from `sql` and the master key. */
+  signInVault?: SignInVault;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
   /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
@@ -756,6 +764,19 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
+  // A person's saved sign-ins, sealed under the installation's key.
+  const signIns =
+    deps.signInVault ??
+    (deps.sql
+      ? new SignInVault(
+          deps.sql,
+          new SealedSecretStore(
+            new PostgresSecretRepository(deps.sql),
+            () => deps.env.MELETE_MASTER_KEY,
+          ),
+        )
+      : undefined);
+  if (signIns) mountSignIns(app, signIns);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
   if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 

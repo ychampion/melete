@@ -172,8 +172,10 @@ export function mcpIssuerFetch(sql: Sql) {
  * Answers how many went.
  */
 export async function sweepUnreferencedSecrets(sql: Sql, now = Date.now()): Promise<number> {
+  // A saved sign-in's password is a sealed secret too, in use while its row is there.
   const inUse = await sql<{ id: string }[]>`select secret_ref as id from connection
-    where secret_ref is not null`;
+    where secret_ref is not null
+    union select secret_ref as id from saved_sign_in`;
   return new PostgresSecretRepository(sql).forgetUnreferenced(
     inUse.map((row) => row.id),
     new Date(now - DAY_MS),
