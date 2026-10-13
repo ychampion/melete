@@ -31,6 +31,7 @@ import { answerJoin } from '../jobs/answer-join.ts';
 import { HISTORY_SUMMARY_KIND } from '../jobs/history-summary.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
+import { COMPUTER_LIMIT_NOTE } from '../sandbox/manifest.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
 import type { ExperienceEffects } from './effects.ts';
 import {
@@ -949,6 +950,11 @@ export class ExperienceEvents {
               if (source.jobId === id)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             }
+          } else if (source.type === 'notice' && payload.kind === 'computer_limit') {
+            await emit(source, {
+              type: 'note',
+              text: COMPUTER_LIMIT_NOTE[payload.scope === 'person' ? 'person' : 'installation'],
+            });
           } else if (source.type === 'notice' && payload.kind === 'computer_busy') {
             const holder =
               typeof payload.held_by === 'string' && payload.held_by.trim()

@@ -382,6 +382,12 @@ These are starting points: tune them to your price and your people (see
 are shared between people either way ([Engine limits](#engine-limits)). They apply only to a hosted installation; a self-hosted
 one has no limits unless you set them, and `check` never asks for them.
 
+With a computer limit of one, a person whose computer is busy with another
+task, or anyone when every computer is in use, is told so in their
+conversation in plain words, and can ask again once it is free. Size
+`MELETE_SANDBOX_MAX_CONCURRENT` to the machine: each running computer may use
+up to 2 GB.
+
 A new installation gets all of it but the alert target in one step:
 
 ```bash

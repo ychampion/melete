@@ -48,6 +48,12 @@ What each version ships.
   with many chats or routines running no longer keeps everyone else waiting.
   `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` can also cap how many one person runs
   at once; it is unset by default, and `init --hosted` writes 2.
+- **A full computer is explained in plain words.** When a person already has
+  as many computers running as they may, or every computer on the
+  installation is in use, the conversation says so ("Your computer is busy
+  with another task right now. Ask again once that task finishes."), and the
+  agent passes it on instead of retrying. A hosted installation starts with
+  one computer per person.
 
 ### Upgrading from v0.2.1
 

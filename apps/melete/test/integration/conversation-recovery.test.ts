@@ -365,6 +365,30 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     expect(later.events.filter((event) => event.item.type === 'note')).toHaveLength(1);
   });
 
+  test('a computer that could not start is told in plain words, and whose limit it was', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Open the spreadsheet on my computer')).status).toBe(200);
+    for (const scope of ['person', 'installation'] as const)
+      await serviceTransaction(required(handle).db, (tx) =>
+        appendEvent(tx, {
+          jobId: chat.id,
+          type: 'notice',
+          payload: { kind: 'computer_limit', scope },
+          dedupKey: `${chat.id}:computer_limit:${scope}`,
+        }),
+      );
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(
+      page.events.filter((event) => event.item.type === 'note').map((event) => event.item),
+    ).toEqual([
+      {
+        type: 'note',
+        text: 'Your computer is busy with another task right now. Ask again once that task finishes.',
+      },
+      { type: 'note', text: 'Every computer here is busy right now. Try again in a little while.' },
+    ]);
+  });
+
   test("a wake waits in its person's line: the job's own person, else its space's owner", async () => {
     const chat = await createConversation();
     const db = required(handle).db;

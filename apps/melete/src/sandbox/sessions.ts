@@ -45,7 +45,13 @@ import {
   PostgresComputerControls,
 } from './computer-control.ts';
 import { type DisplayRow, displayInUse, passToJoiners, SandboxDisplays } from './displays.ts';
-import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
+import {
+  checkSpec,
+  computerLimitReached,
+  LABEL_SESSION,
+  SandboxRefusal,
+  type SessionPersistence,
+} from './manifest.ts';
 import type { SessionHolder, SessionStatus } from './schema.ts';
 import {
   type EgressPolicy,
@@ -448,16 +454,20 @@ export class SandboxSessions {
         }`;
     const live = Number(counted?.live ?? 0);
     const mine = Number(counted?.own ?? 0);
-    // The connection's own first: it names the account that is full.
-    if (mine >= limit.perConnection)
+    // A connection's own limit first, when it is below the ceiling: each
+    // person's computer is their own connection, so that limit is theirs.
+    // At the ceiling or above, only the installation's limit can be reached.
+    if (limit.perConnection < limit.installation && mine >= limit.perConnection)
       throw new SandboxRefusal(
         'concurrency_exhausted',
-        `this connection already has ${mine} running, which is its limit`,
+        computerLimitReached('person', mine),
+        'person',
       );
     if (live >= limit.installation)
       throw new SandboxRefusal(
         'concurrency_exhausted',
-        `this installation already has ${live} running, which is its limit`,
+        computerLimitReached('installation', live),
+        'installation',
       );
   }
 
