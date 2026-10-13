@@ -1,5 +1,5 @@
 {
-  "id": "fd051c50-48ec-40d6-8541-7bb2feb3754a",
+  "id": "2e3282e8-5828-4994-a9f2-bf12907f4779",
   "prevId": "ab944e86-0cc3-424c-91de-dcfbccb61403",
   "version": "7",
   "dialect": "postgresql",
@@ -14192,6 +14192,21 @@
           "columns": [
             {
               "expression": "owner_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sandbox_display_job_idx": {
+          "name": "sandbox_display_job_idx",
+          "columns": [
+            {
+              "expression": "job_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
