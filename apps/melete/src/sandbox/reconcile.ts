@@ -108,13 +108,25 @@ export async function reconcileSandboxes(options: {
   // kind in the space, and is that connection's row's from then on. This
   // connection's account still lists it, so it is kept.
   if (options.connectionId) {
-    const elsewhere = await sql<{ provider_sandbox_id: string; resume_ref: string | null }[]>`
-      select provider_sandbox_id, resume_ref from sandbox_session
+    // Held as that connection's own rows would hold it: running or paused, a
+    // pause workspace's resume reference until it is running again, and an
+    // opening only while its lease lasts.
+    const elsewhere = await sql<
+      {
+        provider_sandbox_id: string;
+        resume_ref: string | null;
+        persistence: string;
+        status: string;
+      }[]
+    >`select provider_sandbox_id, resume_ref, persistence, status from sandbox_session
       where adapter = ${provider.capabilities.adapter} and connection_id <> ${options.connectionId}
-        and status in ('opening', 'ready', 'paused', 'closing')`;
+        and (status in ('ready', 'paused') or (status = 'opening' and lease_expires_at > now()))`;
     for (const row of elsewhere) {
-      if (!row.provider_sandbox_id.startsWith(PENDING_SANDBOX)) live.add(row.provider_sandbox_id);
-      if (row.resume_ref) live.add(row.resume_ref);
+      if (row.persistence === 'pause' && row.resume_ref && row.status !== 'ready')
+        live.add(row.resume_ref);
+      if (row.provider_sandbox_id.startsWith(PENDING_SANDBOX)) continue;
+      if (row.status === 'paused' && row.persistence === 'snapshot') continue;
+      live.add(row.provider_sandbox_id);
     }
   }
   const destroyed = await provider.reconcile(
