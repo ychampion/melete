@@ -35,6 +35,7 @@ import {
   runRecordResponse,
   runResponse,
 } from './runs.ts';
+import { startersResponse } from './starters.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -1513,6 +1514,13 @@ export const experienceOperations = {
   'GET /profile': { response: profileResponse },
   'PATCH /profile': { request: profileInput, response: profileResponse },
   'GET /home': { response: homeResponse },
+  /**
+   * One-tap starter tasks for a new person's Home, until they have a few chats
+   * or put them away. Each is a request to edit and send, never sent for them.
+   */
+  'GET /starters': { response: startersResponse },
+  /** Puts the starters away for this person, on every device. */
+  'POST /starters/dismiss': { response: experienceOk },
   'GET /tasks': { response: taskList },
   'POST /tasks': { request: taskInput, response: taskResponse },
   'PATCH /tasks/{id}': { request: taskInput, response: taskResponse },

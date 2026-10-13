@@ -151,6 +151,8 @@ export type PlanCreate = Body<paths['/plans'], 'post'>;
 export type Task = Success<Ok<paths['/tasks'], 'get'>>['tasks'][number];
 export type TaskInput = Body<paths['/tasks'], 'post'>;
 export type Home = Success<Ok<paths['/home'], 'get'>>;
+export type Starters = Success<Ok<paths['/starters'], 'get'>>;
+export type Starter = Starters['starters'][number];
 export type CalendarEvent = Success<Home['upcoming']>[number];
 export type Profile = Success<Ok<paths['/profile'], 'get'>>['profile'];
 /** What a profile save sends: the sending address is read from the mailbox, not set. */

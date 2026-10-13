@@ -921,6 +921,17 @@ export const clientFocus = pgTable('client_focus', {
 });
 
 /**
+ * A person who put Home's starter tasks away. Kept by account, not by
+ * browser, so they stay away on every device.
+ */
+export const starterDismissal = pgTable('starter_dismissal', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * One thing worth saying, recorded once by its dedup key. It goes out alone or
  * folded into a batch, and it cannot exist without saying why.
  */

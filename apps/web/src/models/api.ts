@@ -28,6 +28,12 @@ export type Usage = Json<paths['/usage']['get']['responses'][200]>;
 /** This account's and the installation's model spending, the limits and any notice. */
 export const usage = () => call<Usage>('/usage');
 
+export type MyUsage = Json<paths['/usage/mine']['get']['responses'][200]>;
+export type UsageRun = MyUsage['runs'][number];
+
+/** This account's own usage this month: by day, by kind, its limits and its work. */
+export const myUsage = () => call<MyUsage>('/usage/mine');
+
 const provider = (name: string) => encodeURIComponent(name);
 
 export const models = {

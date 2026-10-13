@@ -292,6 +292,8 @@ services:
       MELETE_TERMS_URL: ${MELETE_TERMS_URL:-}
       MELETE_PRIVACY_URL: ${MELETE_PRIVACY_URL:-}
       MELETE_SUPPORT_URL: ${MELETE_SUPPORT_URL:-}
+      # Home's starter tasks for a new person, as JSON; empty is the built-in list.
+      MELETE_STARTERS: ${MELETE_STARTERS:-}
       # Account mail and the claim code (docs/DEPLOYMENT.md, "Account mail").
       MELETE_SMTP_URL: ${MELETE_SMTP_URL:-}
       MELETE_MAIL_FROM: ${MELETE_MAIL_FROM:-}
