@@ -11,13 +11,21 @@
  *   others.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { randomBytes } from 'node:crypto';
 import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
-import { accountList, accountRemoval, accountRemovalPreview } from '@melete/contracts';
+import {
+  accountList,
+  accountRemoval,
+  accountRemovalPreview,
+  appDetail,
+  appSubmissionList,
+} from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { AccountRemovalService, removedEmail } from '../../src/account/removal.ts';
+import { SubmissionRefused, submit } from '../../src/apps/submissions.ts';
 import { zipEntries } from '../../src/attachments/extract.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -180,6 +188,63 @@ async function chat(
     values (${newId('turn')}, ${jobId}, ${agentId}, ${recordId('sub')}, ${said}, ${answer}, 'done',
       ${principalId})`;
   return jobId;
+}
+
+/**
+ * An app the room's owner published in the room, and what a member sent it:
+ * a sign-up, and a tracker's state saved twice, so the first save is a
+ * deleted row the member's own replace left. The member has the room open.
+ */
+async function responsesInRoom(room: { spaceId: string; principalId: string; memberId: string }) {
+  if (!h) throw new Error('Postgres unavailable');
+  const appId = `app_${randomBytes(12).toString('hex')}`;
+  const versionId = randomBytes(32).toString('hex');
+  await h.sql`insert into app (id, space_id, slug, name, publisher_principal_id)
+    values (${appId}, ${room.spaceId}, ${appId.slice(4)}, 'Bake sale', ${room.principalId})`;
+  const manifest = {
+    entry: 'index.html',
+    files: {},
+    data: {},
+    collections: { signups: { max_bytes: 4096 }, ticks: { max_bytes: 1024 } },
+  };
+  await h.sql`insert into app_version (id, app_id, manifest_hash, manifest, file_count,
+      total_bytes, created_by)
+    values (${versionId}, ${appId}, ${versionId}, ${JSON.stringify(manifest)}::jsonb, 1, 10,
+      ${room.principalId})`;
+  await h.sql`update app set current_version_id = ${versionId} where id = ${appId}`;
+  await h.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role, granted_by)
+    values (${newId('apg')}, ${appId}, 'principal', ${room.memberId}, 'view', ${room.principalId})`;
+  await submit(h.sql, {
+    appId,
+    principalId: room.memberId,
+    collection: 'signups',
+    record: { dish: 'Lemon cake', note: 'Gluten free' },
+  });
+  for (const ticked of [['flour'], ['flour', 'eggs']])
+    await submit(h.sql, {
+      appId,
+      principalId: room.memberId,
+      collection: 'ticks',
+      record: { ticked },
+      replace: true,
+    });
+  await h.sql`insert into room_presence (space_id, principal_id)
+    values (${room.spaceId}, ${room.memberId})`;
+  return appId;
+}
+
+/** What the app's owner sees under Responses, read as the owner reads it. */
+async function responsesSeenBy(sessionToken: string, appId: string) {
+  if (!h) throw new Error('Postgres unavailable');
+  const response = await h.call(`melete_session=${sessionToken}`, `/apps/${appId}/submissions`);
+  expect(response.status).toBe(200);
+  return appSubmissionList.parse(await response.json()).submissions;
+}
+
+/** Every word of an app's response rows, live or deleted. */
+async function responseRows(appId: string) {
+  if (!h) throw new Error('Postgres unavailable');
+  return JSON.stringify(await h.sql`select * from app_submission where app_id = ${appId}`);
 }
 
 withDb('taking everything along', () => {
@@ -474,13 +539,30 @@ withDb('deleting an account', () => {
     await h.sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
       values (${recordId('rmg')}, ${room.spaceId}, ${thread?.id ?? ''}, ${room.memberId},
         'I will bring the snacks.', ${recordId('rmg')})`;
+    const appId = await responsesInRoom(room);
     const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
       from principal where id = ${room.memberId}`;
     const started = await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', {
       confirm_email: email,
     });
     expect(started.status).toBe(202);
+    // At once, before its spaces are swept: what it sent the room's app names nobody.
+    expect(await responseRows(appId)).not.toContain(room.memberId);
     await h.settle(room.memberId);
+    // The message still names the row, so the row stays; nothing else does.
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    expect(
+      await h.sql`select 1 from room_presence where principal_id = ${room.memberId}`,
+    ).toHaveLength(0);
+    expect(
+      (await responsesSeenBy(room.sessionToken, appId)).map((response) => response.by),
+    ).toEqual([null, null]);
+    // Nor is the app still shared with it, under the address its row was left with.
+    const page = await h.call(`melete_session=${room.sessionToken}`, `/apps/${appId}`);
+    expect(appDetail.parse(await page.json()).grants).toEqual([]);
+    expect(await h.sql`select 1 from app_grant where grantee_id = ${room.memberId}`).toHaveLength(
+      0,
+    );
     // The room and its owner are untouched; the member is no longer in it.
     expect(await h.sql`select 1 from space where id = ${room.spaceId}`).toHaveLength(1);
     const [membership] = await h.sql`select revoked_at from space_membership
@@ -505,6 +587,166 @@ withDb('deleting an account', () => {
     );
     const listed = accountList.parse(await (await h.call(h.owner, '/principals')).json());
     expect(listed.accounts.some((account) => account.id === room.memberId)).toBe(false);
+  }, 120_000);
+  test('responses it sent to an app in a room someone else owns stay with the app, naming nobody', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Bake sale',
+      spacesRoot,
+      workRoot,
+    });
+    await h.sql`update principal set display_name = 'Nina Baker' where id = ${room.memberId}`;
+    const appId = await responsesInRoom(room);
+    // The app is shared with someone else too, and that share is the owner's to keep.
+    const otherId = newId('own');
+    await h.sql`insert into principal (id, email) values (${otherId}, ${`${otherId}@example.test`})`;
+    await h.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role, granted_by)
+      values (${newId('apg')}, ${appId}, 'principal', ${otherId}, 'view', ${room.principalId})`;
+    const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    const before = await responsesSeenBy(room.sessionToken, appId);
+    expect(before.map((response) => response.by?.email)).toEqual([email, email]);
+
+    expect(
+      (await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', { confirm_email: email }))
+        .status,
+    ).toBe(202);
+    await h.settle(room.memberId);
+
+    // The owner keeps every response, as it was sent, from someone no longer named.
+    const after = await responsesSeenBy(room.sessionToken, appId);
+    expect(after).toEqual(before.map((response) => ({ ...response, by: null })));
+    expect(after.map((response) => response.data)).toEqual([
+      { ticked: ['flour', 'eggs'] },
+      { dish: 'Lemon cake', note: 'Gluten free' },
+    ]);
+    // Nothing in the rows, the deleted earlier save included, leads back to the person.
+    const rows = await responseRows(appId);
+    for (const trace of [room.memberId, email, 'Nina Baker']) expect(rows).not.toContain(trace);
+    expect(
+      await h.sql`select 1 from app_submission where app_id = ${appId} and deleted_at is not null`,
+    ).toHaveLength(1);
+    // Having had the room open kept nothing either: the account's row is gone.
+    expect(
+      await h.sql`select 1 from room_presence where principal_id = ${room.memberId}`,
+    ).toHaveLength(0);
+    expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(0);
+    expect(
+      await h.sql`select 1 from app_grant where app_id = ${appId} and grantee_id = ${otherId}
+        and revoked_at is null`,
+    ).toHaveLength(1);
+  }, 120_000);
+  test('an account deleted before its responses were unlinked is unlinked, and goes, on the next pass', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Choir',
+      spacesRoot,
+      workRoot,
+    });
+    const appId = await responsesInRoom(room);
+    // As an earlier deletion left it: wiped and out of the room, its responses still naming it.
+    await h.sql`update principal set email = ${removedEmail(room.memberId)}, display_name = null,
+      password_hash = null, disabled_at = now() where id = ${room.memberId}`;
+    await h.sql`update space_membership set revoked_at = now()
+      where space_id = ${room.spaceId} and principal_id = ${room.memberId}`;
+    expect(await responseRows(appId)).toContain(room.memberId);
+    await h.settle(room.memberId);
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    expect(await h.sql`select 1 from app_submission where app_id = ${appId}`).toHaveLength(3);
+    expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(0);
+  }, 120_000);
+  test('a save its app sends as the account is being deleted neither fails the deletion nor names the account', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const sql = h.sql;
+    const room = await seedSpace(sql, { kind: 'shared', name: 'Book club', spacesRoot, workRoot });
+    const appId = await responsesInRoom(room);
+    // Shared with everyone here too, so being able to open it is not what stops the save.
+    await sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role, granted_by)
+      values (${newId('apg')}, ${appId}, 'installation', 'installation', 'view', ${room.principalId})`;
+    const [{ email } = { email: '' }] = await sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    const waiting = async (count: number) => {
+      for (let tries = 0; tries < 400; tries++) {
+        const [row] = await sql<{ n: number }[]>`select count(*)::int as n from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`;
+        if ((row?.n ?? 0) >= count) return;
+        await Bun.sleep(25);
+      }
+      throw new Error(`fewer than ${count} waiting`);
+    };
+    // Hold the deletion once it has the account's row, before it reaches the responses.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const holding = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = sql.begin(async (tx) => {
+      await tx`select 1 from session where principal_id = ${room.memberId} for update`;
+      locked();
+      await held;
+    });
+    await holding;
+    const deletion = h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', {
+      confirm_email: email,
+    });
+    await waiting(1);
+    // The tracker saves, replacing the earlier save, while the deletion holds the row.
+    const save = submit(sql, {
+      appId,
+      principalId: room.memberId,
+      collection: 'ticks',
+      record: { ticked: ['jam'] },
+      replace: true,
+    }).then(
+      () => 'stored',
+      (error: unknown) => (error instanceof SubmissionRefused ? 'refused' : String(error)),
+    );
+    await waiting(2);
+    release();
+    await holder;
+    expect((await deletion).status).toBe(202);
+    expect(await save).toBe('refused');
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    await h.settle(room.memberId);
+  }, 120_000);
+  test('a response still naming an account being deleted names nobody by the next pass, though its spaces are not gone yet', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Garden club',
+      spacesRoot,
+      workRoot,
+    });
+    const appId = await responsesInRoom(room);
+    const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+    expect(
+      (await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', { confirm_email: email }))
+        .status,
+    ).toBe(202);
+    // A response still naming it, as a save that raced its deletion could
+    // leave one before saves waited for it, and a space of its own whose
+    // removal has not finished.
+    await h.sql`insert into app_submission (id, app_id, version_id, collection, principal_id, data, size)
+      select ${recordId('asub')}, ${appId}, version_id, 'ticks', ${room.memberId},
+        '{"ticked":["sugar"]}'::jsonb, 20
+      from app_submission where app_id = ${appId} limit 1`;
+    const removalId = newId('rem');
+    await h.sql`insert into space_removal (id, space_id, space_name, git_path, kind, requested_by, state)
+      values (${removalId}, ${newId('sp')}, 'Personal', ${join(spacesRoot, 'gone')}, 'removed',
+        ${room.memberId}, 'blocked')`;
+    await h.accounts.resume();
+    expect(await responseRows(appId)).not.toContain(room.memberId);
+    expect(
+      (await responsesSeenBy(room.sessionToken, appId)).map((response) => response.by),
+    ).toEqual([null, null, null]);
+    await h.sql`delete from space_removal where id = ${removalId}`;
+    await h.settle(room.memberId);
   }, 120_000);
   test('its paired computers and unused pairing codes stop at once, before any space is swept', async () => {
     if (!h) throw new Error('Postgres unavailable');

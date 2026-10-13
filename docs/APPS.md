@@ -105,6 +105,11 @@ sent it from.
   response from one person at once.
 - Deleting a response removes it from the app. If the agent already read it, a copy stays in that
   conversation and in the record of that read.
+- When a person deletes their account, the responses they sent to apps in other people's spaces
+  stay with those apps, as they were sent, and nothing on them names the person any more:
+  Responses shows each as from someone who deleted their account. Apps are never given a viewer's
+  name or email, so a response holds one only if the person typed it in. A copy the agent read
+  before the deletion keeps the email it was read with, as above.
 - An app's code can send a response in the name of the person viewing it without them pressing
   anything, within those limits. Responses say what the app sent, not what the person meant.
 
