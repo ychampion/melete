@@ -728,6 +728,14 @@ const variables = z.object({
   MELETE_MODEL_VISION: unsetWhenBlank(z.string().max(400).optional()),
   MELETE_MODEL_FALLBACK: unsetWhenBlank(z.string().max(2000).optional()),
   /**
+   * The model scheduled and background work runs on (routines, watches,
+   * standing runs and other attempts nobody is waiting on), written
+   * `provider/model`, for every person's spaces. The owner's own secondary
+   * model, when they moved scheduled work to it, still wins in their spaces.
+   * Unset, that work runs on the primary model as before.
+   */
+  MELETE_MODEL_BACKGROUND: unsetWhenBlank(z.string().max(400).optional()),
+  /**
    * The model that sorts new mail and calendar changes into needs you, for
    * your information, or ignore, written `provider/model`, or `off` to turn
    * sorting off. Unset, sorting uses the owner's secondary model for scheduled
@@ -1097,7 +1105,12 @@ export const envSchema = variables.transform((value, context) => {
           path: [name],
           message: `MELETE_BLOB_STORE=s3 needs ${name}`,
         });
-  for (const name of ['MELETE_MODEL_FAST', 'MELETE_MODEL_VISION', 'MELETE_MODEL_FALLBACK'] as const)
+  for (const name of [
+    'MELETE_MODEL_FAST',
+    'MELETE_MODEL_VISION',
+    'MELETE_MODEL_FALLBACK',
+    'MELETE_MODEL_BACKGROUND',
+  ] as const)
     for (const entry of (value[name] ?? '').split(',').filter((part) => part.trim()))
       try {
         parseModelChoice(entry, name);

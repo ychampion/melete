@@ -162,6 +162,23 @@ describe('routing a call to the best model', () => {
     expect(() => loadEnv({ MELETE_MODEL_VISION: 'no-slash' })).toThrow('MELETE_MODEL_VISION');
   });
 
+  test('the background model is read the same way, and unset leaves background work on the primary', () => {
+    expect(
+      routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' }).background,
+    ).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+    for (const unset of [{}, { MELETE_MODEL_BACKGROUND: '' }, { MELETE_MODEL_BACKGROUND: '  ' }])
+      expect(routingFromEnv(unset)).toEqual({ fast: null, vision: null, fallback: [] });
+    expect(() => loadEnv({ MELETE_MODEL_BACKGROUND: 'claude-haiku-5-5' })).toThrow(
+      'MELETE_MODEL_BACKGROUND',
+    );
+    expect(
+      routingWarnings(
+        {},
+        routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' }),
+      ),
+    ).toEqual([expect.stringContaining('MELETE_MODEL_BACKGROUND names anthropic')]);
+  });
+
   test('side calls take the fast model; a model pinned for the use wins; without one, the default', async () => {
     const env = { MELETE_DEFAULT_PROVIDER: STRONG.provider, MELETE_DEFAULT_MODEL: STRONG.model };
     const fast = { provider: 'fireworks', model: 'accounts/fireworks/models/llama-8b' };

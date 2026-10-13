@@ -39,6 +39,10 @@ What each version ships.
   tenth of the input price and five-minute cache writes at 1.25 times. Their
   million-token context windows are known, so long conversations are no longer
   summarised early. Older Claude models keep their prices.
+- **Scheduled work can run on a cheaper model.** `MELETE_MODEL_BACKGROUND`
+  names a model for everyone's routines, watches and other work nobody is
+  waiting on. The owner's own secondary model still wins in their spaces.
+  Unset, that work runs on the primary model as before.
 
 ### Upgrading from v0.2.1
 

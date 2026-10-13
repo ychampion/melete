@@ -2093,6 +2093,7 @@ Melete pick a better model per call:
 | `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
+| `MELETE_MODEL_BACKGROUND` | Everyone's scheduled and background work: routines, watches, standing runs and any turn nobody is waiting on. Unset, that work runs on the default model. A person's own messages never run on it |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
 
 For example:
@@ -2107,6 +2108,13 @@ The rules, in order:
 
 - A model the owner chose in the app always wins for agent turns: those turns
   are never sent to the vision model or a fallback.
+- Background work runs on `MELETE_MODEL_BACKGROUND` when it is set, in every
+  person's spaces, even when the owner chose the primary model in the app; it
+  keeps the vision model and the fallbacks. In the owner's own spaces, their
+  secondary model wins once they move scheduled work to it in Settings ›
+  Models. On a hosted installation a cheaper model here, such as
+  `anthropic/claude-haiku-5-5`, keeps routines from spending at the primary's
+  price, and their cost still counts against the background caps.
 - A model on the owner's own machine or network (the OpenAI-compatible endpoint
   at a local address, or one the owner confirmed is on their device) keeps
   every call: side calls stay on it instead of the fast model, and nothing is
