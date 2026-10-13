@@ -1,0 +1,249 @@
+/*
+ * The agent's computer inside the conversation: a small picture under the
+ * turn's browser or desktop work, and one line over the composer while that
+ * work goes on. Both use the shared tokens, so they follow the appearance.
+ */
+
+.live-card {
+  display: flex;
+  flex-direction: column;
+  align-self: flex-start;
+  width: min(100%, 340px);
+  margin: 4px 0 2px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block);
+  background: var(--soft);
+  color: var(--muted);
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.live-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-pill);
+}
+.live-card:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.live-card-screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  margin: 6px 6px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.live-card-screen img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.live-card-empty {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+}
+.live-card-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 7px;
+  border-radius: 999px;
+  background: var(--overlay);
+  box-shadow: var(--shadow-pill);
+  color: var(--heading);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.live-card-dot,
+.work-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  flex-shrink: 0;
+  animation: live-card-beat 1.6s ease-in-out infinite;
+}
+@keyframes live-card-beat {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-card-foot {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 10px 8px;
+  font-size: 12.5px;
+  line-height: 16px;
+}
+.live-card-address {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+.live-card-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.live-card:hover .live-card-open {
+  color: var(--text);
+}
+/* An ended turn whose picture was not kept says so in a short strip, not an empty screen. */
+.live-card-screen[data-none] {
+  aspect-ratio: auto;
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+}
+.live-card-screen[data-none] .live-card-empty {
+  width: 28px;
+  height: 28px;
+}
+.live-card-none {
+  font-size: 12.5px;
+  line-height: 16px;
+  color: var(--muted);
+}
+/* A picture from before the newest step: the screen as last seen, without the beat. */
+.live-card-badge:not([data-fresh]) {
+  color: var(--muted);
+  font-weight: 500;
+}
+/* A turn that ended keeps its picture, a little quieter than a live one. */
+.live-card:not([data-live]) .live-card-screen img {
+  filter: saturate(0.85);
+}
+
+/* ---------- the line over the composer ---------- */
+
+.work-pill {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 40px;
+  margin: 0 0 8px;
+  padding: 0 4px 0 12px;
+  border-radius: 999px;
+  background: var(--overlay);
+  box-shadow: var(--shadow-pill);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.work-pill > svg {
+  flex-shrink: 0;
+}
+.work-pill-words {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--heading);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.work-pill-words:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.work-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.work-pill-btn:hover {
+  background: var(--hover);
+}
+.work-pill-words:focus-visible,
+.work-pill-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.work-pill-stop {
+  padding: 0;
+  width: 32px;
+}
+.work-pill-square {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+@media (max-width: 767px) {
+  .live-card {
+    width: 100%;
+  }
+  .work-pill {
+    font-size: 13px;
+  }
+  /* On a phone the hand says Take over on its own; its name stays for assistive tech. */
+  .work-pill-btn-words {
+    display: none;
+  }
+  .work-pill-btn {
+    padding: 0;
+    width: 32px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-card-dot,
+  .work-pill-dot {
+    animation: none;
+  }
+  .live-card {
+    transition: none;
+  }
+}

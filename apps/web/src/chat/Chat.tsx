@@ -69,6 +69,7 @@ import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { runningTurn, workerName } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
@@ -91,6 +92,7 @@ import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import { WelcomeThread } from './Welcome.tsx';
 import { AgentLine, EarlierMessages, LogEntries, WorkLog } from './WorkLog.tsx';
+import { WorkPill } from './WorkPill.tsx';
 import type { WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
@@ -306,6 +308,7 @@ function TurnView({
   onSendDraft,
   onUndo,
   onTakeOver,
+  onOpenComputer,
   onAnswer,
   onOwn,
   unknown,
@@ -334,6 +337,8 @@ function TurnView({
   onUndo: (id: string) => void;
   /** Take the agent's browser or computer over, from a card that hands the work over. */
   onTakeOver: (action: CardAction) => void;
+  /** Show the agent's computer, from the picture of it in the turn. */
+  onOpenComputer?: () => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
   onAnswer: (questionId: string, answer: string | { text: string }) => void;
   onOwn: (text: string) => void;
@@ -465,6 +470,9 @@ function TurnView({
               items={layout.log}
               finished={layout.finished}
               renderBlock={renderBlock}
+              computer={
+                onOpenComputer && { agentName: agent?.name ?? 'Melete', open: onOpenComputer }
+              }
             />
             {layout.answer ? <Answer text={layout.answer} /> : null}
             {layout.after.length ? (
@@ -563,7 +571,7 @@ function useTranscript() {
 let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
-  const { agents, refreshConversations } = useApp();
+  const { agents, removedAgents, refreshConversations } = useApp();
   const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
   // A new chat started from an agent (Home, the sidebar) begins with that agent.
@@ -1149,9 +1157,19 @@ export function ChatScreen({ id }: { id: string | null }) {
     (count, turn) => count + turn.trail.length,
     0,
   )}`;
-  const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
+  // The turn at work, not a message waiting behind it, is what the pill speaks for.
+  const atWorkTurn = runningTurn(transcript.turns);
+  // Every turn in the chat, a mentioned agent's too, works on the chat agent's computer.
+  const chatAgentId = conversation?.agent_id ?? agentId;
+  const computer = useComputer(
+    conversationId,
+    computerOpen && Boolean(conversationId),
+    toolPulse,
+    chatAgentId,
+  );
   const showComputer = computerOpen && Boolean(conversationId);
   const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const openComputer = () => setComputerOpen(true);
   const computerToggle = (size?: number) =>
     conversationId ? (
       <IconButton
@@ -1328,6 +1346,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                       onSendDraft={sendDraft}
                       onUndo={undo}
                       onTakeOver={takeOver}
+                      onOpenComputer={openComputer}
                       onAnswer={answer}
                       onOwn={(own) => void send(own)}
                       unknown={turn.id === lastId ? unknown : undefined}
@@ -1472,6 +1491,20 @@ ${words}`
                   ))}
                 </div>
               ) : null}
+              <WorkPill
+                turn={atWorkTurn}
+                conversationId={conversationId}
+                agentName={workerName(atWorkTurn, agents, removedAgents, agent)}
+                onStop={() =>
+                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                }
+                onTakeOver={takeOver}
+                onOpen={openComputer}
+                chatAgentId={chatAgentId}
+                onError={(reason) =>
+                  toast({ kind: 'err', title: 'Couldn’t take over', sub: reason })
+                }
+              />
               {conversation?.automation_id ? (
                 <RoutineThreadNote />
               ) : (
