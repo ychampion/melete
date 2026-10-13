@@ -15545,7 +15545,12 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema344"] | components["schemas"]["__schema313"];
+                        "application/json": {
+                            /** @enum {string} */
+                            purpose: "reset" | "invite";
+                            /** @constant */
+                            status: "ok";
+                        } | components["schemas"]["__schema313"];
                     };
                 };
             };
@@ -15591,7 +15596,13 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema344"] | components["schemas"]["__schema313"];
+                        "application/json": {
+                            /** @enum {string} */
+                            purpose: "reset" | "invite";
+                            signed_in: boolean;
+                            /** @constant */
+                            status: "ok";
+                        } | components["schemas"]["__schema313"];
                     };
                 };
             };

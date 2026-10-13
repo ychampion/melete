@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { createAccount } from '../../src/account/cli.ts';
 import { describeReset, operatorReset } from '../../src/account/reset-password.ts';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import type { MailTransport, OutgoingMail } from '../../src/connectors/mail-transport.ts';
@@ -189,11 +190,16 @@ describeWithDb('changing and resetting a password', () => {
     );
     expect(stale.status).toBe(400);
 
+    // A reset is a reset, not an invite: checking says so, and using it signs nobody in.
+    const checked = await api.request('/password-reset/check', json({ token: second.code }));
+    expect(await checked.json()).toEqual({ status: 'ok', purpose: 'reset' });
     const used = await api.request(
       '/password-reset/consume',
       json({ token: second.code, new_password: 'reset-password-4' }),
     );
     expect(used.status).toBe(200);
+    expect(await used.json()).toEqual({ status: 'ok', purpose: 'reset', signed_in: false });
+    expect(used.headers.get('set-cookie')).toBeNull();
     expect(await sessionCount()).toBe(0);
     for (const cookie of [here, elsewhere])
       expect((await api.request('/me', { headers: { Cookie: cookie } })).status).toBe(401);
@@ -215,6 +221,91 @@ describeWithDb('changing and resetting a password', () => {
     expect(((await typo.json()) as { error: { code: string } }).error.code).toBe(
       'invalid_reset_link',
     );
+  });
+
+  /** A new account made by the operator, and the code its invite link carries. */
+  async function invited(api = app(), address = 'new.person@example.test') {
+    await signedIn(api);
+    const made = await createAccount(database().sql, address, 'https://melete.test');
+    const code = (made.json as { code?: string }).code;
+    if (!made.ok || !code) throw new Error('the account was not made');
+    return { api, code, address };
+  }
+
+  test('an invite link opens as an invite and signs the new person straight in', async () => {
+    const { api, code, address } = await invited();
+    const checked = await api.request('/password-reset/check', json({ token: code }));
+    expect(await checked.json()).toEqual({ status: 'ok', purpose: 'invite' });
+    // Checking spends nothing: it can be opened again.
+    expect((await api.request('/password-reset/check', json({ token: code }))).status).toBe(200);
+    const before = await sessionCount();
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: code, new_password: 'my-own-password-1' }),
+    );
+    expect(used.status).toBe(200);
+    expect(await used.json()).toEqual({ status: 'ok', purpose: 'invite', signed_in: true });
+    const cookie = cookieOf(used);
+    const me = await api.request('/me', { headers: { Cookie: cookie } });
+    expect(me.status).toBe(200);
+    expect(((await me.json()) as { owner: { email: string } }).owner.email).toBe(address);
+    expect(await sessionCount()).toBe(before + 1);
+    // The password works for the next sign-in too.
+    expect(
+      (await api.request('/login', json({ email: address, password: 'my-own-password-1' }))).status,
+    ).toBe(200);
+  });
+
+  test('an invite used twice, at once or one after the other, signs in exactly once', async () => {
+    const { api, code } = await invited();
+    const before = await sessionCount();
+    const results = await Promise.all(
+      ['twice-password-1', 'twice-password-2'].map((next) =>
+        api.request('/password-reset/consume', json({ token: code, new_password: next })),
+      ),
+    );
+    expect(results.map((result) => result.status).sort()).toEqual([200, 400]);
+    expect(results.filter((result) => result.headers.get('set-cookie'))).toHaveLength(1);
+    const later = await api.request(
+      '/password-reset/consume',
+      json({ token: code, new_password: 'twice-password-3' }),
+    );
+    expect(later.status).toBe(400);
+    expect(later.headers.get('set-cookie')).toBeNull();
+    expect(await sessionCount()).toBe(before + 1);
+    // The used invite no longer checks as good.
+    expect((await api.request('/password-reset/check', json({ token: code }))).status).toBe(400);
+  });
+
+  test('an expired invite is refused and signs nobody in', async () => {
+    const { api, code, address } = await invited();
+    await database().sql`update password_reset set expires_at = now() - interval '1 second'
+      where via = 'invite'`;
+    expect((await api.request('/password-reset/check', json({ token: code }))).status).toBe(400);
+    const before = await sessionCount();
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: code, new_password: 'too-late-password-1' }),
+    );
+    expect(used.status).toBe(400);
+    expect(used.headers.get('set-cookie')).toBeNull();
+    expect(await sessionCount()).toBe(before);
+    expect(
+      (await api.request('/login', json({ email: address, password: 'too-late-password-1' })))
+        .status,
+    ).toBe(401);
+  });
+
+  test('an invite to an account switched off since signs nobody in', async () => {
+    const { api, code, address } = await invited();
+    await database().sql`update principal set disabled_at = now() where email = ${address}`;
+    const before = await sessionCount();
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: code, new_password: 'switched-off-password-1' }),
+    );
+    expect(used.headers.get('set-cookie')).toBeNull();
+    expect(await sessionCount()).toBe(before);
   });
 
   test('one link used twice at once sets exactly one password', async () => {

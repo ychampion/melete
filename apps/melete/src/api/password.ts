@@ -119,6 +119,8 @@ export function mountPassword(
     limits?: LimitStore;
     /** Closes the connections of the computers a new password disconnected. */
     devicesEnded?: (principalId: string, deviceIds: string[]) => Promise<void>;
+    /** Signs this browser in to an account, for an invite's first password. */
+    startSession?: (c: Context, principalId: string) => Promise<void>;
   },
 ) {
   const { sql } = deps;
@@ -166,7 +168,7 @@ export function mountPassword(
     if (retryAfter > 0) return limited(c, retryAfter);
     const shaped = passwordResetCheck.safeParse(await c.req.json().catch(() => null));
     const [open] = shaped.success
-      ? await sql`select 1 from password_reset r join principal p on p.id = r.principal_id
+      ? await sql`select r.via from password_reset r join principal p on p.id = r.principal_id
           where r.token_hash = ${digest(shaped.data.token)} and r.used_at is null
           and r.expires_at > now() and p.disabled_at is null`
       : [];
@@ -176,7 +178,7 @@ export function mountPassword(
         'That code isn’t right, or it has expired or been used. Ask for a new one.',
         400,
       );
-    return c.json({ status: 'ok' as const });
+    return c.json({ status: 'ok' as const, purpose: purposeOf(open.via) });
   });
 
   app.post('/password-reset/consume', async (c) => {
@@ -198,13 +200,21 @@ export function mountPassword(
         400,
       );
     await consumes.succeeded(source);
-    return c.json({ status: 'ok' as const });
+    // A new account's first password signs the person in, so they go straight
+    // on to setting up; a reset leaves every session ended, as it says.
+    const signedIn = done.invite && deps.startSession !== undefined;
+    if (signedIn) await deps.startSession?.(c, done.principalId);
+    return c.json({
+      status: 'ok' as const,
+      purpose: done.invite ? ('invite' as const) : ('reset' as const),
+      signed_in: signedIn,
+    });
   });
 
   const consume = (input: z.infer<typeof passwordResetConsume>) =>
     sql.begin(async (tx) => {
-      const [reset] = await tx`select r.principal_id, p.email from password_reset r
-        join principal p on p.id = r.principal_id
+      const [reset] = await tx`select r.principal_id, r.via, p.email, p.kind, p.disabled_at
+        from password_reset r join principal p on p.id = r.principal_id
         where r.token_hash = ${digest(input.token)} and r.used_at is null and r.expires_at > now()
         for update of r`;
       if (!reset) return null;
@@ -215,6 +225,12 @@ export function mountPassword(
       // Once a password is set, no other reset link for the account is left open:
       // ending its access marks every unused one used.
       const devices = await setPassword(tx, principalId, input.new_password, null);
-      return { principalId, devices };
+      // Only a person's own invite, on an account that may sign in, signs in.
+      const invite =
+        purposeOf(reset.via) === 'invite' && reset.kind === 'person' && reset.disabled_at === null;
+      return { principalId, devices, invite };
     });
 }
+
+/** What a stored reset link was issued for, as the page reads it. */
+const purposeOf = (via: unknown): 'invite' | 'reset' => (via === 'invite' ? 'invite' : 'reset');

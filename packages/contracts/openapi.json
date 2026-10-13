@@ -10122,7 +10122,25 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/__schema344"
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "ok"
+                        },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "reset",
+                            "invite"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "purpose"
+                      ],
+                      "additionalProperties": false
                     },
                     {
                       "$ref": "#/components/schemas/__schema313"
@@ -10176,7 +10194,29 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/__schema344"
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "ok"
+                        },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "reset",
+                            "invite"
+                          ]
+                        },
+                        "signed_in": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "purpose",
+                        "signed_in"
+                      ],
+                      "additionalProperties": false
                     },
                     {
                       "$ref": "#/components/schemas/__schema313"

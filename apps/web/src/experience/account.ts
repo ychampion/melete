@@ -43,6 +43,28 @@ export async function keepingPushHere<T extends { data: unknown }>(
 }
 
 /**
+ * The words on the password page: a new account's invite asks the person to
+ * choose their password and carries on to setting up; a reset keeps its own.
+ */
+export function passwordPageWords(invite: boolean) {
+  return invite
+    ? {
+        title: 'Welcome to Melete',
+        heading: 'Choose your password',
+        lead: 'You’ll use it with your email to sign in. Next, a few quick questions to set things up.',
+        field: 'Password',
+        submit: 'Continue',
+      }
+    : {
+        title: 'Reset your password',
+        heading: 'Choose a new password',
+        lead: null,
+        field: 'New password',
+        submit: 'Set the new password',
+      };
+}
+
+/**
  * The code in what a person pasted: the code itself, or the whole link a reset
  * mail or printed command gave them. Null when it cannot be a reset code, so
  * a mistyped one is caught before a new password is chosen.

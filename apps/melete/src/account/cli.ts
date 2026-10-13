@@ -98,7 +98,7 @@ export async function createAccount(
   const days = INVITE_MINUTES / 1440;
   const role = made.owner ? 'the owner of this installation' : 'a new account';
   const open = link
-    ? `Send ${address} this link to choose a password:\n\n  ${link}\n`
+    ? `Send ${address} this link. It opens Melete, where they choose a password and go straight on to setting up:\n\n  ${link}\n`
     : `No web address is known, so there is no link. On the sign-in page, choose “Forgot your password?” and enter this code:\n\n  ${made.token}\n`;
   return {
     ok: true,

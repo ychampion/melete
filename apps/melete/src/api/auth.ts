@@ -503,6 +503,7 @@ export function mountAuth(
       clock,
       limits,
       ...devicesEnded,
+      ...(db ? { startSession: (c, principalId) => startSession(c, db, env, principalId) } : {}),
     });
     mountAccountAccess(app, { sql: deps.sql, sessionCookie: SESSION_COOKIE, ...devicesEnded });
   }

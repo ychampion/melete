@@ -1243,7 +1243,7 @@ links use `MELETE_PUBLIC_URL`, or the web port on this machine.
 | Command | What it does |
 |---|---|
 | `account list` | Every account: email, owner, person or guest, created, disabled, whether it has a password yet, how many browsers are signed in, and the last sign-in. |
-| `account create <email>` | A new account with a one-time link, valid for seven days, to choose its password. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
+| `account create <email>` | A new account with a one-time link, valid for seven days. The link opens as an invite: the person chooses their password and goes straight on to setting up, already signed in. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
 | `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
 | `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
 | `account enable <email>` | Lets a disabled account sign in again. |

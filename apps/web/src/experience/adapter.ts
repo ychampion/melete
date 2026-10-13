@@ -364,11 +364,17 @@ export const adapter = {
   /** Mails a reset link when this install can send mail; otherwise says why not. */
   requestPasswordReset: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
-  /** Whether a reset code is still good, before a new password is chosen for it. */
+  /**
+   * Whether a reset code is still good, before a new password is chosen for
+   * it, and whether it is a new account's invite.
+   */
   checkPasswordReset: (token: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/password-reset/check', { body: { token } })),
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite' }>(() =>
+      api.POST('/password-reset/check', { body: { token } }),
+    ),
+  /** Sets the password; an invite also signs this browser in. */
   consumePasswordReset: (token: string, new_password: string) =>
-    guard<{ status: 'ok' }>(() =>
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite'; signed_in?: boolean }>(() =>
       api.POST('/password-reset/consume', { body: { token, new_password } }),
     ),
 

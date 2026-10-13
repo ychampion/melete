@@ -54,6 +54,10 @@ What each version ships.
   with another task right now. Ask again once that task finishes."), and the
   agent passes it on instead of retrying. A hosted installation starts with
   one computer per person.
+- **An invite link opens as an invite.** The link `melete account create`
+  prints now asks the new person to "Choose your password" and takes them
+  straight on to setting up, signed in, instead of showing a password reset
+  and asking them to sign in again. Password reset links keep their own words.
 
 ### Upgrading from v0.2.1
 
