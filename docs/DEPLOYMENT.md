@@ -428,6 +428,32 @@ bun run melete set MELETE_TERMS_URL=https://example.net/terms \
 Terms and privacy take an `https://` page; support takes an `https://` page or
 a `mailto:` address.
 
+### Running it from the web app
+
+The installation's owner also has **Settings › Installation** in the web app,
+which nobody else sees and the service answers to nobody else. It shows the
+month's and the day's spending against the installation's caps, how many
+people are active, invited or turned off, the agent runs and computers going
+now against their limits, the newest backup, free disk, health and the
+version.
+
+Under it is everyone with an account: their status, when they were last
+seen, and what they spent this month and today against their caps. From
+there the owner can invite someone, send a new invite or a password reset,
+turn an account off (which signs them out everywhere) or back on, delete an
+account by typing its email, and give a person caps of their own. Those are
+dollar caps for a day, a month and background work; each stays within the
+installation's caps, and a blank one keeps the `MELETE_SPEND_PERSON_*` value.
+Token caps stay installation-wide.
+
+Every invite and reset link is shown to copy, whether or not account mail is
+set up, so an installation without mail can still bring people in. Every
+change made here, and by `melete account create`, `reset`, `disable` and
+`enable` on the host, is listed under Changes with who made it and when;
+links and codes are never kept there. The newest backup shown is the one
+`melete backup` last noted in the database, so backups taken before this
+release don't appear until the next one runs.
+
 ## On a cloud VM
 
 Any Linux virtual machine you reach over SSH can run Melete, and the melete

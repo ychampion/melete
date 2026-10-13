@@ -6,6 +6,17 @@ What each version ships.
 
 ### Ships
 
+- **The owner runs a hosted installation from the web app.** Settings ›
+  Installation, shown to the installation's owner alone and refused by the
+  service to everyone else, lists everyone with their status, last activity
+  and spending against their caps. The owner can invite people, send a new
+  invite or a password reset, turn an account off or on, delete one by typing
+  its email, and set a person's own dollar caps within the installation's.
+  Every link is shown to copy, with or without account mail. The page also
+  shows the installation's spending, people, running work and computers
+  against their limits, the newest backup, free disk, health and version, and
+  a record of each change with who made it. `melete backup` now notes each
+  backup in the database for it. Adds migration `0118_person_spend_limits`.
 - **A new installation others can reach is claimed with a code.** An
   installation with no setup code whose `MELETE_PUBLIC_URL` or
   `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor
