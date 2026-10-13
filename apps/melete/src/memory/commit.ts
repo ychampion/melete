@@ -284,7 +284,7 @@ async function validateProposal(
    */
   const keepApart = async (
     change: Extract<ExtractionProposal, { op: 'add' | 'supersede' }>,
-    domainKey: string,
+    subject: string,
   ) => {
     const {
       key: _key,
@@ -294,7 +294,14 @@ async function validateProposal(
       key?: string;
       claim_id?: string;
     };
-    const at = await heldUnder(tx, scope, batch, author, domainKey);
+    let domainKey = subject;
+    let at = await heldUnder(tx, scope, batch, author, domainKey);
+    // Another room member's detail holds that subject too ("Brother Sam" of
+    // theirs): this member's is kept under their own, not dropped.
+    if (at && !at.theirs && memberSubject(subject, author.part) !== subject) {
+      domainKey = memberSubject(subject, author.part);
+      at = await heldUnder(tx, scope, batch, author, domainKey);
+    }
     // A claim held there that rests on someone else's words is not added to.
     if (at && !at.theirs) {
       filed = { op: 'no-op', sources: change.sources };

@@ -288,6 +288,71 @@ withDb('a detail is kept with the someone it is about', () => {
     expect((await heldNow(scope)).filter(([, , by]) => String(by).includes(','))).toEqual([]);
   });
 
+  test("in a room, a member's brother is kept where another member's brother of that name is held", async () => {
+    const scope = await room();
+    const alice = 'prn_alice';
+    const bob = 'prn_bob';
+    const friend = await memberSaid(scope, bob, 'My friend Sam lives in Lisbon.');
+    await commitExtraction(store.sql, scope, friend, {
+      proposals: [
+        add(
+          friend,
+          'person.sam.city',
+          'My friend Sam lives in Lisbon',
+          'Friend Sam lives in Lisbon',
+        ),
+      ],
+    });
+    const hers = await memberSaid(scope, alice, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, scope, hers, {
+      proposals: [
+        add(
+          hers,
+          'person.brother.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    // As a change to the friend he holds, and as a new detail on that subject.
+    const changed = await memberSaid(scope, bob, 'My brother Sam lives in Porto.');
+    expect(
+      await commitExtraction(store.sql, scope, changed, {
+        proposals: [
+          supersede(
+            changed,
+            'person.sam.city',
+            'My brother Sam lives in Porto',
+            'Brother Sam lives in Porto',
+          ),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    const added = await memberSaid(scope, bob, 'My brother Sam is vegetarian.');
+    await commitExtraction(store.sql, scope, added, {
+      proposals: [
+        add(added, 'person.sam.diet', 'My brother Sam is vegetarian', 'Brother Sam is vegetarian'),
+      ],
+    });
+    const later = await memberSaid(scope, bob, 'My brother Sam moved to Braga.');
+    await commitExtraction(store.sql, scope, later, {
+      proposals: [
+        add(
+          later,
+          'person.sam.city',
+          'My brother Sam moved to Braga',
+          'Brother Sam lives in Braga',
+        ),
+      ],
+    });
+    expect(await heldNow(scope)).toEqual([
+      ['person.brother.sam.city', 'Brother Sam lives in Madrid', alice, 1, 1],
+      ['person.brother.sam.city.member', 'Brother Sam lives in Braga', bob, 1, 2],
+      ['person.sam.city', 'Friend Sam lives in Lisbon', bob, 1, 1],
+      ['person.sam.diet', 'Brother Sam is vegetarian', bob, 1, 1],
+    ]);
+  });
+
   test('a person of the same name the person relates differently is someone else, either way round', async () => {
     const scope = await createScope(store);
     const friend = await said(scope, 'my friend sam lives in Lisbon. he is vegetarian.');
@@ -438,6 +503,13 @@ withDb('a detail is kept with the someone it is about', () => {
     const moved = await said(scope, 'I moved to Lisbon.');
     await commitExtraction(store.sql, scope, moved, {
       proposals: [add(moved, 'person.owner.city', 'I moved to Lisbon', 'Lives in Lisbon')],
+    });
+    // The person's own move proposed as a change to the flat owner's city never lands on it.
+    const faro = await said(scope, 'I moved to Faro.');
+    await commitExtraction(store.sql, scope, faro, {
+      proposals: [supersede(faro, 'person.owner.city', 'I moved to Faro', 'Lives in Faro')].map(
+        (change) => ({ ...change, domain_key: 'home.city' }),
+      ) as ExtractionProposal[],
     });
     expect(await heldNow(scope)).toEqual([
       ['contact.owner.availability', 'Can be home Thursday afternoon if that works', 'owner', 2, 1],

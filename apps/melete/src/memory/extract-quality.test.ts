@@ -14,7 +14,7 @@ import {
   readExtractionReply,
   sameDetail,
 } from './extract.ts';
-import { ownTopicRun, twoPeople, whoseDetail } from './labels.ts';
+import { ownTopicRun, relatedSubject, twoPeople, whoseDetail } from './labels.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -746,6 +746,58 @@ describe('people of one name, and words that only look like names', () => {
     expect(whoseDetail('person.owner.phone', "The café owner's number is 555 0101").kind).toBe(
       'other',
     );
+  });
+
+  test('how a detail relates someone is read only from the words about them', () => {
+    const two = (a: [string, string], b: [string, string]) =>
+      twoPeople(whoseDetail(a[0], a[1]), a[1], whoseDetail(b[0], b[1]), b[1]);
+    // "Sam and my brother" says nothing of how the person knows Sam.
+    expect(
+      two(
+        ['person.sam.city', 'Sam and my brother moved to Rome'],
+        ['person.sam.city', 'Friend Sam lives in Lisbon'],
+      ),
+    ).toBe(false);
+    // A friend who is also a colleague may be a neighbour's namesake or the neighbour.
+    expect(
+      two(
+        ['person.friend.sam.city', 'My colleague Sam lives in Lisbon'],
+        ['person.sam.city', 'Sam, my neighbour, lives in Lisbon'],
+      ),
+    ).toBe(false);
+    // Brother Sam beside a friend named Sam is kept under the brother, once.
+    const brother = 'My brother Sam lives in Oslo';
+    expect(
+      relatedSubject(
+        'person.friend.sam.city',
+        whoseDetail('person.friend.sam.city', brother),
+        brother,
+      ),
+    ).toBe('person.brother.sam.city');
+    // Which room member's detail it is changes nothing of whose it is.
+    expect(whoseDetail('person.brother.member_0123456789ab', 'Brother lives in Oslo')).toEqual(
+      whoseDetail('person.brother', 'Brother lives in Oslo'),
+    );
+    // A name at the start of a sentence, followed by what Will does, is Will.
+    const [teaches] = mergeIntoHeld(
+      [said('work.schedule', 'Will teaches piano on Fridays', 'Will teaches piano on Fridays')],
+      [held('person.will.schedule', 'Will teaches piano on Fridays')],
+    );
+    expect(teaches).toMatchObject({ op: 'add', domain_key: 'person.will.schedule' });
+  });
+
+  test("the owner of something's detail is not merged into the person's own", () => {
+    const [landlord] = mergeIntoHeld(
+      [
+        said(
+          'person.owner.city',
+          'The owner of my flat lives in Pune',
+          'The owner of my flat lives in Pune',
+        ),
+      ],
+      [held('home.city', 'Lives in Pune')],
+    );
+    expect(landlord).toMatchObject({ op: 'add', domain_key: 'person.owner.city' });
   });
 
   test('a subject of one run of words that says what kind of detail it is names no one', () => {
