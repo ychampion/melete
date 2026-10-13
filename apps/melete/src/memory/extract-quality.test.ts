@@ -14,6 +14,7 @@ import {
   readExtractionReply,
   sameDetail,
 } from './extract.ts';
+import { ownTopicRun, relatedSubject, twoPeople, whoseDetail } from './labels.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -595,5 +596,220 @@ describe('a detail is the same only when it is about the same someone', () => {
       'person.sam.diet',
       'person.will.city',
     ]);
+  });
+});
+
+describe('people of one name, and words that only look like names', () => {
+  const held = (domain_key: string, content: string): HeldClaim => ({
+    id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FB1',
+    domain_key,
+    key: null,
+    content,
+  });
+
+  test('a sentence of the person\'s own starting "Will be" or "May be" does not name Will or May', () => {
+    const [away] = mergeIntoHeld(
+      [said('travel.availability', 'Will be away until Friday', 'I will be away until Friday')],
+      [held('person.will.availability', 'Will is away until Friday')],
+    );
+    expect(away).toMatchObject({ op: 'add', domain_key: 'travel.availability' });
+    const [late] = mergeIntoHeld(
+      [said('work.schedule', 'May be late on Mondays', 'I may be late on Mondays')],
+      [held('person.may.schedule', 'May is late on Mondays')],
+    );
+    expect(late).toMatchObject({ op: 'add', domain_key: 'work.schedule' });
+    // Will and May named at the start of a sentence are still Will and May.
+    const [will] = mergeIntoHeld(
+      [said('work.absence', 'Will is away until Friday', 'Will is away until Friday')],
+      [held('person.will.availability', 'Will is away until Friday')],
+    );
+    expect(will).toMatchObject({ op: 'add', domain_key: 'person.will.availability' });
+    const [birthday] = mergeIntoHeld(
+      [said('dates.birthday', "Will's birthday is March 3", "Will's birthday is March 3")],
+      [held('person.will.birthday', "Will's birthday is March 3")],
+    );
+    expect(birthday).toMatchObject({ op: 'add', domain_key: 'person.will.birthday' });
+    const [may] = mergeIntoHeld(
+      [
+        said(
+          'work.accounts',
+          'May from accounting is allergic to shellfish',
+          'May from accounting is allergic to shellfish',
+        ),
+      ],
+      [held('person.may.allergy', 'May from accounting is allergic to shellfish')],
+    );
+    expect(may).toMatchObject({ op: 'add', domain_key: 'person.may.allergy' });
+  });
+
+  test('two people of one name are two when the person relates them differently', () => {
+    const two = (a: [string, string], b: [string, string]) =>
+      twoPeople(whoseDetail(a[0], a[1]), a[1], whoseDetail(b[0], b[1]), b[1]);
+    const friend: [string, string] = ['person.sam.city', 'Friend Sam lives in Lisbon'];
+    const brother: [string, string] = ['person.sam.city', 'Brother Sam lives in Lisbon'];
+    expect(two(friend, brother)).toBe(true);
+    expect(two(brother, friend)).toBe(true);
+    expect(
+      two(
+        ['person.sam.job', 'My colleague Sam is a nurse'],
+        ['person.sam.job', 'Sam, my neighbour, is a nurse'],
+      ),
+    ).toBe(true);
+    expect(two(['person.brother.sam.city', 'Lives in Lisbon'], friend)).toBe(true);
+    expect(
+      two(
+        ['person.lena.city', 'Sister Lena lives in Rome'],
+        ['person.lena.city', 'My mum Lena lives in Rome'],
+      ),
+    ).toBe(true);
+    // The same one, said twice or said without a relation.
+    expect(two(friend, ['person.sam.city', 'Friend Sam moved to Porto'])).toBe(false);
+    expect(two(friend, ['person.sam.city', 'Sam moved to Porto'])).toBe(false);
+    expect(two(friend, ['person.sam.city', 'Sam, my colleague, lives in Porto'])).toBe(false);
+    expect(
+      two(['person.mum.city', 'Mum lives in Pune'], ['person.mum.city', 'My mother lives in Pune']),
+    ).toBe(false);
+    expect(two(brother, ['person.sam.city', 'My sibling Sam lives in Lisbon'])).toBe(false);
+    expect(
+      two(
+        ['person.sam.city', 'Wife Sam lives in Lisbon'],
+        ['person.sam.city', 'My partner Sam lives in Lisbon'],
+      ),
+    ).toBe(false);
+    // Two people of one name are not merged, even in the same words.
+    const [brotherSam] = mergeIntoHeld(
+      [said('person.brother.sam.home', 'Sam lives in Lisbon', 'my brother Sam lives in Lisbon')],
+      [held('person.friend.sam.city', 'Sam lives in Lisbon')],
+    );
+    expect(brotherSam).toMatchObject({ op: 'add', domain_key: 'person.brother.sam.home' });
+    const [sameSam] = mergeIntoHeld(
+      [said('person.friend.sam.home', 'Sam lives in Lisbon', 'my friend Sam lives in Lisbon')],
+      [held('person.sam.city', 'Sam lives in Lisbon')],
+    );
+    expect(sameSam).toMatchObject({ op: 'add', domain_key: 'person.sam.city' });
+    // Two sisters are two, whether or not a detail says "Sister".
+    const [maya] = mergeIntoHeld(
+      [said('person.sister.maya.city', 'Lives in Lisbon', 'my sister Maya lives in Lisbon')],
+      [held('person.sister.lena.city', 'Lives in Lisbon')],
+    );
+    expect(maya).toMatchObject({ op: 'add', domain_key: 'person.sister.maya.city' });
+    const [sisterMaya] = mergeIntoHeld(
+      [said('person.sister.maya.city', 'Sister lives in Lisbon', 'my sister Maya lives in Lisbon')],
+      [held('person.lena.city', 'Sister lives in Lisbon')],
+    );
+    expect(sisterMaya).toMatchObject({ op: 'add', domain_key: 'person.sister.maya.city' });
+    // Sister Maya's detail, said under a topic, is hers by her name.
+    const [birthday] = mergeIntoHeld(
+      [said('dates.birthday', "Maya's birthday is March 3", "Maya's birthday is March 3")],
+      [held('person.sister.maya.birthday', "Maya's birthday is March 3")],
+    );
+    expect(birthday).toMatchObject({ op: 'add', domain_key: 'person.sister.maya.birthday' });
+    const [hers] = mergeIntoHeld(
+      [
+        said(
+          'person.sister.maya.birthday',
+          "Maya's birthday is March 3",
+          "Maya's birthday is March 3",
+        ),
+      ],
+      [held('dates.birthday', "Maya's birthday is March 3")],
+    );
+    expect(hers).toMatchObject({ op: 'add', domain_key: 'dates.birthday' });
+    // A relation of Sam's is not how the person knows Sam.
+    expect(two(friend, ['person.sam.sister', "Sam's sister lives in Rome"])).toBe(false);
+    expect(two(brother, ['person.sam.city', "Friend Sam's sister lives in Lisbon"])).toBe(true);
+  });
+
+  test("a detail about the owner of something is someone else's; details saved under owner stay the person's", () => {
+    const reply = readExtractionReply(
+      JSON.stringify({
+        proposals: [
+          said(
+            'person.owner.city',
+            'The owner of my flat lives upstairs',
+            'The owner of my flat lives upstairs',
+            {
+              about: 'the_person',
+            },
+          ),
+          said('person.owner.city', 'Lives in Pune', 'I live in Pune', { about: 'the_person' }),
+        ],
+      }),
+    );
+    expect(subjects(fileOwnDetails(reply.proposals, reply.about, []))).toEqual([
+      'person.owner.city',
+      'self.city',
+    ]);
+    expect(whoseDetail('contact.owner.availability', 'Can be home Thursday afternoon')).toEqual({
+      kind: 'self',
+    });
+    expect(whoseDetail('person.owner.phone', "The café owner's number is 555 0101").kind).toBe(
+      'other',
+    );
+  });
+
+  test('how a detail relates someone is read only from the words about them', () => {
+    const two = (a: [string, string], b: [string, string]) =>
+      twoPeople(whoseDetail(a[0], a[1]), a[1], whoseDetail(b[0], b[1]), b[1]);
+    // "Sam and my brother" says nothing of how the person knows Sam.
+    expect(
+      two(
+        ['person.sam.city', 'Sam and my brother moved to Rome'],
+        ['person.sam.city', 'Friend Sam lives in Lisbon'],
+      ),
+    ).toBe(false);
+    // A friend who is also a colleague may be a neighbour's namesake or the neighbour.
+    expect(
+      two(
+        ['person.friend.sam.city', 'My colleague Sam lives in Lisbon'],
+        ['person.sam.city', 'Sam, my neighbour, lives in Lisbon'],
+      ),
+    ).toBe(false);
+    // Brother Sam beside a friend named Sam is kept under the brother, once.
+    const brother = 'My brother Sam lives in Oslo';
+    expect(
+      relatedSubject(
+        'person.friend.sam.city',
+        whoseDetail('person.friend.sam.city', brother),
+        brother,
+      ),
+    ).toBe('person.brother.sam.city');
+    // Which room member's detail it is changes nothing of whose it is.
+    expect(whoseDetail('person.brother.member_0123456789ab', 'Brother lives in Oslo')).toEqual(
+      whoseDetail('person.brother', 'Brother lives in Oslo'),
+    );
+    // A name at the start of a sentence, followed by what Will does, is Will.
+    const [teaches] = mergeIntoHeld(
+      [said('work.schedule', 'Will teaches piano on Fridays', 'Will teaches piano on Fridays')],
+      [held('person.will.schedule', 'Will teaches piano on Fridays')],
+    );
+    expect(teaches).toMatchObject({ op: 'add', domain_key: 'person.will.schedule' });
+  });
+
+  test("the owner of something's detail is not merged into the person's own", () => {
+    const [landlord] = mergeIntoHeld(
+      [
+        said(
+          'person.owner.city',
+          'The owner of my flat lives in Pune',
+          'The owner of my flat lives in Pune',
+        ),
+      ],
+      [held('home.city', 'Lives in Pune')],
+    );
+    expect(landlord).toMatchObject({ op: 'add', domain_key: 'person.owner.city' });
+  });
+
+  test('a subject of one run of words that says what kind of detail it is names no one', () => {
+    expect(ownTopicRun('person.peanut_allergy', 'Allergic to peanuts')).toBe(true);
+    expect(ownTopicRun('contact.aisle_seat', 'Aisle seats only')).toBe(true);
+    // A name in the run, written as one in the sentence, is someone.
+    expect(ownTopicRun('person.sam_city', 'Lives in the same city as Sam')).toBe(false);
+    // No word of it says what kind of detail it is: it may be a name.
+    expect(ownTopicRun('person.maya_lena', 'Allergic to peanuts')).toBe(false);
+    expect(ownTopicRun('person.vegetarian', 'Vegetarian')).toBe(false);
+    // Only a run directly under a person heading.
+    expect(ownTopicRun('person.sam_city.notes', 'Lives in Lisbon')).toBe(false);
+    expect(ownTopicRun('travel.aisle_seat', 'Aisle seats only')).toBe(false);
   });
 });

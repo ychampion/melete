@@ -154,6 +154,8 @@ describe('grouping', () => {
     expect(group('contact.owner.email', 'me@example.test', 'contact.owner.email')).not.toBe(
       'people',
     );
+    // The owner of something, saved under "owner", is someone in their life.
+    expect(group('person.owner.city', 'The owner of my flat lives upstairs')).toBe('people');
     // Where a real model put the person's city and absence on an install
     // before this change.
     expect(group('person.location.city', 'Lives in Delhi')).not.toBe('people');
@@ -225,6 +227,9 @@ describe('labels', () => {
       'Your landlord is Mr. Patel',
     );
     expect(subjectLabel(null, 'self.diet.vegetarian')).toBe('Your diet vegetarian');
+    // Which room member a detail is kept apart for is not part of its name.
+    expect(subjectLabel(null, 'health.allergy.member_0123456789ab')).toBe('Health allergy');
+    expect(memoryKeyLabel('pref.travel.seat.member_0123456789ab')).toBe('Travel: seat');
     expect(beliefLabel(null, 'self.diet', 'Vegetarian')).toBe('Your diet');
     // Someone else who owns something stays as written.
     expect(beliefLabel(null, 'person.cafe', 'The owner of the café is Ana')).toBe(

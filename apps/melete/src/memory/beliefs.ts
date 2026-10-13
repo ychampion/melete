@@ -170,10 +170,10 @@ const CATEGORY_WORDS: [BeliefCategory, RegExp][] = [
  * "person.location.city" are the person's allergy and city, not someone in
  * their life. A subject naming a person, or a relation, is left as it is.
  */
-function ownTopic(domainKey: string): string {
+function ownTopic(domainKey: string, content: string): string {
   const parts = domainKey.split('.');
   const [head = '', subject = ''] = parts;
-  if (!PERSON_HEADS.has(head) || whoseDetail(domainKey).kind === 'other') return domainKey;
+  if (!PERSON_HEADS.has(head) || whoseDetail(domainKey, content).kind === 'other') return domainKey;
   return parts.slice(SELF.has(subject) ? 2 : 1).join('.');
 }
 
@@ -186,12 +186,13 @@ export function beliefCategoryOf(input: {
   sourceKinds?: readonly BeliefSource['kind'][];
 }): BeliefCategory {
   const key = input.key ?? '';
-  if (key.startsWith('contact.') && whoseDetail(key).kind !== 'self') return 'people';
+  if (key.startsWith('contact.') && whoseDetail(key, input.content).kind !== 'self')
+    return 'people';
   if (key.startsWith('pref.')) return 'preferences';
   if (key.startsWith('event.')) return 'routines';
   if (key.startsWith('constraint.')) return 'work';
   if (input.sourceKinds?.includes('receipt')) return 'accounts';
-  const subject = words(ownTopic(input.domainKey));
+  const subject = words(ownTopic(input.domainKey, input.content));
   for (const [category, pattern] of CATEGORY_WORDS) if (pattern.test(subject)) return category;
   if (input.kind === 'preference') return 'preferences';
   const content = input.content.toLowerCase();

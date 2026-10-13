@@ -95,6 +95,10 @@ export async function claimWork(
     // What was learned in a private conversation is shown to the model only
     // while it reads another message from a private conversation.
     const snapshotPrivate = privateOrigin !== null;
+    // In a room, a member's words are read beside only what rests on their own
+    // words: one member's detail is never taken for, changed into, or merged
+    // with another's, however alike they are.
+    const author = (evidence.author_principal_id as string | null) ?? null;
     // The claims this evidence is most likely about come first, so an update to
     // something said weeks ago can name the claim it replaces; the newest fill
     // the rest of the snapshot.
@@ -105,6 +109,9 @@ export async function claimWork(
           join memory_index_manifest m on m.space_id = i.space_id and m.generation = i.generation
           where i.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
             and i.revision = c.head_revision and i.tokens @@ to_tsquery('simple', ${query})
+            and not exists (select 1 from memory_references said join memory_sources who
+              on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+                and who.author_principal_id is distinct from ${author})
             and (${snapshotPrivate} or not exists (select 1 from memory_references ref
               join memory_sources p on p.id = ref.source_id
               where ref.claim_id = c.id and ref.revision = c.head_revision
@@ -113,6 +120,9 @@ export async function claimWork(
       : [];
     const newest = await tx`select c.id from memory_claims c
       where c.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+        and not exists (select 1 from memory_references said join memory_sources who
+          on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+            and who.author_principal_id is distinct from ${author})
         and (${snapshotPrivate} or not exists (select 1 from memory_references ref
           join memory_sources p on p.id = ref.source_id
           where ref.claim_id = c.id and ref.revision = c.head_revision
@@ -126,6 +136,9 @@ export async function claimWork(
           join memory_claims c on c.id = ref.claim_id and ref.revision = c.head_revision
           where cap.job_id = ${capture.job_id} and cap.source_id <> ${row.source_id}
             and c.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+            and not exists (select 1 from memory_references said join memory_sources who
+              on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+                and who.author_principal_id is distinct from ${author})
             and (${snapshotPrivate} or not exists (select 1 from memory_references own
               join memory_sources p on p.id = own.source_id
               where own.claim_id = c.id and own.revision = c.head_revision
