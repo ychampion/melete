@@ -615,6 +615,30 @@ withDb('sandbox sessions', () => {
     await sessions.destroyWorkspace(own.id, provider, signal());
     await sessions.sweep(() => provider, signal());
     expect(await sessions.get(theirs.id)).toMatchObject({ status: 'paused', agentId: melete });
+    // As Melete's, it has a whole retention period again.
+    await sessions.sweep(() => provider, signal());
+    expect(await sessions.get(theirs.id)).toMatchObject({ status: 'paused', agentId: melete });
+    expect(provider.calls.destroy).toBe(1);
+  });
+
+  test("a deleted agent's computer waits for a Melete that cannot reach its connection", async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const melete = await meleteOf(sql, scope.spaceId);
+    const opened = await sessions.openWorkspace(
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.suspendWorkspace(opened.id, provider, signal());
+    await sql`update agent set deleted_at = now() where id = ${scope.agentId}`;
+    await sql`update agent set allowed_connection_ids = '[]'::jsonb where id = ${melete}`;
+    expect(await sessions.handOverDeleted()).toEqual([]);
+    await sql`update agent set allowed_connection_ids = null, uses_computer = false
+      where id = ${melete}`;
+    expect(await sessions.handOverDeleted()).toEqual([]);
+    await sql`update agent set uses_computer = true where id = ${melete}`;
+    expect(await sessions.handOverDeleted()).toEqual([opened.id]);
   });
 
   test("a deleted agent's computer an attempt is still on is handed over only after it ends", async () => {
