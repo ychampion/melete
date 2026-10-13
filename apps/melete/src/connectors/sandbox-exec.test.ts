@@ -21,7 +21,7 @@ import { sandboxSpecFor } from '../sandbox/connection.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions, type SessionRow, sessionHandle } from '../sandbox/sessions.ts';
-import type { ResumeOptions, SandboxHandle } from '../sandbox/types.ts';
+import { type ResumeOptions, SandboxGone, type SandboxHandle } from '../sandbox/types.ts';
 import { ConnectorRegistry } from './registry.ts';
 import {
   createSandboxExecConnector,
@@ -449,6 +449,68 @@ withDb('a command in a remote sandbox', () => {
     if (outcome.outcome !== 'succeeded') throw new Error(JSON.stringify(outcome));
     expect(outcome.receipt.detail.output_digest).toBe(digest('remembered'));
     expect(outcome.receipt.detail.session_id).not.toBe(sessionId);
+    expect(provider.calls.create).toBe(1);
+    expect(provider.calls.resume).toBe(1);
+  }, 60_000);
+
+  test("a computer that went away mid-attempt is marked lost, and the command runs on the agent's computer opened again", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { scope, provider, sessions, run } = await setup({ persistence: 'pause' });
+    await handle.sql`update job set agent_id = ${scope.agentId} where id = ${scope.jobId}`;
+    // The engine says a container it no longer has is gone, as docker does.
+    const gone = (handle: SandboxHandle) => {
+      if (!provider.engine.get(handle.providerSandboxId))
+        throw new SandboxGone(`the engine has no sandbox ${handle.providerSandboxId}`);
+    };
+    for (const name of ['putFiles', 'listFiles', 'getFile', 'exec', 'connect'] as const) {
+      const original = (provider[name] as (...args: unknown[]) => Promise<unknown>).bind(provider);
+      Object.assign(provider, {
+        [name]: async (handle: SandboxHandle, ...rest: unknown[]) => {
+          gone(handle);
+          return original(handle, ...rest);
+        },
+      });
+    }
+    const first = await run({ command: 'printf ok' });
+    if (first.result.outcome !== 'succeeded') throw new Error(JSON.stringify(first.result));
+    const sessionId = String(first.result.receipt.detail.session_id);
+    const before = await sessions.get(sessionId);
+    provider.vanish(before?.providerSandboxId ?? '');
+    // The next command in the same attempt runs on the agent's computer opened again.
+    const next = await run({ command: 'printf back' });
+    if (next.result.outcome !== 'succeeded') throw new Error(JSON.stringify(next.result));
+    expect(next.result.receipt.detail.session_id).not.toBe(sessionId);
+    expect((await sessions.get(sessionId))?.status).toBe('lost');
+  }, 60_000);
+
+  test('a computer whose container went away but whose files are kept is resumed on them, not replaced', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { scope, provider, sessions, run } = await setup({ persistence: 'pause' });
+    await handle.sql`update job set agent_id = ${scope.agentId} where id = ${scope.jobId}`;
+    const first = await run({ command: 'printf kept > /work/notes.txt' });
+    if (first.result.outcome !== 'succeeded') throw new Error(JSON.stringify(first.result));
+    const sessionId = String(first.result.receipt.detail.session_id);
+    // The container is missing and its volumes are not, as after a restore:
+    // the engine says it is gone when connected to, and stopped when asked.
+    const connect = provider.connect.bind(provider);
+    const inspect = provider.inspect.bind(provider);
+    let missing = true;
+    provider.connect = async (handle, signal) => {
+      if (missing) throw new SandboxGone(`the engine has no sandbox ${handle.providerSandboxId}`);
+      return connect(handle, signal);
+    };
+    provider.inspect = async (handle, signal) => (missing ? 'paused' : inspect(handle, signal));
+    const pause = provider.pause.bind(provider);
+    provider.pause = async (handle, signal) => {
+      const paused = await pause(handle, signal);
+      missing = false;
+      return paused;
+    };
+    const next = await run({ command: 'cat /work/notes.txt' });
+    if (next.result.outcome !== 'succeeded') throw new Error(JSON.stringify(next.result));
+    expect(next.result.receipt.detail.output_digest).toBe(digest('kept'));
+    expect(next.result.receipt.detail.session_id).not.toBe(sessionId);
+    expect((await sessions.get(sessionId))?.status).toBe('closed');
     expect(provider.calls.create).toBe(1);
     expect(provider.calls.resume).toBe(1);
   }, 60_000);

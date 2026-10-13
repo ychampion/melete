@@ -209,6 +209,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         if (signal.aborted) break;
         ended.push(...(await endDisplays([row], row.reason, signal, true)));
       }
+      await sessions.displays.prune();
       return ended;
     },
 
