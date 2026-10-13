@@ -12,11 +12,14 @@ import {
   dockerSocketGroup,
   failureReport,
   fillTemplate,
+  hostedSettings,
   providerSettings,
   sandboxProject,
   setupCodeNote,
   voiceSettings,
 } from './configure.ts';
+import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
+import { parseEnvFile } from './provider-settings.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
 describe('the configuration generator options', () => {
@@ -69,6 +72,23 @@ describe('the public address and a hosted installation', () => {
     expect(() =>
       configureOptions(['--public-url', 'http://assistant.example.net', '--hosted']),
     ).toThrow('https://');
+  });
+
+  test('--hosted writes starting cost guards; without it nothing is limited', async () => {
+    const hosted = configureOptions(['--public-url', 'https://assistant.example.net', '--hosted']);
+    expect(hostedSettings(hosted)).toEqual({ ...HOSTED_STARTING_VALUES });
+    expect(
+      hostedSettings(configureOptions(['--public-url', 'https://assistant.example.net'])),
+    ).toEqual({});
+    expect(hostedSettings(configureOptions([]))).toEqual({});
+    // Each one lands on its own line of the real template.
+    const template = await Bun.file(new URL('../.env.example', import.meta.url)).text();
+    const written = parseEnvFile(fillTemplate(template, hostedSettings(hosted)));
+    for (const [name, value] of Object.entries(HOSTED_STARTING_VALUES))
+      expect(written[name]).toBe(value);
+    // The template itself leaves every one of them empty: no limits by default.
+    const plain = parseEnvFile(template);
+    for (const name of Object.keys(HOSTED_STARTING_VALUES)) expect(plain[name] ?? '').toBe('');
   });
 
   test.each([

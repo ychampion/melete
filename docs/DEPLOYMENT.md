@@ -242,7 +242,7 @@ bun run melete feedback        # problem reports people sent from the app
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token, starting cost guards and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). |
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
 | `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
@@ -360,8 +360,27 @@ and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`.
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
 `hosted.alerts` and `hosted.operator_token`, until each is set. Without the
-mark the same rules only warn. A new installation gets all of it but the alert
-target in one step:
+mark the same rules only warn.
+
+Because the installation's model key pays for everyone, a hosted installation
+also needs its cost guards, and `check` and `status` fail until each is set to
+a positive number:
+
+| Rule | Settings | Starting value |
+|---|---|---|
+| `hosted.spend_person` | `MELETE_SPEND_PERSON_DAILY_USD`, `MELETE_SPEND_PERSON_MONTHLY_USD` | $2 a day, $20 a month |
+| `hosted.spend_background` | `MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD`, `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD` | $0.50 a day, $5 a month |
+| `hosted.spend_installation` | `MELETE_SPEND_MONTHLY_USD` | $200 a month |
+| `hosted.uploads` | `MELETE_ATTACHMENT_UPLOADS_AT_ONCE`, `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | 3 at once, 30 in ten minutes |
+| `hosted.computers` | `MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION` | 1 computer per person |
+| `hosted.spend_alert` | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` or `MELETE_ALERT_SPEND_PERSON_PERCENT` | an alert at 4 times the usual hour |
+
+These are starting points: tune them to your price and your people (see
+[Spending caps](#spending-caps), [Attachments](#attachments) and
+[Alerts](#alerts)). They apply only to a hosted installation; a self-hosted
+one has no limits unless you set them, and `check` never asks for them.
+
+A new installation gets all of it but the alert target in one step:
 
 ```bash
 bun run melete init --connect-in-app --public-url https://assistant.example.net --hosted
@@ -370,12 +389,18 @@ bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL && unset MELETE_ALERT_WEB
 ```
 
 For an installation that is already running, set the two addresses together,
-put `"hosted": true` in the deploy file, and give it a token:
+put `"hosted": true` in the deploy file, give it a token, and set the cost
+guards (`check` names each one that is missing, with a starting value):
 
 ```bash
 bun run melete set MELETE_PUBLIC_URL=https://assistant.example.net MELETE_WEB_ORIGIN=https://assistant.example.net
 read -rs MELETE_OPERATOR_TOKEN && export MELETE_OPERATOR_TOKEN   # 24 or more random characters
 bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOKEN
+bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_USD=20 \
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD=0.5 MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD=5 \
+  MELETE_SPEND_MONTHLY_USD=200 MELETE_ATTACHMENT_UPLOADS_AT_ONCE=3 \
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW=30 MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION=1 \
+  MELETE_ALERT_SPEND_HOURLY_MULTIPLE=4
 bun run melete check
 ```
 

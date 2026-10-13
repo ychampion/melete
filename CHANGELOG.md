@@ -27,6 +27,12 @@ What each version ships.
 - **`restore --keep-database` also protects the agents' computers.** When
   their volumes on this machine already hold files, it refuses, as it does for
   the people's files, until `--replace-files` says to replace them.
+- **A hosted installation needs its cost guards.** With `"hosted": true`,
+  `melete check` and `melete status` fail until each person has daily and
+  monthly spending caps and background caps, the installation has a monthly
+  cap, uploads and computers are limited per person, and a spending alert is
+  set. `melete init --hosted` writes starting values to tune. A self-hosted
+  installation still has no limits unless you set them.
 
 ### Upgrading from v0.2.1
 
@@ -43,6 +49,9 @@ What each version ships.
    the old open claim; the service, `melete check` and `melete status` then
    warn about it. Installations that already have an account are unaffected.
    See [Claiming a new installation](docs/DEPLOYMENT.md#claiming-a-new-installation).
+3. An installation marked `"hosted": true` fails `check` and `status` until its
+   cost guards are set; each `hosted.*` rule names the setting and a starting
+   value. See [Hosting for other people](docs/DEPLOYMENT.md#hosting-for-other-people).
 
 ## v0.2.1 — 2026-10-05
 

@@ -7,7 +7,15 @@
  * With `"hosted": true` in deploy/melete.deploy.json a missing one fails `check`
  * and `status`; otherwise each is a warning, because a private installation on
  * a laptop or a tailnet runs without them.
+ *
+ * A hosted installation also needs its cost guards, because its model key pays
+ * for everyone: spending caps per person, for their background work and for
+ * the whole installation, upload limits, a per-person computer limit and a
+ * spending alert. These are judged only when it is hosted. A self-hosted
+ * installation has no limits unless its operator sets them, and is never told
+ * it should.
  */
+import { HOSTED_STARTING_VALUES } from '../../../deploy/scripts/hosted-defaults.ts';
 import type { DeployConfig } from './deploy-config.ts';
 import type { Result } from './schema.ts';
 
@@ -87,5 +95,90 @@ export function judgeHosted(config: DeployConfig, env: Record<string, string>): 
           fix: 'Export a random value of 24 or more characters as MELETE_OPERATOR_TOKEN, then run bun run melete set --from-env MELETE_OPERATOR_TOKEN.',
         },
   );
+  if (hosted) results.push(...judgeCostGuards(env));
   return results;
+}
+
+type Guard = {
+  id: string;
+  /** Every one of these must be set, or with `any` at least one. */
+  names: string[];
+  any?: true;
+  /** What goes unbounded while it is missing. */
+  risk: string;
+  ok: string;
+};
+
+/** Each guard a hosted installation must set. */
+export const COST_GUARDS: Guard[] = [
+  {
+    id: 'hosted.spend_person',
+    names: ['MELETE_SPEND_PERSON_DAILY_USD', 'MELETE_SPEND_PERSON_MONTHLY_USD'],
+    risk: 'one person can spend without limit on the model key you pay for',
+    ok: 'Each person has a daily and a monthly spending cap.',
+  },
+  {
+    id: 'hosted.spend_background',
+    names: [
+      'MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD',
+      'MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD',
+    ],
+    risk: "one person's routines and watches can run up cost with nobody watching",
+    ok: "Each person's background work has a daily and a monthly cap.",
+  },
+  {
+    id: 'hosted.spend_installation',
+    names: ['MELETE_SPEND_MONTHLY_USD'],
+    risk: "everyone's spending together has no ceiling",
+    ok: 'The installation has a monthly spending cap.',
+  },
+  {
+    id: 'hosted.uploads',
+    names: ['MELETE_ATTACHMENT_UPLOADS_AT_ONCE', 'MELETE_ATTACHMENT_UPLOADS_PER_WINDOW'],
+    risk: 'one person can upload without limit and fill the disk',
+    ok: 'Each person has an upload limit.',
+  },
+  {
+    id: 'hosted.computers',
+    names: ['MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION'],
+    risk: 'one person can take every computer the installation runs',
+    ok: 'Each person has a computer limit.',
+  },
+  {
+    id: 'hosted.spend_alert',
+    names: ['MELETE_ALERT_SPEND_HOURLY_MULTIPLE', 'MELETE_ALERT_SPEND_PERSON_PERCENT'],
+    any: true,
+    risk: 'nobody hears when spending jumps',
+    ok: 'A jump in spending raises an alert.',
+  },
+];
+
+const STARTING: Record<string, string | undefined> = HOSTED_STARTING_VALUES;
+
+/** Whether a setting holds a positive number. */
+const positive = (value: string | undefined) => {
+  const text = value?.trim() ?? '';
+  return text !== '' && Number.isFinite(Number(text)) && Number(text) > 0;
+};
+
+/**
+ * The cost guards a hosted installation must set, each failing by name while
+ * it is missing; the fix names a starting value from deploy/scripts/hosted-defaults.ts.
+ */
+export function judgeCostGuards(env: Record<string, string>): Result[] {
+  return COST_GUARDS.map((guard): Result => {
+    const unset = guard.names.filter((name) => !positive(env[name]));
+    const met = guard.any ? unset.length < guard.names.length : unset.length === 0;
+    if (met) return { id: guard.id, level: 'ok', detail: guard.ok };
+    const wanted = guard.any ? guard.names.slice(0, 1) : unset;
+    const named = guard.any
+      ? `Neither ${guard.names.join(' nor ')} is`
+      : `${unset.join(' and ')} ${unset.length === 1 ? 'is' : 'are'} not`;
+    return {
+      id: guard.id,
+      level: 'fail',
+      detail: `${named} set to a positive number, so ${guard.risk}. ${HOSTED_HINT}`,
+      fix: `Run bun run melete set ${wanted.map((name) => `${name}=${STARTING[name] ?? '<value>'}`).join(' ')}, a starting value to tune.`,
+    };
+  });
 }
