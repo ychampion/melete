@@ -191,6 +191,7 @@ import {
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
+import { operatorPaths } from './operator-openapi.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   accountList,
@@ -1363,6 +1364,7 @@ export function buildOpenApiDocument() {
         { name: 'reach' },
         { name: 'assistants' },
         { name: 'feedback' },
+        { name: 'operator' },
       ],
       paths: {
         '/push/public-key': {
@@ -4581,6 +4583,7 @@ export function buildOpenApiDocument() {
         ...devicePaths(),
         ...appsPaths(),
         ...processPreviewPaths(),
+        ...operatorPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

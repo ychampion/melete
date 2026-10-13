@@ -168,6 +168,9 @@ import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { OperatorConsole } from './operator/console.ts';
+import { diskReading } from './operator/disk.ts';
+import { mountOperatorConsole } from './operator/routes.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
@@ -377,24 +380,25 @@ export function createApp(deps: AppDeps) {
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       })
     : undefined;
+  const accountMail = deps.accountMail ?? accountMailerFromEnv(deps.env);
+  // Computers a new password, "sign out everywhere" or a disabled account
+  // disconnected lose their connection the way a revoke from Settings ends it,
+  // fencing running work.
+  const devicesEnded = devices
+    ? async (principalId: string, deviceIds: string[]) => {
+        for (const id of deviceIds)
+          await devices.revoke(id, principalId).catch((error: unknown) => {
+            process.stderr.write(
+              `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          });
+      }
+    : undefined;
   mountAuth(app, {
     ...deps,
     limits,
-    accountMail: deps.accountMail ?? accountMailerFromEnv(deps.env),
-    // Computers a new password or "sign out everywhere" disconnected lose their
-    // connection the way a revoke from Settings ends it, fencing running work.
-    ...(devices
-      ? {
-          devicesEnded: async (principalId: string, deviceIds: string[]) => {
-            for (const id of deviceIds)
-              await devices.revoke(id, principalId).catch((error: unknown) => {
-                process.stderr.write(
-                  `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
-                );
-              });
-          },
-        }
-      : {}),
+    accountMail,
+    ...(devicesEnded ? { devicesEnded } : {}),
   });
   // Before every route that answers with a session, so its checks of a space
   // header, ?space_id and ?job_id run for all of them, files and apps included.
@@ -508,6 +512,33 @@ export function createApp(deps: AppDeps) {
   // Taking everything along, and deleting an account.
   if (deps.sql) {
     const sql = deps.sql;
+    const accounts =
+      deps.accountRemovals ??
+      (deps.removals && deps.db && deps.jobs
+        ? new AccountRemovalService({
+            sql,
+            spaces: deps.removals,
+            principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+            ...(deps.env.MELETE_BROWSER_SPACE
+              ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
+              : {}),
+            removeChats: (ids) =>
+              removeJobs(
+                {
+                  jobs: deps.jobs as JobService,
+                  sql,
+                  runner: deps.runner,
+                  blobs: deps.attachments?.store,
+                  workspaces: {
+                    workRoot: deps.env.MELETE_WORK_DIR,
+                    days: deps.env.MELETE_TRASH_DAYS,
+                    spacesRoot: deps.env.MELETE_SPACES_DIR,
+                  },
+                },
+                ids,
+              ),
+          })
+        : undefined);
     mountAccount(app, {
       sql,
       spacesRoot: deps.env.MELETE_SPACES_DIR,
@@ -525,34 +556,25 @@ export function createApp(deps: AppDeps) {
         );
         return 'content' in file ? file.content : null;
       },
-      accounts:
-        deps.accountRemovals ??
-        (deps.removals && deps.db && deps.jobs
-          ? new AccountRemovalService({
-              sql,
-              spaces: deps.removals,
-              principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
-              ...(deps.env.MELETE_BROWSER_SPACE
-                ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
-                : {}),
-              removeChats: (ids) =>
-                removeJobs(
-                  {
-                    jobs: deps.jobs as JobService,
-                    sql,
-                    runner: deps.runner,
-                    blobs: deps.attachments?.store,
-                    workspaces: {
-                      workRoot: deps.env.MELETE_WORK_DIR,
-                      days: deps.env.MELETE_TRASH_DAYS,
-                      spacesRoot: deps.env.MELETE_SPACES_DIR,
-                    },
-                  },
-                  ids,
-                ),
-            })
-          : undefined),
+      ...(accounts ? { accounts } : {}),
     });
+    // The installation's owner runs it from the web app as from the host.
+    mountOperatorConsole(
+      app,
+      new OperatorConsole({
+        sql,
+        env: deps.env,
+        ...(accounts ? { accounts } : {}),
+        ...(deps.spending ? { spending: deps.spending } : {}),
+        ...(accountMail ? { mailer: accountMail } : {}),
+        ...(devicesEnded ? { devicesEnded } : {}),
+        health:
+          deps.healthDetail ??
+          (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql })),
+        disk: () => diskReading(deps.env),
+        version: VERSION,
+      }),
+    );
   }
   const intents =
     deps.intents ??
