@@ -1549,7 +1549,7 @@ describe('restoring with an external database', () => {
           [
             '#!/bin/sh',
             `echo "$*" > ${bin}/args`,
-            '[ "$RESTORE_FAILS" = 1 ] || { wc -c > ' + bin + '/bytes; exit 0; }',
+            `[ "$RESTORE_FAILS" = 1 ] || { wc -c > ${bin}/bytes; exit 0; }`,
             // pg_restore stops at the error with most of the dump unread.
             'dd bs=1 count=2 of=/dev/null 2>/dev/null',
             `printf 'pg_restore: error: could not execute query: ERROR:  out of shared memory\\nHINT:  You might need to increase "max_locks_per_transaction".\\nCommand was: CREATE TABLE public.note (\\n    id text\\n);\\n' >&2`,

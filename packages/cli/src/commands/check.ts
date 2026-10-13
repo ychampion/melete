@@ -10,8 +10,8 @@ import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
 import { judgeBrowser } from '../browser.ts';
-import { ROLE_SETTINGS } from '../database.ts';
 import { type Context, inServiceImage } from '../context.ts';
+import { ROLE_SETTINGS } from '../database.ts';
 import {
   BLOBS_S3_FILE,
   DEFAULT_REGISTRY,
