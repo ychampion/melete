@@ -89,10 +89,11 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'anthropic/*sonnet*': { input: 3, output: 15, cached_input: 0.3 },
   'anthropic/*haiku*': { input: 1, output: 5, cached_input: 0.1 },
   // The Claude 5.5 models at their list prices. A cache read is a tenth of the
-  // input price and a five-minute cache write a quarter more (CACHE_PRICE_SHARE).
+  // input price, except on Opus 5.5, where it is a twentieth; a five-minute
+  // cache write is a quarter more (CACHE_PRICE_SHARE).
   // Haiku 5.5 charges five times as much for a prompt above 100,000 tokens,
   // which one price per entry cannot say; the lower price is kept here.
-  'anthropic/*opus-5-5*': { input: 4, output: 20, cached_input: 0.4 },
+  'anthropic/*opus-5-5*': { input: 4, output: 20, cached_input: 0.2 },
   'anthropic/*sonnet-5-5*': { input: 2, output: 10, cached_input: 0.2 },
   'anthropic/*haiku-5-5*': { input: 0.1, output: 0.5, cached_input: 0.01 },
   'openai/*': { input: 2.5, output: 10, cached_input: 0.25 },

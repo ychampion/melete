@@ -513,16 +513,17 @@ describe('the price table', () => {
         cachedInputTokens: 0,
         ...usage,
       });
-    for (const [model, input, output] of [
-      ['claude-opus-5-5', 4, 20],
-      ['claude-sonnet-5-5', 2, 10],
-      ['claude-haiku-5-5', 0.1, 0.5],
+    for (const [model, input, output, cacheRead] of [
+      ['claude-opus-5-5', 4, 20, 0.2],
+      ['claude-sonnet-5-5', 2, 10, 0.2],
+      ['claude-haiku-5-5', 0.1, 0.5, 0.01],
     ] as const) {
       expect(cost(model, { inputTokens: 1_000_000 })).toBeCloseTo(input, 6);
       expect(cost(model, { outputTokens: 1_000_000 })).toBeCloseTo(output, 6);
-      // A cache read is a tenth of the input price, a five-minute write a quarter more.
+      // A cache read at its listed price (a twentieth of Opus 5.5's input, a
+      // tenth of the others'), a five-minute write a quarter more than input.
       expect(cost(model, { inputTokens: 1_000_000, cachedInputTokens: 1_000_000 })).toBeCloseTo(
-        input / 10,
+        cacheRead,
         6,
       );
       expect(cost(model, { inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000 })).toBeCloseTo(
