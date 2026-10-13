@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { myUsageResponse, startersResponse, usageResponse } from '@melete/contracts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { PersonLimitStore } from '../../src/gateway/person-limits.ts';
 import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -416,6 +417,29 @@ withDb('your usage', () => {
     expect(
       myUsageResponse.parse(await ok(call(roomy, bob.cookie, '/usage/mine'))).notice,
     ).toBeNull();
+  });
+
+  test('caps the owner gives her in the operator console are the ones she sees', async () => {
+    const guard = new SpendingGuard(database().sql, limits);
+    guard.overrides = new PersonLimitStore(database().sql);
+    const capped = makeApp(guard);
+    await database().sql`insert into person_spend_limit (principal_id, month_usd)
+      values (${alice.id}, 4)`;
+    try {
+      const mine = myUsageResponse.parse(await ok(call(capped, alice.cookie, '/usage/mine')));
+      // Her own month cap replaces the installation's; its daily cap still holds.
+      expect(mine.caps).toEqual({
+        month: { usd: 4, tokens: null },
+        day: { usd: 50, tokens: null },
+        background: null,
+      });
+      expect(mine.notice).toMatchObject({ level: 'warning', period: 'month', scope: 'person' });
+      // Bob has no caps of his own, so the installation's hold for him.
+      const asBob = myUsageResponse.parse(await ok(call(capped, bob.cookie, '/usage/mine')));
+      expect(asBob.caps?.month).toEqual({ usd: 100, tokens: null });
+    } finally {
+      await database().sql`delete from person_spend_limit where principal_id = ${alice.id}`;
+    }
   });
 });
 

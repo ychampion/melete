@@ -87,6 +87,8 @@ const LEFTOVER_RECORDS = [
   'ledger_item',
   'voice_usage',
   'managed_call',
+  'person_spend_limit',
+  'starter_dismissal',
 ];
 
 export type AccountRemovalDeps = {
