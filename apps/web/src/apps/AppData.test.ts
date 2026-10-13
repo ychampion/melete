@@ -4,8 +4,13 @@
  * And the one message Melete sends an app unasked, that data it read changed.
  */
 import { expect, test } from 'bun:test';
-import { responseLines, updateLines } from './AppData.tsx';
+import { responseLines, senderOf, updateLines } from './AppData.tsx';
 import { notifyChanged } from './bridge.ts';
+
+test('a response says who sent it, and that its sender deleted their account once they have', () => {
+  expect(senderOf({ id: 'own_1', email: 'nina@example.test' })).toBe('nina@example.test');
+  expect(senderOf(null)).toBe('Someone who deleted their account');
+});
 
 test("a response's fields read as name and value, long values clipped", () => {
   expect(responseLines({ note: 'Clear', rating: 5, tags: ['a'] })).toEqual([
