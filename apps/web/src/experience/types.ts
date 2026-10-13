@@ -197,6 +197,14 @@ export type AccountRemoval = Ok<paths['/principals/{id}/removal'], 'get'>['remov
 export type AccountSummary = Ok<paths['/principals'], 'get'>['accounts'][number];
 export type SpaceRemovalPreview = Ok<paths['/spaces/{id}/removal/preview'], 'get'>['preview'];
 export type SpaceRemovalReport = Ok<paths['/removals/{id}'], 'get'>;
+
+/** The operator console: the installation's owner running Melete for other people. */
+export type OperatorOverview = Ok<paths['/operator/overview'], 'get'>;
+export type OperatorPeople = Ok<paths['/operator/people'], 'get'>;
+export type OperatorPerson = OperatorPeople['people'][number];
+export type OperatorCaps = OperatorPerson['caps']['own'];
+export type OperatorOneTimeLink = Ok<paths['/operator/people'], 'post'>['invite'];
+export type OperatorAuditEntry = Ok<paths['/operator/audit'], 'get'>['entries'][number];
 /** A removal as it started; the same record its progress reports. */
 export type SpaceRemovalStarted = SpaceRemovalReport['removal'];
 /** A site the agent's browser is signed in to. */

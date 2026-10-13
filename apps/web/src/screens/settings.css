@@ -17,3 +17,82 @@
   color: var(--danger);
   overflow-wrap: anywhere;
 }
+
+/* Settings › Installation: the operator console. */
+.operator-head {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heading);
+  margin: 0;
+}
+.operator-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.operator-tile {
+  gap: 4px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.operator-tile[data-warn="true"] {
+  border-color: var(--danger);
+}
+.operator-tile-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.operator-tile-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.operator-tile-note {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.operator-tile[data-warn="true"] .operator-tile-value {
+  color: var(--danger);
+}
+.operator-people,
+.operator-audit {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.operator-people > li:first-child,
+.operator-audit > li:first-child {
+  border-top: 0;
+}
+.operator-people > li,
+.operator-audit > li {
+  padding: 10px 12px;
+}
+.operator-person {
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 64px;
+}
+.operator-person-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.operator-actions {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .operator-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .operator-actions {
+    flex-basis: 100%;
+  }
+}

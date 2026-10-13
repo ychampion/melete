@@ -59,7 +59,7 @@ function SpacesList({ preview }: { preview: AccountRemovalPreview }) {
 }
 
 /** Type the email to delete an account: one's own, or one the setup owner made. */
-function DeleteAccountDialog({
+export function DeleteAccountDialog({
   preview,
   open,
   onClose,
