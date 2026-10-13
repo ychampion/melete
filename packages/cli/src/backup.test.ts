@@ -1618,6 +1618,7 @@ describe('restoring with an external database', () => {
         expect(silent.code).toBe(1);
         expect(silent.loaded).toBeNull();
         expect(silent.stderr).toContain('psql: could not connect');
+        expect(silent.stderr).not.toContain('already holds');
       } finally {
         rmSync(bin, { recursive: true, force: true });
       }

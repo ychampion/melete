@@ -16,10 +16,14 @@ What each version ships.
   restore` loads the dump in one transaction and only into a database with no
   tables, so a load that fails leaves the database empty and the same restore
   runs again. A restore that stops after the load says to finish with
-  `--keep-database --replace-files`. The rollback that a failed `upgrade.ts
-  --external-db` prints now loads the backup into a new, empty database
-  instead of `pg_restore --clean` over the newer one, which left that
-  release's tables behind.
+  `--keep-database --replace-files`. A load that fails ends its report with
+  the database's error and says not to start the stack on that database
+  first. The rollback that a failed `upgrade.ts --external-db` prints now
+  loads the backup into a new, empty database instead of `pg_restore --clean`
+  over the newer one, which left that release's tables behind. Where an
+  administrator made the database roles, the restore refuses while their
+  addresses name another database than `DATABASE_URL`, and both say to point
+  them at the new one.
 - **`restore --keep-database` also protects the agents' computers.** When
   their volumes on this machine already hold files, it refuses, as it does for
   the people's files, until `--replace-files` says to replace them.

@@ -253,7 +253,7 @@ bun run melete feedback        # problem reports people sent from the app
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
 | `backup` | Backs up the database, the restriction journal, the settings and the files (the spaces, uploads, the shared `/work` and the agents' computers) into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--database-only`, `--offline`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
-| `restore <backup> [--plan \| --verify \| --yes] [--keep-database]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. `--verify` also reads every archive through; `--yes` runs the steps. Neither of the first two changes anything. |
+| `restore <backup> [--plan \| --verify \| --yes] [--keep-database [--replace-files]]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. `--verify` also reads every archive through; `--yes` runs the steps. Neither of the first two changes anything. `--keep-database` keeps an external database that already holds the data, and `--replace-files` lets it replace files already on this machine. |
 | `upgrade <version>` | For an installation that builds its images: takes the release's own `deploy/scripts/upgrade.ts` out of its tag with `git archive` (fetching the tag first if this clone lacks it) and runs that copy ([Upgrading between releases](UPGRADING.md)) with every overlay file and profile in the deploy file: the browser and tailnet files, the sandbox profile, an external database and an S3 blob store. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
 | `account <command>` | The accounts on the installation, run in the service container; [Accounts](#accounts) lists the commands. `--json` prints each answer as one JSON object. |
@@ -501,7 +501,11 @@ computers, so a new one takes over from a backup:
 4. `bun run melete restore <backup> --yes` runs them and starts the stack.
    With an external database that already holds the data, add
    `--keep-database`; to restore into a new database, point `DATABASE_URL` at
-   an empty one first. Docker pulls the images the tag names when the steps
+   an empty one first. Where the database's administrator made the roles
+   ([Roles an administrator creates](#roles-an-administrator-creates)), they
+   grant them the new database, and `MELETE_MIGRATE_DATABASE_URL`,
+   `MELETE_API_DATABASE_URL` and `MELETE_EFFECTS_DATABASE_URL` are pointed at
+   it too; the restore refuses while they name another one. Docker pulls the images the tag names when the steps
    first need them. `bun run melete status` then reports the stack.
 
 If the stack was started on the new VM before the restore, its own start-up
@@ -2342,7 +2346,10 @@ read -rs MELETE_EFFECTS_DATABASE_URL && export MELETE_EFFECTS_DATABASE_URL
 bun run melete set --from-env MELETE_MIGRATE_DATABASE_URL MELETE_API_DATABASE_URL MELETE_EFFECTS_DATABASE_URL
 ```
 
-`database-roles` then uses those roles as given and creates none.
+`database-roles` then uses those roles as given and creates none. A restore
+or a rollback into a new database needs the same two grants there, and the
+three addresses pointed at it; `restore` refuses while they name another
+database than `DATABASE_URL`.
 `bun run melete check` refuses the setting when only some of the three are set,
 when one names another server or database, or when the service's role is
 `DATABASE_URL`'s own user.
@@ -2585,7 +2592,10 @@ missing computer volume with its labels; and only then starts the stack.
 A step that fails stops the restore there, and the report says what that left:
 
 - before anything was replaced, nothing was; it gives the command that starts
-  the stack as it was;
+  the stack as it was. A load into an external database that failed is undone
+  as a whole, so that database stays empty; the report ends with the error and
+  says to run the same `restore --yes` again once the cause is fixed, without
+  starting the stack on that database first, since its first start fills it;
 - after something was replaced, the stack stays stopped, never started on a
   half-restored installation; run the same `restore --yes` again once the
   cause is fixed, and it starts over from the backup. With an external
