@@ -65,11 +65,19 @@ export async function ensureBrowserConnection(
 ): Promise<{ id: string; created: boolean }> {
   return sql.begin(async (tx) => {
     await tx`select id from space where id = ${spaceId} for update`;
-    const [existing] = await tx<{ id: string }[]>`select c.id from connection c
+    const [existing] = await tx<{ id: string; scopes: string[] }[]>`select c.id, c.scopes
+      from connection c
       where c.space_id = ${spaceId} and c.provider = 'web' and c.status <> 'revoked'
         and c.scopes ? 'browser.observe'
       order by c.id limit 1`;
-    if (existing) return { id: existing.id, created: false };
+    if (existing) {
+      // A browser tool added since the connection was made is granted to it too.
+      const missing = BROWSER_SCOPES.filter((scope) => !existing.scopes.includes(scope));
+      if (missing.length)
+        await tx`update connection set scopes = scopes || ${JSON.stringify(missing)}::jsonb
+          where id = ${existing.id}`;
+      return { id: existing.id, created: false };
+    }
     const id = newId('conn');
     await tx`insert into connection
       (id, space_id, provider, label, scopes, configuration, setup_state, status, health, shared_use)

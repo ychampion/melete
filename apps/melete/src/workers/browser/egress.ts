@@ -20,7 +20,16 @@ export type BrowserNetworkPolicy = {
   public_web?: boolean;
 };
 
-export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human';
+/**
+ * `sign_in` is a saved sign-in being filled and sent: pages load as they do when
+ * opened, and only the site the sign-in was saved for, the page's own origin
+ * when it began, may be sent anything; a request that would send elsewhere is
+ * held back, and a form that posts elsewhere ends it.
+ */
+export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human' | 'sign_in';
+
+/** The most requests that change something one sign-in step may send to its own site. */
+export const SIGN_IN_MUTATIONS = 16;
 
 /** A person's live channel: any method inside the takeover's site scope, nothing outside it. */
 export type BrowserHumanWindow = {
@@ -534,6 +543,14 @@ export function createBrowserEgress(
     if (operation.mode === 'navigate' && !read) {
       networkError('mutation_requires_commit', 'browser mutation requires an approved submit');
     }
+    if (operation.mode === 'sign_in' && !read) {
+      // A saved sign-in is sent to the site it was saved for and nowhere else.
+      if (url.origin !== operation.origin)
+        networkError('sign_in_origin', 'a saved sign-in is sent only to its own site');
+      operation.mutations += 1;
+      if (operation.mutations > SIGN_IN_MUTATIONS)
+        networkError('sign_in_budget', 'a sign-in step sent more requests than a sign-in needs');
+    }
     if (operation.mode === 'commit') {
       if (url.origin !== operation.origin) {
         networkError('commit_origin', 'browser submit cannot leave the current page origin');
@@ -737,8 +754,9 @@ export function createBrowserEgress(
           );
         }
         if (
-          (operation.mode === 'navigate' && READ_METHODS.has(request.method())) ||
-          (operation.mode === 'commit' &&
+          ((operation.mode === 'navigate' || operation.mode === 'sign_in') &&
+            READ_METHODS.has(request.method())) ||
+          ((operation.mode === 'commit' || operation.mode === 'sign_in') &&
             request.method() === 'POST' &&
             [302, 303].includes(response.status))
         ) {
@@ -748,7 +766,8 @@ export function createBrowserEgress(
           operation.error = new BrowserRedirect(
             target.href,
             response.status,
-            operation.mode === 'commit',
+            operation.mode === 'commit' ||
+              (operation.mode === 'sign_in' && !READ_METHODS.has(request.method())),
           );
         } else {
           networkError(
@@ -768,7 +787,7 @@ export function createBrowserEgress(
       // browser would load it; the look after says which hosts. Every refusal still ends the
       // operation, and so does a failure of the page's own document, by a plain name.
       const pageResource =
-        operation?.mode === 'navigate' &&
+        (operation?.mode === 'navigate' || operation?.mode === 'sign_in') &&
         !operation.abort.signal.aborted &&
         subresource(route.request());
       if (pageResource && failed) {
@@ -783,7 +802,7 @@ export function createBrowserEgress(
       } else if (
         pageResource &&
         error instanceof BrowserNetworkError &&
-        error.code === 'mutation_requires_commit'
+        (error.code === 'mutation_requires_commit' || error.code === 'sign_in_origin')
       ) {
         // Something the page sends as it loads (an analytics beacon, a log) is held back, as
         // every change is outside an approved submit, and the page loads without it; the look
@@ -822,6 +841,11 @@ export function createBrowserEgress(
 
     get commitDispatched(): boolean {
       return commitDispatched;
+    },
+
+    /** Whether the running operation has already met what ends it: a refusal or a redirect. */
+    get settling(): boolean {
+      return Boolean(active?.error);
     },
 
     /** The hosts resources could not be loaded from since the last call, then forgets them. */
@@ -884,7 +908,7 @@ export function createBrowserEgress(
       if (!context || closed)
         networkError('network_closed', 'browser network guard is not available');
       if (active) networkError('network_busy', 'browser network operation is already running');
-      if (!['navigate', 'reversible', 'commit', 'human'].includes(mode)) {
+      if (!['navigate', 'reversible', 'commit', 'human', 'sign_in'].includes(mode)) {
         networkError('invalid_mode', 'browser network operation mode is invalid');
       }
       if ((mode === 'human') !== Boolean(human)) {
@@ -893,6 +917,8 @@ export function createBrowserEgress(
       if (mode === 'commit') commitDispatched = false;
       const pageUrl = context.pages()[0]?.url();
       const origin = pageUrl && /^https?:/.test(pageUrl) ? parseUrl(pageUrl).origin : undefined;
+      if (mode === 'sign_in' && !origin)
+        networkError('sign_in_origin', 'a sign-in starts on a page of the site it is for');
       let binding: BrowserCommitBinding | undefined;
       if (mode === 'commit') {
         if (commit?.method !== 'POST' || !/^[a-f\d]{64}$/.test(commit.body_sha256)) {

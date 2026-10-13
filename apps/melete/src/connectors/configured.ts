@@ -87,6 +87,7 @@ import { ConnectorRegistry } from './registry.ts';
 import { createRoomConnector } from './room.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
+import { SignInVault } from './sign-in-vault.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createSkillsConnector } from './skills.ts';
 import { SmsConnector } from './sms.ts';
@@ -521,6 +522,10 @@ export class ConnectorFactory {
           sql: options.sql,
           connectionId: row.id,
           privateContext: options.privateContext,
+        }),
+        // The person's saved sign-ins, opened only for the step that types one.
+        vault: new SignInVault(options.sql, this.secrets, {
+          allowLoopbackHttp: options.insecureLocalFixtures === true,
         }),
       });
     }
