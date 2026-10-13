@@ -120,6 +120,11 @@ import type {
   RunRecordPage,
   SandboxComputer,
   SandboxControl,
+  SavedSignIn,
+  SavedSignInCheck,
+  SavedSignInCode,
+  SavedSignInCreate,
+  SavedSignInUpdate,
   SearchResult,
   SendOutcome,
   SensitiveTopic,
@@ -992,6 +997,23 @@ export const adapter = {
     guard<{ domain: string; forgotten: true }>(() =>
       api.DELETE('/browser/sites/{domain}', { params: { path: { domain } } }),
     ),
+  /**
+   * Sign-ins saved for the agent's browser. The service never sends a saved
+   * password or code secret back: a list carries the username and a mask.
+   */
+  savedSignIns: () => guard<{ sign_ins: SavedSignIn[] }>(() => api.GET('/sign-ins')),
+  saveSignIn: (body: SavedSignInCreate) =>
+    guard<SavedSignIn>(() => api.POST('/sign-ins', { body })),
+  updateSignIn: (id: string, body: SavedSignInUpdate) =>
+    guard<SavedSignIn>(() => api.PATCH('/sign-ins/{id}', { ...path(id), body })),
+  deleteSignIn: (id: string) =>
+    guard<{ id: string; deleted: true }>(() => api.DELETE('/sign-ins/{id}', path(id))),
+  /** The code the site would take right now, for the person to read. */
+  signInCode: (id: string) =>
+    guard<SavedSignInCode>(() => api.POST('/sign-ins/{id}/code', path(id))),
+  /** Whether a saved sign-in is ready to use, checked without visiting the site. */
+  checkSignIn: (id: string) =>
+    guard<SavedSignInCheck>(() => api.POST('/sign-ins/{id}/check', path(id))),
   /* ---------- the agent's computer ---------- */
   computer: (id: string) =>
     guard<AgentComputer>(() => api.GET('/conversations/{id}/computer', path(id))),
