@@ -63,10 +63,12 @@ export const TABLE_COUNT_SQL =
  * leave a newer release's behind). It loads in one transaction, so a load that
  * fails part way leaves the database as empty as it found it, ready for the
  * same load again. A refused or failed load reads the dump to its end before
- * it exits, so the command streaming it in sees no broken pipe, and a failed one
- * ends with pg_restore's error and what it left, for the restore's report.
+ * it exits, so the command streaming it in sees no broken pipe. A failed one
+ * ends with pg_restore's error and what it left, for the restore's report, all
+ * in one write as soon as pg_restore stops: Compose soon stops passing on what
+ * a container writes once the stream into it has ended.
  */
-export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; [ -z "$err" ] || printf '%s\\n' "$err" >&2; [ "$rc" = 0 ] && exit 0; cat >/dev/null; printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2 >&2; echo "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; exit "$rc"`;
+export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
 
 /**
  * The connection arguments a psql, pg_dump or pg_restore line takes, read from
