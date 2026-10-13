@@ -1182,8 +1182,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         title={`Delete ${deleting?.name ?? 'this agent'}?`}
         sub={
           agents.find((agent) => agent.is_default)?.fixed_reach
-            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats. Its computer is removed, with anything that was only on it.`
-            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats. Its computer is removed, with anything that was only on it.`
+            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats. Its computer and the files on it are kept for Melete.`
+            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats. Its computer and the files on it are kept for Melete.`
         }
         footer={
           <>

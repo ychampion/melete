@@ -1409,8 +1409,8 @@ export class SandboxSessions {
   /**
    * Destroy the sandboxes of sessions whose lease has run out, suspend
    * workspaces whose attempt stopped renewing them, destroy workspaces
-   * suspended for longer than the retention period, and destroy the
-   * computers of deleted agents. Returns the sessions it closed.
+   * suspended for longer than the retention period, and hand the computers
+   * of deleted agents to Melete. Returns the sessions it closed.
    */
   async sweep(providerFor: ProviderFor, signal: AbortSignal, only?: string[]): Promise<string[]> {
     const swept: string[] = [];
@@ -1487,9 +1487,12 @@ export class SandboxSessions {
       }
     }
     if (only) return swept;
+    // A deleted agent's computer is kept for Melete, however long it waits.
     const stale = await this.sql`select id, adapter, connection_id, status from sandbox_session
       where status = 'paused'
         and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
+        and not exists (select 1 from agent
+          where agent.id = sandbox_session.agent_id and agent.deleted_at is not null)
       order by lease_expires_at limit 100`;
     for (const candidate of stale) {
       const provider = await this.reachable(
@@ -1515,43 +1518,62 @@ export class SandboxSessions {
         // Recorded on the row, which is now `closing`; the next sweep retries it.
       }
     }
-    // A deleted agent's computer goes with it: its chats moved to Melete, so
-    // nothing opens it again. One a person is holding waits until they let go,
-    // and one an attempt is still on waits for it to end. A destroy that
-    // failed left the row closing, and is tried again here.
-    const unowned = await this.sql`select sandbox_session.id, sandbox_session.adapter,
-        sandbox_session.connection_id, sandbox_session.status
-      from sandbox_session join agent on agent.id = sandbox_session.agent_id
-      where agent.deleted_at is not null
-        and (sandbox_session.status in ('paused', 'closing')
-          or (sandbox_session.status in ('opening', 'ready') and ${attemptGone(this.sql)}
-            and not ${displayInUse(this.sql)}))
-      order by sandbox_session.opened_at limit 100`;
-    for (const candidate of unowned) {
-      const provider = await this.reachable(
-        {
-          id: candidate.id as string,
-          adapter: candidate.adapter as string,
-          connectionId: candidate.connection_id as string,
-          status: candidate.status as SessionStatus,
-        },
-        providerFor,
-      );
-      if (!provider) continue;
-      const claimed = await this.claim(
-        candidate.id as string,
-        ['opening', 'ready', 'paused', 'closing'],
-        true,
-      );
-      if (!claimed) continue;
-      try {
-        const finished = await this.finish(claimed.row, claimed.from, provider, signal);
-        if (finished.status === 'closed') swept.push(claimed.row.id);
-      } catch {
-        // Recorded on the row, which is now `closing`; the next sweep retries it.
-      }
-    }
+    await this.handOverDeleted();
     return swept;
+  }
+
+  /**
+   * Hand the computer of a deleted agent to Melete, its files and all, once
+   * nothing is at work on it. Its chats moved to Melete, so Melete is the
+   * agent that would use it. While Melete has a computer of its own the
+   * deleted agent's waits, kept as it is, and is handed over once Melete has
+   * none. Returns the sessions handed over.
+   */
+  async handOverDeleted(): Promise<string[]> {
+    const waiting = await this.sql`select sandbox_session.id, sandbox_session.space_id,
+        sandbox_session.agent_id, sandbox_session.connection_id
+      from sandbox_session join agent on agent.id = sandbox_session.agent_id
+      where agent.deleted_at is not null and sandbox_session.status in ('ready', 'paused')
+      order by sandbox_session.opened_at limit 100`;
+    const handed: string[] = [];
+    for (const row of waiting) {
+      const spaceId = String(row.space_id);
+      const from = String(row.agent_id);
+      const connectionId = String(row.connection_id);
+      const moved = await this.sql.begin(async (tx) => {
+        const [melete] = await tx`select id from agent
+          where space_id = ${spaceId} and is_default and deleted_at is null limit 1`;
+        if (!melete) return false;
+        const to = String(melete.id);
+        // Both workspaces' locks, always in the same order, as an opening takes one.
+        for (const agentId of [from, to].sort())
+          await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${spaceId}:${agentId}`}))`;
+        const [own] = await tx`select 1 from sandbox_session
+          where space_id = ${spaceId} and agent_id = ${to}
+            and status in ('opening', 'ready', 'paused') limit 1`;
+        if (own) return false;
+        const [taken] = await tx`update sandbox_session set agent_id = ${to}
+          where id = ${String(row.id)} and agent_id = ${from} and ${notHeldByPerson(tx)}
+            and (status = 'paused'
+              or (status = 'ready' and ${attemptGone(tx)} and not ${displayInUse(tx)}))
+          returning id`;
+        if (!taken) return false;
+        // What is known about its /work goes with it. Anything Melete kept
+        // about a computer of its own on this connection is of one gone.
+        for (const table of ['sandbox_work_file', 'sandbox_work_read'] as const) {
+          await tx`delete from ${tx(table)}
+            where space_id = ${spaceId} and agent_id = ${to} and connection_id = ${connectionId}`;
+          await tx`update ${tx(table)} set agent_id = ${to}
+            where space_id = ${spaceId} and agent_id = ${from} and connection_id = ${connectionId}`;
+        }
+        for (const table of ['sandbox_work_removal', 'sandbox_process'] as const)
+          await tx`update ${tx(table)} set agent_id = ${to}
+            where space_id = ${spaceId} and agent_id = ${from} and connection_id = ${connectionId}`;
+        return true;
+      });
+      if (moved) handed.push(String(row.id));
+    }
+    return handed;
   }
 
   /**
