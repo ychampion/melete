@@ -27,6 +27,13 @@ export function responseLines(data: Record<string, unknown>): { key: string; tex
   });
 }
 
+/**
+ * Who sent a response. A response outlives its sender's account: it stays the
+ * app's, with nothing left that names them.
+ */
+export const senderOf = (by: AppSubmission['by']): string =>
+  by?.email ?? 'Someone who deleted their account';
+
 /** The keys an update adds, changes and removes, as short lines; empty when it names none. */
 export function updateLines(update: AppDataUpdate): string[] {
   const changes = update.changes;
@@ -150,7 +157,7 @@ export function ResponsesDialog({
               <li key={item.id} className="app-response">
                 <div className="row app-response-head">
                   <span className="app-row-meta app-response-by">
-                    {item.by?.email ?? 'Someone no longer here'} · {changedWhen(item.created_at)}
+                    {senderOf(item.by)} · {changedWhen(item.created_at)}
                     {names.length > 1 ? ` · ${item.collection}` : ''}
                   </span>
                   {confirming === item.id ? (
