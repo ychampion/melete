@@ -34,6 +34,8 @@ export const DEFAULT_MAX_DISPLAYS = 6;
 export const DISPLAY_LIMIT = 64;
 /** A display nobody has used for this long is ended, and its number freed. */
 export const DISPLAY_IDLE_MS = 30 * 60_000;
+/** How long an ended display's row is kept before it is deleted. */
+export const ENDED_DISPLAY_KEPT_MS = 7 * 24 * 3600_000;
 
 type Query = Sql | TransactionSql;
 
@@ -265,6 +267,16 @@ export class SandboxDisplays {
       where d.ended_at is null and ${this.unused()} and not ${heldByPerson(this.sql)}
       order by d.used_at limit ${limit}`;
     return rows.map((row) => ({ ...toDisplay(row), reason: String(row.reason) }));
+  }
+
+  /** Delete the rows of displays that ended long ago; nothing reads them. Returns how many. */
+  async prune(keptMs = ENDED_DISPLAY_KEPT_MS, limit = 1000): Promise<number> {
+    const rows = await this.sql`delete from sandbox_display where id in (
+        select id from sandbox_display
+        where ended_at < now() - make_interval(secs => ${keptMs / 1000})
+        limit ${limit})
+      returning id`;
+    return rows.length;
   }
 
   /** The live displays a stopped chat or run has, which the stop ends. */

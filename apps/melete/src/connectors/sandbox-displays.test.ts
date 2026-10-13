@@ -356,6 +356,28 @@ withDb('a display per chat on the agent computer', () => {
     expect(kept?.ended_at).toBeNull();
   }, 60_000);
 
+  test('an ended display row is deleted a week after it ended, and a live one never', async () => {
+    const s = await setup();
+    const flights = await s.chat('Flights to Lisbon');
+    const notes = await s.chat('Reading notes');
+    const a = await flights.open('https://flights.example/lisbon');
+    const b = await notes.open('https://notes.example/');
+    await s.wiring.endStoppedDisplays(flights.jobId, AbortSignal.timeout(10_000));
+    const left = async () =>
+      (
+        await s.sql`select id from sandbox_display
+          where id in (${String(a.computer_id)}, ${String(b.computer_id)}) order by id`
+      ).map((row) => String(row.id));
+    await s.wiring.reapDisplays(AbortSignal.timeout(10_000));
+    expect(await left()).toEqual([String(a.computer_id), String(b.computer_id)].sort());
+    await s.sql`update sandbox_display set ended_at = now() - interval '8 days'
+      where id = ${String(a.computer_id)}`;
+    await s.sql`update sandbox_display set used_at = now() - interval '8 days'
+      where id = ${String(b.computer_id)}`;
+    await s.wiring.reapDisplays(AbortSignal.timeout(10_000));
+    expect(await left()).toEqual([String(b.computer_id)]);
+  }, 60_000);
+
   test('a chat does not join a computer whose only chat has ended, which may be suspending', async () => {
     const s = await setup();
     const flights = await s.chat('Flights to Lisbon');

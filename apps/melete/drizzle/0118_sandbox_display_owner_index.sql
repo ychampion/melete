@@ -1,0 +1,1 @@
+CREATE INDEX "sandbox_display_owner_job_idx" ON "sandbox_display" USING btree ("owner_job_id");

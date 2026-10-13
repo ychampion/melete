@@ -144,6 +144,8 @@ export const sandboxDisplay = pgTable(
       .on(t.providerSandboxId, t.ownerJobId)
       .where(sql`${t.endedAt} is null`),
     index('sandbox_display_attempt_idx').on(t.attemptId).where(sql`${t.endedAt} is null`),
+    // Deleting a chat or run deletes its displays' rows through this column.
+    index('sandbox_display_owner_job_idx').on(t.ownerJobId),
     check('sandbox_display_number_check', sql`${t.display} >= 0 and ${t.display} < 64`),
   ],
 );
