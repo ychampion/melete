@@ -1516,11 +1516,17 @@ export class SandboxSessions {
       }
     }
     // A deleted agent's computer goes with it: its chats moved to Melete, so
-    // nothing opens it again. One a person is holding waits until they let go.
-    const unowned = await this.sql`select s.id, s.adapter, s.connection_id, s.status
-      from sandbox_session s join agent a on a.id = s.agent_id
-      where a.deleted_at is not null and s.status in ('opening', 'ready', 'paused')
-      order by s.opened_at limit 100`;
+    // nothing opens it again. One a person is holding waits until they let go,
+    // and one an attempt is still on waits for it to end. A destroy that
+    // failed left the row closing, and is tried again here.
+    const unowned = await this.sql`select sandbox_session.id, sandbox_session.adapter,
+        sandbox_session.connection_id, sandbox_session.status
+      from sandbox_session join agent on agent.id = sandbox_session.agent_id
+      where agent.deleted_at is not null
+        and (sandbox_session.status in ('paused', 'closing')
+          or (sandbox_session.status in ('opening', 'ready') and ${attemptGone(this.sql)}
+            and not ${displayInUse(this.sql)}))
+      order by sandbox_session.opened_at limit 100`;
     for (const candidate of unowned) {
       const provider = await this.reachable(
         {
@@ -1534,7 +1540,7 @@ export class SandboxSessions {
       if (!provider) continue;
       const claimed = await this.claim(
         candidate.id as string,
-        ['opening', 'ready', 'paused'],
+        ['opening', 'ready', 'paused', 'closing'],
         true,
       );
       if (!claimed) continue;

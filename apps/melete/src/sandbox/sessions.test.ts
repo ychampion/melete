@@ -572,6 +572,49 @@ withDb('sandbox sessions', () => {
     expect(provider.calls.destroy).toBe(1);
     expect(await sessions.sweep(() => provider, signal())).toEqual([]);
   });
+
+  test("a deleted agent's computer its processes hold, whose destroy failed, is destroyed on the next sweep", async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const opened = await sessions.openWorkspace(
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    // Its attempt ended and a background process keeps it running.
+    await sql`update attempt set ended_at = now() where id = ${opened.attemptId}`;
+    await sql`update sandbox_session set held_by = 'processes', attempt_id = null
+      where id = ${opened.id}`;
+    await sql`update agent set deleted_at = now() where id = ${scope.agentId}`;
+    const destroy = provider.destroy.bind(provider);
+    let refuse = true;
+    provider.destroy = async (handle, signal) => {
+      if (refuse) {
+        refuse = false;
+        throw new Error('the engine did not answer');
+      }
+      return destroy(handle, signal);
+    };
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+    expect((await sessions.get(opened.id))?.status).toBe('closing');
+    expect(await sessions.sweep(() => provider, signal())).toEqual([opened.id]);
+    expect((await sessions.get(opened.id))?.status).toBe('closed');
+  });
+
+  test("a deleted agent's computer an attempt is still on is left until it ends", async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const opened = await sessions.openWorkspace(
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sql`update agent set deleted_at = now() where id = ${scope.agentId}`;
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+    expect((await sessions.get(opened.id))?.status).toBe('ready');
+    await sql`update attempt set ended_at = now() where id = ${opened.attemptId}`;
+    expect(await sessions.sweep(() => provider, signal())).toContain(opened.id);
+  });
 });
 
 /** The fake, suspending the way a provider does, and refusing once when told to. */
