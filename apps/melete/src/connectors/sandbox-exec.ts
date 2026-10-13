@@ -573,10 +573,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           // with nothing left is marked lost, and opened again below.
           const state = await provider.inspect(sessionHandle(row), signal).catch(() => null);
           if (state === 'gone') await sessions.markLost(row.id, error.message);
+          // A suspension refused (another chat is on it, say) says why itself.
           else if (state === 'paused' && row.agentId)
-            await sessions.suspendWorkspace(row.id, provider, signal).catch(() => {
-              throw error;
-            });
+            await sessions.suspendWorkspace(row.id, provider, signal);
           else throw error;
         }
       }
