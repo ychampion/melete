@@ -112,6 +112,45 @@ withDb('sandbox reconciliation', () => {
     ).toBe('paused');
   });
 
+  test("a workspace resumed through another connection is kept by the first one's reconciliation", async () => {
+    const { sql, scope, provider, sessions } = await setup();
+    const other = `${scope.connectionId}_B`;
+    await sql`insert into connection (id, space_id, provider, label)
+      values (${other}, ${scope.spaceId}, 'test', 'Sandbox B')`;
+    const workspace = (connectionId: string) => async () => ({
+      connectionId,
+      spaceId: scope.spaceId,
+      jobId: scope.jobId,
+      attemptId: await scope.attempt(),
+      agentId: scope.agentId,
+      persistence: 'pause' as const,
+    });
+    const first = await sessions.openWorkspace(
+      await workspace(scope.connectionId)(),
+      provider,
+      sessionSpec('install-a', scope.spaceId, scope.connectionId),
+      signal(),
+    );
+    await sessions.suspendWorkspace(first.id, provider, signal());
+    const resumed = await sessions.openWorkspace(
+      await workspace(other)(),
+      provider,
+      sessionSpec('install-a', scope.spaceId, other),
+      signal(),
+    );
+    expect(resumed.resumed).toBe(true);
+    expect(resumed.connectionId).toBe(other);
+    const report = await reconcileSandboxes({
+      sql,
+      provider,
+      project: 'install-a',
+      connectionId: scope.connectionId,
+      signal: signal(),
+    });
+    expect(report.destroyed).toEqual([]);
+    expect(await provider.inspect(sessionHandle(resumed), signal())).toBe('running');
+  });
+
   test('a workspace suspended as a snapshot is not asked about, and is never marked lost', async () => {
     const { sql, scope, provider, sessions } = await setup();
     const workspace = await sessions.openWorkspace(
