@@ -25,7 +25,9 @@ test('a piece of work opens its own thread, else the chat that started it, else 
   expect(runThread({ ...row, kind: 'chat' })).toBe('j1');
   expect(runThread({ ...row, kind: 'routine' })).toBe('j1');
   expect(runThread({ ...row, kind: 'command', parent_id: 'c1', parent_kind: 'chat' })).toBe('c1');
-  expect(runThread({ ...row, kind: 'command', parent_id: 'w1', parent_kind: 'watch' })).toBeNull();
+  expect(
+    runThread({ ...row, kind: 'command', parent_id: 'job_watch', parent_kind: 'watch' }),
+  ).toBeNull();
   expect(runThread({ ...row, kind: 'watch' })).toBeNull();
 });
 
