@@ -419,12 +419,20 @@ export function mountFiles(
     } finally {
       await opened.handle.close();
     }
-    if (!trashed.trash_id || !trashed.moved.length)
+    // Anything kept means the file asked for is not what went: it changed
+    // after the check, even when what took its place is now in the trash.
+    if (!trashed.trash_id || !trashed.moved.length || trashed.kept.length) {
+      const evicted = trashed.evicted.length;
       throw new ServiceError(
         'file_not_deleted',
-        `The file was not deleted${trashed.kept[0] ? `: ${trashed.kept[0].reason}` : ''}.`,
+        `The file was not deleted${trashed.kept[0] ? `: ${trashed.kept[0].reason}` : ''}.${
+          evicted
+            ? ` The trash was full, so ${evicted === 1 ? 'an earlier delete was' : `${evicted} earlier deletes were`} taken out of it to make room and can no longer be put back.`
+            : ''
+        }`,
         409,
       );
+    }
     return c.json(
       personFileDeleted.parse({
         id: found.id,
