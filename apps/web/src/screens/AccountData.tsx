@@ -114,8 +114,9 @@ function DeleteAccountDialog({
       <div className="col" style={{ gap: 12 }}>
         <SpacesList preview={preview} />
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          Messages already sent stay where they were sent. Keys and app passwords made at other
-          services keep working there until you revoke them.
+          Messages already sent stay where they were sent. Responses sent to other people’s apps
+          stay with those apps, without your name. Keys and app passwords made at other services
+          keep working there until you revoke them.
         </span>
         <Field label={`Type ${preview.confirm} to confirm`}>
           <Input
