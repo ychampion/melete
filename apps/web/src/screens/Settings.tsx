@@ -17,6 +17,7 @@ import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
 import { ModelsTab } from '../models/ModelConnect.tsx';
+import { YourUsageTab } from '../models/YourUsage.tsx';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { AccountSettings } from './AccountSettings.tsx';
@@ -418,6 +419,7 @@ const TABS = [
   'rules',
   'activity',
   'models',
+  'usage',
   'privacy',
   'feedback',
   'installation',
@@ -511,6 +513,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 },
                 { value: 'activity', label: 'Activity' },
                 { value: 'models', label: 'Models' },
+                { value: 'usage', label: 'Usage' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
                 // Only the installation's owner runs it; the service refuses everyone else too.
@@ -555,6 +558,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               Only the person who runs this Melete sees this page.
             </p>
           )
+        ) : current === 'usage' ? (
+          <YourUsageTab />
         ) : current === 'account' ? (
           <AccountSettings />
         ) : current === 'connections' ? (

@@ -32,6 +32,7 @@ import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
+import { mountMyUsage } from './api/my-usage.ts';
 import { mountNeedsYouSource } from './api/needs-you-source.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
@@ -106,6 +107,7 @@ import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
+import { startersFromSetting } from './experience/starters.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
@@ -476,6 +478,8 @@ export function createApp(deps: AppDeps) {
       },
       ...(modelSettings ? { roles: (actor) => modelSettings.roles(actor) } : {}),
     });
+  // Each person's own usage, for Settings: never anyone else's, whoever asks.
+  if (deps.spending && deps.sql) mountMyUsage(app, { spending: deps.spending, sql: deps.sql });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -670,6 +674,7 @@ export function createApp(deps: AppDeps) {
         spacesRoot: deps.env.MELETE_SPACES_DIR,
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
+      starters: startersFromSetting(deps.env.MELETE_STARTERS),
     });
   // Rooms: shared spaces where several people talk to one agent. Switched
   // off, no room request is started, by a route or by a chat platform.

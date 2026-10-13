@@ -215,6 +215,8 @@ export class ExperienceMock {
   /** Setup finished or skipped, and a time zone chosen, as the service records them. */
   onboarded = false;
   timeZoneConfirmed = false;
+  /** The person put Home's starter tasks away. */
+  startersDismissed = false;
   /** The people in the session's space. Only a shared space has anyone but the person. */
   readonly members = new Map<string, C.SpaceMember>();
   /** What deleted chats did in the person's name, newest first. */
@@ -2192,6 +2194,24 @@ export class ExperienceMock {
           handoffs: this.handoffsWaiting(),
         };
       }
+      case 'GET /starters': {
+        // The service's rule: after setup, until three chats or put away.
+        const visibility = C.starterVisibility({
+          onboarded: this.profileView().onboarded,
+          dismissed: this.startersDismissed,
+          chats: this.chats.size,
+        });
+        const city = C.cityFromTimeZone(this.profile.time_zone);
+        return {
+          ...visibility,
+          starters: visibility.show
+            ? C.DEFAULT_STARTERS.map((starter) => C.fillStarter(starter, city))
+            : [],
+        };
+      }
+      case 'POST /starters/dismiss':
+        this.startersDismissed = true;
+        return { status: 'ok' };
       case 'GET /tasks':
         return { tasks: [...this.tasks.values()] };
       case 'POST /tasks':

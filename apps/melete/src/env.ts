@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
+import { startersFromSetting } from './experience/starters.ts';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
 import { parseModelPrices } from './gateway/prices.ts';
 import { parseModelChoice } from './gateway/routing.ts';
@@ -814,6 +815,13 @@ const variables = z.object({
       .max(2000)
       .optional(),
   ),
+  /**
+   * The one-tap starter tasks a new person's Home offers, as a JSON array of
+   * { id, label, text, icon, capability }, at most six; `text` may hold
+   * {city} and one [blank]. Unset, the built-in list. Checked at start.
+   * docs/DEPLOYMENT.md, "Starter tasks".
+   */
+  MELETE_STARTERS: unsetWhenBlank(z.string().max(20_000).optional()),
 
   /**
    * The installation's own mail sender, for sign-in and password reset links
@@ -1149,6 +1157,16 @@ export const envSchema = variables.transform((value, context) => {
       } catch (error) {
         context.addIssue({ code: 'custom', path: [name], message: (error as Error).message });
       }
+  if (value.MELETE_STARTERS)
+    try {
+      startersFromSetting(value.MELETE_STARTERS);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['MELETE_STARTERS'],
+        message: (error as Error).message,
+      });
+    }
   if (value.MELETE_MODEL_TRIAGE && value.MELETE_MODEL_TRIAGE.trim() !== 'off')
     try {
       parseModelChoice(value.MELETE_MODEL_TRIAGE, 'MELETE_MODEL_TRIAGE');

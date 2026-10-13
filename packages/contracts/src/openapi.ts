@@ -342,7 +342,7 @@ import {
   spaceRemovalReport,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
-import { healthDetailResponse, usageResponse } from './usage.ts';
+import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
 import {
   voiceAside,
   voiceAsideRequest,
@@ -4258,6 +4258,24 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Usage', usageResponse),
               '401': problem('Not signed in'),
+            },
+          },
+        },
+
+        '/usage/mine': {
+          get: {
+            tags: ['model-providers'],
+            summary:
+              'This account’s own usage: the month by day and by kind, its limits, and its work',
+            description:
+              'Only the signed-in account’s own model calls, whoever else shares its spaces. ' +
+              '`caps` is null when the installation sets no limit for one person. Each run is a ' +
+              'piece of work this account’s calls went to this month, newest first. Days and ' +
+              'months are UTC.',
+            responses: {
+              '200': jsonResponse('Your usage', myUsageResponse),
+              '401': problem('Not signed in'),
+              '403': problem('A guest account uses only its rooms'),
             },
           },
         },

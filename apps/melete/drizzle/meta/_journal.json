@@ -848,6 +848,13 @@
       "when": 1789232400100,
       "tag": "0120_sign_in_vault",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1789232400101,
+      "tag": "0121_starter_dismissal",
+      "breakpoints": true
     }
   ]
 }

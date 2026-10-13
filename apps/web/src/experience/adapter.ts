@@ -139,6 +139,7 @@ import type {
   SpaceRemovalPreview,
   SpaceRemovalReport,
   SpaceRemovalStarted,
+  Starters,
   StreamGap,
   Task,
   TaskInput,
@@ -424,6 +425,10 @@ export const adapter = {
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
+  /** One-tap starter tasks for a new person's Home, and whether to show them. */
+  starters: () => guard<Starters>(() => api.GET('/starters')),
+  /** Puts the starters away for this person on every device. */
+  dismissStarters: () => guard<{ status: 'ok' }>(() => api.POST('/starters/dismiss')),
   tasks: () => guard<{ tasks: Task[] }>(() => api.GET('/tasks')),
   addTask: (title: string) =>
     guard<{ task: Task }>(() => api.POST('/tasks', { body: { title, due_at: null, done: false } })),

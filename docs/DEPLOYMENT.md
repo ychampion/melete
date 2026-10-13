@@ -1990,6 +1990,34 @@ person with many chats or routines cannot keep everyone else waiting.
 its own) also caps how many one person runs at once, even while slots are
 free; `init --hosted` writes `2`.
 
+## Starter tasks
+
+A new person's Home offers a few one-tap starter tasks once setup is done:
+finding well-reviewed places near them, a reminder in ten minutes, a one-page
+PDF of the day's news, pulling facts out of a file they attach, watching a
+page, and planning a trip. Each works with no apps connected, and none sends a
+message, buys anything or needs a sign-in elsewhere. A tap writes the request
+into the composer to edit; nothing is sent until the person sends it. They go
+away once the person has three chats, or when they choose "Hide these", which
+is kept for their account on every device.
+
+`MELETE_STARTERS` replaces the built-in list with your own, as a JSON array of
+at most six entries:
+
+```json
+[{ "id": "coffee-nearby", "label": "Coffee shops nearby",
+   "text": "Find 3 well-reviewed coffee shops near {city} and put them in a short list.",
+   "icon": "mapPin", "capability": "research" }]
+```
+
+`text` may hold `{city}`, filled with the city of the person's time zone, and
+one `[blank]`, whose words are selected in the composer so the first thing the
+person types replaces them. `icon` is one of `mapPin`, `bell`, `fileText`,
+`upload`, `globe`, `compass`, `sparkles`, `calendar`, `search` or `clock`;
+`capability` one of `research`, `reminders`, `files_out`, `files_in`,
+`monitoring`, `planning` or `other`. A list that does not parse or fit stops
+the service at start with the reason.
+
 ## Spending caps
 
 The engine limits above bound one attempt. Spending caps bound what the whole
@@ -2022,8 +2050,9 @@ against the person talking, and a companies scan against the person who started
 it.
 
 - At the notice level of any limit, the person sees a quiet line at the top of
-  every page, and Settings › Models shows it beside this month's usage. The
-  service log records `spending: person warning (month)` once per period.
+  every page, and above the composer in a chat with when the limit starts
+  again; Settings › Models shows it beside this month's usage. The service log
+  records `spending: person warning (month)` once per period.
 - At the limit, no new model call is made. The gateway refuses it with
   `402 spending_limit_reached` and a plain sentence: "This month's limit is
   reached; it resets on November 1." A call already answering is never cut
