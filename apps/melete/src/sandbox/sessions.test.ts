@@ -585,6 +585,37 @@ withDb('sandbox sessions', () => {
     expect(provider.calls.create).toBe(1);
   });
 
+  test("on a hand-over Melete's records of a computer gone make way for the deleted agent's", async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const melete = await meleteOf(sql, scope.spaceId);
+    const opened = await sessions.openWorkspace(
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.suspendWorkspace(opened.id, provider, signal());
+    for (const [agent, tag] of [
+      [scope.agentId, 'theirs'],
+      [melete, 'stale'],
+    ] as const) {
+      await sql`insert into sandbox_work_file (space_id, agent_id, connection_id, path, hash, writers, shared)
+        values (${scope.spaceId}, ${agent}, ${scope.connectionId}, ${`${tag}.txt`}, 'h', '{}', false)`;
+      await sql`insert into sandbox_work_read (space_id, agent_id, connection_id, read_at)
+        values (${scope.spaceId}, ${agent}, ${scope.connectionId}, now() - interval '1 day')`;
+      await sql`insert into sandbox_work_removal (id, space_id, agent_id, connection_id, job_id, path, hash)
+        values (${`rm_${tag}`}, ${scope.spaceId}, ${agent}, ${scope.connectionId}, 'job_x', ${`${tag}.txt`}, 'h')`;
+    }
+    await sql`update agent set deleted_at = now() where id = ${scope.agentId}`;
+    expect(await sessions.handOverDeleted()).toEqual([opened.id]);
+    const files = await sql`select agent_id, path from sandbox_work_file order by path`;
+    expect(files.map((row) => [row.agent_id, row.path])).toEqual([[melete, 'theirs.txt']]);
+    const removals = await sql`select id, agent_id from sandbox_work_removal order by id`;
+    expect(removals.map((row) => [row.agent_id, row.id])).toEqual([[melete, 'rm_theirs']]);
+    const reads = await sql`select agent_id from sandbox_work_read`;
+    expect(reads.map((row) => row.agent_id)).toEqual([melete]);
+  });
+
   test("a deleted agent's computer waits, kept past the retention period, while Melete has its own", async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const melete = await meleteOf(sql, scope.spaceId);
