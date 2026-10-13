@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Action, HandOffReason, JsonObject } from '@melete/contracts';
 import {
+  OWN_WORK_ONLY,
   prepareSignIn,
   runSignIn,
   signInAsksFirst,
@@ -26,6 +27,7 @@ import type { ConnectorContext } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
 import { stepAsk } from '../../src/experience/projectors.ts';
 import { actionCall, actionPhrase } from '../../src/experience/tools.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import type { BrowserWorkerClient } from '../../src/workers/browser/client.ts';
 import { BrowserFault } from '../../src/workers/browser/sessions.ts';
@@ -475,6 +477,105 @@ suite('saved sign-ins', () => {
       'now wants to be asked',
     );
     await vault.update(spaceId, ownerId, entry?.id ?? '', { policy: 'whenever_needed' });
+  });
+
+  test('a job uses only its own person’s sign-ins, never the owner’s by default', async () => {
+    const vault = vaultUnder(KEY);
+    const { sql } = handle();
+    const [owners] = await vault.list(spaceId, ownerId);
+    if (!owners) throw new Error('expected the owner’s saved sign-in');
+    // The owner's sign-in, bound at proposal by the owner's own job.
+    const own = { job_id: jobId, space_id: spaceId } as ConnectorContext;
+    const bound = await prepareSignIn(vault, { site: 'example.com' }, own, sql);
+    const action = {
+      id: 'act_owner_bound',
+      kind: 'browser.sign_in',
+      canonical_payload: bound,
+    } as unknown as Action;
+    await validateSignIn(vault, action, own, sql);
+
+    /** Another job in the same space, of `principal` (or of nobody), of `kind`. */
+    const jobOf = async (principal: string | null, kind = 'responsibility') => {
+      const id = newId('job');
+      await sql`insert into job (id, space_id, principal_id, kind, title, objective, state,
+          lease_epoch, budget, constraints)
+        select ${id}, space_id, ${principal}, ${kind}, title, objective, state, lease_epoch,
+          budget, constraints
+        from job where id = ${jobId}`;
+      return { job_id: id, space_id: spaceId } as ConnectorContext;
+    };
+    let leased = 0;
+    const dispatch = (ctx: ConnectorContext) =>
+      runSignIn({
+        vault,
+        action,
+        ctx,
+        lease: async () => {
+          leased += 1;
+          throw new Error('the browser must not be reached');
+        },
+        handOff: async () => {},
+      });
+    /** Refused at proposal, at the approval's re-check and at dispatch, before any browser. */
+    const refusedEverywhere = async (ctx: ConnectorContext, words: string) => {
+      expect(await failure(prepareSignIn(vault, { site: 'example.com' }, ctx, sql))).toContain(
+        words,
+      );
+      expect(await failure(validateSignIn(vault, action, ctx, sql))).toContain(
+        words === OWN_WORK_ONLY ? OWN_WORK_ONLY : 'deleted or changed',
+      );
+      const result = await dispatch(ctx);
+      expect(result.outcome).toBe('failed');
+      expect(result.outcome === 'failed' ? result.reason : '').toContain(
+        words === OWN_WORK_ONLY ? OWN_WORK_ONLY : 'has been deleted',
+      );
+      holdsNoSecret(result, [USERNAME]);
+    };
+
+    // A job with no person of its own, such as one a message or a schedule started
+    // with nobody behind it, is nobody's: not the owner's.
+    await refusedEverywhere(await jobOf(null), OWN_WORK_ONLY);
+
+    // A guest's job in the shared space finds no sign-in of its own, and never the owner's.
+    const guestId = newId('own');
+    await sql`insert into principal (id, email, kind) values (${guestId}, ${`${guestId}@guest.test`}, 'guest')`;
+    await sql`insert into space_membership (principal_id, space_id, role, generation)
+      values (${guestId}, ${spaceId}, 'guest', 1)`;
+    await refusedEverywhere(await jobOf(guestId), 'There is no saved sign-in for example.com');
+
+    // A member's job uses the member's own sign-in for the same site, never the owner's.
+    const theirs = await vault.forOrigin(spaceId, memberId, 'https://example.com');
+    if (!theirs.length)
+      await vault.create(spaceId, memberId, {
+        site: 'example.com',
+        username: 'member@example.test',
+        password: 'their-own-password',
+      });
+    const member = await jobOf(memberId);
+    const asMember = await prepareSignIn(vault, { site: 'example.com' }, member, sql);
+    expect(asMember.sign_in_id).not.toBe(owners.id);
+    expect((asMember.saved as { account: string }).account).toBe('m***@…');
+    expect(await failure(validateSignIn(vault, action, member, sql))).toContain(
+      'deleted or changed',
+    );
+    expect((await dispatch(member)).outcome).toBe('failed');
+
+    // Once the member has left the space, their work there uses nothing, their own included.
+    await sql`update space_membership set revoked_at = now()
+      where space_id = ${spaceId} and principal_id = ${memberId}`;
+    try {
+      await refusedEverywhere(member, OWN_WORK_ONLY);
+    } finally {
+      await sql`update space_membership set revoked_at = null
+        where space_id = ${spaceId} and principal_id = ${memberId}`;
+    }
+
+    // The owner's own routine still signs in with the owner's sign-in.
+    const routine = await jobOf(ownerId, 'routine');
+    const fromRoutine = await prepareSignIn(vault, { site: 'example.com' }, routine, sql);
+    expect(fromRoutine.sign_in_id).toBe(owners.id);
+    await validateSignIn(vault, action, routine, sql);
+    expect(leased).toBe(0);
   });
 
   test('a use of a sign-in leaves its secrets out of every surface it touches', async () => {

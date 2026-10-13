@@ -301,13 +301,21 @@ export class SignInVault {
   }
 
   /**
-   * Whose work a job is: the person whose saved sign-ins it may use. A job
-   * with no person of its own is the installation owner's.
+   * Whose saved sign-ins a job may use: only those of the job's own person,
+   * while that person can still reach the job's space. A job with no person of
+   * its own uses nobody's, and is never taken for the installation owner's:
+   * whatever started it, the owner did not.
    */
   async principalOf(spaceId: string, jobId: string, tx: Query = this.sql): Promise<string | null> {
-    const [row] = await tx<{ principal: string | null }[]>`select
-      coalesce(j.principal_id, (select id from owner limit 1)) as principal
-      from job j where j.id = ${jobId} and j.space_id = ${spaceId}`;
+    const [row] = await tx<{ principal: string }[]>`select j.principal_id as principal
+      from job j join space s on s.id = j.space_id
+      where j.id = ${jobId} and j.space_id = ${spaceId} and j.principal_id is not null
+        and s.removed_at is null
+        and ((s.kind = 'personal'
+            and coalesce(s.owner_principal_id, (select id from owner limit 1)) = j.principal_id)
+          or exists (select 1 from space_membership m
+            where m.space_id = s.id and m.principal_id = j.principal_id and m.revoked_at is null
+              and (m.expires_at is null or m.expires_at > now())))`;
     return row?.principal ?? null;
   }
 

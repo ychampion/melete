@@ -81,6 +81,9 @@ const refuse = (message: string): never => {
 
 const ADD_ONE = 'The person can add one in Settings → Saved sign-ins.';
 
+/** Said when the job is not a person's own work in a space they can still reach. */
+export const OWN_WORK_ONLY = 'Saved sign-ins can only be used in your own chats and routines.';
+
 /**
  * Resolves the site the agent named to one saved sign-in of the job's person,
  * and binds what may be shown of it. The agent's own `saved` is never kept.
@@ -93,7 +96,7 @@ export async function prepareSignIn(
 ): Promise<JsonObject> {
   if (!vault) return refuse('Saved sign-ins are not available on this installation.');
   const principal = await vault.principalOf(ctx.space_id, ctx.job_id, tx);
-  if (!principal) return refuse('This work has no person to sign in for.');
+  if (!principal) return refuse(OWN_WORK_ONLY);
   let origin: string;
   try {
     origin = vault.origin(String(payload.site ?? ''));
@@ -164,11 +167,10 @@ export async function validateSignIn(
   if (!vault || !saved || typeof id !== 'string')
     refuse('This sign-in was not resolved to a saved sign-in. Propose it again.');
   const principal = await (vault as SignInVaultPort).principalOf(ctx.space_id, ctx.job_id, tx);
-  const record = principal
-    ? await (vault as SignInVaultPort)
-        .get(ctx.space_id, principal, id as string, tx)
-        .catch(() => null)
-    : null;
+  if (!principal) refuse(OWN_WORK_ONLY);
+  const record = await (vault as SignInVaultPort)
+    .get(ctx.space_id, principal as string, id as string, tx)
+    .catch(() => null);
   if (!record || record.origin !== saved?.origin)
     refuse('That saved sign-in has been deleted or changed since. Propose it again.');
   if (record?.policy === 'ask_first' && saved?.ask_first === false)
@@ -339,7 +341,7 @@ export async function runSignIn(options: {
   let record: VaultRecord;
   try {
     const principal = await vault.principalOf(ctx.space_id, ctx.job_id);
-    if (!principal) return failed('This work has no person to sign in for.');
+    if (!principal) return failed(OWN_WORK_ONLY);
     record = await vault.get(ctx.space_id, principal, id);
   } catch {
     return failed(`The saved sign-in for ${host} has been deleted.`);
