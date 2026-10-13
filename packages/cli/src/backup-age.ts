@@ -13,12 +13,14 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { MAX_BACKUP_AGE_HOURS } from '../../../apps/melete/src/operator/backup-note.ts';
 import type { DeployConfig } from './deploy-config.ts';
 import { STATE_DIR } from './lock.ts';
 import type { Result } from './schema.ts';
 
 export const LAST_BACKUP_FILE = 'last-backup.json';
-export const MAX_BACKUP_AGE_HOURS = 26;
+/** At most a day apart, with room for a late run; the operator console judges by the same. */
+export { MAX_BACKUP_AGE_HOURS };
 
 const HOUR = 60 * 60 * 1000;
 const record = z.object({ at: z.string(), location: z.string() });

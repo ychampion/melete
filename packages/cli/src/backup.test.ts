@@ -176,6 +176,33 @@ describe('melete backup', () => {
     );
   });
 
+  test('a finished backup is also noted in the database, where the web app reads it', async () => {
+    const rig = backupRig();
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const note = rig.calls.find((call) => call.includes("'backup_taken'"));
+    expect(note).toContain("'at', '2026-10-02T10:00:00.000Z'");
+    expect(note).toContain("'backup:melete-20261002T100000Z'");
+    // Taken after the dump, so the backup never holds its own note.
+    expect(rig.calls.indexOf(note ?? '')).toBeGreaterThan(
+      rig.calls.findIndex((call) => call.includes('pg_dump')),
+    );
+
+    // A database that will not take the note leaves the backup whole, and says so.
+    const refused = backupRig();
+    const run = refused.context.run;
+    refused.context.run = (command) =>
+      command.join(' ').includes('backup_taken')
+        ? { code: 1, stdout: '', stderr: 'permission denied for table event\nmore' }
+        : run(command);
+    expect(await runBackup(refused.context, [], false)).toBe(0);
+    expect(readdirSync(refused.backups)).toEqual(['melete-20261002T100000Z']);
+    expect(refused.context.printed()).toContain(
+      'the database did not take the note of it, so the web app',
+    );
+    expect(refused.context.printed()).toContain('permission denied for table event');
+    expect(refused.context.printed()).not.toContain('more');
+  });
+
   test('keep removes the oldest backups only, and nothing else in the directory', async () => {
     const rig = backupRig();
     mkdirSync(rig.backups, { recursive: true });
