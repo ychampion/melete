@@ -65,7 +65,7 @@ import {
   sessionHandle,
   type WorkspaceSession,
 } from '../sandbox/sessions.ts';
-import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
+import { SandboxAdapterRefusal, SandboxGone, type SandboxProvider } from '../sandbox/types.ts';
 import {
   listStamps,
   readStart,
@@ -563,8 +563,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       const row = await sessions.get(found.id as string);
       if (row) {
         // A session opened by an earlier command, possibly in another process.
-        await provider.connect(sessionHandle(row), signal);
-        return { row, reused: true };
+        try {
+          await provider.connect(sessionHandle(row), signal);
+          return { row, reused: true };
+        } catch (error) {
+          if (!(error instanceof SandboxGone)) throw error;
+          // Its computer went away under it: marked lost, and opened again below.
+          await sessions.markLost(row.id, error.message);
+        }
       }
     }
     // The two allowances this session must fit inside. They are counted where
