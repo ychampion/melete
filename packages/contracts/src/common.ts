@@ -56,6 +56,10 @@ export const ID_PREFIXES = {
   triage_item: 'tri',
   /** Something the person wants done, kept until it is. */
   intent: 'int',
+  /** A person's saved sign-in for one site. */
+  saved_sign_in: 'ssi',
+  /** One use of a saved sign-in by Melete's browser. */
+  sign_in_use: 'ssu',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

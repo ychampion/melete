@@ -29,6 +29,7 @@ import { NotificationsTab } from './Notifications.tsx';
 import { OperatorTab } from './Operator.tsx';
 import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
+import { SavedSignIns } from './SavedSignIns.tsx';
 import './settings.css';
 
 const dateOf = (iso: string | null) =>
@@ -522,6 +523,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <div className="col" style={{ gap: 14 }}>
             <PrivacyTab />
             <SignedInSites />
+            <SavedSignIns />
           </div>
         ) : null}
         {current === 'activity' ? <ActivityTab /> : null}

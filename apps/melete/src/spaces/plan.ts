@@ -166,6 +166,10 @@ export async function sweepOperational(
 /** Keyed to the space rather than to a job, and independent of each other. */
 const SPACE_KEYED_OPERATIONAL = [
   'browser_recipe_candidate',
+  // Saved sign-ins and the record of their uses. Their sealed passwords are
+  // secrets of the space, which go with the space's other secrets.
+  'saved_sign_in_use',
+  'saved_sign_in',
   'experience_profile',
   // How the person lets auto-review answer for them, and what it decided.
   // The decisions went with their jobs; named again so the phase is whole.

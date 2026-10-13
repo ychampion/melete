@@ -40,6 +40,7 @@ import type { AccountRemovalPreview, AccountSummary } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { ServiceError } from '../api/errors.ts';
+import { forgetSavedSignIns } from '../connectors/sign-in-vault.ts';
 import { principalContext } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import type { SpaceRemovalService } from '../spaces/removal.ts';
@@ -219,6 +220,9 @@ export class AccountRemovalService {
         await tx`delete from ${tx(table)} where principal_id = ${principalId}`;
       await unlinkElsewhere(tx, principalId);
     });
+    // The account's saved sign-ins go now, in rooms too, with their sealed passwords:
+    // a room's removal would never reach the ones it keeps in a room it does not own.
+    await forgetSavedSignIns(this.deps.sql, principalId);
     await this.carryOn(principalId);
     return this.status(principalId);
   }

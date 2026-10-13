@@ -29,6 +29,7 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PendingQuery, Row, Sql } from 'postgres';
+import { exportSavedSignIns } from '../connectors/sign-in-vault.ts';
 import type { ZipEntry } from './zip.ts';
 
 export type AccountExportDeps = {
@@ -44,6 +45,8 @@ export type AccountExportDeps = {
 /** Tables that hold only secrets, digests or sign-in state. */
 const WITHHELD_TABLES = new Set([
   'secret',
+  // Written out on its own, as sites and usernames: see saved-sign-ins.json.
+  'saved_sign_in',
   'session',
   'password_reset',
   'magic_link',
@@ -81,6 +84,9 @@ program can open. Nothing in it needs Melete to read.
     and so on). Each file is a list of rows; each row is a JSON object.
 - account/records/: records kept for your account rather than a space, such
   as notification and memory settings.
+- account/saved-sign-ins.json: the sites and usernames you saved for Melete's
+  browser to sign in with, in every space. Their passwords and codes are not
+  in it.
 
 Left out on purpose: passwords, passkeys, sign-in sessions, and the sealed
 keys and tokens of your connections. They are secrets, and they would not
@@ -394,6 +400,15 @@ export async function* accountExport(
         yield { name: `${folder}/records/${table.name}.json`, modified: now, data: rows };
     }
   }
+  const signIns = await exportSavedSignIns(sql, principalId).catch(() => null);
+  if (signIns === null) withheld.push('saved_sign_in');
+  else if (signIns.length)
+    yield {
+      name: 'account/saved-sign-ins.json',
+      modified: now,
+      data: `${JSON.stringify(signIns, null, 2)}
+`,
+    };
   for (const table of tables.filter((entry) => !entry.spaceKeyed)) {
     const rows = await tryRows(sql, table, 'principal_id', principalId);
     if (rows === 'denied') withheld.push(table.name);

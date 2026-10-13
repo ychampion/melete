@@ -209,6 +209,12 @@ export type OperatorAuditEntry = Ok<paths['/operator/audit'], 'get'>['entries'][
 export type SpaceRemovalStarted = SpaceRemovalReport['removal'];
 /** A site the agent's browser is signed in to. */
 export type BrowserSite = Ok<paths['/browser/sites'], 'get'>['sites'][number];
+/** A sign-in saved for the agent's browser, with its password masked. */
+export type SavedSignIn = Ok<paths['/sign-ins'], 'get'>['sign_ins'][number];
+export type SavedSignInCreate = Body<paths['/sign-ins'], 'post'>;
+export type SavedSignInUpdate = Body<paths['/sign-ins/{id}'], 'patch'>;
+export type SavedSignInCode = Ok<paths['/sign-ins/{id}/code'], 'post'>;
+export type SavedSignInCheck = Ok<paths['/sign-ins/{id}/check'], 'post'>;
 /** What a conversation's agent is doing on its computer: its browser and its terminal. */
 export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
 export type ComputerBrowser = NonNullable<AgentComputer['browser']>;

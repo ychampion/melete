@@ -20,6 +20,14 @@ import { REDACTED, redactSecretText } from '../workers/browser/redact.ts';
 import { type BrowserSessionService, browserInputReasons } from '../workers/browser/routes.ts';
 import { BrowserFault } from '../workers/browser/sessions.ts';
 import { sensitiveName } from '../workers/browser/visible.ts';
+import {
+  prepareSignIn,
+  runSignIn,
+  SIGN_IN_TOOL,
+  type SignInVaultPort,
+  signInAsksFirst,
+  validateSignIn,
+} from './browser-sign-in.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PublicReadPolicy } from './web.ts';
 
@@ -142,6 +150,10 @@ const definitions: Array<{
     effect: 'write_external',
     properties: { intent: intentSchema },
     required: ['intent'],
+  },
+  {
+    ...SIGN_IN_TOOL,
+    properties: { ...SIGN_IN_TOOL.properties, after_observation: observationProperty },
   },
 ];
 
@@ -325,6 +337,8 @@ export function createBrowserConnector(options: {
    * public pages when it says so; without one, a job opens only what its list allows.
    */
   publicReads?: PublicReadPolicy;
+  /** The person's saved sign-ins, for `browser.sign_in`. Left out, that tool refuses. */
+  vault?: SignInVaultPort;
 }): Connector {
   /**
    * Whether this job's browser may open any public page, and if not, why not in plain words.
@@ -467,13 +481,19 @@ export function createBrowserConnector(options: {
 
   return {
     manifest: browserManifest,
+    /** A saved sign-in its person wants to be asked about is asked about. */
+    asksFirst: signInAsksFirst,
+    async validateBinding(action, ctx, tx) {
+      if (action.kind === 'browser.sign_in') await validateSignIn(options.vault, action, ctx, tx);
+    },
     /**
      * A named session must be one this job holds; anything else is refused with the job's own
      * sessions listed, never another job's. A submit with no session is bound here, at proposal,
      * to the job's current session and the epoch it was observed under, so an approval waits on
      * exactly what was seen.
      */
-    async prepare(payload, ctx, tx) {
+    async prepare(payload, ctx, tx, kind) {
+      if (kind === 'browser.sign_in') return prepareSignIn(options.vault, payload, ctx, tx);
       const named = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       if (!named && payload.intent === undefined) return payload;
       const held = await jobSessions(tx, ctx);
@@ -508,6 +528,9 @@ export function createBrowserConnector(options: {
       const kind = action.kind.replace(/^browser\./, '');
       if (!browserManifest.tools.some((tool) => tool.name === action.kind))
         throw new Error('unknown browser tool');
+      // A saved sign-in takes its own path: its result never carries the page.
+      if (kind === 'sign_in')
+        return runSignIn({ vault: options.vault, action, ctx, lease, handOff });
       const payload = action.canonical_payload;
       const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
       let activeSessionId = sessionId;

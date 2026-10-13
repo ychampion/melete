@@ -17,6 +17,15 @@ import {
   BrowserSessions,
   type BrowserSessionsOptions,
 } from './sessions.ts';
+import {
+  markSignInFields,
+  originOf,
+  pageMeasure,
+  type SignInFields,
+  type SignInStepOutcome,
+  signInState,
+  unmarkSignInFields,
+} from './sign-in-page.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
 // These declarations describe only code evaluated inside Chromium. They do not add DOM globals
@@ -121,6 +130,19 @@ const operation = z.discriminatedUnion('kind', [
     name: z.string().max(240).optional(),
   }),
   z.strictObject({ kind: z.literal('submit'), intent: browserSubmitIntent }),
+  // A saved sign-in, filled by the worker from what the service opened for this one step.
+  z.strictObject({
+    kind: z.literal('sign_in'),
+    origin: z.string().url().max(300),
+    url: z.string().url().max(4000).optional(),
+    username: z.string().min(1).max(512),
+    password: z.string().min(1).max(1024),
+  }),
+  z.strictObject({
+    kind: z.literal('sign_in_code'),
+    origin: z.string().url().max(300),
+    code: z.string().regex(/^\d{6,8}$/),
+  }),
 ]);
 export const browserCommand = z.strictObject({
   session_id: z.string(),
@@ -962,6 +984,268 @@ export class BrowserController {
     });
   }
 
+  /**
+   * One step of a saved sign-in: the username and password typed into the sign-in form of the
+   * exact site it was saved for and sent, or, when that page then asks for one, a one-time
+   * code. Nothing is typed anywhere but on that site: the page is checked to be on it after
+   * every navigation and redirect, a form that would send elsewhere ends the step, and plain
+   * http is refused outside a test's own fixture. The answer says what came of it and nothing
+   * of the page: no screenshot, no tree, no values. A password the site did not take is
+   * cleared from its field, so no later look finds it there.
+   */
+  private async signIn(
+    command: BrowserCommand,
+    operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
+  ): Promise<BrowserCommandResult> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const origin = originOf(operation.origin);
+    if (origin === null || origin !== operation.origin) throw new BrowserFault('sign_in_origin');
+    const answer = (outcome: SignInStepOutcome, extra: Record<string, unknown> = {}) => {
+      const current = this.sessions.requireSession(command.session_id, command.job_id);
+      return {
+        session_id: current.id,
+        control_epoch: current.control_epoch,
+        result: { sign_in: outcome, at: originOf(this.sessions.page?.url()) ?? '', ...extra },
+      };
+    };
+    if (!origin.startsWith('https://') && !network.fixture(origin)) return answer('insecure_site');
+    let { page, cdp } = await this.attach();
+    const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
+    const nonce = randomUUID();
+    const here = () => originOf(this.sessions.page?.url());
+    try {
+      if (operation.kind === 'sign_in') {
+        const target =
+          operation.url ?? (originOf(page.url()) === origin ? undefined : `${origin}/`);
+        if (target !== undefined) {
+          if (originOf(target) !== origin) return answer('wrong_site');
+          await this.navigate(command, target);
+          ({ page, cdp } = await this.attach());
+        }
+      }
+      let typedLast: 'username' | 'password' | 'code' | null = null;
+      for (let step = 0; step < 2; step++) {
+        // Checked after every navigation: a redirect to a lookalike, or to another site's
+        // sign-in, is never typed into.
+        if (here() !== origin) return answer('wrong_site');
+        if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
+        const found = await page.evaluate(markSignInFields, nonce);
+        if (found.ambiguous) return answer('form_not_found');
+        const typed = await this.typeSignIn(command, page, cdp, operation, found, nonce);
+        if (typed === 'nothing') {
+          if (operation.kind === 'sign_in' && found.code !== 'none') return answer('code_asked');
+          return answer('form_not_found');
+        }
+        typedLast = typed;
+        const moved = await this.sendSignIn(command, page, cdp, found, nonce);
+        if (moved === 'elsewhere') return answer('wrong_site');
+        ({ page, cdp } = await this.attach());
+        await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {});
+        // A first step that asked for the username alone shows the password field next.
+        if (operation.kind === 'sign_in' && typed === 'username') continue;
+        break;
+      }
+      if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
+      const state = await page.evaluate(signInState, nonce);
+      if (state.filled) await this.clearSignIn(command, page, cdp, nonce);
+      if (state.code) return answer('code_asked');
+      // The username went, and no password field followed it.
+      if (typedLast === 'username') return answer('form_not_found');
+      if (state.password || (operation.kind === 'sign_in_code' && state.username))
+        return answer('not_accepted');
+      return answer('signed_in');
+    } finally {
+      await this.sessions.page?.evaluate(unmarkSignInFields).catch(() => {});
+      if (handedBackIn !== undefined) {
+        const now = await this.attach().catch(() => undefined);
+        if (now && (await this.documentOf(now.cdp)) !== handedBackIn) this.handback = false;
+      }
+    }
+  }
+
+  /**
+   * Types what this step has into the fields it found, under the sign-in network window: the
+   * username and password, either alone when the form asks for them one at a time, or the code.
+   */
+  private async typeSignIn(
+    command: BrowserCommand,
+    page: Page,
+    cdp: CDPSession,
+    operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
+    found: SignInFields,
+    nonce: string,
+  ): Promise<'nothing' | 'username' | 'password' | 'code'> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const field = (what: string) => page.locator(`[data-melete-sign-in="${nonce}:${what}"]`);
+    const type = async (what: string, text: string) => {
+      const handle = await this.unique(field(what));
+      await this.input(command, () =>
+        handle.evaluate((element) => {
+          element.focus();
+          element.select();
+        }),
+      );
+      await this.input(command, () => cdp.send('Input.insertText', { text }));
+    };
+    if (operation.kind === 'sign_in_code') {
+      if (found.code === 'none') return 'nothing';
+      await network.run(
+        'sign_in',
+        async () => {
+          if (found.code === 'single') await type('code', operation.code);
+          else
+            for (const [index, digit] of Array.from(operation.code).entries())
+              if (index < found.boxes) await type(`code${index}`, digit);
+        },
+        undefined,
+        () => this.sessions.checkInput(command.session_id, command.control_epoch),
+      );
+      return 'code';
+    }
+    if (!found.password && !found.username) return 'nothing';
+    await network.run(
+      'sign_in',
+      async () => {
+        if (found.username) await type('username', operation.username);
+        if (found.password) await type('password', operation.password);
+      },
+      undefined,
+      () => this.sessions.checkInput(command.session_id, command.control_epoch),
+    );
+    return found.password ? 'password' : 'username';
+  }
+
+  /**
+   * Sends the form the step filled, by its own submit button or by Enter in its last field, and
+   * waits for the page to answer: a new page, a changed one, or the site's redirect, which is
+   * followed under every check `open` makes. `elsewhere` when the form would send to another site.
+   */
+  private async sendSignIn(
+    command: BrowserCommand,
+    page: Page,
+    cdp: CDPSession,
+    found: SignInFields,
+    nonce: string,
+  ): Promise<'sent' | 'elsewhere'> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const last = found.password
+      ? 'password'
+      : found.code === 'single'
+        ? 'code'
+        : found.code === 'boxes'
+          ? `code${found.boxes - 1}`
+          : 'username';
+    // The fields' state and a rough measure of the page's text: a site that refuses in place,
+    // with a message and no new page, changes the second.
+    const look = () =>
+      page
+        .evaluate(signInState, nonce)
+        .then(async (state) => {
+          const text = await page.evaluate(pageMeasure).catch(() => '');
+          return `${page.url()} ${JSON.stringify(state)} ${text}`;
+        })
+        .catch(() => 'gone');
+    const before = await look();
+    try {
+      await network.run(
+        'sign_in',
+        async () => {
+          if (found.submit) {
+            const handle = await this.unique(
+              page.locator(`[data-melete-sign-in="${nonce}:submit"]`),
+            );
+            const box = await handle.boundingBox();
+            if (!box) throw new BrowserFault('control_not_available');
+            for (const type of ['mousePressed', 'mouseReleased'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchMouseEvent', {
+                  type,
+                  button: 'left',
+                  clickCount: 1,
+                  x: box.x + box.width / 2,
+                  y: box.y + box.height / 2,
+                }),
+              );
+          } else {
+            const handle = await this.unique(
+              page.locator(`[data-melete-sign-in="${nonce}:${last}"]`),
+            );
+            await this.input(command, () => handle.evaluate((element) => element.focus()));
+            for (const type of ['keyDown', 'keyUp'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchKeyEvent', {
+                  type,
+                  key: 'Enter',
+                  code: 'Enter',
+                  windowsVirtualKeyCode: 13,
+                  ...(type === 'keyDown' ? { text: '\r' } : {}),
+                }),
+              );
+          }
+          // The page answers by loading another, or by changing this one; a redirect or a
+          // refusal the network window met ends the wait at once.
+          const deadline = Date.now() + SIGN_IN_SETTLE_MS;
+          let changedAt = 0;
+          while (Date.now() < deadline && !network.settling) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const now = await look();
+            if (now !== before) {
+              if (!changedAt) changedAt = Date.now();
+              else if (Date.now() - changedAt >= 600) break;
+            }
+          }
+          await page.waitForLoadState('domcontentloaded', { timeout: 2_000 }).catch(() => {});
+        },
+        undefined,
+        () => this.sessions.checkInput(command.session_id, command.control_epoch),
+      );
+    } catch (error) {
+      if (error instanceof BrowserNetworkError && error.code === 'sign_in_origin')
+        return 'elsewhere';
+      if (!(error instanceof BrowserRedirect)) throw error;
+      // The site answered with a redirect: followed as an opened page is, on a new page,
+      // with the cookies it set kept.
+      await this.replacePage(command);
+      await this.navigate(command, error.target_url);
+    }
+    return 'sent';
+  }
+
+  /** Empties the password field a step filled, when the site left it holding the password. */
+  private async clearSignIn(command: BrowserCommand, page: Page, cdp: CDPSession, nonce: string) {
+    const handle = await this.unique(
+      page.locator(`[data-melete-sign-in="${nonce}:password"]`),
+    ).catch(() => null);
+    if (!handle || !this.network) return;
+    await this.network
+      .run('sign_in', async () => {
+        await this.input(command, () =>
+          handle.evaluate((element) => {
+            element.focus();
+            element.select();
+          }),
+        );
+        for (const type of ['keyDown', 'keyUp'] as const)
+          await this.input(command, () =>
+            cdp.send('Input.dispatchKeyEvent', {
+              type,
+              key: 'Backspace',
+              windowsVirtualKeyCode: 8,
+            }),
+          );
+      })
+      .catch(() => {});
+    // Whatever the page's script did with the keys, the field ends empty.
+    await handle
+      .evaluate((element) => {
+        (element as { value: string }).value = '';
+      })
+      .catch(() => {});
+  }
+
   async command(input: unknown): Promise<BrowserCommandResult> {
     const command = browserCommand.parse(input);
     let commitStarted = false;
@@ -996,6 +1280,8 @@ export class BrowserController {
         }
         // Even a caller that skips planning checks reaches this controller gate before it can act.
         this.sessions.checkInput(command.session_id, command.control_epoch);
+        if (command.operation.kind === 'sign_in' || command.operation.kind === 'sign_in_code')
+          return await this.signIn(command, command.operation);
         const before = await this.transition(page, cdp);
         const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
@@ -1226,6 +1512,9 @@ export class BrowserController {
       });
   }
 }
+
+/** How long a sign-in step waits for the page to answer what was sent. */
+export const SIGN_IN_SETTLE_MS = 8_000;
 
 /** At most this many hosts are named; a page can ask for resources from as many as it likes. */
 export const UNREACHABLE_HOSTS_SHOWN = 10;
