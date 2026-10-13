@@ -377,7 +377,9 @@ a positive number:
 
 These are starting points: tune them to your price and your people (see
 [Spending caps](#spending-caps), [Attachments](#attachments) and
-[Alerts](#alerts)). They apply only to a hosted installation; a self-hosted
+[Alerts](#alerts)). `init --hosted` also writes
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON=2`, which is not required: free slots
+are shared between people either way ([Engine limits](#engine-limits)). They apply only to a hosted installation; a self-hosted
 one has no limits unless you set them, and `check` never asks for them.
 
 A new installation gets all of it but the alert target in one step:
@@ -1931,6 +1933,14 @@ each in its own engine container. Further work waits for a free slot in a fair
 order across chats, routines and quiet work, and the conversation says it is
 waiting and how many other tasks are running. Raise it on a host with memory to
 spare; each running attempt may use up to 2 GB.
+
+Slots are shared fairly between people too: within chats, routines and quiet
+work alike, the next free slot goes to the waiting person who is running the
+fewest, and among equals to the one who started something longest ago, so one
+person with many chats or routines cannot keep everyone else waiting.
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` (unset by default, which is no limit of
+its own) also caps how many one person runs at once, even while slots are
+free; `init --hosted` writes `2`.
 
 ## Spending caps
 

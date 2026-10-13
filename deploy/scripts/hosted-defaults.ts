@@ -22,6 +22,8 @@ export const HOSTED_STARTING_VALUES = {
   MELETE_ATTACHMENT_UPLOADS_PER_WINDOW: '30',
   /** Computers one person may have running at once. */
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: '1',
+  /** Attempts one person may run at once; not required, slots are shared in turn either way. */
+  MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: '2',
   /** An alert when an hour's model spending is four times the usual hour. */
   MELETE_ALERT_SPEND_HOURLY_MULTIPLE: '4',
 } as const satisfies Record<string, string>;

@@ -284,6 +284,14 @@ const variables = z.object({
    * waits for a free slot, and its conversation says so.
    */
   MELETE_ATTEMPT_CONCURRENCY: unsetWhenBlank(z.coerce.number().int().min(1).max(32).default(4)),
+  /**
+   * How many of those one person may run at once; their further attempts wait
+   * while others' start. Unset is no limit of its own: free slots are shared
+   * in turn between the people waiting for them either way.
+   */
+  MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(32).optional(),
+  ),
   MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
   MELETE_HERMES_PYTHON: z
     .string()

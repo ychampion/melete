@@ -43,6 +43,11 @@ What each version ships.
   names a model for everyone's routines, watches and other work nobody is
   waiting on. The owner's own secondary model still wins in their spaces.
   Unset, that work runs on the primary model as before.
+- **One person can no longer take every agent slot.** Free slots go in turn to
+  the people waiting, within chats, routines and quiet work alike, so someone
+  with many chats or routines running no longer keeps everyone else waiting.
+  `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` can also cap how many one person runs
+  at once; it is unset by default, and `init --hosted` writes 2.
 
 ### Upgrading from v0.2.1
 

@@ -1531,6 +1531,9 @@ export async function bootstrap(
       runner = new AttemptRunner(jobs, gatedRuntime, {
         key: env.MELETE_CAPABILITY_KEY,
         concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
+        ...(env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON
+          ? { concurrencyPerPerson: env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON }
+          : {}),
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,

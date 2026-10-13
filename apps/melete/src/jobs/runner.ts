@@ -46,6 +46,7 @@ import {
   experienceTurn,
   job,
   question,
+  space,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -131,6 +132,8 @@ export type RunnerOptions = {
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   /** How many attempts run at once; one more waits for a free slot. */
   concurrency?: number;
+  /** How many of them one person may run at once; unset, as many as there are slots. */
+  concurrencyPerPerson?: number;
   heartbeatMs?: number;
   leaseMs?: number;
   artifactRoots?: ArtifactRoots;
@@ -248,13 +251,33 @@ export class AttemptRunner {
   ) {
     if (Buffer.byteLength(options.key) < 32)
       throw new Error('MELETE_CAPABILITY_KEY must be at least 32 bytes');
-    this.scheduler = new FairScheduler(this.concurrency);
+    this.scheduler = new FairScheduler(this.concurrency, this.perPerson);
     jobs.onCancelled = (id) => this.interrupt(id);
     jobs.stopTurn = (tx, row) => this.stopTurn(tx, row);
   }
 
   private get concurrency() {
     return this.options.concurrency ?? DEFAULT_ATTEMPT_CONCURRENCY;
+  }
+
+  private get perPerson() {
+    return this.options.concurrencyPerPerson ?? Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Whose turn a wake is, for sharing slots fairly: the job's person, else
+   * its space's owner. A job that is gone has nobody, and its wake is dropped
+   * when it runs.
+   */
+  async personForWake(jobId: string): Promise<string | undefined> {
+    const [row] = await this.jobs.db
+      .select({
+        person: sql<string | null>`coalesce(${job.principalId}, ${space.ownerPrincipalId})`,
+      })
+      .from(job)
+      .innerJoin(space, eq(space.id, job.spaceId))
+      .where(eq(job.id, jobId));
+    return row?.person ?? undefined;
   }
 
   private get leaseMs() {
@@ -1942,7 +1965,7 @@ export class AttemptRunner {
     if (this.workerStarted) return;
     this.workerStarted = true;
     this.stopping = false;
-    this.scheduler = new FairScheduler(this.concurrency);
+    this.scheduler = new FairScheduler(this.concurrency, this.perPerson);
     await this.recover();
     // Each queue hands over more wakes than can run, so one that has to wait
     // waits here, in the scheduler's fair order, where its conversation can be
@@ -1979,13 +2002,20 @@ export class AttemptRunner {
 
   private async scheduledWake(scheduling: SchedulingClass, wake: AttemptWake) {
     try {
-      const running = this.scheduler.activeCount;
-      if (running >= this.scheduler.capacity)
+      const person = await this.personForWake(wake.job_id);
+      const reason = this.scheduler.waitReason(person);
+      if (reason) {
+        // What holds it back: every slot, or this person's own share of them.
+        const running =
+          reason === 'person' && person
+            ? this.scheduler.activeFor(person)
+            : this.scheduler.activeCount;
         void this.noteWaiting(wake, running).catch((error: unknown) =>
           process.stderr.write(`waiting note not recorded: ${String(error)}
 `),
         );
-      await this.scheduler.run(scheduling, () => this.handleWake(wake));
+      }
+      await this.scheduler.run(scheduling, () => this.handleWake(wake), person);
     } catch (error) {
       if (!this.stopping) throw error;
     }
