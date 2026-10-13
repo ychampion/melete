@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadEnv } from '../../apps/melete/src/env.ts';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
+import { HOSTED_STARTING_VALUES } from '../../packages/cli/src/hosted-defaults.ts';
 import {
   addressSettings,
   ConfigureRefusal,
@@ -18,7 +19,6 @@ import {
   setupCodeNote,
   voiceSettings,
 } from './configure.ts';
-import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
 import { parseEnvFile } from './provider-settings.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 

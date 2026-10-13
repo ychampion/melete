@@ -64,7 +64,7 @@ import {
   readDockerHost,
   socketProbeCommand,
 } from '../../apps/melete/src/runtime/docker-host.ts';
-import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
+import { HOSTED_STARTING_VALUES } from '../../packages/cli/src/hosted-defaults.ts';
 import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 

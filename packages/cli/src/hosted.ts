@@ -15,8 +15,9 @@
  * installation has no limits unless its operator sets them, and is never told
  * it should.
  */
-import { HOSTED_STARTING_VALUES } from '../../../deploy/scripts/hosted-defaults.ts';
+
 import type { DeployConfig } from './deploy-config.ts';
+import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
 import type { Result } from './schema.ts';
 
 const HOSTED_HINT =
@@ -163,7 +164,7 @@ const positive = (value: string | undefined) => {
 
 /**
  * The cost guards a hosted installation must set, each failing by name while
- * it is missing; the fix names a starting value from deploy/scripts/hosted-defaults.ts.
+ * it is missing; the fix names a starting value from hosted-defaults.ts.
  */
 export function judgeCostGuards(env: Record<string, string>): Result[] {
   return COST_GUARDS.map((guard): Result => {

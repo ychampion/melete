@@ -3,7 +3,7 @@
  * unset on a self-hosted installation, which has no limits unless its
  * operator sets them; `init --hosted` writes these, and `check` and `status`
  * fail a hosted installation while any of them is missing
- * (packages/cli/src/hosted.ts).
+ * (hosted.ts beside it).
  *
  * They are starting points to tune, not recommendations for every install:
  * dollars are estimated from the price table, per UTC day and month.

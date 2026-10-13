@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { HOSTED_STARTING_VALUES } from '../../../deploy/scripts/hosted-defaults.ts';
 import { judgeCheck } from './commands/check.ts';
 import { runStatus } from './commands/status.ts';
 import { DEPLOY_FILE, deployConfigSchema, renderDeployConfig } from './deploy-config.ts';
 import { COST_GUARDS, judgeCostGuards, judgeHosted } from './hosted.ts';
+import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
 import { readInstallation } from './installation.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
