@@ -5,7 +5,9 @@
 # first account, turns on the browser worker by running the installer again with
 # MELETE_BROWSER=1, asks `doctor` in the service container for the worker's
 # state, then runs the plain installer once more to show a later run keeps
-# deploy/.env, the data and the worker. On a pull request the published images
+# deploy/.env, the data and the worker. The first run prints a one-time setup
+# code and keeps only its SHA-256 in deploy/.env; the account is made with it.
+# On a pull request the published images
 # are main's, so this pull request's images are built and served under the same
 # names from a registry on the runner, as the setup-guide workflow does. No
 # secret is read.
@@ -113,12 +115,122 @@ jobs:
           echo "$health" | jq -e '.status == "ok" and .database == "ok"'
           grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$HOME/melete/deploy/.env"
           test "$(stat -c %a "$HOME/melete/deploy/.env")" = 600
-      - name: Create the owner account, as the person does in the browser
+      - name: deploy/.env keeps only the setup code's hash, and it is the printed code's
         run: |
+          set -euo pipefail
+          env_file="$HOME/melete/deploy/.env"
+          test "$(grep -c '^MELETE_SETUP_CODE_HASH=' "$env_file")" = 1
+          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/first.log")"
+          [[ "$code" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]]
+          plain="${code//-/}"
+          if grep -rqF -e "$code" -e "$plain" "$HOME/melete"; then
+            echo "the plain setup code was written to a file"
+            exit 1
+          fi
+          test "$(printf '%s' "$plain" | sha256sum | cut -d ' ' -f 1)" = "$hash"
+          # The installer's own hash agrees with the service's setupCodeHash() on
+          # a fixed code typed loosely (apps/melete/src/api/setup-code.test.ts).
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | sed '$d' > "$RUNNER_TEMP/install-functions.sh"
+          fixed="$(source "$RUNNER_TEMP/install-functions.sh" && setup_code_hash ' abcd efgh-jkmn pqrs tvwx ')"
+          test "$fixed" = 8582f0401bebbf68f0492d9590c5b80f40e8f33a29c45cfd13e185b2eb4c0170
+          # A hash line written another way is still found, so a later run keeps it.
+          mkdir -p "$RUNNER_TEMP/state"
+          state() { printf '%s\n' "$1" > "$RUNNER_TEMP/state/.env" && (source "$RUNNER_TEMP/install-functions.sh" && DEPLOY="$RUNNER_TEMP/state" setup_code_state); }
+          test "$(state "export MELETE_SETUP_CODE_HASH=$hash")" = set
+          test "$(state "  MELETE_SETUP_CODE_HASH = \"$hash\"")" = set
+          # An empty one, as deploy/.env.example ships it, is no hash: it gets a code.
+          test "$(state 'MELETE_SETUP_CODE_HASH=')" = missing
+          test "$(state 'MELETE_SETUP_CODE_HASH=""')" = missing
+          test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = missing
+          test "$(state 'MELETE_IMAGE_TAG=main')" = missing
+          # The service's own setupCodeHash() gives the printed code the same hash.
+          compose=(docker compose -f "$HOME/melete/deploy/docker-compose.yml")
+          service="$(printf '%s' "$code" | "${compose[@]}" exec -T melete bun -e \
+            "import { setupCodeHash } from './apps/melete/src/api/setup-code.ts'; process.stdout.write(setupCodeHash(await Bun.stdin.text()))")"
+          test "$service" = "$hash"
+      - name: An installation made before setup codes gets one on its next run
+        run: |
+          set -euo pipefail
+          env_file="$HOME/melete/deploy/.env"
+          before="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          # As an older installer left it: no hash at all.
+          sed -i '/^MELETE_SETUP_CODE_HASH=/d' "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/upgrade.log"
+          test "$(grep -c '^MELETE_SETUP_CODE_HASH=' "$env_file")" = 1
+          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          test "$hash" != "$before"
+          test "$(stat -c %a "$env_file")" = 600
+          code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/upgrade.log")"
+          [[ "$code" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]]
+          if grep -rqF -e "$code" -e "${code//-/}" "$HOME/melete"; then
+            echo "the plain setup code was written to a file"
+            exit 1
+          fi
+          test "$(printf '%s' "${code//-/}" | sha256sum | cut -d ' ' -f 1)" = "$hash"
+          # From here on, this run's code is the installation's.
+          cp "$RUNNER_TEMP/upgrade.log" "$RUNNER_TEMP/first.log"
+      - name: MELETE_SETUP_OPEN=true makes no code, and an empty hash otherwise gets one
+        run: |
+          set -euo pipefail
+          env_file="$HOME/melete/deploy/.env"
+          before="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          # Open setup: no code is made, even with no hash.
+          sed -i 's/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=/' "$env_file"
+          printf 'MELETE_SETUP_OPEN=true\n' >> "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/open.log"
+          grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/open.log"; then exit 1; fi
+          grep -F 'Setup is open: with MELETE_SETUP_OPEN=true' "$RUNNER_TEMP/open.log"
+          # Without it, the empty hash, as deploy/.env.example ships it, gets a
+          # code; so does one followed by a later empty line, which Compose reads.
+          sed -i '/^MELETE_SETUP_OPEN=/d' "$env_file"
+          sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$before/" "$env_file"
+          printf 'MELETE_SETUP_CODE_HASH=\n' >> "$env_file"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/empty.log"
+          test "$(grep -c 'MELETE_SETUP_CODE_HASH' "$env_file")" = 1
+          hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          test "$hash" != "$before"
+          test "$(stat -c %a "$env_file")" = 600
+          code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/empty.log")"
+          [[ "$code" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]]
+          if grep -rqF -e "$code" -e "${code//-/}" "$HOME/melete"; then
+            echo "the plain setup code was written to a file"
+            exit 1
+          fi
+          test "$(printf '%s' "${code//-/}" | sha256sum | cut -d ' ' -f 1)" = "$hash"
+          grep -qx 'Set MELETE_SETUP_OPEN=true only if the first visitor should be allowed to create the owner without a code.' "$RUNNER_TEMP/empty.log"
+          cp "$RUNNER_TEMP/empty.log" "$RUNNER_TEMP/first.log"
+          # The next run keeps that hash and prints no code.
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/back.log"
+          test "$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")" = "$hash"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/back.log"; then exit 1; fi
+      - name: Create the owner account with the setup code, as the person does in the browser
+        run: |
+          set -euo pipefail
           password="$(openssl rand -hex 16)"
+          code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/first.log")"
+          curl -fsS http://localhost:3101/api/setup | jq -e '.needed == true and .code_required == true'
+          # Without the code, or with another, the first account is refused.
+          status="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3101/api/setup \
+            -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}")"
+          echo "setup without the code answered $status"
+          test "$status" = 403
+          status="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3101/api/setup \
+            -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\",\"setup_code\":\"ABCD-EFGH-JKMN-PQRS-TVWX\"}")"
+          echo "setup with another code answered $status"
+          test "$status" = 403
+          # Typed loosely, the printed code makes the account.
+          loose="$(printf '%s' "$code" | tr '[:upper:]' '[:lower:]' | tr - ' ')"
           curl -fsS -X POST http://localhost:3101/api/setup \
             -H 'content-type: application/json' \
-            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" > /dev/null
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\",\"setup_code\":\"$loose\"}" > /dev/null
+          curl -fsS http://localhost:3101/api/setup | jq -e '.needed == false'
       - name: Turn on the browser worker with the installer, without Bun
         run: |
           set -euo pipefail
@@ -154,8 +266,9 @@ jobs:
           # Turning it on again changes nothing.
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" MELETE_BROWSER=1 bash
           test "$before" = "$(cat "$deploy/.env" "$deploy/melete.deploy.json" "$deploy/config/connections.json" | sha256sum)"
-          # A plain run keeps the worker.
-          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash
+          # A plain run keeps the worker, and prints no new setup code.
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/later.log"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/later.log"; then exit 1; fi
           test "$before" = "$(cat "$deploy/.env" "$deploy/melete.deploy.json" "$deploy/config/connections.json" | sha256sum)"
           curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
           # The worker survived --remove-orphans, and is healthy beside the service.
