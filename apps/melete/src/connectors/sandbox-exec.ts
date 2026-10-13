@@ -568,8 +568,16 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           return { row, reused: true };
         } catch (error) {
           if (!(error instanceof SandboxGone)) throw error;
-          // Its computer went away under it: marked lost, and opened again below.
-          await sessions.markLost(row.id, error.message);
+          // Its container went away under it. A computer whose files the
+          // provider still keeps is suspended, and resumed on them below; one
+          // with nothing left is marked lost, and opened again below.
+          const state = await provider.inspect(sessionHandle(row), signal).catch(() => null);
+          if (state === 'gone') await sessions.markLost(row.id, error.message);
+          else if (state === 'paused' && row.agentId)
+            await sessions.suspendWorkspace(row.id, provider, signal).catch(() => {
+              throw error;
+            });
+          else throw error;
         }
       }
     }
