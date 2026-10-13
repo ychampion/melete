@@ -100,6 +100,9 @@
     },
     {
       "name": "feedback"
+    },
+    {
+      "name": "operator"
     }
   ],
   "paths": {
@@ -30200,6 +30203,1086 @@
           }
         }
       }
+    },
+    "/operator/overview": {
+      "get": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "The installation at a glance, for its owner",
+        "description": "Spending this month and today against the installation’s caps, how many people have accounts and how many were active in the last week, agent runs and computers going against their limits, when the newest backup was taken, free disk against its floor, the health checks and the version. Read-only.",
+        "responses": {
+          "200": {
+            "description": "Overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    },
+                    "spend": {
+                      "type": "object",
+                      "properties": {
+                        "day_usd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "month_usd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "day_cap_usd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "month_cap_usd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "month_resets_at": {
+                          "$ref": "#/components/schemas/__schema217"
+                        }
+                      },
+                      "required": [
+                        "day_usd",
+                        "month_usd",
+                        "day_cap_usd",
+                        "month_cap_usd",
+                        "month_resets_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "people": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "active": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "invited": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "disabled": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "total",
+                        "active",
+                        "invited",
+                        "disabled"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "runs": {
+                      "$ref": "#/components/schemas/OperatorUsedOf"
+                    },
+                    "computers": {
+                      "$ref": "#/components/schemas/OperatorUsedOf"
+                    },
+                    "backup": {
+                      "type": "object",
+                      "properties": {
+                        "newest_at": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/__schema217"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_age_hours": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "newest_at",
+                        "max_age_hours"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "disk": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "free_mb": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "floor_mb": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "ok": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "free_mb",
+                            "floor_mb",
+                            "ok"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "health": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "unhealthy"
+                          ]
+                        },
+                        "checks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "ok": {
+                                "type": "boolean"
+                              },
+                              "detail": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "ok",
+                              "detail"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "checks"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "spend",
+                    "people",
+                    "runs",
+                    "computers",
+                    "backup",
+                    "disk",
+                    "health"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people": {
+      "get": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Everyone with an account here, with this month’s spending and their caps",
+        "responses": {
+          "200": {
+            "description": "People",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "people": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OperatorPerson"
+                      }
+                    },
+                    "installation": {
+                      "type": "object",
+                      "properties": {
+                        "day_usd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "month_usd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "day_usd",
+                        "month_usd"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "defaults": {
+                      "$ref": "#/components/schemas/OperatorCaps"
+                    },
+                    "can_email": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "people",
+                    "installation",
+                    "defaults",
+                    "can_email"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Invite someone: a new account and a one-time link to choose a password",
+        "description": "The link is always returned, to pass on by hand, and also emailed when account mail and a web address are set. It works once and expires in 7 days; opening it signs the person straight in once they choose a password.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email",
+                    "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  }
+                },
+                "required": [
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Invited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "person": {
+                      "$ref": "#/components/schemas/OperatorPerson"
+                    },
+                    "invite": {
+                      "$ref": "#/components/schemas/OperatorOneTimeLink"
+                    }
+                  },
+                  "required": [
+                    "person",
+                    "invite"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an email address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone already has an account with that email",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}/disable": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Stop someone signing in, and sign them out everywhere",
+        "description": "Ends their sessions, sign-in and reset links, connected apps, notifications and paired computers. Their routines and data are kept. The owner can’t be disabled.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema804"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account, or it is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The owner’s own account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}/enable": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Let a disabled account sign in again",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema804"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account, or it is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The owner’s own account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}/password-reset": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "A one-time link to choose a password: a new invite, or a reset",
+        "description": "Someone who never chose a password gets their invite again (7 days). Anyone else gets a reset link (60 minutes); using it signs them out everywhere. The link is always returned, and also emailed when account mail and a web address are set.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "person": {
+                      "$ref": "#/components/schemas/OperatorPerson"
+                    },
+                    "reset": {
+                      "$ref": "#/components/schemas/OperatorOneTimeLink"
+                    }
+                  },
+                  "required": [
+                    "person",
+                    "reset"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account, or it is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}/caps": {
+      "put": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Set or clear someone’s own spending caps",
+        "description": "All four, each in dollars or null for the installation’s per-person cap. Each has to be more than $0, in whole cents, and at most the installation’s own cap for the period; a day’s cap at most the month’s, and background work at most what the person may spend in all.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "day_usd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "month_usd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "background_day_usd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "background_month_usd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "day_usd",
+                  "month_usd",
+                  "background_day_usd",
+                  "background_month_usd"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Caps set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema804"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A cap outside the installation’s limits (`caps_out_of_range`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account, or it is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}/removal/preview": {
+      "get": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "What deleting someone’s account takes with it",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "preview": {
+                      "$ref": "#/components/schemas/__schema278"
+                    }
+                  },
+                  "required": [
+                    "preview"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/people/{id}": {
+      "delete": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Delete someone’s account, its email typed to confirm",
+        "description": "The account deletion every account has, asked by the installation’s owner.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Account id"
+            },
+            "required": true,
+            "description": "Account id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/__schema23"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Deletion started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removal": {
+                      "$ref": "#/components/schemas/__schema280"
+                    }
+                  },
+                  "required": [
+                    "removal"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The email does not match the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account, or it is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The owner’s own account, or a space the browser worker uses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator/audit": {
+      "get": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "The newest 100 changes made to people’s accounts, newest first",
+        "description": "Who did what to whom, and when: from the operator console or the operator’s command on the host. No link or code is ever kept.",
+        "responses": {
+          "200": {
+            "description": "Changes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "$ref": "#/components/schemas/__schema217"
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "invited",
+                              "invite_resent",
+                              "reset_sent",
+                              "disabled",
+                              "enabled",
+                              "caps_changed",
+                              "removed"
+                            ]
+                          },
+                          "actor": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "email": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "email"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "target": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "email": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "email"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "detail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "action",
+                          "actor",
+                          "target",
+                          "detail"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "entries"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the session ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner of this installation, a guest, or not a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema219"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -34338,6 +35421,134 @@
         "required": [
           "process_id",
           "state"
+        ],
+        "additionalProperties": false
+      },
+      "OperatorUsedOf": {
+        "type": "object",
+        "properties": {
+          "used": {
+            "$ref": "#/components/schemas/__schema782"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/__schema783"
+          },
+          "per_person": {
+            "$ref": "#/components/schemas/__schema784"
+          }
+        },
+        "required": [
+          "used",
+          "limit",
+          "per_person"
+        ],
+        "additionalProperties": false
+      },
+      "OperatorPerson": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/__schema785"
+          },
+          "email": {
+            "$ref": "#/components/schemas/__schema786"
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/__schema787"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/__schema788"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/__schema789"
+          },
+          "status": {
+            "$ref": "#/components/schemas/__schema790"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema217"
+          },
+          "last_active_at": {
+            "$ref": "#/components/schemas/__schema791"
+          },
+          "sessions": {
+            "$ref": "#/components/schemas/__schema792"
+          },
+          "spend": {
+            "$ref": "#/components/schemas/__schema793"
+          },
+          "caps": {
+            "$ref": "#/components/schemas/__schema794"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "kind",
+          "owner",
+          "status",
+          "created_at",
+          "last_active_at",
+          "sessions",
+          "spend",
+          "caps"
+        ],
+        "additionalProperties": false
+      },
+      "OperatorCaps": {
+        "type": "object",
+        "properties": {
+          "day_usd": {
+            "$ref": "#/components/schemas/__schema795"
+          },
+          "month_usd": {
+            "$ref": "#/components/schemas/__schema796"
+          },
+          "background_day_usd": {
+            "$ref": "#/components/schemas/__schema797"
+          },
+          "background_month_usd": {
+            "$ref": "#/components/schemas/__schema798"
+          }
+        },
+        "required": [
+          "day_usd",
+          "month_usd",
+          "background_day_usd",
+          "background_month_usd"
+        ],
+        "additionalProperties": false
+      },
+      "OperatorOneTimeLink": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "$ref": "#/components/schemas/__schema799"
+          },
+          "link": {
+            "$ref": "#/components/schemas/__schema800"
+          },
+          "code": {
+            "$ref": "#/components/schemas/__schema801"
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/__schema217"
+          },
+          "emailed": {
+            "$ref": "#/components/schemas/__schema802"
+          },
+          "mail_problem": {
+            "$ref": "#/components/schemas/__schema803"
+          }
+        },
+        "required": [
+          "purpose",
+          "link",
+          "code",
+          "expires_at",
+          "emailed",
+          "mail_problem"
         ],
         "additionalProperties": false
       },
@@ -47477,24 +48688,226 @@
         ]
       },
       "__schema782": {
-        "type": "string",
-        "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
-      },
-      "__schema783": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
+      "__schema783": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991
+      },
       "__schema784": {
+        "anyOf": [
+          {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema785": {
+        "type": "string",
+        "pattern": "^own_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+      },
+      "__schema786": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema787": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "__schema788": {
+        "type": "string",
+        "enum": [
+          "person",
+          "guest"
+        ]
+      },
+      "__schema789": {
+        "type": "boolean"
+      },
+      "__schema790": {
+        "type": "string",
+        "enum": [
+          "active",
+          "invited",
+          "disabled",
+          "removing"
+        ]
+      },
+      "__schema791": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/__schema217"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema792": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema793": {
+        "type": "object",
+        "properties": {
+          "day_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "month_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "background_month_usd": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "day_usd",
+          "month_usd",
+          "background_month_usd"
+        ],
+        "additionalProperties": false
+      },
+      "__schema794": {
+        "type": "object",
+        "properties": {
+          "own": {
+            "$ref": "#/components/schemas/OperatorCaps"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/OperatorCaps"
+          }
+        },
+        "required": [
+          "own",
+          "effective"
+        ],
+        "additionalProperties": false
+      },
+      "__schema795": {
+        "anyOf": [
+          {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema796": {
+        "anyOf": [
+          {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema797": {
+        "anyOf": [
+          {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema798": {
+        "anyOf": [
+          {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema799": {
+        "type": "string",
+        "enum": [
+          "invite",
+          "reset"
+        ]
+      },
+      "__schema800": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "__schema801": {
+        "type": "string"
+      },
+      "__schema802": {
+        "type": "boolean"
+      },
+      "__schema803": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "__schema804": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "$ref": "#/components/schemas/OperatorPerson"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "additionalProperties": false
+      },
+      "__schema805": {
+        "type": "string",
+        "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+      },
+      "__schema806": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema807": {
         "type": "string",
         "minLength": 1
       },
-      "__schema785": {
+      "__schema808": {
         "type": "string",
         "minLength": 1,
         "maxLength": 160
       },
-      "__schema786": {
+      "__schema809": {
         "type": "string",
         "enum": [
           "on_session_start",
@@ -47520,7 +48933,7 @@
           "runtime_error"
         ]
       },
-      "__schema787": {
+      "__schema810": {
         "anyOf": [
           {
             "type": "string",
@@ -47531,7 +48944,7 @@
           }
         ]
       },
-      "__schema788": {
+      "__schema811": {
         "type": "object",
         "properties": {
           "captured_at": {
@@ -47556,7 +48969,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema789": {
+      "__schema812": {
         "type": "string",
         "enum": [
           "started",
@@ -47567,7 +48980,7 @@
           "unknown"
         ]
       },
-      "__schema790": {
+      "__schema813": {
         "anyOf": [
           {
             "type": "string",
@@ -47578,7 +48991,7 @@
           }
         ]
       },
-      "__schema791": {
+      "__schema814": {
         "type": "object",
         "properties": {
           "compression_count": {
@@ -47595,7 +49008,7 @@
         },
         "additionalProperties": false
       },
-      "__schema792": {
+      "__schema815": {
         "type": "string",
         "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
@@ -47779,37 +49192,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema785"
+                "$ref": "#/components/schemas/__schema808"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema786"
+                "$ref": "#/components/schemas/__schema809"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema787"
+                "$ref": "#/components/schemas/__schema810"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema788"
+                "$ref": "#/components/schemas/__schema811"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema789"
+                "$ref": "#/components/schemas/__schema812"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema790"
+                "$ref": "#/components/schemas/__schema813"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema791"
+                "$ref": "#/components/schemas/__schema814"
               },
               "type": {
                 "type": "string",
@@ -47835,37 +49248,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema785"
+                "$ref": "#/components/schemas/__schema808"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema786"
+                "$ref": "#/components/schemas/__schema809"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema787"
+                "$ref": "#/components/schemas/__schema810"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema788"
+                "$ref": "#/components/schemas/__schema811"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema789"
+                "$ref": "#/components/schemas/__schema812"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema790"
+                "$ref": "#/components/schemas/__schema813"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema791"
+                "$ref": "#/components/schemas/__schema814"
               },
               "type": {
                 "type": "string",
@@ -47900,13 +49313,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -47935,13 +49348,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -47968,13 +49381,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48001,13 +49414,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48042,13 +49455,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48083,13 +49496,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48121,13 +49534,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48249,7 +49662,7 @@
                         "minItems": 1,
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/__schema792"
+                          "$ref": "#/components/schemas/__schema815"
                         }
                       }
                     },
@@ -48365,13 +49778,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48404,13 +49817,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48439,13 +49852,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema782"
+                "$ref": "#/components/schemas/__schema805"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema783"
+                "$ref": "#/components/schemas/__schema806"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema784"
+                "$ref": "#/components/schemas/__schema807"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema217"
@@ -48483,25 +49896,25 @@
         "type": "object",
         "properties": {
           "capture_id": {
-            "$ref": "#/components/schemas/__schema785"
+            "$ref": "#/components/schemas/__schema808"
           },
           "name": {
-            "$ref": "#/components/schemas/__schema786"
+            "$ref": "#/components/schemas/__schema809"
           },
           "tool_name": {
-            "$ref": "#/components/schemas/__schema787"
+            "$ref": "#/components/schemas/__schema810"
           },
           "timing": {
-            "$ref": "#/components/schemas/__schema788"
+            "$ref": "#/components/schemas/__schema811"
           },
           "outcome": {
-            "$ref": "#/components/schemas/__schema789"
+            "$ref": "#/components/schemas/__schema812"
           },
           "redacted_args_digest": {
-            "$ref": "#/components/schemas/__schema790"
+            "$ref": "#/components/schemas/__schema813"
           },
           "detail": {
-            "$ref": "#/components/schemas/__schema791"
+            "$ref": "#/components/schemas/__schema814"
           }
         },
         "required": [

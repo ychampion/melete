@@ -26,6 +26,7 @@ import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
+import { OperatorTab } from './Operator.tsx';
 import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
 import './settings.css';
@@ -418,6 +419,7 @@ const TABS = [
   'models',
   'privacy',
   'feedback',
+  'installation',
 ] as const;
 type Tab = (typeof TABS)[number] | 'memory';
 
@@ -428,6 +430,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const people = useLoad(() => adapter.spaceMembers(), []);
   // People is a shared space's page; a personal space has only its owner.
   const shared = people.data?.space.kind === 'shared';
+  const owner = model.data?.can_edit === true;
   const current: Tab =
     tab === 'memory'
       ? 'memory'
@@ -509,6 +512,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 { value: 'models', label: 'Models' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
+                // Only the installation's owner runs it; the service refuses everyone else too.
+                ...(owner ? [{ value: 'installation' as const, label: 'Installation' }] : []),
               ]}
             />
           </div>
@@ -540,6 +545,14 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <FeedbackTab selected={detail} />
         ) : current === 'models' ? (
           <ModelsTab loaded={model} />
+        ) : current === 'installation' ? (
+          owner ? (
+            <OperatorTab />
+          ) : model.loading ? null : (
+            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+              Only the person who runs this Melete sees this page.
+            </p>
+          )
         ) : current === 'account' ? (
           <AccountSettings />
         ) : current === 'connections' ? (

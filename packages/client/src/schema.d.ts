@@ -15328,6 +15328,784 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/operator/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest 100 changes made to people’s accounts, newest first
+         * @description Who did what to whom, and when: from the operator console or the operator’s command on the host. No link or code is ever kept.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Changes */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            entries: {
+                                /** @enum {string} */
+                                action: "invited" | "invite_resent" | "reset_sent" | "disabled" | "enabled" | "caps_changed" | "removed";
+                                actor: {
+                                    email: string | null;
+                                    id: string | null;
+                                };
+                                at: components["schemas"]["__schema217"];
+                                detail: string | null;
+                                id: string;
+                                target: {
+                                    email: string | null;
+                                    id: string | null;
+                                };
+                            }[];
+                        };
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The installation at a glance, for its owner
+         * @description Spending this month and today against the installation’s caps, how many people have accounts and how many were active in the last week, agent runs and computers going against their limits, when the newest backup was taken, free disk against its floor, the health checks and the version. Read-only.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Overview */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            backup: {
+                                max_age_hours: number;
+                                newest_at: components["schemas"]["__schema217"] | null;
+                            };
+                            computers: components["schemas"]["OperatorUsedOf"];
+                            disk: {
+                                floor_mb: number;
+                                free_mb: number | null;
+                                ok: boolean;
+                            } | null;
+                            health: {
+                                checks: {
+                                    detail: string;
+                                    name: string;
+                                    ok: boolean;
+                                }[];
+                                /** @enum {string} */
+                                status: "ok" | "unhealthy";
+                            };
+                            people: {
+                                active: number;
+                                disabled: number;
+                                invited: number;
+                                total: number;
+                            };
+                            runs: components["schemas"]["OperatorUsedOf"];
+                            spend: {
+                                day_cap_usd: number | null;
+                                day_usd: number;
+                                month_cap_usd: number | null;
+                                month_resets_at: components["schemas"]["__schema217"];
+                                month_usd: number;
+                            };
+                            version: string;
+                        };
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everyone with an account here, with this month’s spending and their caps */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description People */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            can_email: boolean;
+                            defaults: components["schemas"]["OperatorCaps"];
+                            installation: {
+                                day_usd: number | null;
+                                month_usd: number | null;
+                            };
+                            people: components["schemas"]["OperatorPerson"][];
+                        };
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Invite someone: a new account and a one-time link to choose a password
+         * @description The link is always returned, to pass on by hand, and also emailed when account mail and a web address are set. It works once and expires in 7 days; opening it signs the person straight in once they choose a password.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Invited */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            invite: components["schemas"]["OperatorOneTimeLink"];
+                            person: components["schemas"]["OperatorPerson"];
+                        };
+                    };
+                };
+                /** @description Not an email address */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Someone already has an account with that email */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete someone’s account, its email typed to confirm
+         * @description The account deletion every account has, asked by the installation’s owner.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["__schema23"];
+                };
+            };
+            responses: {
+                /** @description Deletion started */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            removal: components["schemas"]["__schema280"];
+                        };
+                    };
+                };
+                /** @description The email does not match the account */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account, or it is being deleted */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description The owner’s own account, or a space the browser worker uses */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}/caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set or clear someone’s own spending caps
+         * @description All four, each in dollars or null for the installation’s per-person cap. Each has to be more than $0, in whole cents, and at most the installation’s own cap for the period; a day’s cap at most the month’s, and background work at most what the person may spend in all.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        background_day_usd: number | null;
+                        background_month_usd: number | null;
+                        day_usd: number | null;
+                        month_usd: number | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description Caps set */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema804"];
+                    };
+                };
+                /** @description A cap outside the installation’s limits (`caps_out_of_range`) */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account, or it is being deleted */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop someone signing in, and sign them out everywhere
+         * @description Ends their sessions, sign-in and reset links, connected apps, notifications and paired computers. Their routines and data are kept. The owner can’t be disabled.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Disabled */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema804"];
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account, or it is being deleted */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description The owner’s own account */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Let a disabled account sign in again */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Enabled */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema804"];
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account, or it is being deleted */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description The owner’s own account */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A one-time link to choose a password: a new invite, or a reset
+         * @description Someone who never chose a password gets their invite again (7 days). Anyone else gets a reset link (60 minutes); using it signs them out everywhere. The link is always returned, and also emailed when account mail and a web address are set.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Link */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            person: components["schemas"]["OperatorPerson"];
+                            reset: components["schemas"]["OperatorOneTimeLink"];
+                        };
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account, or it is being deleted */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description The account is disabled */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operator/people/{id}/removal/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What deleting someone’s account takes with it */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Account id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Preview */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            preview: components["schemas"]["__schema278"];
+                        };
+                    };
+                };
+                /** @description No session, or the session ended */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description Not the owner of this installation, a guest, or not a browser session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+                /** @description No such account */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema219"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/own-skills": {
         parameters: {
             query?: never;
@@ -26865,26 +27643,61 @@ export interface components {
         __schema780: string;
         /** @enum {string} */
         __schema781: "starting" | "running" | "exited" | "stopped" | "expired" | "lost";
-        __schema782: string;
+        __schema782: number;
         __schema783: number;
-        __schema784: string;
+        __schema784: number | null;
         __schema785: string;
-        /** @enum {string} */
-        __schema786: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
+        __schema786: string | null;
         __schema787: string | null;
-        __schema788: {
+        /** @enum {string} */
+        __schema788: "person" | "guest";
+        __schema789: boolean;
+        /** @enum {string} */
+        __schema790: "active" | "invited" | "disabled" | "removing";
+        __schema791: components["schemas"]["__schema217"] | null;
+        __schema792: number;
+        __schema793: {
+            background_month_usd: number;
+            day_usd: number;
+            month_usd: number;
+        };
+        __schema794: {
+            effective: components["schemas"]["OperatorCaps"];
+            own: components["schemas"]["OperatorCaps"];
+        };
+        __schema795: number | null;
+        __schema796: number | null;
+        __schema797: number | null;
+        __schema798: number | null;
+        /** @enum {string} */
+        __schema799: "invite" | "reset";
+        __schema800: string | null;
+        __schema801: string;
+        __schema802: boolean;
+        __schema803: string | null;
+        __schema804: {
+            person: components["schemas"]["OperatorPerson"];
+        };
+        __schema805: string;
+        __schema806: number;
+        __schema807: string;
+        __schema808: string;
+        /** @enum {string} */
+        __schema809: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
+        __schema810: string | null;
+        __schema811: {
             captured_at: components["schemas"]["__schema217"];
             duration_ms: number | null;
         };
         /** @enum {string} */
-        __schema789: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
-        __schema790: string | null;
-        __schema791: {
+        __schema812: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
+        __schema813: string | null;
+        __schema814: {
             compression_count?: number;
             in_place?: boolean;
             used_fallback?: boolean;
         };
-        __schema792: string;
+        __schema815: string;
         Action: {
             attempt_id: components["schemas"]["__schema534"];
             authorization_ref: components["schemas"]["__schema538"];
@@ -27138,13 +27951,13 @@ export interface components {
             take_over: components["schemas"]["__schema450"];
         };
         HookObservation: {
-            capture_id: components["schemas"]["__schema785"];
-            detail?: components["schemas"]["__schema791"];
-            name: components["schemas"]["__schema786"];
-            outcome: components["schemas"]["__schema789"];
-            redacted_args_digest: components["schemas"]["__schema790"];
-            timing: components["schemas"]["__schema788"];
-            tool_name: components["schemas"]["__schema787"];
+            capture_id: components["schemas"]["__schema808"];
+            detail?: components["schemas"]["__schema814"];
+            name: components["schemas"]["__schema809"];
+            outcome: components["schemas"]["__schema812"];
+            redacted_args_digest: components["schemas"]["__schema813"];
+            timing: components["schemas"]["__schema811"];
+            tool_name: components["schemas"]["__schema810"];
         };
         Job: {
             budget: components["schemas"]["__schema452"];
@@ -27231,6 +28044,38 @@ export interface components {
         LiveScopeResponse: {
             site_scope: components["schemas"]["__schema675"];
         };
+        OperatorCaps: {
+            background_day_usd: components["schemas"]["__schema797"];
+            background_month_usd: components["schemas"]["__schema798"];
+            day_usd: components["schemas"]["__schema795"];
+            month_usd: components["schemas"]["__schema796"];
+        };
+        OperatorOneTimeLink: {
+            code: components["schemas"]["__schema801"];
+            emailed: components["schemas"]["__schema802"];
+            expires_at: components["schemas"]["__schema217"];
+            link: components["schemas"]["__schema800"];
+            mail_problem: components["schemas"]["__schema803"];
+            purpose: components["schemas"]["__schema799"];
+        };
+        OperatorPerson: {
+            caps: components["schemas"]["__schema794"];
+            created_at: components["schemas"]["__schema217"];
+            display_name: components["schemas"]["__schema787"];
+            email: components["schemas"]["__schema786"];
+            id: components["schemas"]["__schema785"];
+            kind: components["schemas"]["__schema788"];
+            last_active_at: components["schemas"]["__schema791"];
+            owner: components["schemas"]["__schema789"];
+            sessions: components["schemas"]["__schema792"];
+            spend: components["schemas"]["__schema793"];
+            status: components["schemas"]["__schema790"];
+        };
+        OperatorUsedOf: {
+            limit: components["schemas"]["__schema783"];
+            per_person: components["schemas"]["__schema784"];
+            used: components["schemas"]["__schema782"];
+        };
         PermissionSeen: {
             id: components["schemas"]["__schema26"];
             version: components["schemas"]["__schema26"];
@@ -27311,74 +28156,74 @@ export interface components {
         };
         RuntimeEvent: {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            capture_id: components["schemas"]["__schema785"];
-            dedup_key: components["schemas"]["__schema784"];
-            detail?: components["schemas"]["__schema791"];
-            local_seq: components["schemas"]["__schema783"];
-            name: components["schemas"]["__schema786"];
-            outcome: components["schemas"]["__schema789"];
-            redacted_args_digest: components["schemas"]["__schema790"];
-            timing: components["schemas"]["__schema788"];
-            tool_name: components["schemas"]["__schema787"];
+            attempt_id: components["schemas"]["__schema805"];
+            capture_id: components["schemas"]["__schema808"];
+            dedup_key: components["schemas"]["__schema807"];
+            detail?: components["schemas"]["__schema814"];
+            local_seq: components["schemas"]["__schema806"];
+            name: components["schemas"]["__schema809"];
+            outcome: components["schemas"]["__schema812"];
+            redacted_args_digest: components["schemas"]["__schema813"];
+            timing: components["schemas"]["__schema811"];
+            tool_name: components["schemas"]["__schema810"];
             /** @constant */
             type: "hook_event";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            capture_id: components["schemas"]["__schema785"];
-            dedup_key: components["schemas"]["__schema784"];
-            detail?: components["schemas"]["__schema791"];
+            attempt_id: components["schemas"]["__schema805"];
+            capture_id: components["schemas"]["__schema808"];
+            dedup_key: components["schemas"]["__schema807"];
+            detail?: components["schemas"]["__schema814"];
             /** @enum {string} */
             error_code: "observer_failed" | "delivery_failed" | "capture_gap";
-            local_seq: components["schemas"]["__schema783"];
-            name: components["schemas"]["__schema786"];
-            outcome: components["schemas"]["__schema789"];
-            redacted_args_digest: components["schemas"]["__schema790"];
-            timing: components["schemas"]["__schema788"];
-            tool_name: components["schemas"]["__schema787"];
+            local_seq: components["schemas"]["__schema806"];
+            name: components["schemas"]["__schema809"];
+            outcome: components["schemas"]["__schema812"];
+            redacted_args_digest: components["schemas"]["__schema813"];
+            timing: components["schemas"]["__schema811"];
+            tool_name: components["schemas"]["__schema810"];
             /** @constant */
             type: "hook_error";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             turn: number;
             /** @constant */
             type: "turn_started";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             text: string;
             /** @constant */
             type: "text_delta";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             text: string;
             /** @constant */
             type: "reasoning_delta";
         } | {
             arguments: components["schemas"]["__schema469"];
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
+            attempt_id: components["schemas"]["__schema805"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             tool: string;
             /** @constant */
             type: "tool_call_proposed";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
+            attempt_id: components["schemas"]["__schema805"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             ok: boolean;
             result: components["schemas"]["__schema469"];
             /** @constant */
@@ -27386,17 +28231,17 @@ export interface components {
         } | {
             action_id: string;
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
             kind: string;
-            local_seq: components["schemas"]["__schema783"];
+            local_seq: components["schemas"]["__schema806"];
             /** @constant */
             type: "action_requested";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             outcome: {
                 evidence: ({
                     artifact_id: string;
@@ -27420,7 +28265,7 @@ export interface components {
                 kind: "waiting_for_input";
                 question: string;
             } | {
-                action_ids: components["schemas"]["__schema792"][];
+                action_ids: components["schemas"]["__schema815"][];
                 /** @constant */
                 kind: "waiting_for_approval";
             } | {
@@ -27450,27 +28295,27 @@ export interface components {
             usage?: components["schemas"]["__schema515"];
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             silent_ms: number;
             tool?: string;
             /** @constant */
             type: "stalled";
         } | {
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             steer_id: string;
             /** @constant */
             type: "steer_delivered";
         } | {
             after_seq: number;
             at: components["schemas"]["__schema217"];
-            attempt_id: components["schemas"]["__schema782"];
-            dedup_key: components["schemas"]["__schema784"];
-            local_seq: components["schemas"]["__schema783"];
+            attempt_id: components["schemas"]["__schema805"];
+            dedup_key: components["schemas"]["__schema807"];
+            local_seq: components["schemas"]["__schema806"];
             reason: string;
             /** @constant */
             type: "gap";

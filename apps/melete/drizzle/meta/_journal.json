@@ -834,6 +834,13 @@
       "when": 1789232400098,
       "tag": "0118_sandbox_display_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1789232400099,
+      "tag": "0119_person_spend_limits",
+      "breakpoints": true
     }
   ]
 }

@@ -14,11 +14,12 @@
  * set; `--json` prints one JSON object instead of sentences. Exit codes: 0
  * done, 1 refused (an unknown account, an owner that already exists), 2 usage.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { issuePasswordReset, principalByEmail, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { issueSetupCode, SETUP_CODE_HOURS, setupLink } from '../api/setup-code.ts';
 import { newId } from '../ids.ts';
+import { recordOperatorAction } from '../operator/audit.ts';
 import { describeReset, operatorReset } from './reset-password.ts';
 
 export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
@@ -39,6 +40,66 @@ const refused = (message: string): AccountOutcome => ({
 });
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A new account and its invite, or why there is none. */
+export type Invited =
+  | { ok: true; id: string; email: string; owner: boolean; token: string; expiresAt: Date }
+  | { ok: false; reason: 'invalid' | 'taken'; message: string };
+
+/**
+ * Makes an account with no password, and the one-time invite that lets its
+ * person choose one: the installation's owner when it has none yet. The
+ * operator's command and the operator console both make accounts this way.
+ */
+export async function inviteAccount(sql: Sql, email: string): Promise<Invited> {
+  const address = email.trim().toLowerCase();
+  if (!EMAIL.test(address))
+    return { ok: false, reason: 'invalid', message: `${email} is not an email address.` };
+  const made = await sql.begin(async (tx) => {
+    const [taken] = await tx`select 1 from principal where email = ${address}`;
+    if (taken) return null;
+    const [installed] = await tx`select id from owner limit 1 for update`;
+    const id = newId('own');
+    // The first account is the installation's owner; its personal space is
+    // made, and furnished, when it first signs in.
+    if (!installed) await tx`insert into owner (id, email) values (${id}, ${address})`;
+    await tx`insert into principal (id, email) values (${id}, ${address})`;
+    // Setup is done once the owner exists: codes issued for it are spent.
+    if (!installed) await tx`update setup_code set used_at = now() where used_at is null`;
+    const issued = await issuePasswordReset(tx, id, 'invite');
+    return { id, owner: !installed, token: issued.token, expiresAt: issued.expiresAt };
+  });
+  if (!made)
+    return { ok: false, reason: 'taken', message: `An account already signs in as ${address}.` };
+  return { ok: true, email: address, ...made };
+}
+
+/**
+ * Stops an account signing in and ends every way it was signed in: sessions,
+ * links, connected apps, notifications and paired computers, whose
+ * connections close as a revoke closes them. Its routines and data are kept.
+ * Returns the computers it disconnected, so a running service can also close
+ * their live connections.
+ */
+export function disableAccount(q: Sql, principalId: string): Promise<string[]> {
+  return q.begin(async (tx: TransactionSql) => {
+    await tx`update principal set disabled_at = coalesce(disabled_at, now()) where id = ${principalId}`;
+    const ended = await endAccess(tx, principalId, null);
+    // The computers' connections close as a revoke from Settings closes them
+    // when no policy service is at hand: the generation moves on, so nothing
+    // still holding the old one acts.
+    if (ended.length)
+      await tx`update connection set status = 'revoked', generation = generation + 1
+        where id in (select connection_id from paired_device where id = any(${ended}))
+        and status <> 'revoked'`;
+    return ended;
+  });
+}
+
+/** Lets a disabled account sign in again. */
+export async function enableAccount(q: Sql, principalId: string): Promise<void> {
+  await q`update principal set disabled_at = null where id = ${principalId}`;
+}
 
 export async function listAccounts(sql: Sql): Promise<AccountOutcome> {
   const rows = await sql`select p.id, p.email, p.kind, p.created_at, p.disabled_at,
@@ -77,23 +138,15 @@ export async function createAccount(
   email: string,
   webUrl: string | undefined,
 ): Promise<AccountOutcome> {
-  const address = email.trim().toLowerCase();
-  if (!EMAIL.test(address)) return refused(`${email} is not an email address.`);
-  const made = await sql.begin(async (tx) => {
-    const [taken] = await tx`select 1 from principal where email = ${address}`;
-    if (taken) return null;
-    const [installed] = await tx`select id from owner limit 1 for update`;
-    const id = newId('own');
-    // The first account is the installation's owner; its personal space is
-    // made, and furnished, when it first signs in.
-    if (!installed) await tx`insert into owner (id, email) values (${id}, ${address})`;
-    await tx`insert into principal (id, email) values (${id}, ${address})`;
-    // Setup is done once the owner exists: codes issued for it are spent.
-    if (!installed) await tx`update setup_code set used_at = now() where used_at is null`;
-    const issued = await issuePasswordReset(tx, id, 'invite');
-    return { owner: !installed, token: issued.token };
+  const made = await inviteAccount(sql, email);
+  if (!made.ok) return refused(made.message);
+  const address = made.email;
+  await recordOperatorAction(sql, {
+    actor: null,
+    action: 'invited',
+    target: { id: made.id, email: address },
+    detail: made.owner ? 'As the owner of this installation' : 'With a one-time link',
   });
-  if (!made) return refused(`An account already signs in as ${address}.`);
   const link = webUrl ? resetUrl(webUrl, made.token) : null;
   const days = INVITE_MINUTES / 1440;
   const role = made.owner ? 'the owner of this installation' : 'a new account';
@@ -113,6 +166,16 @@ export async function resetAccount(
   webUrl: string | undefined,
 ): Promise<AccountOutcome> {
   const result = await operatorReset(sql, email, webUrl);
+  if (result.ok) {
+    const account = await principalByEmail(sql, result.email);
+    if (account)
+      await recordOperatorAction(sql, {
+        actor: null,
+        action: 'reset_sent',
+        target: account,
+        detail: 'A one-time link to choose a new password',
+      });
+  }
   return {
     ok: result.ok,
     text: describeReset(result),
@@ -136,25 +199,16 @@ export async function setDisabled(
   const account = await principalByEmail(sql, email.trim());
   if (!account) return refused(`No account signs in as ${email.trim()}.`);
   if (!disabled) {
-    await sql`update principal set disabled_at = null where id = ${account.id}`;
+    await enableAccount(sql, account.id);
+    await recordOperatorAction(sql, { actor: null, action: 'enabled', target: account });
     return {
       ok: true,
       text: `${account.email} can sign in again.\n`,
       json: { ok: true, email: account.email, disabled: false },
     };
   }
-  const devices = await sql.begin(async (tx) => {
-    await tx`update principal set disabled_at = coalesce(disabled_at, now()) where id = ${account.id}`;
-    const ended = await endAccess(tx, account.id, null);
-    // The computers' connections close as a revoke from Settings closes them
-    // when no policy service is at hand: the generation moves on, so nothing
-    // still holding the old one acts.
-    if (ended.length)
-      await tx`update connection set status = 'revoked', generation = generation + 1
-        where id in (select connection_id from paired_device where id = any(${ended}))
-        and status <> 'revoked'`;
-    return ended;
-  });
+  const devices = await disableAccount(sql, account.id);
+  await recordOperatorAction(sql, { actor: null, action: 'disabled', target: account });
   const [owner] = await sql`select 1 from owner where id = ${account.id}`;
   const note = owner
     ? ' It is the installation’s owner, so nobody can change its settings until it is enabled again.'

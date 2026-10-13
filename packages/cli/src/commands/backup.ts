@@ -48,6 +48,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { backupNoteStatement } from '../../../../apps/melete/src/operator/backup-note.ts';
 import { recordBackup } from '../backup-age.ts';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
@@ -730,6 +731,16 @@ export async function takeBackup(
   }
   // Noted for check and status, which judge how old the newest backup is.
   recordBackup(context.deployDir, started, location);
+  // And in the database, where the operator console reads it.
+  const noted = context.run(psqlLine(compose, config, backupNoteStatement(name, started)));
+  if (noted.code !== 0) {
+    const said = (noted.stderr || noted.stdout).trim().split('\n')[0]?.slice(0, 200);
+    results.push({
+      id: 'backup.noted',
+      level: 'warn',
+      detail: `The backup is whole, but the database did not take the note of it, so the web app's operator console may show an older backup${said ? `: ${said}` : '.'}`,
+    });
+  }
   return { ok: true, location, results };
 }
 

@@ -83,6 +83,12 @@ import type {
   MemoryRewind,
   MemoryTimeline,
   MessageAcceptance,
+  OperatorAuditEntry,
+  OperatorCaps,
+  OperatorOneTimeLink,
+  OperatorOverview,
+  OperatorPeople,
+  OperatorPerson,
   OwnSkill,
   OwnSkillEdit,
   Permission,
@@ -303,6 +309,36 @@ export const adapter = {
     guard<{ removal: AccountRemoval }>(() =>
       api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
     ),
+  /* ---------- the operator console: the installation's owner only ---------- */
+  operatorOverview: () => guard<OperatorOverview>(() => api.GET('/operator/overview')),
+  operatorPeople: () => guard<OperatorPeople>(() => api.GET('/operator/people')),
+  invitePerson: (email: string) =>
+    guard<{ person: OperatorPerson; invite: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people', { body: { email } }),
+    ),
+  setPersonDisabled: (id: string, disabled: boolean) =>
+    guard<{ person: OperatorPerson }>(() =>
+      disabled
+        ? api.POST('/operator/people/{id}/disable', path(id))
+        : api.POST('/operator/people/{id}/enable', path(id)),
+    ),
+  sendPersonReset: (id: string) =>
+    guard<{ person: OperatorPerson; reset: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people/{id}/password-reset', path(id)),
+    ),
+  setPersonCaps: (id: string, caps: OperatorCaps) =>
+    guard<{ person: OperatorPerson }>(() =>
+      api.PUT('/operator/people/{id}/caps', { ...path(id), body: caps }),
+    ),
+  personRemovalPreview: (id: string) =>
+    guard<{ preview: AccountRemovalPreview }>(() =>
+      api.GET('/operator/people/{id}/removal/preview', path(id)),
+    ),
+  removePerson: (id: string, confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/operator/people/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
+    ),
+  operatorAudit: () => guard<{ entries: OperatorAuditEntry[] }>(() => api.GET('/operator/audit')),
   spaceRemovalPreview: (id: string) =>
     guard<{ preview: SpaceRemovalPreview }>(() =>
       api.GET('/spaces/{id}/removal/preview', path(id)),
