@@ -110,7 +110,7 @@ non-zero when the preflight found a problem; the plan is printed either way.
 | `--browser` | Include `deploy/docker-compose.browser.yml` in every Compose command and stop the browser worker with the other writers. Use it if you start the stack with that override. |
 | `--tailscale` | Include `deploy/docker-compose.tailscale.yml` in every Compose command and stop the Tailscale node with the other writers. Use it if you start the stack with that override. |
 | `--tailscale-kernel` | Also include `deploy/docker-compose.tailscale-kernel.yml`, read on top of the Tailscale file. Needs `--tailscale`. |
-| `--external-db` | Include `deploy/docker-compose.external-db.yml`. The database is dumped, sized and checked through the `database-client` service rather than a bundled `postgres`, and the rollback restores the dump into that server. |
+| `--external-db` | Include `deploy/docker-compose.external-db.yml`. The database is dumped, sized and checked through the `database-client` service rather than a bundled `postgres`, and the rollback loads the dump into a new, empty database on that server, which you create and point `DATABASE_URL` at (with roles an administrator made, their three addresses too); the database the release used is left as it is. |
 | `--blobs-s3` | Include `deploy/docker-compose.blobs-s3.yml`, read last, so the service keeps its blobs in the bucket. |
 | `--profile sandbox` | Run every Compose command with the sandbox profile, so the agents' computer image is rebuilt with the release and its running image is kept for a rollback. |
 | `--wait-timeout seconds` | How long `up --wait` may take. Default 300. Image builds are not bounded by it. |
