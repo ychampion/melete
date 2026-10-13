@@ -367,9 +367,13 @@ describe('reaching an external database', () => {
     );
     // Only into an empty database, all at once: never --clean over tables already there.
     expect(EXTERNAL_LOAD).toContain(
-      'exec pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error',
+      'pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error',
     );
     expect(steps).not.toContain('--clean');
+    // The administrator's roles move to the new database with DATABASE_URL.
+    expect(steps).toContain(
+      'MELETE_MIGRATE_DATABASE_URL, MELETE_API_DATABASE_URL and MELETE_EFFECTS_DATABASE_URL are pointed at it too',
+    );
     // A new machine has no journal of its own to keep.
     expect(steps).not.toContain('Keep the restriction journal volume');
     // The journal still comes back before the service starts on a new machine.

@@ -10,6 +10,7 @@ import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
 import { judgeBrowser } from '../browser.ts';
+import { ROLE_SETTINGS } from '../database.ts';
 import { type Context, inServiceImage } from '../context.ts';
 import {
   BLOBS_S3_FILE,
@@ -363,13 +364,6 @@ export function judgeDatabaseUrl(
   results.push(judgeDatabaseRoles(url, env));
   return results;
 }
-
-/** The addresses an administrator gives when database-roles may not create the roles itself. */
-export const ROLE_SETTINGS = [
-  'MELETE_MIGRATE_DATABASE_URL',
-  'MELETE_API_DATABASE_URL',
-  'MELETE_EFFECTS_DATABASE_URL',
-] as const;
 
 /**
  * How an external database gets the service's three roles: made at start by

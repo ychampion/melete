@@ -35,7 +35,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Context, Source } from '../context.ts';
-import { psqlLine, TABLE_COUNT_SQL } from '../database.ts';
+import { psqlLine, rolesElsewhere, TABLE_COUNT_SQL } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import {
   CELLS_SERVICE,
@@ -372,11 +372,12 @@ async function runSteps(
       level: 'fail',
       detail: redact(`${actionLine(action, null)}: ${detail}`, secrets),
       fix:
-        outcome === 'not_started'
+        action.failure ??
+        (outcome === 'not_started'
           ? `Every part is back; only the start failed. See bun run melete status and bun run melete logs, fix the cause, then start it with ${start}. The restore need not run again.`
           : outcome === 'midway'
             ? `The restore stopped here, and the stack was not started on a half-restored installation. Fix the cause, then ${rerun ? `restore again. ${rerun}` : 'run the same restore --yes again: it starts over from the backup.'}`
-            : `Nothing was replaced yet, but services may be stopped. Fix the cause and run the same restore --yes again, or start the stack as it was with ${start}.`,
+            : `Nothing was replaced yet, but services may be stopped. Fix the cause and run the same restore --yes again, or start the stack as it was with ${start}.`),
     });
     return outcome;
   }
@@ -656,6 +657,16 @@ export async function runRestore(
             },
       );
   }
+  // The service runs where the administrator's role addresses point, not where DATABASE_URL does.
+  const elsewhere =
+    config.database.external && installation.env ? rolesElsewhere(installation.env) : [];
+  if (elsewhere.length > 0)
+    results.push({
+      id: 'restore.database_roles',
+      level: 'fail',
+      detail: `${elsewhere.join(', ')} name${elsewhere.length === 1 ? 's' : ''} another server or database than DATABASE_URL, and the service runs on what ${elsewhere.length === 1 ? 'it names' : 'they name'}, not on the database this restore ${options.keepDatabase ? 'keeps' : 'loads'}. Nothing was changed.`,
+      fix: 'Have the database\'s administrator grant those roles the database DATABASE_URL names (docs/DEPLOYMENT.md, "Roles an administrator creates"), point each at it with bun run melete set --from-env, then run this again.',
+    });
   // Missing, or with no entry yet: a new machine, or a restore that stopped
   // after `compose create` made the volume and before the journal went back.
   const journalVolume = `${config.project}_restrictions`;

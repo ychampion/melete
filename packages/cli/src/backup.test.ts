@@ -1412,12 +1412,55 @@ describe('restoring with an external database', () => {
     rig.context.streamFails.push('pg_restore --dbname');
     expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
     const printed = rig.context.printed();
-    expect(printed).toContain('Nothing was replaced yet');
+    expect(printed).toContain(
+      'The load runs in one transaction, so the database DATABASE_URL names holds nothing of it. Fix the cause, then run the same restore --yes again. Do not start the stack on that database meanwhile',
+    );
+    // Started now, the stack would fill the new database, and the restore would then refuse it.
+    expect(printed).not.toContain('start the stack as it was');
     expect(printed).toMatch(
       /fail\s+restore\.done\s+The restore stopped before it replaced anything/,
     );
     expect(indexOf(rig.events, 'src=melete_spaces,dst=/v ')).toBe(-1);
     expect(rig.events.some(startsStack)).toBe(false);
+  });
+
+  test("the administrator's role addresses must name the database the restore loads or keeps", async () => {
+    const at = (user: string, database: string) =>
+      `postgres://${user}:${'p'.repeat(16)}@db.example:5432/${database}?sslmode=require`;
+    const roles = (database: string) => ({
+      MELETE_MIGRATE_DATABASE_URL: at('melete_migrate', database),
+      MELETE_API_DATABASE_URL: at('melete_api', database),
+      MELETE_EFFECTS_DATABASE_URL: at('melete_effects', database),
+    });
+    // DATABASE_URL was pointed at a new database; the roles still name the old one.
+    const env = { DATABASE_URL: at('admin', 'melete_new'), ...roles('melete') };
+    const rig = filesRig({ contract: { database: { external: true } }, env });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    rig.events.length = 0;
+    for (const args of [['--yes'], ['--keep-database', '--yes']]) {
+      const run = testContext(rig.deployDir, [], {
+        run: rig.context.run,
+        stream: rig.context.stream,
+      });
+      expect(await runRestore(run, [rig.set, ...args], false)).toBe(2);
+      expect(run.printed()).toMatch(
+        /fail\s+restore\.database_roles\s+MELETE_MIGRATE_DATABASE_URL, MELETE_API_DATABASE_URL, MELETE_EFFECTS_DATABASE_URL name another server or database than DATABASE_URL/,
+      );
+    }
+    expect(changes(rig.events)).toEqual([]);
+
+    // Pointed at the new database too, the restore goes ahead.
+    writeEnv(rig.deployDir, {
+      MELETE_SANDBOX_PROJECT: 'proj',
+      DATABASE_URL: at('admin', 'melete_new'),
+      ...roles('melete_new'),
+    });
+    const moved = testContext(rig.deployDir, [], {
+      run: rig.context.run,
+      stream: rig.context.stream,
+    });
+    expect(await runRestore(moved, [rig.set], false)).toBe(0);
+    expect(moved.printed()).not.toContain('restore.database_roles');
   });
 
   test('a restore that stops after the dump is loaded says how to finish it, and that finishes it', async () => {
@@ -1503,12 +1546,24 @@ describe('restoring with an external database', () => {
         );
         writeFileSync(
           join(bin, 'pg_restore'),
-          `#!/bin/sh\necho "$*" > ${bin}/args\nwc -c > ${bin}/bytes\n`,
+          [
+            '#!/bin/sh',
+            `echo "$*" > ${bin}/args`,
+            '[ "$RESTORE_FAILS" = 1 ] || { wc -c > ' + bin + '/bytes; exit 0; }',
+            // pg_restore stops at the error with most of the dump unread.
+            'dd bs=1 count=2 of=/dev/null 2>/dev/null',
+            `printf 'pg_restore: error: could not execute query: ERROR:  out of shared memory\\nHINT:  You might need to increase "max_locks_per_transaction".\\nCommand was: CREATE TABLE public.note (\\n    id text\\n);\\n' >&2`,
+            'exit 1',
+          ].join('\n'),
         );
+        // The script reads what is left of the dump with cat; this one says that it did.
+        writeFileSync(join(bin, 'cat'), `#!/bin/sh\nwc -c > ${bin}/drained\n`);
         chmodSync(join(bin, 'psql'), 0o755);
         chmodSync(join(bin, 'pg_restore'), 0o755);
-        const load = (tables: string, psqlFails = false) => {
+        chmodSync(join(bin, 'cat'), 0o755);
+        const load = (tables: string, psqlFails = false, restoreFails = false) => {
           rmSync(join(bin, 'args'), { force: true });
+          rmSync(join(bin, 'drained'), { force: true });
           const run = Bun.spawnSync(['sh', '-c', EXTERNAL_LOAD], {
             stdin: new TextEncoder().encode('the dump'),
             env: {
@@ -1516,6 +1571,7 @@ describe('restoring with an external database', () => {
               DATABASE_URL: 'postgres://u@db/x?sslmode=require',
               TABLES: tables,
               PSQL_FAILS: psqlFails ? '1' : '0',
+              RESTORE_FAILS: restoreFails ? '1' : '0',
             },
           });
           return {
@@ -1523,6 +1579,9 @@ describe('restoring with an external database', () => {
             stderr: run.stderr.toString(),
             loaded: existsSync(join(bin, 'args'))
               ? readFileSync(join(bin, 'args'), 'utf8').trim()
+              : null,
+            drained: existsSync(join(bin, 'drained'))
+              ? Number(readFileSync(join(bin, 'drained'), 'utf8').trim())
               : null,
           };
         };
@@ -1532,6 +1591,7 @@ describe('restoring with an external database', () => {
           '--dbname=postgres://u@db/x?sslmode=require --single-transaction --no-owner --no-privileges --exit-on-error',
         );
         expect(readFileSync(join(bin, 'bytes'), 'utf8').trim()).toBe('8');
+        expect(empty.drained).toBeNull();
 
         const full = load('12');
         expect(full.code).toBe(1);
@@ -1539,6 +1599,20 @@ describe('restoring with an external database', () => {
         expect(full.stderr).toContain(
           'already holds 12 table(s), and a restore loads only into an empty one. Nothing was loaded.',
         );
+        // The dump is read to its end, so the command streaming it in sees no broken pipe.
+        expect(full.drained).toBe(8);
+
+        // A load that fails reads the rest of the dump, and its last lines are the error,
+        // never the statement it ran: the restore's report shows the last lines.
+        const failed = load('0', false, true);
+        expect(failed.code).toBe(1);
+        expect(failed.drained).toBe(6);
+        expect(failed.stderr).toContain('Command was: CREATE TABLE public.note');
+        expect(failed.stderr.trim().split('\n').slice(-3)).toEqual([
+          'pg_restore: error: could not execute query: ERROR:  out of shared memory',
+          'HINT:  You might need to increase "max_locks_per_transaction".',
+          'The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again.',
+        ]);
 
         const silent = load('0', true);
         expect(silent.code).toBe(1);

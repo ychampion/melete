@@ -221,6 +221,11 @@ describe('the rollback steps', () => {
     expect(external[load]).toContain('a restore loads only into an empty one');
     expect(external[load]).toContain('< /srv/backups/melete-upgrade-v0.2.0/database.dump');
     expect(external.join('\n')).toContain('assistant_restrictions');
+    // Roles an administrator made name a database themselves: they move with DATABASE_URL.
+    const roles = external.findIndex((line) => line.includes('MELETE_MIGRATE_DATABASE_URL'));
+    expect(roles).toBeGreaterThan(point);
+    expect(roles).toBeLessThan(up);
+    expect(external.slice(roles, roles + 4).join(' ')).toContain('Roles an administrator creates');
   });
 
   test('a detached start returns to the commit, not to a branch', () => {

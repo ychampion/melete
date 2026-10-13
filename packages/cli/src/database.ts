@@ -22,6 +22,35 @@ export const CLIENT_TLS =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
   'case "$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; ';
 
+/** The addresses an administrator gives when database-roles may not create the roles itself. */
+export const ROLE_SETTINGS = [
+  'MELETE_MIGRATE_DATABASE_URL',
+  'MELETE_API_DATABASE_URL',
+  'MELETE_EFFECTS_DATABASE_URL',
+] as const;
+
+/**
+ * Of the role addresses deploy/.env gives, the ones that name another server
+ * or database than DATABASE_URL. The service runs on what they name, so after
+ * DATABASE_URL moves to a new database they must move with it.
+ */
+export function rolesElsewhere(env: Record<string, string>): string[] {
+  const parse = (value: string | undefined) => {
+    try {
+      return new URL(value?.trim() ?? '');
+    } catch {
+      return null;
+    }
+  };
+  const operator = parse(env.DATABASE_URL);
+  if (!operator) return [];
+  return ROLE_SETTINGS.filter((name) => {
+    if (!env[name]?.trim()) return false;
+    const url = parse(env[name]);
+    return !url || url.host !== operator.host || url.pathname !== operator.pathname;
+  });
+}
+
 /** How many tables the database holds outside Postgres's own schemas: none in an empty one. */
 export const TABLE_COUNT_SQL =
   "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')";
@@ -33,10 +62,11 @@ export const TABLE_COUNT_SQL =
  * already there (`pg_restore --clean` would drop only the backup's own, and
  * leave a newer release's behind). It loads in one transaction, so a load that
  * fails part way leaves the database as empty as it found it, ready for the
- * same load again. A refused load reads the dump to its end before it exits,
- * so the command streaming it in sees no broken pipe.
+ * same load again. A refused or failed load reads the dump to its end before
+ * it exits, so the command streaming it in sees no broken pipe, and a failed one
+ * ends with pg_restore's error and what it left, for the restore's report.
  */
-export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; exec pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error`;
+export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; [ -z "$err" ] || printf '%s\\n' "$err" >&2; [ "$rc" = 0 ] && exit 0; cat >/dev/null; printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2 >&2; echo "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; exit "$rc"`;
 
 /**
  * The connection arguments a psql, pg_dump or pg_restore line takes, read from

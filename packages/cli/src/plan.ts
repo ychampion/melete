@@ -458,6 +458,8 @@ export type RestoreAction =
        * run instead, for the report of a restore that stops after it.
        */
       rerun?: string;
+      /** What to do when this step fails, in place of the general advice. */
+      failure?: string;
       /**
        * `stop`: stops something and replaces nothing; `start`: the start at the
        * end. Left out, the step changes the installation.
@@ -504,6 +506,9 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
             'point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
           ),
           note(
+            "Where the database's administrator made the roles, they grant them the new database, and MELETE_MIGRATE_DATABASE_URL, MELETE_API_DATABASE_URL and MELETE_EFFECTS_DATABASE_URL are pointed at it too.",
+          ),
+          note(
             'The load refuses a database that holds tables, and runs in one transaction: one that fails leaves it empty.',
           ),
           ...(context.freshHost
@@ -530,6 +535,8 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
               input: dump,
               rerun:
                 "The database DATABASE_URL names now holds the backup's data, so a restore into it is refused: run the same restore with --keep-database --replace-files --yes, which keeps that database and puts back the rest.",
+              failure:
+                'The load runs in one transaction, so the database DATABASE_URL names holds nothing of it. Fix the cause, then run the same restore --yes again. Do not start the stack on that database meanwhile: its first start fills it, and a restore into it is then refused.',
             },
           ),
         ]
