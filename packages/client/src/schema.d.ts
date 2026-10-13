@@ -21407,6 +21407,9 @@ export interface paths {
                             email_sign_in: boolean;
                             multiplayer: boolean;
                             needed: boolean;
+                            privacy_url?: string;
+                            support_url?: string;
+                            terms_url?: string;
                         };
                     };
                 };

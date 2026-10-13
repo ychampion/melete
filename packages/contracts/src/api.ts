@@ -127,6 +127,13 @@ export const setupStatusResponse = z.strictObject({
    * forgotten password needs the person who runs the installation.
    */
   email_sign_in: z.boolean(),
+  /**
+   * This installation's terms, privacy notice and support (a web page or a
+   * mailto: address), each only when its operator set one.
+   */
+  terms_url: z.string().max(2000).optional(),
+  privacy_url: z.string().max(2000).optional(),
+  support_url: z.string().max(2000).optional(),
 });
 
 // --------------------------------------------------------------------------

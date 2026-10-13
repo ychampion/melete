@@ -58,6 +58,10 @@ What each version ships.
   prints now asks the new person to "Choose your password" and takes them
   straight on to setting up, signed in, instead of showing a password reset
   and asking them to sign in again. Password reset links keep their own words.
+- **Terms, privacy and support links.** `MELETE_TERMS_URL`,
+  `MELETE_PRIVACY_URL` and `MELETE_SUPPORT_URL` (an https page, or `mailto:`
+  for support) are linked on the sign-in page, in setup and in Settings ›
+  Account, each only when it is set. Melete ships no legal text of its own.
 
 ### Upgrading from v0.2.1
 

@@ -16520,6 +16520,18 @@
                     },
                     "email_sign_in": {
                       "type": "boolean"
+                    },
+                    "terms_url": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "privacy_url": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "support_url": {
+                      "type": "string",
+                      "maxLength": 2000
                     }
                   },
                   "required": [

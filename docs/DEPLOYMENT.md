@@ -412,6 +412,18 @@ bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_U
 bun run melete check
 ```
 
+People you invite should be able to read your terms and privacy notice and
+reach you for help. Host those pages yourself and name them; each is linked on
+the sign-in page, in setup and in Settings › Account only when it is set:
+
+```bash
+bun run melete set MELETE_TERMS_URL=https://example.net/terms \
+  MELETE_PRIVACY_URL=https://example.net/privacy MELETE_SUPPORT_URL=mailto:help@example.net
+```
+
+Terms and privacy take an `https://` page; support takes an `https://` page or
+a `mailto:` address.
+
 ## On a cloud VM
 
 Any Linux virtual machine you reach over SSH can run Melete, and the melete

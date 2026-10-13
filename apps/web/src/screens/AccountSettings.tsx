@@ -13,6 +13,7 @@ import { useApp } from '../experience/hooks.ts';
 import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
+import { InstallLinks } from '../shell/InstallLinks.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { AccountData } from './AccountData.tsx';
 import { SignedIn } from './SignedIn.tsx';
@@ -227,6 +228,7 @@ export function AccountSettings() {
       </div>
       <SignedIn />
       <AccountData />
+      <InstallLinks />
     </div>
   );
 }

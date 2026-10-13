@@ -790,6 +790,30 @@ const variables = z.object({
    * running the installation. docs/FEEDBACK.md.
    */
   MELETE_FEEDBACK_WEBHOOK_URL: unsetWhenBlank(z.url({ protocol: /^https?$/ }).optional()),
+  /**
+   * Where people read this installation's terms and privacy notice, and how
+   * they reach its support (a web page, or a mailto: address). Each is shown
+   * on sign-in, in setup and in Settings only when it is set; none is by
+   * default. docs/DEPLOYMENT.md, "Hosting for other people".
+   */
+  MELETE_TERMS_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^https$/ })
+      .max(2000)
+      .optional(),
+  ),
+  MELETE_PRIVACY_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^https$/ })
+      .max(2000)
+      .optional(),
+  ),
+  MELETE_SUPPORT_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^(https|mailto)$/ })
+      .max(2000)
+      .optional(),
+  ),
 
   /**
    * The installation's own mail sender, for sign-in and password reset links

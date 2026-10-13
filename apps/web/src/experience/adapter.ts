@@ -327,6 +327,9 @@ export const adapter = {
       multiplayer?: boolean;
       code_required?: boolean;
       email_sign_in?: boolean;
+      terms_url?: string;
+      privacy_url?: string;
+      support_url?: string;
     }>(() => api.GET('/setup')),
   /** Creates the first account and signs this browser in. */
   createAccount: (email: string, password: string, setup_code?: string) =>

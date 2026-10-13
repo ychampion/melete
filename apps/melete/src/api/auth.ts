@@ -581,6 +581,9 @@ export function mountAuth(
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
       email_sign_in: needed || !signIn ? false : await signIn.canSend(),
+      ...(env.MELETE_TERMS_URL ? { terms_url: env.MELETE_TERMS_URL } : {}),
+      ...(env.MELETE_PRIVACY_URL ? { privacy_url: env.MELETE_PRIVACY_URL } : {}),
+      ...(env.MELETE_SUPPORT_URL ? { support_url: env.MELETE_SUPPORT_URL } : {}),
     });
   });
 
