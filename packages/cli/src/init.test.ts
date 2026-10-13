@@ -59,7 +59,7 @@ describe('melete init --adopt', () => {
       profiles: [],
       overlays: ['browser'],
       disk: { min_free_mb: 600, pull_margin_mb: 200 },
-      backup: { dir: '~/melete-backups', keep: 3 },
+      backup: { dir: '~/melete-backups', keep: 3, max_age_days: 30 },
       public_ports: false,
       database: { external: false },
       blobs: { store: 'local' },

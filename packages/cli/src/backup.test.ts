@@ -23,6 +23,9 @@ import { DEPLOY_FILE } from './deploy-config.ts';
 import {
   archiveCommand,
   CHANGED_WHILE_READ,
+  extractCommand,
+  LEFT_OUT,
+  legacyExtractCommand,
   parseContents,
   stopCellsCommand,
   volumePresence,
@@ -211,7 +214,7 @@ describe('melete backup', () => {
           'command' in call.source && call.source.command.join(' ').includes('src=melete_spaces'),
       );
       expect(spaces && 'command' in spaces.source ? spaces.source.command.at(-1) : '').toBe(
-        'exec tar -C /v --numeric-owner -cf - .',
+        "exec tar -C /v --numeric-owner --anchored --no-wildcards-match-slash --exclude='./*/.index' --exclude='./*/.proposed' -cf - .",
       );
     }
   });
@@ -323,29 +326,91 @@ describe('melete restore', () => {
 });
 
 describe('what backup and restore keep, and refuse', () => {
-  test('keep never removes the backup the last deploy took', async () => {
-    const rig = backupRig();
-    mkdirSync(rig.backups, { recursive: true });
-    for (const name of ['melete-20260901T000000Z', 'melete-20260915T000000Z'])
-      mkdirSync(join(rig.backups, name));
-    const named = join(rig.backups, 'melete-20260901T000000Z');
-    appendHistory(rig.deployDir, {
+  const deployedWith = (deployDir: string, backup: string) =>
+    appendHistory(deployDir, {
       at: '2026-09-01T00:00:01.000Z',
       command: 'deploy',
       from: { tag: 'aaaaaaa', revision: null },
       to: { tag: 'bbbbbbb', revision: null },
       checkout: null,
       migrations: { from: 68, to: 69 },
-      backup: named,
+      backup,
       result: 'deployed',
       detail: '',
     });
+
+  /** A backup directory holding these, and backup settings beside `dir`. */
+  const keeping = (names: string[], backup: object = {}) => {
+    const rig = backupRig();
+    writeFileSync(
+      join(rig.deployDir, DEPLOY_FILE),
+      JSON.stringify({ contract: 1, backup: { dir: rig.backups, ...backup } }),
+    );
+    mkdirSync(rig.backups, { recursive: true });
+    for (const name of names) mkdirSync(join(rig.backups, name));
+    return rig;
+  };
+
+  test('keep never removes the backup the last deploy took', async () => {
+    const rig = keeping(['melete-20260910T000000Z', 'melete-20260915T000000Z'], { keep: 2 });
+    deployedWith(rig.deployDir, join(rig.backups, 'melete-20260910T000000Z'));
     expect(await runBackup(rig.context, [], false)).toBe(0);
     // keep is 2: the two newest stay, and so does the one the deploy named, though it is older.
     expect(readdirSync(rig.backups).sort()).toEqual([
-      'melete-20260901T000000Z',
+      'melete-20260910T000000Z',
       'melete-20260915T000000Z',
       'melete-20261002T100000Z',
+    ]);
+  });
+
+  test('a backup older than max_age_days goes when a new one is made, however few there are', async () => {
+    // The backup is made at 2026-10-02T10:00:00Z.
+    const rig = keeping(
+      ['melete-20260925T095959Z', 'melete-20260925T100001Z', 'melete-20260930T000000Z', 'notes'],
+      { keep: 10, max_age_days: 7 },
+    );
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20260925T100001Z',
+      'melete-20260930T000000Z',
+      'melete-20261002T100000Z',
+      'notes',
+    ]);
+    expect(rig.context.printed()).toMatch(
+      /backup\.keep\s+Kept the newest 10, none older than 7 days; removed melete-20260925T095959Z\./,
+    );
+  });
+
+  test('by default a backup is kept 30 days, and the age limit removes even the one the last deploy took', async () => {
+    const rig = keeping(['melete-20260901T000000Z', 'melete-20260905T000000Z'], { keep: 3 });
+    deployedWith(rig.deployDir, join(rig.backups, 'melete-20260901T000000Z'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20260905T000000Z',
+      'melete-20261002T100000Z',
+    ]);
+    expect(rig.context.printed()).toContain('none older than 30 days');
+    expect(rig.context.printed()).toContain('rollback can no longer restore from it');
+  });
+
+  test('max_age_days null keeps backups by count alone, and the new one always stays', async () => {
+    const rig = keeping(['melete-20250101T000000Z', 'melete-20250601T000000Z'], {
+      keep: 3,
+      max_age_days: null,
+    });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20250101T000000Z',
+      'melete-20250601T000000Z',
+      'melete-20261002T100000Z',
+    ]);
+
+    // A clock behind the backups already there never removes the one just made.
+    const behind = keeping(['melete-20270101T000000Z'], { keep: 1, max_age_days: 1 });
+    expect(await runBackup(behind.context, [], false)).toBe(0);
+    expect(readdirSync(behind.backups).sort()).toEqual([
+      'melete-20261002T100000Z',
+      'melete-20270101T000000Z',
     ]);
   });
 
@@ -799,6 +864,173 @@ describe('the people files and the agents computers in a backup', () => {
     },
   );
 
+  test("the spaces' archive leaves out each space's search index and staged writes, and only those", async () => {
+    const rig = filesRig();
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const archives = rig.events.filter(
+      (event) => event.startsWith('stream ') && / tar -C \/v /.test(event),
+    );
+    const spaces = archives.find((event) => event.includes('src=melete_spaces,'));
+    expect(spaces).toContain("--exclude='./*/.index'");
+    expect(spaces).toContain("--exclude='./*/.proposed'");
+    // Uploads, /work and the computers are people's own files: nothing of them is left out.
+    const others = archives.filter((event) => !event.includes('src=melete_spaces,'));
+    expect(others.length).toBeGreaterThan(0);
+    for (const event of others) expect(event).not.toContain('--exclude');
+  });
+
+  const gnuTar = posix && Bun.spawnSync(['tar', '--version']).stdout.toString().includes('GNU tar');
+  test.skipIf(!gnuTar)(
+    "a space's own .index and .proposed stay out of the archive, and a folder of that name in its files stays in",
+    () => {
+      const volume = join(temporaryDeployDir(), 'volume');
+      const files: Record<string, string> = {
+        'sp_a/.index/fts.sqlite': 'index',
+        'sp_a/.index/fts.sqlite-wal': 'log',
+        'sp_a/.proposed/prop_1.json': 'staged',
+        'sp_a/knowledge/note.md': 'kept',
+        'sp_a/knowledge/.index/own.md': 'a folder a person named .index',
+        'sp_a/raw/.proposed': 'a file a person named .proposed',
+        'sp_b/.git/HEAD': 'ref',
+      };
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(volume, path, '..'), { recursive: true });
+        writeFileSync(join(volume, path), text);
+      }
+      const realTar = Bun.which('tar') ?? 'tar';
+      const bin = join(volume, '..', 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'tar'),
+        '#!/bin/sh\n[ "$1" = -C ] && [ "$2" = /v ] && shift 2\nexec "$REAL_TAR" -C "$VOLUME" "$@"\n',
+        { mode: 0o755 },
+      );
+      for (const online of [true, false]) {
+        const script = archiveCommand('img', 'melete_spaces', online, [
+          './*/.index',
+          './*/.proposed',
+        ]).at(-1);
+        // The volume is mounted at /v in the helper container; here it is a folder,
+        // reached through a `tar` first on PATH that swaps `-C /v` for it.
+        const run = Bun.spawnSync(['sh', '-c', `( ${script} ) | "$REAL_TAR" -tf -`], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            VOLUME: volume,
+            REAL_TAR: realTar,
+          },
+        });
+        expect({ code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+          code: 0,
+          stderr: '',
+        });
+        const listed = run.stdout
+          .toString()
+          .split('\n')
+          .filter((line) => line && !line.endsWith('/'))
+          .map((line) => line.replace(/^\.\//, ''))
+          .sort();
+        expect(listed).toEqual([
+          'sp_a/knowledge/.index/own.md',
+          'sp_a/knowledge/note.md',
+          'sp_a/raw/.proposed',
+          'sp_b/.git/HEAD',
+        ]);
+      }
+      rmSync(join(volume, '..'), { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(!gnuTar)(
+    'a restore leaves out the search index and staged writes an earlier backup still holds, and keeps everything else',
+    () => {
+      const root = temporaryDeployDir();
+      const source = join(root, 'source');
+      const files: Record<string, string> = {
+        'sp_a/.index/fts.sqlite': 'an old index, with a removed record still in its free pages',
+        'sp_a/.proposed/prop_1.json': 'staged',
+        'sp_a/knowledge/note.md': 'kept',
+        'sp_a/knowledge/.index/own.md': 'a folder a person named .index',
+        'sp_a/raw/.proposed': 'a file a person named .proposed',
+        'sp_b/.git/HEAD': 'ref',
+      };
+      for (const [path, text] of Object.entries(files)) {
+        for (const base of [source, join(source, 'data', 'spaces')]) {
+          mkdirSync(join(base, path, '..'), { recursive: true });
+          writeFileSync(join(base, path), text);
+        }
+      }
+      mkdirSync(join(source, 'data', 'artifacts', 'blobs'), { recursive: true });
+      writeFileSync(join(source, 'data', 'artifacts', 'blobs', 'b1'), 'upload');
+      const realTar = Bun.which('tar') ?? 'tar';
+      const archive = (name: string, members: string[]) => {
+        const file = join(root, name);
+        expect(Bun.spawnSync([realTar, '-C', source, '-cf', file, ...members]).exitCode).toBe(0);
+        return file;
+      };
+      const kept = (base: string) =>
+        Bun.spawnSync(['find', base, '-type', 'f'])
+          .stdout.toString()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.slice(base.length + 1))
+          .sort();
+      // The helper container's volumes are folders here, reached through a `tar` first on
+      // PATH that swaps the container's -C for them; only the unpacking part of each script runs.
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'tar'),
+        '#!/bin/sh\n[ "$1" = -C ] && shift 2\nexec "$REAL_TAR" -C "$TARGET" "$@"\n',
+        { mode: 0o755 },
+      );
+      const unpack = (command: string[], file: string, target: string) => {
+        const script = (command.at(-1) ?? '').replace(/^.* && exec tar /, 'exec tar ');
+        const run = Bun.spawnSync(['sh', '-c', `${script} < "$ARCHIVE"`], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            TARGET: target,
+            REAL_TAR: realTar,
+            ARCHIVE: file,
+          },
+        });
+        expect({ code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+          code: 0,
+          stderr: '',
+        });
+      };
+      const people = [
+        'sp_a/knowledge/.index/own.md',
+        'sp_a/knowledge/note.md',
+        'sp_a/raw/.proposed',
+        'sp_b/.git/HEAD',
+      ];
+
+      // spaces.tar from a backup made before the index was left out.
+      const spaces = join(root, 'spaces-volume');
+      mkdirSync(spaces);
+      unpack(
+        extractCommand('img', 'melete_spaces', LEFT_OUT.spaces),
+        archive('spaces.tar', ['./sp_a', './sp_b']),
+        spaces,
+      );
+      expect(kept(spaces)).toEqual(people);
+
+      // data.tar from an earlier --with-volumes backup.
+      const r = join(root, 'r');
+      mkdirSync(join(r, 'data', 'spaces'), { recursive: true });
+      mkdirSync(join(r, 'data', 'artifacts'), { recursive: true });
+      unpack(legacyExtractCommand('img', 'melete', 'data.tar'), archive('data.tar', ['data']), r);
+      expect(kept(join(r, 'data', 'spaces'))).toEqual(people);
+      expect(kept(join(r, 'data', 'artifacts'))).toEqual(['blobs/b1']);
+
+      // Uploads, /work and the computers are people's own files: nothing of them is left out.
+      expect(extractCommand('img', 'melete_work', LEFT_OUT.work).at(-1)).not.toContain('--exclude');
+      rmSync(root, { recursive: true, force: true });
+    },
+  );
+
   test("a volume labelled for this installation's computers that is not a /work or home is named, not left out silently", async () => {
     const rig = filesRig();
     rig.volumes.add(`${COMPUTERS[0]}-cache`);
@@ -886,6 +1118,14 @@ describe('restoring the files', () => {
       "find /v -mindepth 1 -delete && exec tar -C /v --numeric-owner -xpf -' < ",
     );
     expect(printed).toContain(`${rig.set}/spaces.tar`);
+    // An earlier backup's search index and staged writes are not put back; nothing else is left out.
+    const unpacks = printed.split('\n').filter((line) => line.includes(' -xpf -'));
+    const spaces = unpacks.filter((line) => line.includes('src=melete_spaces,'));
+    expect(spaces).toHaveLength(1);
+    expect(spaces[0]).toContain("--exclude='\\''./*/.index'\\'' --exclude='\\''./*/.proposed'\\''");
+    expect(unpacks.length).toBeGreaterThan(1);
+    for (const line of unpacks.filter((line) => !line.includes('src=melete_spaces,')))
+      expect(line).not.toContain('--exclude');
     expect(printed).toContain(`${rig.set}/computer-${COMPUTERS[0]}-home.tar`);
     expect(printed).toContain(`--yes runs these steps.`);
     expect(changes(rig.events)).toEqual([]);
@@ -1273,7 +1513,7 @@ describe('restoring the files', () => {
     expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
     const printed = rig.context.printed();
     expect(printed).toContain(
-      'find /r/data/spaces -mindepth 1 -delete && find /r/data/artifacts -mindepth 1 -delete && exec tar -C /r --numeric-owner -xpf - data/spaces data/artifacts',
+      "find /r/data/spaces -mindepth 1 -delete && find /r/data/artifacts -mindepth 1 -delete && exec tar -C /r --numeric-owner --anchored --no-wildcards-match-slash --exclude='\\''data/spaces/*/.index'\\'' --exclude='\\''data/spaces/*/.proposed'\\'' -xpf - data/spaces data/artifacts",
     );
     expect(printed).toContain('exec tar -C /r --numeric-owner -xpf - work');
     expect(printed).not.toContain('data/restrictions');

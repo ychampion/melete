@@ -141,6 +141,7 @@ import { unsettledSteps } from './jobs/unsettled.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
+import { startStagedWriteSweep } from './knowledge/staged.ts';
 import { attachConversationCorrections } from './learning/conversation.ts';
 import { EngineSkillService } from './learning/engine-skills.ts';
 import { EpisodeService } from './learning/episodes.ts';
@@ -908,6 +909,7 @@ export async function bootstrap(
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopStagedWriteSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
   let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
@@ -963,6 +965,7 @@ export async function bootstrap(
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
+    stopStagedWriteSweep?.();
     stopAccessSweep?.();
     stopSecretSweep?.();
     stopManagedRemovals?.();
@@ -1091,6 +1094,10 @@ export async function bootstrap(
         { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         env.MELETE_TRASH_DAYS,
         () => leading(leases, 'trash-sweep'),
+      );
+      // Writes staged in a space that nothing applied go after a week.
+      stopStagedWriteSweep = startStagedWriteSweep(env.MELETE_SPACES_DIR, () =>
+        leading(leases, 'staged-write-sweep'),
       );
     }
     if (handle) {

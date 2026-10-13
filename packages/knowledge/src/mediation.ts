@@ -11,7 +11,15 @@
  * hole in it, a record too large to have been written by a person, or a secret
  * that a model read somewhere and is about to write down forever.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import {
   type KnowledgeFrontmatter,
@@ -387,6 +395,78 @@ export function discardProposal(paths: SpacePaths, id: string): boolean {
   if (!existsSync(file)) return false;
   rmSync(file);
   return true;
+}
+
+/**
+ * How long a staged write waits before it is discarded unapplied, in days. A
+ * staged write holds the whole record it would write, so one nobody applies
+ * must not keep that text for ever.
+ */
+export const STAGED_WRITE_DAYS = 7;
+
+/** The staged files in `.proposed/`: regular files only, never a link or a folder. */
+function stagedFiles(paths: SpacePaths): { file: string; written: number }[] {
+  let entries: string[];
+  try {
+    if (!lstatSync(paths.proposed).isDirectory()) return [];
+    entries = readdirSync(paths.proposed);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const files: { file: string; written: number }[] = [];
+  for (const entry of entries) {
+    if (!/^prop_[0-9A-Za-z]+\.json$/.test(entry)) continue;
+    const file = join(paths.proposed, entry);
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (stat?.isFile()) files.push({ file, written: stat.mtimeMs });
+  }
+  return files;
+}
+
+/**
+ * Discard every staged write that would land on one of these paths, or that
+ * holds a record with one of these ids, so removing a record also removes the
+ * writes waiting to change it. A staged file that cannot be read is left for
+ * `expireProposals`. Answers how many went.
+ */
+export function discardProposalsFor(
+  paths: SpacePaths,
+  target: { ids?: readonly string[]; paths?: readonly string[] },
+): number {
+  const ids = new Set(target.ids ?? []);
+  const where = new Set((target.paths ?? []).map((path) => path.replace(/\\/g, '/')));
+  let discarded = 0;
+  for (const { file } of stagedFiles(paths)) {
+    let proposal: Partial<Proposal>;
+    try {
+      proposal = JSON.parse(readFileSync(file, 'utf8')) as Partial<Proposal>;
+    } catch {
+      continue;
+    }
+    const parsed = typeof proposal.content === 'string' ? parseRecord(proposal.content) : null;
+    const id = parsed?.ok ? parsed.record.frontmatter.id : null;
+    const path = typeof proposal.path === 'string' ? proposal.path.replace(/\\/g, '/') : null;
+    if ((id !== null && ids.has(id)) || (path !== null && where.has(path))) {
+      rmSync(file, { force: true });
+      discarded += 1;
+    }
+  }
+  return discarded;
+}
+
+/**
+ * Discard the staged writes written before `before`, by the file's own time
+ * (what a staged file says about itself is not trusted). Answers how many went.
+ */
+export function expireProposals(paths: SpacePaths, before: Date): number {
+  let expired = 0;
+  for (const { file, written } of stagedFiles(paths)) {
+    if (written >= before.getTime()) continue;
+    rmSync(file, { force: true });
+    expired += 1;
+  }
+  return expired;
 }
 
 export type ApplyOptions = {
