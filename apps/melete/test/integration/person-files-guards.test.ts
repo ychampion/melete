@@ -620,3 +620,65 @@ databaseTest(
     expect(await readFile(inFiles('race', 'plan-moved.md'), 'utf8')).toBe('plan\n');
   },
 );
+
+databaseTest(
+  'a delete that took another file in place of the one asked for says what it took out of a full trash',
+  async () => {
+    const small = createApp({
+      env: loadEnv({
+        MELETE_SPACES_DIR: spacesRoot,
+        MELETE_WORK_DIR: workRoot,
+        MELETE_ENABLE_FAKE_PROVIDER: 'true',
+        MELETE_TRASH_MAX_MB: '1',
+      }),
+      db: fixture?.db ?? null,
+      checkDatabase: async () => 'ok',
+    });
+    const removeHere = (id: string) =>
+      small.request(`/files/${id}`, { method: 'DELETE', headers: { cookie } });
+    const chat = await anotherJob('chat');
+    const big = 'x'.repeat(600 * 1024);
+    const first = await savedInFiles('full/first.bin', big, chat);
+    const one = await removeHere(first);
+    expect(one.status).toBe(200);
+    const firstTrash = await trashOf(one);
+    const id = await savedInFiles('full/plan.md', 'plan\n', chat);
+    const place = filesTrash(await realpath(spacesRoot), spaceId, chat);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const busy = oneAtATime(place, () => gate);
+    const pending = removeHere(id);
+    await heldOpen(inFiles('full', 'plan.md'));
+    // A large file takes its place, and a third takes the name before the
+    // large one can go back: the large one stays in the trash.
+    await rename(inFiles('full', 'plan.md'), inFiles('full', 'plan-moved.md'));
+    await writeFile(inFiles('full', 'plan.md'), big);
+    const putBack = filesModule.moveWithoutReplacing;
+    let planted = false;
+    const spy = spyOn(filesModule, 'moveWithoutReplacing').mockImplementation(async (from, to) => {
+      if (!planted) {
+        planted = true;
+        await writeFile(inFiles('full', 'plan.md'), 'third\n');
+      }
+      return putBack(from, to);
+    });
+    try {
+      release();
+      await busy;
+      const response = await pending;
+      expect(planted).toBe(true);
+      expect(response.status).toBe(409);
+      const message =
+        ((await response.json()) as { error?: { message?: string } }).error?.message ?? '';
+      expect(message).toContain('another file took its name');
+      expect(message).toContain('an earlier delete was taken out of it to make room');
+    } finally {
+      spy.mockRestore();
+    }
+    // The earlier delete really is gone from the trash.
+    expect((await restore(first, firstTrash)).status).toBe(404);
+    expect(await readFile(inFiles('full', 'plan-moved.md'), 'utf8')).toBe('plan\n');
+  },
+);

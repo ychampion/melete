@@ -2,8 +2,9 @@
  * A delete takes only the file it was decided on, and a delete is put back
  * once, however many ask at the same moment.
  */
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, spyOn, test } from 'bun:test';
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readdir,
@@ -16,6 +17,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as filesModule from './files.ts';
 import { filesTrash, hasTrash, moveToTrash, restoreFromTrash } from './files-trash.ts';
 
 const root = await realpath(await mkdtemp(join(tmpdir(), 'melete-files-trash-')));
@@ -131,4 +133,130 @@ test('a delete that takes nothing takes no earlier delete out of a full trash', 
   expect(third.evicted).toEqual([first.trash_id as string]);
   expect(await hasTrash(place, first.trash_id as string)).toBe(false);
   expect(await hasTrash(place, third.trash_id as string)).toBe(true);
+});
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+test('a trash that cannot take its oldest delete out takes the next oldest instead', async () => {
+  const place = filesTrash(root, spaceId, 'job_stucktrash');
+  const made: string[] = [];
+  for (const [index, name] of ['stuck.bin', 'older.bin', 'newer.bin'].entries()) {
+    await writeFile(join(files, name), 'a'.repeat(300));
+    const trashed = await moveToTrash(place, [{ path: name, hash: null }], {
+      days: 7,
+      maxBytes: 1000,
+      now: minutesAgo(3 - index),
+    });
+    made.push(trashed.trash_id as string);
+  }
+  const [stuck, older, newer] = made as [string, string, string];
+  const removeIn = filesModule.removeIn;
+  const spy = spyOn(filesModule, 'removeIn').mockImplementation(async (directory, name) => {
+    if (name === stuck)
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    return removeIn(directory, name);
+  });
+  try {
+    await writeFile(join(files, 'latest.bin'), 'b'.repeat(300));
+    const latest = await moveToTrash(place, [{ path: 'latest.bin', hash: null }], {
+      days: 7,
+      maxBytes: 1000,
+    });
+    expect(latest.moved).toEqual(['latest.bin']);
+    expect(latest.evicted).toEqual([older]);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(await hasTrash(place, stuck)).toBe(true);
+  expect(await hasTrash(place, older)).toBe(false);
+  expect(await hasTrash(place, newer)).toBe(true);
+});
+
+test('a delete that went stays done when the trash cannot be trimmed after it', async () => {
+  const place = filesTrash(root, spaceId, 'job_untrimmable');
+  await writeFile(join(files, 'early.bin'), 'a'.repeat(600));
+  const early = await moveToTrash(place, [{ path: 'early.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+    now: minutesAgo(1),
+  });
+  const holdBeneath = filesModule.holdBeneath;
+  const spy = spyOn(filesModule, 'holdBeneath').mockImplementation(async (base, names, create) => {
+    // The chat's trash itself can no longer be read.
+    if (names.join('/') === place.trash.join('/'))
+      throw Object.assign(new Error('input/output error'), { code: 'EIO' });
+    return holdBeneath(base, names, create);
+  });
+  let late: Awaited<ReturnType<typeof moveToTrash>>;
+  try {
+    await writeFile(join(files, 'late.bin'), 'b'.repeat(600));
+    late = await moveToTrash(place, [{ path: 'late.bin', hash: null }], {
+      days: 7,
+      maxBytes: 1000,
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(late.moved).toEqual(['late.bin']);
+  expect(late.evicted).toEqual([]);
+  // Over its size until the earlier delete expires: both still restore.
+  expect(await hasTrash(place, early.trash_id as string)).toBe(true);
+  expect(await hasTrash(place, late.trash_id as string)).toBe(true);
+});
+
+test('a file that grew after the delete sized it is never taken out by its own delete', async () => {
+  const place = filesTrash(root, spaceId, 'job_grew');
+  await writeFile(join(files, 'before.bin'), 'a'.repeat(300));
+  const before = await moveToTrash(place, [{ path: 'before.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+    now: minutesAgo(1),
+  });
+  await writeFile(join(files, 'growing.log'), 'b'.repeat(100));
+  const holdBeneath = filesModule.holdBeneath;
+  let grown = false;
+  const spy = spyOn(filesModule, 'holdBeneath').mockImplementation(async (base, names, create) => {
+    // Sized already: the file is written on past what the trash holds.
+    if (create && !grown) {
+      grown = true;
+      await appendFile(join(files, 'growing.log'), 'c'.repeat(5000));
+    }
+    return holdBeneath(base, names, create);
+  });
+  let grew: Awaited<ReturnType<typeof moveToTrash>>;
+  try {
+    grew = await moveToTrash(place, [{ path: 'growing.log', hash: null }], {
+      days: 7,
+      maxBytes: 1000,
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(grown).toBe(true);
+  expect(grew.moved).toEqual(['growing.log']);
+  expect(grew.evicted).toEqual([before.trash_id as string]);
+  expect(await hasTrash(place, grew.trash_id as string)).toBe(true);
+});
+
+test('a full trash lets expired deletes go before older ones still kept', async () => {
+  const place = filesTrash(root, spaceId, 'job_expiredfirst');
+  await writeFile(join(files, 'kept.bin'), 'a'.repeat(400));
+  const kept = await moveToTrash(place, [{ path: 'kept.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+    now: minutesAgo(3 * 24 * 60),
+  });
+  await writeFile(join(files, 'expired.bin'), 'b'.repeat(400));
+  const expired = await moveToTrash(place, [{ path: 'expired.bin', hash: null }], {
+    days: 1,
+    maxBytes: 1000,
+    now: minutesAgo(2 * 24 * 60),
+  });
+  await writeFile(join(files, 'now.bin'), 'c'.repeat(400));
+  const latest = await moveToTrash(place, [{ path: 'now.bin', hash: null }], {
+    days: 7,
+    maxBytes: 1000,
+  });
+  expect(latest.evicted).toEqual([expired.trash_id as string]);
+  expect(await hasTrash(place, kept.trash_id as string)).toBe(true);
 });

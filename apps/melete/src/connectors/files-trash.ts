@@ -384,8 +384,9 @@ async function moveToTrashNow(
 /**
  * Take the oldest deletes (expired first) out of this trash until it holds no
  * more than `maxBytes`, never `keep`, the delete just made. Answers what went.
- * The delete is done by then: a trash that cannot be trimmed now stays over
- * its size until its deletes expire.
+ * One that cannot be taken out is passed over for the next oldest. The delete
+ * is done by then: a trash that cannot be trimmed now stays over its size
+ * until its deletes expire.
  */
 async function makeRoom(
   place: TrashPlace,
@@ -410,7 +411,14 @@ async function makeRoom(
     try {
       for (const folder of oldest) {
         if (used <= maxBytes) break;
-        await removeIn(job, folder.id);
+        try {
+          await removeIn(job, folder.id);
+        } catch (error) {
+          // Swept as it expired: its room is free. Anything else holds up no
+          // other delete, or one stuck folder would let the trash grow without end.
+          if (codeOf(error) === 'ENOENT') used -= folder.bytes;
+          continue;
+        }
         used -= folder.bytes;
         evicted.push(folder.id);
       }
