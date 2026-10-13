@@ -33,6 +33,12 @@ What each version ships.
   cap, uploads and computers are limited per person, and a spending alert is
   set. `melete init --hosted` writes starting values to tune. A self-hosted
   installation still has no limits unless you set them.
+- **Claude 5.5 models are priced and sized correctly.** Spending estimates use
+  the current list prices for Opus 5.5 ($4 in, $20 out per million tokens),
+  Sonnet 5.5 ($2, $10) and Haiku 5.5 ($0.10, $0.50), with cache reads at a
+  tenth of the input price and five-minute cache writes at 1.25 times. Their
+  million-token context windows are known, so long conversations are no longer
+  summarised early. Older Claude models keep their prices.
 
 ### Upgrading from v0.2.1
 

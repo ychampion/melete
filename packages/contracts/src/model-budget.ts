@@ -19,6 +19,10 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash': 1_000_000,
   'gpt-6-astra': 1_050_000,
+  // The Claude 5.5 models, as Anthropic's API names them.
+  'claude-opus-5-5': 1_000_000,
+  'claude-sonnet-5-5': 1_000_000,
+  'claude-haiku-5-5': 1_000_000,
 };
 
 /** The window a model answers with, or the documented fallback. */

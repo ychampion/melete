@@ -12,7 +12,7 @@ import {
 } from './effort.ts';
 import { createModelGateway, type GatewayOptions, providersFromEnv } from './index.ts';
 import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
-import { PriceTable, parseModelPrices } from './prices.ts';
+import { type PricedUsage, PriceTable, parseModelPrices } from './prices.ts';
 import {
   agentRoutes,
   allowedWithRoutes,
@@ -485,6 +485,41 @@ describe('the price table', () => {
       }),
     ).toBeCloseTo(3.1, 6);
     expect(() => parseModelPrices('{"x": {"input": "cheap"}}')).toThrow('MELETE_MODEL_PRICES');
+  });
+
+  test('the Claude 5.5 models are priced at their list prices, older ones as before', () => {
+    const table = new PriceTable();
+    const cost = (model: string, usage: Partial<PricedUsage>) =>
+      table.cost('anthropic', model, {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        ...usage,
+      });
+    for (const [model, input, output] of [
+      ['claude-opus-5-5', 4, 20],
+      ['claude-sonnet-5-5', 2, 10],
+      ['claude-haiku-5-5', 0.1, 0.5],
+    ] as const) {
+      expect(cost(model, { inputTokens: 1_000_000 })).toBeCloseTo(input, 6);
+      expect(cost(model, { outputTokens: 1_000_000 })).toBeCloseTo(output, 6);
+      // A cache read is a tenth of the input price, a five-minute write a quarter more.
+      expect(cost(model, { inputTokens: 1_000_000, cachedInputTokens: 1_000_000 })).toBeCloseTo(
+        input / 10,
+        6,
+      );
+      expect(cost(model, { inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000 })).toBeCloseTo(
+        input * 1.25,
+        6,
+      );
+    }
+    // A dated name is the same model.
+    expect(table.priceFor('anthropic', 'claude-opus-5-5-20260901').entry).toBe(
+      'anthropic/*opus-5-5*',
+    );
+    // Older models keep their own entries.
+    expect(table.priceFor('anthropic', 'claude-opus-4').input).toBe(15);
+    expect(table.priceFor('anthropic', 'claude-sonnet-4-5').input).toBe(3);
   });
 });
 

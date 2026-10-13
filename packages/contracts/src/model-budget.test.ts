@@ -34,6 +34,15 @@ test('the catalog names both spellings of the default million-token model', () =
   expect(hasKnownContextWindow('accounts/fireworks/models/deepseek-v4p1-flash')).toBe(true);
 });
 
+test('the Claude 5.5 models have their million-token windows', () => {
+  for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+    expect(hasKnownContextWindow(model)).toBe(true);
+    expect(modelContextWindow(model)).toBe(1_000_000);
+  }
+  // Only the exact names the API answers to: an older Claude keeps the fallback.
+  expect(modelContextWindow('claude-sonnet-4')).toBe(FALLBACK_CONTEXT_WINDOW);
+});
+
 test('a model the catalog does not name falls back to the documented window', () => {
   expect(hasKnownContextWindow('a-model-nobody-listed')).toBe(false);
   expect(modelContextWindow('a-model-nobody-listed')).toBe(FALLBACK_CONTEXT_WINDOW);
