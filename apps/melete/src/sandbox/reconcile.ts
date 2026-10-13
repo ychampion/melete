@@ -104,6 +104,19 @@ export async function reconcileSandboxes(options: {
     }
     live.add(row.provider_sandbox_id);
   }
+  // A computer one connection made can be resumed through another of the same
+  // kind in the space, and is that connection's row's from then on. This
+  // connection's account still lists it, so it is kept.
+  if (options.connectionId) {
+    const elsewhere = await sql<{ provider_sandbox_id: string; resume_ref: string | null }[]>`
+      select provider_sandbox_id, resume_ref from sandbox_session
+      where adapter = ${provider.capabilities.adapter} and connection_id <> ${options.connectionId}
+        and status in ('opening', 'ready', 'paused', 'closing')`;
+    for (const row of elsewhere) {
+      if (!row.provider_sandbox_id.startsWith(PENDING_SANDBOX)) live.add(row.provider_sandbox_id);
+      if (row.resume_ref) live.add(row.resume_ref);
+    }
+  }
   const destroyed = await provider.reconcile(
     project,
     new LiveSandboxes(live, snapshot - OPENING_MARGIN_MS),
