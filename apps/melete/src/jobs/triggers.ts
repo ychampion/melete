@@ -30,6 +30,7 @@ import { connection, event, experienceTurn, job, space, trigger } from '../db/sc
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
@@ -388,6 +389,14 @@ export async function createProcessWatch(
 
 export class TriggerService {
   private started = false;
+  /**
+   * Routines whose schedule could not be registered. Each sync (every minute,
+   * after the recovery scan) tries them again; only the log is spared.
+   */
+  private readonly scheduleFailures = new ItemFailures('routine schedules', {
+    firstMs: 60_000,
+    maxMs: 60_000,
+  });
   /** Called for each new observation, in its delivery's transaction (situations' detectors). */
   readonly observers: ObservationHook[] = [];
 
@@ -449,7 +458,7 @@ export class TriggerService {
     });
     // pg-boss schedule() has no transaction adapter. The trigger row is authoritative;
     // startup and every recovery scan restore registrations after a crash here.
-    if (spec.kind === 'schedule') await this.syncSchedules();
+    if (spec.kind === 'schedule') await this.syncSchedules(created.id);
     return created;
   }
 
@@ -844,27 +853,46 @@ export class TriggerService {
     });
   }
 
-  async syncSchedules(): Promise<void> {
+  /**
+   * Registers every enabled routine's schedule and drops the rest. One routine
+   * whose schedule cannot be registered never stops the others: it is said in
+   * the log and the health detail, and only `own`, the routine just saved,
+   * answers with its error.
+   */
+  async syncSchedules(own?: string): Promise<void> {
     const rows = await this.jobs.db.select().from(trigger).where(eq(trigger.kind, 'schedule'));
     const schedules = await this.jobs.boss.getSchedules(QUEUES.triggerSchedule);
     const desired = new Set<string>();
+    let ownError: { error: unknown } | undefined;
     for (const row of rows) {
       if (!row.enabled) continue;
       desired.add(row.id);
-      const spec = triggerSpec.parse(row.spec);
-      if (spec.kind !== 'schedule') continue;
-      const current = schedules.find((schedule) => schedule.key === row.id);
-      if (current?.cron === spec.cron && current.timezone === spec.timezone) continue;
-      await this.jobs.boss.schedule(
-        QUEUES.triggerSchedule,
-        spec.cron,
-        { trigger_id: row.id },
-        { key: row.id, tz: spec.timezone, missed: 'once', retryLimit: 0 },
-      );
+      try {
+        const spec = triggerSpec.parse(row.spec);
+        if (spec.kind !== 'schedule') continue;
+        const current = schedules.find((schedule) => schedule.key === row.id);
+        if (current?.cron === spec.cron && current.timezone === spec.timezone) {
+          this.scheduleFailures.succeeded(row.id);
+          continue;
+        }
+        await this.jobs.boss.schedule(
+          QUEUES.triggerSchedule,
+          spec.cron,
+          { trigger_id: row.id },
+          { key: row.id, tz: spec.timezone, missed: 'once', retryLimit: 0 },
+        );
+        this.scheduleFailures.succeeded(row.id);
+      } catch (error) {
+        this.scheduleFailures.failed(row.id, error, `${row.id} of ${row.jobId}`);
+        if (row.id === own) ownError = { error };
+      }
     }
     for (const schedule of schedules)
       if (!desired.has(schedule.key))
-        await this.jobs.boss.unschedule(QUEUES.triggerSchedule, schedule.key);
+        await this.jobs.boss
+          .unschedule(QUEUES.triggerSchedule, schedule.key)
+          .catch((error: unknown) => this.scheduleFailures.failed(schedule.key, error));
+    if (ownError) throw ownError.error;
   }
 
   async start(): Promise<void> {

@@ -170,6 +170,7 @@ import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts'
 import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
+import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
@@ -1971,6 +1972,7 @@ export async function bootstrap(
       ...(sqlForHealth ? { sql: sqlForHealth } : {}),
       ...(spendAlerts ? { spend: spendAlerts } : {}),
       ...(env.MELETE_CELLS_URL ? { cells: cellsProbe(env.MELETE_CELLS_URL) } : {}),
+      stuck: stuckItems,
       ...(env.MELETE_ALERT_DISK_MIN_FREE_MB > 0
         ? {
             disk: {

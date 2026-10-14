@@ -1,3 +1,4 @@
+import { ItemFailures } from '../ops/item-failures.ts';
 import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import type { MemorySql } from './db.ts';
 
@@ -17,15 +18,26 @@ export function startJobRecompute(
     wakeOn,
   }: { intervalMs?: number; idleMs?: number; wakeOn?: Commits } = {},
 ) {
+  // A wake that fails waits from five seconds, doubling up to half an hour,
+  // and is left out of the query meanwhile, so it never holds up the others.
+  const failures = new ItemFailures('memory job wakes', { firstMs: 5_000, maxMs: 30 * 60_000 });
   const loop = quietLoop(
     async () => {
-      const rows = await sql`select id, target_id from memory_outbox
-        where kind = 'job_recompute' and completed_at is null order by created_at, id limit 20`;
+      const rows = await sql`select id, target_id, space_id from memory_outbox
+        where kind = 'job_recompute' and completed_at is null
+          and id <> all(${failures.waiting()}::text[])
+        order by created_at, id limit 20`;
       for (const row of rows) {
-        // Enqueue commits before acknowledging the outbox. A crash can repeat
-        // a wake, which the job's epoch/version gate already deduplicates.
-        await onJobRecompute(row.target_id as string);
-        await sql`update memory_outbox set completed_at = clock_timestamp() where id = ${row.id}`;
+        const id = row.id as string;
+        try {
+          // Enqueue commits before acknowledging the outbox. A crash can repeat
+          // a wake, which the job's epoch/version gate already deduplicates.
+          await onJobRecompute(row.target_id as string);
+          await sql`update memory_outbox set completed_at = clock_timestamp() where id = ${id}`;
+          failures.succeeded(id);
+        } catch (error) {
+          failures.failed(id, error, `job ${row.target_id} in ${row.space_id}`);
+        }
       }
       return rows.length > 0;
     },

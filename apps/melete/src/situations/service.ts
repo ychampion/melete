@@ -70,6 +70,7 @@ import { workQuiet } from '../jobs/quiet.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { isQuiet } from '../push/policy.ts';
 import { documentSubjectKey } from '../signals/observations.ts';
 import type { DocumentFile, Occurrence, SignalSource, SubjectReader } from '../signals/types.ts';
@@ -301,6 +302,11 @@ export class SituationService {
   private started = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private timerAt = Number.POSITIVE_INFINITY;
+  /** Clocks whose check failed: each waits from a minute, doubling up to an hour. */
+  private readonly failures = new ItemFailures('situation checks', {
+    firstMs: 60_000,
+    maxMs: 60 * 60_000,
+  });
 
   constructor(readonly deps: SituationDeps) {}
 
@@ -1322,8 +1328,20 @@ export class SituationService {
       const due = await this.claim();
       if (!due.length) break;
       for (const entry of due) {
-        const outcome = await this.check(entry);
-        totals[outcome] += 1;
+        // One clock whose check fails never holds up the clocks after it. It
+        // stays claimed, so no sweep takes it again until its pause is over.
+        try {
+          const outcome = await this.check(entry);
+          totals[outcome] += 1;
+          this.failures.succeeded(entry.id);
+        } catch (error) {
+          const retryAt = this.failures.failed(entry.id, error, `${entry.id} in ${entry.spaceId}`);
+          await this.db
+            .update(clock)
+            .set({ claimedUntil: new Date(retryAt) })
+            .where(and(eq(clock.id, entry.id), eq(clock.state, 'checking')))
+            .catch(() => {});
+        }
       }
       if (due.length < 20) break;
     }

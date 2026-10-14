@@ -6,7 +6,9 @@
  * melete-cells and the container engine behind it, the free disk under the
  * directories the service writes, the job queue (work that is due but has not
  * been picked up) and the recent error rate (attempts that failed or were lost,
- * and model calls providers refused). Where the operator asks for them, two spending checks join it:
+ * and model calls providers refused), and background work stuck on one space
+ * (a space, account or routine that the same background pass keeps failing
+ * on while the rest go on). Where the operator asks for them, two spending checks join it:
  * the last hour's model spending against the installation's usual hour, and
  * one person's share of today's. `GET /health/detail` returns it to the
  * operator.
@@ -22,6 +24,7 @@ import nodemailer from 'nodemailer';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
 import { smtpTransportOptions } from '../experience/account-mail.ts';
+import type { StuckItem } from '../ops/item-failures.ts';
 
 export type HealthCheck = { name: string; ok: boolean; detail: string };
 export type HealthDetail = {
@@ -46,6 +49,8 @@ export type HealthProbes = {
    * out where the service has no cell service (MELETE_CELLS_URL unset).
    */
   cells?: () => Promise<unknown>;
+  /** The items background passes keep failing on (ops/item-failures.ts); left out, not checked. */
+  stuck?: () => StuckItem[];
 };
 
 export type DiskProbe = {
@@ -240,6 +245,7 @@ export async function healthDetail(
     });
   }
   if (probes.disk) checks.push(diskCheck(probes.disk));
+  if (probes.stuck) checks.push(stuckCheck(probes.stuck()));
   if (probes.sql && database === 'ok') {
     const sql = probes.sql;
     try {
@@ -294,6 +300,29 @@ export async function healthDetail(
     version: probes.version,
     checks,
     time: new Date().toISOString(),
+  };
+}
+
+/** How many listed in a stuck check's detail; the rest are counted. */
+const STUCK_LISTED = 10;
+
+/**
+ * Background work that keeps failing on one space, account or routine while
+ * the rest go on: each named with its pass, how often it failed and why.
+ */
+export function stuckCheck(stuck: StuckItem[]): HealthCheck {
+  if (!stuck.length) return { name: 'background_work', ok: true, detail: 'ok' };
+  const listed = stuck
+    .slice(0, STUCK_LISTED)
+    .map(
+      (item) =>
+        `${item.pass}: ${item.id} failed ${item.failures} times since ${item.since} (${item.error})`,
+    );
+  const more = stuck.length - listed.length;
+  return {
+    name: 'background_work',
+    ok: false,
+    detail: `${listed.join('; ')}${more > 0 ? `; and ${more} more` : ''}`,
   };
 }
 
