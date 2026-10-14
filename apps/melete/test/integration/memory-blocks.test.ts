@@ -463,7 +463,7 @@ withDb('a block holds for the detail that was forgotten', () => {
       await say(plain, 'I go by Maxi now.', [['general', 'I go by Maxi', 'Goes by Maxi']]),
     ).toEqual(['blocked_by_person']);
 
-    // Kept for its subject, it is not a block on a subject it narrows to, as before.
+    // Kept for its subject, it is a block on anything about it, the subjects it narrows to included.
     await say(plain, 'When I fly I always book an aisle seat.', [
       [
         'travel.seat',
@@ -475,6 +475,11 @@ withDb('a block holds for the detail that was forgotten', () => {
     expect(
       await say(plain, 'On trains I like a window seat.', [
         ['travel.seat.train', 'On trains I like a window seat', 'Prefers window seats on trains'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(plain, 'On long flights I like extra legroom.', [
+        ['travel.legroom', 'On long flights I like extra legroom', 'Likes extra legroom'],
       ]),
     ).toEqual([]);
     await say(plain, 'My friend Sam lives in Porto.', [
@@ -757,6 +762,132 @@ withDb('a block holds for the detail that was forgotten', () => {
       ]),
     ).toEqual([]);
     expect(await held(scope)).toEqual(['travel.seat.train :: Prefers window seats on trains']);
+  });
+
+  test('anything about a subject holds for the narrower subjects under it; just a detail does not', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'When I fly I always book an aisle seat. I live in Lisbon.', [
+      [
+        'travel.seat',
+        'When I fly I always book an aisle seat',
+        'Always books an aisle seat when flying',
+      ],
+      ['home.city', 'I live in Lisbon', 'Lives in Lisbon'],
+    ]);
+    expect(await blockAs('topic', scope, /aisle/)).toEqual(['topic']);
+    expect(await blockAs('detail', scope, /Lisbon/)).toEqual(['detail']);
+    // Under the subject, as real models filed these: "Anything about Travel seat".
+    for (const [text, subject, content] of [
+      [
+        'On trains I prefer a window seat.',
+        'travel.seat.window',
+        'Prefers a window seat on trains',
+      ],
+      ['On trains I prefer a window seat.', 'travel.seat.train', 'Prefers a window seat on trains'],
+      ['On long flights I like extra legroom.', 'travel.seat.legroom', 'Likes extra legroom'],
+    ] as const)
+      expect(await say(scope, text, [[subject, text.slice(0, -1), content]])).toEqual([
+        'blocked_by_person',
+      ]);
+    // Beside it, not under it, is another subject.
+    expect(
+      await say(scope, 'On long flights I like extra legroom.', [
+        ['travel.legroom', 'On long flights I like extra legroom', 'Likes extra legroom'],
+      ]),
+    ).toEqual([]);
+    expect(
+      await say(scope, 'I always pack carry-on only.', [
+        ['travel.luggage', 'I always pack carry-on only', 'Packs carry-on only'],
+      ]),
+    ).toEqual([]);
+    expect(
+      await say(scope, 'I like to see the cabin map first.', [
+        [
+          'travel.seating_chart',
+          'I like to see the cabin map first',
+          'Looks at the cabin map first',
+        ],
+      ]),
+    ).toEqual([]);
+    // A block on just a detail reaches no narrower subject for a different detail.
+    expect(
+      await say(scope, 'Before Lisbon I lived in Madrid.', [
+        ['home.city.previous', 'Before Lisbon I lived in Madrid', 'Previously lived in Madrid'],
+      ]),
+    ).toEqual([]);
+    expect(await held(scope)).toEqual([
+      'home.city.previous :: Previously lived in Madrid',
+      'travel.legroom :: Likes extra legroom',
+      'travel.luggage :: Packs carry-on only',
+      'travel.seating_chart :: Looks at the cabin map first',
+    ]);
+
+    // Blocks kept for their subject, from before the choice, reach as far, under
+    // the older names of the person's own subjects too.
+    const legacy = await createScope(store);
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_allergy', ${legacy.spaceId}, 'health.allergy', null, 'Health allergy'),
+      ('mb_user_city', ${legacy.spaceId}, 'person.user.city', null, 'Your city'),
+      ('mb_general', ${legacy.spaceId}, 'general', null, 'General')`;
+    expect(
+      await say(legacy, "I'm also allergic to shellfish.", [
+        ['health.allergy.shellfish', 'allergic to shellfish', 'Allergic to shellfish'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(legacy, 'Before that I lived in Madrid.', [
+        ['self.city.previous', 'Before that I lived in Madrid', 'Previously lived in Madrid'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    // A heading that names nothing is no topic to reach under.
+    expect(
+      await say(legacy, 'I have asthma. My timezone is Lisbon time.', [
+        ['health.condition', 'I have asthma', 'Has asthma'],
+        ['general.timezone', 'My timezone is Lisbon time', 'Timezone is Lisbon time'],
+      ]),
+    ).toEqual([]);
+    expect(await held(legacy)).toEqual([
+      'general.timezone :: Timezone is Lisbon time',
+      'health.condition :: Has asthma',
+    ]);
+
+    // In a room, a member's block reaches under its subject for that member only.
+    const room: MemoryScope = {
+      ...(await createScope(store)),
+      audience: 'space',
+      publisher: 'room',
+    };
+    const bob = 'prn_bob_narrower';
+    const bobs = `travel.seat.member_${stableId('member', bob).slice(0, 12)}`;
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_room_narrower', ${room.spaceId}, ${bobs}, null, 'Travel seat')`;
+    const fromBob = await memberSaid(room, bob, 'On trains I want a window seat.');
+    await commitExtraction(store.sql, room, fromBob, {
+      proposals: [
+        add(
+          fromBob,
+          'travel.seat.train',
+          'On trains I want a window seat',
+          'Window seat on trains',
+        ),
+      ],
+    });
+    const fromAlice = await memberSaid(
+      room,
+      'prn_alice_narrower',
+      'On trains I want a window seat.',
+    );
+    await commitExtraction(store.sql, room, fromAlice, {
+      proposals: [
+        add(
+          fromAlice,
+          'travel.seat.train',
+          'On trains I want a window seat',
+          'Window seat on trains',
+        ),
+      ],
+    });
+    expect(await held(room)).toEqual(['travel.seat.train :: Window seat on trains']);
   });
 
   test('just this detail, in a script whose words are not compared, blocks anything about its subject', async () => {

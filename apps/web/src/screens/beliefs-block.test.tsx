@@ -4,7 +4,7 @@
  */
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { BlockChoice, blockChoices, blockedToast } from './Beliefs.tsx';
+import { allowedToast, BlockChoice, blockChoices, blockedToast } from './Beliefs.tsx';
 
 test('the choice names the subject, anything about it first and preselected', () => {
   expect(blockChoices('Travel seat').map((choice) => [choice.scope, choice.title])).toEqual([
@@ -14,7 +14,7 @@ test('the choice names the subject, anything about it first and preselected', ()
   const html = renderToStaticMarkup(
     <BlockChoice
       belief={{ id: 'k1', topic: 'Travel seat' }}
-      onBlock={() => {}}
+      onBlock={async () => {}}
       onBack={() => {}}
       onCancel={() => {}}
     />,
@@ -40,4 +40,13 @@ test('the toast says how far the block reached', () => {
   );
   // Never the old wording that read as the whole subject for a detail.
   expect(`${detail.title} ${detail.sub}`).not.toContain('won’t learn it again');
+});
+
+test('allowed again, the toast says it plainly for either reach', () => {
+  expect(allowedToast({ label: 'Anything about Travel seat', scope: 'topic' })).toBe(
+    'I can learn about Travel seat again',
+  );
+  expect(allowedToast({ label: 'Home city, the detail you forgot', scope: 'detail' })).toBe(
+    'I can learn that detail again',
+  );
 });

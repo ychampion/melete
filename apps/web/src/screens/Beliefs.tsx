@@ -26,6 +26,7 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type {
   Belief,
+  BeliefBlock,
   BeliefBlockScope,
   BeliefCategory,
   BeliefHistory,
@@ -158,6 +159,15 @@ export const blockedToast = (label: string, topic: string, scope: BeliefBlockSco
       ? `I won’t learn anything about ${topic} again.`
       : `I won’t learn this detail again. Other details about ${topic} can still be learned.`,
 });
+
+/** What the toast after "Allow again" says, for how far the block reached. */
+export const allowedToast = (block: Pick<BeliefBlock, 'label' | 'scope'>) => {
+  if (block.scope === 'detail') return 'I can learn that detail again';
+  const topic = block.label.replace(/^Anything about /, '');
+  return topic === block.label
+    ? `I can learn “${block.label}” again`
+    : `I can learn about ${topic} again`;
+};
 
 /** Where a source link goes: the conversation it was said in, or the one its receipt is in. */
 const linkHref = (link: NonNullable<Belief['source']['link']>) => href(`/chat/${link.id}`);
@@ -354,7 +364,7 @@ function BeliefRow({
             onBlock={(scope) => {
               // The block reaches the whole subject when the detail can't be told apart.
               let reached = scope;
-              void eachCopy([belief.id, ...twins], async (id) => {
+              return eachCopy([belief.id, ...twins], async (id) => {
                 const result = await adapter.blockBelief(id, scope);
                 if (result.data?.scope === 'topic') reached = 'topic';
                 return result;
@@ -553,7 +563,7 @@ function BeliefsView({ focus }: { focus: string | null }) {
                   onClick={() =>
                     void adapter.unblockBelief(block.id).then((r) => {
                       if (r.data === null) return failed(r, 'Couldn’t change that');
-                      toast({ kind: 'ok', title: `I can learn “${block.label}” again` });
+                      toast({ kind: 'ok', title: allowedToast(block) });
                       blocks.reload();
                     })
                   }
@@ -580,11 +590,23 @@ export function BlockChoice({
   onCancel,
 }: {
   belief: Pick<Belief, 'id' | 'topic'>;
-  onBlock: (scope: BeliefBlockScope) => void;
+  onBlock: (scope: BeliefBlockScope) => Promise<unknown>;
   onBack: () => void;
   onCancel: () => void;
 }) {
   const [scope, setScope] = useState<BeliefBlockScope>('topic');
+  // One press forgets once: a second click while it is saving does nothing.
+  const sending = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const confirm = () => {
+    if (sending.current) return;
+    sending.current = true;
+    setBusy(true);
+    void onBlock(scope).finally(() => {
+      sending.current = false;
+      setBusy(false);
+    });
+  };
   return (
     <fieldset className="belief-confirm">
       <legend>Forget this and don’t learn it again. What should I stop learning?</legend>
@@ -605,7 +627,14 @@ export function BlockChoice({
         </label>
       ))}
       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        <Button size="sm" variant="destructive" autoFocus onClick={() => onBlock(scope)}>
+        <Button
+          size="sm"
+          variant="destructive"
+          autoFocus
+          loading={busy}
+          disabled={busy}
+          onClick={confirm}
+        >
           Forget and don’t learn again
         </Button>
         <Button size="sm" variant="outline" onClick={onBack}>

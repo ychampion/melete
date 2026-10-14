@@ -15,8 +15,8 @@
  * for the same subject filed under an older or variant heading.
  *
  * The person chooses how far a block reaches. By default it holds for
- * anything about the subject, the way blocks always did, and also for the
- * forgotten detail filed under any other subject of theirs. Or it holds for
+ * anything about the subject, the narrower subjects under it included, and
+ * also for the forgotten detail filed under any other subject of theirs. Or it holds for
  * just that detail, so a different detail under the same subject ("Lives in
  * Porto" after "Lives in Lisbon") can still be learned.
  */
@@ -261,7 +261,8 @@ export type Said = { domain_key: string; content: string; key?: unknown };
  * it, or null for the person in their own memory.
  *
  * - A registry key or the same subject, under any name an older extraction
- *   gave it or the member's own tag, matches a block kept for its subject.
+ *   gave it or the member's own tag, matches a block kept for its subject;
+ *   so does a narrower subject under it (travel.seat.window for travel.seat).
  * - A block that kept what was forgotten matches a detail that says all of
  *   it again, under any subject of the person's own ("Tell restaurants about
  *   the peanut allergy" for "Allergic to peanuts"); or, under the same subject
@@ -297,9 +298,13 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
   return blocks.list.some((block) => {
     if (block.key && typeof said.key === 'string' && block.key === said.key) return true;
     const same = subjects.has(block.subject);
+    // Anything about a subject is about the narrower subjects under it too:
+    // travel.seat.window is about the travel seat.
+    const under = !same && block.whole && narrower(subjects, block.subject);
     // A room member's block is only that member's.
     const blockMember = MEMBER.exec(block.subject)?.[1] ?? null;
     if (blockMember && blockMember !== (member ?? '').slice(0, 12) && !same) return false;
+    if (under) return true;
     const blockOwn =
       olderOwnSubject(block.subject) ||
       ownTopicRun(block.subject, said.content) ||
@@ -332,6 +337,17 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
   });
 }
 
+/**
+ * Whether one of these subjects sits under `wider`: travel.seat.window and
+ * travel.seat.window.member_… under travel.seat. A heading that names nothing
+ * ("general", "person", "self") is no topic to reach under.
+ */
+function narrower(subjects: ReadonlySet<string>, wider: string): boolean {
+  const base = withoutMember(wider);
+  if (!subjectSays(base).size) return false;
+  return [...subjects].some((subject) => withoutMember(subject).startsWith(`${base}.`));
+}
+
 /** An own block kept for its subject, matched against the person's own detail under another. */
 function untaggedOwnBlock(
   subject: string,
@@ -343,8 +359,9 @@ function untaggedOwnBlock(
   // "person.peanut_allergy" reads as the words "peanut allergy".
   const blockSays = subjectSays(subject);
   if (!blockSays.size) return false;
-  // A block under a topic heading holds for that topic, not for one it narrows
-  // to: travel.seat is not a block on travel.seat.train.
+  // Read across subjects, a block under a topic heading holds for that topic,
+  // not for one it narrows to: preference.flights.seat is not a block on
+  // travel.seat.train.
   if (
     !olderOwnSubject(subject) &&
     !ownTopicRun(subject, said.content) &&

@@ -626,7 +626,9 @@ export class MockBeliefs {
       );
       if (
         [...this.blocks.values()].some(
-          (block) => block.scope === 'topic' && block.subject === entry.subject,
+          (block) =>
+            block.scope === 'topic' &&
+            (block.subject === entry.subject || entry.subject.startsWith(`${block.subject}.`)),
         )
       ) {
         skipped++;
