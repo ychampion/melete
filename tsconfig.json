@@ -19,6 +19,7 @@
     "apps/*/test/**/*.ts",
     "apps/*/*.ts",
     "deploy/scripts/**/*.ts",
+    ".github/scripts/**/*.ts",
     "conformance/**/*.ts",
     "evals/**/*.ts"
   ],
