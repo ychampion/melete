@@ -6,7 +6,8 @@ import {
   type SourceEvent,
   type SourceRef,
 } from '@melete/contracts';
-import { blockedSubjects, isBlocked } from './beliefs.ts';
+import { blockedSubjects } from './beliefs.ts';
+import { blockedDetail } from './blocks.ts';
 import {
   addReferences,
   type ClaimHead,
@@ -33,13 +34,12 @@ import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './inv
 import {
   GENERIC_HEADS,
   memberSubject,
+  olderOwnSubject,
   olderOwnSubjects,
-  ownTopicRun,
   PERSON_HEADS,
   relatedSubject,
   SELF,
   sameWhose,
-  TOPICS,
   twoPeople,
   whoseDetail,
 } from './labels.ts';
@@ -189,42 +189,6 @@ const subjectWords = (domainKey: string) =>
       )
       .join(' '),
   );
-
-/** A subject an older extraction gave a detail of the person's own: a person heading naming no one. */
-const olderOwnSubject = (domainKey: string) =>
-  PERSON_HEADS.has(domainKey.split('.')[0] ?? '') && whoseDetail(domainKey).kind !== 'other';
-
-/** Words that say what kind of detail something is ("flights", "health"), as a subject's words are compared. */
-const TOPIC_WORDS = detailWords([...TOPICS].join(' '));
-
-/**
- * Whether the person blocked this detail of their own under the subject an
- * older extraction gave it. A block on person.allergy.peanuts still holds
- * when the allergy is proposed as health.allergy: every word of what the
- * blocked subject is about is in the new subject or its sentence. One word
- * saying what kind of detail it was may be missing when at least two others
- * are there: a block on person.preference.flights.aisle_seat holds for
- * "Always book aisle seats" under travel.seat. A block on
- * person.peanut_allergy holds for "Allergic to peanuts" under health.allergy.
- * A shellfish allergy, someone else's peanut allergy, or "Loves peanut
- * butter" is not blocked by it.
- */
-function blockedUnderOlderSubject(
-  blocked: { domains: Set<string> },
-  proposal: { domain_key: string; content: string },
-): boolean {
-  if (whoseDetail(proposal.domain_key, proposal.content).kind !== 'self') return false;
-  const said = new Set([...subjectWords(proposal.domain_key), ...detailWords(proposal.content)]);
-  return [...blocked.domains].some((domain) => {
-    if (!olderOwnSubject(domain) && !ownTopicRun(domain, proposal.content)) return false;
-    const words = [...subjectWords(domain)];
-    const missing = words.filter((word) => !said.has(word));
-    if (!words.length) return false;
-    if (!missing.length) return true;
-    const [only = ''] = missing;
-    return missing.length === 1 && words.length >= 3 && TOPIC_WORDS.has(only);
-  });
-}
 
 /**
  * Whether a change proposed under a topic is to the person's own detail held
@@ -695,17 +659,14 @@ export async function commitExtraction(
       // under the space lock a block is written under, so one written a moment
       // ago is seen.
       const blocked = await blockedSubjects(tx, scope.spaceId);
+      // In a room, a member's block holds for what that member says.
+      const speaker = await authorOf(tx, batch);
       const proposals: ExtractionProposal[] = [];
       const refused: Tier1Rejection[] = [];
       for (const [index, proposal] of accepted.entries()) {
         if (
           (proposal.op === 'add' || proposal.op === 'supersede') &&
-          // A subject blocked under the name an earlier extraction gave it stays blocked.
-          ([
-            proposal,
-            ...olderOwnSubjects(proposal.domain_key).map((domain_key) => ({ domain_key })),
-          ].some((subject) => isBlocked(blocked, subject)) ||
-            blockedUnderOlderSubject(blocked, proposal))
+          blockedDetail(blocked, proposal, speaker.id ? speaker.part : null)
         )
           refused.push({
             index,
