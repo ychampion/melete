@@ -48,6 +48,7 @@ import {
   question,
   trigger,
 } from '../db/schema.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
@@ -1576,8 +1577,16 @@ export class AttemptRunner {
         })
         .catch(async (error: unknown) => {
           // A rejected persisted outcome must not starve the remaining recovery candidates.
-          if (!(error instanceof ServiceError)) throw error;
-          return this.loseAttempt(candidate.id, error.code);
+          if (error instanceof ServiceError) return this.loseAttempt(candidate.id, error.code);
+          throw error;
+        })
+        .catch((error: unknown) => {
+          // Nor may any other failure: this one is logged and the rest are still recovered.
+          if (databaseUnreachable(error)) throw error;
+          process.stderr.write(
+            `attempt recovery: ${candidate.id} not recovered: ${failureMessage(error)}\n`,
+          );
+          return false;
         });
       if (fenced) this.interrupt(candidate.jobId, candidate.id);
     }
@@ -1591,19 +1600,26 @@ export class AttemptRunner {
         ),
       );
     for (const candidate of due) {
-      await this.jobs.transaction(async (tx) => {
-        const row = await this.jobs.lock(tx, candidate.id, true);
-        if (
-          !row?.nextWakeAt ||
-          row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
-          !['queued', 'waiting_for_event_or_time'].includes(row.state)
-        )
-          return;
-        const live = await tx.execute(
-          sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
-        );
-        if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
-      });
+      await this.jobs
+        .transaction(async (tx) => {
+          const row = await this.jobs.lock(tx, candidate.id, true);
+          if (
+            !row?.nextWakeAt ||
+            row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
+            !['queued', 'waiting_for_event_or_time'].includes(row.state)
+          )
+            return;
+          const live = await tx.execute(
+            sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
+          );
+          if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
+        })
+        .catch((error: unknown) => {
+          if (databaseUnreachable(error)) throw error;
+          process.stderr.write(
+            `job recovery: ${candidate.id} not requeued: ${failureMessage(error)}\n`,
+          );
+        });
     }
     await this.settleOrphanTurns();
     await this.afterRecovery?.();
