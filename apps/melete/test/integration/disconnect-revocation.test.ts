@@ -412,6 +412,83 @@ withDb('removing an MCP connection signed in with OAuth', () => {
     expect(await sealed(mcp.secretRef)).toBe(0);
   });
 
+  test('sends its client secret only to the issuer the credential is refreshed at', async () => {
+    // A server that now names another authorization server than the one that
+    // issued its token: the token's own client secret does not go there.
+    const named = {
+      'GET https://mcp.example.test/.well-known/oauth-protected-resource/mcp': () =>
+        Response.json({
+          resource: 'https://mcp.example.test/mcp',
+          authorization_servers: ['https://elsewhere.example.test'],
+        }),
+      'GET https://elsewhere.example.test/.well-known/oauth-authorization-server': () =>
+        Response.json({
+          issuer: 'https://elsewhere.example.test',
+          token_endpoint: 'https://elsewhere.example.test/token',
+          revocation_endpoint: 'https://elsewhere.example.test/revoke',
+        }),
+      'POST https://elsewhere.example.test/revoke': () => new Response(null, { status: 200 }),
+      'GET https://as.example.test/.well-known/oauth-authorization-server': () =>
+        Response.json({
+          issuer: 'https://as.example.test',
+          token_endpoint: 'https://as.example.test/token',
+          revocation_endpoint: 'https://as.example.test/revoke',
+        }),
+      'POST https://as.example.test/revoke': () => new Response(null, { status: 200 }),
+    };
+    const { seen, fetcher } = providers(named);
+    const spaceId = await newSpace();
+    const configuration = {
+      server: { endpoint: { transport: 'http', url: 'https://mcp.example.test/mcp' } },
+    };
+    const unanchored = await connect(
+      spaceId,
+      'mcp',
+      configuration,
+      JSON.stringify({
+        access_token: 'at-unanchored',
+        client_id: 'app-client',
+        client_secret: 'app-secret',
+        resource: 'https://mcp.example.test/mcp',
+        status: 'active',
+      }),
+    );
+    const policy = policyWith({ mcpFetch: async () => fetcher });
+    await policy.changeConnection(unanchored.id, { kind: 'revoke', expected_generation: 0 });
+    expect(seen.filter((entry) => entry.body.includes('app-secret'))).toEqual([]);
+    expect(await sealed(unanchored.secretRef)).toBe(0);
+
+    // Refreshed at its issuer's token endpoint, the revocation beside it gets the secret.
+    seen.length = 0;
+    const anchored = await connect(
+      spaceId,
+      'mcp',
+      configuration,
+      JSON.stringify({
+        access_token: 'at-anchored',
+        refresh_token: 'rt-anchored',
+        token_url: 'https://as.example.test/token',
+        client_id: 'app-client',
+        client_secret: 'app-secret',
+        resource: 'https://mcp.example.test/mcp',
+        status: 'active',
+      }),
+    );
+    const answer = await policy.changeConnection(anchored.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    const posts = seen.filter((entry) => entry.method === 'POST');
+    expect(posts.map((entry) => entry.url)).toEqual(['https://as.example.test/revoke']);
+    expect(Object.fromEntries(new URLSearchParams(posts[0]?.body))).toEqual({
+      token: 'rt-anchored',
+      token_type_hint: 'refresh_token',
+      client_id: 'app-client',
+      client_secret: 'app-secret',
+    });
+  });
+
   test('a key pasted for an MCP server is never sent anywhere', async () => {
     const { seen, fetcher } = providers({});
     const spaceId = await newSpace();

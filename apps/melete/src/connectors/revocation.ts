@@ -220,7 +220,12 @@ async function withdraw(
       tokenUrl: server.tokenUrl,
       revokeUrl: server.revokeUrl,
       clientId: credential.client_id,
-      ...(credential.client_secret ? { clientSecret: credential.client_secret } : {}),
+      // The secret goes only beside the token endpoint the credential is
+      // refreshed at. An issuer found from what the server names now was
+      // never checked against the one that issued the token.
+      ...(credential.client_secret && credential.token_url
+        ? { clientSecret: credential.client_secret }
+        : {}),
       scopes: '',
       redirectUri: '',
       refreshEncoding: 'form',
