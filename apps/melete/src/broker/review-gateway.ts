@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
@@ -132,6 +132,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     reasoningEffort: options.reasoningEffort,
     maxRequestBytes: 128 * 1024,
     maxResponseBytes: 32 * 1024,
+    onError: gatewayLog('review'),
     async authenticate(token) {
       // One token, one call: it is spent the moment the gateway accepts it.
       const call = live.get(token);
