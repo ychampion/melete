@@ -11,7 +11,7 @@ import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete
 import { z } from 'zod';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
 import { parseModelPrices } from './gateway/prices.ts';
-import { parseModelChoice } from './gateway/routing.ts';
+import { parseModelChoice, parseWorkRoutes } from './gateway/routing.ts';
 import { DEFAULT_NETWORK_POOL, parseNetworkPool } from './runtime/network-pool.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -745,6 +745,12 @@ const variables = z.object({
   MELETE_MODEL_VISION: unsetWhenBlank(z.string().max(400).optional()),
   MELETE_MODEL_FALLBACK: unsetWhenBlank(z.string().max(2000).optional()),
   /**
+   * A model per kind of agent work: entries separated by `;` or new lines,
+   * each `kind=provider/model[,provider/model...]`, or `recommended` first for
+   * the preset (gateway/work-routes.ts). Unset, one model serves every turn.
+   */
+  MELETE_MODEL_ROUTES: unsetWhenBlank(z.string().max(8000).optional()),
+  /**
    * The model that sorts new mail and calendar changes into needs you, for
    * your information, or ignore, written `provider/model`, or `off` to turn
    * sorting off. Unset, sorting uses the owner's secondary model for scheduled
@@ -1128,6 +1134,16 @@ export const envSchema = variables.transform((value, context) => {
       context.addIssue({
         code: 'custom',
         path: ['MELETE_MODEL_TRIAGE'],
+        message: (error as Error).message,
+      });
+    }
+  if (value.MELETE_MODEL_ROUTES)
+    try {
+      parseWorkRoutes(value.MELETE_MODEL_ROUTES);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['MELETE_MODEL_ROUTES'],
         message: (error as Error).message,
       });
     }

@@ -2227,6 +2227,78 @@ Each rerouted call is recorded with the model that served it: the trail's
 `model_usage` has the same columns. The refused call before a fallback has its
 own receipt.
 
+### Sending each kind of work to a model
+
+`MELETE_MODEL_ROUTES` sends each kind of agent work to a model of its own. It
+is off unless set: a self-hosted install with one key and no
+`MELETE_MODEL_ROUTES` runs every turn on one model, as before.
+
+The value is a list of entries separated by `;` or new lines. Each entry is
+`kind=provider/model`, optionally followed by `,provider/model` fallbacks,
+tried in order when the first model's provider rate-limits, fails or cannot be
+reached:
+
+```bash
+MELETE_MODEL_ROUTES="chat=openai/gpt-6; browser=anthropic/claude-opus-5-5; computer=openai/gpt-6,openai/gpt-6-mini; background=fireworks/accounts/fireworks/models/deepseek-v4p1-flash"
+```
+
+The kinds, and when an attempt is each:
+
+| Kind | When |
+| --- | --- |
+| `background` | Scheduled, repeating or triggered work that nobody is waiting on |
+| `team` | Work in a space with more than one person in it |
+| `computer` | The job's recent attempts used the computer, its terminal or ran code, or the newest message asks to run, install, script, code, chart or work on a CSV or spreadsheet |
+| `browser` | The job's recent attempts used the browser, or the newest message asks to open or go to a website, gives an address, or says "in your browser" |
+| `long` | Earlier messages of the conversation are already being summarised, or the conversation fills about half of the model's context window |
+| `files` | The newest message carries a file other than a picture |
+| `research` | The newest message asks to compare, research or look into something, or for sources |
+| `chat` | Every agent turn; a `chat` route covers whatever no other route took |
+
+An attempt can be several kinds at once. It runs on the route of the first of
+its kinds in this order: `background`, `team`, `computer`, `browser`, `long`,
+`files`, `research`, `chat`. A route whose provider has no key or sign-in at
+that moment is passed over for the next kind; with none left, the attempt
+runs where it would have without routes. The words checked in the newest
+message are a starting point and will be tuned.
+
+The rules:
+
+- A model the owner chose in the app always wins for agent turns. Routes only
+  apply to a turn that would otherwise run on the server's default model.
+- The `background` route applies to background work whatever the owner chose
+  for their own turns, except that the owner's secondary model, when they
+  moved scheduled work to it, wins over it.
+- A server default on the owner's own machine or network keeps its turns;
+  routes do not move them elsewhere.
+- Each attempt is chosen afresh, so a conversation can move between models from
+  one turn to the next, across providers and protocols: the engine is started
+  for each attempt with that attempt's model, and is handed the conversation
+  as Melete recorded it, not as one provider wrote it.
+- A routed attempt keeps its own route's fallbacks, then
+  `MELETE_MODEL_FALLBACK`, and the vision model, as an attempt on the default
+  does. Within one attempt, a fallback is only taken when it speaks the same
+  protocol as the attempt's model; a route's fallback that does not is named
+  in a warning at start-up.
+- An unknown kind or a model not written `provider/model` stops the service
+  at start-up with a message naming `MELETE_MODEL_ROUTES` and the kinds. A
+  model whose provider has no key in the environment is named in a warning.
+
+`recommended`, alone or as the first entry, starts from Melete's built-in
+table of a model for each kind. The entries after it replace the table's for
+their kind:
+
+```bash
+MELETE_MODEL_ROUTES="recommended; browser=anthropic/claude-opus-5-5"
+```
+
+A model in the table whose provider has no key in the environment is left
+out, with a warning at start-up, so `recommended` is safe on an install with
+one key.
+
+Each routed attempt writes one line to the service log, naming the job, the
+kind and the model: `model route: job <id> browser -> anthropic/claude-opus-5-5`.
+
 ### Reasoning effort
 
 `MELETE_REASONING_EFFORT_AGENT` (default `medium`) and

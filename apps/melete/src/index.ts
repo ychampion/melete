@@ -143,6 +143,7 @@ import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { unsettledSteps } from './jobs/unsettled.ts';
+import { attemptWorkKinds } from './jobs/work-signals.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
@@ -1556,17 +1557,34 @@ export async function bootstrap(
         // A model chosen in the app applies from the next attempt. On the
         // server's default, a configured vision model reads its pictures.
         // Scheduled work runs on its person's secondary when they chose so.
+        // With routes per kind of work, the attempt's kind picks its model.
         ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
           ? {
-              resolveModel: (
-                tx: Parameters<ModelSettingsService['routedChoice']>[1],
-                row: { spaceId: string },
+              resolveModel: async (
+                tx: NonNullable<Parameters<ModelSettingsService['routedChoice']>[1]>,
+                row: { id: string; spaceId: string; audience: string },
                 usageClass: UsageClass,
-              ) =>
-                (modelSettings as ModelSettingsService).routedChoice(routing, tx, {
-                  spaceId: row.spaceId,
-                  usageClass,
-                }),
+              ) => {
+                const chosen = await (modelSettings as ModelSettingsService).routedChoice(
+                  routing,
+                  tx,
+                  {
+                    spaceId: row.spaceId,
+                    usageClass,
+                    ...(Object.keys(routing.work ?? {}).some((kind) => kind !== 'background')
+                      ? {
+                          kinds: (otherwise: { model: string }) =>
+                            attemptWorkKinds(tx, row, usageClass, otherwise),
+                        }
+                      : {}),
+                  },
+                );
+                if (chosen.route)
+                  process.stderr.write(
+                    `model route: job ${row.id} ${chosen.route} -> ${chosen.provider}/${chosen.model}\n`,
+                  );
+                return chosen;
+              },
             }
           : {}),
         // Past a spending limit no attempt starts, and one cut short ends on it.
