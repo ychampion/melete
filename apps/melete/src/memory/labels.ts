@@ -441,6 +441,10 @@ export function sameWhose(a: Whose, aText: string, b: Whose, bText: string): boo
   );
 }
 
+/** A subject an older extraction gave a detail of the person's own: a person heading naming no one. */
+export const olderOwnSubject = (domainKey: string) =>
+  PERSON_HEADS.has(domainKey.split('.')[0] ?? '') && whoseDetail(domainKey).kind !== 'other';
+
 /**
  * The subjects an earlier extraction gave a detail of the person's own that
  * is now filed under `self.`: `self.city` was `person.user.city`,

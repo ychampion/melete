@@ -13,6 +13,7 @@ import type {
   BeliefTrust,
   OriginTrust,
 } from '@melete/contracts';
+import { blockedSubject, readBlocks } from './blocks.ts';
 import { type ClaimHead, eligibleRevision, getHead, listClaims } from './claims.ts';
 import {
   lockSpace,
@@ -372,26 +373,19 @@ export async function beliefHistory(
   });
 }
 
-/** Subjects the person asked Melete not to learn again. */
+/** Details the person asked Melete not to learn again (see `blockedDetail`). */
 export async function blockedSubjects(sql: MemorySql | MemoryTx, spaceId: string) {
   const rows = await sql`select domain_key, key from memory_blocks
     where space_id = ${spaceId} and removed_at is null`;
-  return {
-    domains: new Set(rows.map((row) => String(row.domain_key))),
-    keys: new Set(rows.flatMap((row) => (row.key ? [String(row.key)] : []))),
-  };
+  return readBlocks(spaceId, rows);
 }
-export const isBlocked = (
-  blocked: { domains: Set<string>; keys: Set<string> },
-  subject: { domain_key: string; key?: string | null },
-) =>
-  blocked.domains.has(subject.domain_key) ||
-  (typeof subject.key === 'string' && blocked.keys.has(subject.key));
 
 /**
- * Forget a belief and stop learning its subject again. The block is written
- * before the forget, so a message being read at the same moment cannot bring
- * the subject back in between.
+ * Forget a belief and stop learning it again. The block is written before the
+ * forget, so a message being read at the same moment cannot bring the detail
+ * back in between. It holds for that detail wherever a model files it, not
+ * for every other detail filed under the same subject (see `blockedSubject`),
+ * and its name says so.
  */
 export async function blockBelief(
   sql: MemorySql,
@@ -404,8 +398,11 @@ export async function blockBelief(
     const found = await getHead(tx, scope, id);
     if (!found) throw new MemoryError('claim_not_found');
     const domain = found.domain_key.split(':exception:')[0] ?? found.domain_key;
+    const block = blockedSubject(scope.spaceId, domain, found.current.content);
+    const label = subjectLabel(found.key, found.domain_key);
     await tx`insert into memory_blocks (id, space_id, domain_key, key, label)
-      values (${newId('blk')}, ${scope.spaceId}, ${domain}, ${found.key}, ${subjectLabel(found.key, found.domain_key)})
+      values (${newId('blk')}, ${scope.spaceId}, ${block.subject}, ${found.key},
+        ${block.detail ? `${label}, the detail you forgot` : label})
       on conflict (space_id, domain_key) where removed_at is null do nothing`;
     return found;
   });
