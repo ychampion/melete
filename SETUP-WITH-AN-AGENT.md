@@ -169,9 +169,9 @@ bun run deploy/scripts/set-env.ts COMPOSE_PROJECT_NAME=melete2
 A second installation keeps the `MELETE_SANDBOX_PROJECT` that `configure.ts`
 wrote, which keeps its agents' computers apart from the first one's, and backs
 up to a folder of its own, `~/melete-backups/<project>`. Before starting it, run
-`bun run melete doctor` and check `docker.address_pools`: both installations
-take networks from the same pools ([Docker address
-pools](docs/DEPLOYMENT.md#docker-address-pools)).
+`bun run melete doctor` and check `docker.address_pools` and
+`docker.network_pool`: both installations take networks from the same pools
+([Docker address pools](docs/DEPLOYMENT.md#docker-address-pools)).
 
 The rest of this page writes `3101`; use your `WEB_PORT` instead.
 

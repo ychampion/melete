@@ -9,8 +9,8 @@
  * nothing. The registry and the external database are its network calls, and
  * `--offline` skips both.
  *
- * It also counts how many more networks the service's network pool (or, with
- * MELETE_NETWORK_POOL=off, Docker's address pools) can give, and
+ * It also counts how many more networks Docker's address pools and the
+ * service's own network pool (MELETE_NETWORK_POOL) can give, and
  * lists the agents' computers and networks that sandbox projects no
  * installation on this engine uses have left behind. `--remove-leftovers`
  * removes those, and is the only way doctor changes anything.
@@ -37,9 +37,11 @@ import {
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
 import {
   type AddressPoolFact,
+  type AddressPoolFacts,
   type Cidr,
   enginePools,
   judgeAddressPools,
+  type Pool,
   type PoolHeadroom,
   parseCidr,
   parseRoutes,
@@ -111,8 +113,8 @@ export type DoctorFacts = {
   registry: { url: string; answered: boolean; detail: string } | null;
   /** The external database's answer; null when not asked: the bundled database, no deploy/.env, or --offline. */
   database: DatabaseFact | null;
-  /** How many more networks the engine can make; null when its networks could not be read, left out when not asked. */
-  addressPools?: AddressPoolFact | null;
+  /** How many more networks the engine's pools and the service's pool can give; left out when not asked. */
+  addressPools?: AddressPoolFacts;
   /** What unused sandbox projects left; null when it could not be listed, left out when not asked. */
   leftovers?: Leftovers[] | null;
   /** What `--remove-leftovers` did, in place of the list. */
@@ -280,7 +282,10 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
     );
   }
 
-  if (facts.addressPools !== undefined) results.push(...judgeAddressPools(facts.addressPools));
+  if (facts.addressPools !== undefined) {
+    results.push(...judgeAddressPools(facts.addressPools.engine));
+    if (facts.addressPools.melete) results.push(...judgeAddressPools(facts.addressPools.melete));
+  }
   if (facts.removed) results.push(facts.removed);
   else if (facts.leftovers !== undefined) results.push(judgeLeftovers(facts.leftovers));
 
@@ -361,30 +366,34 @@ export function publishedByProject(stdout: string): Set<number> {
 }
 
 /**
- * The pools the service's networks come from, and how many networks each has
- * left, from the subnets of the networks that exist: the installation's
+ * The pools networks come from, and how many networks each has left, from the
+ * subnets of the networks that exist: the engine's own address pools, which
+ * every Compose network takes a block of, and the installation's
  * MELETE_NETWORK_POOL (its default when unset), cut into the /28s the service
- * takes, or with `off` the engine's own address pools. This machine's routes
- * are read only when the engine runs here, on Linux.
+ * takes, unless it is `off`. A value the service refuses is reported whether
+ * or not Docker answers. This machine's routes are read only when the engine
+ * runs here, on Linux.
  */
 export function readAddressPools(
   run: Run,
   host: DockerHostFacts,
   networkPoolSetting?: string,
-): AddressPoolFact | null {
-  let melete: NetworkPool | null;
+): AddressPoolFacts {
+  let melete: NetworkPool | null = null;
+  let invalid: AddressPoolFact | undefined;
   try {
     melete = parseNetworkPool(networkPoolSetting);
   } catch (error) {
-    return {
+    invalid = {
       source: 'melete',
       builtIn: false,
       pools: [],
       invalid: error instanceof Error ? error.message : String(error),
     };
   }
+  const unknown: AddressPoolFacts = { engine: null, ...(invalid ? { melete: invalid } : {}) };
   const listed = run(['docker', 'network', 'ls', '--quiet']);
-  if (listed.code !== 0) return null;
+  if (listed.code !== 0) return unknown;
   const ids = listed.stdout.split(/\s+/).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
   let taken: Cidr[] = [];
   if (ids.length > 0) {
@@ -396,7 +405,7 @@ export function readAddressPools(
       '{{range .IPAM.Config}}{{.Subnet}} {{end}}',
       ...ids,
     ]);
-    if (inspected.code !== 0) return null;
+    if (inspected.code !== 0) return unknown;
     taken = inspected.stdout.split(/\s+/).flatMap((subnet) => {
       const cidr = parseCidr(subnet);
       return cidr ? [cidr] : [];
@@ -409,17 +418,32 @@ export function readAddressPools(
   const routes = (table?.code === 0 ? parseRoutes(table.stdout) : []).filter(
     (route) => !taken.some((net) => net.start === route.start && net.prefix === route.prefix),
   );
-  const { pools, builtIn } = melete
-    ? { pools: [{ base: formatPool(melete), size: NETWORK_SUBNET_PREFIX }], builtIn: false }
-    : enginePools(host.info?.defaultAddressPools);
+  const headroom = (pools: readonly Pool[]) =>
+    pools.flatMap((pool): PoolHeadroom[] => {
+      const free = poolHeadroom(pool, taken, routes);
+      return free ? [free] : [];
+    });
+  const { pools, builtIn, ipv6Only } = enginePools(host.info?.defaultAddressPools);
   return {
-    source: melete ? 'melete' : 'docker',
-    builtIn,
-    ...(melete && !networkPoolSetting?.trim() ? { defaultPool: true } : {}),
-    pools: pools.flatMap((pool): PoolHeadroom[] => {
-      const headroom = poolHeadroom(pool, taken, routes);
-      return headroom ? [headroom] : [];
-    }),
+    engine: {
+      source: 'docker',
+      builtIn,
+      attempts: melete === null && invalid === undefined,
+      ...(ipv6Only ? { ipv6Only } : {}),
+      pools: headroom(pools),
+    },
+    ...(invalid
+      ? { melete: invalid }
+      : melete
+        ? {
+            melete: {
+              source: 'melete' as const,
+              builtIn: false,
+              ...(networkPoolSetting?.trim() ? {} : { defaultPool: true }),
+              pools: headroom([{ base: formatPool(melete), size: NETWORK_SUBNET_PREFIX }]),
+            },
+          }
+        : {}),
   };
 }
 
@@ -547,6 +571,7 @@ export const HOST_DOCTOR_RULES = [
   'disk.free_mb',
   'memory.total_mb',
   'docker.address_pools',
+  'docker.network_pool',
   LEFTOVERS_ID,
   'ports.published',
   'images.present',

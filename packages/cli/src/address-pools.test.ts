@@ -147,8 +147,12 @@ describe("Docker's address pools", () => {
       if (line === 'cat /proc/net/route') return answer(table);
       return { code: 1, stdout: '', stderr: '' };
     };
-    const fact = readAddressPools(run, linuxHost([{ base: '10.216.0.0/14', size: 24 }]), 'off');
-    expect(fact?.pools[0]).toMatchObject({ free: 1023, routes: ['10.216.9.0/24'] });
+    const { engine } = readAddressPools(
+      run,
+      linuxHost([{ base: '10.216.0.0/14', size: 24 }]),
+      'off',
+    );
+    expect(engine?.pools[0]).toMatchObject({ free: 1023, routes: ['10.216.9.0/24'] });
   });
 });
 
@@ -209,16 +213,16 @@ function refusal(value: string): string {
 }
 
 describe('MELETE_NETWORK_POOL', () => {
-  // The daemon names a pool too: with MELETE_NETWORK_POOL on, it is not what is judged.
+  // The daemon names a pool too: it is judged as its own rule beside the service's pool.
   const daemon = linuxHost([{ base: '10.216.0.0/14', size: 24 }]);
 
-  test("unset, the service's default pool is judged in /28s, not the engine's pools", () => {
+  test("unset, the service's default pool is judged in /28s, beside the engine's pools", () => {
     expect(DEFAULT_NETWORK_POOL).toBe('10.215.0.0/16');
     const { run } = engine(['10.215.0.16/28', '10.215.0.32/28', '10.216.0.0/24', '172.17.0.0/16']);
     for (const unset of [undefined, '', '  ']) {
-      const fact = readAddressPools(run, daemon, unset);
-      expect(fact).toMatchObject({ source: 'melete', builtIn: false, defaultPool: true });
-      expect(fact?.pools).toEqual([
+      const facts = readAddressPools(run, daemon, unset);
+      expect(facts.melete).toMatchObject({ source: 'melete', builtIn: false, defaultPool: true });
+      expect(facts.melete?.pools).toEqual([
         {
           pool: '10.215.0.0/16',
           size: NETWORK_SUBNET_PREFIX,
@@ -227,22 +231,27 @@ describe('MELETE_NETWORK_POOL', () => {
           routes: [],
         },
       ]);
-      const [result] = judgeAddressPools(fact);
-      expect(result).toMatchObject({ id: 'docker.address_pools', level: 'ok' });
+      const [result] = judgeAddressPools(facts.melete ?? null);
+      expect(result).toMatchObject({ id: 'docker.network_pool', level: 'ok' });
       expect(result?.detail).toBe(
         "Melete's network pool 10.215.0.0/16 (MELETE_NETWORK_POOL unset, so the default) has 4094 of 4096 networks left.",
       );
+      // The engine's pools are still counted: Compose's own networks take them.
+      expect(facts.engine).toMatchObject({ source: 'docker', builtIn: false, attempts: false });
+      expect(facts.engine?.pools).toEqual([
+        { pool: '10.216.0.0/14', size: 24, blocks: 1024, free: 1023, routes: [] },
+      ]);
     }
   });
 
   test('set, its own range is judged: a /24 holds 16 networks, and a few left warns with the setting as the fix', () => {
     const inside = Array.from({ length: 10 }, (_, index) => `10.214.0.${index * 16}/28`);
-    const fact = readAddressPools(engine(inside).run, daemon, ' 10.214.0.0/24 ');
-    expect(fact).toMatchObject({ source: 'melete', builtIn: false });
-    expect(fact?.defaultPool).toBeUndefined();
-    expect(fact?.pools[0]).toMatchObject({ pool: '10.214.0.0/24', blocks: 16, free: 6 });
-    const [result] = judgeAddressPools(fact);
-    expect(result).toMatchObject({ id: 'docker.address_pools', level: 'warn' });
+    const { melete } = readAddressPools(engine(inside).run, daemon, ' 10.214.0.0/24 ');
+    expect(melete).toMatchObject({ source: 'melete', builtIn: false });
+    expect(melete?.defaultPool).toBeUndefined();
+    expect(melete?.pools[0]).toMatchObject({ pool: '10.214.0.0/24', blocks: 16, free: 6 });
+    const [result] = judgeAddressPools(melete ?? null);
+    expect(result).toMatchObject({ id: 'docker.network_pool', level: 'warn' });
     expect(result?.detail).toContain(
       "Melete's network pool 10.214.0.0/24 (MELETE_NETWORK_POOL) has 6 of 16 networks left.",
     );
@@ -250,26 +259,64 @@ describe('MELETE_NETWORK_POOL', () => {
     expect(result?.fix).not.toContain('daemon.json');
 
     const full = Array.from({ length: 16 }, (_, index) => `10.214.0.${index * 16}/28`);
-    const [none] = judgeAddressPools(readAddressPools(engine(full).run, daemon, '10.214.0.0/24'));
+    const [none] = judgeAddressPools(
+      readAddressPools(engine(full).run, daemon, '10.214.0.0/24').melete ?? null,
+    );
     expect(none).toMatchObject({
       level: 'fail',
       detail: expect.stringContaining('all 16 are taken'),
     });
   });
 
-  test("off judges the engine's own pools, as before", () => {
+  test("with the service's pool on, the engine's pools running out still fails, as a Compose problem", () => {
+    // Docker's 31 built-in blocks, every one taken by some Compose project.
+    const taken = DOCKER_DEFAULT_POOLS.flatMap((pool) => {
+      const range = cidr(pool.base);
+      return Array.from(
+        { length: 2 ** (pool.size - range.prefix) },
+        (_, index) =>
+          `${formatCidr({ start: range.start + index * 2 ** (32 - pool.size), prefix: pool.size })}`,
+      );
+    });
+    expect(taken).toHaveLength(31);
+    const facts = readAddressPools(engine(taken).run, linuxHost(), undefined);
+    const [pools] = judgeAddressPools(facts.engine);
+    expect(pools).toMatchObject({ id: 'docker.address_pools', level: 'fail' });
+    expect(pools?.detail).toContain('all 31 are taken');
+    expect(pools?.detail).toContain('fails to start');
+    expect(pools?.detail).not.toContain('chat');
+    expect(pools?.fix).toContain('daemon.json');
+    // The service's own pool is untouched by them.
+    expect(judgeAddressPools(facts.melete ?? null)[0]).toMatchObject({
+      id: 'docker.network_pool',
+      level: 'ok',
+    });
+  });
+
+  test("off judges only the engine's own pools, which chats then take networks from", () => {
     const { run } = engine(['10.216.5.0/24', '10.215.0.16/28']);
     for (const off of ['off', 'OFF', ' off ']) {
-      const fact = readAddressPools(run, daemon, off);
-      expect(fact).toMatchObject({ source: 'docker', builtIn: false });
-      expect(fact?.pools).toEqual([
+      const facts = readAddressPools(run, daemon, off);
+      expect(facts.melete).toBeUndefined();
+      expect(facts.engine).toMatchObject({ source: 'docker', builtIn: false, attempts: true });
+      expect(facts.engine?.pools).toEqual([
         { pool: '10.216.0.0/14', size: 24, blocks: 1024, free: 1023, routes: [] },
       ]);
     }
-    expect(readAddressPools(run, daemon, undefined)?.source).toBe('melete');
+    expect(readAddressPools(run, daemon, undefined).melete?.source).toBe('melete');
+    const few = readAddressPools(
+      engine(
+        Array.from({ length: 1020 }, (_, index) => `10.${216 + (index >> 8)}.${index % 256}.0/24`),
+      ).run,
+      daemon,
+      'off',
+    );
+    const [result] = judgeAddressPools(few.engine);
+    expect(result).toMatchObject({ id: 'docker.address_pools', level: 'warn' });
+    expect(result?.detail).toContain('Each chat attempt, agent computer and plugin');
   });
 
-  test("an unusable value fails with the service's own rule, before Docker is asked", () => {
+  test("an unusable value fails with the service's own rule, whether or not Docker answers", () => {
     for (const bad of [
       '10.214.0.0/25',
       '10.0.0.0/7',
@@ -279,16 +326,17 @@ describe('MELETE_NETWORK_POOL', () => {
       'nonsense',
       'fd00::/8',
     ]) {
-      const { run, commands } = engine(['10.215.0.16/28']);
-      const fact = readAddressPools(run, daemon, bad);
-      expect(fact).toMatchObject({ source: 'melete', pools: [], invalid: refusal(bad) });
-      expect(commands).toEqual([]);
-      const results = judgeAddressPools(fact);
-      expect(results).toHaveLength(1);
-      expect(results[0]).toMatchObject({ id: 'docker.address_pools', level: 'fail' });
-      expect(results[0]?.detail).toContain(refusal(bad));
-      expect(results[0]?.fix).toContain('/8 to /24');
-      expect(results[0]?.fix).toContain('off');
+      const unanswered: Run = () => ({ code: 1, stdout: '', stderr: 'Cannot connect' });
+      for (const run of [engine(['10.215.0.16/28']).run, unanswered]) {
+        const { melete } = readAddressPools(run, daemon, bad);
+        expect(melete).toMatchObject({ source: 'melete', pools: [], invalid: refusal(bad) });
+        const results = judgeAddressPools(melete ?? null);
+        expect(results).toHaveLength(1);
+        expect(results[0]).toMatchObject({ id: 'docker.network_pool', level: 'fail' });
+        expect(results[0]?.detail).toContain(refusal(bad));
+        expect(results[0]?.fix).toContain('/8 to /24');
+        expect(results[0]?.fix).toContain('off');
+      }
     }
   });
 
@@ -302,16 +350,18 @@ describe('MELETE_NETWORK_POOL', () => {
       routeLine('eth0', '192.168.1.0/24'),
     ];
     const { run } = engine(['10.215.3.0/28'], routes);
-    const fact = readAddressPools(run, daemon, undefined);
-    expect(fact?.pools[0]?.routes).toEqual(['10.215.128.0/20']);
-    const warning = judgeAddressPools(fact).find((r) => r.id === 'docker.address_pool_routes');
+    const { melete } = readAddressPools(run, daemon, undefined);
+    expect(melete?.pools[0]?.routes).toEqual(['10.215.128.0/20']);
+    const warning = judgeAddressPools(melete ?? null).find(
+      (r) => r.id === 'docker.address_pool_routes',
+    );
     expect(warning).toMatchObject({ level: 'warn' });
     expect(warning?.detail).toContain('10.215.0.0/16');
     expect(warning?.fix).toContain('MELETE_NETWORK_POOL=');
     expect(warning?.fix).not.toContain('daemon.json');
 
     // A pool set clear of the VPN is not warned about.
-    const moved = readAddressPools(run, daemon, '10.214.0.0/16');
+    const moved = readAddressPools(run, daemon, '10.214.0.0/16').melete ?? null;
     expect(judgeAddressPools(moved).some((r) => r.id === 'docker.address_pool_routes')).toBe(false);
   });
 });
@@ -319,17 +369,28 @@ describe('MELETE_NETWORK_POOL', () => {
 describe('a daemon that reports only IPv6 pools', () => {
   const v6 = { base: 'fd00:dead:beef::/48', size: 64 };
 
-  test("takes IPv4 networks from Docker's built-in pools, so it is judged as unconfigured", () => {
-    expect(enginePools([v6])).toEqual({ pools: DOCKER_DEFAULT_POOLS, builtIn: true });
+  test('has no pool for an IPv4 network, since Docker does not fall back to its built-in ones', () => {
+    expect(enginePools([v6])).toEqual({ pools: [], builtIn: false, ipv6Only: [v6.base] });
     const v4 = { base: '10.216.0.0/14', size: 24 };
     expect(enginePools([v6, v4])).toEqual({ pools: [v4], builtIn: false });
+    expect(enginePools([])).toEqual({ pools: DOCKER_DEFAULT_POOLS, builtIn: true });
   });
 
-  test('is not "0 of 0 networks left"', () => {
-    const fact = readAddressPools(engine(['172.17.0.0/16']).run, linuxHost([v6]), 'off');
-    expect(fact).toMatchObject({ source: 'docker', builtIn: true });
-    const [result] = judgeAddressPools(fact);
-    expect(result).toMatchObject({ id: 'docker.address_pools', level: 'ok' });
-    expect(result?.detail).toBe("Docker's built-in address pools have 30 of 31 networks left.");
+  test('fails, and with off says chats fail too', () => {
+    const { run } = engine(['172.17.0.0/16']);
+    for (const [setting, chats] of [
+      [undefined, false],
+      ['off', true],
+    ] as const) {
+      const { engine: fact } = readAddressPools(run, linuxHost([v6]), setting);
+      expect(fact).toMatchObject({ source: 'docker', builtIn: false, ipv6Only: [v6.base] });
+      const results = judgeAddressPools(fact);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ id: 'docker.address_pools', level: 'fail' });
+      expect(results[0]?.detail).toContain('are all IPv6');
+      expect(results[0]?.detail).toContain('invalid address pool');
+      expect(results[0]?.detail.includes('every chat')).toBe(chats);
+      expect(results[0]?.fix).toContain('IPv4 pool');
+    }
   });
 });

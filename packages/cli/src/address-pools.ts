@@ -2,10 +2,11 @@
  * How many more networks the Docker engine can make. Every bridge network
  * Compose or Melete creates without naming a subnet takes one block from the
  * engine's address pools ("default-address-pools" in daemon.json); with
- * Docker's built-in pools that is 31 blocks for the whole machine. Each chat
- * attempt, agent computer and plugin that reaches a network gets a network of
- * its own, so on a busy machine the blocks run out, and each of those then
- * fails with "all predefined address pools have been fully subnetted".
+ * Docker's built-in pools that is 31 blocks for the whole machine. Each
+ * stack's Compose networks take them, and with MELETE_NETWORK_POOL=off so does
+ * the network of each chat attempt, agent computer and plugin, so on a busy
+ * machine the blocks run out, and each of those then fails with "all
+ * predefined address pools have been fully subnetted".
  *
  * The judgement takes any list of pools, so a pool Melete carves its own
  * networks from can be judged the same way: how many blocks of its size are
@@ -135,31 +136,52 @@ export type AddressPoolFact = {
   /** Docker's built-in pools, because daemon.json names none. */
   builtIn: boolean;
   pools: PoolHeadroom[];
+  /**
+   * The engine's pools only: chat attempts, agent computers and plugins take
+   * their networks from them too, because MELETE_NETWORK_POOL is off.
+   */
+  attempts?: boolean;
+  /** The engine's pools only: daemon.json names these IPv6 pools and no IPv4 one. */
+  ipv6Only?: string[];
   /** MELETE_NETWORK_POOL is unset, so the pool is the service's default. */
   defaultPool?: boolean;
   /** Why MELETE_NETWORK_POOL cannot be used, in the service's own words; nothing else is judged. */
   invalid?: string;
 };
 
+/** What doctor judges: the engine's pools, and the service's own pool unless it is off. */
+export type AddressPoolFacts = {
+  /** null when Docker's networks could not be listed. */
+  engine: AddressPoolFact | null;
+  /** MELETE_NETWORK_POOL's pool; left out with `off`, or when Docker could not be asked. */
+  melete?: AddressPoolFact;
+};
+
 /**
  * The engine's pools as `docker info` reports them; Docker's own when it
- * reports no IPv4 pool, since IPv4 networks then come from the built-in ones.
+ * reports none. When it reports only IPv6 pools, an IPv4 network that names
+ * no subnet has no pool at all: Docker does not fall back to its built-in ones
+ * (`docker network create` answers "invalid address pool").
  */
 export function enginePools(reported: readonly Pool[] | null | undefined): {
   pools: readonly Pool[];
   builtIn: boolean;
+  ipv6Only?: string[];
 } {
-  const ipv4 = (reported ?? []).filter((pool) => parseCidr(pool.base) !== null);
-  return ipv4.length > 0
-    ? { pools: ipv4, builtIn: false }
-    : { pools: DOCKER_DEFAULT_POOLS, builtIn: true };
+  const listed = reported ?? [];
+  const ipv4 = listed.filter((pool) => parseCidr(pool.base) !== null);
+  if (ipv4.length > 0) return { pools: ipv4, builtIn: false };
+  if (listed.length > 0)
+    return { pools: [], builtIn: false, ipv6Only: listed.map((pool) => pool.base) };
+  return { pools: DOCKER_DEFAULT_POOLS, builtIn: true };
 }
 
 const DOCS = 'docs/DEPLOYMENT.md, "Docker address pools"';
 
 /** The rule for the pools networks come from: free blocks, and any route a pool overlaps. */
 export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
-  const id = 'docker.address_pools';
+  const melete = fact?.source === 'melete';
+  const id = melete ? 'docker.network_pool' : 'docker.address_pools';
   if (fact === null)
     return [
       {
@@ -168,7 +190,17 @@ export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
         detail: "Docker's networks could not be listed, so how many more it can make is not known.",
       },
     ];
-  const melete = fact.source === 'melete';
+  // Without MELETE_NETWORK_POOL=off, the engine's pools serve only Compose's own networks.
+  const needs = melete || fact.attempts ? 'Every chat, agent computer and plugin' : null;
+  if (fact.ipv6Only !== undefined)
+    return [
+      {
+        id,
+        level: 'fail',
+        detail: `Docker's address pools (${fact.ipv6Only.join(', ')}) are all IPv6, so an IPv4 network that names no subnet of its own has no pool: docker compose up fails with "invalid address pool"${needs ? `, and so does ${needs.toLowerCase()} that needs a network of its own` : ''}.`,
+        fix: `Add an IPv4 pool beside them in /etc/docker/daemon.json, such as {"base": "10.216.0.0/14", "size": 24} in "default-address-pools" (any private range nothing on your network uses), then restart Docker (${DOCS}).`,
+      },
+    ];
   if (fact.invalid !== undefined)
     return [
       {
@@ -193,14 +225,14 @@ export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
       ? {
           id,
           level: 'fail',
-          detail: `${which} no network left: all ${blocks} are taken. Every chat, agent computer and plugin that needs a network of its own fails until one is free.`,
+          detail: `${which} no network left: all ${blocks} are taken. ${needs ? `${needs} that needs a network of its own fails` : 'A stack whose networks do not exist yet, this one or any other Compose project, fails to start'} until one is free.`,
           fix,
         }
       : free < LOW_NETWORK_BLOCKS
         ? {
             id,
             level: 'warn',
-            detail: `${which} ${free} of ${blocks} networks left. Each chat attempt, agent computer and plugin with network access takes one while it runs.`,
+            detail: `${which} ${free} of ${blocks} networks left. ${needs ? 'Each chat attempt, agent computer and plugin with network access takes one while it runs.' : "Each installation's stack takes four or more when it is first started, and every other Compose project its own."}`,
             fix,
           }
         : { id, level: 'ok', detail: `${which} ${free} of ${blocks} networks left.` },
