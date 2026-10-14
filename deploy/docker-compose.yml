@@ -127,6 +127,7 @@ services:
       MELETE_SANDBOX_DOCKER_IMAGE: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
       MELETE_MCP_NODE_IMAGE: ${MELETE_MCP_NODE_IMAGE:-}
       MELETE_MCP_PYTHON_IMAGE: ${MELETE_MCP_PYTHON_IMAGE:-}
+      MELETE_NETWORK_POOL: ${MELETE_NETWORK_POOL:-}
     group_add: ["${DOCKER_GID:?run bun run deploy/scripts/configure.ts}"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -183,6 +184,7 @@ services:
       # The engine, through the cell service; the service has no socket.
       MELETE_CELLS_URL: http://melete-cells:8791
       MELETE_CELLS_KEY_FILE: /data/cells-key/key
+      MELETE_NETWORK_POOL: ${MELETE_NETWORK_POOL:-}
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?run bun run deploy/scripts/configure.ts}

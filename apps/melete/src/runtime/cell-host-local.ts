@@ -9,6 +9,7 @@ import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import type { CellHandle, CellHost, CellSpec, CellState } from './cell-host.ts';
 import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
+import { createPooledNetwork } from './network-pool.ts';
 import { ADOPTING, LocalWorkspaceFs, type Removable, SPARE_DIRECTORY } from './workspace-fs.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
@@ -393,14 +394,14 @@ export class LocalCellHost implements CellHost {
 
   /** One private network with the broker as its sole peer, and a home volume. */
   private async provisionCell(resources: Resources, labels: Labels, signal: AbortSignal) {
-    const network = (await this.docker.request('POST', '/networks/create', {
+    const network = await createPooledNetwork(this.docker, {
       Name: resources.network,
       Driver: 'bridge',
       Internal: true,
       EnableIPv6: false,
       Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
       Labels: labels,
-    })) as { Id: string };
+    });
     resources.networkId = network.Id;
     signal.throwIfAborted();
     await this.docker.request('POST', `/networks/${network.Id}/connect`, {

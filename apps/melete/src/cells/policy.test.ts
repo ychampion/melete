@@ -625,6 +625,51 @@ describe('melete-cells refuses a container outside its profiles', () => {
     expect(verdict.allow).toBe(false);
   });
 
+  test('allows a network on one subnet of the pool, and no other addresses', async () => {
+    const engine = new Engine();
+    const network = (IPAM: unknown) =>
+      engine.ask('POST', '/networks/create', {
+        Name: `${ATTEMPT}-net`,
+        Driver: 'bridge',
+        Internal: true,
+        Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
+        Labels: runtimeLabels('att_01j00000000000000000000000'),
+        IPAM,
+      });
+    expect(
+      (await network({ Driver: 'default', Config: [{ Subnet: '10.215.4.16/28' }] })).allow,
+    ).toBe(true);
+    for (const IPAM of [
+      { Config: [{ Subnet: '192.168.1.0/28' }] },
+      { Config: [{ Subnet: '10.215.0.0/16' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', Gateway: '192.168.1.1' }] },
+      { Config: [{ Subnet: '10.215.4.16/28' }, { Subnet: '10.215.4.32/28' }] },
+      { Driver: 'other', Config: [{ Subnet: '10.215.4.16/28' }] },
+      { Config: [{ Subnet: '10.215.4.16/28' }], Options: {} },
+      'default',
+    ])
+      expect((await network(IPAM)).allow).toBe(false);
+    // With the pool off, a network names no addresses of its own.
+    const off = await judge(
+      {
+        method: 'POST',
+        path: '/networks/create',
+        query: new URLSearchParams(),
+        body: {
+          Name: `${ATTEMPT}-net`,
+          Driver: 'bridge',
+          Internal: true,
+          Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
+          Labels: runtimeLabels('att_01j00000000000000000000000'),
+          IPAM: { Config: [{ Subnet: '10.215.4.16/28' }] },
+        },
+      },
+      { ...config, networkPool: null },
+      engine.lookup,
+    );
+    expect(off.allow).toBe(false);
+  });
+
   test("refuses to act on containers outside the profiles, such as the database's", async () => {
     const engine = new Engine();
     for (const [method, target, body] of [
