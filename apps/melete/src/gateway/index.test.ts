@@ -14,6 +14,7 @@ import {
   type GatewayReservation,
   type GatewayReservationRequest,
   type GatewaySettlement,
+  providerRejection,
   providersFromEnv,
 } from './index.ts';
 import { stopModelCalls } from './inflight.ts';
@@ -945,5 +946,109 @@ describe('prompt caching on the way out', () => {
     // The same conversation names the same key on every request.
     await post('/providers/openai/v1/responses', { model: 'fixture-chat', input: 'again' });
     expect(seen[2]?.body.prompt_cache_key).toBe(seen[1]?.body.prompt_cache_key);
+  });
+});
+
+describe('Claude through the gateway', () => {
+  const dotted = {
+    model: 'fixture-messages',
+    tools: [{ name: 'web.search', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'look it up' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_0', name: 'web.search', input: { q: 'a' } }],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_0', content: 'x' }] },
+    ],
+  };
+
+  test('a tool with a dot in its name reaches Anthropic under a name it takes, and comes back under its own', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { post } = await start({
+      fetch: async (request) => {
+        sent.push((await request.json()) as Record<string, unknown>);
+        return Response.json({
+          model: 'fixture-messages',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'web__search', input: { q: 'b' } }],
+          usage: { input_tokens: 5, output_tokens: 2 },
+        });
+      },
+    });
+    const response = await post('/v1/messages', dotted);
+    expect(response.status).toBe(200);
+    expect((sent[0]?.tools as { name: string }[]).map((tool) => tool.name)).toEqual([
+      'web__search',
+    ]);
+    const history = sent[0]?.messages as { content: { name?: string }[] }[];
+    expect(history[1]?.content[0]?.name).toBe('web__search');
+    const reply = (await response.json()) as { content: { name: string }[] };
+    expect(reply.content[0]?.name).toBe('web.search');
+  });
+
+  test('a streamed reply gets the tool its own name back', async () => {
+    const events = [
+      'event: message_start\ndata: {"type":"message_start","message":{"model":"fixture-messages","usage":{"input_tokens":5,"output_tokens":1}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"web__search","input":{}}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join('');
+    const { post } = await start({
+      fetch: async () => {
+        const bytes = new TextEncoder().encode(events);
+        // Cut through the middle of the wire name.
+        const cut = events.indexOf('web__search') + 4;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes.slice(0, cut));
+              controller.enqueue(bytes.slice(cut));
+              controller.close();
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        );
+      },
+    });
+    const response = await post('/v1/messages', { ...dotted, stream: true });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"name":"web.search"');
+    expect(text).not.toContain('web__search');
+  });
+
+  test("a provider's refusal reaches the operator's log with its reason and without the key", async () => {
+    const logged: string[] = [];
+    const { post } = await start({
+      onError: (error) => logged.push(error.message),
+      fetch: async () =>
+        Response.json(
+          {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message: 'tools.0.custom.name: bad name (key real-anthropic-secret)',
+            },
+          },
+          { status: 400 },
+        ),
+    });
+    const response = await post('/v1/messages', { model: 'fixture-messages', messages: [] });
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain('tools.0');
+    const line = logged.find((message) => message.startsWith('provider_rejected'));
+    expect(line).toBe(
+      'provider_rejected: anthropic/fixture-messages answered 400 (invalid_request_error: tools.0.custom.name: bad name (key [redacted]))',
+    );
+  });
+
+  test('a refusal line is short and names the cause even when the body is not JSON', () => {
+    expect(providerRejection('openai/x', 503, '  upstream\n  down  ', [])).toBe(
+      'provider_rejected: openai/x answered 503 (upstream down)',
+    );
+    expect(providerRejection('openai/x', 500, '', [])).toBe(
+      'provider_rejected: openai/x answered 500',
+    );
+    expect(providerRejection('openai/x', 400, 'y'.repeat(1000), []).length).toBeLessThan(460);
   });
 });
