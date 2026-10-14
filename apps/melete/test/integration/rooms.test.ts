@@ -731,6 +731,50 @@ withDb('rooms', () => {
     ).toBe(404);
   }, 60_000);
 
+  test('people find only who they share a space with, or one whole email; the owner finds everyone', async () => {
+    const make = async (name: string): Promise<Person> => {
+      const made = await ok<{ principal: { id: string } }>(
+        send(world.alice.cookie, '/principals', 'POST', {
+          email: `${name}@example.test`,
+          password,
+        }),
+        201,
+      );
+      return { id: made.principal.id, cookie: await login(`${name}@example.test`) };
+    };
+    const dan = await make('dan');
+    const erin = await make('erin');
+    const found = async (person: Person, query?: string) => {
+      const listed = await ok<{ people: Record<string, unknown>[] }>(
+        send(
+          person.cookie,
+          `/people${query === undefined ? '' : `?query=${encodeURIComponent(query)}`}`,
+        ),
+      );
+      for (const one of listed.people)
+        expect(Object.keys(one).sort()).toEqual(['display_name', 'email', 'id']);
+      return listed.people.map((one) => one.id as string).sort();
+    };
+    const roomId = await makeRoom('Dan and Alice', [dan]);
+    // A member finds themselves and the people of their rooms, nobody else.
+    expect(await found(dan)).toEqual([dan.id, world.alice.id].sort());
+    expect(await found(dan, 'erin')).toEqual([]);
+    expect(await found(dan, 'example.test')).toEqual([dan.id, world.alice.id].sort());
+    // Someone who shares nothing finds only themselves, and another person only
+    // by their whole email address, in any case.
+    expect(await found(erin)).toEqual([erin.id]);
+    expect(await found(erin, 'dan')).toEqual([]);
+    expect(await found(erin, 'dan@example')).toEqual([]);
+    expect(await found(erin, ' DAN@example.test ')).toEqual([dan.id]);
+    // The person who set the installation up finds everyone.
+    expect(await found(world.alice)).toEqual(
+      expect.arrayContaining([world.alice.id, world.bob.id, world.carol.id, dan.id, erin.id]),
+    );
+    // Once they share nothing, they no longer find each other.
+    await ok(send(world.alice.cookie, `/rooms/${roomId}/members/${dan.id}`, 'DELETE'));
+    expect(await found(dan)).toEqual([dan.id]);
+  }, 60_000);
+
   test("room jobs appear on no personal surface, the room owner's included", async () => {
     const { sql } = database();
     const roomId = await makeRoom('Private plans');
