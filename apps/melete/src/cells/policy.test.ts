@@ -646,6 +646,14 @@ describe('melete-cells refuses a container outside its profiles', () => {
       { Config: [{ Subnet: '10.215.4.16/28' }, { Subnet: '10.215.4.32/28' }] },
       { Driver: 'other', Config: [{ Subnet: '10.215.4.16/28' }] },
       { Config: [{ Subnet: '10.215.4.16/28' }], Options: {} },
+      { Config: [{ Subnet: ' 10.215.4.16/28' }] },
+      { Config: [{ Subnet: '10.215.4.8/28' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', IPRange: '10.215.4.16/29' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', AuxiliaryAddresses: { a: '10.215.4.20' } }] },
+      { Config: [{ Subnet: 'fd00::/64' }] },
+      { Config: [{ Subnet: 168_100_000 }] },
+      { Config: [] },
+      null,
       'default',
     ])
       expect((await network(IPAM)).allow).toBe(false);

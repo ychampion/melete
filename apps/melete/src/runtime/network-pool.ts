@@ -13,8 +13,15 @@ export const DEFAULT_NETWORK_POOL = '10.215.0.0/16';
 /** 14 addresses: a network has its service, its container and at most a guard. */
 export const NETWORK_SUBNET_PREFIX = 28;
 const SUBNET_SIZE = 2 ** (32 - NETWORK_SUBNET_PREFIX);
-/** Tries at a free subnet before giving up: an engine refuses one that overlaps any of its networks. */
+/** Different subnets tried before giving up: an engine refuses one that overlaps any of its networks. */
 const TRIES = 8;
+/** Ranges no network may take: this host, link-local (cloud metadata), multicast and above. */
+const RESERVED: ReadonlyArray<[number, number]> = [
+  [0, 8],
+  [127 * 2 ** 24, 8],
+  [(169 * 256 + 254) * 2 ** 16, 16],
+  [224 * 2 ** 24, 3],
+];
 
 function address(text: string): number | null {
   const parts = text.split('.');
@@ -47,9 +54,12 @@ export function parseNetworkPool(value: string | undefined): NetworkPool | null 
     throw new Error(
       `MELETE_NETWORK_POOL is "${text}"; it takes an IPv4 range such as ${DEFAULT_NETWORK_POOL}, or off`,
     );
-  if (pool.prefix < 8 || pool.prefix > NETWORK_SUBNET_PREFIX)
+  if (pool.prefix < 8 || pool.prefix > 24)
+    throw new Error(`MELETE_NETWORK_POOL is "${text}"; its size is between /8 and /24`);
+  const end = pool.start + 2 ** (32 - pool.prefix);
+  if (RESERVED.some(([start, prefix]) => pool.start < start + 2 ** (32 - prefix) && start < end))
     throw new Error(
-      `MELETE_NETWORK_POOL is "${text}"; its size is between /8 and /${NETWORK_SUBNET_PREFIX}`,
+      `MELETE_NETWORK_POOL is "${text}"; it overlaps addresses no network may take, such as 127.0.0.0/8 or 169.254.0.0/16`,
     );
   return pool;
 }
@@ -70,9 +80,20 @@ export function networkPool(): NetworkPool | null {
 export function subnetOfPool(pool: NetworkPool, subnet: unknown): boolean {
   if (typeof subnet !== 'string') return false;
   const range = cidr(subnet);
+  // Written exactly as this service writes one, so what is judged is what the engine reads.
   if (!range || range.prefix !== NETWORK_SUBNET_PREFIX) return false;
+  if (subnet !== `${dotted(range.start)}/${NETWORK_SUBNET_PREFIX}`) return false;
   return range.start >= pool.start && range.start < pool.start + 2 ** (32 - pool.prefix);
 }
+
+/** The engine's answer for a subnet that overlaps one of its networks: 403, "Pool overlaps …". */
+const overlaps = (error: unknown) =>
+  error instanceof Error &&
+  'status' in error &&
+  error.status === 403 &&
+  'reason' in error &&
+  typeof error.reason === 'string' &&
+  error.reason.includes('Pool overlaps');
 
 /**
  * Create the network `body` describes on a free subnet of `pool`, or on one of
@@ -87,22 +108,28 @@ export async function createPooledNetwork(
 ): Promise<{ Id: string }> {
   if (!pool) return (await docker.request('POST', '/networks/create', body)) as { Id: string };
   const subnets = 2 ** (NETWORK_SUBNET_PREFIX - pool.prefix);
+  const tried = new Set<number>();
   let refused: unknown;
-  for (let attempt = 0; attempt < TRIES; attempt += 1) {
-    const subnet = `${dotted(pool.start + Math.floor(random() * subnets) * SUBNET_SIZE)}/${NETWORK_SUBNET_PREFIX}`;
+  while (tried.size < Math.min(TRIES, subnets)) {
+    let index = Math.floor(random() * subnets);
+    // The next untried one after a pick already tried.
+    while (tried.has(index)) index = (index + 1) % subnets;
+    tried.add(index);
+    const subnet = `${dotted(pool.start + index * SUBNET_SIZE)}/${NETWORK_SUBNET_PREFIX}`;
     try {
       return (await docker.request('POST', '/networks/create', {
         ...body,
         IPAM: { Driver: 'default', Config: [{ Subnet: subnet }] },
       })) as { Id: string };
     } catch (error) {
-      // The engine answers 403 for a subnet another network already has.
-      if (!(error instanceof Error && 'status' in error && error.status === 403)) throw error;
+      // Only a subnet another network already has is worth another try; anything
+      // else, such as the cell service refusing the request, is said as it is.
+      if (!overlaps(error)) throw error;
       refused = error;
     }
   }
   throw new Error(
-    `No free network was found in ${formatPool(pool)} after ${TRIES} tries; set MELETE_NETWORK_POOL to a larger range no other network on this host uses`,
+    `No free network was found in ${formatPool(pool)} after ${tried.size} tries; set MELETE_NETWORK_POOL to a larger range no other network on this host uses`,
     { cause: refused },
   );
 }

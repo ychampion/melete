@@ -8,9 +8,10 @@ import {
 } from './network-pool.ts';
 
 const body = { Name: 'melete-net', Driver: 'bridge', Internal: true };
+const OVERLAP = 'invalid pool request: Pool overlaps with other one on this address space';
 
-/** An engine that refuses, as an overlapping subnet, each subnet in `taken`. */
-function engine(taken: ReadonlySet<string> = new Set(), status = 403) {
+/** An engine that refuses each subnet in `taken`, by default as one another network has. */
+function engine(taken: ReadonlySet<string> = new Set(), status = 403, reason = OVERLAP) {
   const asked: string[] = [];
   return {
     asked,
@@ -18,11 +19,15 @@ function engine(taken: ReadonlySet<string> = new Set(), status = 403) {
       const subnet = (request as { IPAM?: { Config: Array<{ Subnet: string }> } }).IPAM?.Config[0]
         ?.Subnet;
       asked.push(subnet ?? 'engine');
-      if (subnet && taken.has(subnet)) throw new DockerError(status, 'POST', '/networks/create');
+      if (subnet && taken.has(subnet))
+        throw new DockerError(status, 'POST', '/networks/create', reason);
       return { Id: 'net_1' };
     },
   };
 }
+
+const subnetsOf = (third: number) =>
+  new Set(Array.from({ length: 16 }, (_, index) => `10.215.${third}.${index * 16}/28`));
 
 describe('network pool', () => {
   test('reads a range, off, and the default when unset', () => {
@@ -38,42 +43,53 @@ describe('network pool', () => {
       '10.215.0.0',
       '10.256.0.0/16',
       '10.0.0.0/7',
-      '10.0.0.0/29',
+      '10.0.0.0/25',
       'pool',
+      '127.0.0.0/16',
+      '169.254.0.0/16',
+      '160.0.0.0/4',
+      '0.0.0.0/8',
+      '230.0.0.0/8',
     ])
       expect(() => parseNetworkPool(bad)).toThrow('MELETE_NETWORK_POOL');
   });
 
-  test('a subnet of the pool is one aligned /28 inside it', () => {
+  test('a subnet of the pool is one aligned /28 inside it, written plainly', () => {
     const pool = parseNetworkPool('10.215.0.0/16');
     if (!pool) throw new Error('expected a pool');
     expect(subnetOfPool(pool, '10.215.255.240/28')).toBe(true);
     expect(subnetOfPool(pool, '10.215.0.16/28')).toBe(true);
-    expect(subnetOfPool(pool, '10.216.0.0/28')).toBe(false);
-    expect(subnetOfPool(pool, '10.215.0.8/28')).toBe(false);
-    expect(subnetOfPool(pool, '10.215.0.0/24')).toBe(false);
-    expect(subnetOfPool(pool, '192.168.1.0/28')).toBe(false);
-    expect(subnetOfPool(pool, undefined)).toBe(false);
+    for (const other of [
+      '10.216.0.0/28',
+      '10.215.0.8/28',
+      '10.215.0.0/24',
+      '192.168.1.0/28',
+      ' 10.215.0.16/28',
+      '10.215.0.016/28',
+      undefined,
+    ])
+      expect(subnetOfPool(pool, other)).toBe(false);
   });
 
-  test('takes a subnet of the pool, and another when the engine says one is in use', async () => {
+  test('takes a subnet of the pool, and a different one when the engine says it is in use', async () => {
     const pool = parseNetworkPool('10.215.0.0/24');
-    const picks = [0, 0.5, 0.99];
     const docker = engine(new Set(['10.215.0.0/28']));
-    expect(await createPooledNetwork(docker, body, pool, () => picks.shift() ?? 0)).toEqual({
-      Id: 'net_1',
-    });
-    expect(docker.asked).toEqual(['10.215.0.0/28', '10.215.0.128/28']);
+    expect(await createPooledNetwork(docker, body, pool, () => 0)).toEqual({ Id: 'net_1' });
+    expect(docker.asked).toEqual(['10.215.0.0/28', '10.215.0.16/28']);
   });
 
-  test('says so when no subnet is free, and passes other refusals on', async () => {
-    const pool = parseNetworkPool('10.215.0.0/28');
-    await expect(
-      createPooledNetwork(engine(new Set(['10.215.0.0/28'])), body, pool),
-    ).rejects.toThrow('No free network was found in 10.215.0.0/28');
-    const broken = engine(new Set(['10.215.0.0/28']), 500);
-    await expect(createPooledNetwork(broken, body, pool)).rejects.toBeInstanceOf(DockerError);
-    expect(broken.asked).toHaveLength(1);
+  test('says so when no subnet is free, and passes any other refusal on at once', async () => {
+    const pool = parseNetworkPool('10.215.0.0/24');
+    await expect(createPooledNetwork(engine(subnetsOf(0)), body, pool)).rejects.toThrow(
+      'No free network was found in 10.215.0.0/24 after 8 tries',
+    );
+    for (const docker of [
+      engine(subnetsOf(0), 500),
+      engine(subnetsOf(0), 403, "a profile network's addresses are one subnet of its network pool"),
+    ]) {
+      await expect(createPooledNetwork(docker, body, pool)).rejects.toBeInstanceOf(DockerError);
+      expect(docker.asked).toHaveLength(1);
+    }
   });
 
   test("off leaves the addresses to the engine's own pools", async () => {
