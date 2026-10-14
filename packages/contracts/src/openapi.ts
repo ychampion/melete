@@ -956,7 +956,8 @@ function roomsPaths() {
     '/people': {
       get: {
         tags: ['rooms'],
-        summary: 'People on this installation who can be added to a room',
+        summary:
+          'People who can be added to a room: those who share a space with you, or one whole email address',
         requestParams: { query: peopleQuery },
         responses: {
           '200': jsonResponse('People', peopleList),
