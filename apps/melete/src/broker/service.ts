@@ -54,6 +54,7 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
@@ -1700,8 +1701,9 @@ export class BrokerService implements BrokerOperations {
         });
       } catch (error) {
         // One that cannot be escalated is logged and left; the rest still go to the person.
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `broker: stale review ${String(row.id)} not escalated: ${error instanceof Error ? error.message : String(error)}\n`,
+          `broker: stale review ${String(row.id)} not escalated: ${failureMessage(error)}\n`,
         );
       }
     }
@@ -2315,8 +2317,9 @@ export class BrokerService implements BrokerOperations {
         });
       } catch (error) {
         // One that cannot be woken is logged and left; the rest still go on.
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `broker: answered job ${String(row.id)} not woken: ${error instanceof Error ? error.message : String(error)}\n`,
+          `broker: answered job ${String(row.id)} not woken: ${failureMessage(error)}\n`,
         );
       }
     }
@@ -3213,8 +3216,9 @@ export class BrokerService implements BrokerOperations {
         await this.dispatch(row.id as string, now);
       } catch (error) {
         // One that cannot be resumed is logged and left; the rest still go out.
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `broker: parked action ${String(row.id)} not resumed: ${error instanceof Error ? error.message : String(error)}\n`,
+          `broker: parked action ${String(row.id)} not resumed: ${failureMessage(error)}\n`,
         );
       }
     }
@@ -3698,8 +3702,9 @@ export class BrokerService implements BrokerOperations {
         recovered += 1;
       } catch (error) {
         // One that cannot be settled is logged and left; the rest are still recovered.
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `broker: dispatched action ${String(row.id)} not recovered: ${error instanceof Error ? error.message : String(error)}\n`,
+          `broker: dispatched action ${String(row.id)} not recovered: ${failureMessage(error)}\n`,
         );
       }
     }
@@ -3719,8 +3724,9 @@ export class BrokerService implements BrokerOperations {
         });
         recovered += 1;
       } catch (error) {
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `broker: unanswered read ${String(row.id)} not settled: ${error instanceof Error ? error.message : String(error)}\n`,
+          `broker: unanswered read ${String(row.id)} not settled: ${failureMessage(error)}\n`,
         );
       }
     }

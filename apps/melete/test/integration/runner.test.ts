@@ -709,6 +709,37 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     expect(queued).toHaveLength(1);
   });
 
+  test('a database out of reach ends the scan instead of failing every attempt in turn', async () => {
+    const { jobs, handle } = fixture();
+    const worker = runner();
+    const attempts: string[] = [];
+    for (let index = 0; index < 2; index++)
+      attempts.push((await claim(worker, await create())).claims.attempt_id);
+    await handle.sql`update attempt set lease_expires_at = now() - interval '1 second'
+      where id = any(${attempts})`;
+    const transaction = jobs.transaction;
+    let tried = 0;
+    jobs.transaction = (() => {
+      tried += 1;
+      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), {
+        code: 'ECONNREFUSED',
+      });
+      return Promise.reject(refused);
+    }) as typeof jobs.transaction;
+    let failure: unknown = null;
+    try {
+      await worker.recover();
+    } catch (error) {
+      failure = error;
+    } finally {
+      jobs.transaction = transaction;
+    }
+    expect((failure as { code?: string } | null)?.code).toBe('ECONNREFUSED');
+    expect(tried).toBe(1);
+    await worker.recover();
+    for (const id of attempts) expect((await execution(id)).leaseStatus).toBe('lost');
+  });
+
   test('cancelling a live stub finalizes its attempt once before interruption', async () => {
     const { jobs, handle } = fixture();
     const started = deferred<AttemptBundle>();

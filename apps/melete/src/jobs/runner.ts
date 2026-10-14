@@ -48,6 +48,7 @@ import {
   question,
   trigger,
 } from '../db/schema.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
@@ -1581,8 +1582,9 @@ export class AttemptRunner {
         })
         .catch((error: unknown) => {
           // Nor may any other failure: this one is logged and the rest are still recovered.
+          if (databaseUnreachable(error)) throw error;
           process.stderr.write(
-            `attempt recovery: ${candidate.id} not recovered: ${error instanceof Error ? error.message : String(error)}\n`,
+            `attempt recovery: ${candidate.id} not recovered: ${failureMessage(error)}\n`,
           );
           return false;
         });
@@ -1613,8 +1615,9 @@ export class AttemptRunner {
           if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
         })
         .catch((error: unknown) => {
+          if (databaseUnreachable(error)) throw error;
           process.stderr.write(
-            `job recovery: ${candidate.id} not requeued: ${error instanceof Error ? error.message : String(error)}\n`,
+            `job recovery: ${candidate.id} not requeued: ${failureMessage(error)}\n`,
           );
         });
     }

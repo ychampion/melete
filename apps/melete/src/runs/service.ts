@@ -76,6 +76,7 @@ import {
   runEntry,
   runState,
 } from '../db/schema.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { SUPERSEDED_NOTE } from '../experience/projectors.ts';
@@ -2692,9 +2693,8 @@ export class RunService {
         if (triggers) await this.syncSchedules();
       } catch (error) {
         // One that cannot be handled is logged and left; the rest are still looked at.
-        process.stderr.write(
-          `run watchdog: ${entry.id} not handled: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(`run watchdog: ${entry.id} not handled: ${failureMessage(error)}\n`);
       }
     }
     return done;
@@ -2776,8 +2776,9 @@ export class RunService {
         told.push(...surfaced);
       } catch (error) {
         // One run that cannot be told of is logged and left; the others still are.
+        if (databaseUnreachable(error)) throw error;
         process.stderr.write(
-          `run watchdog: permissions for ${id} not surfaced: ${error instanceof Error ? error.message : String(error)}\n`,
+          `run watchdog: permissions for ${id} not surfaced: ${failureMessage(error)}\n`,
         );
       }
     }
