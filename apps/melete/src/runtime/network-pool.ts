@@ -13,8 +13,8 @@ export const DEFAULT_NETWORK_POOL = '10.215.0.0/16';
 /** 14 addresses: a network has its service, its container and at most a guard. */
 export const NETWORK_SUBNET_PREFIX = 28;
 const SUBNET_SIZE = 2 ** (32 - NETWORK_SUBNET_PREFIX);
-/** Different subnets tried before giving up: an engine refuses one that overlaps any of its networks. */
-const TRIES = 8;
+/** Subnets tried at random before the rest are tried in order. */
+const RANDOM_TRIES = 8;
 /** Ranges no network may take: this host, link-local (cloud metadata), multicast and above. */
 const RESERVED: ReadonlyArray<[number, number]> = [
   [0, 8],
@@ -96,9 +96,10 @@ const overlaps = (error: unknown) =>
   error.reason.includes('Pool overlaps');
 
 /**
- * Create the network `body` describes on a free subnet of `pool`, or on one of
- * the engine's own pools when there is none. Subnets are tried at random, so
- * services and installations on one engine rarely want the same one.
+ * Create the network `body` describes on a free subnet of `pool`, or, with no
+ * pool, on the engine's own pools. A few subnets are tried at random, so
+ * services and installations on one engine rarely want the same one; then the
+ * rest in order, so it fails only when every subnet of the pool is taken.
  */
 export async function createPooledNetwork(
   docker: DockerApi,
@@ -110,11 +111,7 @@ export async function createPooledNetwork(
   const subnets = 2 ** (NETWORK_SUBNET_PREFIX - pool.prefix);
   const tried = new Set<number>();
   let refused: unknown;
-  while (tried.size < Math.min(TRIES, subnets)) {
-    let index = Math.floor(random() * subnets);
-    // The next untried one after a pick already tried.
-    while (tried.has(index)) index = (index + 1) % subnets;
-    tried.add(index);
+  const create = async (index: number) => {
     const subnet = `${dotted(pool.start + index * SUBNET_SIZE)}/${NETWORK_SUBNET_PREFIX}`;
     try {
       return (await docker.request('POST', '/networks/create', {
@@ -126,10 +123,27 @@ export async function createPooledNetwork(
       // else, such as the cell service refusing the request, is said as it is.
       if (!overlaps(error)) throw error;
       refused = error;
+      return null;
     }
+  };
+  let index = 0;
+  while (tried.size < Math.min(RANDOM_TRIES, subnets)) {
+    index = Math.floor(random() * subnets);
+    // The next untried one after a pick already tried.
+    while (tried.has(index)) index = (index + 1) % subnets;
+    tried.add(index);
+    const created = await create(index);
+    if (created) return created;
+  }
+  // The rest, in order from the last pick.
+  for (let step = 1; step < subnets; step += 1) {
+    const next = (index + step) % subnets;
+    if (tried.has(next)) continue;
+    const created = await create(next);
+    if (created) return created;
   }
   throw new Error(
-    `No free network was found in ${formatPool(pool)} after ${tried.size} tries; set MELETE_NETWORK_POOL to a larger range no other network on this host uses`,
+    `No free network was found in ${formatPool(pool)}: all ${subnets} of its subnets are taken; set MELETE_NETWORK_POOL to a larger range no other network on this host uses`,
     { cause: refused },
   );
 }
