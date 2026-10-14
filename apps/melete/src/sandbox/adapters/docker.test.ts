@@ -26,6 +26,7 @@ import {
   EGRESS_ALIAS,
   ExecCapture,
   isDesktopProvider,
+  LABEL_INSTALL_PROJECT,
   OVER_ALLOWANCE_FILE_BLOCKS,
 } from './docker.ts';
 import { SandboxEgressGuard } from './docker-egress.ts';
@@ -185,6 +186,16 @@ describe('creating a sandbox', () => {
     // The guard admits this container's address and no other.
     const address = engine.containers.get(NAME)?.networks[`${NAME}-net`] ?? '';
     expect(guard.granted(NAME)).toEqual([address]);
+  });
+
+  test('a computer, its volumes and its network name the installation that made them', async () => {
+    const { engine, host } = setup({ open: true, settings: { installProject: 'melete-mine' } });
+    await host.create(spec('sbx_one', { kind: 'open' }), signal());
+    const install = { [LABEL_INSTALL_PROJECT]: 'melete-mine' };
+    expect(engine.containers.get(NAME)?.labels).toMatchObject(install);
+    expect(engine.networks.get(`${NAME}-net`)?.labels).toMatchObject(install);
+    expect(engine.volumes.get(`${NAME}-work`)).toMatchObject(install);
+    expect(engine.volumes.get(`${NAME}-home`)).toMatchObject(install);
   });
 
   test('open egress is refused when the service cannot be the way out', async () => {
