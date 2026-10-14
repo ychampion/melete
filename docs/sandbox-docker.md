@@ -13,6 +13,10 @@ sending mail, still asks you first.
 
 ## Turn it on
 
+The [one-line installer](DEPLOYMENT.md#one-line-install) turns it on for a new
+installation; `MELETE_COMPUTER=0` leaves it out, and running the installer again
+with `MELETE_COMPUTER=1` turns it on later.
+
 With the Compose deployment from [DEPLOYMENT.md](DEPLOYMENT.md), add one line to
 `deploy/.env` (`configure.ts` has already written `MELETE_SANDBOX_PROJECT`):
 

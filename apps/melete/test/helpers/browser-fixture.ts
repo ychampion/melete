@@ -77,6 +77,15 @@ export function startBrowserFixture() {
           ? `<label for="labelled">${labelled.replace(/'/g, '&#39;')}</label><input id="labelled" name="labelled">`
           : '';
       const duplicate = variant === 'ambiguous_save' ? '<button type="submit">Save</button>' : '';
+      // Fields drawn in parts, which take a value rather than typing, and one fill cannot change.
+      const typed =
+        variant === 'typed_fields'
+          ? '<label for="when">Delivery time</label><input id="when" name="delivery" type="time">' +
+            '<label for="day">Day</label><input id="day" name="day" type="date">' +
+            '<label for="guests">Guests</label><input id="guests" name="guests" type="number" min="1" max="12">' +
+            '<label for="shade">Colour</label><input id="shade" name="shade" type="color">' +
+            '<label for="extra">Extra cheese</label><input id="extra" name="extra" type="checkbox">'
+          : '';
       const hidden =
         variant === 'hidden_destination'
           ? '<input type="hidden" name="destination_picker_7" value="hidden@example.test">'
@@ -110,7 +119,7 @@ export function startBrowserFixture() {
           ? `<script>document.getElementById('name').addEventListener('input',()=>{document.querySelector('label[for="email"]').textContent='Contact email';});</script>`
           : '';
       return new Response(
-        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${named}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${typed}${auth}${named}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
         { headers: { 'content-type': 'text/html' } },
       );
     },

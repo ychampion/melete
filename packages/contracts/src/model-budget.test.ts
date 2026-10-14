@@ -34,6 +34,16 @@ test('the catalog names both spellings of the default million-token model', () =
   expect(hasKnownContextWindow('accounts/fireworks/models/deepseek-v4p1-flash')).toBe(true);
 });
 
+test("Anthropic's current models have room for the output cap the engine asks of them", () => {
+  // The engine asks every current Claude model for up to 128,000 output tokens;
+  // the gateway refuses a cap that leaves no room in the window.
+  for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+    expect(hasKnownContextWindow(model)).toBe(true);
+    expect(modelContextWindow(model)).toBeGreaterThan(128_000 + 256);
+  }
+  expect(modelContextWindow('claude-haiku-4-5')).toBe(200_000);
+});
+
 test('a model the catalog does not name falls back to the documented window', () => {
   expect(hasKnownContextWindow('a-model-nobody-listed')).toBe(false);
   expect(modelContextWindow('a-model-nobody-listed')).toBe(FALLBACK_CONTEXT_WINDOW);

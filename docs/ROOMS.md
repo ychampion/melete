@@ -206,10 +206,11 @@ is waiting for.
 ## Connections in a room
 
 A room's requests act only through the connections marked for the room. Its own
-tools (files, the web, its computer) are marked so from the start. Any other
-connection in the room's space serves only the owner's own work there until an
-owner marks it for the room (`PUT /rooms/{id}/connections/{connection}` with
-`shared_use: "room"`); everyone in the room can see the connections
+tools (files, the web, its computer) are marked so from the start, and so is
+a connection an owner adds to the room's space. An owner can keep one for
+their own work there instead, or share it with the room again
+(`PUT /rooms/{id}/connections/{connection}` with `shared_use: "owner"` or
+`"room"`); everyone in the room can see the connections
 that serve the room (`GET /rooms/{id}/connections`); owners also see the ones
 kept for them. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions

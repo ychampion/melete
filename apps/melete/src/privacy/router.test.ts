@@ -562,11 +562,12 @@ describe('cloud requests: redact out, rehydrate back', () => {
       ],
     });
     const anthropic = sentJson(captured[1]?.body ?? '{}');
-    // The gateway's cache breakpoint on the newest block rides beside the swap.
+    // The gateway's cache breakpoint on the newest block rides beside the swap, and the tool
+    // goes out under the name the messages protocol accepts.
     expect(anthropic.messages[0].content[0]).toMatchObject({
       type: 'tool_use',
       id: 'toolu_1',
-      name: 'contacts.add',
+      name: 'contacts__add',
       input: { name: '⟦PRIVATE_1⟧', id: '⟦SSN_1⟧' },
     });
   });

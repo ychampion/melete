@@ -46,6 +46,8 @@ type BrowserElement = {
   checkVisibility?(): boolean;
   /** An open shadow root; a closed one is null, as for any page script. */
   shadowRoot: BrowserRoot | null;
+  /** The document, or the shadow root the element sits in; only a shadow root has a host. */
+  getRootNode(): { host?: BrowserElement };
   focus(): void;
   select(): void;
   dispatchEvent(event: Event): boolean;
@@ -59,6 +61,8 @@ declare const document: BrowserRoot & {
   querySelector(selector: string): BrowserElement | null;
 };
 declare const location: { href: string };
+/** Where an input field keeps the value setter the page itself reads. */
+declare const HTMLInputElement: { prototype: object };
 declare function getComputedStyle(element: BrowserElement): {
   visibility: string;
   display: string;
@@ -281,8 +285,20 @@ const LISTED_ROLES: Record<string, number> = {
   checkbox: 0,
   radio: 0,
   spinbutton: 0,
+  slider: 0,
   button: 1,
   link: 2,
+};
+/**
+ * The accessibility tree's own roles for a time, date or colour field, listed as the field a
+ * value is filled into. Chromium names the field by its label, and its parts (hours, minutes,
+ * a picker button) separately inside it; the parts are left out of a look.
+ */
+const VALUE_FIELD_ROLES: Record<string, string> = {
+  InputTime: 'textbox',
+  Date: 'textbox',
+  DateTime: 'textbox',
+  ColorWell: 'textbox',
 };
 /** The most controls one look lists; the rest are counted and said to be there. */
 export const MAX_LISTED_CONTROLS = 128;
@@ -328,6 +344,12 @@ function controlLooks(...elements: BrowserElement[]) {
         element.type === 'submit' &&
         form !== null &&
         (element.getAttribute('formmethod') ?? form.method).toLowerCase() === 'post',
+      // A part the browser draws inside a field, such as a time field's hours or its picker
+      // button: the field itself is what is filled.
+      inner: (() => {
+        const host = element.getRootNode().host;
+        return host !== undefined && ['INPUT', 'TEXTAREA', 'SELECT'].includes(host.tagName);
+      })(),
     };
   });
 }
@@ -526,7 +548,8 @@ export class BrowserController {
     const { nodes } = await cdp.send('Accessibility.getFullAXTree');
     const found: Candidate[] = [];
     for (const node of nodes) {
-      const role = String(node.role?.value ?? '');
+      const raw = String(node.role?.value ?? '');
+      const role = VALUE_FIELD_ROLES[raw] ?? raw;
       if (node.ignored || LISTED_ROLES[role] === undefined) continue;
       found.push({
         label: String(node.name?.value ?? ''),
@@ -606,7 +629,7 @@ export class BrowserController {
       const looks = await this.looks(cdp, batch);
       batch.forEach(({ label, role, required }, index) => {
         const look = looks[index];
-        if (!look?.visible) return;
+        if (!look?.visible || look.inner) return;
         const sensitive =
           look.secret || isSensitiveControl({ label, role, sensitive: false, required: false });
         if (sensitive && !look.emptyPassword) guarded = true;
@@ -1019,17 +1042,34 @@ export class BrowserController {
           await this.navigate(command, link);
         } else if (action.kind === 'fill') {
           const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
-          const safe = await handle.evaluate(
-            (element) =>
-              ((element.tagName === 'INPUT' &&
-                ['text', 'email', 'search', 'tel', 'url'].includes(element.type)) ||
-                element.tagName === 'TEXTAREA') &&
-              !element.readOnly &&
-              !element.disabled &&
-              !/password|one-time-code|webauthn|cc-number|cc-csc/i.test(element.autocomplete),
-          );
+          // What the field is: typed into, given a value (a time, a date, a number), not
+          // something fill changes, or where a secret goes, which stays the person's.
+          const kind = await handle.evaluate((element) => {
+            if (/password|one-time-code|webauthn|cc-number|cc-csc/i.test(element.autocomplete))
+              return 'secret';
+            if (element.tagName === 'TEXTAREA')
+              return element.readOnly || element.disabled ? 'fixed' : 'typed';
+            if (element.tagName !== 'INPUT') return 'other';
+            if (element.type === 'password') return 'secret';
+            if (element.readOnly || element.disabled) return 'fixed';
+            if (['text', 'email', 'search', 'tel', 'url'].includes(element.type)) return 'typed';
+            if (
+              [
+                'time',
+                'date',
+                'datetime-local',
+                'month',
+                'week',
+                'number',
+                'range',
+                'color',
+              ].includes(element.type)
+            )
+              return 'valued';
+            return 'other';
+          });
           if (
-            !safe ||
+            kind === 'secret' ||
             isSensitiveControl({
               label: action.label,
               role: 'textbox',
@@ -1038,32 +1078,74 @@ export class BrowserController {
             })
           )
             throw new BrowserFault('sensitive_input_require_takeover');
-          await this.network.run('reversible', async () => {
-            await this.input(command, () =>
-              handle.evaluate((element) => {
-                element.focus();
-                element.select();
-              }),
+          if (kind === 'fixed')
+            throw new BrowserFault('not_fillable: that field is read-only or disabled.');
+          if (kind === 'other')
+            throw new BrowserFault(
+              'not_fillable: that control takes no typed value; a checkbox, radio button or button is clicked, and a file is never chosen by the agent.',
             );
-            if (action.value)
-              await this.input(command, () => cdp.send('Input.insertText', { text: action.value }));
-            else {
+          if (kind === 'valued') {
+            // A time, date or number field is drawn in parts that typing does not fill in
+            // reliably, so its value is set the way the page itself would read it, then read
+            // back: the browser empties a value of the wrong form, such as "7:30 pm" in a time
+            // field, and the field is then put back as it was.
+            const taken = await this.network.run('reversible', () =>
+              this.input(command, () =>
+                handle.evaluate((element, value) => {
+                  const input = element;
+                  const before = input.value;
+                  const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value',
+                  )?.set;
+                  setter?.call(input, value);
+                  // A colour field turns a value it cannot read into black rather than empty.
+                  const accepted =
+                    value === '' ||
+                    (input.value !== '' &&
+                      (input.type !== 'color' || input.value === value.toLowerCase()));
+                  if (!accepted) setter?.call(input, before);
+                  else {
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  return accepted ? null : input.type;
+                }, action.value),
+              ),
+            );
+            if (taken)
+              throw new BrowserFault(
+                `value_not_accepted: that ${taken} field does not take "${action.value}"; give it in the form the field uses, such as 19:30 for a time or 2026-10-15 for a date.`,
+              );
+          } else
+            await this.network.run('reversible', async () => {
               await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyDown',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
+                handle.evaluate((element) => {
+                  element.focus();
+                  element.select();
                 }),
               );
-              await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyUp',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
-                }),
-              );
-            }
-          });
+              if (action.value)
+                await this.input(command, () =>
+                  cdp.send('Input.insertText', { text: action.value }),
+                );
+              else {
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyDown',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyUp',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+              }
+            });
         } else if (action.kind === 'select') {
           const handle = await this.dropdown(page, action.label, action.value);
           // The dropdown may be found by an option or nearby text, so its own names are checked

@@ -2005,7 +2005,12 @@ async function requestedShape(
     const credential = installation.credentials
       ? mcpCredentials.parse(installation.credentials)
       : undefined;
-    if (credential) mcpCredentialUrl.parse(url);
+    if (credential && !mcpCredentialUrl.safeParse(url).success)
+      throw new ServiceError(
+        'invalid_request',
+        'A token is only sent to an https address, or to http on this machine (localhost). Use https for this server, or connect it without a token.',
+        400,
+      );
     // Named verbs must also be explicitly granted; tool discovery cannot add them for the operator.
     if (
       !config.tools.every((tool) =>
