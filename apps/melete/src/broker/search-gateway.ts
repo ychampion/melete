@@ -29,7 +29,7 @@ import {
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import { type ModelSettingsService, serviceModelSource } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -378,6 +378,7 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
     timeoutMs: options.timeoutMs ?? 60_000,
     maxRequestBytes: 64 * 1024,
     maxResponseBytes: SEARCH_MAX_REPLY_BYTES,
+    onError: gatewayLog('search'),
     async authenticate(token) {
       // One token, one call: spent the moment the gateway accepts it.
       const call = live.get(token);
