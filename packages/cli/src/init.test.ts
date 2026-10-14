@@ -233,8 +233,95 @@ describe('melete init', () => {
     expect(context.attached).toEqual([]);
   });
 
-  test('--adopt takes only the disk floors', () => {
+  test('--adopt takes only the disk floors and the backup folder', () => {
     expect(() => initOptions(['--adopt', '--fake'])).toThrow('belongs to a new installation');
     expect(() => initOptions(['--min-free-mb', 'lots'])).toThrow('whole number');
+    expect(initOptions(['--adopt', '--backup-dir', '~/backups/two'])).toMatchObject({
+      adopt: true,
+      backupDir: '~/backups/two',
+    });
+    expect(() => initOptions(['--backup-dir', 'relative/folder'])).toThrow('--backup-dir');
+    expect(() => initOptions(['--project', 'Melete Two'])).toThrow('--project');
+  });
+});
+
+describe('a second installation on one machine', () => {
+  /** An engine where project `name` has containers from `folders` and these volumes. */
+  const using = (name: string, folders: string[], volumes: string[] = []) =>
+    [
+      [
+        `docker ps --all --filter label=com.docker.compose.project=${name} --format`,
+        ok(folders.map((folder) => `dir=${folder}\n`).join('')),
+      ],
+      [
+        `docker volume ls --quiet --filter label=com.docker.compose.project=${name}`,
+        ok(volumes.join('\n')),
+      ],
+    ] as [string, ReturnType<typeof ok>][];
+  const configuring = (deployDir: string, rules: [string, ReturnType<typeof ok>][], env = {}) => {
+    const context = testContext(deployDir, rules, {
+      attach: async (command) => {
+        context.attached.push([...command]);
+        writeEnv(deployDir, env);
+        return 0;
+      },
+    });
+    return context;
+  };
+
+  test("--project and the ports reach configure, and backups get a folder of the project's own", async () => {
+    const deployDir = temporaryDeployDir();
+    const context = configuring(deployDir, using('melete2', []), {
+      COMPOSE_PROJECT_NAME: 'melete2',
+      MELETE_PORT: '3200',
+      WEB_PORT: '3201',
+    });
+    const args = ['--fake', '--project', 'melete2', '--api-port', '3200', '--web-port', '3201'];
+    expect(await runInit(context, args)).toBe(0);
+    expect(context.attached[0]?.slice(2)).toEqual(args);
+    const contract = JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8'));
+    expect(contract.project).toBe('melete2');
+    expect(contract.backup.dir).toBe('~/melete-backups/melete2');
+    expect(context.printed()).toContain('Backups go to ~/melete-backups/melete2.');
+  });
+
+  test('--backup-dir names the folder, and is not handed to configure', async () => {
+    const deployDir = temporaryDeployDir();
+    const context = configuring(deployDir, using('melete', []));
+    expect(await runInit(context, ['--fake', '--backup-dir', '/srv/backups/two'])).toBe(0);
+    expect(context.attached[0]?.slice(2)).toEqual(['--fake']);
+    const contract = JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8'));
+    expect(contract.backup).toEqual({ dir: '/srv/backups/two', keep: 3, max_age_days: 30 });
+  });
+
+  test("a project name another installation's containers use is refused before anything is written", async () => {
+    const deployDir = temporaryDeployDir();
+    const context = configuring(
+      deployDir,
+      using('melete', ['/srv/melete/deploy', '/srv/melete/deploy'], ['melete_pgdata']),
+    );
+    expect(await runInit(context, ['--fake'])).toBe(2);
+    expect(context.errors()).toContain(
+      'Another installation, in /srv/melete/deploy, already runs as the Compose project melete',
+    );
+    expect(context.errors()).toContain('--project melete2 --api-port 3200 --web-port 3201');
+    expect(context.attached).toEqual([]);
+    expect(readdirSync(deployDir)).not.toContain('.env');
+    expect(changingCalls(context.docker.calls)).toEqual([]);
+  });
+
+  test("a stopped installation's volumes are refused too: its database would not open", async () => {
+    const deployDir = temporaryDeployDir();
+    const context = configuring(deployDir, using('melete2', [], ['melete2_pgdata']));
+    expect(await runInit(context, ['--fake', '--project', 'melete2'])).toBe(2);
+    expect(context.errors()).toContain('Compose project melete2 already has 1 volume(s)');
+    expect(context.attached).toEqual([]);
+  });
+
+  test('a free name goes ahead; an engine that does not answer is left to configure', async () => {
+    const free = temporaryDeployDir();
+    expect(await runInit(configuring(free, using('melete', [])), ['--fake'])).toBe(0);
+    const silent = temporaryDeployDir();
+    expect(await runInit(configuring(silent, []), ['--fake'])).toBe(0);
   });
 });
