@@ -30,6 +30,7 @@ import {
   dockerFetch,
 } from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
+import { createPooledNetwork } from '../runtime/network-pool.ts';
 import { type HostResolver, imagePullAllowed } from './image-registry.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
 import { StdioCapacityError, type StdioLauncher, type StdioLaunchSpec } from './mcp-stdio.ts';
@@ -687,14 +688,14 @@ export class DockerStdioLauncher implements StdioLauncher {
     const self = this.options.selfId;
     if (!self) throw new Error('Egress needs the service to run in its container');
     await this.remove('DELETE', `/networks/${names.network}`);
-    const created = (await this.docker.request('POST', '/networks/create', {
+    const created = await createPooledNetwork(this.docker, {
       Name: names.network,
       Driver: 'bridge',
       Internal: true,
       EnableIPv6: false,
       Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
       Labels: this.labels(connectionId),
-    })) as { Id: string };
+    });
     // An engine that made it routable would give the server the host's network.
     const recorded = (await this.docker.request('GET', `/networks/${created.Id}`)) as {
       Internal?: boolean;
