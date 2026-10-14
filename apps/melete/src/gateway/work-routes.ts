@@ -98,11 +98,12 @@ export const WORK_KEYWORDS: readonly {
   },
   {
     kind: 'browser',
-    words: /\b(?:open|go to|website|web site|url|in (?:your|the) browser)\b|https?:\/\/|\bwww\./i,
+    words:
+      /\b(?:go to|website|web site|web page|url|in (?:your|the) browser|open (?:the |this |that |a )?(?:site|page|link))\b|https?:\/\/|\bwww\./i,
   },
   {
     kind: 'computer',
-    words: /\b(?:run|script|install|csv|spreadsheet|chart|code)\b/i,
+    words: /\b(?:script|install|csv|spreadsheet|chart|code|terminal|python)\b/i,
   },
 ];
 
@@ -119,6 +120,9 @@ const isBrowserTool = (name: string) => toolBase(name).startsWith('browser.');
 /** Tools that use the agent's computer: its screen, its terminal, or running code. */
 const isComputerTool = (name: string) => /^(?:computer|terminal|code)\./.test(toolBase(name));
 
+/** Tools that search and read the web, which is what research turns do. */
+const isResearchTool = (name: string) => /^web\.(?:search|fetch|read)$/.test(toolBase(name));
+
 /**
  * Every kind of work these signals show, in precedence order. `chat` always
  * applies, last, so a route for it covers every agent turn no other route
@@ -134,7 +138,7 @@ export function workKinds(signals: WorkSignals): WorkKind[] {
     browser: signals.tools.some(isBrowserTool) || said('browser'),
     long: signals.summarised || signals.contextShare >= LONG_CONTEXT_SHARE,
     files: signals.attachments.some((kind) => kind !== 'image'),
-    research: said('research'),
+    research: signals.tools.some(isResearchTool) || said('research'),
     chat: true,
   };
   return WORK_KINDS.filter((kind) => applies[kind]);

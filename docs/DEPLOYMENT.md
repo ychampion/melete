@@ -2248,11 +2248,11 @@ The kinds, and when an attempt is each:
 | --- | --- |
 | `background` | Scheduled, repeating or triggered work that nobody is waiting on |
 | `team` | Work in a space with more than one person in it |
-| `computer` | The job's recent attempts used the computer, its terminal or ran code, or the newest message asks to run, install, script, code, chart or work on a CSV or spreadsheet |
-| `browser` | The job's recent attempts used the browser, or the newest message asks to open or go to a website, gives an address, or says "in your browser" |
+| `computer` | The job's recent attempts used the computer, its terminal or ran code, or the newest message mentions a script, code, Python, the terminal, installing, a chart, a CSV or a spreadsheet |
+| `browser` | The job's recent attempts used the browser, or the newest message asks to go to a website or open a page or link, gives an address, or says "in your browser" |
 | `long` | Earlier messages of the conversation are already being summarised, or the conversation fills about half of the model's context window |
 | `files` | The newest message carries a file other than a picture |
-| `research` | The newest message asks to compare, research or look into something, or for sources |
+| `research` | The job's recent attempts searched or read the web, or the newest message asks to compare, research or look into something, or for sources |
 | `chat` | Every agent turn; a `chat` route covers whatever no other route took |
 
 An attempt can be several kinds at once. It runs on the route of the first of
