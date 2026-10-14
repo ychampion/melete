@@ -5,8 +5,10 @@
 #
 # It downloads the Compose file and its configuration into ~/melete (or
 # MELETE_DIR), writes deploy/.env once with fresh secrets, pulls the images and
-# starts them. Running it again updates the files and images and keeps
-# deploy/.env and every volume. Options, all read from the environment:
+# starts them. The first run prints a one-time setup code, which creates the
+# first account; deploy/.env keeps only its SHA-256. Running it again updates
+# the files and images and keeps deploy/.env and every volume. Options, all
+# read from the environment:
 #
 #   MELETE_DIR        where the files go (default ~/melete)
 #   MELETE_REF        the branch, tag or commit the files come from (default main)
@@ -33,6 +35,16 @@ say() { printf '%s\n' "$*"; }
 fail() {
   printf 'Melete: %s\n' "$*" >&2
   exit 1
+}
+
+# deploy/.env keeps only the setup code's hash, so a run that stops after
+# writing it, however it stops, says the code on its way out, once.
+SETUP_CODE='' SETUP_CODE_SHOWN=0
+say_unshown_code() {
+  if [ -n "$SETUP_CODE" ] && [ "$SETUP_CODE_SHOWN" = 0 ]; then
+    SETUP_CODE_SHOWN=1
+    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it.\n' "$SETUP_CODE" >&2
+  fi
 }
 
 # The versions deploy/scripts/configure.ts requires (apps/melete/src/runtime/docker-engine.ts).
@@ -90,6 +102,53 @@ download() {
 }
 
 hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
+
+# The one-time setup code that claims a new installation, as newSetupCode() in
+# apps/melete/src/api/setup-code.ts makes it: 20 characters nobody misreads, in
+# groups of four. Bytes from /dev/urandom at 240 or above are skipped, so each
+# of the 30 characters is equally likely.
+SETUP_ALPHABET=ABCDEFGHJKMNPQRSTVWXYZ23456789
+new_setup_code() {
+  local chars='' byte
+  local -a bytes
+  while [ "${#chars}" -lt 20 ]; do
+    read -r -a bytes <<<"$(od -An -tu1 -N32 /dev/urandom | tr '\n' ' ')"
+    # Nothing read from /dev/urandom would otherwise loop here for ever.
+    [ "${#bytes[@]}" -gt 0 ] || return 1
+    for byte in "${bytes[@]}"; do
+      [ "$byte" -lt 240 ] || continue
+      chars="$chars${SETUP_ALPHABET:byte % 30:1}"
+      [ "${#chars}" -lt 20 ] || break
+    done
+  done
+  printf '%s-%s-%s-%s-%s\n' "${chars:0:4}" "${chars:4:4}" "${chars:8:4}" "${chars:12:4}" "${chars:16:4}"
+}
+
+# What deploy/.env keeps of a setup code, as setupCodeHash() works it out: the
+# SHA-256, in hex, of the code in capitals with everything but letters and
+# digits taken out. The code reaches the hash through a pipe, never a command line.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d ' ' -f 1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d ' ' -f 1
+  else
+    return 1
+  fi
+}
+setup_code_hash() {
+  printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]' | LC_ALL=C tr -cd 'A-Z0-9' | sha256_hex
+}
+
+# A new code in NEW_SETUP_CODE and its hash in NEW_SETUP_HASH.
+make_setup_code() {
+  NEW_SETUP_CODE="$(new_setup_code)" || NEW_SETUP_CODE=''
+  [[ "$NEW_SETUP_CODE" =~ ^[A-HJKMNP-TV-Z2-9]{4}(-[A-HJKMNP-TV-Z2-9]{4}){4}$ ]] ||
+    fail 'Could not read /dev/urandom to make the setup code.'
+  NEW_SETUP_HASH="$(setup_code_hash "$NEW_SETUP_CODE")" || NEW_SETUP_HASH=''
+  [[ "$NEW_SETUP_HASH" =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'sha256sum or shasum is needed to make the setup code. Install coreutils, then run this again.'
+}
 base64_bytes() { head -c "$1" /dev/urandom | base64 | tr -d '\n'; }
 base64url() { base64 | tr -d '\n=' | tr '+/' '-_'; }
 
@@ -215,9 +274,13 @@ write_env() {
     fail 'ELEVENLABS_API_KEY contains a space or a line break, so it is not a key as written. Set it again and run this again.' ;;
   esac
 
+  # Shown once, at the end of this run; only its hash is written.
+  make_setup_code
+
   # Passed to awk through its environment, never on a command line.
   local settings
-  settings="MELETE_VAPID_PUBLIC_KEY=$VAPID_PUBLIC
+  settings="MELETE_SETUP_CODE_HASH=$NEW_SETUP_HASH
+MELETE_VAPID_PUBLIC_KEY=$VAPID_PUBLIC
 MELETE_VAPID_PRIVATE_KEY=$VAPID_PRIVATE
 MELETE_MASTER_KEY=$(base64_bytes 32)
 MELETE_CAPABILITY_KEY=$(hex 32)
@@ -257,12 +320,31 @@ ELEVENLABS_API_KEY=@VOICE"
           values[substr(lines[i], 1, eq - 1)] = v
         }
       }
+      # The template is read twice: first for the settings that have a line of
+      # their own, then to write the file.
+      NR == FNR {
+        if (match($0, /^[A-Z_]+=/)) set[substr($0, 1, RLENGTH - 1)] = 1
+        next
+      }
       match($0, /^[A-Z_]+=/) {
         name = substr($0, 1, RLENGTH - 1)
-        if (name in values) { print name "=" values[name]; next }
+        if (name in values) { print name "=" values[name]; written[name] = 1; next }
+      }
+      # A setting the template has only as an empty commented line, such as
+      # `# MELETE_SETUP_CODE_HASH=`, is written in place of that line, as
+      # fillTemplate() in deploy/scripts/configure.ts does.
+      match($0, /^# ?[A-Z_]+=[ \t]*$/) {
+        name = $0
+        sub(/^# ?/, "", name)
+        sub(/=.*$/, "", name)
+        if ((name in values) && !(name in set) && !(name in written)) {
+          print name "=" values[name]; written[name] = 1; next
+        }
       }
       { print }
-    ' "$template" >"$partial"
+      # A setting an older template has no line for goes at the end.
+      END { for (name in values) if (!(name in written)) print name "=" values[name] }
+    ' "$template" "$template" >"$partial"
   )
   unset MELETE_INSTALL_PROVIDER_KEY MELETE_INSTALL_VOICE_KEY
   # Written once: a second run, or a race, keeps the file already there.
@@ -271,6 +353,7 @@ ELEVENLABS_API_KEY=@VOICE"
     fail 'deploy/.env appeared while this ran. Run this again to keep it and start Melete.'
   fi
   rm -f "$partial"
+  SETUP_CODE="$NEW_SETUP_CODE"
   if [ "$PROVIDER" = fake ]; then
     say 'Created deploy/.env with the practice model.'
   else
@@ -289,8 +372,10 @@ open_browser() {
 }
 
 # A setting in deploy/.env, as deploy/scripts/set-env.ts's withSetting() sets it:
-# rewritten where it first stands, or appended. The value reaches awk through its
-# environment, never a command line, and the file is replaced in one rename.
+# rewritten where it first stands, or appended. A later line for the same name
+# is dropped, since Compose would read that one instead. The value reaches awk
+# through its environment, never a command line, and the file is replaced in
+# one rename.
 set_env() {
   local name="$1" partial="$DEPLOY/.env.partial"
   rm -f "$partial"
@@ -298,8 +383,9 @@ set_env() {
     umask 077
     MELETE_INSTALL_NAME="$name" MELETE_INSTALL_VALUE="$2" awk '
       BEGIN { name = ENVIRON["MELETE_INSTALL_NAME"]; done = 0 }
-      !done && match($0, "^[ \t]*(export[ \t]+)?" name "[ \t]*=") {
-        print name "=" ENVIRON["MELETE_INSTALL_VALUE"]; done = 1; next
+      match($0, "^[ \t]*(export[ \t]+)?" name "[ \t]*=") {
+        if (!done) print name "=" ENVIRON["MELETE_INSTALL_VALUE"]
+        done = 1; next
       }
       { print }
       END { if (!done) print name "=" ENVIRON["MELETE_INSTALL_VALUE"] }
@@ -310,6 +396,39 @@ set_env() {
 
 # A setting's value in deploy/.env, or nothing.
 env_value() { sed -n "s/^$1=//p" "$DEPLOY/.env" | tail -n 1 | tr -d '\r'; }
+
+# Whether deploy/.env holds a setup code hash: `set`, or `missing` with no line
+# for it or an empty one, which older templates shipped. A line counts
+# as set_env would rewrite it, indented or after `export`, so a hash already
+# there is never replaced; quotes are not a value, and the last line wins, as
+# Compose reads the file.
+setup_code_state() {
+  if [ -n "$(env_setting MELETE_SETUP_CODE_HASH)" ]; then say set; else say missing; fi
+}
+
+# A setting's value as set_env finds its line, without spaces or quotes.
+env_setting() {
+  local line
+  line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$DEPLOY/.env" | tail -n 1 || true)"
+  printf '%s' "${line#*=}" | tr -d "[:space:]\"'"
+}
+
+# Whether deploy/.env says MELETE_SETUP_OPEN=true: the first visitor creates
+# the owner without a code, so no code is made. The service reads only `true`
+# and `false` there and will not start on anything else, so nothing else counts.
+setup_open() {
+  [ "$(env_setting MELETE_SETUP_OPEN)" = true ]
+}
+
+# Say so when MELETE_SETUP_OPEN holds something the service will refuse.
+check_setup_open() {
+  local value
+  value="$(env_setting MELETE_SETUP_OPEN)"
+  case "$value" in
+    '' | true | false) ;;
+    *) say "MELETE_SETUP_OPEN in deploy/.env is \"$value\"; Melete starts only with true or false there." ;;
+  esac
+}
 
 # A file's text, or a line of text, as one line of base64; `-` for a missing file.
 base64_line() { base64 | tr -d '\n'; }
@@ -483,6 +602,12 @@ main() {
   DIR="$dir"
   DEPLOY="$dir/deploy"
 
+  # A run stopped by a signal leaves through the EXIT trap too.
+  trap say_unshown_code EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
   # Read once and taken out of the environment, where Compose would read it
   # before deploy/.env.
   local want_browser=0 requested="${MELETE_BROWSER_SPACE:-}"
@@ -510,10 +635,24 @@ main() {
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
 
+  SETUP_OPEN=0
   if [ -f "$DEPLOY/.env" ]; then
     say 'Keeping deploy/.env and your data.'
     if [ -n "${MELETE_IMAGE_TAG:-}" ] || ! grep -q '^MELETE_IMAGE_TAG=.' "$DEPLOY/.env"; then
       set_env MELETE_IMAGE_TAG "$IMAGE_TAG"
+    fi
+    # An installation with no setup code hash, whether made before setup codes
+    # or with an older template's empty line, gets a code now, said once, as a
+    # first install does. A hash already there is kept, and none is made while
+    # MELETE_SETUP_OPEN=true.
+    check_setup_open
+    if setup_open; then
+      SETUP_OPEN=1
+    elif [ "$(setup_code_state)" = missing ]; then
+      make_setup_code
+      set_env MELETE_SETUP_CODE_HASH "$NEW_SETUP_HASH"
+      SETUP_CODE="$NEW_SETUP_CODE"
+      say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
     fi
   else
     write_env
@@ -562,10 +701,22 @@ main() {
   local shown="${compose[*]}"
   say ''
   say "Melete is running at $url"
-  if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
-    say 'Open it and create your account. It starts with a practice model; add your own key in Settings → Models.'
+  if [ -n "$SETUP_CODE" ]; then
+    # Said once: deploy/.env keeps only its hash.
+    say "Open $url/#/welcome?code=$SETUP_CODE to create your account"
+    say "Your one-time setup code is $SETUP_CODE. It is shown only now; keep it until your account exists."
+    SETUP_CODE_SHOWN=1
   else
     say 'Open it and create your account.'
+  fi
+  if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
+    say 'It starts with a practice model; add your own key in Settings → Models.'
+  fi
+  say "For a new setup code: $shown exec melete bun run melete account setup-code"
+  if [ "$SETUP_OPEN" = 1 ]; then
+    say 'Setup is open: with MELETE_SETUP_OPEN=true, the first visitor creates the owner account without a code.'
+  elif [ -n "$SETUP_CODE" ]; then
+    say 'Set MELETE_SETUP_OPEN=true only if the first visitor should be allowed to create the owner without a code.'
   fi
   say "Run this command again to update. Stop it with: $shown down"
   if [ "$browser" = 0 ]; then

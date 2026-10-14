@@ -8,7 +8,10 @@
  *    email, name, password and passkey are wiped, and its sign-in sessions,
  *    linked sign-ins, reset links, assistant grants, push subscriptions and
  *    pending notification texts are deleted, and its paired computers are
- *    disconnected. The email is free again.
+ *    disconnected. The email is free again. The responses it sent to apps in
+ *    other people's spaces stay with those apps, naming nobody; apps shared
+ *    with it are no longer shared with it; and it is no longer shown as
+ *    having any room open.
  * 2. It leaves the rooms other people own, as leaving one does: its place
  *    there ends and the work it started there stops. Its own chats there,
  *    which only it could read, are deleted as deleting each would delete it;
@@ -18,9 +21,12 @@
  *    final count that removing one space runs, so a space is reported gone
  *    only once a recount finds nothing left.
  * 4. Once none of its spaces is left, the account's remaining records go,
- *    and its row with them. Where messages it wrote in someone else's room
- *    still name it, the row stays, with nothing in it but its id, so that
- *    room's history still reads; it says "a removed account".
+ *    and its row with them. Where something in a room someone else owns
+ *    still names it (a message or thread it wrote there, a chat it held with
+ *    the room, something the room handed it, an invite it made or used, an
+ *    app it published or shared there), the row stays,
+ *    with nothing in it but its id, so that room's history still reads; the
+ *    room calls it "Someone".
  *
  * Steps 2 to 4 run again at startup and every minute until they are done, so
  * a deletion interrupted by a restart finishes. What marks an account as being
@@ -31,7 +37,7 @@
  * instead, which empties its own space, or remove Melete from its computer.
  */
 import type { AccountRemovalPreview, AccountSummary } from '@melete/contracts';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { ServiceError } from '../api/errors.ts';
 import { principalContext } from '../principals/authority.ts';
@@ -211,6 +217,7 @@ export class AccountRemovalService {
             and status <> 'revoked'`;
       for (const table of ACCOUNT_RECORDS)
         await tx`delete from ${tx(table)} where principal_id = ${principalId}`;
+      await unlinkElsewhere(tx, principalId);
     });
     await this.carryOn(principalId);
     return this.status(principalId);
@@ -322,6 +329,11 @@ export class AccountRemovalService {
   async resume(): Promise<number> {
     const pending = await this.deps.sql<{ id: string }[]>`select id from principal
       where email = 'removed+' || lower(id) || '@removed.invalid'`;
+    if (!pending.length) return 0;
+    // Before any is finished, for all of them at once: a response that landed
+    // as a deletion began, and the links of an account whose deletion began
+    // before step 1 unlinked them, whether or not its spaces are gone yet.
+    await unlinkElsewhere(this.deps.sql, null);
     let finished = 0;
     for (const { id } of pending) {
       await this.carryOn(id);
@@ -384,6 +396,29 @@ function summary(row: Account, setupOwner: string | null): AccountSummary {
     setup_owner: row.id === setupOwner,
     state: removing ? 'removing' : 'active',
   };
+}
+
+/**
+ * What of the account other people's spaces keep stops naming it. The
+ * responses it sent to their apps are those apps' records and stay, as sent,
+ * from nobody: no account on the response, nor on an earlier one its own
+ * newer save replaced. Apps never get the viewer's name or email to put in a
+ * response, so a response names someone only if they typed it. An app shared
+ * with it is no longer shared with it, and whether it had a room open is
+ * nobody's record: both go.
+ *
+ * Given no account, it does this for every account being deleted, each table
+ * read once however many there are.
+ */
+async function unlinkElsewhere(q: Sql | TransactionSql, principalId: string | null) {
+  const who = () =>
+    principalId === null
+      ? q`select id from principal where email = 'removed+' || lower(id) || '@removed.invalid'`
+      : q`select ${principalId}::text`;
+  await q`update app_submission set principal_id = null where principal_id in (${who()})`;
+  await q`update app_submission set deleted_by = null where deleted_by in (${who()})`;
+  await q`delete from app_grant where grantee_kind = 'principal' and grantee_id in (${who()})`;
+  await q`delete from room_presence where principal_id in (${who()})`;
 }
 
 const describe = (error: unknown) => (error instanceof Error ? error.message : 'unknown error');

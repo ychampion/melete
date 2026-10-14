@@ -147,7 +147,7 @@ export interface paths {
         post?: never;
         /**
          * Delete this account and everything it owns
-         * @description The account email must be typed exactly. The account stops working at once: its email, name, password and passkey are wiped and every session ends. It leaves the rooms others own, and each space it owns is removed in the background, as removing a space is. The account that set Melete up cannot be deleted.
+         * @description The account email must be typed exactly. The account stops working at once: its email, name, password and passkey are wiped and every session ends. It leaves the rooms others own, and each space it owns is removed in the background, as removing a space is. Responses it sent to apps in other people’s spaces stay with those apps, no longer naming it. The account that set Melete up cannot be deleted.
          */
         delete: {
             parameters: {
@@ -9273,7 +9273,7 @@ export interface paths {
         put?: never;
         /**
          * Propose a knowledge write
-         * @description The only write path an agent has. The proposal is validated and rendered as a diff the owner applies or discards; applying is a git commit.
+         * @description The only write path an agent has. The proposal is validated, staged in the space and rendered as a diff. A staged write is discarded when the record it names is retracted, deleted or forgotten, and after seven days if nothing has applied it.
          */
         post: {
             parameters: {
@@ -25279,6 +25279,8 @@ export interface components {
                 };
                 name: string;
                 onboarded: boolean;
+                /** @enum {string} */
+                role: "owner" | "member";
                 sending_address: string | null;
                 time_zone: string;
                 time_zone_confirmed: boolean;

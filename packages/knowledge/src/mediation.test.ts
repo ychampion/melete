@@ -1,5 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { ProposedWrite } from '@melete/contracts';
 import type { Check } from './findings.ts';
@@ -11,6 +20,8 @@ import {
   applyProposal,
   DEFAULT_POLICY,
   discardProposal,
+  discardProposalsFor,
+  expireProposals,
   getProposal,
   listProposals,
   MAX_RECORD_BYTES,
@@ -24,6 +35,7 @@ import {
   type SpacePolicy,
   validateProposal,
 } from './mediation.ts';
+import { hardDelete, retract } from './records.ts';
 import { commitRecord } from './space.ts';
 import { knownIds, loadSpace } from './store.ts';
 
@@ -506,4 +518,119 @@ describe('the space can move between staging and approval', () => {
     expect(applied.ok).toBe(false);
     if (!applied.ok) expect(checks(applied.findings)).toContain('space-read-only');
   });
+});
+
+describe('a staged write does not outlive what it would change', () => {
+  const staged = () => readdirSync(paths.proposed).sort();
+
+  /** The space holds the bun record; one write is staged for it, one for another record. */
+  async function withStagedWrites() {
+    await commitRecord(
+      paths,
+      'knowledge/prefers-bun.md',
+      serializeRecord(aRecord({ id: IDS.bun }), 'Zara uses bun for every package operation.'),
+      { proposedBy: 'user', now },
+    );
+    const forBun = proposeWrite(
+      context(),
+      aWrite({
+        frontmatter: aRecord({ id: IDS.bun }),
+        body: 'Zara uses bun, and pnpm on Fridays.',
+      }),
+    );
+    const other = proposeWrite(
+      context(),
+      aWrite({ path: 'knowledge/flights.md', frontmatter: aRecord({ id: IDS.flights }) }),
+    );
+    if (!forBun.ok || !other.ok) throw new Error('the fixture writes were not staged');
+    const record = loadSpace(paths).records.find((r) => r.frontmatter.id === IDS.bun);
+    if (!record) throw new Error('the fixture record is missing');
+    return { record, other: other.proposal };
+  }
+
+  test('retracting a record discards the writes staged for it, and only those', async () => {
+    const { record, other } = await withStagedWrites();
+    const index = SpaceIndex.open(paths);
+    try {
+      await retract(paths, index, record, { reason: 'not true', by: 'zara', now });
+    } finally {
+      index.close();
+    }
+    expect(staged()).toEqual([`${other.id}.json`]);
+  });
+
+  test('deleting a record discards the writes staged for it, and only those', async () => {
+    const { record, other } = await withStagedWrites();
+    const index = SpaceIndex.open(paths);
+    try {
+      await hardDelete(paths, index, record, { reason: 'remove it', by: 'zara', now });
+    } finally {
+      index.close();
+    }
+    expect(staged()).toEqual([`${other.id}.json`]);
+  });
+
+  test('a staged write is found by the record id it holds, or by the path it would write', () => {
+    const byId = stageByHand({
+      id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS1',
+      path: 'knowledge/renamed.md',
+      content: serializeRecord(aRecord({ id: IDS.landlord }), 'The door code is 4417.'),
+    });
+    const byPath = stageByHand({
+      id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS2',
+      path: 'knowledge\\door.md',
+      content: 'not a record at all',
+    });
+    const unreadable = 'prop_01J8ZP3QWABCDEFGHJKMNPQRS3.json';
+    writeFileSync(join(paths.proposed, unreadable), '{ not json');
+    const kept = stageByHand({
+      id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS4',
+      path: 'knowledge/other.md',
+      content: serializeRecord(aRecord({ id: IDS.fresh }), 'Something else.'),
+    });
+    expect(discardProposalsFor(paths, { ids: [IDS.landlord], paths: ['knowledge/door.md'] })).toBe(
+      2,
+    );
+    expect(staged()).toEqual([unreadable, `${kept.id}.json`].sort());
+    expect(existsSync(join(paths.proposed, `${byId.id}.json`))).toBe(false);
+    expect(existsSync(join(paths.proposed, `${byPath.id}.json`))).toBe(false);
+  });
+
+  test('a staged write expires by when its file was written, not by the time it claims', () => {
+    const old = stageByHand({
+      id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS5',
+      proposedAt: '2099-01-01T00:00:00.000Z',
+      content: 'old',
+    });
+    const fresh = stageByHand({
+      id: 'prop_01J8ZP3QWABCDEFGHJKMNPQRS6',
+      proposedAt: '2001-01-01T00:00:00.000Z',
+      content: 'fresh',
+    });
+    const at = (file: string, when: string) =>
+      utimesSync(join(paths.proposed, file), new Date(when), new Date(when));
+    at(`${old.id}.json`, '2026-09-01T00:00:00Z');
+    at(`${fresh.id}.json`, '2026-09-30T00:00:00Z');
+    // Something that is not a staged file is never touched.
+    writeFileSync(join(paths.proposed, 'README'), 'left alone');
+    at('README', '2020-01-01T00:00:00Z');
+    expect(expireProposals(paths, new Date('2026-09-20T00:00:00Z'))).toBe(1);
+    expect(staged()).toEqual(['README', `${fresh.id}.json`]);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a staging folder that is a link elsewhere is not followed',
+    () => {
+      const elsewhere = join(root, 'elsewhere');
+      const file = join(elsewhere, 'prop_01J8ZP3QWABCDEFGHJKMNPQRS7.json');
+      mkdirSync(elsewhere);
+      writeFileSync(file, '{}');
+      utimesSync(file, new Date('2020-01-01'), new Date('2020-01-01'));
+      rmSync(paths.proposed, { recursive: true, force: true });
+      symlinkSync(elsewhere, paths.proposed);
+      expect(expireProposals(paths, new Date('2026-01-01'))).toBe(0);
+      expect(discardProposalsFor(paths, { paths: ['knowledge/handmade.md'] })).toBe(0);
+      expect(existsSync(file)).toBe(true);
+    },
+  );
 });

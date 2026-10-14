@@ -5,8 +5,8 @@
  * By default the backup is online and whole: the database as a custom-format
  * dump, checked with `pg_restore --list` while it is written, the restriction
  * journal on its own under a timestamped name, deploy/.env, deploy/config/ and
- * deploy/melete.deploy.json; then the people's files (files.ts): the spaces,
- * the local blob store, the shared /work and each agent computer's two
+ * deploy/melete.deploy.json; then the people's files (files.ts): the spaces
+ * (without their search indexes, rebuilt from the files), the local blob store, the shared /work and each agent computer's two
  * volumes, each as its own archive, with contents.json saying what they are;
  * and a SHA256SUMS list of all of them. Each backup is a new directory,
  * melete-<time>, readable only by the account that made it (0700, files 0600).
@@ -65,6 +65,7 @@ import {
   type FileSettings,
   FilesRefusal,
   fileSettings,
+  LEFT_OUT,
   listComputerVolumes,
   measureFiles,
   PART_NAMES,
@@ -362,7 +363,12 @@ async function backupFiles(
     for (const each of FILE_PARTS)
       if (
         !(await part(`backup.${each}`, partFile(each), {
-          command: archiveCommand(image, composeVolume(config.project, each), mode === 'online'),
+          command: archiveCommand(
+            image,
+            composeVolume(config.project, each),
+            mode === 'online',
+            LEFT_OUT[each],
+          ),
         }))
       )
         return false;
@@ -707,26 +713,57 @@ export async function takeBackup(
       fix: 'For a copy where nothing changes underneath, back up with --offline: it stops the writers while the files are copied.',
     });
 
-  if (destination.kind === 'dir') {
-    // The backup the last deploy took is the one rollback restores from: it is never pruned.
-    const named = lastSwitched(readHistory(context.deployDir))?.backup;
-    const kept = readdirSync(destination.dir)
-      .filter((entry) => BACKUP_NAME.test(entry))
-      .filter((entry) => statSync(join(destination.dir, entry)).isDirectory())
-      .sort();
-    const removed = kept
-      .slice(0, Math.max(0, kept.length - config.backup.keep))
-      .filter((entry) => !named || resolve(join(destination.dir, entry)) !== resolve(named));
-    for (const entry of removed)
-      rmSync(join(destination.dir, entry), { recursive: true, force: true });
-    if (removed.length > 0)
-      results.push({
-        id: 'backup.keep',
-        level: 'ok',
-        detail: `Kept the newest ${config.backup.keep}; removed ${removed.join(', ')}.`,
-      });
-  }
+  if (destination.kind === 'dir')
+    results.push(...pruneBackups(context, config, destination.dir, name));
   return { ok: true, location, results };
+}
+
+/** When a backup named `melete-<time>` was made. */
+const madeAt = (entry: string): number => {
+  const [, y, mo, d, h, mi, s] =
+    /^melete-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/.exec(entry) ?? [];
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+};
+
+/**
+ * Removes, from the directory a backup was just written to, the backups beyond
+ * the newest `backup.keep`, and every one older than `backup.max_age_days`.
+ * The one just made always stays. The backup the last deploy took is the one
+ * rollback restores from, so `keep` never removes it; the age limit does, since
+ * it is what bounds how long a removed thing survives in a backup.
+ */
+function pruneBackups(context: Context, config: DeployConfig, dir: string, made: string): Result[] {
+  const named = lastSwitched(readHistory(context.deployDir))?.backup;
+  const isNamed = (entry: string) => !!named && resolve(join(dir, entry)) === resolve(named);
+  const { keep, max_age_days: days } = config.backup;
+  const oldest = days === null ? null : context.now().getTime() - days * 24 * 60 * 60 * 1000;
+  const kept = readdirSync(dir)
+    .filter((entry) => BACKUP_NAME.test(entry))
+    .filter((entry) => statSync(join(dir, entry)).isDirectory())
+    .sort();
+  const beyond = new Set(kept.slice(0, Math.max(0, kept.length - keep)));
+  const removed = kept.filter(
+    (entry) =>
+      entry !== made &&
+      ((beyond.has(entry) && !isNamed(entry)) || (oldest !== null && madeAt(entry) < oldest)),
+  );
+  for (const entry of removed) rmSync(join(dir, entry), { recursive: true, force: true });
+  if (removed.length === 0) return [];
+  const rule =
+    days === null
+      ? `Kept the newest ${keep}`
+      : `Kept the newest ${keep}, none older than ${days} days`;
+  return [
+    {
+      id: 'backup.keep',
+      level: 'ok',
+      detail: `${rule}; removed ${removed.join(', ')}.${
+        removed.some(isNamed)
+          ? ' One of them was the backup the last deploy took, so rollback can no longer restore from it.'
+          : ''
+      }`,
+    },
+  ];
 }
 
 /**

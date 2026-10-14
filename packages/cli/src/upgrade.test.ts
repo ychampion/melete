@@ -6,10 +6,11 @@ import {
   composeArguments,
   parseArguments,
   UPGRADE_CLIENT_TLS,
+  UPGRADE_EXTERNAL_LOAD,
   upgradePlan,
 } from '../../../deploy/scripts/upgrade.ts';
 import { runUpgrade, upgradeOverlayArguments } from './commands/upgrade.ts';
-import { CLIENT_TLS } from './database.ts';
+import { CLIENT_TLS, EXTERNAL_LOAD } from './database.ts';
 import { composeCommand, type DeployConfig, deployConfigSchema } from './deploy-config.ts';
 import { ok, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
@@ -89,6 +90,10 @@ describe('the upgrade reads the same Compose files and profiles as a deploy', ()
 
   test("the upgrade script's TLS line is the melete command's", () => {
     expect(UPGRADE_CLIENT_TLS).toBe(CLIENT_TLS);
+  });
+
+  test("the upgrade script's rollback loads an external database the way restore does", () => {
+    expect(UPGRADE_EXTERNAL_LOAD).toBe(EXTERNAL_LOAD);
   });
 });
 

@@ -19,6 +19,8 @@ import type { ResultCard } from '../experience/types.ts';
 import { waitingUntilWords } from '../experience/waiting.ts';
 import { href } from '../router.ts';
 import { toolIcon } from './activity.tsx';
+import { LiveBrowserCard } from './LiveBrowserCard.tsx';
+import { cardHost, computerTools } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
 import { stoppedLine } from './parts.tsx';
 import {
@@ -636,16 +638,26 @@ export function LogEntries({
   live,
   streaming,
   renderBlock,
+  card,
 }: {
   items: LogItem[];
   live: boolean;
   /** The newest message is still being written. */
   streaming: boolean;
   renderBlock: (block: TurnBlock) => ReactNode;
+  /** The picture of the agent's computer, drawn under the work row it belongs to. */
+  card?: { after: string; node: ReactNode };
 }) {
   return (
     <>
       {items.map((item, index) => {
+        if (card && item.key === card.after)
+          return (
+            <Fragment key={item.key}>
+              {item.type === 'work' ? <WorkGroup work={item.work} live={live} /> : null}
+              {card.node}
+            </Fragment>
+          );
         switch (item.type) {
           case 'message':
             return (
@@ -760,6 +772,7 @@ export function WorkLog({
   items,
   finished,
   renderBlock,
+  computer,
   until,
 }: {
   turn: TranscriptTurn;
@@ -769,10 +782,28 @@ export function WorkLog({
   items: LogItem[];
   finished: boolean;
   renderBlock: (block: TurnBlock) => ReactNode;
+  /** Whose computer the turn's browser and desktop work was on, and how to show it. */
+  computer?: { agentName: string; open: () => void };
 }) {
   const [choice, setChoice] = useState<boolean | null>(null);
   const id = useId();
   const running = RUNNING.has(turn.status);
+  // One picture of the agent's browser or desktop, under the last of its work in this turn.
+  const host = computer ? cardHost(items) : null;
+  const card =
+    host && computer
+      ? {
+          after: host,
+          node: (
+            <LiveBrowserCard
+              turn={turn}
+              tools={computerTools(turn)}
+              agentName={computer.agentName}
+              onOpen={computer.open}
+            />
+          ),
+        }
+      : undefined;
   const hasWork = items.some((item) => item.type !== 'block' || !finished);
   if (!hasWork && !running) {
     // Nothing to fold: whatever is here is a card that needs the person.
@@ -811,8 +842,11 @@ export function WorkLog({
           live={running}
           streaming={turn.streaming && running}
           renderBlock={renderBlock}
+          card={open ? card : undefined}
         />
       </Reveal>
+      {/* Folded, the picture stays in view as the record of what was done there. */}
+      {!open && card ? <div className="worklog-kept">{card.node}</div> : null}
       {running && !writing ? (
         <div className="log-line log-live" data-static="true" role="status">
           <span className="log-icon" aria-hidden="true">

@@ -17,7 +17,7 @@ import { TotalsRow, totalsOf } from '../companies/Totals.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useMedia, useNow } from '../experience/hooks.ts';
+import { useApp, useMedia, useNow } from '../experience/hooks.ts';
 import type { CompanyMap, LedgerDetail, ScanProgress } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -39,6 +39,7 @@ export function CompaniesScreen() {
   const [scanning, setScanning] = useState(false);
   // Whether a mailbox is connected to scan: unknown until the connections load.
   const [mailbox, setMailbox] = useState(true);
+  const { member } = useApp();
   const phone = useMedia('(max-width: 767px)');
   // The relative dates on the rows stay honest while the screen is open.
   const now = useNow(true, 60_000);
@@ -55,6 +56,8 @@ export function CompaniesScreen() {
   }, []);
 
   useEffect(() => {
+    // The space's apps are its owner's to read and connect.
+    if (member) return;
     let live = true;
     void adapter.connections().then((result) => {
       if (live && result.data)
@@ -63,7 +66,7 @@ export function CompaniesScreen() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [member]);
 
   useEffect(() => {
     let live = true;

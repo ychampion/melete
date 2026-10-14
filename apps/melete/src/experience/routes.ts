@@ -91,16 +91,15 @@ export type ExperienceDeps = {
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
- * profile, tasks, saved rules, agents and connection reads. In a personal space
- * the caller is always the owner. In a shared space only its owner works with
- * them; a member keeps to conversations, plans and routines of their own.
+ * profile's changes, tasks, saved rules, agents and connection reads. In a
+ * personal space the caller is always the owner. In a shared space only its
+ * owner works with them; a member keeps to conversations, plans and routines
+ * of their own. The profile and Home answer a member with a view of their own.
  */
 const NOT_CONNECTED = 'Your saved details are not connected yet.';
 const RUNS_UNAVAILABLE = 'Long work is not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
-  'GET /profile',
   'PATCH /profile',
-  'GET /home',
   'GET /tasks',
   'POST /tasks',
   'PATCH /tasks/{id}',
@@ -199,7 +198,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
-    'GET /profile': (spaceId) => home.profile(spaceId),
+    // A member is shown their own view of it, never the owner's.
+    'GET /profile': (spaceId, c) =>
+      ownsSessionSpace(c.get('sessionSpace'))
+        ? home.profile(spaceId)
+        : home.memberProfile(spaceId, c.get('owner').id),
     'PATCH /profile': async (spaceId, _c, input) => {
       const { profile } = await home.saveProfile(spaceId, input);
       // Routines run on the person's clock: they keep their local hour when the
@@ -207,11 +210,23 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       await planning.retimeSchedules(spaceId, profile.time_zone);
       return { profile };
     },
-    'GET /home': async (spaceId, c) => ({
-      ...(await home.home(spaceId)),
-      routine_results: await planning.recentResults(spaceId),
-      ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
-    }),
+    'GET /home': async (spaceId, c) => {
+      const waiting = handoffs
+        ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) }
+        : {};
+      // A member sees their own day: nothing of the owner's calendar, tasks or routines.
+      if (!ownsSessionSpace(c.get('sessionSpace')))
+        return {
+          ...(await home.memberHome(spaceId, c.get('owner').id)),
+          routine_results: [],
+          ...waiting,
+        };
+      return {
+        ...(await home.home(spaceId)),
+        routine_results: await planning.recentResults(spaceId),
+        ...waiting,
+      };
+    },
     'GET /tasks': (spaceId) => home.tasks(spaceId),
     'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
     'PATCH /tasks/{id}': (spaceId, c, input) =>

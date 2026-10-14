@@ -111,14 +111,17 @@ async function readableTables(sql: Sql): Promise<Table[]> {
       on t.table_schema = c.table_schema and t.table_name = c.table_name
     where c.table_schema = 'public' and t.table_type = 'BASE TABLE'
     order by c.table_name, c.ordinal_position`;
+  // Read from the catalog itself: information_schema shows a table's key only
+  // to a role that may do more than read it.
   const keyRows = await sql<{ table_name: string; column_name: string }[]>`
-    select k.table_name, k.column_name
-    from information_schema.table_constraints c
-    join information_schema.key_column_usage k
-      on k.constraint_schema = c.constraint_schema and k.constraint_name = c.constraint_name
-        and k.table_name = c.table_name
-    where c.table_schema = 'public' and c.constraint_type = 'PRIMARY KEY'
-    order by k.table_name, k.ordinal_position`;
+    select c.relname as table_name, a.attname as column_name
+    from pg_index i
+    join pg_class c on c.oid = i.indrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    cross join lateral unnest(i.indkey) with ordinality as k(attnum, position)
+    join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
+    where i.indisprimary and n.nspname = 'public' and k.position <= i.indnkeyatts
+    order by c.relname, k.position`;
   const keys = new Map<string, string[]>();
   for (const row of keyRows)
     keys.set(row.table_name, [...(keys.get(row.table_name) ?? []), row.column_name]);

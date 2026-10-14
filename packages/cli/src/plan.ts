@@ -5,13 +5,14 @@
  * same facts always give the same plan, so the tests drive every refusal
  * without Docker.
  */
-import { CLIENT_TLS, DATABASE_CLIENT } from './database.ts';
+import { DATABASE_CLIENT, EXTERNAL_LOAD } from './database.ts';
 import type { DeployConfig } from './deploy-config.ts';
 import {
   type ComputerVolume,
   composeVolume,
   extractCommand,
   type FilePart,
+  LEFT_OUT,
   legacyExtractCommand,
   stopCellsCommand,
 } from './files.ts';
@@ -454,6 +455,13 @@ export type RestoreAction =
       /** Volumes no running container may use when the step runs: it empties them. */
       unused?: string[];
       /**
+       * Once this step has run, the same restore run again is refused: what to
+       * run instead, for the report of a restore that stops after it.
+       */
+      rerun?: string;
+      /** What to do when this step fails, in place of the general advice. */
+      failure?: string;
+      /**
        * `stop`: stops something and replaces nothing; `start`: the start at the
        * end. Left out, the step changes the installation.
        */
@@ -498,7 +506,19 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
           note(
             'point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
           ),
-          note('Keep the restriction journal volume: the newer journal is replayed at startup.'),
+          note(
+            "Where the database's administrator made the roles, they grant them the new database, and MELETE_MIGRATE_DATABASE_URL, MELETE_API_DATABASE_URL and MELETE_EFFECTS_DATABASE_URL are pointed at it too.",
+          ),
+          note(
+            'The load refuses a database that holds tables, and runs in one transaction: one that fails leaves it empty.',
+          ),
+          ...(context.freshHost
+            ? []
+            : [
+                note(
+                  'Keep the restriction journal volume: the newer journal is replayed at startup.',
+                ),
+              ]),
           run(
             'Loaded the database dump into the database DATABASE_URL names.',
             [
@@ -510,16 +530,26 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
               DATABASE_CLIENT,
               'sh',
               '-c',
-              `${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error`,
+              EXTERNAL_LOAD,
             ],
-            { input: dump },
+            {
+              input: dump,
+              rerun:
+                "The database DATABASE_URL names now holds the backup's data, so a restore into it is refused: run the same restore with --keep-database --replace-files --yes, which keeps that database and puts back the rest.",
+              failure:
+                'The load runs in one transaction, so the database DATABASE_URL names holds nothing of it. Fix the cause, then run the same restore --yes again. Do not start the stack on that database meanwhile: its first start fills it, and a restore into it is then refused.',
+            },
           ),
         ]
       : [
           note(
-            `Replace the database volume. Keep ${context.project}_restrictions: the newer journal is`,
+            context.freshHost
+              ? 'Replace the database volume.'
+              : `Replace the database volume. Keep ${context.project}_restrictions: the newer journal is`,
           ),
-          note('replayed at startup, so nothing forgotten since the backup comes back.'),
+          ...(context.freshHost
+            ? []
+            : [note('replayed at startup, so nothing forgotten since the backup comes back.')]),
           run(
             `Removed ${context.project}_pgdata.`,
             ['docker', 'volume', 'rm', `${context.project}_pgdata`],
@@ -566,7 +596,11 @@ export function restoreActions(context: RestoreContext): RestoreAction[] {
         ...files.parts.map((part) =>
           run(
             `Put back ${part.file} into ${composeVolume(context.project, part.part)}.`,
-            extractCommand(files.image, composeVolume(context.project, part.part)),
+            extractCommand(
+              files.image,
+              composeVolume(context.project, part.part),
+              LEFT_OUT[part.part],
+            ),
             {
               input: inSet(part.file),
               unused: [composeVolume(context.project, part.part)],

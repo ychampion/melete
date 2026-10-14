@@ -35,7 +35,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Context, Source } from '../context.ts';
-import { psqlLine } from '../database.ts';
+import { psqlLine, rolesElsewhere, TABLE_COUNT_SQL } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import {
   CELLS_SERVICE,
@@ -329,6 +329,7 @@ async function runSteps(
 ): Promise<StepsOutcome> {
   const secrets = installationSecrets(context.deployDir);
   let changed = false;
+  let rerun: string | null = null;
   for (const action of actions) {
     if (action.kind !== 'run') continue;
     let detail: string | null = null;
@@ -361,6 +362,7 @@ async function runSteps(
     if (detail === null) {
       results.push({ id: 'restore.step', level: 'ok', detail: action.say });
       if (action.phase === undefined) changed = true;
+      if (action.rerun) rerun = action.rerun;
       continue;
     }
     const outcome: StepsOutcome =
@@ -370,11 +372,12 @@ async function runSteps(
       level: 'fail',
       detail: redact(`${actionLine(action, null)}: ${detail}`, secrets),
       fix:
-        outcome === 'not_started'
+        action.failure ??
+        (outcome === 'not_started'
           ? `Every part is back; only the start failed. See bun run melete status and bun run melete logs, fix the cause, then start it with ${start}. The restore need not run again.`
           : outcome === 'midway'
-            ? 'The restore stopped here, and the stack was not started on a half-restored installation. Fix the cause, then run the same restore --yes again: it starts over from the backup.'
-            : `Nothing was replaced yet, but services may be stopped. Fix the cause and run the same restore --yes again, or start the stack as it was with ${start}.`,
+            ? `The restore stopped here, and the stack was not started on a half-restored installation. Fix the cause, then ${rerun ? `restore again. ${rerun}` : 'run the same restore --yes again: it starts over from the backup.'}`
+            : `Nothing was replaced yet, but services may be stopped. Fix the cause and run the same restore --yes again, or start the stack as it was with ${start}.`),
     });
     return outcome;
   }
@@ -387,13 +390,7 @@ function externalDatabaseEmpty(
   compose: readonly string[],
   config: DeployConfig,
 ): boolean | null {
-  const output = context.run(
-    psqlLine(
-      compose,
-      config,
-      "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')",
-    ),
-  );
+  const output = context.run(psqlLine(compose, config, TABLE_COUNT_SQL));
   const text = output.stdout.trim();
   return output.code === 0 && /^\d+$/.test(text) ? Number(text) === 0 : null;
 }
@@ -538,7 +535,7 @@ function filesToRestore(
     results.push({
       id: 'restore.computers_without_container',
       level: 'warn',
-      detail: `${absent.length} of the ${names.length} agent computer(s) have no container on this machine (a new machine, or one removed). Their volumes are put back. A service that makes a computer again on its kept volumes does so the next time the agent uses it, with its /work and home folder; an earlier one gives the agent a new computer instead, with each chat's files in /work back from the shared /work and an empty home folder (browser sign-ins and installed tools lost).`,
+      detail: `${absent.length} of the ${names.length} agent computer(s) have no container on this machine (a new machine, or one removed). Their volumes are put back, and the service makes each container again on them the next time the agent uses it, with its /work and home folder. An older service, from before computers came back this way, gives the agent a new computer instead, with each chat's files in /work back from the shared /work and an empty home folder (browser sign-ins and installed tools lost).`,
     });
   return { files, results };
 }
@@ -617,7 +614,15 @@ export async function runRestore(
   if (options.keepDatabase && config.database.external && files) {
     const volumes = FILE_PARTS.map((part) => composeVolume(config.project, part));
     const presence = volumes.map((volume) => ({ volume, state: volumePresence(context, volume) }));
-    const present = presence.filter((each) => each.state === 'present').map((each) => each.volume);
+    // The agents' computers' volumes the restore replaces are here and this installation's;
+    // the ones it makes are not, and hold nothing to lose.
+    const computers = files.computers
+      .map((computer) => computer.volume)
+      .filter((volume) => !files.missing.includes(volume));
+    const present = [
+      ...presence.filter((each) => each.state === 'present').map((each) => each.volume),
+      ...computers,
+    ];
     const unknown = presence.flatMap(({ volume, state }) =>
       typeof state === 'object' ? [`${volume} (${state.unreadable})`] : [],
     );
@@ -648,10 +653,20 @@ export async function runRestore(
               id: 'restore.keep_database_files',
               level: 'fail',
               detail: `${held.join(', ')} already hold files. With --keep-database the database stays as it is, so putting the backup's files in their place would delete any file added since the backup while the database still names it.`,
-              fix: 'On a new machine whose stack started before the restore, the files there are only its own: add --replace-files. On the machine the backup came from, restore into a new, empty database instead of keeping this one.',
+              fix: "On a new machine whose stack started before the restore, the files there are only its own (an agent computer's too, if one was used there): add --replace-files. On the machine the backup came from, restore into a new, empty database instead of keeping this one.",
             },
       );
   }
+  // The service runs where the administrator's role addresses point, not where DATABASE_URL does.
+  const elsewhere =
+    config.database.external && installation.env ? rolesElsewhere(installation.env) : [];
+  if (elsewhere.length > 0)
+    results.push({
+      id: 'restore.database_roles',
+      level: 'fail',
+      detail: `${elsewhere.join(', ')} name${elsewhere.length === 1 ? 's' : ''} another server or database than DATABASE_URL, and the service runs on what ${elsewhere.length === 1 ? 'it names' : 'they name'}, not on the database this restore ${options.keepDatabase ? 'keeps' : 'loads'}. Nothing was changed.`,
+      fix: 'Have the database\'s administrator grant those roles the database DATABASE_URL names (docs/DEPLOYMENT.md, "Roles an administrator creates"), point each at it with bun run melete set --from-env, then run this again.',
+    });
   // Missing, or with no entry yet: a new machine, or a restore that stopped
   // after `compose create` made the volume and before the journal went back.
   const journalVolume = `${config.project}_restrictions`;

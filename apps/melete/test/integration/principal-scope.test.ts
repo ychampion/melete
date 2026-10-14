@@ -806,6 +806,101 @@ withDb('each account acts only inside its own space', () => {
     expect(await (await call(cookie, '/conversations')).text()).toContain(second.conversationId);
   }, 60_000);
 
+  test('a member of a shared space loads their own profile and day, and nothing of the owner’s', async () => {
+    const { sql } = database();
+    const shared = await json<{ space: { id: string } }>(
+      await call(first.cookie, '/spaces/shared', 'POST', { name: 'Studio' }),
+    );
+    const studio = shared.space.id;
+    const granted = await json<{ membership: { generation: number } }>(
+      await call(first.cookie, `/spaces/${studio}/memberships`, 'POST', {
+        principal_id: second.principalId,
+      }),
+    );
+    // The owner's own details for the space: a name, a clock and a task.
+    await sql`insert into experience_profile (space_id, name, time_zone, day_start, day_end)
+      values (${studio}, 'Studio Owner Name', 'Europe/Paris', '09:00', '18:00')
+      on conflict (space_id) do update set name = excluded.name, time_zone = excluded.time_zone,
+        day_start = excluded.day_start, day_end = excluded.day_end`;
+    await sql`insert into task (id, space_id, title)
+      values (${recordId('task')}, ${studio}, 'Owner studio errand')`;
+    // The mailbox the space sends from is the owner's too.
+    const mailbox = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
+      values (${mailbox}, ${studio}, 'imap', 'Mail', '["email.search","email.send"]'::jsonb,
+        '{"mail":{"from":"studio-owner@example.test"}}'::jsonb)`;
+    const cookie = await login('second@example.test');
+    expect((await call(cookie, '/me', 'PATCH', { display_name: 'Sam' })).status).toBe(200);
+    const digest = createHash('sha256')
+      .update(cookie.split('=')[1] ?? '')
+      .digest('hex');
+    await sql`update session set space_id = ${studio},
+      membership_generation = ${granted.membership.generation} where token_hash = ${digest}`;
+
+    const profile = await call(cookie, '/profile');
+    expect(profile.status).toBe(200);
+    const profileText = await profile.text();
+    expect(JSON.parse(profileText).profile).toEqual({
+      name: 'Sam',
+      time_zone: 'Europe/Paris',
+      day_hours: { start: '09:00', end: '18:00' },
+      onboarded: true,
+      time_zone_confirmed: true,
+      sending_address: null,
+      role: 'member',
+    });
+    expect(profileText).not.toContain('Studio Owner Name');
+    expect(profileText).not.toContain('studio-owner@example.test');
+    const day = await call(cookie, '/home');
+    expect(day.status).toBe(200);
+    const dayText = await day.text();
+    expect(JSON.parse(dayText)).toMatchObject({
+      time_zone: 'Europe/Paris',
+      tasks: [],
+      open_task_count: 0,
+      routine_results: [],
+      upcoming: { status: 'not_available', reason: 'The calendar here is the space owner’s.' },
+    });
+    expect(dayText).not.toContain('Owner studio errand');
+    expect(dayText).not.toContain('studio-owner@example.test');
+    expect(dayText).not.toContain('Studio Owner Name');
+    // What only the owner may read or change stays theirs.
+    expect(
+      (
+        await call(cookie, '/profile', 'PATCH', {
+          name: 'Sam',
+          time_zone: 'UTC',
+          day_hours: { start: '08:00', end: '22:00' },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await call(cookie, '/tasks')).status).toBe(403);
+    expect((await call(cookie, '/experience/connections')).status).toBe(403);
+    expect((await call(cookie, '/rules')).status).toBe(403);
+    // The owner still reads their own profile, and is told it is theirs.
+    const own = await json<{ profile: { role: string } }>(await call(first.cookie, '/profile'));
+    expect(own.profile.role).toBe('owner');
+    // In the shared space itself, its owner sees what the member does not.
+    const ownerInStudio = await login('first@example.test');
+    const [owned] = await sql`select generation from space_membership
+      where space_id = ${studio} and principal_id = ${first.principalId} and revoked_at is null`;
+    await sql`update session set space_id = ${studio}, membership_generation = ${owned?.generation}
+      where token_hash = ${createHash('sha256')
+        .update(ownerInStudio.split('=')[1] ?? '')
+        .digest('hex')}`;
+    const ownersView = await json<{
+      profile: { name: string; role: string; sending_address: string | null };
+    }>(await call(ownerInStudio, '/profile'));
+    expect(ownersView.profile).toMatchObject({
+      name: 'Studio Owner Name',
+      role: 'owner',
+      sending_address: 'studio-owner@example.test',
+    });
+    expect(await (await call(ownerInStudio, '/home')).text()).toContain('Owner studio errand');
+    await sql`delete from connection where id = ${mailbox}`;
+    await call(first.cookie, `/spaces/${studio}/memberships/${second.principalId}`, 'DELETE');
+  }, 60_000);
+
   test('only the job’s own principal speaks in it, and a message says who spoke', async () => {
     const { sql } = database();
     if (!jobs) throw new Error('Postgres unavailable');
