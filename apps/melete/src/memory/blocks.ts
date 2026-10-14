@@ -33,6 +33,14 @@ import {
 /** Where a block's tags start in its stored subject: "health.allergy:detail:…". */
 const DETAIL = ':detail:';
 const MEMBER = /\.member_([0-9a-f]{12})(?=$|[.:])/;
+/**
+ * A letter of a script whose words are not compared here: they have no
+ * stems, and some have no spaces between words. A detail written in one is
+ * blocked for its whole subject, and one said in one under a blocked subject
+ * is held, so a forgotten detail said again in other words, or in another
+ * language, is not learned again.
+ */
+const UNCOMPARED = /(?!\p{Script=Latin})\p{L}/u;
 
 /** The words of a stemmed word list, as `detailWords` makes them. */
 const stems = (words: string) => detailWords(words);
@@ -205,7 +213,8 @@ export function blockedSubject(
   const words = wordsOf(content ?? '');
   const named = personWords(domainKey, content ?? '');
   const distinct = [...words].filter((word) => !KIND.has(word) && !named.has(word));
-  if (!key || !distinct.length) return { subject: domainKey, detail: false };
+  if (!key || !distinct.length || UNCOMPARED.test(content ?? ''))
+    return { subject: domainKey, detail: false };
   const tags = [...new Set([...words].map(key.tag))].sort();
   return { subject: `${domainKey}${DETAIL}${[key.check, ...tags].join('.')}`, detail: true };
 }
@@ -268,6 +277,7 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
       if (same) return true;
       return untaggedOwnBlock(block.subject, said, words, proposalSays, distinct);
     }
+    if (same && UNCOMPARED.test(said.content)) return true;
     // Who a detail about someone is about is in its subject; their name or
     // relation need not be said again ("Sam", "friend").
     const named = new Set([...personWords(block.subject)].map((word) => key?.tag(word)));

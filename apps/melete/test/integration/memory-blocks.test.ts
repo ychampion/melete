@@ -526,6 +526,55 @@ withDb('a block holds for the detail that was forgotten', () => {
     expect(refused.map((row) => row.reason)).toEqual(['blocked_by_person', 'blocked_by_person']);
   });
 
+  test('a detail said in a script whose words are not compared stays blocked for its subject', async () => {
+    // Saved in English, said again in Japanese under the blocked subject.
+    const english = await createScope(store);
+    await say(english, '私はベジタリアンです。私はリスボンに住んでいます。', [
+      ['food.diet', '私はベジタリアンです', 'Is vegetarian'],
+      ['home.city', '私はリスボンに住んでいます', 'Lives in Lisbon'],
+    ]);
+    await block(english, /vegetarian/i, /lisbon/i);
+    expect(
+      await say(english, '肉や魚は食べません。', [
+        ['food.diet', '肉や魚は食べません', '肉や魚は食べません'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(english, 'リスボン在住です。', [
+        ['home.city', 'リスボン在住です', 'リスボンに住んでいる'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(await held(english)).toEqual([]);
+
+    // Saved in Russian, said again in other words, or in English.
+    const russian = await createScope(store);
+    await say(russian, 'Я живу в Лиссабоне. У меня аллергия на арахис.', [
+      ['home.city', 'Я живу в Лиссабоне', 'Живу в Лиссабоне'],
+      ['health.allergy.peanuts', 'У меня аллергия на арахис', 'Аллергия на арахис'],
+    ]);
+    await block(russian, /Лиссабон/, /арахис/);
+    expect((await listBlocks(store.sql, russian)).blocks.map((row) => row.label).sort()).toEqual([
+      'Health allergy peanuts',
+      'Home city',
+    ]);
+    expect(
+      await say(russian, 'Мой дом — Лиссабон.', [
+        ['home.city', 'Мой дом — Лиссабон', 'Lives in Lisbon'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(russian, 'Сейчас я обосновался в Лиссабоне.', [
+        ['home.city', 'Сейчас я обосновался в Лиссабоне', 'Обосновался в Лиссабоне'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(russian, 'Арахис мне нельзя, аллергия.', [
+        ['health.allergy', 'Арахис мне нельзя, аллергия', 'Allergic to peanuts'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(await held(russian)).toEqual([]);
+  });
+
   test('importing a file brings in a different detail under a blocked subject, not the blocked one', async () => {
     const target = await blockedFour();
     const shellfish = await createScope(store);
