@@ -1,7 +1,8 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
 Three observer seams, one prompt seam, one reasoning seam, one picture
-seam, one live-tools seam, one delegation seam and one parallel-reads seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
+seam, one live-tools seam, one delegation seam, one parallel-reads seam and one
+gateway-capability seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
 product pointer, its profile line and its host runtime block, which describe
 the engine's install rather than the attempt. It is inert unless that key is
 set. The reasoning seam puts the model's reasoning on a run's event stream as
@@ -15,8 +16,12 @@ ending the run and starting another. The delegation seam keeps a delegation
 inside the turn that made it, so its results reach the attempt that asked.
 The parallel-reads seam lets the engine run Melete's web lookups side by side
 in one batch, as it already runs its own.
+The gateway-capability seam gives the engine's own Anthropic client the
+attempt's capability header, which its OpenAI-wire clients already take from
+the provider entry, so a Claude model reaches Melete's gateway at all. It adds
+the header only to a client pointed at Melete's broker.
 
-All nine original source hashes are checked before any write. A subsequent
+All ten original source hashes are checked before any write. A subsequent
 run accepts only the same patch, or a named earlier version of it, never an
 arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
@@ -253,6 +258,20 @@ def _durable_content(content: Any) -> Any:
              "            or parallel_read(name)):  # Melete parallel-reads seam\n"),
         ],
     ),
+    # The gateway-capability seam. At the pin the native Anthropic client is
+    # built from the key and the beta headers alone: the provider entry's
+    # extra_headers, where the boot script puts the attempt's capability, reach
+    # only the OpenAI-wire clients. Every Anthropic client the engine builds
+    # (main, fallback, rebuild, auxiliary) is made by this one function.
+    "agent/anthropic_adapter.py": (
+        "40128a54b62d7c06498b751b2f6626144924887ec11a634b9e03109d290c01b0",
+        [
+            ("    return _new_sdk_client(sdk, kwargs, headers)\n\n\ndef build_anthropic_bedrock_client",
+             "    from melete_runtime_hooks import gateway_headers  # Melete gateway-capability seam\n"
+             "    headers = {**headers, **gateway_headers(base_url)}  # Melete gateway-capability seam\n"
+             "    return _new_sdk_client(sdk, kwargs, headers)\n\n\ndef build_anthropic_bedrock_client"),
+        ],
+    ),
 }
 
 # A checkout patched by an earlier reviewed version of a file's patch is
@@ -319,7 +338,7 @@ def main() -> None:
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:
         target.write_text(content, encoding="utf-8", newline="\n")
-    print("Melete observer bridge applied: 9 checked source files and 1 support module")
+    print("Melete observer bridge applied: 10 checked source files and 1 support module")
 
 
 if __name__ == "__main__":
