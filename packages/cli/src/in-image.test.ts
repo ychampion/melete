@@ -93,7 +93,7 @@ describe('doctor in the service image', () => {
     await runDoctor(context, false, true);
     const text = context.printed();
     expect(text).toMatch(/^ {2}skip {2}docker\.engine +Skipped: run on the host to check this\.$/m);
-    expect(text).toContain('doctor: passed. 7 skipped here; run it on the host to check those.');
+    expect(text).toContain('doctor: passed. 9 skipped here; run it on the host to check those.');
   });
 });
 

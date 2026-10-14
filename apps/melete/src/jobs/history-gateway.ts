@@ -20,7 +20,7 @@ import type { AddressInfo } from 'node:net';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
@@ -216,6 +216,7 @@ export async function openHistoryGateway(
     timeoutMs,
     maxRequestBytes: 1024 * 1024,
     maxResponseBytes: 256 * 1024,
+    onError: gatewayLog('history'),
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'history_principal_denied');

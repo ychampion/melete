@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import { connect } from 'node:net';
+import { join } from 'node:path';
 import { connect as connectTls } from 'node:tls';
+import { fileURLToPath } from 'node:url';
 import { defaultPrivacyRouter } from '../privacy/index.ts';
 import { selfSignedPair } from './fixtures/self-signed.ts';
 import {
@@ -19,6 +21,7 @@ import {
 } from './index.ts';
 import { stopModelCalls } from './inflight.ts';
 import { SecretRedactor, UsageCollector } from './metering.ts';
+import { toolWireName } from './tool-names.ts';
 
 const principal: GatewayPrincipal = {
   privacy: { kind: 'job' },
@@ -950,6 +953,7 @@ describe('prompt caching on the way out', () => {
 });
 
 describe('Claude through the gateway', () => {
+  const wire = toolWireName('web.search');
   const dotted = {
     model: 'fixture-messages',
     tools: [{ name: 'web.search', input_schema: { type: 'object' } }],
@@ -970,18 +974,16 @@ describe('Claude through the gateway', () => {
         sent.push((await request.json()) as Record<string, unknown>);
         return Response.json({
           model: 'fixture-messages',
-          content: [{ type: 'tool_use', id: 'toolu_1', name: 'web__search', input: { q: 'b' } }],
+          content: [{ type: 'tool_use', id: 'toolu_1', name: wire, input: { q: 'b' } }],
           usage: { input_tokens: 5, output_tokens: 2 },
         });
       },
     });
     const response = await post('/v1/messages', dotted);
     expect(response.status).toBe(200);
-    expect(((sent[0]?.tools ?? []) as { name: string }[]).map((tool) => tool.name)).toEqual([
-      'web__search',
-    ]);
+    expect(((sent[0]?.tools ?? []) as { name: string }[]).map((tool) => tool.name)).toEqual([wire]);
     const history = sent[0]?.messages as { content: { name?: string }[] }[];
-    expect(history[1]?.content[0]?.name).toBe('web__search');
+    expect(history[1]?.content[0]?.name).toBe(wire);
     const reply = (await response.json()) as { content: { name: string }[] };
     expect(reply.content[0]?.name).toBe('web.search');
   });
@@ -989,7 +991,7 @@ describe('Claude through the gateway', () => {
   test('a streamed reply gets the tool its own name back', async () => {
     const events = [
       'event: message_start\ndata: {"type":"message_start","message":{"model":"fixture-messages","usage":{"input_tokens":5,"output_tokens":1}}}\n\n',
-      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"web__search","input":{}}}\n\n',
+      `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"${wire}","input":{}}}\n\n`,
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ].join('');
@@ -997,7 +999,7 @@ describe('Claude through the gateway', () => {
       fetch: async () => {
         const bytes = new TextEncoder().encode(events);
         // Cut through the middle of the wire name.
-        const cut = events.indexOf('web__search') + 4;
+        const cut = events.indexOf(wire) + 4;
         return new Response(
           new ReadableStream({
             start(controller) {
@@ -1014,7 +1016,7 @@ describe('Claude through the gateway', () => {
     expect(response.status).toBe(200);
     const text = await response.text();
     expect(text).toContain('"name":"web.search"');
-    expect(text).not.toContain('web__search');
+    expect(text).not.toContain(wire);
   });
 
   test("a provider's refusal reaches the operator's log with its reason and without the key", async () => {
@@ -1040,6 +1042,24 @@ describe('Claude through the gateway', () => {
     expect(line).toBe(
       'provider_rejected: anthropic/fixture-messages answered 400 (invalid_request_error: tools.0.custom.name: bad name (key [redacted]))',
     );
+  });
+
+  test('every gateway the service opens logs what it reports, under its own name', async () => {
+    // A gateway opened without a log loses each refusal's reason: the caller sees only a 502.
+    const root = fileURLToPath(new URL('../', import.meta.url));
+    const opened: string[] = [];
+    for await (const found of new Bun.Glob('**/*.ts').scan({ cwd: root })) {
+      const file = found.replaceAll('\\', '/');
+      if (file.endsWith('.test.ts') || file === 'gateway/index.ts') continue;
+      const source = await Bun.file(join(root, file)).text();
+      const calls = source.split('createModelGateway({').length - 1;
+      if (!calls) continue;
+      opened.push(file);
+      expect([file, source.split('onError: gatewayLog(').length - 1]).toEqual([file, calls]);
+    }
+    // The service's own gateway and the eight that serve memory, triage, history, review,
+    // search, companies, proposals and voice.
+    expect(opened.length).toBeGreaterThanOrEqual(9);
   });
 
   test('a refusal line is short and names the cause even when the body is not JSON', () => {

@@ -18,7 +18,8 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
                              The public address and web origin together; --hosted for other people
   init --adopt               Describe a running installation in deploy/melete.deploy.json; nothing else changes
   check [--json]             Judge deploy/melete.deploy.json, deploy/.env and the Compose files, without Docker
-  doctor [--json] [--offline]  Judge this machine: Docker, disk in MB, memory, ports, images, registry
+  doctor [--json] [--offline]  Judge this machine: Docker, its networks, disk in MB, memory, ports, images, registry
+  doctor --remove-leftovers  Also remove the agents' computers and networks no installation here uses
   status [--json]            The installation's report: services, API, account and the optional parts
   set NAME=value ...         Change settings in deploy/.env; --from-env NAME for a key, --clear NAME
                              to empty one; says which services to recreate
@@ -114,13 +115,17 @@ export async function main(argv: readonly string[], make = realContext): Promise
         noExtra('Usage: bun run melete check [--json]') ??
         (await import('./commands/check.ts')).runCheck(context, parsed.json)
       );
-    case 'doctor':
+    case 'doctor': {
+      const remove = parsed.rest.length === 1 && parsed.rest[0] === '--remove-leftovers';
       return (
-        noExtra('Usage: bun run melete doctor [--json] [--offline]') ??
+        (remove
+          ? null
+          : noExtra('Usage: bun run melete doctor [--json] [--offline] [--remove-leftovers]')) ??
         (await (
           await import('./commands/doctor.ts')
-        ).runDoctor(context, parsed.json, parsed.offline))
+        ).runDoctor(context, parsed.json, parsed.offline, remove))
       );
+    }
     case 'status':
       return (
         noExtra('Usage: bun run melete status [--json]') ??

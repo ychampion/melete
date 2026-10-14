@@ -4,9 +4,15 @@
  * ordinary fields is read and filled as before.
  */
 import { expect, test } from 'bun:test';
-import { ORDINARY_LABELS, SECRET_LABELS } from '../../../test/helpers/secret-labels.ts';
+import {
+  BARE_CODE_LABELS,
+  ORDINARY_FIELD_NAMES,
+  ORDINARY_LABELS,
+  SECRET_FIELD_NAMES,
+  SECRET_LABELS,
+} from '../../../test/helpers/secret-labels.ts';
 import { redactSecretText } from './redact.ts';
-import { isSensitiveControl, sensitiveName } from './visible.ts';
+import { attributeWords, isSensitiveControl, sensitiveName } from './visible.ts';
 
 const field = (label: string, role = 'textbox') => ({
   label,
@@ -33,4 +39,26 @@ test('an ordinary form holds no secret, and a link or button never does', () => 
     expect(isSensitiveControl(field(label, 'button'))).toBe(false);
   }
   expect(redactSecretText('Order number: 48213')).toBe('Order number: 48213');
+});
+
+test('a field labelled only as a code or an expiry holds a secret, and page text saying so is kept', () => {
+  for (const label of BARE_CODE_LABELS) {
+    expect([label, isSensitiveControl(field(label))]).toEqual([label, true]);
+    expect([label, isSensitiveControl(field(label, 'spinbutton'))]).toEqual([label, true]);
+    expect([label, isSensitiveControl(field(label, 'button'))]).toEqual([label, false]);
+  }
+  // Only the whole label counts; a sentence or a longer name is ordinary.
+  for (const label of ['Promo code', 'Discount code', 'ZIP code', 'Offer expires soon', 'Codes'])
+    expect([label, isSensitiveControl(field(label))]).toEqual([label, false]);
+  expect(redactSecretText('Offer expires: 2026-10-31')).toBe('Offer expires: 2026-10-31');
+  expect(redactSecretText('Code: SUMMER25')).toBe('Code: SUMMER25');
+});
+
+test('a field’s name or id is read as words, so a code or card field is known by it', () => {
+  for (const name of SECRET_FIELD_NAMES)
+    expect([name, isSensitiveControl(field(attributeWords(name)))]).toEqual([name, true]);
+  for (const name of ORDINARY_FIELD_NAMES)
+    expect([name, isSensitiveControl(field(attributeWords(name)))]).toEqual([name, false]);
+  expect(attributeWords('verificationCode')).toBe('verification Code');
+  expect(attributeWords('cc_exp-month')).toBe('cc exp month');
 });
