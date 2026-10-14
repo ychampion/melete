@@ -1112,6 +1112,14 @@ withDb('installing each kind of connection through the API', () => {
       expect(refused.status).toBe(400);
       expectNoSecret(refused.text);
     }
+    // A token is never sent over plain http to another machine, and the refusal says why.
+    const plainHttp = await h.install({
+      ...body,
+      mcp: { ...body.mcp, url: 'http://mcp.example.test/mcp' },
+    });
+    expect(plainHttp.status).toBe(400);
+    expect(plainHttp.text).toContain('https');
+    expectNoSecret(plainHttp.text);
 
     const created = await h.install(body);
     expect(created.status).toBe(201);

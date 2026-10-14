@@ -161,6 +161,13 @@ export async function readConnectionConfig(path?: string): Promise<ConfiguredCon
   try {
     value = JSON.parse(await readFile(path, 'utf8'));
   } catch (error) {
+    // The file is mounted from the host and read as the service's own user. A
+    // file or folder made under a umask such as 077 is its owner's alone, and
+    // a bare EACCES at start-up names nothing to fix.
+    if ((error as NodeJS.ErrnoException).code === 'EACCES')
+      throw new Error(
+        `${path} (MELETE_CONNECTIONS_FILE) cannot be read by the service's user (uid ${process.getuid?.() ?? 'unknown'}): on the host the file or its folder is readable only by its owner, as files made under a umask such as 077 are. Make them readable, for example with chmod 755 deploy/config and chmod 644 deploy/config/*.json, or run the installer again, which does that.`,
+      );
     if (!(error instanceof SyntaxError)) throw error;
     throw new Error(`${path} (MELETE_CONNECTIONS_FILE) is not valid JSON: ${error.message}`);
   }

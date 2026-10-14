@@ -197,3 +197,20 @@ def test_what_waits_for_the_attempt_runs_once_in_order_and_one_failure_stops_not
     assert "broker unreachable" in capsys.readouterr().err
     attempt_arrived()
     assert ran == ["first", "third"]
+
+
+def test_gateway_headers_give_the_capability_to_the_broker_only(monkeypatch):
+    # The engine's Anthropic client ignores the provider's extra headers, so
+    # the gateway capability seam adds this header where the client is built.
+    from melete_runtime_hooks import gateway_headers
+    monkeypatch.setenv("MELETE_BROKER_URL", "http://melete:8788/broker/")
+    monkeypatch.setenv("MELETE_ATTEMPT_TOKEN", "attempt-capability")
+    wanted = {"x-melete-capability": "attempt-capability"}
+    assert gateway_headers("http://melete:8788/broker/providers/anthropic/v1") == wanted
+    assert gateway_headers("http://melete:8788/broker") == wanted
+    # A look-alike prefix, another host or no address gets nothing.
+    assert gateway_headers("http://melete:8788/brokerage/v1") == {}
+    assert gateway_headers("https://api.anthropic.com") == {}
+    assert gateway_headers(None) == {}
+    monkeypatch.delenv("MELETE_ATTEMPT_TOKEN")
+    assert gateway_headers("http://melete:8788/broker/providers/anthropic/v1") == {}
