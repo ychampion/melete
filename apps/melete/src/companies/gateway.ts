@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import {
@@ -110,6 +110,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
     timeoutMs: EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 512 * 1024,
     maxResponseBytes: 256 * 1024,
+    onError: gatewayLog('companies'),
     async authenticate(token) {
       const spaceId = tokens.get(token);
       if (!spaceId) throw new GatewayError(401, 'extraction_principal_denied');
