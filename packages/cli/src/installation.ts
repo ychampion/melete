@@ -86,6 +86,14 @@ export function imagesFromEnv(env: Record<string, string>): DeployConfig['images
 }
 
 /** The contract deploy/.env implies on its own, for a new file or in place of a missing one. */
+/**
+ * Whether deploy/.env asks for the sandbox profile: the docker computer is the
+ * sandbox provider, or COMPOSE_PROFILES lists it.
+ */
+export const sandboxProfile = (env: Record<string, string>): boolean =>
+  env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker' ||
+  (env.COMPOSE_PROFILES ?? '').split(',').some((profile) => profile.trim() === 'sandbox');
+
 export function configFromEnv(
   env: Record<string, string>,
   overrides: Partial<DeployConfig> = {},
@@ -94,7 +102,7 @@ export function configFromEnv(
     contract: 1,
     project: env.COMPOSE_PROJECT_NAME?.trim() || 'melete',
     images: imagesFromEnv(env),
-    profiles: env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker' ? ['sandbox'] : [],
+    profiles: sandboxProfile(env) ? ['sandbox'] : [],
     ...overrides,
   });
 }

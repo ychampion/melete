@@ -149,25 +149,56 @@ describe('melete set', () => {
 });
 
 describe('renaming the Compose project', () => {
-  test('is refused while the current project has containers, and allowed with --force', async () => {
+  /** An engine whose project `melete` has containers started from these folders. */
+  const engineWith = (folders: string[]) => {
+    const calls: string[] = [];
+    const run = (command: readonly string[]) => {
+      calls.push(command.join(' '));
+      const line = command.join(' ');
+      if (line.startsWith('docker ps --all --filter label=com.docker.compose.project=melete '))
+        return { code: 0, stdout: folders.map((folder) => `dir=${folder}\n`).join(''), stderr: '' };
+      if (line.startsWith('docker volume ls')) return { code: 0, stdout: '', stderr: '' };
+      return { code: 1, stdout: '', stderr: 'no such command in this test' };
+    };
+    return { calls, run };
+  };
+
+  test('is refused while this checkout has containers in the project, and allowed with --force', async () => {
     const deployDir = temporaryDeployDir();
     const before = writeEnv(deployDir);
-    const calls: string[] = [];
-    const context = testContext(deployDir, [], {
-      run: (command) => {
-        calls.push(command.join(' '));
-        return { code: 0, stdout: 'c0ffee\n', stderr: '' };
-      },
-    });
+    const engine = engineWith([deployDir]);
+    const context = testContext(deployDir, [], { run: engine.run });
     expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(2);
     expect(read(deployDir, '.env')).toBe(before);
-    expect(context.errors()).toContain('Compose project melete has containers');
-    expect(calls).toEqual([
-      'docker ps --all --quiet --filter label=com.docker.compose.project=melete',
-    ]);
+    expect(context.errors()).toContain(
+      'Compose project melete has containers started from this checkout',
+    );
+    expect(engine.calls[0]).toStartWith(
+      'docker ps --all --filter label=com.docker.compose.project=melete --format',
+    );
 
     expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2', '--force'])).toBe(0);
     expect(read(deployDir, '.env')).toMatch(/^COMPOSE_PROJECT_NAME=melete2$/m);
+  });
+
+  test("a container with no folder label could be this checkout's, so it still refuses", async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir, [], { run: engineWith(['']).run });
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(2);
+  });
+
+  test("another installation's containers under the same name do not stop a second checkout", async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir, [], {
+      run: engineWith(['/srv/melete/deploy', '/srv/melete/deploy']).run,
+    });
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(0);
+    expect(read(deployDir, '.env')).toMatch(/^COMPOSE_PROJECT_NAME=melete2$/m);
+    expect(context.printed()).toContain(
+      "Compose project melete's containers belong to the installation in /srv/melete/deploy, not to this checkout",
+    );
   });
 
   test('is allowed when the current project has no containers', async () => {
@@ -177,5 +208,37 @@ describe('renaming the Compose project', () => {
       run: () => ({ code: 0, stdout: '', stderr: '' }),
     });
     expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(0);
+  });
+
+  test('is refused when the engine cannot be asked', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(2);
+    expect(context.errors()).toContain('could not be checked');
+  });
+});
+
+describe('COMPOSE_PROFILES', () => {
+  test('is a setting melete set takes, and the contract follows it', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    writeContract(deployDir, {});
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['COMPOSE_PROFILES=sandbox'])).toBe(0);
+    expect(read(deployDir, '.env')).toMatch(/^COMPOSE_PROFILES=sandbox$/m);
+    expect(JSON.parse(read(deployDir, DEPLOY_FILE)).profiles).toEqual(['sandbox']);
+    expect(context.printed()).toContain('Apply it with bun run melete deploy.');
+
+    expect(await runSet(testContext(deployDir), ['COMPOSE_PROFILES='])).toBe(0);
+    expect(JSON.parse(read(deployDir, DEPLOY_FILE)).profiles).toEqual([]);
+  });
+
+  test('another setting leaves a profile written into the contract by hand', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    writeContract(deployDir, { profiles: ['sandbox'] });
+    expect(await runSet(testContext(deployDir), ['MELETE_IMAGE_TAG=v0.3.0'])).toBe(0);
+    expect(JSON.parse(read(deployDir, DEPLOY_FILE)).profiles).toEqual(['sandbox']);
   });
 });
