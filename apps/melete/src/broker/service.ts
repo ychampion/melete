@@ -54,6 +54,7 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
@@ -1657,46 +1658,54 @@ export class BrokerService implements BrokerOperations {
       limit 50`;
     let sent = 0;
     for (const row of stale) {
-      const original = await loadAction(this.sql, String(row.id));
-      sent += await this.sql.begin(async (tx) => {
-        const job = await lockJob(tx, original.job_id);
-        const action = await loadAction(tx, original.id, true);
-        const [asked] = await tx`select id from approval where action_id = ${action.id}`;
-        if (action.status !== 'proposed' || asked || ENDED_JOB_STATES.has(job.state)) return 0;
-        const reason = 'The review did not finish, so this one is yours to decide.';
-        const stored = await loadBinding(tx, action);
-        const approvalId = recordId('apr');
-        await tx`insert into approval
+      try {
+        const original = await loadAction(this.sql, String(row.id));
+        sent += await this.sql.begin(async (tx) => {
+          const job = await lockJob(tx, original.job_id);
+          const action = await loadAction(tx, original.id, true);
+          const [asked] = await tx`select id from approval where action_id = ${action.id}`;
+          if (action.status !== 'proposed' || asked || ENDED_JOB_STATES.has(job.state)) return 0;
+          const reason = 'The review did not finish, so this one is yours to decide.';
+          const stored = await loadBinding(tx, action);
+          const approvalId = recordId('apr');
+          await tx`insert into approval
           (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
           values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
             ${(stored.tuple.expires_at ?? null) as string | null}, '[]'::jsonb)`;
-        await recordReview(tx, {
-          action_id: action.id,
-          job_id: job.id,
-          space_id: job.space_id,
-          attempt_id: action.attempt_id,
-          tier: 'reviewable',
-          action_class: null,
-          decided_by: 'policy',
-          outcome: 'escalated',
-          risk: null,
-          reason,
-        });
-        await this.setStatus(tx, action, 'needs_approval');
-        await appendEvent(tx, job.id, action.attempt_id, 'approval_requested', {
-          action_id: action.id,
-          approval_id: approvalId,
-          origin_warnings: [],
-          origin_warnings_hash: hashOriginWarnings([]),
-          auto_review: { outcome: 'escalated', reason },
-        });
-        if (job.state === 'running' && !this.options.deferApprovalWaitToRunner)
-          await this.moveJob(tx, job, 'waiting_for_approval', {
-            kind: 'approval',
-            action_ids: [action.id],
+          await recordReview(tx, {
+            action_id: action.id,
+            job_id: job.id,
+            space_id: job.space_id,
+            attempt_id: action.attempt_id,
+            tier: 'reviewable',
+            action_class: null,
+            decided_by: 'policy',
+            outcome: 'escalated',
+            risk: null,
+            reason,
           });
-        return 1;
-      });
+          await this.setStatus(tx, action, 'needs_approval');
+          await appendEvent(tx, job.id, action.attempt_id, 'approval_requested', {
+            action_id: action.id,
+            approval_id: approvalId,
+            origin_warnings: [],
+            origin_warnings_hash: hashOriginWarnings([]),
+            auto_review: { outcome: 'escalated', reason },
+          });
+          if (job.state === 'running' && !this.options.deferApprovalWaitToRunner)
+            await this.moveJob(tx, job, 'waiting_for_approval', {
+              kind: 'approval',
+              action_ids: [action.id],
+            });
+          return 1;
+        });
+      } catch (error) {
+        // One that cannot be escalated is logged and left; the rest still go to the person.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `broker: stale review ${String(row.id)} not escalated: ${failureMessage(error)}\n`,
+        );
+      }
     }
     return sent;
   }
@@ -2297,13 +2306,23 @@ export class BrokerService implements BrokerOperations {
             and (p.expires_at is null or p.expires_at > now()))
       limit 50`;
     let woken = 0;
-    for (const row of waiting)
-      woken += await this.sql.begin(async (tx) => {
-        const job = await lockJob(tx, String(row.id));
-        if (job.state !== 'waiting_for_approval' || (await this.stillAsking(tx, job, ''))) return 0;
-        await this.wake(tx, job, 'approval');
-        return 1;
-      });
+    for (const row of waiting) {
+      try {
+        woken += await this.sql.begin(async (tx) => {
+          const job = await lockJob(tx, String(row.id));
+          if (job.state !== 'waiting_for_approval' || (await this.stillAsking(tx, job, '')))
+            return 0;
+          await this.wake(tx, job, 'approval');
+          return 1;
+        });
+      } catch (error) {
+        // One that cannot be woken is logged and left; the rest still go on.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `broker: answered job ${String(row.id)} not woken: ${failureMessage(error)}\n`,
+        );
+      }
+    }
     return woken;
   }
 
@@ -3192,7 +3211,17 @@ export class BrokerService implements BrokerOperations {
     const rows = await this.sql`select id from action
       where status = 'admitted' and retry_after_at is not null and retry_after_at <= ${due}
       order by retry_after_at`;
-    for (const row of rows) await this.dispatch(row.id as string, now);
+    for (const row of rows) {
+      try {
+        await this.dispatch(row.id as string, now);
+      } catch (error) {
+        // One that cannot be resumed is logged and left; the rest still go out.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `broker: parked action ${String(row.id)} not resumed: ${failureMessage(error)}\n`,
+        );
+      }
+    }
     return rows.length;
   }
 
@@ -3634,40 +3663,50 @@ export class BrokerService implements BrokerOperations {
       from action a where a.status = 'dispatched'`;
     let recovered = 0;
     for (const row of rows) {
-      const orphaned = row.orphaned === true && !this.inFlight.has(row.id as string);
-      const connector = this.options.connectors.get(row.connection_id);
-      if (!orphaned) {
-        if (new Date(row.dispatched_at).getTime() > Date.parse(cutoff)) continue;
-        // A dispatch its connector gave longer than the default is still inside
-        // its own budget, and calling it unknown now would be a guess.
-        const budgetMs = connector
-          ? this.dispatchBudget(connector, {
-              kind: row.kind,
-              canonical_payload: row.canonical_payload,
-            })
-          : this.dispatchTimeoutMs;
-        if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
-      }
-      const fallback = uncertainResult(
-        await this.plainRead(
-          row as unknown as Pick<Action, 'effect_class' | 'connection_id' | 'kind'>,
-        ),
-        orphaned
-          ? 'The service stopped before this dispatch answered'
-          : 'Dispatch ended without a durable receipt',
-      );
-      let result: DispatchResult = fallback;
-      if (orphaned && connector?.abandoned) {
-        try {
-          const action = await loadAction(this.sql, row.id as string);
-          const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
-          if (job) result = await connector.abandoned(action, this.context(job, action));
-        } catch {
-          result = fallback;
+      try {
+        const orphaned = row.orphaned === true && !this.inFlight.has(row.id as string);
+        const connector = this.options.connectors.get(row.connection_id);
+        if (!orphaned) {
+          if (new Date(row.dispatched_at).getTime() > Date.parse(cutoff)) continue;
+          // A dispatch its connector gave longer than the default is still inside
+          // its own budget, and calling it unknown now would be a guess.
+          const budgetMs = connector
+            ? this.dispatchBudget(connector, {
+                kind: row.kind,
+                canonical_payload: row.canonical_payload,
+              })
+            : this.dispatchTimeoutMs;
+          if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
         }
+        const fallback = uncertainResult(
+          await this.plainRead(
+            row as unknown as Pick<Action, 'effect_class' | 'connection_id' | 'kind'>,
+          ),
+          orphaned
+            ? 'The service stopped before this dispatch answered'
+            : 'Dispatch ended without a durable receipt',
+        );
+        let result: DispatchResult = fallback;
+        if (orphaned && connector?.abandoned) {
+          try {
+            const action = await loadAction(this.sql, row.id as string);
+            const [job] = await this.sql<
+              LockedJob[]
+            >`select * from job where id = ${action.job_id}`;
+            if (job) result = await connector.abandoned(action, this.context(job, action));
+          } catch {
+            result = fallback;
+          }
+        }
+        await this.recordResult(row.id, result);
+        recovered += 1;
+      } catch (error) {
+        // One that cannot be settled is logged and left; the rest are still recovered.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `broker: dispatched action ${String(row.id)} not recovered: ${failureMessage(error)}\n`,
+        );
       }
-      await this.recordResult(row.id, result);
-      recovered += 1;
     }
     // A read left uncertain before reads always settled is settled now: it
     // changed nothing, so it failed, and the person is no longer asked. Its
@@ -3676,13 +3715,20 @@ export class BrokerService implements BrokerOperations {
       where effect_class = 'read' and status in ('unknown', 'unresolved')`;
     for (const row of reads) {
       const read = row as unknown as Pick<Action, 'effect_class' | 'connection_id' | 'kind'>;
-      if (!(await this.plainRead(read))) continue;
-      await this.recordResult(row.id as string, {
-        outcome: 'failed',
-        reason: 'This read never answered; it changed nothing and can be tried again',
-        retryable: true,
-      });
-      recovered += 1;
+      try {
+        if (!(await this.plainRead(read))) continue;
+        await this.recordResult(row.id as string, {
+          outcome: 'failed',
+          reason: 'This read never answered; it changed nothing and can be tried again',
+          retryable: true,
+        });
+        recovered += 1;
+      } catch (error) {
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `broker: unanswered read ${String(row.id)} not settled: ${failureMessage(error)}\n`,
+        );
+      }
     }
     return recovered;
   }

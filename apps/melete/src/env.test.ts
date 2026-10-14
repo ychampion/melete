@@ -114,6 +114,18 @@ describe('the model defaults', () => {
       expect(readEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: value }).ok).toBe(false);
   });
 
+  test('automatic memory has no daily read limit unless the operator sets one', () => {
+    expect(loadEnv({}).MELETE_MEMORY_DAILY_CALLS).toBeUndefined();
+    expect(loadEnv({ MELETE_MEMORY_DAILY_CALLS: '' }).MELETE_MEMORY_DAILY_CALLS).toBeUndefined();
+    expect(loadEnv({ MELETE_MEMORY_DAILY_CALLS: '500' }).MELETE_MEMORY_DAILY_CALLS).toBe(500);
+    for (const value of ['-1', '1.5', 'many'])
+      expect(readEnv({ MELETE_MEMORY_DAILY_CALLS: value }).ok).toBe(false);
+    // Compose and the example leave it empty too, so an install made from them is not capped.
+    expect(composeServiceEnvironment().MELETE_MEMORY_DAILY_CALLS ?? '').toBe('');
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain('\nMELETE_MEMORY_DAILY_CALLS=\n');
+  });
+
   test('Compose falls back to the same provider and model as the service and the example', () => {
     // Only a deploy/.env without these lines meets the fallback; it must not
     // select a provider the service then refuses to start with.

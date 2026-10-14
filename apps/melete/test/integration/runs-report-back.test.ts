@@ -389,4 +389,41 @@ withDb('long work reports back', () => {
     const shift = await claim(run.id);
     expect(shift.bundle.job.objective).toContain('Find campsites: stopped');
   });
+
+  test('one stalled run the watchdog cannot pause does not stop it pausing the others', async () => {
+    const ids = [
+      (await start({ goal: 'Compare two kettles' })).id,
+      (await start({ goal: 'Compare two toasters' })).id,
+    ];
+    await required(handle).sql`update job
+      set next_wake_at = now() - make_interval(secs => ${RUN_STALL_MS / 1000 + 60})
+      where id = any(${ids})`;
+    const service = required(runs) as unknown as {
+      soFar: (tx: unknown, run: string) => Promise<string | null>;
+    };
+    const soFar = service.soFar;
+    let failed = null as string | null;
+    service.soFar = function (this: unknown, tx, run) {
+      if (failed === null) {
+        failed = run;
+        return Promise.reject(new Error('the record could not be read'));
+      }
+      return soFar.call(this, tx, run);
+    };
+    let result: Awaited<ReturnType<RunService['watch']>>;
+    try {
+      result = await required(runs).watch(4);
+    } finally {
+      service.soFar = soFar;
+    }
+    expect(failed).not.toBeNull();
+    // The one that met the failure is left as it was; every other is still paused.
+    const others = ids.filter((id) => id !== failed);
+    expect(others.length).toBeGreaterThan(0);
+    for (const id of others) {
+      expect(result.paused).toContain(id);
+      expect((await row(id)).paused).toBe(true);
+    }
+    if (failed && ids.includes(failed)) expect((await row(failed)).paused).toBe(false);
+  });
 });
