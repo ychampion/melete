@@ -87,6 +87,33 @@ describe('operator alerts', () => {
     expect(monitor.sent[2]?.subject).toBe('Melete is healthy again');
   });
 
+  test('a check that starts failing while another already fails is alerted at once', async () => {
+    const stuck: HealthDetail = {
+      status: 'unhealthy',
+      version: 'test',
+      checks: [
+        { name: 'database', ok: true, detail: 'ok' },
+        { name: 'background_work', ok: false, detail: 'trash sweep: sp_a failed 3 times' },
+      ],
+      time: '2026-10-03T12:01:00.000Z',
+    };
+    const down: HealthDetail = {
+      ...stuck,
+      checks: [
+        { name: 'database', ok: false, detail: 'unreachable' },
+        { name: 'background_work', ok: false, detail: 'trash sweep: sp_a failed 3 times' },
+      ],
+    };
+    const monitor = scripted([stuck, stuck, down, down, stuck]);
+    await monitor.tick(0);
+    await monitor.tick(60_000);
+    await monitor.tick(600_000);
+    await monitor.tick(660_000);
+    await monitor.tick(720_000);
+    expect(monitor.sent.map((alert) => alert.kind)).toEqual(['unhealthy', 'unhealthy']);
+    expect(monitor.sent[1]?.subject).toBe('Melete is unhealthy: database, background_work');
+  });
+
   test('an instance that does not hold the alert lease sends nothing', async () => {
     const sent: Alert[] = [];
     const monitor = new HealthMonitor({
