@@ -9,24 +9,48 @@
  * nothing. The registry and the external database are its network calls, and
  * `--offline` skips both.
  *
+ * It also counts how many more networks Docker's address pools can give, and
+ * lists the agents' computers and networks that sandbox projects no
+ * installation on this engine uses have left behind. `--remove-leftovers`
+ * removes those, and is the only way doctor changes anything.
+ *
  * The test suite's own prerequisites stay in `bun run doctor`.
  */
 
 import { readHostDocker } from '../../../../apps/melete/src/runtime/docker-engine.ts';
 import {
+  type DockerHostFacts,
   describeDockerHost,
+  engineElsewhere,
   judgeDockerMachine,
   MIN_DESKTOP_MEMORY_BYTES,
   readDockerHost,
   remoteEngineHost,
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
+import {
+  type AddressPoolFact,
+  type Cidr,
+  enginePools,
+  judgeAddressPools,
+  type PoolHeadroom,
+  parseCidr,
+  parseRoutes,
+  poolHeadroom,
+} from '../address-pools.ts';
 import { judgeBrowser } from '../browser.ts';
-import { type Context, inServiceImage, type PortProbe } from '../context.ts';
+import { type Context, inServiceImage, type PortProbe, type Run } from '../context.ts';
 import { databaseShell } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import { type Installation, publishedPorts, readInstallation } from '../installation.ts';
 import { databaseSecrets, redact } from '../redact.ts';
+import {
+  judgeLeftovers,
+  LEFTOVERS_ID,
+  type Leftovers,
+  readSandboxLeftovers,
+  removeLeftovers,
+} from '../sandbox-leftovers.ts';
 import { EXIT, type ExitCode, hostOnly, type Result, renderReport, report } from '../schema.ts';
 import { judgeContract } from './check.ts';
 
@@ -80,6 +104,12 @@ export type DoctorFacts = {
   registry: { url: string; answered: boolean; detail: string } | null;
   /** The external database's answer; null when not asked: the bundled database, no deploy/.env, or --offline. */
   database: DatabaseFact | null;
+  /** How many more networks the engine can make; null when its networks could not be read, left out when not asked. */
+  addressPools?: AddressPoolFact | null;
+  /** What unused sandbox projects left; null when it could not be listed, left out when not asked. */
+  leftovers?: Leftovers[] | null;
+  /** What `--remove-leftovers` did, in place of the list. */
+  removed?: Result;
 };
 
 export type DatabaseFact =
@@ -243,6 +273,10 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
     );
   }
 
+  if (facts.addressPools !== undefined) results.push(...judgeAddressPools(facts.addressPools));
+  if (facts.removed) results.push(facts.removed);
+  else if (facts.leftovers !== undefined) results.push(judgeLeftovers(facts.leftovers));
+
   if (facts.database !== null) results.push(...judgeDatabase(facts.database));
 
   if (facts.registry !== null)
@@ -319,6 +353,49 @@ export function publishedByProject(stdout: string): Set<number> {
   return ports;
 }
 
+/**
+ * The engine's address pools and how many networks each has left, from the
+ * subnets of the networks that exist. This machine's routes are read only when
+ * the engine runs here, on Linux.
+ */
+export function readAddressPools(run: Run, host: DockerHostFacts): AddressPoolFact | null {
+  const listed = run(['docker', 'network', 'ls', '--quiet']);
+  if (listed.code !== 0) return null;
+  const ids = listed.stdout.split(/\s+/).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
+  let taken: Cidr[] = [];
+  if (ids.length > 0) {
+    const inspected = run([
+      'docker',
+      'network',
+      'inspect',
+      '--format',
+      '{{range .IPAM.Config}}{{.Subnet}} {{end}}',
+      ...ids,
+    ]);
+    if (inspected.code !== 0) return null;
+    taken = inspected.stdout.split(/\s+/).flatMap((subnet) => {
+      const cidr = parseCidr(subnet);
+      return cidr ? [cidr] : [];
+    });
+  }
+  const local = host.platform === 'linux' && !engineElsewhere(host);
+  const table = local ? run(['cat', '/proc/net/route']) : null;
+  // A route that is exactly a Docker network's subnet is that network's bridge,
+  // whatever the bridge is called (com.docker.network.bridge.name).
+  const routes = (table?.code === 0 ? parseRoutes(table.stdout) : []).filter(
+    (route) => !taken.some((net) => net.start === route.start && net.prefix === route.prefix),
+  );
+  const { pools, builtIn } = enginePools(host.info?.defaultAddressPools);
+  return {
+    source: 'docker',
+    builtIn,
+    pools: pools.flatMap((pool): PoolHeadroom[] => {
+      const headroom = poolHeadroom(pool, taken, routes);
+      return headroom ? [headroom] : [];
+    }),
+  };
+}
+
 /** The registry's API root: any HTTP answer, a 401 included, means it is reachable. */
 export const registryUrl = (registry: string): string => `https://${registry.split('/')[0]}/v2/`;
 
@@ -348,6 +425,12 @@ export async function gatherDoctor(
     database: null,
   };
   if (docker.length > 0) return facts;
+
+  facts.addressPools = readAddressPools(run, host);
+  facts.leftovers = readSandboxLeftovers(
+    run,
+    installation.env?.MELETE_SANDBOX_PROJECT?.trim() || null,
+  );
 
   const compose = composeCommand(context.deployDir, config);
   if (installation.env !== null) {
@@ -431,11 +514,13 @@ export async function gatherDoctor(
   return facts;
 }
 
-/** The rules that judge the host: its engine, disk, memory, ports, images and registry. */
+/** The rules that judge the host: its engine, disk, memory, networks, ports, images and registry. */
 export const HOST_DOCTOR_RULES = [
   'docker.engine',
   'disk.free_mb',
   'memory.total_mb',
+  'docker.address_pools',
+  LEFTOVERS_ID,
   'ports.published',
   'images.present',
   'images.registry_reachable',
@@ -461,11 +546,22 @@ export async function runDoctor(
   context: Context,
   json: boolean,
   offline: boolean,
+  removeLeftoversToo = false,
 ): Promise<ExitCode> {
   const installation = readInstallation(context.deployDir, context.machine.platform);
-  const results = inServiceImage(context.environment)
-    ? judgeDoctorInImage(installation, context.environment)
-    : judgeDoctor(await gatherDoctor(context, installation, offline));
+  const inImage = inServiceImage(context.environment);
+  if (inImage && removeLeftoversToo) {
+    context.err('--remove-leftovers needs the Docker engine; run it on the host.\n');
+    return EXIT.refused;
+  }
+  let results: Result[];
+  if (inImage) results = judgeDoctorInImage(installation, context.environment);
+  else {
+    const facts = await gatherDoctor(context, installation, offline);
+    if (removeLeftoversToo && facts.leftovers?.length)
+      facts.removed = removeLeftovers(context.run, facts.leftovers);
+    results = judgeDoctor(facts);
+  }
   const value = report('doctor', results);
   context.out(json ? `${JSON.stringify(value, null, 2)}\n` : renderReport(value));
   return value.ok ? EXIT.ok : EXIT.failed;

@@ -43,6 +43,18 @@ export const DEFAULT_REGISTRY = 'ghcr.io/ychampion';
  */
 export const DEFAULT_BACKUP_DAYS = 30;
 
+/** A Compose project name, as COMPOSE_PROJECT_NAME takes it. */
+export const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
+ * Where backups go when the contract does not say: a folder of the project's
+ * own, so two installations on one machine never prune each other's backups.
+ * The project `melete` keeps the folder it always had; another project's
+ * folder is inside it, where pruning never looks.
+ */
+export const defaultBackupDir = (project: string): string =>
+  project === 'melete' ? '~/melete-backups' : `~/melete-backups/${project}`;
+
 const unique = <T>(values: readonly T[]) => new Set(values).size === values.length;
 
 const images = z.strictObject({
@@ -111,13 +123,25 @@ const remote = z.strictObject({
   cli: z.array(remoteWord).min(1).default(['bun', 'run', 'melete']),
 });
 
-export const deployConfigSchema = z
+/** A contract with no backup folder gets its project's own (defaultBackupDir). */
+function withProjectBackupDir(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const project = typeof record.project === 'string' ? record.project : 'melete';
+  const backup = record.backup;
+  if (backup === undefined) return { ...record, backup: { dir: defaultBackupDir(project) } };
+  if (backup !== null && typeof backup === 'object' && !Array.isArray(backup) && !('dir' in backup))
+    return { ...record, backup: { ...backup, dir: defaultBackupDir(project) } };
+  return raw;
+}
+
+const contractObject = z
   .strictObject({
     contract: z.literal(CONTRACT),
     /** The Compose project: COMPOSE_PROJECT_NAME. */
     project: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9_-]*$/, 'a Compose project name: lower-case letters, digits, - and _')
+      .regex(PROJECT_NAME, 'a Compose project name: lower-case letters, digits, - and _')
       .default('melete'),
     images: images.default({ registry: DEFAULT_REGISTRY, tag: 'main', channel: 'main' }),
     profiles: z.array(z.enum(PROFILES)).refine(unique, 'each profile once').default([]),
@@ -161,6 +185,8 @@ export const deployConfigSchema = z
           'images built here have registry null and tag local; published images name a registry and a published tag',
       });
   });
+
+export const deployConfigSchema = z.preprocess(withProjectBackupDir, contractObject);
 
 export type DeployConfig = z.infer<typeof deployConfigSchema>;
 

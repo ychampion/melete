@@ -12,6 +12,25 @@ const issues = (text: string) => {
   return loaded.kind === 'invalid' ? loaded.issues.join('\n') : '';
 };
 
+describe('where backups go by default', () => {
+  test('each project has a folder of its own; melete keeps the folder it always had', () => {
+    expect(valid('{"contract":1}').backup.dir).toBe('~/melete-backups');
+    expect(valid('{"contract":1,"project":"melete-two"}').backup).toEqual({
+      dir: '~/melete-backups/melete-two',
+      keep: 3,
+      max_age_days: 30,
+    });
+    expect(valid('{"contract":1,"project":"melete-two","backup":{"keep":5}}').backup).toEqual({
+      dir: '~/melete-backups/melete-two',
+      keep: 5,
+      max_age_days: 30,
+    });
+    expect(
+      valid('{"contract":1,"project":"melete-two","backup":{"dir":"/srv/b"}}').backup.dir,
+    ).toBe('/srv/b');
+  });
+});
+
 describe('the deploy contract', () => {
   test('a file with only the contract number takes every default', () => {
     expect(valid('{"contract":1}')).toEqual(defaultDeployConfig());
