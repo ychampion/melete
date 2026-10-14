@@ -40,6 +40,7 @@ import type { AccountRemovalPreview, AccountSummary } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { ServiceError } from '../api/errors.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { principalContext } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import type { SpaceRemovalService } from '../spaces/removal.ts';
@@ -111,9 +112,16 @@ export class AccountRemovalService {
   private timer?: ReturnType<typeof setInterval>;
   private passing?: Promise<unknown>;
   private readonly log: (line: string) => void;
+  /** Accounts whose deletion pass failed, each tried again later on its own. */
+  private readonly failures: ItemFailures;
 
   constructor(readonly deps: AccountRemovalDeps) {
     this.log = deps.log ?? ((line) => process.stderr.write(`${line}\n`));
+    this.failures = new ItemFailures('account deletion', {
+      firstMs: 60_000,
+      maxMs: 60 * 60_000,
+      say: this.log,
+    });
   }
 
   private async setupOwner(): Promise<string | null> {
@@ -335,9 +343,16 @@ export class AccountRemovalService {
     // before step 1 unlinked them, whether or not its spaces are gone yet.
     await unlinkElsewhere(this.deps.sql, null);
     let finished = 0;
+    // One account whose deletion fails never holds up the others.
     for (const { id } of pending) {
-      await this.carryOn(id);
-      if (await this.finish(id)) finished += 1;
+      if (!this.failures.due(id)) continue;
+      try {
+        await this.carryOn(id);
+        if (await this.finish(id)) finished += 1;
+        this.failures.succeeded(id);
+      } catch (error) {
+        this.failures.failed(id, error);
+      }
     }
     return finished;
   }

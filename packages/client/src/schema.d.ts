@@ -15622,7 +15622,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** People on this installation who can be added to a room */
+        /** People who can be added to a room: those who share a space with you, or one whole email address */
         get: {
             parameters: {
                 query?: {
