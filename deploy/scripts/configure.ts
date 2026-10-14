@@ -6,6 +6,11 @@
  *   bun run deploy/scripts/configure.ts --fake [--tailscale ...]
  *   bun run deploy/scripts/configure.ts --connect-in-app [--provider name] [--model id]
  *   ... [--public-url https://your.domain [--hosted]]
+ *   ... [--project name] [--api-port port] [--web-port port]
+ *
+ * `--project`, `--api-port` and `--web-port` give a second installation on
+ * this machine its own Compose project and ports (COMPOSE_PROJECT_NAME,
+ * MELETE_PORT and WEB_PORT); the first one keeps melete, 3100 and 3101.
  *
  * `--public-url` writes the address people open as both MELETE_PUBLIC_URL and
  * MELETE_WEB_ORIGIN. `--hosted`, for an installation other people use, also
@@ -38,7 +43,12 @@ import { existsSync } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
-import { newSetupCode, setupCodeHash, setupLink } from '../../apps/melete/src/api/setup-code.ts';
+import {
+  newSetupCode,
+  SETUP_CODE_HOURS,
+  setupCodeHash,
+  setupLink,
+} from '../../apps/melete/src/api/setup-code.ts';
 import {
   OPENAI_COMPATIBLE,
   PROVIDER_NAMES,
@@ -66,7 +76,14 @@ import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 
 export const CONFIGURE_USAGE =
-  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--connect-in-app] [--tailscale [--tailscale-hostname name]] [--public-url https://your.domain [--hosted]], or --fake for the demonstration';
+  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--connect-in-app] [--tailscale [--tailscale-hostname name]] [--public-url https://your.domain [--hosted]] [--project name] [--api-port port] [--web-port port], or --fake for the demonstration';
+
+/** A port on 127.0.0.1 the stack publishes: a whole number from 1 to 65535. */
+function portOption(name: string, value: string): string {
+  if (!/^\d{1,5}$/.test(value) || Number(value) < 1 || Number(value) > 65_535)
+    throw new Error(`${name} takes a port from 1 to 65535, not ${value}. ${CONFIGURE_USAGE}`);
+  return String(Number(value));
+}
 
 /**
  * `--public-url`'s value as the origin both settings take: an http(s) address
@@ -113,20 +130,32 @@ export function configureOptions(args: readonly string[]): {
   /** The origin `--public-url` names, written as MELETE_PUBLIC_URL and MELETE_WEB_ORIGIN. */
   publicUrl?: string;
   hosted?: true;
+  /** COMPOSE_PROJECT_NAME, MELETE_PORT and WEB_PORT, when given. */
+  install?: Record<string, string>;
 } {
   let provider: string | undefined;
   let model: string | undefined;
   let publicUrl: string | undefined;
+  const install: Record<string, string> = {};
+  const VALUED = ['--provider', '--model', '--public-url', '--project', '--api-port', '--web-port'];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--tailscale-hostname') index += 1;
-    else if (argument === '--provider' || argument === '--model' || argument === '--public-url') {
+    else if (argument !== undefined && VALUED.includes(argument)) {
       const value = args[index + 1];
       if (!value || value.startsWith('--'))
         throw new Error(`${argument} needs a value. ${CONFIGURE_USAGE}`);
       if (argument === '--provider') provider = value;
       else if (argument === '--model') model = value;
-      else publicUrl = value;
+      else if (argument === '--public-url') publicUrl = value;
+      else if (argument === '--project') {
+        if (!/^[a-z0-9][a-z0-9_-]*$/.test(value))
+          throw new Error(
+            `--project takes a Compose project name: lower-case letters, digits, - and _, starting with a letter or a digit. ${CONFIGURE_USAGE}`,
+          );
+        install.COMPOSE_PROJECT_NAME = value;
+      } else if (argument === '--api-port') install.MELETE_PORT = portOption(argument, value);
+      else install.WEB_PORT = portOption(argument, value);
       index += 1;
     } else if (
       argument !== '--fake' &&
@@ -160,6 +189,11 @@ export function configureOptions(args: readonly string[]): {
     throw new Error(
       `--provider ${provider} is not a provider the gateway has. Use one of: ${PROVIDER_NAMES.join(', ')}.`,
     );
+  // The defaults are the template's, 3100 and 3101.
+  if ((install.MELETE_PORT ?? '3100') === (install.WEB_PORT ?? '3101'))
+    throw new Error(
+      `The service and the web app would both take port ${install.WEB_PORT ?? '3101'}. Give --api-port and --web-port a port each. ${CONFIGURE_USAGE}`,
+    );
   // Named before anything is written, so a misspelt node name costs nothing.
   return {
     fake,
@@ -169,6 +203,7 @@ export function configureOptions(args: readonly string[]): {
     ...(inApp ? { inApp: true as const } : {}),
     ...(origin ? { publicUrl: origin } : {}),
     ...(hosted ? { hosted: true as const } : {}),
+    ...(Object.keys(install).length > 0 ? { install } : {}),
   };
 }
 
@@ -366,7 +401,7 @@ export function setupCodeNote(code: string, webUrl: string): string {
     `  ${code}`,
     '',
     `Once Melete is running, open ${setupLink(webUrl, code)}`,
-    'Lost it? bun run melete account setup-code issues another.',
+    `It works once, for ${SETUP_CODE_HOURS} hours from Melete's first start. Lost it, or too late? bun run melete account setup-code issues another, and this one stops working.`,
   ].join('\n');
 }
 
@@ -442,6 +477,7 @@ async function configure(root: string) {
     ...provider,
     ...voice,
     ...addressSettings(options),
+    ...options.install,
     // TS_AUTHKEY stays as the template leaves it, which is empty: it is issued by
     // the Tailscale admin console and nothing here can invent one.
     ...(nodeName === null ? {} : { TS_HOSTNAME: nodeName }),

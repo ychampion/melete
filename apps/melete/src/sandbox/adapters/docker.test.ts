@@ -857,6 +857,17 @@ describe('the life of a sandbox', () => {
     expect(engine.containers.get('melete-sbx-proj-sbx_quiet')?.running).toBe(true);
   });
 
+  test('a container that will not stop leaves the others to be stopped, and is tried again', async () => {
+    const { engine, host, advance } = setup({ settings: { idleSeconds: 600 } });
+    await host.create(spec('sbx_stuck'), signal());
+    await host.create(spec('sbx_quiet'), signal());
+    advance(700_000);
+    engine.failNext = { match: /^POST \/containers\/melete-sbx-proj-sbx_stuck\/stop/, status: 500 };
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_quiet']);
+    expect(engine.containers.get('melete-sbx-proj-sbx_stuck')?.running).toBe(true);
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_stuck']);
+  });
+
   test('a container its processes keep awake is not idle-stopped, and its idle clock starts when they end', async () => {
     let awake: ReadonlySet<string> = new Set(['melete-sbx-proj-sbx_server']);
     let failing = false;
