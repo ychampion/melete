@@ -24,7 +24,7 @@ import type { Result } from './schema.ts';
 export const ENABLE_COMMAND = 'bun run melete browser enable';
 /** The same, on a host that runs the published images without Bun. */
 export const INSTALLER_ENABLE_COMMAND =
-  'MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash';
+  'curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash';
 export const CONNECTIONS_FILE = join('config', 'connections.json');
 export const SPACE_ID = /^sp_[A-Za-z0-9_-]+$/;
 export const CONNECTION_ID = /^conn_[A-Za-z0-9_-]+$/;

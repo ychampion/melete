@@ -45,7 +45,7 @@ volume are kept. Once your account exists, running it again with
 the agent's own browser, with no Bun on the host:
 
 ```bash
-MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash
 ```
 
 From then on every run starts the worker too, from its published image. While
@@ -58,14 +58,33 @@ the worker is off, the installer's last lines print this command.
 | `MELETE_IMAGE_TAG` | `main` | The image tag to run, such as a release's `v0.3.0`; set on a later run, it switches the installation to that tag |
 | `MELETE_MODEL` | | The model id, for an Anthropic, OpenAI or Google key |
 | `MELETE_NO_OPEN` | | `1` leaves the browser closed |
+| `MELETE_COMPUTER` | `1` for a new installation | Every agent gets a [computer of its own](sandbox-docker.md), a container on this Docker engine; `0` leaves it out, and `1` on a later run turns it on. Its image is a download of about 600 MB and takes about 2.3 GB of disk |
+| `MELETE_PROJECT` | `melete` | The Compose project name. Chosen when `deploy/.env` is written; a second installation on one machine needs its own, and its own ports |
+| `MELETE_PORT` | `3100` | The service's port on `127.0.0.1` |
+| `MELETE_WEB_PORT` | `3101` | The web app's port on `127.0.0.1`; the installer prints the address with it |
 | `MELETE_BROWSER` | | `1`, once your account exists, turns on the browser worker |
 | `MELETE_BROWSER_SPACE` | the first person's space | With `MELETE_BROWSER=1`, the space the worker works for, `sp_...` |
 
-Pass them on the `bash` side of the pipe:
+Pass them on the `bash` side of the pipe, where the installer reads them. Put
+before `curl`, they go to `curl` instead, and the installer runs with none of
+them:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=/srv/melete bash
 ```
+
+A second installation on the same machine needs a project name and ports of its
+own. The installer refuses to start one under a project name another
+installation's containers already use, since Compose would hand it that
+installation's containers and volumes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=~/melete2 MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash
+```
+
+The health check is `/api/health` on the web app's port (3101 by default). On
+the service's own port (3100) the same check is `/health`; `/api/health` there
+answers 401.
 
 Afterwards the stack is managed with Compose, for example
 `docker compose -f ~/melete/deploy/docker-compose.yml logs` or `down`. The
@@ -246,7 +265,7 @@ bun run melete feedback        # problem reports people sent from the app
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
 | `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
-| `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| bash`. |
+| `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| MELETE_BROWSER=1 bash`. |
 | `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor, and the `hosted.*` rules `check` reports. |
 | `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. `--attempts` lists the containers attempts ran in, and `--computers` the agents' computers, found by this installation's labels; with an attempt id or a container name it shows that one's logs, with the same options. |
@@ -288,7 +307,7 @@ connections file the service runs with, and `status` asks the service itself for
 its health and whether the owner account exists. With the worker on, add
 `-f deploy/docker-compose.browser.yml` after the base file. On a host without
 Bun, the installer turns the worker on:
-`MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash`.
+`curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash`.
 
 ### The deploy file
 

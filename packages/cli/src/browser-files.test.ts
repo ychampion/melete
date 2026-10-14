@@ -130,7 +130,9 @@ describe('the browser judgment inside the service container', () => {
   test('reports the worker off, with the installer command, without the overlay', () => {
     const [result] = service({}, '[]');
     expect(result?.level).toBe('warn');
-    expect(result?.fix).toContain('MELETE_BROWSER=1 curl -fsSL');
+    // On the bash side of the pipe: before curl, the installer would never see it.
+    expect(result?.fix).toContain('install.sh | MELETE_BROWSER=1 bash');
+    expect(result?.fix).not.toContain('MELETE_BROWSER=1 curl');
   });
 
   test('fails a listed connection without the overlay, and a short token', () => {

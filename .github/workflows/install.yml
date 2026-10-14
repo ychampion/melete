@@ -7,6 +7,8 @@
 # state, then runs the plain installer once more to show a later run keeps
 # deploy/.env, the data and the worker. The first run prints a one-time setup
 # code and keeps only its SHA-256 in deploy/.env; the account is made with it.
+# A second installation then runs beside the first, under umask 077, with a
+# project name and ports of its own, after one without them is refused.
 # On a pull request the published images
 # are main's, so this pull request's images are built and served under the same
 # names from a registry on the runner, as the setup-guide workflow does. No
@@ -77,6 +79,12 @@ jobs:
             # Removed here, so the installer's own pull is what puts them back.
             docker image rm "localhost:5000/melete-$image:main"
           done
+          # The agents' computer image, which a new installation pulls too, is
+          # main's: served under the same name rather than built here.
+          docker pull ghcr.io/ychampion/melete-sandbox:main
+          docker tag ghcr.io/ychampion/melete-sandbox:main localhost:5000/melete-sandbox:main
+          docker push localhost:5000/melete-sandbox:main
+          docker image rm localhost:5000/melete-sandbox:main ghcr.io/ychampion/melete-sandbox:main
       # The published worker image may not be readable without signing in yet. The
       # installer then runs the copy already on the machine, so one is built here
       # under the published name, from the commit the images were built from.
@@ -104,8 +112,13 @@ jobs:
           if command -v bun; then echo "bun is on the PATH"; exit 1; fi
           # No provider key is in this environment, so it starts with the practice model.
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/first.log"
-          # The worker is off, so the closing lines name the command that turns it on.
-          grep -F 'MELETE_BROWSER=1 curl -fsSL' "$RUNNER_TEMP/first.log"
+          # The worker is off, so the closing lines name the command that turns it
+          # on, with the option on the bash side of the pipe where the installer reads it.
+          grep -F 'install.sh | MELETE_BROWSER=1 bash' "$RUNNER_TEMP/first.log"
+          # A new installation gives every agent a computer of its own.
+          grep -Fx 'Every agent has a computer of its own, a container on this Docker engine.' "$RUNNER_TEMP/first.log"
+          grep -qx 'MELETE_SANDBOX_PROVIDER=docker' "$HOME/melete/deploy/.env"
+          grep -qx 'COMPOSE_PROFILES=sandbox' "$HOME/melete/deploy/.env"
       - name: The web app and the API answer
         run: |
           set -euo pipefail
@@ -288,6 +301,35 @@ jobs:
             -d '{"email":"other@example.com","password":"another-password-1"}')"
           echo "second setup answered $code"
           test "$code" -ge 400
+      - name: A second installation needs its own name, and runs beside the first under umask 077
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh"
+          # With the first one's project name it would take over the first one's
+          # containers, so it is refused before deploy/.env is written.
+          if curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete2" bash > "$RUNNER_TEMP/second-refused.log" 2>&1; then
+            echo "a second installation started under the first one's project"
+            exit 1
+          fi
+          grep -F 'already runs as the Compose project melete' "$RUNNER_TEMP/second-refused.log"
+          test ! -e "$HOME/melete2/deploy/.env"
+          # Under umask 077 every file it downloads would be its owner's alone;
+          # the service reads deploy/config as another user.
+          (umask 077 && curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete2" \
+            MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 MELETE_COMPUTER=0 bash) | tee "$RUNNER_TEMP/second.log"
+          grep -Fx 'Melete is running at http://localhost:3201' "$RUNNER_TEMP/second.log"
+          grep -F 'install.sh | MELETE_DIR=' "$RUNNER_TEMP/second.log" | grep -F 'MELETE_COMPUTER=1 bash'
+          env_file="$HOME/melete2/deploy/.env"
+          grep -qx 'COMPOSE_PROJECT_NAME=melete2' "$env_file"
+          grep -qx 'MELETE_SANDBOX_PROVIDER=' "$env_file"
+          test "$(stat -c %a "$env_file")" = 600
+          test "$(stat -c %a "$HOME/melete2/deploy/config")" = 755
+          test "$(stat -c %a "$HOME/melete2/deploy/config/connections.json")" = 644
+          curl -fsS http://localhost:3201/api/health | jq -e '.status == "ok" and .database == "ok"'
+          # The first installation is untouched and still answers.
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          docker compose -f "$HOME/melete2/deploy/docker-compose.yml" down -v --remove-orphans
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
       - name: Logs
         if: failure()
         run: |
@@ -297,4 +339,5 @@ jobs:
         if: always()
         run: |
           docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true
+          [ ! -f "$HOME/melete2/deploy/docker-compose.yml" ] || docker compose -f "$HOME/melete2/deploy/docker-compose.yml" down -v --remove-orphans || true
           docker rm -f install-registry || true
