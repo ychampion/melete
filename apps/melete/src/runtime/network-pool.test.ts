@@ -78,11 +78,24 @@ describe('network pool', () => {
     expect(docker.asked).toEqual(['10.215.0.0/28', '10.215.0.16/28']);
   });
 
+  test('finds the last free subnet once the random picks miss', async () => {
+    const pool = parseNetworkPool('10.215.0.0/20');
+    const taken = new Set(Array.from({ length: 16 }, (_, third) => [...subnetsOf(third)]).flat());
+    taken.delete('10.215.9.48/28');
+    const docker = engine(taken);
+    expect(await createPooledNetwork(docker, body, pool)).toEqual({ Id: 'net_1' });
+    expect(docker.asked.at(-1)).toBe('10.215.9.48/28');
+    expect(new Set(docker.asked).size).toBe(docker.asked.length);
+  });
+
   test('says so when no subnet is free, and passes any other refusal on at once', async () => {
     const pool = parseNetworkPool('10.215.0.0/24');
-    await expect(createPooledNetwork(engine(subnetsOf(0)), body, pool)).rejects.toThrow(
-      'No free network was found in 10.215.0.0/24 after 8 tries',
+    const full = engine(subnetsOf(0));
+    await expect(createPooledNetwork(full, body, pool)).rejects.toThrow(
+      'No free network was found in 10.215.0.0/24: all 16 of its subnets are taken',
     );
+    expect(new Set(full.asked)).toEqual(subnetsOf(0));
+    expect(full.asked).toHaveLength(16);
     for (const docker of [
       engine(subnetsOf(0), 500),
       engine(subnetsOf(0), 403, "a profile network's addresses are one subnet of its network pool"),
