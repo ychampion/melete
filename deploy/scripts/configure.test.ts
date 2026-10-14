@@ -33,6 +33,23 @@ describe('the configuration generator options', () => {
     });
   });
 
+  test('a second installation names its project and ports', () => {
+    expect(
+      configureOptions(['--project', 'melete-two', '--api-port', '3200', '--web-port', '3201']),
+    ).toEqual({
+      fake: false,
+      nodeName: null,
+      install: { COMPOSE_PROJECT_NAME: 'melete-two', MELETE_PORT: '3200', WEB_PORT: '3201' },
+    });
+    expect(() => configureOptions(['--project', 'Two'])).toThrow('--project takes');
+    expect(() => configureOptions(['--api-port', '70000'])).toThrow('--api-port takes a port');
+    expect(() => configureOptions(['--web-port'])).toThrow('--web-port needs a value');
+    expect(() => configureOptions(['--api-port', '3101'])).toThrow('both take port 3101');
+    expect(() => configureOptions(['--api-port', '3300', '--web-port', '3300'])).toThrow(
+      'both take port 3300',
+    );
+  });
+
   test('a misspelt option is refused before anything is written', () => {
     for (const [args, unknown] of [
       [['--fak'], '--fak'],
@@ -364,6 +381,9 @@ describe('what configure prints', () => {
     expect(note).toContain('  ABCD-EFGH-JKMN-PQRS-TVWX\n');
     expect(note).toContain('http://127.0.0.1:3101/#/welcome?code=ABCD-EFGH-JKMN-PQRS-TVWX');
     expect(note).toContain('melete account setup-code');
+    // The printed code follows an issued code's rules.
+    expect(note).toContain('It works once, for 72 hours');
+    expect(note).toContain('this one stops working');
   });
 
   test('a refusal, such as a second run, is its message alone, with no stack', () => {
