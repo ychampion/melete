@@ -9,7 +9,8 @@
  * nothing. The registry and the external database are its network calls, and
  * `--offline` skips both.
  *
- * It also counts how many more networks Docker's address pools can give, and
+ * It also counts how many more networks the service's network pool (or, with
+ * MELETE_NETWORK_POOL=off, Docker's address pools) can give, and
  * lists the agents' computers and networks that sandbox projects no
  * installation on this engine uses have left behind. `--remove-leftovers`
  * removes those, and is the only way doctor changes anything.
@@ -27,6 +28,12 @@ import {
   readDockerHost,
   remoteEngineHost,
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
+import {
+  formatPool,
+  NETWORK_SUBNET_PREFIX,
+  type NetworkPool,
+  parseNetworkPool,
+} from '../../../../apps/melete/src/runtime/network-pool.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
 import {
   type AddressPoolFact,
@@ -354,11 +361,28 @@ export function publishedByProject(stdout: string): Set<number> {
 }
 
 /**
- * The engine's address pools and how many networks each has left, from the
- * subnets of the networks that exist. This machine's routes are read only when
- * the engine runs here, on Linux.
+ * The pools the service's networks come from, and how many networks each has
+ * left, from the subnets of the networks that exist: the installation's
+ * MELETE_NETWORK_POOL (its default when unset), cut into the /28s the service
+ * takes, or with `off` the engine's own address pools. This machine's routes
+ * are read only when the engine runs here, on Linux.
  */
-export function readAddressPools(run: Run, host: DockerHostFacts): AddressPoolFact | null {
+export function readAddressPools(
+  run: Run,
+  host: DockerHostFacts,
+  networkPoolSetting?: string,
+): AddressPoolFact | null {
+  let melete: NetworkPool | null;
+  try {
+    melete = parseNetworkPool(networkPoolSetting);
+  } catch (error) {
+    return {
+      source: 'melete',
+      builtIn: false,
+      pools: [],
+      invalid: error instanceof Error ? error.message : String(error),
+    };
+  }
   const listed = run(['docker', 'network', 'ls', '--quiet']);
   if (listed.code !== 0) return null;
   const ids = listed.stdout.split(/\s+/).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
@@ -385,10 +409,13 @@ export function readAddressPools(run: Run, host: DockerHostFacts): AddressPoolFa
   const routes = (table?.code === 0 ? parseRoutes(table.stdout) : []).filter(
     (route) => !taken.some((net) => net.start === route.start && net.prefix === route.prefix),
   );
-  const { pools, builtIn } = enginePools(host.info?.defaultAddressPools);
+  const { pools, builtIn } = melete
+    ? { pools: [{ base: formatPool(melete), size: NETWORK_SUBNET_PREFIX }], builtIn: false }
+    : enginePools(host.info?.defaultAddressPools);
   return {
-    source: 'docker',
+    source: melete ? 'melete' : 'docker',
     builtIn,
+    ...(melete && !networkPoolSetting?.trim() ? { defaultPool: true } : {}),
     pools: pools.flatMap((pool): PoolHeadroom[] => {
       const headroom = poolHeadroom(pool, taken, routes);
       return headroom ? [headroom] : [];
@@ -426,7 +453,7 @@ export async function gatherDoctor(
   };
   if (docker.length > 0) return facts;
 
-  facts.addressPools = readAddressPools(run, host);
+  facts.addressPools = readAddressPools(run, host, installation.env?.MELETE_NETWORK_POOL);
   facts.leftovers = readSandboxLeftovers(
     run,
     installation.env?.MELETE_SANDBOX_PROJECT?.trim() || null,

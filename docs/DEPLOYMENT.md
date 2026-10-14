@@ -259,17 +259,28 @@ Every network Docker makes without a subnet of its own takes one block from
 the engine's address pools. With no `default-address-pools` in
 `/etc/docker/daemon.json`, Docker has 31 blocks for the whole machine: fifteen
 /16 blocks between 172.17.0.0 and 172.31.255.255, and sixteen /20 blocks in
-192.168.0.0/16. Each installation's stack takes four or more, and while it
-works each chat attempt, agent computer and plugin that reaches a network takes
-one more; every other Compose project on the machine takes its own. When none
-is left, `docker compose up` fails with "all predefined address pools have been
-fully subnetted", and so does every chat, computer and plugin that needs a new
-network.
+192.168.0.0/16. Each installation's stack takes four or more, and every other
+Compose project on the machine takes its own. When none is left,
+`docker compose up` fails with "all predefined address pools have been fully
+subnetted".
+
+The networks of chat attempts, agent computers and plugins do not take those
+blocks. The service gives each one a /28 (14 addresses) of its own range,
+`MELETE_NETWORK_POOL`, which is 10.215.0.0/16 unless you set it, so a /16 holds
+4096 of them. The range must be between /8 and /24 in size, and the service
+refuses one that overlaps 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16 or anything
+from 224.0.0.0 up. Change it when it overlaps a route of this machine, such as
+your LAN or a VPN, or when two installations on one engine should each keep to
+a range of their own: `bun run melete set MELETE_NETWORK_POOL=10.214.0.0/16`.
+Set it to `off` to have those networks take blocks from Docker's own pools
+instead, as described above.
 
 `bun run melete doctor` reports `docker.address_pools`: how many networks
-Docker can still make. It warns below 8 and fails at none. To give Docker more,
-choose a private range that nothing on your network, VPN or tailnet uses, and
-name it in `/etc/docker/daemon.json` (merged with what the file already holds):
+are left in `MELETE_NETWORK_POOL`, or with `off`, how many Docker can still
+make. It warns below 8 and fails at none, and fails when the setting is one the
+service refuses. To give Docker more, choose a private range that nothing on
+your network, VPN or tailnet uses, and name it in `/etc/docker/daemon.json`
+(merged with what the file already holds):
 
 ```json
 {
@@ -283,7 +294,8 @@ built-in ones; networks that exist keep their addresses. Check the file with
 `dockerd --validate --config-file /etc/docker/daemon.json`, then restart Docker
 (`sudo systemctl restart docker`) while no `docker compose up` is running. With
 `live-restore`, running containers keep running through the restart. `doctor`
-warns when a pool named there overlaps a route of this machine (`ip route`
+warns when a pool named there, or `MELETE_NETWORK_POOL`, overlaps a route of
+this machine (`ip route`
 lists them), since a network made from it would hide those addresses from its
 containers.
 

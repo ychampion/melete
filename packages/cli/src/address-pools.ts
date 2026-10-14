@@ -127,26 +127,37 @@ export function parseRoutes(text: string): Cidr[] {
 }
 
 export type AddressPoolFact = {
-  /** Whose pools: the engine's own (daemon.json, or Docker's defaults). */
-  source: 'docker';
+  /**
+   * Whose pools: the engine's own (daemon.json, or Docker's defaults), or the
+   * range the service carves its networks from (MELETE_NETWORK_POOL).
+   */
+  source: 'docker' | 'melete';
   /** Docker's built-in pools, because daemon.json names none. */
   builtIn: boolean;
   pools: PoolHeadroom[];
+  /** MELETE_NETWORK_POOL is unset, so the pool is the service's default. */
+  defaultPool?: boolean;
+  /** Why MELETE_NETWORK_POOL cannot be used, in the service's own words; nothing else is judged. */
+  invalid?: string;
 };
 
-/** The engine's pools as `docker info` reports them; Docker's own when it reports none. */
+/**
+ * The engine's pools as `docker info` reports them; Docker's own when it
+ * reports no IPv4 pool, since IPv4 networks then come from the built-in ones.
+ */
 export function enginePools(reported: readonly Pool[] | null | undefined): {
   pools: readonly Pool[];
   builtIn: boolean;
 } {
-  return reported && reported.length > 0
-    ? { pools: reported, builtIn: false }
+  const ipv4 = (reported ?? []).filter((pool) => parseCidr(pool.base) !== null);
+  return ipv4.length > 0
+    ? { pools: ipv4, builtIn: false }
     : { pools: DOCKER_DEFAULT_POOLS, builtIn: true };
 }
 
 const DOCS = 'docs/DEPLOYMENT.md, "Docker address pools"';
 
-/** The rule for the engine's pools: free blocks, and any route a pool overlaps. */
+/** The rule for the pools networks come from: free blocks, and any route a pool overlaps. */
 export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
   const id = 'docker.address_pools';
   if (fact === null)
@@ -157,28 +168,42 @@ export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
         detail: "Docker's networks could not be listed, so how many more it can make is not known.",
       },
     ];
+  const melete = fact.source === 'melete';
+  if (fact.invalid !== undefined)
+    return [
+      {
+        id,
+        level: 'fail',
+        detail: `${fact.invalid}. The service does not start with it.`,
+        fix: `Set MELETE_NETWORK_POOL to a private IPv4 range from /8 to /24 that nothing on your network uses, clear it for the default, or set it to off for Docker's own pools: bun run melete set MELETE_NETWORK_POOL=<range> (${DOCS}).`,
+      },
+    ];
   const free = fact.pools.reduce((sum, pool) => sum + pool.free, 0);
   const blocks = fact.pools.reduce((sum, pool) => sum + pool.blocks, 0);
-  const which = fact.builtIn
-    ? "Docker's built-in address pools"
-    : `Docker's address pools (${fact.pools.map((pool) => `${pool.pool} in /${pool.size}s`).join(', ')})`;
-  const fix = `Give Docker a larger pool: in /etc/docker/daemon.json set "default-address-pools": [{"base": "10.216.0.0/14", "size": 24}] (any private range nothing on your network uses), then restart Docker (${DOCS}). Networks no container uses also hold blocks: docker network ls lists them.`;
+  const which = melete
+    ? `Melete's network pool ${fact.pools.map((pool) => pool.pool).join(', ')} (MELETE_NETWORK_POOL${fact.defaultPool ? ' unset, so the default' : ''}) has`
+    : fact.builtIn
+      ? "Docker's built-in address pools have"
+      : `Docker's address pools (${fact.pools.map((pool) => `${pool.pool} in /${pool.size}s`).join(', ')}) have`;
+  const fix = melete
+    ? `Give Melete a larger pool: bun run melete set MELETE_NETWORK_POOL=<range>, a private range from /8 to /24 that nothing on your network uses (a /16 holds 4096 networks) (${DOCS}). Networks no container uses also hold blocks: docker network ls lists them.`
+    : `Give Docker a larger pool: in /etc/docker/daemon.json set "default-address-pools": [{"base": "10.216.0.0/14", "size": 24}] (any private range nothing on your network uses), then restart Docker (${DOCS}). Networks no container uses also hold blocks: docker network ls lists them.`;
   const results: Result[] = [
     free === 0
       ? {
           id,
           level: 'fail',
-          detail: `${which} have no network left: all ${blocks} are taken. Every chat, agent computer and plugin that needs a network of its own fails until one is free.`,
+          detail: `${which} no network left: all ${blocks} are taken. Every chat, agent computer and plugin that needs a network of its own fails until one is free.`,
           fix,
         }
       : free < LOW_NETWORK_BLOCKS
         ? {
             id,
             level: 'warn',
-            detail: `${which} have ${free} of ${blocks} networks left. Each chat attempt, agent computer and plugin with network access takes one while it runs.`,
+            detail: `${which} ${free} of ${blocks} networks left. Each chat attempt, agent computer and plugin with network access takes one while it runs.`,
             fix,
           }
-        : { id, level: 'ok', detail: `${which} have ${free} of ${blocks} networks left.` },
+        : { id, level: 'ok', detail: `${which} ${free} of ${blocks} networks left.` },
   ];
   // Docker's built-in pools overlap many home networks, and Docker steps around them itself.
   for (const pool of fact.builtIn ? [] : fact.pools)
@@ -187,7 +212,9 @@ export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
         id: 'docker.address_pool_routes',
         level: 'warn',
         detail: `The address pool ${pool.pool} overlaps this machine's route to ${pool.routes.join(', ')}; a network made from it would hide those addresses from the containers on it.`,
-        fix: `Choose a pool that no route of this machine overlaps (ip route lists them), in /etc/docker/daemon.json (${DOCS}).`,
+        fix: melete
+          ? `Choose a pool that no route of this machine overlaps (ip route lists them): bun run melete set MELETE_NETWORK_POOL=<range> (${DOCS}).`
+          : `Choose a pool that no route of this machine overlaps (ip route lists them), in /etc/docker/daemon.json (${DOCS}).`,
       });
   return results;
 }
