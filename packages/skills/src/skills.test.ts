@@ -205,7 +205,9 @@ test('remember-this is marked as keeping memory, so an agent that keeps none is 
 });
 
 test('schedule-a-check-in sends a repeating reminder to a schedule, since one wait wakes only once', () => {
-  const skill = loadBuiltInSkills().skills.find((s) => s.frontmatter.name === 'schedule-a-check-in');
+  const skill = loadBuiltInSkills().skills.find(
+    (s) => s.frontmatter.name === 'schedule-a-check-in',
+  );
   const body = skill?.body ?? '';
   expect(body).toContain('job.wait');
   expect(body).toMatch(/wakes once[\s\S]*repeats[\s\S]*run\.start with repeat\.cron/);
