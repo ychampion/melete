@@ -9,6 +9,7 @@ import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import type { CellHandle, CellHost, CellSpec, CellState } from './cell-host.ts';
 import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
+import { createPooledNetwork } from './network-pool.ts';
 import { ADOPTING, LocalWorkspaceFs, type Removable, SPARE_DIRECTORY } from './workspace-fs.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
@@ -39,9 +40,13 @@ export class DockerError extends Error {
     readonly status: number,
     method: Method,
     path: string,
+    /** The engine's own reason, kept only for networks, whose requests carry no Env. */
+    readonly reason?: string,
   ) {
     // Docker errors can include the submitted configuration. Never log its Env.
-    super(`Docker ${method} ${path.split('?')[0]} answered ${status}`);
+    super(
+      `Docker ${method} ${path.split('?')[0]} answered ${status}${reason ? `: ${reason}` : ''}`,
+    );
   }
 }
 
@@ -72,6 +77,16 @@ export function dockerFetch(
   return fetch(`${endpoint.url.replace(/\/+$/, '')}/docker${path}`, { ...init, headers });
 }
 
+/** The `message` an engine (or the cell service) answered with, cut short. */
+async function engineReason(response: Response): Promise<string | undefined> {
+  try {
+    const { message } = (await response.json()) as { message?: unknown };
+    return typeof message === 'string' ? message.slice(0, 300) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Only this trusted service reaches the engine; no cell receives it or a Docker client. */
 export class DockerSocketApi implements DockerApi, DockerVersionSource {
   constructor(private readonly socket: DockerEndpoint) {}
@@ -93,7 +108,13 @@ export class DockerSocketApi implements DockerApi, DockerVersionSource {
         : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw new DockerError(response.status, method, path);
+    if (!response.ok)
+      throw new DockerError(
+        response.status,
+        method,
+        path,
+        path.startsWith('/networks') ? await engineReason(response) : undefined,
+      );
     const text = await response.text();
     return text ? JSON.parse(text) : null;
   }
@@ -393,14 +414,14 @@ export class LocalCellHost implements CellHost {
 
   /** One private network with the broker as its sole peer, and a home volume. */
   private async provisionCell(resources: Resources, labels: Labels, signal: AbortSignal) {
-    const network = (await this.docker.request('POST', '/networks/create', {
+    const network = await createPooledNetwork(this.docker, {
       Name: resources.network,
       Driver: 'bridge',
       Internal: true,
       EnableIPv6: false,
       Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
       Labels: labels,
-    })) as { Id: string };
+    });
     resources.networkId = network.Id;
     signal.throwIfAborted();
     await this.docker.request('POST', `/networks/${network.Id}/connect`, {
