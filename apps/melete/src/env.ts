@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
 import { parseModelPrices } from './gateway/prices.ts';
 import { parseModelChoice } from './gateway/routing.ts';
+import { DEFAULT_NETWORK_POOL, parseNetworkPool } from './runtime/network-pool.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -432,6 +433,22 @@ const variables = z.object({
     .default('melete_work'),
   MELETE_RUNTIME_START_TIMEOUT_MS: unsetWhenBlank(
     z.coerce.number().int().positive().default(120_000),
+  ),
+  /**
+   * The range the networks of attempts, computers and plugins take a /28 of
+   * each, or `off` for the engine's own address pools.
+   */
+  MELETE_NETWORK_POOL: unsetWhenBlank(
+    z
+      .string()
+      .default(DEFAULT_NETWORK_POOL)
+      .superRefine((value, context) => {
+        try {
+          parseNetworkPool(value);
+        } catch (error) {
+          context.addIssue({ code: 'custom', message: (error as Error).message });
+        }
+      }),
   ),
   /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
   MELETE_MCP_NODE_IMAGE: unsetWhenBlank(
