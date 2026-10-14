@@ -836,7 +836,12 @@ export function Toast({
       </span>
       <div className="col grow" style={{ gap: 2 }}>
         <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
-        {sub ? <span style={{ fontSize: 13, color: 'var(--muted)' }}>{sub}</span> : null}
+        {sub ? (
+          // A provider's address in it breaks anywhere rather than widening the toast.
+          <span style={{ fontSize: 13, color: 'var(--muted)', overflowWrap: 'anywhere' }}>
+            {sub}
+          </span>
+        ) : null}
       </div>
       {action ? (
         <Button size="sm" variant="outline" onClick={onAction}>

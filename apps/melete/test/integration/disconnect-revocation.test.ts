@@ -1,0 +1,518 @@
+/**
+ * What removing a connection does to the credential it held:
+ * - the sealed copy is deleted, and a key the person made for Melete comes
+ *   back with the page where they can cancel it themselves;
+ * - a sealed copy another connection still points at is kept, and its access
+ *   is not withdrawn;
+ * - an MCP sign-in is withdrawn at its issuer, found the way signing in found
+ *   it, including an issuer with a path and GitHub's own app API;
+ * - a provider that cannot be reached never stops the removal;
+ * - removing a space withdraws each of its sign-ins, unless another space
+ *   still stands on the same grant.
+ */
+import { afterAll, describe, expect, test } from 'bun:test';
+import { connectionGeneration } from '@melete/contracts';
+import {
+  connectionRevocation,
+  type RevocationOptions,
+  spaceAccessWithdrawal,
+} from '../../src/connectors/revocation.ts';
+import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
+import type { OAuthFetch } from '../../src/gateway/oauth.ts';
+import { newId } from '../../src/ids.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
+import { startQueue } from '../../src/jobs/queue.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { testDatabase } from '../helpers/database.ts';
+
+const MASTER_KEY = 'c4'.repeat(32);
+const handle = await testDatabase();
+const queue = handle ? await startQueue(handle.url) : null;
+const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
+const closers: Array<() => unknown> = [];
+afterAll(async () => {
+  for (const close of closers) await close();
+  await queue?.stop();
+  await handle?.close();
+}, 30_000);
+const withDb = jobs ? describe : describe.skip;
+
+const secrets = handle
+  ? new SealedSecretStore(new PostgresSecretRepository(handle.sql), () => MASTER_KEY)
+  : null;
+
+async function newSpace(): Promise<string> {
+  if (!handle) throw new Error('Postgres unavailable');
+  const id = newId('sp');
+  await handle.sql`insert into space (id, name, git_path) values (${id}, 'Fixture', ${`spaces/${id}`})`;
+  return id;
+}
+
+/** A connection holding `value` sealed, as an installation leaves it. */
+async function connect(
+  spaceId: string,
+  provider: string,
+  configuration: Record<string, unknown>,
+  value: string | null,
+  ref?: string,
+) {
+  if (!handle || !secrets) throw new Error('Postgres unavailable');
+  const secretRef = ref ?? (value === null ? null : await secrets.put(spaceId, value));
+  const id = newId('conn');
+  await handle.sql`insert into connection (id, space_id, provider, label, secret_ref, configuration)
+    values (${id}, ${spaceId}, ${provider}, 'Fixture', ${secretRef},
+      ${JSON.stringify(configuration)}::jsonb)`;
+  return { id, spaceId, provider, configuration, secretRef };
+}
+
+/** The connection's row as it now is. */
+async function rowOf(id: string) {
+  if (!handle) throw new Error('Postgres unavailable');
+  const [row] = await handle.sql`select secret_ref, status from connection where id = ${id}`;
+  return row;
+}
+
+const sealed = async (ref: string | null) =>
+  handle && ref ? (await handle.sql`select id from secret where id = ${ref}`).length : 0;
+
+function policyWith(options: Omit<RevocationOptions, 'sql' | 'secrets'>) {
+  if (!handle || !secrets || !jobs) throw new Error('Postgres unavailable');
+  return new PolicyService(jobs, undefined, {
+    afterRevoke: connectionRevocation({ sql: handle.sql, secrets, log: () => {}, ...options }),
+  });
+}
+
+/** A request as the provider received it. */
+type Seen = { method: string; url: string; headers: Headers; body: string };
+
+/** Answers by address, as the providers would; nothing leaves this process. */
+function providers(routes: Record<string, (seen: Seen) => Response>) {
+  const seen: Seen[] = [];
+  const fetcher: OAuthFetch = async (request) => {
+    const entry = {
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: request.body ? await request.text() : '',
+    };
+    seen.push(entry);
+    const route = routes[`${request.method} ${request.url}`];
+    return route ? route(entry) : new Response('not found', { status: 404 });
+  };
+  return { seen, fetcher };
+}
+
+withDb('removing a connection that holds a key the person made', () => {
+  test('deletes the sealed copy and names the page where the token itself is cancelled', async () => {
+    const spaceId = await newSpace();
+    const github = { kind: 'command_line', adapter: 'github', config: {}, account: 'someone' };
+    const fine = await connect(spaceId, 'command_line', github, 'github_pat_example');
+    const classic = await connect(spaceId, 'command_line', github, 'ghp_example');
+    const policy = policyWith({});
+
+    const answer = connectionGeneration.parse(
+      await policy.changeConnection(fine.id, { kind: 'revoke', expected_generation: 0 }),
+    );
+    expect(answer.status).toBe('revoked');
+    expect(answer.provider_access).toBe('not_offered');
+    expect(answer.revoke_at).toEqual({
+      name: 'GitHub',
+      url: 'https://github.com/settings/personal-access-tokens',
+    });
+    expect(await sealed(fine.secretRef)).toBe(0);
+    expect(await rowOf(fine.id)).toEqual({ secret_ref: null, status: 'revoked' });
+
+    const other = await policy.changeConnection(classic.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(other.revoke_at?.url).toBe('https://github.com/settings/tokens');
+    expect(await sealed(classic.secretRef)).toBe(0);
+  });
+
+  test('names the page for each kind of key, and none where there is no page to name', async () => {
+    const spaceId = await newSpace();
+    const policy = policyWith({});
+    const cases: Array<[string, Record<string, unknown>, string, string | undefined]> = [
+      [
+        'command_line',
+        { kind: 'command_line', adapter: 'gitlab', config: {} },
+        'glpat-example',
+        'https://gitlab.com/-/user_settings/personal_access_tokens',
+      ],
+      [
+        'command_line',
+        { kind: 'command_line', adapter: 'npm', config: {} },
+        'npm_example',
+        'https://docs.npmjs.com/revoking-access-tokens',
+      ],
+      [
+        'command_line',
+        { kind: 'command_line', adapter: 'aws', config: {} },
+        '{"access_key_id":"AKIAEXAMPLE","secret_access_key":"example"}',
+        'https://console.aws.amazon.com/iam/',
+      ],
+      ['twilio', { kind: 'sms', sms: {} }, '{}', 'https://console.twilio.com'],
+      [
+        'imap',
+        { kind: 'mail', mail: { imap: { host: 'imap.gmail.com', port: 993, secure: true } } },
+        'app-password',
+        'https://myaccount.google.com/apppasswords',
+      ],
+      [
+        'imap',
+        { kind: 'mail', mail: { imap: { host: 'mail.example.test', port: 993, secure: true } } },
+        'password',
+        undefined,
+      ],
+      [
+        'imap',
+        { kind: 'outlook_mail', account: 'someone@outlook.com' },
+        '{}',
+        'https://account.live.com/consent/Manage',
+      ],
+      [
+        'imap',
+        { kind: 'outlook_mail', account: 'someone@company.example' },
+        '{}',
+        'https://myapps.microsoft.com',
+      ],
+    ];
+    for (const [provider, configuration, value, url] of cases) {
+      const made = await connect(spaceId, provider, configuration, value);
+      const answer = await policy.changeConnection(made.id, {
+        kind: 'revoke',
+        expected_generation: 0,
+      });
+      expect(answer.provider_access).toBe('not_offered');
+      expect(answer.revoke_at?.url).toBe(url);
+      expect(await sealed(made.secretRef)).toBe(0);
+    }
+  });
+
+  test('keeps a sealed copy another connection still points at, and does not withdraw it', async () => {
+    const spaceId = await newSpace();
+    const { seen, fetcher } = providers({});
+    const configuration = { kind: 'gmail', account: 'shared-copy@example.test' };
+    const value = JSON.stringify({
+      access_token: 'at-shared',
+      refresh_token: 'rt-shared',
+      scope: 'x',
+      account: 'shared-copy@example.test',
+    });
+    const leaving = await connect(spaceId, 'imap', configuration, value);
+    const staying = await connect(spaceId, 'caldav', configuration, null, leaving.secretRef ?? '');
+    const policy = policyWith({
+      fetcher,
+      google: { client: { clientId: 'client', clientSecret: 'secret' } },
+    });
+    const answer = await policy.changeConnection(leaving.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.status).toBe('revoked');
+    expect(answer.provider_access).toBe('kept_for_other_connections');
+    expect(seen).toEqual([]);
+    expect(await sealed(leaving.secretRef)).toBe(1);
+    expect((await rowOf(staying.id))?.secret_ref).toBe(leaving.secretRef);
+  });
+
+  test('a provider that cannot be reached does not stop the removal', async () => {
+    const spaceId = await newSpace();
+    const google = await connect(
+      spaceId,
+      'imap',
+      { kind: 'gmail', account: 'unreachable@example.test' },
+      JSON.stringify({
+        access_token: 'at-u',
+        refresh_token: 'rt-u',
+        scope: 'x',
+        account: 'unreachable@example.test',
+      }),
+    );
+    const policy = policyWith({
+      google: { client: { clientId: 'client', clientSecret: 'secret' } },
+      fetcher: async () => {
+        throw new TypeError('fetch failed: connection refused');
+      },
+    });
+    const answer = await policy.changeConnection(google.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.status).toBe('revoked');
+    expect(answer.provider_access).toBe('not_confirmed');
+    expect(answer.revoke_at?.url).toBe('https://myaccount.google.com/linkedapps');
+    expect(await sealed(google.secretRef)).toBe(0);
+  });
+
+  test('a provider that never answers is given up on, and the removal finishes', async () => {
+    if (!handle || !secrets) return;
+    const spaceId = await newSpace();
+    const google = await connect(
+      spaceId,
+      'imap',
+      { kind: 'gmail', account: 'silent@example.test' },
+      JSON.stringify({ access_token: 'at-s', scope: 'x', account: 'silent@example.test' }),
+    );
+    const revoke = connectionRevocation(
+      {
+        sql: handle.sql,
+        secrets,
+        log: () => {},
+        google: { client: { clientId: 'client', clientSecret: 'secret' } },
+        fetcher: () => new Promise<Response>(() => {}),
+      },
+      200,
+    );
+    const started = Date.now();
+    expect((await revoke(google))?.provider_access).toBe('not_confirmed');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await sealed(google.secretRef)).toBe(0);
+  });
+});
+
+withDb('removing an MCP connection signed in with OAuth', () => {
+  test('finds an issuer with a path, and withdraws the token at its revocation endpoint', async () => {
+    // A real server on this machine, standing in for the app's sign-in.
+    const received: Array<{ path: string; form: Record<string, string> }> = [];
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request): Promise<Response> {
+        const url = new URL(request.url);
+        const base = url.origin;
+        if (
+          request.method === 'GET' &&
+          url.pathname === '/.well-known/oauth-authorization-server/tenant'
+        )
+          return Response.json({
+            issuer: `${base}/tenant`,
+            authorization_endpoint: `${base}/tenant/oauth2/authorize`,
+            token_endpoint: `${base}/tenant/oauth2/token`,
+            revocation_endpoint: `${base}/tenant/oauth2/revoke`,
+            code_challenge_methods_supported: ['S256'],
+          });
+        if (request.method === 'POST' && url.pathname === '/tenant/oauth2/revoke') {
+          received.push({
+            path: url.pathname,
+            form: Object.fromEntries(new URLSearchParams(await request.text())),
+          });
+          return new Response(null, { status: 200 });
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    closers.push(() => server.stop(true));
+    const base = `http://127.0.0.1:${server.port}`;
+    const spaceId = await newSpace();
+    const mcp = await connect(
+      spaceId,
+      'mcp',
+      { server: { endpoint: { transport: 'http', url: `${base}/mcp` } } },
+      JSON.stringify({
+        access_token: 'at-mcp',
+        refresh_token: 'rt-mcp',
+        token_url: `${base}/tenant/oauth2/token`,
+        client_id: 'melete-client',
+        resource: `${base}/mcp`,
+        status: 'active',
+      }),
+    );
+    const policy = policyWith({ mcpFetch: async () => (request) => fetch(request) });
+    const answer = await policy.changeConnection(mcp.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(answer.revoke_at).toBeUndefined();
+    expect(received).toEqual([
+      {
+        path: '/tenant/oauth2/revoke',
+        form: { token: 'rt-mcp', token_type_hint: 'refresh_token', client_id: 'melete-client' },
+      },
+    ]);
+    expect(await sealed(mcp.secretRef)).toBe(0);
+  });
+
+  const GITHUB_SERVER = 'https://api.githubcopilot.com/mcp/';
+  const githubRoutes = (answer: number) => ({
+    'GET https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp': () =>
+      Response.json({
+        resource: 'https://api.githubcopilot.com/mcp',
+        authorization_servers: ['https://github.com/login/oauth'],
+      }),
+    'GET https://github.com/.well-known/oauth-authorization-server/login/oauth': () =>
+      Response.json({
+        issuer: 'https://github.com/login/oauth',
+        authorization_endpoint: 'https://github.com/login/oauth/authorize',
+        token_endpoint: 'https://github.com/login/oauth/access_token',
+        code_challenge_methods_supported: ['S256'],
+      }),
+    'DELETE https://api.github.com/applications/app-client/grant': () =>
+      new Response(null, { status: answer }),
+    'DELETE https://api.github.com/applications/app-client/token': () =>
+      new Response(null, { status: answer }),
+  });
+  const githubCredential = JSON.stringify({
+    access_token: 'gho_example',
+    client_id: 'app-client',
+    client_secret: 'app-secret',
+    resource: 'https://api.githubcopilot.com/mcp',
+    status: 'active',
+  });
+  const githubConfiguration = { server: { endpoint: { transport: 'http', url: GITHUB_SERVER } } };
+
+  test("withdraws GitHub's grant through its app API with the app's own client", async () => {
+    const { seen, fetcher } = providers(githubRoutes(204));
+    const spaceId = await newSpace();
+    const mcp = await connect(spaceId, 'mcp', githubConfiguration, githubCredential);
+    const answer = await policyWith({ mcpFetch: async () => fetcher }).changeConnection(mcp.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    const withdrawal = seen.find((entry) => entry.method === 'DELETE');
+    expect(withdrawal?.url).toBe('https://api.github.com/applications/app-client/grant');
+    expect(withdrawal?.headers.get('authorization')).toBe(
+      `Basic ${Buffer.from('app-client:app-secret').toString('base64')}`,
+    );
+    expect(JSON.parse(withdrawal?.body ?? '{}')).toEqual({ access_token: 'gho_example' });
+    expect(await sealed(mcp.secretRef)).toBe(0);
+  });
+
+  test('withdraws only the token while another connection may stand on the same grant', async () => {
+    const { seen, fetcher } = providers(githubRoutes(204));
+    const spaceId = await newSpace();
+    await connect(spaceId, 'mcp', githubConfiguration, githubCredential);
+    const mcp = await connect(spaceId, 'mcp', githubConfiguration, githubCredential);
+    const answer = await policyWith({ mcpFetch: async () => fetcher }).changeConnection(mcp.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(seen.find((entry) => entry.method === 'DELETE')?.url).toBe(
+      'https://api.github.com/applications/app-client/token',
+    );
+  });
+
+  test('says where to withdraw it when GitHub refuses', async () => {
+    const { fetcher } = providers(githubRoutes(422));
+    const spaceId = await newSpace();
+    const mcp = await connect(spaceId, 'mcp', githubConfiguration, githubCredential);
+    const answer = await policyWith({ mcpFetch: async () => fetcher }).changeConnection(mcp.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('not_confirmed');
+    expect(answer.revoke_at).toEqual({
+      name: 'GitHub',
+      url: 'https://github.com/settings/applications',
+    });
+    expect(await sealed(mcp.secretRef)).toBe(0);
+  });
+
+  test('a key pasted for an MCP server is never sent anywhere', async () => {
+    const { seen, fetcher } = providers({});
+    const spaceId = await newSpace();
+    const mcp = await connect(
+      spaceId,
+      'mcp',
+      githubConfiguration,
+      JSON.stringify({ access_token: 'pasted-key', status: 'active' }),
+    );
+    const answer = await policyWith({ mcpFetch: async () => fetcher }).changeConnection(mcp.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('not_offered');
+    expect(seen).toEqual([]);
+    expect(await sealed(mcp.secretRef)).toBe(0);
+  });
+});
+
+withDb('removing a space', () => {
+  test("withdraws its sign-ins, unless another space still stands on the account's grant", async () => {
+    if (!handle || !secrets) return;
+    const revoked: string[] = [];
+    const fetcher: OAuthFetch = async (request) => {
+      revoked.push(new URLSearchParams(await request.text()).get('token') ?? '');
+      return new Response(null, { status: 200 });
+    };
+    const google = (account: string, token: string) =>
+      JSON.stringify({ access_token: `at-${token}`, refresh_token: token, scope: 'x', account });
+    const leaving = await newSpace();
+    const other = await newSpace();
+    // Mail and calendar on one account, both in the space that goes.
+    await connect(
+      leaving,
+      'imap',
+      { kind: 'gmail', account: 'a@example.test' },
+      google('a@example.test', 'rt-a-mail'),
+    );
+    await connect(
+      leaving,
+      'caldav',
+      { kind: 'google_calendar', account: 'a@example.test' },
+      google('a@example.test', 'rt-a-calendar'),
+    );
+    // An account another space still uses.
+    await connect(
+      leaving,
+      'imap',
+      { kind: 'gmail', account: 'b@example.test' },
+      google('b@example.test', 'rt-b-leaving'),
+    );
+    await connect(
+      other,
+      'imap',
+      { kind: 'gmail', account: 'b@example.test' },
+      google('b@example.test', 'rt-b-staying'),
+    );
+    // A key the person made: nothing to ask anyone.
+    await connect(
+      leaving,
+      'command_line',
+      { kind: 'command_line', adapter: 'github' },
+      'github_pat_example',
+    );
+
+    await spaceAccessWithdrawal({
+      sql: handle.sql,
+      secrets,
+      log: () => {},
+      fetcher,
+      google: { client: { clientId: 'client', clientSecret: 'secret' } },
+    })(leaving);
+    expect(revoked.sort()).toEqual(['rt-a-calendar', 'rt-a-mail']);
+  });
+
+  test('a provider that fails or hangs does not stop it', async () => {
+    if (!handle || !secrets) return;
+    const space = await newSpace();
+    for (const account of ['h1@example.test', 'h2@example.test'])
+      await connect(
+        space,
+        'imap',
+        { kind: 'gmail', account },
+        JSON.stringify({ access_token: 'at', refresh_token: `rt-${account}`, scope: 'x', account }),
+      );
+    const lines: string[] = [];
+    let calls = 0;
+    await spaceAccessWithdrawal(
+      {
+        sql: handle.sql,
+        secrets,
+        log: (line) => lines.push(line),
+        fetcher: () => {
+          calls += 1;
+          return calls === 1 ? new Promise<Response>(() => {}) : Promise.reject(new Error('down'));
+        },
+        google: { client: { clientId: 'client', clientSecret: 'secret' } },
+      },
+      200,
+    )(space);
+    expect(calls).toBe(2);
+    expect(lines).toHaveLength(2);
+  });
+});

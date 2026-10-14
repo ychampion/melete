@@ -4047,6 +4047,11 @@ export interface paths {
                             policy_generation: number;
                             /** @enum {string} */
                             provider_access?: "withdrawn" | "kept_for_other_connections" | "not_offered" | "not_confirmed";
+                            revoke_at?: {
+                                name: string;
+                                /** Format: uri */
+                                url: string;
+                            };
                             status: string;
                         };
                     };

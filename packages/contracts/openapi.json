@@ -13835,6 +13835,25 @@
                         "not_offered",
                         "not_confirmed"
                       ]
+                    },
+                    "revoke_at": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80
+                        },
+                        "url": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "url"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [

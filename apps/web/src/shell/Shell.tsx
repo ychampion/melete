@@ -62,6 +62,8 @@ export type ToastSpec = {
   sub?: string;
   action?: string;
   onAction?: () => void;
+  /** Kept until closed, for a step the person still has to take. */
+  persist?: boolean;
 };
 
 let toastSeq = 0;
@@ -78,7 +80,8 @@ function ToastStack() {
   useEffect(() => {
     const listener = (item: ToastSpec) => {
       setToasts((previous) => [...previous, item]);
-      setTimeout(() => setToasts((previous) => previous.filter((t) => t.id !== item.id)), 6000);
+      if (!item.persist)
+        setTimeout(() => setToasts((previous) => previous.filter((t) => t.id !== item.id)), 6000);
     };
     toastListeners.add(listener);
     return () => {

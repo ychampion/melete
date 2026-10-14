@@ -7,6 +7,7 @@ import {
   type AppEntry,
   Catalog,
   ConnectionActions,
+  disconnectedNote,
   KindForm,
   Linked,
   type SignInEntry,
@@ -147,6 +148,28 @@ test('a connection the service keeps in every space is tested here and not remov
   );
   expect(installed).toContain('Test');
   expect(installed).toContain('Disconnect');
+});
+
+test('after a removal, the person reads that the copy is gone and where to cancel the rest', () => {
+  const pasted = disconnectedNote({
+    provider_access: 'not_offered',
+    revoke_at: { name: 'GitHub', url: 'https://github.com/settings/personal-access-tokens' },
+  });
+  expect(pasted.sub).toBe(
+    'Melete has deleted its copy. To cancel the token itself, delete it at https://github.com/settings/personal-access-tokens',
+  );
+  expect(pasted.link?.name).toBe('GitHub');
+  const unconfirmed = disconnectedNote({
+    provider_access: 'not_confirmed',
+    revoke_at: { name: 'Google', url: 'https://myaccount.google.com/linkedapps' },
+  });
+  expect(unconfirmed.sub).toContain('didn’t confirm');
+  expect(unconfirmed.sub).toContain('https://myaccount.google.com/linkedapps');
+  const withdrawn = disconnectedNote({ provider_access: 'withdrawn' });
+  expect(withdrawn.sub).toContain('withdrawn Melete’s access');
+  expect(withdrawn.link).toBeUndefined();
+  // Nothing was held, so nothing is said beyond the disconnection itself.
+  expect(disconnectedNote({}).sub).toBeNull();
 });
 
 /** A catalog entry for Google, as the service serves it. */
