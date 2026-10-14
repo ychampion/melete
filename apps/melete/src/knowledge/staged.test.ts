@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   existsSync,
   mkdirSync,
@@ -10,7 +10,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as knowledge from '@melete/knowledge';
 import { STAGED_WRITE_DAYS } from '@melete/knowledge';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { startStagedWriteSweep, sweepStagedWrites } from './staged.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -92,4 +94,32 @@ describe('writes staged in a space that nothing applied', () => {
       expect(existsSync(old)).toBe(!leading);
       expect(said).toEqual([]);
     });
+
+  test('a space whose staged writes cannot be removed never stops the sweep of the others', async () => {
+    const root = spacesRoot();
+    const old = ['sp_a', 'sp_b', 'sp_c', 'sp_d'].map((space) =>
+      stage(root, space, 'prop_01GGGGGGGGGGGGGGGGGGGGGGGG.json', 365),
+    );
+    stage(root, 'sp_held', 'prop_01HHHHHHHHHHHHHHHHHHHHHHHH.json', 365);
+    const expire = knowledge.expireProposals;
+    const refused = spyOn(knowledge, 'expireProposals').mockImplementation((paths, before) => {
+      if (paths.space === 'sp_held') throw new Error('operation not permitted');
+      return expire(paths, before);
+    });
+    const said: string[] = [];
+    const failures = new ItemFailures('staged write sweep', {
+      firstMs: 3_600_000,
+      maxMs: 3_600_000,
+      say: (line) => said.push(line),
+    });
+    try {
+      expect(await sweepStagedWrites(root, NOW, STAGED_WRITE_DAYS, failures)).toBe(4);
+    } finally {
+      refused.mockRestore();
+    }
+    for (const file of old) expect(existsSync(file)).toBe(false);
+    expect(said).toEqual([
+      'staged write sweep: sp_held failed (operation not permitted); the others carry on, and it is tried again in 1 h',
+    ]);
+  });
 });

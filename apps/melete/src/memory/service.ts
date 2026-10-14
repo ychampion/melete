@@ -1,5 +1,6 @@
 import type { PgBoss } from 'pg-boss';
 import { workQuiet } from '../jobs/quiet.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
 import { type CommitResult, commitExtraction } from './commit.ts';
@@ -137,29 +138,52 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     options.onError?.(code);
   }
 }
-/** Builds what memory derives from its writes. Resolves to whether there was any to build. */
-export async function runDerivedWork(options: MemoryServiceOptions): Promise<boolean> {
+/**
+ * Spaces whose memory work failed: each waits from half a minute, doubling up
+ * to half an hour, before it is tried again, while every other space goes on.
+ */
+export const derivedWorkFailures = () =>
+  new ItemFailures('memory background work', { firstMs: 30_000, maxMs: 30 * 60_000 });
+
+/**
+ * Builds what memory derives from its writes. Resolves to whether there was any
+ * to build. One space whose work fails never holds up the spaces after it.
+ */
+export async function runDerivedWork(
+  options: MemoryServiceOptions,
+  failures = derivedWorkFailures(),
+): Promise<boolean> {
   const markdown = options.markdown;
+  // A space waiting out a failure is left out here, so it neither takes one of
+  // the hundred places nor keeps the loop busy.
   const spaces =
     await options.sql`select distinct p.* from memory_spaces p join memory_outbox o on o.space_id = p.space_id
-    where o.completed_at is null and o.kind in ('index','cleanup','markdown','proposal') order by p.space_id limit 100`;
+    where o.completed_at is null and o.kind in ('index','cleanup','markdown','proposal')
+      and p.space_id <> all(${failures.waiting()}::text[])
+    order by p.space_id limit 100`;
   for (const space of spaces) {
-    await cleanupMemory(
-      options.sql,
-      space.space_id,
-      markdown ? (spaceId, claimIds) => markdown.cleanup(spaceId, claimIds) : undefined,
-    );
-    if (!space.restore_ready || space.revoked) continue;
-    const scope: MemoryScope = {
-      ownerId: space.owner_id,
-      spaceId: space.space_id,
-      publisher: 'view-builder',
-      audience: 'private',
-      role: 'owner',
-    };
-    await runViewWork(options.sql, scope, options.embedding);
-    await options.markdown?.build(scope);
-    await options.markdown?.proposals(scope);
+    try {
+      await cleanupMemory(
+        options.sql,
+        space.space_id,
+        markdown ? (spaceId, claimIds) => markdown.cleanup(spaceId, claimIds) : undefined,
+      );
+      if (space.restore_ready && !space.revoked) {
+        const scope: MemoryScope = {
+          ownerId: space.owner_id,
+          spaceId: space.space_id,
+          publisher: 'view-builder',
+          audience: 'private',
+          role: 'owner',
+        };
+        await runViewWork(options.sql, scope, options.embedding);
+        await options.markdown?.build(scope);
+        await options.markdown?.proposals(scope);
+      }
+      failures.succeeded(space.space_id);
+    } catch (error) {
+      failures.failed(space.space_id, error);
+    }
   }
   // A note is embedded shortly after it is written. A failing provider is
   // asked again after a growing pause, up to five minutes, not every tick.
@@ -229,7 +253,8 @@ export async function startMemoryService(options: MemoryServiceOptions) {
   const stopRecovery = startRecoveryScan(options.sql, options.boss, onError);
   // Every two seconds while there is derived work, when a change is committed,
   // and otherwise at most every half minute.
-  const derived = quietLoop(() => runDerivedWork(options), {
+  const failures = derivedWorkFailures();
+  const derived = quietLoop(() => runDerivedWork(options, failures), {
     busyMs: 2000,
     idleMs: 30_000,
     wakeOn: options.wakeOn,

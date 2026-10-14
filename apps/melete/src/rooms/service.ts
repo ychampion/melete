@@ -251,17 +251,39 @@ export class RoomService {
     return { removed: memberId };
   }
 
-  /** Accounts a person can add to a room: people, never a room's own principal or a guest. */
+  /**
+   * Accounts a person can add to a room: people, never a room's own principal
+   * or a guest. The person who set this installation up finds everyone. Anyone
+   * else finds themselves and the people they share a space or room with now,
+   * and someone else only by typing that person's whole email address, so
+   * nobody can list the other accounts here.
+   */
   async people(actor: string, query?: string) {
     if ((await this.kindOf(actor)) !== 'person')
       throw new ServiceError('scope_denied', 'Only a person can look up people.', 403);
-    const pattern = query?.trim() ? `%${query.trim().replace(/[\\%_]/g, '\\$&')}%` : undefined;
+    const typed = query?.trim() ?? '';
+    const pattern = typed ? `%${typed.replace(/[\\%_]/g, '\\$&')}%` : undefined;
+    const current = (alias: string) =>
+      sql.raw(
+        `${alias}.revoked_at is null and (${alias}.expires_at is null or ${alias}.expires_at > now())`,
+      );
+    const visible = or(
+      sql`exists (select 1 from owner o where o.id = ${actor})`,
+      eq(principal.id, actor),
+      sql`exists (select 1 from space_membership mine
+        join space_membership theirs on theirs.space_id = mine.space_id
+        join space s on s.id = mine.space_id
+        where mine.principal_id = ${actor} and theirs.principal_id = ${principal.id}
+          and s.removed_at is null and ${current('mine')} and ${current('theirs')})`,
+      typed ? sql`lower(${principal.email}) = lower(${typed})` : undefined,
+    );
     const rows = await this.deps.db
       .select()
       .from(principal)
       .where(
         and(
           eq(principal.kind, 'person'),
+          visible,
           pattern
             ? or(ilike(principal.email, pattern), ilike(principal.displayName, pattern))
             : undefined,
