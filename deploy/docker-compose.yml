@@ -227,7 +227,7 @@ services:
       # Automatic memory (docs/DEPLOYMENT.md, "Memory model"). Empty uses the default model.
       MELETE_MEMORY_MODEL: ${MELETE_MEMORY_MODEL:-}
       MELETE_MEMORY_PROVIDER: ${MELETE_MEMORY_PROVIDER:-}
-      MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-200}
+      MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-}
       # Semantic recall (docs/DEPLOYMENT.md, "Semantic recall"). Empty uses the default provider's embedding model.
       MELETE_EMBEDDING_PROVIDER: ${MELETE_EMBEDDING_PROVIDER:-}
       MELETE_EMBEDDING_MODEL: ${MELETE_EMBEDDING_MODEL:-}

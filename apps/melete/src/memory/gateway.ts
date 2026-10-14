@@ -53,7 +53,8 @@ export type MemoryGatewayOptions = {
    * uses `provider`, `model` and `providers` as given.
    */
   source?: ServiceModelSource;
-  dailyCalls: number;
+  /** Calls one person's memory may make in a rolling day; left out, there is no limit. */
+  dailyCalls?: number | undefined;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
   /** How long one call may take; the extraction limit unless a test shortens it. */
@@ -100,7 +101,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         const [used] = await tx`select count(*)::int as calls from memory_model_calls
           where owner_id = ${call.ownerId} and created_at > clock_timestamp() - interval '1 day'
             and coalesce(settlement->>'status', '') <> 'failed'`;
-        if (Number(used?.calls ?? 0) >= options.dailyCalls)
+        if (options.dailyCalls !== undefined && Number(used?.calls ?? 0) >= options.dailyCalls)
           throw new GatewayError(429, 'memory_daily_budget');
         const id = randomUUID();
         await tx`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
