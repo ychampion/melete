@@ -23,6 +23,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { parseNetworkPool } from '../../apps/melete/src/runtime/network-pool.ts';
 import { ENV_FILE_MODE, fileReplacer, replaceFile } from './tailscale-origin.ts';
 
 export const SET_ENV_USAGE =
@@ -73,6 +74,15 @@ export function requestedSettings(
     // A line break would write a second setting; a space is a mistyped key.
     if (/[\r\n]/.test(value ?? '') || (fromEnv && /\s/.test(value ?? '')))
       throw new SetEnvRefusal(`${name} contains a space or a line break; set it again.`);
+    // The service refuses to start with a pool it cannot use, so it is not written.
+    if (name === 'MELETE_NETWORK_POOL')
+      try {
+        parseNetworkPool(value);
+      } catch (error) {
+        throw new SetEnvRefusal(
+          `${(error as Error).message}. The service does not start with it, so nothing was changed.`,
+        );
+      }
     return { name, value: value ?? '', secret: fromEnv || isSecretName(name) };
   });
 }

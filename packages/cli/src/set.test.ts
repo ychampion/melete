@@ -33,6 +33,25 @@ describe('melete set', () => {
     expect(context.errors()).not.toContain('sk-typed');
   });
 
+  test('a network pool the service refuses is not written, even with --force; one it takes is', async () => {
+    const deployDir = temporaryDeployDir();
+    const before = writeEnv(deployDir);
+    for (const args of [
+      ['MELETE_NETWORK_POOL=10.214.0.0/25'],
+      ['--force', 'MELETE_NETWORK_POOL=127.0.0.0/16'],
+    ]) {
+      const context = testContext(deployDir);
+      expect(await runSet(context, args)).toBe(2);
+      expect(read(deployDir, '.env')).toBe(before);
+      expect(context.errors()).toContain(
+        'The service does not start with it, so nothing was changed.',
+      );
+    }
+    const context = testContext(deployDir);
+    expect(await runSet(context, ['MELETE_NETWORK_POOL=10.214.0.0/16'])).toBe(0);
+    expect(read(deployDir, '.env')).toContain('\nMELETE_NETWORK_POOL=10.214.0.0/16\n');
+  });
+
   test('a key from the environment is written and only named', async () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir);
