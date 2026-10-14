@@ -253,6 +253,15 @@ export function providerRejection(
   return `provider_rejected: ${target} answered ${status}${reason ? ` (${reason})` : ''}`;
 }
 
+/**
+ * The operator's log for one gateway: every error it reports (a provider's refusal, a ledger
+ * failure), one line each, under the gateway's name. The lines carry no keys: a refusal is
+ * already redacted by providerRejection, and the rest are codes.
+ */
+export function gatewayLog(name: string): (error: Error) => void {
+  return (error) => process.stderr.write(`${name} gateway: ${error.message}\n`);
+}
+
 /** At most `limit` bytes of a response's text; the rest is not read. */
 async function cappedText(response: Response, limit: number): Promise<string> {
   const reader = response.body?.getReader();

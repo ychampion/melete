@@ -20,7 +20,7 @@ import type { AddressInfo } from 'node:net';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
@@ -141,6 +141,7 @@ export async function openTriageGateway(options: TriageGatewayOptions): Promise<
     timeoutMs: options.timeoutMs ?? TRIAGE_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
     maxResponseBytes: 128 * 1024,
+    onError: gatewayLog('triage'),
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'triage_principal_denied');
