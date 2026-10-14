@@ -16,7 +16,7 @@ const providers: GatewayProvider[] = [
   {
     name: 'anthropic',
     baseUrl: 'https://api.anthropic.com/v1/',
-    apiKey: 'sk-ant-real-key',
+    apiKey: 'test-provider-key',
     protocols: ['messages'],
   },
   {
@@ -164,7 +164,7 @@ test('a Claude model searches with its own search tool through the gateway, mete
   });
   expect(upstream[0]?.url).toBe('https://api.anthropic.com/v1/messages');
   // The real key is the gateway's; the caller only ever had a surrogate.
-  expect(upstream[0]?.headers.get('x-api-key')).toBe('sk-ant-real-key');
+  expect(upstream[0]?.headers.get('x-api-key')).toBe('test-provider-key');
   expect(bodies[0]).toMatchObject({
     model: 'claude-sonnet-4-5',
     tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: SEARCH_MAX_USES }],
@@ -394,7 +394,7 @@ test("a provider's refusal of a search reaches the operator's log, named and wit
             type: 'error',
             error: {
               type: 'invalid_request_error',
-              message: 'web_search is not enabled for this key (sk-ant-real-key)',
+              message: 'web_search is not enabled for this key (test-provider-key)',
             },
           },
           { status: 400 },
