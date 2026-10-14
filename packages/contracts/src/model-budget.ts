@@ -19,6 +19,21 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash': 1_000_000,
   'gpt-6-astra': 1_050_000,
+  // Anthropic's current models, as its Messages API names them. Unlisted, a
+  // Claude model fell back to 128,000, below the 128,000-token output cap the
+  // engine asks of every current Claude model, so every call was refused.
+  'claude-fable-5-1': 1_000_000,
+  'claude-fable-5': 1_000_000,
+  'claude-opus-5-5': 1_000_000,
+  'claude-opus-5': 1_000_000,
+  'claude-opus-4-8': 1_000_000,
+  'claude-opus-4-7': 1_000_000,
+  'claude-opus-4-6': 1_000_000,
+  'claude-sonnet-5-5': 1_000_000,
+  'claude-sonnet-5': 1_000_000,
+  'claude-sonnet-4-6': 1_000_000,
+  'claude-haiku-5-5': 1_000_000,
+  'claude-haiku-4-5': 200_000,
 };
 
 /** The window a model answers with, or the documented fallback. */

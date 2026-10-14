@@ -11,6 +11,7 @@ import contextvars
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -353,3 +354,18 @@ def attach_helper_parked(result: Any) -> Any:
     data["awaiting_approval"] = parked
     data["awaiting_approval_note"] = HELPER_PARKED_NOTE
     return json.dumps(data, ensure_ascii=False)
+
+
+def gateway_headers(base_url: Any) -> dict[str, str]:
+    """The attempt's capability header for a model client pointed at Melete's
+    broker, and nothing for any other address, so the capability never goes to
+    a third party. Read when the client is built: a spare engine has no
+    capability until its attempt is handed over."""
+    token = os.environ.get("MELETE_ATTEMPT_TOKEN", "")
+    broker = os.environ.get("MELETE_BROKER_URL", "").rstrip("/")
+    if not token or not broker or not isinstance(base_url, str):
+        return {}
+    address = base_url.rstrip("/")
+    if address == broker or address.startswith(broker + "/"):
+        return {"x-melete-capability": token}
+    return {}
