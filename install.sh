@@ -16,10 +16,24 @@
 #   MELETE_MODEL      the model id to use with ANTHROPIC_API_KEY, OPENAI_API_KEY
 #                     or GOOGLE_API_KEY
 #   MELETE_NO_OPEN    set to 1 to leave the browser closed
+#   MELETE_COMPUTER   1 (the default for a new installation) gives every agent
+#                     a computer of its own, a container on this Docker engine;
+#                     0 leaves it out. Its image is a download of about
+#                     600 MB and takes about 2.3 GB of disk
+#   MELETE_PROJECT    the Compose project name (default melete). A second
+#                     installation on one machine needs its own, and its own
+#                     MELETE_PORT and MELETE_WEB_PORT; it is chosen once, when
+#                     deploy/.env is written
+#   MELETE_PORT       the service's port on 127.0.0.1 (default 3100)
+#   MELETE_WEB_PORT   the web app's port on 127.0.0.1 (default 3101)
 #   MELETE_BROWSER    set to 1, once your account exists, to turn on the browser
 #                     worker: the agent's own browser
 #   MELETE_BROWSER_SPACE  with MELETE_BROWSER=1, the space the worker works for
 #                     (default the first person's own)
+#
+# The options go on the bash side of the pipe, where the installer reads them:
+#
+#   curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash
 #
 # deploy/.env holds the same settings deploy/scripts/configure.ts writes. Once
 # the browser worker's space is named there, by MELETE_BROWSER=1 or by
@@ -295,6 +309,18 @@ MELETE_DEFAULT_PROVIDER=$PROVIDER
 MELETE_DEFAULT_MODEL=$model
 MELETE_ENABLE_FAKE_PROVIDER=$fake
 MELETE_ENABLE_TEST_CONNECTOR=$fake"
+  [ -z "$PROJECT" ] || settings="$settings
+COMPOSE_PROJECT_NAME=$PROJECT"
+  [ -z "$SERVICE_PORT" ] || settings="$settings
+MELETE_PORT=$SERVICE_PORT"
+  [ -z "$WEB_PORT_SETTING" ] || settings="$settings
+WEB_PORT=$WEB_PORT_SETTING"
+  # Every agent gets a computer of its own unless MELETE_COMPUTER=0 said not to.
+  if [ "$COMPUTER" != 0 ]; then
+    settings="$settings
+MELETE_SANDBOX_PROVIDER=docker
+COMPOSE_PROFILES=sandbox"
+  fi
   if [ -n "$PROVIDER_KEY_NAME" ]; then
     settings="$settings
 $PROVIDER_KEY_NAME=@KEY"
@@ -392,6 +418,44 @@ set_env() {
     ' "$DEPLOY/.env" >"$partial"
   )
   mv -f "$partial" "$DEPLOY/.env"
+}
+
+# Adds the sandbox profile to COMPOSE_PROFILES in deploy/.env (with 1) or
+# takes it out (with 0), keeping any other profile listed there.
+set_sandbox_profile() {
+  local current kept='' profile list=()
+  current="$(env_value COMPOSE_PROFILES)"
+  IFS=',' read -r -a list <<<"$current"
+  for profile in "${list[@]}"; do
+    profile="${profile//[[:space:]]/}"
+    [ -z "$profile" ] || [ "$profile" = sandbox ] || kept="${kept:+$kept,}$profile"
+  done
+  [ "$1" = 0 ] || kept="${kept:+$kept,}sandbox"
+  [ "$kept" = "$current" ] || set_env COMPOSE_PROFILES "$kept"
+}
+
+# The service reads deploy/config as a user of its own (/etc/melete in the
+# container). Under a umask such as 077 every file the installer downloads
+# would be its owner's alone, and the service would stop at start-up with
+# EACCES on /etc/melete/connections.json, so the folder and its files are
+# made readable on every run. deploy/.env stays the owner's alone.
+share_config() {
+  chmod 0755 "$DEPLOY/config"
+  find "$DEPLOY/config" -maxdepth 1 -type f -name '*.json' -exec chmod a+r {} +
+}
+
+# Compose finds a project by its name alone. A second installation with the
+# first one's name would take over the first one's containers and volumes and
+# start them with its own secrets, so that is refused before anything runs.
+check_project_free() {
+  local project="$1" here physical other
+  here="$(cd "$DEPLOY" && pwd)"
+  physical="$(cd "$DEPLOY" && pwd -P)"
+  other="$(docker ps -a --filter "label=com.docker.compose.project=$project" \
+    --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
+    grep -vxF -e "$here" -e "$physical" | head -n 1 || true)"
+  [ -z "$other" ] ||
+    fail "Another installation, in $other, already runs as the Compose project $project, and this one would take over its containers. Give this one a name and ports of its own, for example: curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$DIR MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash"
 }
 
 # A setting's value in deploy/.env, or nothing.
@@ -622,8 +686,35 @@ main() {
     [[ "$requested" =~ ^sp_[A-Za-z0-9_-]+$ ]] || fail "MELETE_BROWSER_SPACE takes a space id such as sp_..., not $requested."
   fi
 
+  # The computer, the project name and the ports, read once. deploy/.env keeps
+  # them, and Compose would read these names from the environment before it.
+  COMPUTER=''
+  case "${MELETE_COMPUTER:-}" in
+    1 | true | yes) COMPUTER=1 ;;
+    0 | false | no) COMPUTER=0 ;;
+    '') ;;
+    *) fail 'MELETE_COMPUTER takes 1 to give every agent a computer of its own on this Docker engine, or 0 to leave it out.' ;;
+  esac
+  PROJECT="${MELETE_PROJECT:-${COMPOSE_PROJECT_NAME:-}}"
+  SERVICE_PORT="${MELETE_PORT:-}"
+  WEB_PORT_SETTING="${MELETE_WEB_PORT:-${WEB_PORT:-}}"
+  unset COMPOSE_PROJECT_NAME MELETE_PORT WEB_PORT
+  if [ -n "$PROJECT" ] && ! [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    fail "MELETE_PROJECT takes lower-case letters, digits, - and _, starting with a letter or a digit, not $PROJECT."
+  fi
+  local port_name port_value
+  for port_name in MELETE_PORT MELETE_WEB_PORT; do
+    if [ "$port_name" = MELETE_PORT ]; then port_value="$SERVICE_PORT"; else port_value="$WEB_PORT_SETTING"; fi
+    if [ -n "$port_value" ] && { ! [[ "$port_value" =~ ^[1-9][0-9]{0,4}$ ]] || ((port_value > 65535)); }; then
+      fail "$port_name takes a port number from 1 to 65535, not $port_value."
+    fi
+  done
+
   check_docker
 
+  # Files made from here on are readable by the services; deploy/.env is
+  # written under umask 077 on its own.
+  umask 022
   say "Installing Melete into $dir from $ref."
   mkdir -p "$DEPLOY/config" "$dir/packages/runtime-hermes"
   download deploy/docker-compose.yml "$DEPLOY/docker-compose.yml"
@@ -634,6 +725,27 @@ main() {
   for file in connections.json tailscale-serve.json browser-seccomp.json; do
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
+  share_config
+
+  local project service_port web_port
+  if [ -f "$DEPLOY/.env" ]; then
+    project="$(env_value COMPOSE_PROJECT_NAME)"
+    project="${project:-melete}"
+    if [ -n "$PROJECT" ] && [ "$PROJECT" != "$project" ]; then
+      fail "This installation is the Compose project $project, and its data lives in volumes named after it, so MELETE_PROJECT cannot change it. Nothing was changed."
+    fi
+    service_port="${SERVICE_PORT:-$(env_value MELETE_PORT)}"
+    web_port="${WEB_PORT_SETTING:-$(env_value WEB_PORT)}"
+  else
+    project="${PROJECT:-melete}"
+    service_port="$SERVICE_PORT"
+    web_port="$WEB_PORT_SETTING"
+  fi
+  service_port="${service_port:-3100}"
+  web_port="${web_port:-3101}"
+  [ "$service_port" != "$web_port" ] ||
+    fail "The service and the web app would both take port $web_port. Give MELETE_PORT and MELETE_WEB_PORT a port each. Nothing was changed."
+  check_project_free "$project"
 
   SETUP_OPEN=0
   if [ -f "$DEPLOY/.env" ]; then
@@ -654,6 +766,18 @@ main() {
       SETUP_CODE="$NEW_SETUP_CODE"
       say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
     fi
+    [ -z "$SERVICE_PORT" ] || set_env MELETE_PORT "$SERVICE_PORT"
+    [ -z "$WEB_PORT_SETTING" ] || set_env WEB_PORT "$WEB_PORT_SETTING"
+    case "$COMPUTER" in
+      1)
+        set_env MELETE_SANDBOX_PROVIDER docker
+        set_sandbox_profile 1
+        ;;
+      0)
+        set_env MELETE_SANDBOX_PROVIDER ''
+        set_sandbox_profile 0
+        ;;
+    esac
   else
     write_env
   fi
@@ -690,9 +814,7 @@ main() {
   "${compose[@]}" up -d --no-build --remove-orphans --wait --wait-timeout 600 ||
     fail "Melete did not start. See why with: ${compose[*]} logs --tail=100"
 
-  local port
-  port="$(sed -n 's/^WEB_PORT=//p' "$DEPLOY/.env" | head -n 1)"
-  local url="http://localhost:${port:-3101}"
+  local url="http://localhost:$web_port"
   if [ "$want_browser" = 1 ]; then
     enable_browser "${requested:-$configured}"
     browser=1
@@ -719,11 +841,17 @@ main() {
     say 'Set MELETE_SETUP_OPEN=true only if the first visitor should be allowed to create the owner without a code.'
   fi
   say "Run this command again to update. Stop it with: $shown down"
+  local again=''
+  [ -z "${MELETE_DIR:-}" ] || again=" MELETE_DIR=$dir"
+  if [ "$(env_value MELETE_SANDBOX_PROVIDER)" = docker ]; then
+    say 'Every agent has a computer of its own, a container on this Docker engine.'
+  else
+    say 'To give every agent a computer of its own on this Docker engine, run this again with MELETE_COMPUTER=1:'
+    say "  curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh |$again MELETE_COMPUTER=1 bash"
+  fi
   if [ "$browser" = 0 ]; then
     say 'To give the agent a browser of its own once your account exists, run this again with MELETE_BROWSER=1:'
-    local options='MELETE_BROWSER=1'
-    [ -z "${MELETE_DIR:-}" ] || options="$options MELETE_DIR=$dir"
-    say "  $options curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh | bash"
+    say "  curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh |$again MELETE_BROWSER=1 bash"
   fi
   open_browser "$url"
 }
