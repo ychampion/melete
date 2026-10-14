@@ -130,7 +130,22 @@ export function stuckItems(): StuckItem[] {
 }
 
 function describe(error: unknown): string {
-  const text = error instanceof Error ? error.message || error.name : String(error);
+  let text = error instanceof Error ? error.message || error.name : String(error);
+  // A failed file call names the file ("EPERM: operation not permitted, unlink
+  // '<path>'"), and a file's name can be a person's own words. The log, the
+  // health detail and the alerts sent from it keep what failed and in which
+  // call, never the name: the item's id already says where.
+  const { syscall, path, dest } = (error ?? {}) as {
+    syscall?: unknown;
+    path?: unknown;
+    dest?: unknown;
+  };
+  if (typeof syscall === 'string' && syscall) {
+    const at = text.indexOf(`, ${syscall}`);
+    if (at >= 0) text = text.slice(0, at + syscall.length + 2);
+  }
+  for (const named of [path, dest])
+    if (typeof named === 'string' && named) text = text.replaceAll(named, '...');
   return text.replace(/\s+/g, ' ').slice(0, 200);
 }
 

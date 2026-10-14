@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtemp, rm, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { stuckCheck } from '../health/monitor.ts';
 import { ItemFailures, STUCK_AFTER, stuckItems } from './item-failures.ts';
 
@@ -73,6 +76,32 @@ describe('a background pass with an item that keeps failing', () => {
     expect(failures.stuck()).toHaveLength(1);
     time.pass(10_000 + 10_000);
     expect(failures.stuck()).toEqual([]);
+  });
+
+  test('never names the file a failed file call was about, only what failed and in which call', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'melete-item-failures-'));
+    try {
+      const error = await unlink(join(folder, "Sam Patel's divorce settlement.pdf")).catch(
+        (reason: unknown) => reason,
+      );
+      const said: string[] = [];
+      const failures = new ItemFailures('test pass names', {
+        firstMs: 1_000,
+        maxMs: 1_000,
+        say: (line) => said.push(line),
+      });
+      for (let i = 0; i < STUCK_AFTER; i++) failures.failed('sp_files', error);
+      const [stuck] = failures.stuck();
+      for (const text of [...said, stuck?.error ?? '']) {
+        expect(text).not.toContain('Sam Patel');
+        expect(text).not.toContain(folder);
+      }
+      expect(stuck?.error).toStartWith('ENOENT');
+      expect(stuck?.error).toContain('unlink');
+      expect(said[0]).toContain('sp_files');
+    } finally {
+      await rm(folder, { recursive: true, force: true });
+    }
   });
 });
 
