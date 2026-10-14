@@ -30,6 +30,7 @@ export type DockerSandboxEnv = {
   MELETE_CELLS_KEY?: string;
   MELETE_SANDBOX_PROVIDER?: 'docker';
   MELETE_SANDBOX_PROJECT?: string;
+  MELETE_COMPOSE_PROJECT?: string;
   MELETE_SANDBOX_DOCKER_IMAGE?: string;
   MELETE_SANDBOX_DOCKER_CPUS?: number;
   MELETE_SANDBOX_DOCKER_MEMORY_MB?: number;
@@ -63,6 +64,7 @@ export function dockerSandboxSettings(
   return {
     socket: dockerEndpoint(env),
     project: env.MELETE_SANDBOX_PROJECT ?? '',
+    ...(env.MELETE_COMPOSE_PROJECT ? { installProject: env.MELETE_COMPOSE_PROJECT } : {}),
     cpus: env.MELETE_SANDBOX_DOCKER_CPUS ?? DOCKER_SANDBOX_DEFAULTS.cpus,
     memoryMb: env.MELETE_SANDBOX_DOCKER_MEMORY_MB ?? DOCKER_SANDBOX_DEFAULTS.memoryMb,
     pids: env.MELETE_SANDBOX_DOCKER_PIDS ?? DOCKER_SANDBOX_DEFAULTS.pids,
