@@ -57,7 +57,7 @@ SETUP_CODE='' SETUP_CODE_SHOWN=0
 say_unshown_code() {
   if [ -n "$SETUP_CODE" ] && [ "$SETUP_CODE_SHOWN" = 0 ]; then
     SETUP_CODE_SHOWN=1
-    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it.\n' "$SETUP_CODE" >&2
+    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it within 72 hours.\n' "$SETUP_CODE" >&2
   fi
 }
 
@@ -454,8 +454,12 @@ shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 # could be anyone's, so it counts as another installation's. Containers started
 # from a folder this installation was moved or renamed from are its own: its
 # deploy/.env names the project, and that folder holds no installation now.
+# A new installation ($2 is 1) is refused any container or volume of the
+# project at all: a stopped or removed installation leaves its data in volumes,
+# which a new one would start on with new secrets, and its database would not open.
 check_project_free() {
-  local project="$1" here physical listed line name dir others=() reason
+  local project="$1" new="$2" here physical listed line name dir others=() reason count
+  local label="label=com.docker.compose.project=$project"
   if [ -d "$DEPLOY" ]; then
     here="$(cd "$DEPLOY" && pwd)"
     physical="$(cd "$DEPLOY" && pwd -P)"
@@ -467,32 +471,39 @@ check_project_free() {
     esac
     physical="$here"
   fi
-  if ! listed="$(docker ps -a --filter "label=com.docker.compose.project=$project" \
+  if ! listed="$(docker ps -a --filter "$label" \
     --format '{{.Names}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null)"; then
     reason="$(docker ps -a 2>&1 >/dev/null | tail -n 1 || true)"
     fail "Could not ask Docker which containers run as the Compose project $project${reason:+ (Docker said: $reason)}, so this installation cannot tell whether it would take over another one. Check that Docker is running and that this user may use it, then run this again. Nothing was changed."
   fi
-  local hint
-  hint="curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$(shell_quote "$DIR") MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash"
+  local choose
+  choose="Give this one a name and ports of its own, for example: curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$(shell_quote "$DIR") MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash (on Windows, set \$env:MELETE_PROJECT, \$env:MELETE_PORT and \$env:MELETE_WEB_PORT before install.ps1)."
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     name="${line%%|*}" dir="${line#*|}"
     [ -n "$dir" ] ||
-      fail "The container $name runs as the Compose project $project and does not say which folder started it, so it may be another installation's, and this one would take it over. Remove it if it is left over, or give this installation a name and ports of its own, for example: $hint"
+      fail "The container $name runs as the Compose project $project and does not say which folder started it, so it may be another installation's, and this one would take it over. Remove it if it is left over. $choose"
     [ "$dir" = "$here" ] || [ "$dir" = "$physical" ] || others+=("$dir")
   done <<<"$listed"
-  [ "${#others[@]}" -gt 0 ] || return 0
-  if [ -f "$DEPLOY/.env" ]; then
-    local named moved=1
-    named="$(env_value COMPOSE_PROJECT_NAME)"
-    [ "${named:-melete}" = "$project" ] || moved=0
-    for dir in "${others[@]}"; do [ ! -e "$dir/.env" ] || moved=0; done
-    if [ "$moved" = 1 ]; then
-      say "This installation's containers were started from ${others[0]}, where it was before it moved; they are taken over from here."
-      return 0
+  if [ "${#others[@]}" -gt 0 ]; then
+    if [ -f "$DEPLOY/.env" ]; then
+      local named moved=1
+      named="$(env_value COMPOSE_PROJECT_NAME)"
+      [ "${named:-melete}" = "$project" ] || moved=0
+      for dir in "${others[@]}"; do [ ! -e "$dir/.env" ] || moved=0; done
+      if [ "$moved" = 1 ]; then
+        say "This installation's containers were started from ${others[0]}, where it was before it moved; they are taken over from here."
+        return 0
+      fi
     fi
+    fail "Another installation, in ${others[0]}, already runs as the Compose project $project, and this one would take over its containers. $choose"
   fi
-  fail "Another installation, in ${others[0]}, already runs as the Compose project $project, and this one would take over its containers. Give this one a name and ports of its own, for example: $hint"
+  [ "$new" = 1 ] || return 0
+  [ -z "$listed" ] ||
+    fail "Compose project $project already has containers on this engine, and this installation would take them over with new secrets. $choose If they are left from an installation you removed, remove them first (docker compose -p $project down)."
+  count="$(docker volume ls -q --filter "$label" 2>/dev/null | grep -c . || true)"
+  [ "${count:-0}" = 0 ] ||
+    fail "Compose project $project already has $count volume(s) on this engine: the data of an installation that is stopped or was removed. This one would start on that data with new secrets, and its database would not open. $choose If that data is no longer wanted, remove it first (docker volume rm \$(docker volume ls -q --filter $label))."
 }
 
 # A setting's value in deploy/.env, or nothing.
@@ -768,7 +779,7 @@ main() {
   [ "$service_port" != "$web_port" ] ||
     fail "The service and the web app would both take port $web_port. Give MELETE_PORT and MELETE_WEB_PORT a port each. Nothing was changed."
   # Before anything is downloaded, so a refused installation leaves nothing behind.
-  check_project_free "$project"
+  if [ -f "$DEPLOY/.env" ]; then check_project_free "$project" 0; else check_project_free "$project" 1; fi
 
   # Files made from here on are readable by the services; deploy/.env is
   # written under umask 077 on its own.
@@ -865,14 +876,15 @@ main() {
     # Said once: deploy/.env keeps only its hash.
     say "Open $url/#/welcome?code=$SETUP_CODE to create your account"
     say "Your one-time setup code is $SETUP_CODE. It is shown only now; keep it until your account exists."
+    say "It works once, for 72 hours from when Melete starts with it. Lost it, or too late? $shown exec melete bun run melete account setup-code issues another, and this one stops working."
     SETUP_CODE_SHOWN=1
   else
     say 'Open it and create your account.'
+    say "For a new setup code: $shown exec melete bun run melete account setup-code"
   fi
   if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
     say 'It starts with a practice model; add your own key in Settings → Models.'
   fi
-  say "For a new setup code: $shown exec melete bun run melete account setup-code"
   if [ "$SETUP_OPEN" = 1 ]; then
     say 'Setup is open: with MELETE_SETUP_OPEN=true, the first visitor creates the owner account without a code.'
   elif [ -n "$SETUP_CODE" ]; then
