@@ -76,20 +76,33 @@ export class BlobCollector {
       ).map((row) => row.key),
     );
     let deleted = 0;
+    // A blob that cannot be deleted now is left for the next pass; it never
+    // stops the blobs after it. The pass says so once, not once for each.
+    let failed = 0;
+    let first = '';
     for (const key of keys) {
       if (referenced.has(key)) continue;
-      await sql.begin(async (tx) => {
-        await lockBlobKey(tx, key, 'exclusive');
-        const [row] = await tx<{ present: boolean }[]>`select exists (
-            select 1 from blob_ref where key = ${key}
-          ) as present`;
-        if (row?.present) return;
-        const head = await store.head(key);
-        if (!head || head.modifiedAt >= cutoff) return;
-        await store.delete(key);
-        deleted++;
-      });
+      try {
+        await sql.begin(async (tx) => {
+          await lockBlobKey(tx, key, 'exclusive');
+          const [row] = await tx<{ present: boolean }[]>`select exists (
+              select 1 from blob_ref where key = ${key}
+            ) as present`;
+          if (row?.present) return;
+          const head = await store.head(key);
+          if (!head || head.modifiedAt >= cutoff) return;
+          await store.delete(key);
+          deleted++;
+        });
+      } catch (error) {
+        failed++;
+        first ||= `${key}: ${error instanceof Error ? error.message : String(error)}`;
+      }
     }
+    if (failed)
+      process.stderr.write(
+        `blob collection: ${failed} blob${failed === 1 ? '' : 's'} not deleted, left for the next pass (${first.slice(0, 200)})\n`,
+      );
     return deleted;
   }
 
