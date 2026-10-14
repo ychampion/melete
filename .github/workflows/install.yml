@@ -8,7 +8,9 @@
 # deploy/.env, the data and the worker. The first run prints a one-time setup
 # code and keeps only its SHA-256 in deploy/.env; the account is made with it.
 # A second installation then runs beside the first, under umask 077, with a
-# project name and ports of its own, after one without them is refused.
+# project name and ports of its own, after one without them is refused and
+# leaves nothing behind. Last, the first installation is moved to another
+# folder and run from there, and keeps its containers and its data.
 # On a pull request the published images
 # are main's, so this pull request's images are built and served under the same
 # names from a registry on the runner, as the setup-guide workflow does. No
@@ -312,7 +314,9 @@ jobs:
             exit 1
           fi
           grep -F 'already runs as the Compose project melete' "$RUNNER_TEMP/second-refused.log"
-          test ! -e "$HOME/melete2/deploy/.env"
+          grep -F "MELETE_DIR='$HOME/melete2'" "$RUNNER_TEMP/second-refused.log"
+          # Refused before anything was downloaded, so nothing is left behind.
+          test ! -e "$HOME/melete2"
           # Under umask 077 every file it downloads would be its owner's alone;
           # the service reads deploy/config as another user.
           (umask 077 && curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete2" \
@@ -330,14 +334,41 @@ jobs:
           curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
           docker compose -f "$HOME/melete2/deploy/docker-compose.yml" down -v --remove-orphans
           curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+      - name: A moved installation keeps its containers, and a copy beside the original is refused
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh"
+          # A folder with the first one's deploy/.env, while the first one is still where it was,
+          # is a second installation under the same name.
+          mkdir -p "$HOME/melete-copy/deploy"
+          cp "$HOME/melete/deploy/.env" "$HOME/melete-copy/deploy/.env"
+          if curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-copy" bash > "$RUNNER_TEMP/copy.log" 2>&1; then
+            echo "a copy beside the original took over its containers"
+            exit 1
+          fi
+          grep -F "Another installation, in $HOME/melete/deploy" "$RUNNER_TEMP/copy.log"
+          test ! -e "$HOME/melete-copy/deploy/docker-compose.yml"
+          rm -rf "$HOME/melete-copy"
+          # Moved, it is the same installation: its own containers are taken over, with its data.
+          mv "$HOME/melete" "$HOME/melete-moved"
+          curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-moved" bash | tee "$RUNNER_TEMP/moved.log"
+          grep -F "were started from $HOME/melete/deploy" "$RUNNER_TEMP/moved.log"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/moved.log"; then exit 1; fi
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          docker ps --filter label=com.docker.compose.project=melete \
+            --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | tee "$RUNNER_TEMP/moved-dirs.txt"
+          test "$(cat "$RUNNER_TEMP/moved-dirs.txt")" = "$HOME/melete-moved/deploy"
       - name: Logs
         if: failure()
         run: |
-          docker compose -f "$HOME/melete/deploy/docker-compose.yml" logs --tail=100 || true
+          for deploy in "$HOME/melete/deploy" "$HOME/melete-moved/deploy"; do
+            [ ! -f "$deploy/docker-compose.yml" ] || docker compose -f "$deploy/docker-compose.yml" logs --tail=100 || true
+          done
           docker logs --tail=100 "$(docker ps -aq --filter label=com.docker.compose.service=browser | head -n1)" || true
       - name: Remove it
         if: always()
         run: |
-          docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true
-          [ ! -f "$HOME/melete2/deploy/docker-compose.yml" ] || docker compose -f "$HOME/melete2/deploy/docker-compose.yml" down -v --remove-orphans || true
+          for deploy in "$HOME/melete/deploy" "$HOME/melete-moved/deploy" "$HOME/melete2/deploy"; do
+            [ ! -f "$deploy/docker-compose.yml" ] || docker compose -f "$deploy/docker-compose.yml" down -v --remove-orphans || true
+          done
           docker rm -f install-registry || true
