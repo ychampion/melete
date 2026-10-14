@@ -150,7 +150,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/autofix"
       - name: Ask Claude to find and fix the cause
         if: steps.gate.outputs.go == 'true'
-        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1.0.249
+        uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1.0.237
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
