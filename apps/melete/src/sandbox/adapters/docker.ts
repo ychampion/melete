@@ -1662,10 +1662,16 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       if (!idle && !expired) continue;
       this.guard.revoke(name);
       this.trusted.delete(name);
-      await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
-        if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
-          throw error;
-      });
+      try {
+        await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
+          if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
+            throw error;
+        });
+      } catch (error) {
+        // One that will not stop is tried again next pass; the rest still are.
+        process.stderr.write(`docker sandbox idle stop of ${name} failed: ${describe(error)}\n`);
+        continue;
+      }
       this.started.delete(name);
       stopped.push(name);
     }
