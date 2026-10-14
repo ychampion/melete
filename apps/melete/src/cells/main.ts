@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DEFAULT_STDIO_IMAGES } from '../connectors/mcp-stdio-docker.ts';
+import { parseNetworkPool } from '../runtime/network-pool.ts';
 import { startCellsServer } from './server.ts';
 
 /** The key in `path`, written there first if there is none. */
@@ -53,6 +54,7 @@ if (import.meta.main) {
       process.env.MELETE_MCP_PYTHON_IMAGE?.trim() || DEFAULT_STDIO_IMAGES.python,
     ],
     workVolume: setting('MELETE_WORK_VOLUME', `${project}_work`),
+    networkPool: parseNetworkPool(process.env.MELETE_NETWORK_POOL),
   });
   process.stdout.write(`melete-cells listening on ${server.hostname}:${server.port}\n`);
   const stop = () => {

@@ -216,16 +216,31 @@ calendar connect by signing in with Microsoft
 Compose names every container, volume and network after the project, and
 `deploy/.env.example` names the project `melete` with ports 3100 and 3101. A
 second installation that keeps those values is the first one: its `up` replaces
-the first installation's containers and opens its database. The
-[one-line install](#one-line-install) always writes those values, so use it only
-for the first installation on a host.
+the first installation's containers and opens its database. With the
+[one-line install](#one-line-install), give the second one `MELETE_PROJECT`,
+`MELETE_PORT` and `MELETE_WEB_PORT`, as shown there.
 
-For another one, clone into a directory of its own and run `configure.ts` there
-as above. Then, before the first `up`, give it its own project and ports:
+From a checkout, clone into a directory of its own and give `init` the project
+and ports there:
 
 ```bash
-bun run deploy/scripts/set-env.ts COMPOSE_PROJECT_NAME=melete-two MELETE_PORT=3110 WEB_PORT=3111
+bun run melete init --project melete-two --api-port 3110 --web-port 3111
 ```
+
+`init` takes the other options it always does beside these (`--provider`,
+`--connect-in-app`, `--public-url` and the rest), and `deploy/scripts/configure.ts`
+takes the same three. `init` refuses, with nothing written, a project name
+that containers or volumes on this engine already use: another installation's,
+or the data of one that was stopped or removed, which this one would otherwise
+start on with new secrets. The containers of another installation are named by
+the directory they were started from.
+
+Each project keeps its backups in a folder of its own: `~/melete-backups` for
+`melete`, and `~/melete-backups/<project>` for any other, so two installations
+never prune each other's backups. `--backup-dir <folder>` chooses another, and
+`backup.dir` in `deploy/melete.deploy.json` changes it later. An installation
+whose deploy file names the folder another installation uses should be given
+its own.
 
 Keep the `MELETE_SANDBOX_PROJECT` that `configure.ts` wrote: it is random for
 each installation and tells apart the agents' computers and attempt containers,
@@ -233,6 +248,55 @@ which Compose does not manage. Run every command from that installation's own
 directory, so its `deploy/.env` names the project; a `docker compose` command
 given a Compose file without that `.env` acts on the project `melete`. Its web
 address is then **http://localhost:3111**.
+
+Each installation's agents also take networks from Docker's address pools,
+which the whole machine shares; with two or more installations, check
+[Docker address pools](#docker-address-pools) first.
+
+### Docker address pools
+
+Every network Docker makes without a subnet of its own takes one block from
+the engine's address pools. With no `default-address-pools` in
+`/etc/docker/daemon.json`, Docker has 31 blocks for the whole machine: fifteen
+/16 blocks between 172.17.0.0 and 172.31.255.255, and sixteen /20 blocks in
+192.168.0.0/16. Each installation's stack takes four or more, and while it
+works each chat attempt, agent computer and plugin that reaches a network takes
+one more; every other Compose project on the machine takes its own. When none
+is left, `docker compose up` fails with "all predefined address pools have been
+fully subnetted", and so does every chat, computer and plugin that needs a new
+network.
+
+`bun run melete doctor` reports `docker.address_pools`: how many networks
+Docker can still make. It warns below 8 and fails at none. To give Docker more,
+choose a private range that nothing on your network, VPN or tailnet uses, and
+name it in `/etc/docker/daemon.json` (merged with what the file already holds):
+
+```json
+{
+  "default-address-pools": [{ "base": "10.216.0.0/14", "size": 24 }],
+  "live-restore": true
+}
+```
+
+That is 1024 networks of 254 addresses each. These pools replace Docker's
+built-in ones; networks that exist keep their addresses. Check the file with
+`dockerd --validate --config-file /etc/docker/daemon.json`, then restart Docker
+(`sudo systemctl restart docker`) while no `docker compose up` is running. With
+`live-restore`, running containers keep running through the restart. `doctor`
+warns when a pool named there overlaps a route of this machine (`ip route`
+lists them), since a network made from it would hide those addresses from its
+containers.
+
+Networks that no container uses hold blocks too; `docker network ls` lists
+them. `doctor` also reports `docker.leftover_sandboxes`: the stopped agents'
+computers and empty networks whose sandbox project no installation on this
+engine uses, which an installation's own clean-up never reaches. Another
+installation's computers are never listed; they are told apart by the
+`MELETE_SANDBOX_PROJECT` each installation's service runs with. An
+installation that is down (`docker compose down` removes its service
+container) cannot be told apart that way, so check the list before
+`bun run melete doctor --remove-leftovers` removes it. It removes only those
+stopped computers and empty networks, and keeps the computers' volumes.
 
 ## The melete command
 
@@ -246,7 +310,7 @@ driving the command; `packages/cli/src/schema.ts` describes its shape.
 bun run melete init            # configure.ts, then deploy/melete.deploy.json
 bun run melete init --adopt    # describe an installation that is already running
 bun run melete check           # the files alone: no Docker, no network
-bun run melete doctor          # this machine: Docker, disk in MB, memory, ports, images, registry
+bun run melete doctor          # this machine: Docker, its networks, disk in MB, memory, ports, images, registry
 bun run melete status          # the running installation, as status.ts reports it
 bun run melete set MELETE_PUBLIC_URL=https://melete.example.net
 bun run melete logs melete --since 1h
@@ -261,13 +325,13 @@ bun run melete feedback        # problem reports people sent from the app
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). |
-| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused. |
+| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. It takes `--backup-dir` too. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
-| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
+| `doctor [--offline] [--remove-leftovers]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. `docker.address_pools` counts the networks Docker can still make ([Docker address pools](#docker-address-pools)), and `docker.leftover_sandboxes` lists the agents' computers and networks that sandbox projects no installation on this engine uses left behind; `--remove-leftovers` removes those, and is the only time `doctor` changes anything. |
 | `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| MELETE_BROWSER=1 bash`. |
 | `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor, and the `hosted.*` rules `check` reports. |
-| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME` or `COMPOSE_PROFILES` updates `deploy/melete.deploy.json` to match (`COMPOSE_PROFILES=sandbox` turns its `sandbox` profile on). A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers started from this checkout, since every command would then act on a new, empty installation; another installation's containers under that name do not count. `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. `--attempts` lists the containers attempts ran in, and `--computers` the agents' computers, found by this installation's labels; with an attempt id or a container name it shows that one's logs, with the same options. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
@@ -313,7 +377,9 @@ Bun, the installer turns the worker on:
 
 `deploy/melete.deploy.json` records what an installation is beyond what
 `deploy/.env` says. It holds no secret, so it can be kept in a repository; the
-keys stay in `deploy/.env`. Every key has a default, so `{"contract": 1}` is a
+keys stay in `deploy/.env`. This repository's `.gitignore` leaves it out, with
+`deploy/.env` and `deploy/.melete/`, so a checkout stays clean for
+`deploy --checkout`. Every key has a default, so `{"contract": 1}` is a
 complete file, and `init` writes each one out:
 
 ```json
@@ -345,8 +411,10 @@ complete file, and `init` writes each one out:
   `status` report the machine short of disk. A small host sets its own, below
   1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
   images it pulls.
-- `backup.dir` is where backups are written, `backup.keep` how many are
-  kept there, and `backup.max_age_days` the most days any of them is kept
+- `backup.dir` is where backups are written: by default `~/melete-backups`
+  for the project `melete` and `~/melete-backups/<project>` for any other, so
+  installations on one machine never prune each other's. `backup.keep` is how
+  many are kept there, and `backup.max_age_days` the most days any of them is kept
   (`null` keeps them by number alone); see
   [How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
 - `blobs.store` is `local`, or `s3` with a non-secret `bucket`, an `endpoint`
@@ -601,7 +669,9 @@ docker compose -f deploy/docker-compose.yml up -d --no-build --wait --wait-timeo
 
 With a docker sandbox ([Sandboxes](#sandboxes)), add `--profile sandbox` to
 both `docker compose` lines, or set `COMPOSE_PROFILES=sandbox` in
-`deploy/.env`; the computer image is then pulled with the others.
+`deploy/.env` (`bun run melete set COMPOSE_PROFILES=sandbox` also turns on the
+deploy file's `sandbox` profile); the computer image is then pulled with the
+others.
 
 `MELETE_IMAGE_TAG` set to a version, such as `v0.3.0`, stays on that release;
 check out the same tag (`git checkout v0.3.0`) so the Compose file matches the
@@ -1171,8 +1241,11 @@ While the code is configured, the sign-in page asks for it beside the email and
 password (the link fills it in), and `POST /setup` answers 403
 `setup_code_required` without it and 403 `invalid_setup_code` for a wrong one.
 Case, spaces and dashes don't matter. The password is checked first, so a weak
-one does not use up an issued code. Once the account exists the code has
-nothing left to open. `GET /setup` says `code_required` while it matters.
+one does not use up a code. The code works once, and lasts 72 hours from the
+first time Melete starts with it; after that, or once `account setup-code` has
+issued a newer one, it is refused as `invalid_setup_code`. Once the account
+exists the code has nothing left to open. `GET /setup` says `code_required`
+while it matters.
 
 Lost it, or setting up installations for other people without `init`?
 
@@ -1181,7 +1254,7 @@ bun run melete account setup-code
 ```
 
 prints a new code and link that last 72 hours; each new one cancels the one
-before. An operator who provisions an installation for someone else can also
+before, the code `init` printed included. An operator who provisions an installation for someone else can also
 skip the code and create that person's account directly with
 `bun run melete account create <email>` (see [Accounts](#accounts)).
 
