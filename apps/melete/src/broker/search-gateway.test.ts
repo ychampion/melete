@@ -373,3 +373,39 @@ test('a search past a spending limit is refused with its sentence, and the fee c
   await allowed.backend.search(request);
   expect(recorded.map((settlement) => settlement.feeUsd ?? 0).filter(Boolean)).toEqual([0.01]);
 });
+
+test("a provider's refusal of a search reaches the operator's log, named and without the key", async () => {
+  const logged: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    logged.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const refusing = await openSearchGateway({
+      sql: undefined as never,
+      providers,
+      privacy: false,
+      attemptModel: async () => ({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+      budget: () => ({ reserve: async () => ({ id: 'res_1' }), settle: async () => {} }),
+      fetch: async () =>
+        Response.json(
+          {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message: 'web_search is not enabled for this key (sk-ant-real-key)',
+            },
+          },
+          { status: 400 },
+        ),
+    });
+    closers.push(refusing.close);
+    await refusing.backend.search(request).catch(() => undefined);
+  } finally {
+    process.stderr.write = write;
+  }
+  expect(logged.filter((line) => line.includes('provider_rejected'))).toEqual([
+    'search gateway: provider_rejected: anthropic/claude-sonnet-4-5 answered 400 (invalid_request_error: web_search is not enabled for this key ([redacted]))\n',
+  ]);
+});
