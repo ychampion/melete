@@ -18,6 +18,8 @@ import type { Result } from './schema.ts';
 
 const SANDBOX = 'label=com.melete.sandbox=v1';
 const PROJECT = 'melete.project';
+/** A sandbox project as the service accepts MELETE_SANDBOX_PROJECT; no computer it makes has another. */
+const PROJECT_NAME = /^[a-z0-9][a-z0-9-]{2,40}$/;
 /** States in which a container runs nothing and `docker rm` removes it without force. */
 const STOPPED = new Set(['exited', 'created', 'dead']);
 
@@ -37,6 +39,20 @@ const lines = (stdout: string) =>
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+
+/**
+ * The project label as the listings print it, through `json`: a value with a
+ * line break or a tab stays inside its own field, so it can never add a row
+ * that names another container or network. Null for anything else.
+ */
+function labelOf(field: string): string | null {
+  try {
+    const value: unknown = JSON.parse(field);
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The sandbox projects the Melete service containers on this engine run with. */
 function projectsInUse(run: Run): Set<string> | null {
@@ -83,7 +99,7 @@ export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] 
     '--filter',
     SANDBOX,
     '--format',
-    `{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label "${PROJECT}"}}`,
+    `{{.ID}}\t{{.Names}}\t{{.State}}\t{{json (.Label "${PROJECT}")}}`,
   ]);
   if (containers.code !== 0) return null;
   const listed = run(['docker', 'network', 'ls', '--quiet', '--filter', SANDBOX]);
@@ -96,20 +112,28 @@ export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] 
       'network',
       'inspect',
       '--format',
-      `{{.Name}}\t{{index .Labels "${PROJECT}"}}\t{{len .Containers}}`,
+      `{{.Name}}\t{{json (index .Labels "${PROJECT}")}}\t{{len .Containers}}`,
       ...networkIds,
     ]);
     if (inspected.code !== 0) return null;
     networks = lines(inspected.stdout).flatMap((line) => {
-      const [name = '', project = '', count = ''] = line.split('\t');
-      return name && /^\d+$/.test(count) ? [{ name, project, containers: Number(count) }] : [];
+      const fields = line.split('\t');
+      const [name = '', label = '', count = ''] = fields;
+      const project = labelOf(label);
+      return fields.length === 3 && name && project !== null && /^\d+$/.test(count)
+        ? [{ name, project, containers: Number(count) }]
+        : [];
     });
   }
   const stopped = lines(containers.stdout).flatMap((line): SandboxContainer[] => {
-    const [id = '', name = '', state = '', project = ''] = line.split('\t');
-    return id && STOPPED.has(state) ? [{ id, name, state, project }] : [];
+    const fields = line.split('\t');
+    const [id = '', name = '', state = '', label = ''] = fields;
+    const project = labelOf(label);
+    return fields.length === 4 && id && project !== null && STOPPED.has(state)
+      ? [{ id, name, state, project }]
+      : [];
   });
-  const left = (project: string) => project !== '' && !inUse.has(project);
+  const left = (project: string) => PROJECT_NAME.test(project) && !inUse.has(project);
   const byProject = new Map<string, Leftovers>();
   const entry = (project: string) => {
     let found = byProject.get(project);

@@ -380,7 +380,11 @@ export function readAddressPools(run: Run, host: DockerHostFacts): AddressPoolFa
   }
   const local = host.platform === 'linux' && !engineElsewhere(host);
   const table = local ? run(['cat', '/proc/net/route']) : null;
-  const routes = table?.code === 0 ? parseRoutes(table.stdout) : [];
+  // A route that is exactly a Docker network's subnet is that network's bridge,
+  // whatever the bridge is called (com.docker.network.bridge.name).
+  const routes = (table?.code === 0 ? parseRoutes(table.stdout) : []).filter(
+    (route) => !taken.some((net) => net.start === route.start && net.prefix === route.prefix),
+  );
   const { pools, builtIn } = enginePools(host.info?.defaultAddressPools);
   return {
     source: 'docker',

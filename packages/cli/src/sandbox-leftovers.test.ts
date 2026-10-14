@@ -6,6 +6,15 @@ import { reportSchema } from './schema.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 /**
+ * The project label as Docker prints it for the template a command asks for:
+ * quoted when the template passes it through `json`, as it is otherwise.
+ */
+function printedLabel(command: readonly string[], value: string): string {
+  const format = command[command.indexOf('--format') + 1] ?? '';
+  return format.includes('{{json (') ? JSON.stringify(value) : value;
+}
+
+/**
  * An engine with two installations: `melete` on sandbox project melete-aaaa1111
  * and `melete2` (stopped) on melete-bbbb2222, and computers and networks of
  * those and of two projects nobody uses any more.
@@ -17,6 +26,7 @@ function engine(options: { refuse?: string[] } = {}) {
     const line = command.join(' ');
     calls.push(line);
     const answer = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+    const label = (value: string) => printedLabel(command, value);
     if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
       return answer('aaa111\nbbb222\n');
     if (line.startsWith('docker inspect --format {{range .Config.Env}}'))
@@ -26,12 +36,12 @@ function engine(options: { refuse?: string[] } = {}) {
     if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
       return answer(
         [
-          'c1\tmelete-sbx-melete-aaaa1111-a\texited\tmelete-aaaa1111',
-          'c2\tmelete-sbx-melete-bbbb2222-b\texited\tmelete-bbbb2222',
-          'c3\tmelete-sbx-melete-cccc3333-c\texited\tmelete-cccc3333',
-          'c4\tmelete-sbx-melete-cccc3333-d\trunning\tmelete-cccc3333',
-          'c5\tmelete-sbx-melete-dddd4444-e\tcreated\tmelete-dddd4444',
-          'c6\tsomething-else\texited\t',
+          `c1\tmelete-sbx-melete-aaaa1111-a\texited\t${label('melete-aaaa1111')}`,
+          `c2\tmelete-sbx-melete-bbbb2222-b\texited\t${label('melete-bbbb2222')}`,
+          `c3\tmelete-sbx-melete-cccc3333-c\texited\t${label('melete-cccc3333')}`,
+          `c4\tmelete-sbx-melete-cccc3333-d\trunning\t${label('melete-cccc3333')}`,
+          `c5\tmelete-sbx-melete-dddd4444-e\tcreated\t${label('melete-dddd4444')}`,
+          `c6\tsomething-else\texited\t${label('')}`,
         ].join('\n'),
       );
     if (line === 'docker network ls --quiet --filter label=com.melete.sandbox=v1')
@@ -39,10 +49,10 @@ function engine(options: { refuse?: string[] } = {}) {
     if (line.startsWith('docker network inspect --format {{.Name}}'))
       return answer(
         [
-          'melete-sbx-melete-aaaa1111-a-net\tmelete-aaaa1111\t0',
-          'melete-sbx-melete-bbbb2222-b-net\tmelete-bbbb2222\t0',
-          'melete-sbx-melete-cccc3333-c-net\tmelete-cccc3333\t0',
-          'melete-sbx-melete-cccc3333-d-net\tmelete-cccc3333\t1',
+          `melete-sbx-melete-aaaa1111-a-net\t${label('melete-aaaa1111')}\t0`,
+          `melete-sbx-melete-bbbb2222-b-net\t${label('melete-bbbb2222')}\t0`,
+          `melete-sbx-melete-cccc3333-c-net\t${label('melete-cccc3333')}\t0`,
+          `melete-sbx-melete-cccc3333-d-net\t${label('melete-cccc3333')}\t1`,
         ].join('\n'),
       );
     if (line.startsWith('docker rm ') || line.startsWith('docker network rm ')) {
@@ -156,5 +166,54 @@ describe('melete doctor and leftovers', () => {
       level: 'ok',
       detail: expect.stringContaining('Removed'),
     });
+  });
+});
+
+describe('a project label that carries a line break', () => {
+  // A computer and a network whose label holds a line break and tabs, as
+  // anything that can make containers on the engine could write. Printed raw,
+  // it would add a row for a stopped container and an empty network that are
+  // not agents' computers; read whole, it is no project the service accepts.
+  const forged = 'x\nfeedfeedfeed\tsomeones-database\texited\tmelete-cccc3333';
+  const forgedNet = 'x\nsomeones-network\tmelete-cccc3333\t0';
+  function engine() {
+    const removed: string[] = [];
+    const run: Run = (command) => {
+      const line = command.join(' ');
+      const answer = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+      const label = (value: string) => printedLabel(command, value);
+      if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
+        return answer('');
+      if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
+        return answer(
+          [
+            `c3\tmelete-sbx-melete-cccc3333-c\texited\t${label('melete-cccc3333')}`,
+            `c9\tmelete-sbx-x-f\texited\t${label(forged)}`,
+          ].join('\n'),
+        );
+      if (line === 'docker network ls --quiet --filter label=com.melete.sandbox=v1')
+        return answer('cc03cc03cc03\nff09ff09ff09\n');
+      if (line.startsWith('docker network inspect --format {{.Name}}'))
+        return answer(
+          [
+            `melete-sbx-melete-cccc3333-c-net\t${label('melete-cccc3333')}\t0`,
+            `melete-sbx-x-f-net\t${label(forgedNet)}\t0`,
+          ].join('\n'),
+        );
+      if (line.startsWith('docker rm ') || line.startsWith('docker network rm ')) {
+        removed.push(command.at(-1) ?? '');
+        return answer('');
+      }
+      return { code: 1, stdout: '', stderr: 'no such command in this test' };
+    };
+    return { run, removed };
+  }
+
+  test('adds no row: only the real computer and network are listed and removed', () => {
+    const fake = engine();
+    const leftovers = readSandboxLeftovers(fake.run, null) ?? [];
+    expect(leftovers.map((each) => each.project)).toEqual(['melete-cccc3333']);
+    removeLeftovers(fake.run, leftovers);
+    expect(fake.removed).toEqual(['c3', 'melete-sbx-melete-cccc3333-c-net']);
   });
 });

@@ -9,6 +9,8 @@ import {
   parseRoutes,
   poolHeadroom,
 } from './address-pools.ts';
+import { readAddressPools } from './commands/doctor.ts';
+import type { Run } from './context.ts';
 
 const cidr = (text: string): Cidr => {
   const parsed = parseCidr(text);
@@ -121,5 +123,37 @@ describe("Docker's address pools", () => {
     expect(configured.find((r) => r.id === 'docker.address_pool_routes')?.level).toBe('warn');
     const builtIn = judgeAddressPools({ source: 'docker', builtIn: true, pools: [pool] });
     expect(builtIn.some((r) => r.id === 'docker.address_pool_routes')).toBe(false);
+  });
+
+  test("a Docker network's own bridge is not a route, whatever the bridge is called", () => {
+    // One network on a bridge named by com.docker.network.bridge.name, and a real
+    // route of this machine inside the pool.
+    const table = [
+      'Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT',
+      'br-spacere\t0005D80A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0',
+      'wg0\t0009D80A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0',
+    ].join('\n');
+    const run: Run = (command) => {
+      const line = command.join(' ');
+      const answer = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+      if (line === 'docker network ls --quiet') return answer('aa01aa01aa01\n');
+      if (line.startsWith('docker network inspect')) return answer('10.216.5.0/24 \n');
+      if (line === 'cat /proc/net/route') return answer(table);
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    const fact = readAddressPools(run, {
+      platform: 'linux',
+      endpoint: null,
+      pipePresent: null,
+      info: {
+        osType: 'linux',
+        operatingSystem: 'Ubuntu',
+        kernelVersion: '6.8.0',
+        memTotal: 0,
+        dockerRootDir: '/var/lib/docker',
+        defaultAddressPools: [{ base: '10.216.0.0/14', size: 24 }],
+      },
+    });
+    expect(fact?.pools[0]).toMatchObject({ free: 1023, routes: ['10.216.9.0/24'] });
   });
 });

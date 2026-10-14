@@ -217,6 +217,33 @@ describe('renaming the Compose project', () => {
     expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(2);
     expect(context.errors()).toContain('could not be checked');
   });
+
+  test("is refused when the new name is another checkout's installation, the default included", async () => {
+    const deployDir = temporaryDeployDir();
+    const before = writeEnv(deployDir, { COMPOSE_PROJECT_NAME: 'melete2' });
+    const ok = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+    const run = (command: readonly string[]) => {
+      const line = command.join(' ');
+      // `melete` runs from another checkout; this one's `melete2` has nothing yet.
+      if (line.startsWith('docker ps --all --filter label=com.docker.compose.project=melete '))
+        return ok('dir=/srv/melete/deploy\n');
+      if (line.startsWith('docker ps --all --filter label=com.docker.compose.project='))
+        return ok('');
+      if (line.startsWith('docker volume ls')) return ok('');
+      return { code: 1, stdout: '', stderr: 'no such command in this test' };
+    };
+    for (const setting of ['COMPOSE_PROJECT_NAME=melete', 'COMPOSE_PROJECT_NAME=']) {
+      const context = testContext(deployDir, [], { run });
+      expect(await runSet(context, [setting])).toBe(2);
+      expect(context.errors()).toContain(
+        'Compose project melete is the installation in /srv/melete/deploy',
+      );
+      expect(read(deployDir, '.env')).toBe(before);
+    }
+    expect(
+      await runSet(testContext(deployDir, [], { run }), ['COMPOSE_PROJECT_NAME=melete3']),
+    ).toBe(0);
+  });
 });
 
 describe('COMPOSE_PROFILES', () => {

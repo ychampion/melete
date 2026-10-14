@@ -216,6 +216,15 @@ export async function runSet(
         throw new SetEnvRefusal(
           `Compose project ${current} ${use === null ? 'could not be checked' : 'has containers started from this checkout'}; renaming it to ${renamed.value} would leave them running and point every command at a new, empty installation with its own database. Nothing was changed. Stop and remove the old stack first, or pass --force if a new installation is what you want.`,
         );
+      // Nor may it take the name another checkout's installation runs as: every
+      // command here would then reach that installation's containers and volumes.
+      const target = renamed.value.trim() || 'melete';
+      const taken = readProjectUse(context.run, target);
+      const theirs = taken ? otherCheckouts(taken, context.deployDir) : [];
+      if (theirs.length > 0)
+        throw new SetEnvRefusal(
+          `Compose project ${target} is the installation in ${theirs.join(', ')}; renaming this one to it would point every command here at that installation's containers and volumes. Nothing was changed. Choose a name of this installation's own.`,
+        );
       if (others.length > 0)
         context.out(
           `Compose project ${current}'s containers belong to the installation in ${others.join(', ')}, not to this checkout, so they are left as they are.\n`,
