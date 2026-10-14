@@ -53,10 +53,10 @@ WORKDIR /opt/hermes
 RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_COMMIT}" \
     && git -C /opt/hermes rev-parse HEAD > /opt/hermes/.melete-hermes-commit \
-    && uv sync --frozen --no-install-project --extra messaging \
+    && uv sync --frozen --no-install-project --extra messaging --extra anthropic \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps -e "." \
     && test -x /opt/hermes/.venv/bin/hermes \
-    && /opt/hermes/.venv/bin/python -c "import aiohttp, yaml" \
+    && /opt/hermes/.venv/bin/python -c "import aiohttp, anthropic, yaml" \
     && rm -rf /root/.cache/uv
 
 # The plugin and the config, staged where the entrypoint can sync them into the
@@ -67,6 +67,11 @@ COPY melete_plugin/ /opt/melete-runtime/melete_plugin/
 COPY runtime_support/ /opt/melete-runtime/runtime_support/
 COPY patches/ /opt/melete-runtime/patches/
 RUN python /opt/melete-runtime/patches/observer_bridge.py /opt/hermes
+# Melete serves Claude models over the Messages API, through the engine's own
+# Anthropic client (the `anthropic` extra above). The build fails unless that
+# client reaches a stand-in broker carrying the attempt's capability.
+COPY anthropic_check.py /opt/melete-runtime/anthropic_check.py
+RUN cd /opt/hermes && python /opt/melete-runtime/anthropic_check.py
 COPY config/config.yaml /opt/melete-runtime/config.yaml
 COPY config/SOUL.md /opt/melete-runtime/SOUL.md
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
