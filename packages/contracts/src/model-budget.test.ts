@@ -62,3 +62,33 @@ test('a model named after an inherited property is still a model the catalog doe
     expect(inputTokenCeiling(name, { max_input_tokens: 50_000 })).toBe(50_000);
   }
 });
+
+test('a Claude id spelled with a snapshot date, a router prefix or a Bedrock name finds its window', () => {
+  for (const [model, window] of [
+    ['claude-haiku-4-5-20251001', 200_000],
+    ['claude-opus-4-8@20260101', 1_000_000],
+    ['anthropic/claude-opus-5-5', 1_000_000],
+    ['anthropic.claude-sonnet-5-5-v1:0', 1_000_000],
+    ['us.anthropic.claude-haiku-4-5-20251001-v1:0', 200_000],
+    ['global.anthropic.claude-opus-5-5-v1', 1_000_000],
+    ['anthropic/claude-haiku-4-5-20251001', 200_000],
+  ] as const) {
+    expect([model, hasKnownContextWindow(model)]).toEqual([model, true]);
+    expect([model, modelContextWindow(model)]).toEqual([model, window]);
+  }
+  // An id that is not a listed Claude model once its spelling is taken off keeps the fallback,
+  // and only Claude ids are rewritten.
+  for (const model of [
+    'claude-opus-9-9-20251001',
+    'anthropic/claude-unknown',
+    'anthropic.claude-sonnet-5-5-preview',
+    'claude-opus-5-5-2025100',
+    'openai/gpt-6-astra',
+    'gpt-6-astra-20251001',
+    'anthropic/constructor',
+    'anthropic.toString-v1:0',
+  ]) {
+    expect([model, hasKnownContextWindow(model)]).toEqual([model, false]);
+    expect([model, modelContextWindow(model)]).toEqual([model, FALLBACK_CONTEXT_WINDOW]);
+  }
+});
