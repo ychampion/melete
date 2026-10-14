@@ -37,6 +37,7 @@ import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { BlobStore } from '../storage/blob.ts';
@@ -219,6 +220,11 @@ export class SpaceRemovalService {
   private timer?: ReturnType<typeof setInterval>;
   private resuming?: Promise<unknown>;
   private readonly inFlight = new Map<string, Promise<SpaceRemovalRow>>();
+  /** Removals whose resumed run failed, each tried again later on its own. */
+  private readonly failures = new ItemFailures('space removal', {
+    firstMs: 60_000,
+    maxMs: 30 * 60_000,
+  });
 
   constructor(readonly deps: RemovalDeps) {
     this.leaseMs = deps.leaseMs ?? LEASE_MS;
@@ -918,7 +924,7 @@ export class SpaceRemovalService {
    */
   async resume(signal?: AbortSignal): Promise<SpaceRemovalRow[]> {
     const ready = await this.deps.db
-      .select({ id: spaceRemoval.id })
+      .select({ id: spaceRemoval.id, spaceId: spaceRemoval.spaceId })
       .from(spaceRemoval)
       .where(
         and(
@@ -932,7 +938,14 @@ export class SpaceRemovalService {
       if (signal?.aborted) break;
       // One this process is already running is left to that run.
       if (this.inFlight.has(entry.id)) continue;
-      finished.push(await this.run(entry.id, signal));
+      // One removal whose run fails never holds up the removals after it.
+      if (!this.failures.due(entry.id)) continue;
+      try {
+        finished.push(await this.run(entry.id, signal));
+        this.failures.succeeded(entry.id);
+      } catch (error) {
+        this.failures.failed(entry.id, error, `${entry.id} of ${entry.spaceId}`);
+      }
     }
     return finished;
   }

@@ -10,6 +10,7 @@ import {
   type GatewayProvider,
   type GatewaySettlement,
 } from '../gateway/index.ts';
+import { toolWireName } from '../gateway/tool-names.ts';
 import {
   IMAGE_WITHHELD_DEVICE,
   IMAGE_WITHHELD_LOCAL,
@@ -567,7 +568,7 @@ describe('cloud requests: redact out, rehydrate back', () => {
     expect(anthropic.messages[0].content[0]).toMatchObject({
       type: 'tool_use',
       id: 'toolu_1',
-      name: 'contacts__add',
+      name: toolWireName('contacts.add'),
       input: { name: '⟦PRIVATE_1⟧', id: '⟦SSN_1⟧' },
     });
   });

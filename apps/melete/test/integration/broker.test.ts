@@ -15,7 +15,7 @@ import type { BrokerOptions } from '../../src/broker/service.ts';
 import { BrokerService, OWN_COMPUTER_UNKNOWN } from '../../src/broker/service.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
-import { rejectionOf, seedJob } from '../helpers/broker.ts';
+import { failOnceFor, rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
 /** Record that an action runs on an agent's computer that reaches nothing outside. */
@@ -429,6 +429,91 @@ describe('durable action lifecycle', () => {
     expect(s.calls()).toBe(0);
     const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
     expect(job?.state).toBe('needs_reconciliation');
+  });
+
+  /** Two approved sends on one job, admitted and not yet dispatched. */
+  async function twoAdmitted(s: Awaited<ReturnType<typeof setup>>) {
+    const ids: string[] = [];
+    for (const body of ['first', 'second']) {
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: { body },
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      ids.push(proposal.action_id);
+    }
+    return ids;
+  }
+
+  databaseTest('one dispatch that cannot be recovered does not stop the others', async () => {
+    const s = await setup();
+    const ids = await twoAdmitted(s);
+    await s.sql`update action set status = 'dispatched', dispatched_at = now() - interval '1 minute'
+      where id = any(${ids})`;
+    const broken = failOnceFor(s.broker, 'recordResult', (args) => args[0], ids);
+    try {
+      expect(await s.broker.recoverDispatched()).toBeGreaterThanOrEqual(1);
+    } finally {
+      broken.restore();
+    }
+    const failed = broken.failed();
+    expect(failed).not.toBeNull();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('dispatched');
+    for (const id of ids.filter((id) => id !== failed))
+      expect((await loadAction(s.sql, id)).status).toBe('unknown');
+    // The one left over is taken up by the next sweep.
+    await s.broker.recoverDispatched();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('unknown');
+    expect(s.calls()).toBe(0);
+  });
+
+  databaseTest('one unanswered read that cannot be settled does not stop the others', async () => {
+    const s = await setup();
+    const ids = [recordId('act'), recordId('act')];
+    for (const id of ids)
+      await s.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+        values (${id}, ${s.claims.job_id}, ${s.claims.attempt_id}, ${s.connectionId},
+          'test.read', 'read', '{}'::jsonb, ${'e'.repeat(64)}, ${id}, 'unknown', now())`;
+    const broken = failOnceFor(s.broker, 'recordResult', (args) => args[0], ids);
+    try {
+      await s.broker.recoverDispatched();
+    } finally {
+      broken.restore();
+    }
+    const failed = broken.failed();
+    expect(failed).not.toBeNull();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('unknown');
+    for (const id of ids.filter((id) => id !== failed))
+      expect((await loadAction(s.sql, id)).status).toBe('failed');
+    await s.broker.recoverDispatched();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('failed');
+  });
+
+  databaseTest('one parked action that cannot be resumed does not stop the others', async () => {
+    const s = await setup();
+    const ids = await twoAdmitted(s);
+    await s.sql`update action set retry_after_at = now() - interval '1 second' where id = any(${ids})`;
+    const broken = failOnceFor(s.broker, 'dispatch', (args) => args[0], ids);
+    try {
+      await s.broker.resumeParked();
+    } finally {
+      broken.restore();
+    }
+    const failed = broken.failed();
+    expect(failed).not.toBeNull();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('admitted');
+    for (const id of ids.filter((id) => id !== failed))
+      expect((await loadAction(s.sql, id)).status).toBe('succeeded');
+    expect(s.calls()).toBe(1);
+    await s.broker.resumeParked();
+    expect((await loadAction(s.sql, failed ?? '')).status).toBe('succeeded');
+    expect(s.calls()).toBe(2);
   });
 
   databaseTest('a dispatch its connector gave longer finishes inside that budget', async () => {

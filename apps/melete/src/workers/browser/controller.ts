@@ -17,7 +17,7 @@ import {
   BrowserSessions,
   type BrowserSessionsOptions,
 } from './sessions.ts';
-import { isSensitiveControl, type VisibleSchema } from './visible.ts';
+import { attributeWords, isSensitiveControl, type VisibleSchema } from './visible.ts';
 
 // These declarations describe only code evaluated inside Chromium. They do not add DOM globals
 // to the Bun service's type environment (whose streams include Bun-specific methods).
@@ -25,7 +25,13 @@ type BrowserElement = {
   tagName: string;
   type: string;
   name: string;
+  id: string;
   value: string;
+  /** A slider's ends and step, as the page wrote them; empty when it wrote none. */
+  min: string;
+  max: string;
+  step: string;
+  isContentEditable: boolean;
   disabled: boolean;
   readOnly: boolean;
   checked: boolean;
@@ -246,8 +252,8 @@ export const CHALLENGE_DRAW_MS = 4_000;
  * field, as on a sign-in or sign-up form; else 'guarded'. Runs in the page.
  */
 function secretFieldState(): 'none' | 'passwords' | 'guarded' {
-  const secret = /password|one-time-code|webauthn|cc-number|cc-csc/i;
-  const other = /one-time-code|webauthn|cc-number|cc-csc/i;
+  const secret = /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
+  const other = /one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
   let state: 'none' | 'passwords' | 'guarded' = 'none';
   const look = (root: BrowserRoot) => {
     for (const element of Array.from(root.querySelectorAll('input, textarea, select')))
@@ -328,14 +334,14 @@ function controlLooks(...elements: BrowserElement[]) {
         box.height > 0,
       secret:
         element.getAttribute('type') === 'password' ||
-        /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+        /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ),
       // A password field with nothing in it yet, as a sign-in or sign-up form shows one.
       emptyPassword:
         element.tagName === 'INPUT' &&
         element.getAttribute('type') === 'password' &&
-        !/one-time-code|webauthn|cc-number|cc-csc/i.test(
+        !/one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ) &&
         element.value === '',
@@ -677,7 +683,7 @@ export class BrowserController {
       const sensitive = controls.some(
         (field) =>
           field.type === 'password' ||
-          /password|one-time-code|webauthn|cc-number|cc-csc/i.test(field.autocomplete) ||
+          /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(field.autocomplete) ||
           /password|passcode|otp|verification.code|security.code|authenticator/i.test(
             `${field.name} ${field.getAttribute('aria-label') ?? ''}`,
           ),
@@ -1043,16 +1049,24 @@ export class BrowserController {
         } else if (action.kind === 'fill') {
           const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
           // What the field is: typed into, given a value (a time, a date, a number), not
-          // something fill changes, or where a secret goes, which stays the person's.
-          const kind = await handle.evaluate((element) => {
-            if (/password|one-time-code|webauthn|cc-number|cc-csc/i.test(element.autocomplete))
-              return 'secret';
+          // something fill changes, or where a secret goes, which stays the person's. Its name
+          // and id are read too, since a code field is often known by them alone.
+          const { kind, names } = await handle.evaluate((element) => {
+            const names = [element.getAttribute('name') ?? '', element.id];
+            const is = (kind: string) => ({ kind, names });
+            if (
+              /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(element.autocomplete)
+            )
+              return is('secret');
             if (element.tagName === 'TEXTAREA')
-              return element.readOnly || element.disabled ? 'fixed' : 'typed';
-            if (element.tagName !== 'INPUT') return 'other';
-            if (element.type === 'password') return 'secret';
-            if (element.readOnly || element.disabled) return 'fixed';
-            if (['text', 'email', 'search', 'tel', 'url'].includes(element.type)) return 'typed';
+              return is(element.readOnly || element.disabled ? 'fixed' : 'typed');
+            if (element.tagName === 'SELECT') return is('dropdown');
+            if (element.tagName !== 'INPUT')
+              return is(element.isContentEditable ? 'editable' : 'other');
+            if (element.type === 'password') return is('secret');
+            if (element.readOnly || element.disabled) return is('fixed');
+            if (['text', 'email', 'search', 'tel', 'url'].includes(element.type))
+              return is('typed');
             if (
               [
                 'time',
@@ -1065,21 +1079,26 @@ export class BrowserController {
                 'color',
               ].includes(element.type)
             )
-              return 'valued';
-            return 'other';
+              return is('valued');
+            return is('other');
           });
           if (
             kind === 'secret' ||
-            isSensitiveControl({
-              label: action.label,
-              role: 'textbox',
-              sensitive: false,
-              required: false,
-            })
+            [action.label, ...names.filter(Boolean).map(attributeWords)].some((label) =>
+              isSensitiveControl({ label, role: 'textbox', sensitive: false, required: false }),
+            )
           )
             throw new BrowserFault('sensitive_input_require_takeover');
           if (kind === 'fixed')
             throw new BrowserFault('not_fillable: that field is read-only or disabled.');
+          if (kind === 'dropdown')
+            throw new BrowserFault(
+              'not_fillable: that field is a dropdown; choose one of its options with select.',
+            );
+          if (kind === 'editable')
+            throw new BrowserFault(
+              'not_fillable: that is an editable area of the page (contenteditable), not a form field; fill types only into text fields, text areas and fields that take a time, date, number or colour.',
+            );
           if (kind === 'other')
             throw new BrowserFault(
               'not_fillable: that control takes no typed value; a checkbox, radio button or button is clicked, and a file is never chosen by the agent.',
@@ -1099,23 +1118,39 @@ export class BrowserController {
                     'value',
                   )?.set;
                   setter?.call(input, value);
-                  // A colour field turns a value it cannot read into black rather than empty.
+                  // A colour field turns a value it cannot read into black rather than empty,
+                  // and a slider moves a value past its ends or between its steps to the
+                  // nearest one it allows, so both are compared with what was asked for.
                   const accepted =
                     value === '' ||
                     (input.value !== '' &&
-                      (input.type !== 'color' || input.value === value.toLowerCase()));
+                      (input.type === 'color'
+                        ? input.value === value.toLowerCase()
+                        : input.type !== 'range' ||
+                          (value.trim() !== '' && Number(input.value) === Number(value))));
                   if (!accepted) setter?.call(input, before);
                   else {
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                   }
-                  return accepted ? null : input.type;
+                  if (accepted) return null;
+                  return {
+                    type: input.type,
+                    range:
+                      input.type === 'range'
+                        ? [input.min || '0', input.max || '100', input.step || '1']
+                        : null,
+                  };
                 }, action.value),
               ),
             );
+            if (taken?.range)
+              throw new BrowserFault(
+                `value_not_accepted: that slider does not take "${action.value}"; it takes a number from ${taken.range[0]} to ${taken.range[1]} in steps of ${taken.range[2]}, and was left as it was.`,
+              );
             if (taken)
               throw new BrowserFault(
-                `value_not_accepted: that ${taken} field does not take "${action.value}"; give it in the form the field uses, such as 19:30 for a time or 2026-10-15 for a date.`,
+                `value_not_accepted: that ${taken.type} field does not take "${action.value}"; give it in the form the field uses, such as 19:30 for a time or 2026-10-15 for a date.`,
               );
           } else
             await this.network.run('reversible', async () => {
@@ -1163,7 +1198,7 @@ export class BrowserController {
             element.options[0]?.disabled || element.options[0]?.value === ''
               ? element.options[0].label
               : '',
-            /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+            /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
               element.getAttribute('autocomplete') ?? '',
             )
               ? 'password'

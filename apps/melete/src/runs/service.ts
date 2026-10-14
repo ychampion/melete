@@ -76,6 +76,7 @@ import {
   runEntry,
   runState,
 } from '../db/schema.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { SUPERSEDED_NOTE } from '../experience/projectors.ts';
@@ -2628,58 +2629,73 @@ export class RunService {
       .where(and(inArray(job.kind, ['run', 'run_step']), stalled))
       .limit(50);
     for (const entry of rows) {
-      // Decided again under the lock: one that started meanwhile is left alone.
-      const isStalled = async (tx: Transaction) => {
-        const locked = await this.jobs.lock(tx, entry.id, true);
-        if (!locked) return null;
-        const [still] = await tx
-          .select({ id: job.id })
-          .from(job)
-          .where(and(eq(job.id, entry.id), stalled));
-        return still ? locked : null;
-      };
-      if (entry.kind === 'run_step') {
-        // It has not started, so nothing of it is running to interrupt.
-        const stopped = await this.jobs.transaction(async (tx) => {
+      try {
+        // Decided again under the lock: one that started meanwhile is left alone.
+        const isStalled = async (tx: Transaction) => {
+          const locked = await this.jobs.lock(tx, entry.id, true);
+          if (!locked) return null;
+          const [still] = await tx
+            .select({ id: job.id })
+            .from(job)
+            .where(and(eq(job.id, entry.id), stalled));
+          return still ? locked : null;
+        };
+        if (entry.kind === 'run_step') {
+          // It has not started, so nothing of it is running to interrupt.
+          const stopped = await this.jobs.transaction(async (tx) => {
+            const locked = await isStalled(tx);
+            if (locked) await this.jobs.cancelInTransaction(tx, locked, 'helper_stalled');
+            return Boolean(locked);
+          });
+          if (stopped) done.stopped.push(entry.id);
+          continue;
+        }
+        const triggers = await this.jobs.transaction(async (tx) => {
           const locked = await isStalled(tx);
-          if (locked) await this.jobs.cancelInTransaction(tx, locked, 'helper_stalled');
-          return Boolean(locked);
+          if (!locked) return null;
+          await tx
+            .update(job)
+            .set({ paused: true, updatedAt: new Date() })
+            .where(eq(job.id, entry.id));
+          await appendEvent(tx, {
+            jobId: entry.id,
+            type: 'notice',
+            payload: { kind: 'run_paused', reason: STALLED, message: STALLED_QUESTION },
+            dedupKey: `${entry.id}:${STALLED}:${newId('op')}`,
+          });
+          // What it has so far goes with the question, so the card shows both.
+          const has = await this.soFar(tx, entry.id);
+          await this.write(tx, {
+            run: entry.id,
+            kind: 'report',
+            title: 'It stopped making progress',
+            body: has
+              ? clip(`${STALLED_QUESTION}\n\n${SO_FAR}:\n${has}`, RUN_BODY_LIMIT)
+              : STALLED_QUESTION,
+            data: { automatic: true, stalled: true, ...(has ? { partial: true } : {}) },
+          });
+          await this.reported(
+            tx,
+            entry.id,
+            locked,
+            'It stopped making progress',
+            STALLED_QUESTION,
+            {
+              spaced: false,
+              key: 'run-stalled',
+            },
+          );
+          return setStandingEnabled(tx, entry.id, false);
         });
-        if (stopped) done.stopped.push(entry.id);
-        continue;
-      }
-      const triggers = await this.jobs.transaction(async (tx) => {
-        const locked = await isStalled(tx);
-        if (!locked) return null;
-        await tx
-          .update(job)
-          .set({ paused: true, updatedAt: new Date() })
-          .where(eq(job.id, entry.id));
-        await appendEvent(tx, {
-          jobId: entry.id,
-          type: 'notice',
-          payload: { kind: 'run_paused', reason: STALLED, message: STALLED_QUESTION },
-          dedupKey: `${entry.id}:${STALLED}:${newId('op')}`,
-        });
-        // What it has so far goes with the question, so the card shows both.
-        const has = await this.soFar(tx, entry.id);
-        await this.write(tx, {
-          run: entry.id,
-          kind: 'report',
-          title: 'It stopped making progress',
-          body: has
-            ? clip(`${STALLED_QUESTION}\n\n${SO_FAR}:\n${has}`, RUN_BODY_LIMIT)
-            : STALLED_QUESTION,
-          data: { automatic: true, stalled: true, ...(has ? { partial: true } : {}) },
-        });
-        await this.reported(tx, entry.id, locked, 'It stopped making progress', STALLED_QUESTION, {
-          spaced: false,
-          key: 'run-stalled',
-        });
+        // Counted once it is committed, so one that failed part way is not reported paused.
+        if (triggers === null) continue;
         done.paused.push(entry.id);
-        return setStandingEnabled(tx, entry.id, false);
-      });
-      if (triggers) await this.syncSchedules();
+        if (triggers) await this.syncSchedules();
+      } catch (error) {
+        // One that cannot be handled is logged and left; the rest are still looked at.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(`run watchdog: ${entry.id} not handled: ${failureMessage(error)}\n`);
+      }
     }
     return done;
   }
@@ -2712,36 +2728,37 @@ export class RunService {
       .limit(100);
     const told: string[] = [];
     for (const { id } of open) {
-      const surfaced = await this.jobs.transaction(async (tx) => {
-        const waiting = (await waitingForOk(tx, [id])).get(id) ?? [];
-        const [root] = await tx.select().from(job).where(eq(job.id, id));
-        if (!root || !waiting.length) return [];
-        const already = new Set(
-          (
-            await tx
-              .select({ approval: sql<string>`${runEntry.data}->>'approval_id'` })
-              .from(runEntry)
-              .where(
-                and(
-                  eq(runEntry.runJobId, id),
-                  eq(runEntry.kind, 'report'),
-                  sql`${runEntry.data}->>'approval_id' is not null`,
-                ),
-              )
-          ).map((entry) => entry.approval),
-        );
-        const fresh = waiting.filter((entry) => !already.has(entry.approvalId));
-        for (const entry of fresh) {
-          await this.write(tx, {
-            run: id,
-            kind: 'report',
-            title: 'It needs your OK to go on',
-            body: 'It asked for your permission before its next step. Approve or decline it here; until then it waits.',
-            data: { automatic: true, approval_id: entry.approvalId, action_id: entry.actionId },
-          });
-          const principal = root.principalId;
-          if (principal)
-            await tx.execute(sql`insert into push_intent
+      try {
+        const surfaced = await this.jobs.transaction(async (tx) => {
+          const waiting = (await waitingForOk(tx, [id])).get(id) ?? [];
+          const [root] = await tx.select().from(job).where(eq(job.id, id));
+          if (!root || !waiting.length) return [];
+          const already = new Set(
+            (
+              await tx
+                .select({ approval: sql<string>`${runEntry.data}->>'approval_id'` })
+                .from(runEntry)
+                .where(
+                  and(
+                    eq(runEntry.runJobId, id),
+                    eq(runEntry.kind, 'report'),
+                    sql`${runEntry.data}->>'approval_id' is not null`,
+                  ),
+                )
+            ).map((entry) => entry.approval),
+          );
+          const fresh = waiting.filter((entry) => !already.has(entry.approvalId));
+          for (const entry of fresh) {
+            await this.write(tx, {
+              run: id,
+              kind: 'report',
+              title: 'It needs your OK to go on',
+              body: 'It asked for your permission before its next step. Approve or decline it here; until then it waits.',
+              data: { automatic: true, approval_id: entry.approvalId, action_id: entry.actionId },
+            });
+            const principal = root.principalId;
+            if (principal)
+              await tx.execute(sql`insert into push_intent
                 (id, principal_id, kind, title, body, because, url, dedup_key)
               select ${newId('pint')}, ${principal}, 'decision', 'One decision is waiting',
                 ${clip(root.title, 300)}, 'Because it can’t go on until you decide.',
@@ -2749,11 +2766,21 @@ export class RunService {
               where coalesce((select s.decisions from push_setting s
                 where s.principal_id = ${principal}), true)
               on conflict (dedup_key) do nothing`);
-          await tx.update(runState).set({ lastReportAt: new Date() }).where(eq(runState.jobId, id));
-        }
-        return fresh.map((entry) => entry.approvalId);
-      });
-      told.push(...surfaced);
+            await tx
+              .update(runState)
+              .set({ lastReportAt: new Date() })
+              .where(eq(runState.jobId, id));
+          }
+          return fresh.map((entry) => entry.approvalId);
+        });
+        told.push(...surfaced);
+      } catch (error) {
+        // One run that cannot be told of is logged and left; the others still are.
+        if (databaseUnreachable(error)) throw error;
+        process.stderr.write(
+          `run watchdog: permissions for ${id} not surfaced: ${failureMessage(error)}\n`,
+        );
+      }
     }
     return told;
   }
