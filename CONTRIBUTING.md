@@ -123,6 +123,35 @@ how to run the deployment scenarios against a Compose stack.
 Write commit messages as plain sentences. In the pull request, say what changed,
 how it behaves, and which suites you ran.
 
+## When main fails
+
+Two pull requests can each pass on their own and fail together once both are
+on main. Three things deal with that.
+
+- **An issue opens by itself.** After every run of CI, Conformance, Images,
+  Install and Setup guide on main, the Main health workflow checks the result.
+  On a failure it opens one issue per workflow, titled
+  `main is failing: <workflow> / <job>` and labelled `main-failing`. It names
+  the commit, the run, the failed job and step, the end of the step's log, the
+  last commit the workflow passed on, and the pull requests merged since then;
+  the cause is usually among those. A later failure updates the same issue.
+  When the same jobs pass on main again, the issue is closed with the commit
+  that fixed it.
+- **An automatic fix, if you turn it on.** Add an `ANTHROPIC_API_KEY`
+  repository secret and Main health also asks Claude to reproduce the failure
+  at the failing commit, find the cause among the merged pull requests and fix
+  it. The fix arrives as a pull request from a `fix/main-<short sha>` branch,
+  labelled `main-autofix`, that points at the issue. It is never pushed to
+  main and never merged: review it like any other pull request. A pull request
+  opened with the workflow's own token does not start CI, so close and reopen
+  it, or push to its branch, to run the checks. Only one automatic fix runs at
+  a time, and none starts while a `main-autofix` pull request is open. Without
+  the secret this step is skipped.
+- **Stale branches are stopped early.** The Base is current check fails a pull
+  request when main has changed `install.sh`, `deploy/`, `.github/workflows/`,
+  `apps/melete/drizzle/` or `packages/contracts/` since the branch was cut.
+  Merge main into the branch so CI tests it against current main.
+
 ## Licence
 
 Contributions are licensed under Apache-2.0, as described in [LICENSE](LICENSE).
