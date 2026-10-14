@@ -59,7 +59,13 @@ export class MockBeliefs {
   readonly beliefs = new Map<string, MockBelief>();
   readonly blocks = new Map<
     string,
-    { id: string; label: string; subject: string; created_at: string }
+    {
+      id: string;
+      label: string;
+      scope: C.BeliefBlockScope;
+      subject: string;
+      created_at: string;
+    }
   >();
   readonly rewinds = new Map<string, MockRewind>();
   /** Notes Melete kept for itself, newest first. */
@@ -252,6 +258,7 @@ export class MockBeliefs {
     return C.belief.parse({
       id: belief.id,
       label: belief.label,
+      topic: belief.label,
       value: current.value,
       category: belief.category,
       source: current.source,
@@ -289,16 +296,22 @@ export class MockBeliefs {
     this.required(id);
     this.beliefs.delete(id);
   }
-  block(id: string) {
+  /** A block on anything about the belief's subject, or on just that detail. */
+  block(id: string, scope: C.BeliefBlockScope = 'topic') {
     const belief = this.required(id);
     const block = {
       id: newId('blk'),
-      label: belief.label,
+      label:
+        scope === 'detail'
+          ? `${belief.label}, the detail you forgot`
+          : `Anything about ${belief.label}`,
+      scope,
       subject: belief.subject,
       created_at: this.now().toISOString(),
     };
     this.blocks.set(block.id, block);
     this.beliefs.delete(id);
+    return scope;
   }
 
   /** Every revision recorded in a window, as timeline changes, newest first. */
@@ -611,7 +624,11 @@ export class MockBeliefs {
       const existing = [...this.beliefs.values()].find(
         (b) => b.subject === entry.subject && !b.setAside,
       );
-      if ([...this.blocks.values()].some((block) => block.subject === entry.subject)) {
+      if (
+        [...this.blocks.values()].some(
+          (block) => block.scope === 'topic' && block.subject === entry.subject,
+        )
+      ) {
         skipped++;
         notes.push(`${entry.label}: you asked me not to learn this again.`);
         continue;
@@ -648,8 +665,10 @@ export class MockBeliefs {
       case 'GET /memory/beliefs/{id}/history':
         return this.history(id);
       case 'POST /memory/beliefs/{id}/block':
-        this.block(id);
-        return { status: 'ok' };
+        return {
+          status: 'ok',
+          scope: this.block(id, C.beliefBlockRequest.parse(input)?.scope ?? 'topic'),
+        };
       case 'GET /memory/notes':
         return {
           notes: [...this.notes.values()].sort((a, b) => b.created.localeCompare(a.created)),

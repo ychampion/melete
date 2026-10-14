@@ -431,9 +431,13 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /memory/beliefs/{id}/history': (spaceId, c) =>
       beliefs?.history(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
       unavailable(NOT_CONNECTED),
-    'POST /memory/beliefs/{id}/block': (spaceId, c) =>
-      beliefs?.block(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
-      unavailable(NOT_CONNECTED),
+    'POST /memory/beliefs/{id}/block': (spaceId, c, input) =>
+      beliefs?.block(
+        spaceId,
+        c.get('owner').id,
+        c.req.param('id') ?? '',
+        input.scope === 'detail' ? 'detail' : 'topic',
+      ) ?? unavailable(NOT_CONNECTED),
     'GET /memory/blocks': (spaceId, c) =>
       beliefs?.blocks(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
     'DELETE /memory/blocks/{id}': (spaceId, c) =>
@@ -704,7 +708,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const ownerOnly = () =>
         new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
       if (member && SPACE_OWNER_SURFACES.has(key)) throw ownerOnly();
-      const input = 'request' in operation ? operation.request.parse(await c.req.json()) : {};
+      // An empty body is read as none, which only a request that may be left out accepts.
+      const raw = 'request' in operation ? await c.req.text() : '';
+      const input =
+        'request' in operation
+          ? (operation.request.parse(raw.trim() ? JSON.parse(raw) : undefined) ?? {})
+          : {};
       if ('query' in operation) operation.query.parse(c.req.query());
       // A standing rule changes what the whole space permits, not one job.
       if (

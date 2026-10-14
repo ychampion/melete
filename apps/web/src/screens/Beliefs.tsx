@@ -26,6 +26,7 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type {
   Belief,
+  BeliefBlockScope,
   BeliefCategory,
   BeliefHistory,
   MemoryDay,
@@ -131,6 +132,33 @@ const CHANGE_WORD: Record<MemoryDay['changes'][number]['change'], string> = {
 const failed = (r: { error: string | null; unavailable: string | null }, fallback: string) =>
   toast({ kind: 'err', title: r.error ?? r.unavailable ?? fallback });
 
+/**
+ * The two reaches "don't learn again" offers, in the words the person picks
+ * from. Anything about the subject comes first and is the default.
+ */
+export const blockChoices = (topic: string) =>
+  [
+    {
+      scope: 'topic',
+      title: `Forget this and anything about ${topic}`,
+      hint: `Nothing about ${topic} is learned again.`,
+    },
+    {
+      scope: 'detail',
+      title: 'Forget just this detail',
+      hint: `Other details about ${topic} can still be learned.`,
+    },
+  ] as const satisfies readonly { scope: BeliefBlockScope; title: string; hint: string }[];
+
+/** What the toast after "don't learn again" says, for how far the block reached. */
+export const blockedToast = (label: string, topic: string, scope: BeliefBlockScope) => ({
+  title: `Forgot “${label}”`,
+  sub:
+    scope === 'topic'
+      ? `I won’t learn anything about ${topic} again.`
+      : `I won’t learn this detail again. Other details about ${topic} can still be learned.`,
+});
+
 /** Where a source link goes: the conversation it was said in, or the one its receipt is in. */
 const linkHref = (link: NonNullable<Belief['source']['link']>) => href(`/chat/${link.id}`);
 
@@ -208,9 +236,9 @@ function BeliefRow({
   twins?: readonly string[];
   highlighted: boolean;
   onChanged: () => void;
-  onRemoved: (message: string) => void;
+  onRemoved: (title: string, sub?: string) => void;
 }) {
-  const [mode, setMode] = useState<'view' | 'edit' | 'forget'>('view');
+  const [mode, setMode] = useState<'view' | 'edit' | 'forget' | 'block'>('view');
   const [sharing, setSharing] = useState(false);
   // Sharing to a room is offered only where the server has rooms switched on.
   const multiplayer = useApp().capabilities.multiplayer;
@@ -309,16 +337,7 @@ function BeliefRow({
               >
                 Forget
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  void eachCopy([belief.id, ...twins], adapter.blockBelief).then((r) => {
-                    if (r) return failed(r, 'Couldn’t forget that');
-                    onRemoved(`Forgot “${belief.label}” and won’t learn it again`);
-                  })
-                }
-              >
+              <Button size="sm" variant="outline" onClick={() => setMode('block')}>
                 Forget and don’t learn again
               </Button>
               <Button size="sm" variant="ghost" onClick={closeEdit}>
@@ -326,6 +345,26 @@ function BeliefRow({
               </Button>
             </div>
           </fieldset>
+        ) : null}
+        {mode === 'block' ? (
+          <BlockChoice
+            belief={belief}
+            onBack={() => setMode('forget')}
+            onCancel={closeEdit}
+            onBlock={(scope) => {
+              // The block reaches the whole subject when the detail can't be told apart.
+              let reached = scope;
+              void eachCopy([belief.id, ...twins], async (id) => {
+                const result = await adapter.blockBelief(id, scope);
+                if (result.data?.scope === 'topic') reached = 'topic';
+                return result;
+              }).then((r) => {
+                if (r) return failed(r, 'Couldn’t forget that');
+                const said = blockedToast(belief.label, belief.topic, reached);
+                onRemoved(said.title, said.sub);
+              });
+            }}
+          />
         ) : null}
       </div>
       <div className="belief-actions">
@@ -480,8 +519,8 @@ function BeliefsView({ focus }: { focus: string | null }) {
                   twins={twins}
                   highlighted={focus === belief.id || (focus !== null && twins.includes(focus))}
                   onChanged={beliefs.reload}
-                  onRemoved={(message) => {
-                    toast({ kind: 'ok', title: message });
+                  onRemoved={(title, sub) => {
+                    toast({ kind: 'ok', title, sub });
                     beliefs.reload();
                     blocks.reload();
                   }}
@@ -527,6 +566,56 @@ function BeliefsView({ focus }: { focus: string | null }) {
         </section>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * How far "don't learn again" reaches, picked before anything is forgotten:
+ * anything about the belief's subject (preselected), or just this detail.
+ */
+export function BlockChoice({
+  belief,
+  onBlock,
+  onBack,
+  onCancel,
+}: {
+  belief: Pick<Belief, 'id' | 'topic'>;
+  onBlock: (scope: BeliefBlockScope) => void;
+  onBack: () => void;
+  onCancel: () => void;
+}) {
+  const [scope, setScope] = useState<BeliefBlockScope>('topic');
+  return (
+    <fieldset className="belief-confirm">
+      <legend>Forget this and don’t learn it again. What should I stop learning?</legend>
+      {blockChoices(belief.topic).map((choice) => (
+        <label key={choice.scope} className="belief-scope">
+          <input
+            type="radio"
+            className="radio"
+            name={`block-scope-${belief.id}`}
+            value={choice.scope}
+            checked={scope === choice.scope}
+            onChange={() => setScope(choice.scope)}
+          />
+          <span className="col" style={{ gap: 2, minWidth: 0 }}>
+            <span className="belief-scope-title">{choice.title}</span>
+            <span className="belief-scope-hint">{choice.hint}</span>
+          </span>
+        </label>
+      ))}
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <Button size="sm" variant="destructive" autoFocus onClick={() => onBlock(scope)}>
+          Forget and don’t learn again
+        </Button>
+        <Button size="sm" variant="outline" onClick={onBack}>
+          Back
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Keep it
+        </Button>
+      </div>
+    </fieldset>
   );
 }
 

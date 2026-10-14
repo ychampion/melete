@@ -36,6 +36,7 @@ import type {
   AutomationCreate,
   Belief,
   BeliefBlock,
+  BeliefBlockScope,
   BeliefExport,
   BeliefHistory,
   BeliefImport,
@@ -737,9 +738,14 @@ export const adapter = {
   beliefs: () => guard<{ beliefs: Belief[]; time_zone: string }>(() => api.GET('/memory/beliefs')),
   beliefHistory: (id: string) =>
     guard<BeliefHistory>(() => api.GET('/memory/beliefs/{id}/history', path(id))),
-  /** Forget a belief and never learn its subject again. */
-  blockBelief: (id: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/memory/beliefs/{id}/block', path(id))),
+  /**
+   * Forget a belief and don't learn it again: anything about its subject, or
+   * just this detail. The answer says how far the block reached.
+   */
+  blockBelief: (id: string, scope: BeliefBlockScope = 'topic') =>
+    guard<{ status: 'ok'; scope: BeliefBlockScope }>(() =>
+      api.POST('/memory/beliefs/{id}/block', { ...path(id), body: { scope } }),
+    ),
   beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
   unblockBelief: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),

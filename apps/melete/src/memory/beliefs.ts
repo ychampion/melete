@@ -13,7 +13,7 @@ import type {
   BeliefTrust,
   OriginTrust,
 } from '@melete/contracts';
-import { blockedSubject, readBlocks } from './blocks.ts';
+import { type BlockScope, blockedSubject, readBlocks, storedScope } from './blocks.ts';
 import { type ClaimHead, eligibleRevision, getHead, listClaims } from './claims.ts';
 import {
   lockSpace,
@@ -288,6 +288,7 @@ export async function beliefFromHead(
   return {
     id: head.id,
     label: beliefLabel(head.key, head.domain_key, head.current.content),
+    topic: subjectLabel(head.key, head.domain_key),
     // Saved before details were put in the person's words, it may still say "the owner".
     value: inPersonsWords(head.current.content),
     category: beliefCategoryOf({
@@ -383,41 +384,53 @@ export async function blockedSubjects(sql: MemorySql | MemoryTx, spaceId: string
 /**
  * Forget a belief and stop learning it again. The block is written before the
  * forget, so a message being read at the same moment cannot bring the detail
- * back in between. It holds for that detail wherever a model files it, not
- * for every other detail filed under the same subject (see `blockedSubject`),
- * and its name says so.
+ * back in between. By default it holds for anything about the belief's
+ * subject, and for the detail itself wherever a model files it; with
+ * `detail`, for just that detail, so another detail under the same subject
+ * can still be learned (see `blockedSubject`). The answer says how far it
+ * reached, which is the whole subject when the detail cannot be told apart.
  */
 export async function blockBelief(
   sql: MemorySql,
   scope: MemoryScope,
   id: string,
   journal: RestrictionJournal,
+  reach: BlockScope = 'topic',
 ) {
-  const head = await sql.begin(async (tx) => {
+  const { head, block } = await sql.begin(async (tx) => {
     await lockSpace(tx, scope);
     const found = await getHead(tx, scope, id);
     if (!found) throw new MemoryError('claim_not_found');
     const domain = found.domain_key.split(':exception:')[0] ?? found.domain_key;
-    const block = blockedSubject(scope.spaceId, domain, found.current.content);
+    const kept = blockedSubject(scope.spaceId, domain, found.current.content, reach);
     const label = subjectLabel(found.key, found.domain_key);
     await tx`insert into memory_blocks (id, space_id, domain_key, key, label)
-      values (${newId('blk')}, ${scope.spaceId}, ${block.subject}, ${found.key},
-        ${block.detail ? `${label}, the detail you forgot` : label})
+      values (${newId('blk')}, ${scope.spaceId}, ${kept.subject}, ${found.key},
+        ${kept.scope === 'detail' ? `${label}, the detail you forgot` : label})
       on conflict (space_id, domain_key) where removed_at is null do nothing`;
-    return found;
+    return { head: found, block: kept };
   });
   await forgetMemory(sql, scope, { claim_id: head.id }, journal);
-  return { status: 'ok' as const };
+  return { status: 'ok' as const, scope: block.scope };
 }
+/**
+ * What the person asked Melete not to learn again, each said with how far it
+ * reaches: "Home city, the detail you forgot", or "Anything about Home city"
+ * for a block on the whole subject, as every block made before the choice is.
+ */
 export async function listBlocks(sql: MemorySql, scope: MemoryScope) {
-  const rows = await sql`select id, label, created_at from memory_blocks
+  const rows = await sql`select id, label, domain_key, created_at from memory_blocks
     where space_id = ${scope.spaceId} and removed_at is null order by created_at desc limit 500`;
   return {
-    blocks: rows.map((row) => ({
-      id: String(row.id),
-      label: String(row.label),
-      created_at: new Date(String(row.created_at)).toISOString(),
-    })),
+    blocks: rows.map((row) => {
+      const reach = storedScope(String(row.domain_key));
+      return {
+        id: String(row.id),
+        label: reach === 'topic' ? `Anything about ${String(row.label)}` : String(row.label),
+        scope: reach,
+        created_at: new Date(String(row.created_at)).toISOString(),
+      };
+    }),
   };
 }
 export async function removeBlock(sql: MemorySql, scope: MemoryScope, id: string) {

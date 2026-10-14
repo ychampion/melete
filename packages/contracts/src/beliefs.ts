@@ -69,6 +69,8 @@ export type BeliefSource = z.infer<typeof beliefSource>;
 export const belief = z.strictObject({
   id,
   label: text,
+  /** What the belief is about, as a block on anything about it is named: "Home city". */
+  topic: text,
   value,
   category: beliefCategory,
   source: beliefSource,
@@ -99,8 +101,29 @@ export const beliefVersion = z.strictObject({
 });
 export const beliefHistory = z.strictObject({ label: text, versions: z.array(beliefVersion) });
 
+/**
+ * How far "don't learn this again" reaches: anything about the belief's
+ * subject (the default), or just the detail forgotten, so another detail
+ * under the same subject can still be learned.
+ */
+export const beliefBlockScope = z.enum(['topic', 'detail']);
+export type BeliefBlockScope = z.infer<typeof beliefBlockScope>;
+/** An empty body blocks anything about the subject. */
+export const beliefBlockRequest = z.strictObject({ scope: beliefBlockScope.optional() }).optional();
+/**
+ * `scope` is how far the block reached: anything about the subject when the
+ * detail cannot be told apart from others under it, whatever was asked.
+ */
+export const beliefBlocked = z.strictObject({ status: z.literal('ok'), scope: beliefBlockScope });
+
 /** Something the person asked Melete not to learn again. */
-export const beliefBlock = z.strictObject({ id, label: text, created_at: date });
+export const beliefBlock = z.strictObject({
+  id,
+  /** "Anything about Home city", or "Home city, the detail you forgot". */
+  label: text,
+  scope: beliefBlockScope,
+  created_at: date,
+});
 export const beliefBlockList = z.strictObject({ blocks: z.array(beliefBlock) });
 
 export const beliefChangeKind = z.enum(['learned', 'changed', 'corrected', 'restored', 'removed']);
