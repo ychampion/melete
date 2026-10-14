@@ -67,6 +67,51 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     expect(fixture.effects.filter((effect) => effect.run === 'controller')).toHaveLength(1);
     expect(fixture.effects[0]?.fields.person_name).toBe('A Person');
   }, 20_000);
+  test('a time, date or number field takes its value, and is not mistaken for a secret', async () => {
+    const opened = await call({ kind: 'open', url: `${fixture.url}/form/typed_fields?run=typed` });
+    // Each field is listed once, by its label, and not by the parts the browser draws in it.
+    expect(opened.observation?.schema.map((control) => [control.label, control.role])).toEqual([
+      ['Name', 'textbox'],
+      ['Email', 'textbox'],
+      ['Delivery time', 'textbox'],
+      ['Day', 'textbox'],
+      ['Guests', 'spinbutton'],
+      ['Colour', 'textbox'],
+      ['Extra cheese', 'checkbox'],
+      ['Save', 'button'],
+    ]);
+    await call({ kind: 'fill', label: 'Name', value: 'A Person' });
+    await call({ kind: 'fill', label: 'Email', value: 'person@example.com' });
+    await call({ kind: 'fill', label: 'Delivery time', value: '19:30' });
+    await call({ kind: 'fill', label: 'Day', value: '2026-10-15' });
+    await call({ kind: 'fill', label: 'Guests', value: '4' });
+    await call({ kind: 'fill', label: 'Colour', value: '#FF8800' });
+    const observed = await call({ kind: 'observe' });
+    const intent = ((observed.result?.submit_intents ?? []) as BrowserSubmitIntent[])[0];
+    expect(intent?.fields).toMatchObject({
+      delivery: '19:30',
+      day: '2026-10-15',
+      guests: '4',
+      shade: '#ff8800',
+    });
+    // A value of the wrong form is refused by name, and the field keeps what it had.
+    await expect(
+      call({ kind: 'fill', label: 'Delivery time', value: 'half past seven' }),
+    ).rejects.toThrow('value_not_accepted');
+    await expect(call({ kind: 'fill', label: 'Colour', value: 'orange' })).rejects.toThrow(
+      'value_not_accepted',
+    );
+    const after = await call({ kind: 'observe' });
+    expect(
+      ((after.result?.submit_intents ?? []) as BrowserSubmitIntent[])[0]?.fields,
+    ).toMatchObject({ delivery: '19:30', shade: '#ff8800' });
+    // A checkbox is clicked, not filled; neither is a reason to hand the page to the person.
+    const refused = await call({ kind: 'fill', label: 'Extra cheese', value: 'yes' }).catch(
+      (error: unknown) => error as Error,
+    );
+    expect(String(refused)).toContain('not_fillable');
+    expect(String(refused)).not.toContain('sensitive_input_require_takeover');
+  }, 20_000);
   test('controller refuses the second fill after takeover, and handback requires fresh observation', async () => {
     await call({ kind: 'open', url: `${fixture.url}/form/takeover?run=takeover` });
     await call({ kind: 'fill', label: 'Name', value: 'Before takeover' });
