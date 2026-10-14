@@ -120,6 +120,8 @@ jobs:
           set -euo pipefail
           env_file="$HOME/melete/deploy/.env"
           test "$(grep -c '^MELETE_SETUP_CODE_HASH=' "$env_file")" = 1
+          # It stands where the template's commented line was, as `melete init` writes it.
+          test "$(grep -c 'MELETE_SETUP_CODE_HASH' "$env_file")" = 1
           hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
           [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
           code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/first.log")"
@@ -140,7 +142,7 @@ jobs:
           state() { printf '%s\n' "$1" > "$RUNNER_TEMP/state/.env" && (source "$RUNNER_TEMP/install-functions.sh" && DEPLOY="$RUNNER_TEMP/state" setup_code_state); }
           test "$(state "export MELETE_SETUP_CODE_HASH=$hash")" = set
           test "$(state "  MELETE_SETUP_CODE_HASH = \"$hash\"")" = set
-          # An empty one, as deploy/.env.example ships it, is no hash: it gets a code.
+          # An empty one, as older templates shipped it, is no hash: it gets a code.
           test "$(state 'MELETE_SETUP_CODE_HASH=')" = missing
           test "$(state 'MELETE_SETUP_CODE_HASH=""')" = missing
           test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = missing
@@ -184,7 +186,7 @@ jobs:
           grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
           if grep -F 'welcome?code=' "$RUNNER_TEMP/open.log"; then exit 1; fi
           grep -F 'Setup is open: with MELETE_SETUP_OPEN=true' "$RUNNER_TEMP/open.log"
-          # Without it, the empty hash, as deploy/.env.example ships it, gets a
+          # Without it, the empty hash, as older templates shipped it, gets a
           # code; so does one followed by a later empty line, which Compose reads.
           sed -i '/^MELETE_SETUP_OPEN=/d' "$env_file"
           sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$before/" "$env_file"

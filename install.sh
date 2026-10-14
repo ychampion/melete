@@ -320,14 +320,31 @@ ELEVENLABS_API_KEY=@VOICE"
           values[substr(lines[i], 1, eq - 1)] = v
         }
       }
+      # The template is read twice: first for the settings that have a line of
+      # their own, then to write the file.
+      NR == FNR {
+        if (match($0, /^[A-Z_]+=/)) set[substr($0, 1, RLENGTH - 1)] = 1
+        next
+      }
       match($0, /^[A-Z_]+=/) {
         name = substr($0, 1, RLENGTH - 1)
         if (name in values) { print name "=" values[name]; written[name] = 1; next }
       }
+      # A setting the template has only as an empty commented line, such as
+      # `# MELETE_SETUP_CODE_HASH=`, is written in place of that line, as
+      # fillTemplate() in deploy/scripts/configure.ts does.
+      match($0, /^# ?[A-Z_]+=[ \t]*$/) {
+        name = $0
+        sub(/^# ?/, "", name)
+        sub(/=.*$/, "", name)
+        if ((name in values) && !(name in set) && !(name in written)) {
+          print name "=" values[name]; written[name] = 1; next
+        }
+      }
       { print }
       # A setting an older template has no line for goes at the end.
       END { for (name in values) if (!(name in written)) print name "=" values[name] }
-    ' "$template" >"$partial"
+    ' "$template" "$template" >"$partial"
   )
   unset MELETE_INSTALL_PROVIDER_KEY MELETE_INSTALL_VOICE_KEY
   # Written once: a second run, or a race, keeps the file already there.
@@ -381,7 +398,7 @@ set_env() {
 env_value() { sed -n "s/^$1=//p" "$DEPLOY/.env" | tail -n 1 | tr -d '\r'; }
 
 # Whether deploy/.env holds a setup code hash: `set`, or `missing` with no line
-# for it or an empty one, which deploy/.env.example itself ships. A line counts
+# for it or an empty one, which older templates shipped. A line counts
 # as set_env would rewrite it, indented or after `export`, so a hash already
 # there is never replaced; quotes are not a value, and the last line wins, as
 # Compose reads the file.
@@ -625,8 +642,8 @@ main() {
       set_env MELETE_IMAGE_TAG "$IMAGE_TAG"
     fi
     # An installation with no setup code hash, whether made before setup codes
-    # or with the template's empty line, gets a code now, said once, as a first
-    # install does. A hash already there is kept, and none is made while
+    # or with an older template's empty line, gets a code now, said once, as a
+    # first install does. A hash already there is kept, and none is made while
     # MELETE_SETUP_OPEN=true.
     check_setup_open
     if setup_open; then
