@@ -24,6 +24,7 @@
  */
 
 import { type HostResolver, imagePullAllowed } from '../connectors/image-registry.ts';
+import { type NetworkPool, networkPool, subnetOfPool } from '../runtime/network-pool.ts';
 
 export type Profile = 'runtime' | 'sandbox' | 'mcp';
 
@@ -42,6 +43,8 @@ export type CellsPolicyConfig = {
   workVolume: string;
   /** Resolves an image registry's name before a pull; the system resolver when left out. */
   resolve?: HostResolver;
+  /** Where profile networks take their subnets (MELETE_NETWORK_POOL); null for the engine's pools. */
+  networkPool?: NetworkPool | null;
 };
 
 type Labels = Record<string, string>;
@@ -552,7 +555,7 @@ export async function judge(
     if (method === 'POST' && id === 'create' && action === undefined) {
       const body = request.body;
       if (!isRecord(body)) return refuse('a network is created from a JSON body');
-      const allowed = ['Name', 'Driver', 'Internal', 'EnableIPv6', 'Options', 'Labels'];
+      const allowed = ['Name', 'Driver', 'Internal', 'EnableIPv6', 'Options', 'Labels', 'IPAM'];
       const extra = Object.keys(body).filter((key) => !allowed.includes(key));
       if (extra.length) return refuse(`no profile's network sets ${extra.join(', ')}`);
       const profile = profileOf(isRecord(body.Labels) ? (body.Labels as Labels) : null, config);
@@ -573,6 +576,24 @@ export async function judge(
         )
       )
         return refuse('a profile network has no host bridge address');
+      // Its addresses, when it names them: one subnet of the installation's pool, so
+      // no network can take a range the host routes elsewhere.
+      if (body.IPAM !== undefined) {
+        const pool = config.networkPool === undefined ? networkPool() : config.networkPool;
+        const ipam = body.IPAM;
+        const entries = isRecord(ipam) ? ipam.Config : undefined;
+        const entry = Array.isArray(entries) && entries.length === 1 ? entries[0] : undefined;
+        if (
+          !pool ||
+          !isRecord(ipam) ||
+          !Object.keys(ipam).every((key) => key === 'Driver' || key === 'Config') ||
+          (ipam.Driver !== undefined && ipam.Driver !== 'default') ||
+          !isRecord(entry) ||
+          !Object.keys(entry).every((key) => key === 'Subnet') ||
+          !subnetOfPool(pool, entry.Subnet)
+        )
+          return refuse("a profile network's addresses are one subnet of its network pool");
+      }
       return allow;
     }
     if (!id || !ID.test(id)) return refuse('a malformed network name');

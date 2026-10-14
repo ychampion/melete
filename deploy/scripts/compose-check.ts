@@ -90,6 +90,7 @@ export const CELLS_SETTINGS = [
   'MELETE_SANDBOX_DOCKER_IMAGE',
   'MELETE_MCP_NODE_IMAGE',
   'MELETE_MCP_PYTHON_IMAGE',
+  'MELETE_NETWORK_POOL',
 ];
 
 type Mount = NonNullable<ComposeService['volumes']>[number];
