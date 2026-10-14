@@ -977,7 +977,7 @@ describe('Claude through the gateway', () => {
     });
     const response = await post('/v1/messages', dotted);
     expect(response.status).toBe(200);
-    expect((sent[0]?.tools as { name: string }[]).map((tool) => tool.name)).toEqual([
+    expect(((sent[0]?.tools ?? []) as { name: string }[]).map((tool) => tool.name)).toEqual([
       'web__search',
     ]);
     const history = sent[0]?.messages as { content: { name?: string }[] }[];
