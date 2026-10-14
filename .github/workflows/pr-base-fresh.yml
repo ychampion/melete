@@ -1,0 +1,36 @@
+# A pull request's checks test it against the main it was branched from. When
+# main has since changed the installer, the deployment, the workflows, the
+# database migrations or the API contract, two pull requests can each pass and
+# still fail together once both are merged. This check fails such a pull
+# request with a plain message: merge main into the branch so CI tests it
+# against current main. It runs git only, and the token can only read.
+name: Base is current
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-base-fresh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fresh:
+    name: Branch includes main's changes to install, deploy, workflows, migrations and contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Full history without file contents: the check compares commits and paths only.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Check the branch is current where it matters
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/pr-base-fresh.sh "origin/$BASE_REF" "$HEAD_SHA"
