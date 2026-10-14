@@ -559,8 +559,8 @@ CLIP_RECTS = """function () {
 
 #: What a field autocompletes when its value is a secret, as the browser tools
 #: read it (`apps/melete/src/workers/browser/controller.ts`): a password, a
-#: one-time code, a passkey, a card's number or its security code.
-SECRET_AUTOCOMPLETE = "password|one-time-code|webauthn|cc-number|cc-csc"
+#: one-time code, a passkey, a card's number, its expiry or its security code.
+SECRET_AUTOCOMPLETE = "password|one-time-code|webauthn|cc-number|cc-csc|cc-exp"
 #: Fields whose value is a secret: passwords and codes, by type, by what they
 #: autocomplete, or by text the page draws masked. Fields inside a component's
 #: open shadow root are looked at as well, since its tree shows them.

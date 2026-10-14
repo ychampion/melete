@@ -45,8 +45,9 @@ describe('the connection configuration file', () => {
     });
   });
 
-  // Root reads any file, so the refusal only happens as another user.
-  test.skipIf(process.getuid?.() === 0)(
+  // Root reads any file, so the refusal only happens as another user; and on Windows a
+  // mode of 000 only sets the read-only attribute, which still lets the file be read.
+  test.skipIf(process.getuid?.() === 0 || process.platform === 'win32')(
     'a file the service may not read names the cause, not a bare EACCES',
     async () => {
       await withFile('[]', async (path) => {

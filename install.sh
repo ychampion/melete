@@ -444,25 +444,62 @@ share_config() {
   find "$DEPLOY/config" -maxdepth 1 -type f -name '*.json' -exec chmod a+r {} +
 }
 
+# A value quoted for a shell, so a printed command can be pasted as it is.
+shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
 # Compose finds a project by its name alone. A second installation with the
 # first one's name would take over the first one's containers and volumes and
-# start them with its own secrets, so that is refused before anything runs.
+# start them with its own secrets, so that is refused before anything is
+# downloaded or written. A container that does not say which folder started it
+# could be anyone's, so it counts as another installation's. Containers started
+# from a folder this installation was moved or renamed from are its own: its
+# deploy/.env names the project, and that folder holds no installation now.
 # A new installation ($2 is 1) is refused any container or volume of the
 # project at all: a stopped or removed installation leaves its data in volumes,
 # which a new one would start on with new secrets, and its database would not open.
 check_project_free() {
-  local project="$1" new="$2" here physical other count choose
+  local project="$1" new="$2" here physical listed line name dir others=() reason count
   local label="label=com.docker.compose.project=$project"
-  choose="Give this one a name and ports of its own, for example: curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$DIR MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash (on Windows, set \$env:MELETE_PROJECT, \$env:MELETE_PORT and \$env:MELETE_WEB_PORT before install.ps1)."
-  here="$(cd "$DEPLOY" && pwd)"
-  physical="$(cd "$DEPLOY" && pwd -P)"
-  other="$(docker ps -a --filter "$label" \
-    --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
-    grep -vxF -e "$here" -e "$physical" | head -n 1 || true)"
-  [ -z "$other" ] ||
-    fail "Another installation, in $other, already runs as the Compose project $project, and this one would take over its containers. $choose"
+  if [ -d "$DEPLOY" ]; then
+    here="$(cd "$DEPLOY" && pwd)"
+    physical="$(cd "$DEPLOY" && pwd -P)"
+  else
+    # Not made yet: where it will be.
+    case "$DEPLOY" in
+      /*) here="$DEPLOY" ;;
+      *) here="$PWD/$DEPLOY" ;;
+    esac
+    physical="$here"
+  fi
+  if ! listed="$(docker ps -a --filter "$label" \
+    --format '{{.Names}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null)"; then
+    reason="$(docker ps -a 2>&1 >/dev/null | tail -n 1 || true)"
+    fail "Could not ask Docker which containers run as the Compose project $project${reason:+ (Docker said: $reason)}, so this installation cannot tell whether it would take over another one. Check that Docker is running and that this user may use it, then run this again. Nothing was changed."
+  fi
+  local choose
+  choose="Give this one a name and ports of its own, for example: curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$(shell_quote "$DIR") MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash (on Windows, set \$env:MELETE_PROJECT, \$env:MELETE_PORT and \$env:MELETE_WEB_PORT before install.ps1)."
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%%|*}" dir="${line#*|}"
+    [ -n "$dir" ] ||
+      fail "The container $name runs as the Compose project $project and does not say which folder started it, so it may be another installation's, and this one would take it over. Remove it if it is left over. $choose"
+    [ "$dir" = "$here" ] || [ "$dir" = "$physical" ] || others+=("$dir")
+  done <<<"$listed"
+  if [ "${#others[@]}" -gt 0 ]; then
+    if [ -f "$DEPLOY/.env" ]; then
+      local named moved=1
+      named="$(env_value COMPOSE_PROJECT_NAME)"
+      [ "${named:-melete}" = "$project" ] || moved=0
+      for dir in "${others[@]}"; do [ ! -e "$dir/.env" ] || moved=0; done
+      if [ "$moved" = 1 ]; then
+        say "This installation's containers were started from ${others[0]}, where it was before it moved; they are taken over from here."
+        return 0
+      fi
+    fi
+    fail "Another installation, in ${others[0]}, already runs as the Compose project $project, and this one would take over its containers. $choose"
+  fi
   [ "$new" = 1 ] || return 0
-  [ -z "$(docker ps -aq --filter "$label" 2>/dev/null || true)" ] ||
+  [ -z "$listed" ] ||
     fail "Compose project $project already has containers on this engine, and this installation would take them over with new secrets. $choose If they are left from an installation you removed, remove them first (docker compose -p $project down)."
   count="$(docker volume ls -q --filter "$label" 2>/dev/null | grep -c . || true)"
   [ "${count:-0}" = 0 ] ||
@@ -723,21 +760,6 @@ main() {
 
   check_docker
 
-  # Files made from here on are readable by the services; deploy/.env is
-  # written under umask 077 on its own.
-  umask 022
-  say "Installing Melete into $dir from $ref."
-  mkdir -p "$DEPLOY/config" "$dir/packages/runtime-hermes"
-  download deploy/docker-compose.yml "$DEPLOY/docker-compose.yml"
-  download deploy/docker-compose.browser.yml "$DEPLOY/docker-compose.browser.yml"
-  download deploy/.env.example "$DEPLOY/.env.example"
-  # Configuration a person may have edited is kept on a second run.
-  local file
-  for file in connections.json tailscale-serve.json browser-seccomp.json; do
-    [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
-  done
-  share_config
-
   local project service_port web_port
   if [ -f "$DEPLOY/.env" ]; then
     project="$(env_value COMPOSE_PROJECT_NAME)"
@@ -756,7 +778,23 @@ main() {
   web_port="${web_port:-3101}"
   [ "$service_port" != "$web_port" ] ||
     fail "The service and the web app would both take port $web_port. Give MELETE_PORT and MELETE_WEB_PORT a port each. Nothing was changed."
+  # Before anything is downloaded, so a refused installation leaves nothing behind.
   if [ -f "$DEPLOY/.env" ]; then check_project_free "$project" 0; else check_project_free "$project" 1; fi
+
+  # Files made from here on are readable by the services; deploy/.env is
+  # written under umask 077 on its own.
+  umask 022
+  say "Installing Melete into $dir from $ref."
+  mkdir -p "$DEPLOY/config" "$dir/packages/runtime-hermes"
+  download deploy/docker-compose.yml "$DEPLOY/docker-compose.yml"
+  download deploy/docker-compose.browser.yml "$DEPLOY/docker-compose.browser.yml"
+  download deploy/.env.example "$DEPLOY/.env.example"
+  # Configuration a person may have edited is kept on a second run.
+  local file
+  for file in connections.json tailscale-serve.json browser-seccomp.json; do
+    [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
+  done
+  share_config
 
   SETUP_OPEN=0
   if [ -f "$DEPLOY/.env" ]; then

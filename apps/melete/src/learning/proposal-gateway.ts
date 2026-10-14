@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { PROCEDURE_CHECK_KINDS, procedureCheck } from '@melete/contracts';
 import { and, eq, gt } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import { estimateInputTokens } from '../gateway/metering.ts';
 import type { ServiceModel, ServiceModelSource } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
@@ -325,6 +325,7 @@ export async function openProposalGateway(options: {
     maxRequestBytes: 8192,
     // A full answer at the raised output cap, inside a provider envelope, can pass 8 KiB.
     maxResponseBytes: 16384,
+    onError: gatewayLog('proposal'),
     async authenticate(token) {
       const admission = tokens.get(token);
       if (!admission) throw new GatewayError(401, 'proposal_principal_denied');
