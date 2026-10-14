@@ -824,12 +824,16 @@ export class DockerStdioLauncher implements StdioLauncher {
     if (this.prepared.has(key) || spec.launch.runner === 'image') return;
     const registry = REGISTRY_DESTINATIONS[spec.launch.runner];
     const image = await this.image(command.image, signal);
-    await this.network(spec.connectionId, names);
-    const { env, grant } = await this.proxyEnv(registry);
     // Only the package volume: nothing the server ever wrote in its own volume reaches here.
     const mounts: StdioMount[] = [{ volume: names.packages, target: '/pkg', readOnly: false }];
     let id: string | undefined;
+    let grant: EgressGrant | undefined;
     try {
+      // Inside the try, so a network that was made is removed however the preparation ends.
+      await this.network(spec.connectionId, names);
+      const proxied = await this.proxyEnv(registry);
+      grant = proxied.grant;
+      const env = proxied.env;
       id = await this.create(
         names.prepare,
         stdioContainerBody({
@@ -869,9 +873,29 @@ export class DockerStdioLauncher implements StdioLauncher {
       }
       this.prepared.add(key);
     } finally {
-      grant.revoke();
-      if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
-      await this.dropNetwork(names);
+      grant?.revoke();
+      try {
+        if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
+      } finally {
+        await this.dropNetwork(names);
+      }
+    }
+  }
+
+  /**
+   * A server's network and its proxy grant. When either cannot be made, the
+   * network is removed before the error is passed on, so a failed start leaves
+   * no network taking one of the engine's address blocks.
+   */
+  private async egressNetwork(spec: StdioLaunchSpec, names: Names) {
+    try {
+      const network = await this.network(spec.connectionId, names);
+      return { network, ...(await this.proxyEnv(spec.launch.egress)) };
+    } catch (error) {
+      // The first error is the one to report; a network that still could not be
+      // removed is removed by the next start's reconcile.
+      await this.dropNetwork(names).catch(() => {});
+      throw error;
     }
   }
 
@@ -908,20 +932,19 @@ export class DockerStdioLauncher implements StdioLauncher {
     if (prepare) await this.prepare(spec, names, prepare, signal);
     signal.throwIfAborted();
     const image = await this.image(run.image, signal);
-    const egress = spec.launch.egress.length
-      ? {
-          network: await this.network(spec.connectionId, names),
-          ...(await this.proxyEnv(spec.launch.egress)),
-        }
-      : undefined;
+    const egress = spec.launch.egress.length ? await this.egressNetwork(spec, names) : undefined;
     let id: string | undefined;
     let stream: AttachedStream | undefined;
     const release = async () => {
       uncount();
       egress?.grant.revoke();
       stream?.destroy();
-      if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
-      if (egress) await this.dropNetwork(names);
+      try {
+        if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
+      } finally {
+        // A container that could not be removed still leaves no network behind it.
+        if (egress) await this.dropNetwork(names);
+      }
     };
     // Its own volume to write, and the prepared package to read, never to change.
     const mounts: StdioMount[] = [
