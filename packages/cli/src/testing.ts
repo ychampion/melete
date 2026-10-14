@@ -212,8 +212,14 @@ export const CHANGING = [
   'docker image prune',
   'docker image rm',
   'docker rmi',
-  'docker volume',
-  'docker network',
+  'docker volume create',
+  'docker volume rm',
+  'docker volume prune',
+  'docker network create',
+  'docker network rm',
+  'docker network prune',
+  'docker network connect',
+  'docker network disconnect',
   'docker tag',
 ];
 
