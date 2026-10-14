@@ -357,7 +357,13 @@ jobs:
           curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
           docker ps --filter label=com.docker.compose.project=melete \
             --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | tee "$RUNNER_TEMP/moved-dirs.txt"
-          test "$(cat "$RUNNER_TEMP/moved-dirs.txt")" = "$HOME/melete-moved/deploy"
+          # Compose recreates only the containers whose settings changed with the folder; the rest
+          # keep the folder they were started from, which no longer holds an installation.
+          grep -qx "$HOME/melete-moved/deploy" "$RUNNER_TEMP/moved-dirs.txt"
+          if grep -vx -e "$HOME/melete-moved/deploy" -e "$HOME/melete/deploy" "$RUNNER_TEMP/moved-dirs.txt"; then exit 1; fi
+          # And a later run from the new folder still counts them as its own.
+          curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-moved" bash > "$RUNNER_TEMP/moved-again.log"
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
       - name: Logs
         if: failure()
         run: |
