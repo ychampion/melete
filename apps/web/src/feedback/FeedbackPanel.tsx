@@ -64,12 +64,27 @@ function Sent({ report, onClose }: { report: FeedbackReport; onClose: () => void
   );
 }
 
+/**
+ * Said before Send when the installation also sends each report, with the
+ * reporter's email address, on to an address of its operator's.
+ */
+export function ForwardingNote({ forwarded }: { forwarded: boolean }) {
+  if (!forwarded) return null;
+  return (
+    <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+      Your report and your email address are also sent to whoever runs Melete here, outside the app.
+    </p>
+  );
+}
+
 function Form({
   draft,
+  forwarded,
   onClose,
   onSent,
 }: {
   draft: string;
+  forwarded: boolean;
   onClose: () => void;
   onSent: (report: FeedbackReport) => void;
 }) {
@@ -175,6 +190,7 @@ function Form({
             {error}
           </p>
         ) : null}
+        <ForwardingNote forwarded={forwarded} />
       </form>
     </Dialog>
   );
@@ -187,6 +203,7 @@ export function FeedbackHost() {
     { step: 'closed' } | { step: 'form'; draft: string } | { step: 'sent'; report: FeedbackReport }
   >({ step: 'closed' });
   const atAddress = route.parts[0] === 'feedback';
+  const [forwarded, setForwarded] = useState(false);
   // The field inside takes focus as the panel opens, so the dialog cannot see
   // what opened it; focus goes back to that control here instead.
   const opener = useRef<HTMLElement | null>(null);
@@ -206,6 +223,19 @@ export function FeedbackHost() {
     if (atAddress) setState((now) => (now.step === 'closed' ? { step: 'form', draft: '' } : now));
   }, [atAddress]);
 
+  // Asked each time the panel opens; a failed answer says nothing either way.
+  const open = state.step === 'form';
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    void adapter.feedbackForwarding().then((result) => {
+      if (current) setForwarded(result.data?.forwarded === true);
+    });
+    return () => {
+      current = false;
+    };
+  }, [open]);
+
   const close = useCallback(() => {
     setState({ step: 'closed' });
     const back = opener.current;
@@ -222,6 +252,7 @@ export function FeedbackHost() {
     return (
       <Form
         draft={state.draft}
+        forwarded={forwarded}
         onClose={close}
         onSent={(report) => setState({ step: 'sent', report })}
       />

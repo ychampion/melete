@@ -613,7 +613,7 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
   sign_in_required:
     "The account's sign-in has ended or its access was removed. Sign in again to reconnect it.",
   needs_sign_in:
-    'This server asks you to sign in to it. Choose Sign in on this connection. Signing in needs the address people open this service at (MELETE_PUBLIC_URL).',
+    'This server asks you to sign in to it. Choose Sign in on this connection. If signing in does not work, ask whoever runs Melete here to check the web address it is set up with.',
   not_running: 'This isn’t running right now, so Melete can’t use it yet. Test it again later.',
   revoked: 'This connection was removed and can no longer be used.',
   unreachable:
