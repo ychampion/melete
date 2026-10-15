@@ -1118,7 +1118,7 @@ export async function bootstrap(
       if (env.MELETE_RUNTIME_ADAPTER === 'docker' && !options.runtime) {
         const hostname = process.env.HOSTNAME ?? '';
         stdioLauncher = new DockerStdioLauncher({
-          project: env.MELETE_COMPOSE_PROJECT,
+          project: env.MELETE_COMPOSE_PROJECT ?? 'melete',
           socket: docker,
           selfId: /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(hostname) ? hostname : undefined,
           egressPort: env.MELETE_MCP_EGRESS_PORT,
@@ -1333,7 +1333,7 @@ export async function bootstrap(
         if (!env.MELETE_RUNTIME_KEY || !handle)
           throw new Error('Docker runtime supervision requires MELETE_RUNTIME_KEY and Postgres');
         supervisedRuntime = new DockerHermesRuntimeAdapter({
-          project: env.MELETE_COMPOSE_PROJECT,
+          project: env.MELETE_COMPOSE_PROJECT ?? 'melete',
           image: env.MELETE_RUNTIME_IMAGE,
           socket: docker,
           workRoot: env.MELETE_WORK_DIR,
