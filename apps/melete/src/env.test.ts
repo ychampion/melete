@@ -439,3 +439,39 @@ describe('what a computer may reach', () => {
     expect(readEnv({ MELETE_EGRESS_RECORD_DAYS: '0' }).ok).toBe(false);
   });
 });
+
+describe('internal hosts everyone may reach', () => {
+  test('off by default, and Compose and the example leave it empty', () => {
+    expect(loadEnv({}).MELETE_PRIVATE_HOSTS).toBe('');
+    expect(composeServiceEnvironment().MELETE_PRIVATE_HOSTS).toBe('');
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain('\nMELETE_PRIVATE_HOSTS=\n');
+  });
+
+  test('names, wildcards and ranges start the service; anything else stops it and says which', () => {
+    expect(
+      readEnv({
+        MELETE_PRIVATE_HOSTS: 'mcp.corp.internal, *.corp.internal, 10.20.0.0/16, fd00::/8',
+      }).ok,
+    ).toBe(true);
+    for (const value of ['*.internal', '10.20.0.1/16', '0.0.0.0/0', 'https://mcp.corp.internal']) {
+      const result = readEnv({ MELETE_PRIVATE_HOSTS: value });
+      expect([value, result.ok]).toEqual([value, false]);
+      if (!result.ok) expect(result.issues.join('\n')).toContain('MELETE_PRIVATE_HOSTS');
+    }
+  });
+
+  test('a range over Melete’s own networks is refused, wherever the pool is', () => {
+    const overlapping = readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8' });
+    expect(overlapping.ok).toBe(false);
+    if (!overlapping.ok) expect(overlapping.issues.join('\n')).toContain('MELETE_NETWORK_POOL');
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.215.3.0/24' }).ok).toBe(false);
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.20.0.0/16' }).ok).toBe(true);
+    expect(
+      readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8', MELETE_NETWORK_POOL: '172.30.0.0/16' }).ok,
+    ).toBe(true);
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8', MELETE_NETWORK_POOL: 'off' }).ok).toBe(
+      true,
+    );
+  });
+});
