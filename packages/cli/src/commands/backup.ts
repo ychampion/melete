@@ -78,6 +78,7 @@ import {
   PART_NAMES,
   partFile,
   stopCellsCommand,
+  type UnclaimedVolumes,
   volumePresence,
 } from '../files.ts';
 import { lastSwitched, readHistory } from '../history.ts';
@@ -340,10 +341,12 @@ async function backupFiles(
     );
   let computers: ComputerVolume[];
   const skipped: string[] = [];
+  const unclaimed: UnclaimedVolumes = { unattributed: [], elsewhere: [] };
+  const { unattributed, elsewhere } = unclaimed;
   /** Computers' volumes the engine no longer has: their computer ended after they were listed. */
   const gone: string[] = [];
   try {
-    computers = listComputerVolumes(context, settings.sandboxProject, skipped);
+    computers = listComputerVolumes(context, settings, skipped, unclaimed);
   } catch (error) {
     if (!(error instanceof FilesRefusal)) throw error;
     return fail(
@@ -359,6 +362,24 @@ async function backupFiles(
       detail: `${skipped.length} volume(s) labelled for this installation's computers are not a computer's /work or home volume, so this backup leaves them out: ${skipped.join(', ')}.`,
       fix: 'Check that this checkout is at the release the installation runs (bun run melete history): a newer release may keep more of a computer, and its backup takes it.',
     });
+  if (unattributed.length > 0) {
+    const projects = [...new Set(unattributed.map((each) => each.project || '(none)'))];
+    results.push({
+      id: 'backup.computer_volumes_unattributed',
+      level: 'warn',
+      detail: `${unattributed.length} agent computer volume(s) under sandbox project${projects.length === 1 ? '' : 's'} ${projects.join(', ')}, which this installation does not run with now, were made before computers named the installation that made them. Whether they are this installation's (made before MELETE_SANDBOX_PROJECT changed) or another's cannot be told, so this backup leaves them out: ${unattributed.map((each) => each.volume).join(', ')}.`,
+      fix: 'For each one that belongs to this installation, archive it by hand with its labels, outside this backup, as docs/DEPLOYMENT.md shows ("Computers a backup leaves out"): a restore does not put it back. Each stays on this engine as it is.',
+    });
+  }
+  if (elsewhere.length > 0) {
+    const named = [...new Set(elsewhere.map((each) => each.installation))];
+    results.push({
+      id: 'backup.computer_volumes_other_installation',
+      level: 'warn',
+      detail: `${elsewhere.length} agent computer volume(s) name the installation${named.length === 1 ? '' : 's'} ${named.join(', ')}, which ha${named.length === 1 ? 's' : 've'} no Melete service container on this engine: made by this installation before its COMPOSE_PROJECT_NAME changed, or by one that was removed or is down. Whose they are cannot be told, so this backup leaves them out: ${elsewhere.map((each) => each.volume).join(', ')}.`,
+      fix: 'For each one that belongs to this installation, archive it by hand and make it again named for this installation, as docs/DEPLOYMENT.md shows ("Computers a backup leaves out"); its later backups then take it. Each stays on this engine as it is until then.',
+    });
+  }
   for (const each of FILE_PARTS) {
     const volume = composeVolume(config.project, each);
     if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
@@ -769,6 +790,38 @@ export const madeAt = (entry: string): number => {
     /^melete-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/.exec(entry) ?? [];
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 };
+
+/**
+ * The Compose project of the installation a set is a backup of, from its own
+ * files, as ownerOf reads them: contents.json, or, in a set from before it
+ * named one, the set's unencrypted contract or its deploy/.env. Null when
+ * none of them says.
+ */
+export function setInstallation(set: string): string | null {
+  const read = (file: string) => {
+    try {
+      return readFileSync(join(set, file), 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const named = (value: unknown) =>
+    typeof value === 'string' && PROJECT_NAME.test(value) ? value : null;
+  const contents = read(CONTENTS_FILE);
+  if (contents !== null) {
+    try {
+      const project = named(JSON.parse(contents)?.project);
+      if (project) return project;
+    } catch {
+      // Read as unnamed; the files below may still say.
+    }
+  }
+  const contract = read(DEPLOY_FILE);
+  const loaded = contract === null ? null : parseDeployConfig(contract);
+  if (loaded?.kind === 'found') return named(loaded.config.project);
+  const env = read('deploy.env');
+  return env === null ? null : named(parseEnvFile(env).COMPOSE_PROJECT_NAME?.trim() || 'melete');
+}
 
 /**
  * Whose backup a set is, from its own files: contents.json names the

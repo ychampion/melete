@@ -2754,8 +2754,16 @@ made before they were), `artifacts.tar` (uploads and Files, kept by
 their content, unless they are in an S3 bucket), `work.tar` (the shared
 `/work`), and for each agent computer of this installation its two volumes,
 `computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
-home folder, browser profile included); `contents.json`, which lists those
-archives and each computer volume's labels; and a `SHA256SUMS` list. The
+home folder, browser profile included). A computer is this installation's when
+its volumes' `melete.install_project` label names this installation's Compose
+project, whatever `MELETE_SANDBOX_PROJECT` it was made under, so the computers
+an agent still resumes after that setting changes are kept too; one made before
+computers carried that label is this installation's when its `melete.project`
+is the current `MELETE_SANDBOX_PROJECT` (see
+[Computers a backup leaves out](#computers-a-backup-leaves-out)
+for the others); `contents.json`, which lists those
+archives and each computer volume's labels and names the installation's
+Compose project; and a `SHA256SUMS` list. The
 `runtime-home` volume, the home folder of the warm runtime container that no
 job runs in, and each attempt's own home are left out: they keep no job's
 work, and jobs recover from the database into fresh attempts. Each new backup removes the older ones
@@ -2829,10 +2837,22 @@ refused: the files are put back as the backup's database
 knows them, so that database comes back with them. An agent computer whose
 container is still on the machine starts on its restored volumes when it is
 next used; for one whose container is gone, see
-[Replacing the VM](#replacing-the-vm). A computer in the backup that belongs to
-another installation (another `MELETE_SANDBOX_PROJECT`), or whose volume name
-is taken here by a volume labelled for something else, is left out, and the
-report says so. A backup made by `--with-volumes` before backups held their
+[Replacing the VM](#replacing-the-vm). The computers come back as the backup
+holds them, whatever the installation it was taken of was called: each is
+made with `melete.install_project` set to this installation's Compose project,
+so a restore onto a new machine under another `COMPOSE_PROJECT_NAME` keeps
+every computer, and this installation's backups take them from then on.
+`contents.json` names the installation the backup is of (`project`; in a
+backup from before it did, the backup's unencrypted `melete.deploy.json` or
+`deploy.env` names it), and a computer whose labels name another installation
+is not that installation's to put back. A backup in which nothing names its
+installation is judged by this installation's own labels, as a backup is.
+Such a computer, and one whose volume name is taken here by a volume that is
+not this installation's, is left out and the report says so; nothing of its
+here is touched. One whose volumes are here but name another installation
+(`restore.computers_named_elsewhere`, as after `COMPOSE_PROJECT_NAME`
+changed on the same machine) is left out too, and the report says how to
+make it this installation's. A backup made by `--with-volumes` before backups held their
 list of parts restores its `data.tar` and `work.tar` the same way, without
 their copy of the journal; each is checked first to hold the folders put back
 from it. A backup counts as whole only when `SHA256SUMS` lists every file in it
@@ -2843,8 +2863,10 @@ and says so.
 The same backup by hand: back up `deploy/.env`, Postgres, the named volumes
 containing knowledge, artifacts, workspaces, and restrictions, and the two
 volumes of each of the agents' computers (`melete-sbx-<name>-work` and
-`melete-sbx-<name>-home`, labelled with this installation's
-`MELETE_SANDBOX_PROJECT`). Preserve ownership and permissions. Stop Melete,
+`melete-sbx-<name>-home`: those whose `melete.install_project` is this
+installation's Compose project, and those made before computers carried that
+label whose `melete.project` is its `MELETE_SANDBOX_PROJECT`). Preserve
+ownership and permissions. Stop Melete,
 runtime work and the agents' computers before taking the database and volume
 snapshot so their durable state is consistent; a stopped computer starts again
 when it is next used. An installation started with an override names the same
@@ -2857,11 +2879,16 @@ backup_dir="$HOME/melete-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 "$backup_dir"
 docker compose -f deploy/docker-compose.yml stop melete runtime web
 project="$(sed -n 's/^MELETE_SANDBOX_PROJECT=//p' deploy/.env)"
+name="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' deploy/.env)"
 computers="label=com.melete.sandbox=v1"
-if [ -n "$project" ]; then
-  docker ps --quiet --filter "$computers" --filter "label=melete.project=$project" \
-    | xargs -r docker stop
-fi
+labels='{{.Label "melete.install_project"}}|{{.Label "melete.project"}}'
+# This installation's computers: labelled with its Compose project or, made
+# before computers carried that label, with its sandbox project.
+own() {
+  awk -F'|' -v name="${name:-melete}" -v project="$project" \
+    '$2 == name || ($2 == "" && project != "" && $3 == project) { print $1 }'
+}
+docker ps --filter "$computers" --format "{{.Names}}|$labels" | own | xargs -r docker stop
 docker compose -f deploy/docker-compose.yml exec -T postgres sh -c \
   'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
   > "$backup_dir/database.dump"
@@ -2870,14 +2897,11 @@ docker compose -f deploy/docker-compose.yml cp -a melete:/data - > "$backup_dir/
 docker compose -f deploy/docker-compose.yml cp -a melete:/work - > "$backup_dir/work.tar"
 image="$(docker inspect --format '{{.Config.Image}}' \
   "$(docker compose -f deploy/docker-compose.yml ps --all --quiet melete)")"
-if [ -n "$project" ]; then
-  for volume in $(docker volume ls --quiet --filter "$computers" \
-      --filter "label=melete.project=$project"); do
-    docker run --rm --network none --user 0:0 --entrypoint tar \
-      --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
-      -C /v --numeric-owner -cf - . > "$backup_dir/computer-$volume.tar"
-  done
-fi
+for volume in $(docker volume ls --filter "$computers" --format "{{.Name}}|$labels" | own); do
+  docker run --rm --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
+    -C /v --numeric-owner -cf - . > "$backup_dir/computer-$volume.tar"
+done
 chmod 600 "$backup_dir"/*
 docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
 ```
@@ -2926,6 +2950,71 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+### Computers a backup leaves out
+
+`backup` takes the agent computers it can tell are this installation's. The
+volumes of one it cannot tell about are named in a warning, so none is left
+out silently:
+
+- `backup.computer_volumes_unattributed`: made before computers carried
+  `melete.install_project`, under a `MELETE_SANDBOX_PROJECT` this installation
+  no longer runs with. It may be this installation's, from before that setting
+  changed, or another's on the same engine. One under the sandbox project that
+  another installation's service runs with now belongs to that installation,
+  whose own backup takes it, so it is not named.
+- `backup.computer_volumes_other_installation`: its `melete.install_project`
+  names a Compose project that has no Melete service container on this engine.
+  It is this installation's from before its `COMPOSE_PROJECT_NAME` changed, or
+  belongs to an installation that was removed or is down
+  (`docker compose down`).
+
+The volumes stay on the engine as they are, and `restore` does not put them
+back. To keep a copy of one that is this installation's, stop its container
+(`computer`, the volume name without `-work` or `-home`). Then archive both
+volumes with their labels into a folder of their own, outside the backup (a
+backup counts as whole only when `SHA256SUMS` lists every file in it), with
+`image` and `name` set as in the commands above:
+
+```bash
+computer=melete-sbx-<name>
+copy_dir="$HOME/melete-computers-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -m 700 "$copy_dir"
+docker stop "$computer"
+for volume in "$computer-work" "$computer-home"; do
+  docker volume inspect --format \
+    '{{range $key, $value := .Labels}}--label {{$key}}={{$value}} {{end}}' \
+    "$volume" > "$copy_dir/$volume.labels"
+  docker run --rm --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
+    -C /v --numeric-owner -cf - . > "$copy_dir/$volume.tar"
+done
+```
+
+To make it this installation's, so that its backups take it from then on and a
+restore puts it back, make both volumes again, named for this installation,
+and unpack the archives into them before the agent next uses the computer. On
+the engine that still has them, first remove the computer's container and both
+volumes; the service makes the container again on the volumes the next time
+the agent uses it:
+
+```bash
+docker rm -f "$computer"
+docker volume rm "$computer-work" "$computer-home"
+```
+
+Then, on that engine or a new one:
+
+```bash
+for volume in "$computer-work" "$computer-home"; do
+  docker volume create \
+    $(sed 's/--label melete\.install_project=[^ ]* //' "$copy_dir/$volume.labels") \
+    --label "melete.install_project=${name:-melete}" "$volume"
+  docker run --rm -i --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v" "$image" \
+    -C /v --numeric-owner -xpf - < "$copy_dir/$volume.tar"
+done
+```
 
 ### How long backups keep what was removed
 
