@@ -2292,9 +2292,32 @@ their kind:
 MELETE_MODEL_ROUTES="recommended; browser=anthropic/claude-opus-5-5"
 ```
 
-A model in the table whose provider has no key in the environment is left
-out, with a warning at start-up, so `recommended` is safe on an install with
-one key.
+Each kind lists models in order of preference. The first whose provider has
+a key is used, and the later ones on the same protocol are its fallbacks, so
+the table works with a Fireworks key, an Anthropic key, or both. A kind with
+no keyed model is left out, with a warning at start-up.
+
+| Kind | With Fireworks | With only Anthropic |
+| --- | --- | --- |
+| `chat` | DeepSeek V4.1 Flash, then GLM 5.3 | Haiku 5.5, then Sonnet 5.5 |
+| `research` | DeepSeek V4.1 Flash, then Kimi K3 (Haiku 5.5 first when there is an Anthropic key) | Haiku 5.5, then Sonnet 5.5 |
+| `browser` | DeepSeek V4.1 Flash, then GLM 5.3 | Haiku 5.5, then Sonnet 5.5 |
+| `computer`, `files`, `long` | DeepSeek V4.1 Flash, then Kimi K3 | Haiku 5.5, then Sonnet 5.5 |
+| `team` | DeepSeek V4.1 Flash, then Kimi K3 | Opus 5.5, then Sonnet 5.5 |
+| `background` | DeepSeek V4.1 Flash, then GLM 5.3 | Sonnet 5.5, then Opus 5.5 |
+
+The table comes from running real personal and team tasks on each model
+(live research, memory across chats, long conversations, the browser and the
+computer, files, routines, honesty traps, and work in shared spaces). It
+weighs what each model costs per task finished without a false claim. The
+small models finished about as many tasks as the large ones in most kinds,
+for a fraction of the cost, so they lead. The exceptions:
+
+- Opus 5.5 was the most reliable at memory across chats. Use
+  `recommended; chat=anthropic/claude-opus-5-5` when that matters more than
+  cost.
+- In shared spaces Opus 5.5 finished clearly more tasks than Haiku or Sonnet,
+  so it leads `team` on an Anthropic-only install.
 
 Each routed attempt writes one line to the service log, naming the job, the
 kind and the model: `model route: job <id> browser -> anthropic/claude-opus-5-5`.

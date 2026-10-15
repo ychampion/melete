@@ -40,25 +40,41 @@ export type WorkRoutes = Partial<Record<WorkKind, ModelChoice[]>>;
 /** The value of MELETE_MODEL_ROUTES that expands to `RECOMMENDED_ROUTES`. */
 export const RECOMMENDED = 'recommended';
 
+const DEEPSEEK = 'fireworks/accounts/fireworks/models/deepseek-v4p1-flash';
+const GLM = 'fireworks/accounts/fireworks/models/glm-5p3';
+const KIMI = 'fireworks/accounts/fireworks/models/kimi-k3';
+const HAIKU = 'anthropic/claude-haiku-5-5';
+const SONNET = 'anthropic/claude-sonnet-5-5';
+const OPUS = 'anthropic/claude-opus-5-5';
+
 /**
- * PLACEHOLDER: the `recommended` preset, to be replaced with the chosen table
- * before it is relied on. Until then every kind names the model the deploy
- * files ship as the default, so choosing the preset changes nothing.
+ * The `recommended` preset. Each kind lists `provider/model` entries in order
+ * of preference: the first whose provider has a key is used, and the later
+ * ones on its protocol are its fallbacks. The rest are there for an install
+ * without that key, so the preset works with Fireworks, with Anthropic, or
+ * with both.
  *
- * Each kind lists `provider/model` entries, the first used and the rest its
- * fallbacks. An entry whose provider has no key in the environment is
- * dropped at start-up with a warning, so the preset is safe on an install
- * with one key.
+ * Chosen from runs of real personal and team tasks on each model, weighing
+ * cost per task finished without a false claim. The cheap models finished as
+ * many tasks as the large ones in most kinds, so they lead. Each kind's
+ * comment says where that is not so.
  */
 export const RECOMMENDED_ROUTES: Readonly<Partial<Record<WorkKind, readonly string[]>>> = {
-  chat: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  research: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  browser: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  computer: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  files: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  long: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  team: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
-  background: ['fireworks/accounts/fireworks/models/deepseek-v4p1-flash'],
+  // Everyday asks, judgment calls and memory. Opus was the only model that kept every
+  // remembered detail across chats; name it here when that matters more than cost.
+  chat: [DEEPSEEK, GLM, HAIKU, SONNET],
+  // Live facts with sources: Haiku finished all of them, at a few cents.
+  research: [HAIKU, SONNET, DEEPSEEK, KIMI],
+  browser: [DEEPSEEK, GLM, HAIKU, SONNET],
+  computer: [DEEPSEEK, KIMI, HAIKU, SONNET],
+  files: [DEEPSEEK, KIMI, HAIKU, SONNET],
+  // Long conversations that must keep their first rules.
+  long: [DEEPSEEK, KIMI, HAIKU, SONNET],
+  // Shared spaces, where a slip leaks one person's private details to another. On Anthropic,
+  // Opus finished clearly more of these than Haiku or Sonnet, so it leads despite the cost.
+  team: [DEEPSEEK, KIMI, OPUS, SONNET],
+  // Routines and scheduled work; Haiku set them up least reliably.
+  background: [DEEPSEEK, GLM, SONNET, OPUS],
 };
 
 /**

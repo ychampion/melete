@@ -130,8 +130,10 @@ function keyedIn(env: Record<string, unknown>): (provider: string) => boolean {
  * MELETE_MODEL_ROUTES: entries separated by `;` or new lines, each
  * `kind=provider/model`, optionally followed by `,provider/model` fallbacks.
  * `recommended`, alone or as the first entry, starts from the preset; the
- * entries after it replace the preset's for their kind. A preset model whose
- * provider has no key (`keyed`) is left out and returned in `dropped`.
+ * entries after it replace the preset's for their kind. For each kind the
+ * preset's first model whose provider has a key (`keyed`) is used, with the
+ * later ones on its protocol as fallbacks; a kind with no keyed model is left
+ * out and its models returned in `dropped`.
  * Throws a message naming the setting and the kinds.
  */
 export function parseWorkRoutes(
@@ -159,12 +161,16 @@ export function parseWorkRoutes(
         const models = (preset[kind] ?? []).map((model) =>
           parseModelChoice(model, `${ROUTES_SETTING} (${RECOMMENDED}, ${kind})`),
         );
-        const kept = models.filter((choice) => {
-          const ok = options.keyed?.(choice.provider) ?? true;
-          if (!ok) dropped.push({ kind, choice });
-          return ok;
-        });
-        if (kept.length) routes[kind] = kept;
+        // The preset lists models in order of preference, for installs with different keys: the first
+        // with a key is used, and the later ones that speak its protocol are its fallbacks. The others
+        // are alternatives for an install without it, so they are left out here without a warning.
+        const keyed = models.filter((choice) => options.keyed?.(choice.provider) ?? true);
+        const first = keyed[0];
+        if (!first) {
+          for (const choice of models) dropped.push({ kind, choice });
+          continue;
+        }
+        routes[kind] = keyed.filter((choice) => sameProtocol(choice, first));
       }
       return;
     }

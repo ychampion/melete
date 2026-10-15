@@ -113,6 +113,47 @@ describe('MELETE_MODEL_ROUTES is read', () => {
       expect(warning).toMatch(/leaves out|no key|never taken/);
   });
 
+  test('the shipped preset routes every kind with only Fireworks, only Anthropic, or both, on one protocol each', () => {
+    const installs = [
+      { FIREWORKS_API_KEY: 'fw-test' },
+      { ANTHROPIC_API_KEY: 'sk-ant-test' },
+      { FIREWORKS_API_KEY: 'fw-test', ANTHROPIC_API_KEY: 'sk-ant-test' },
+    ];
+    for (const keys of installs) {
+      const env = { MELETE_MODEL_ROUTES: 'recommended', ...keys };
+      const routing = routingFromEnv(env);
+      expect(Object.keys(routing.work ?? {}).sort()).toEqual([...WORK_KINDS].sort());
+      for (const models of Object.values(routing.work ?? {})) {
+        expect(models.length).toBeGreaterThanOrEqual(2);
+        const providers = new Set(models.map((model) => model.provider));
+        expect(providers.size).toBe(1);
+      }
+      // Alternatives for other keys are not fallbacks, so nothing is reported as never taken.
+      expect(routingWarnings(env, routing)).toEqual([]);
+    }
+    const both = routingFromEnv({
+      MELETE_MODEL_ROUTES: 'recommended',
+      FIREWORKS_API_KEY: 'fw-test',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+    }).work;
+    expect(both?.chat?.[0]?.provider).toBe('fireworks');
+    expect(both?.research?.[0]).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+  });
+
+  test('a preset model on another protocol than the kind’s first keyed one is left out quietly', () => {
+    const mixed = { chat: ['openai/gpt-a', 'anthropic/claude-x', 'openai/gpt-b'] };
+    expect(parseWorkRoutes('recommended', { preset: mixed }).routes.chat).toEqual([
+      { provider: 'openai', model: 'gpt-a' },
+      { provider: 'openai', model: 'gpt-b' },
+    ]);
+    const { routes, dropped } = parseWorkRoutes('recommended', {
+      preset: mixed,
+      keyed: (provider) => provider === 'anthropic',
+    });
+    expect(routes.chat).toEqual([{ provider: 'anthropic', model: 'claude-x' }]);
+    expect(dropped).toEqual([]);
+  });
+
   test('unset, nothing is routed', () => {
     const routing = routingFromEnv({});
     expect(routing.work).toBeUndefined();
