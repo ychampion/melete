@@ -24,7 +24,7 @@ import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
 import { clockTime } from '../experience/clock.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
-import { webHref } from '../experience/markdown.ts';
+import { appHref, webHref } from '../experience/markdown.ts';
 import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
@@ -419,6 +419,19 @@ export function ResultCard({
           size={size}
           touch={touch}
         />
+      );
+    // A card that points at a place in Melete itself, such as Settings → Models,
+    // moves this page there.
+    const place = a.kind === 'open' && !a.url ? appHref(a.handle) : null;
+    if (place)
+      return (
+        <a
+          key={`place:${a.handle}`}
+          className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`}
+          href={place}
+        >
+          {a.label}
+        </a>
       );
     if (a.kind === 'open' || a.kind === 'download') {
       // A card opens only a web address, in a new tab that cannot reach back to this one.

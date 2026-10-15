@@ -150,6 +150,8 @@ export type TransitionOptions = {
   payload?: JsonObject;
   reason?: AttemptWake['reason'];
   bumpEpoch?: boolean;
+  /** For a move back to queued: how long the next attempt waits before it may start. */
+  retryAfterMs?: number;
 };
 
 export type JobFaults = {
@@ -384,7 +386,7 @@ export class JobService {
     let wait = options.wait ?? { kind: 'none' };
     const baseWakeAt =
       result.value === 'queued'
-        ? await databaseNow(tx)
+        ? new Date((await databaseNow(tx)).getTime() + Math.max(0, options.retryAfterMs ?? 0))
         : result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
           ? new Date(wait.wake_at)
           : result.value === 'waiting_for_event_or_time' &&

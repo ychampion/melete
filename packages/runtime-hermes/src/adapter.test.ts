@@ -557,6 +557,40 @@ describe('nothing becomes a completion that was not one', () => {
     });
   });
 
+  test('a run the provider refused carries the class, and only a passing one is retried', async () => {
+    const run = async (error: string) => {
+      const { fetch } = harness({
+        sse: `data: ${JSON.stringify({ event: 'run.failed', error })}\n\n`,
+      });
+      return adapterWith(fetch).start(bundle, new Collector(), new AbortController().signal);
+    };
+    expect(
+      await run(
+        "Error code: 401 - {'error': {'code': 'provider_key_refused', 'message': 'provider_key_refused'}}",
+      ),
+    ).toMatchObject({ kind: 'failed', failure: 'key_refused', retryable: false });
+    expect(await run('HTTP 402: provider_quota')).toMatchObject({
+      failure: 'quota',
+      retryable: false,
+    });
+    expect(await run('HTTP 404: provider_model_not_found')).toMatchObject({
+      failure: 'model_not_found',
+      retryable: false,
+    });
+    expect(await run('Error code: 429 - provider_rate_limited')).toMatchObject({
+      failure: 'rate_limited',
+      retryable: true,
+    });
+    expect(await run('Error code: 502 - provider_down')).toMatchObject({
+      failure: 'provider_down',
+      retryable: true,
+    });
+    // Words that merely look alike name nothing.
+    const plain = await run('the provider_downstream cache missed');
+    expect(plain).toMatchObject({ retryable: true });
+    expect(plain).not.toHaveProperty('failure');
+  });
+
   test('a start the engine refused never opens a stream', async () => {
     const { calls, fetch } = harness({ startStatus: 503 });
     const outcome = await adapterWith(fetch).start(

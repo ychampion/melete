@@ -446,6 +446,21 @@ export const evidenceRef = z.discriminatedUnion('kind', [
 ]);
 export type EvidenceRef = z.infer<typeof evidenceRef>;
 
+/**
+ * Why the model provider refused a call, in classes safe to show and act on.
+ * The provider's own words never travel with it.
+ */
+export const PROVIDER_FAILURES = [
+  'key_refused',
+  'quota',
+  'rate_limited',
+  'model_not_found',
+  'context_too_long',
+  'provider_down',
+] as const;
+export const providerFailure = z.enum(PROVIDER_FAILURES);
+export type ProviderFailure = z.infer<typeof providerFailure>;
+
 /** How an attempt ends. There is no other way out. */
 export const attemptOutcome = z.discriminatedUnion('kind', [
   z.object({
@@ -463,7 +478,13 @@ export const attemptOutcome = z.discriminatedUnion('kind', [
     action_ids: z.array(prefixedId(ID_PREFIXES.action)).min(1),
   }),
   z.object({ kind: z.literal('waiting_for_event_or_time'), wait: waitSpec }),
-  z.object({ kind: z.literal('failed'), reason: z.string(), retryable: z.boolean() }),
+  z.object({
+    kind: z.literal('failed'),
+    reason: z.string(),
+    retryable: z.boolean(),
+    /** Set when the model provider refused the call, and why. */
+    failure: providerFailure.optional(),
+  }),
   z.object({ kind: z.literal('budget_exhausted'), summary: z.string() }),
   z.object({
     kind: z.literal('unknown_check'),

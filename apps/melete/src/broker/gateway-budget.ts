@@ -277,6 +277,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           latency_ms: result.latencyMs,
           status: result.status,
           http_status: result.httpStatus,
+          ...(result.failure ? { failure: result.failure } : {}),
           usage_uncertain: usage === null || result.usageEstimated === true,
           late,
           ...(result.stopped ? { stopped: true } : {}),

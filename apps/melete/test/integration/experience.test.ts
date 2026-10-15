@@ -677,9 +677,11 @@ withDb('experience rows and authenticated scope', () => {
         .flatMap((event) =>
           event.item.type === 'status' ? [`${event.item.status}/${event.item.composer}`] : [],
         );
-    const endings: [AttemptOutcome, 'done' | 'failed'][] = [
+    const endings: [AttemptOutcome, 'done' | 'failed' | 'working'][] = [
       [{ kind: 'completed', summary: 'Two meetings and a run.', evidence: [] }, 'done'],
-      [{ kind: 'failed', reason: 'The calendar did not answer.', retryable: true }, 'failed'],
+      [{ kind: 'failed', reason: 'The calendar did not answer.', retryable: false }, 'failed'],
+      // A failure the turn will try again stays under way; it never reads failed in between.
+      [{ kind: 'failed', reason: 'The calendar did not answer.', retryable: true }, 'working'],
     ];
     for (const [outcome, saved] of endings) {
       const chat = await createConversation();
@@ -702,7 +704,10 @@ withDb('experience rows and authenticated scope', () => {
         await (await request(`/conversations/${chat.id}/messages`)).json(),
       );
       expect(turns.turns[0]?.status).toBe(saved);
-      expect(await statuses(chat.id, sent.turn_id)).toEqual(['working/pause', `${saved}/send`]);
+      expect(await statuses(chat.id, sent.turn_id)).toEqual([
+        'working/pause',
+        saved === 'working' ? 'working/pause' : `${saved}/send`,
+      ]);
     }
   });
   test('quick answers persist the offered choices and reject invented option ids', async () => {
