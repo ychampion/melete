@@ -8,6 +8,8 @@ test('an activity row shows a reference a person can look up, and never a hash o
   expect(plainReference('bsess_01M3Y75DJYNQEVHKAJ6E6TZBC3')).toBeNull();
   expect(plainReference('brws_8fcafb00-6d06-4213-9a4e-0c1d2e3f4a5b')).toBeNull();
   expect(plainReference('del_1791582295515_ecebc01dfea9')).toBeNull();
+  // Another service's reference shaped like a trash entry is still its own.
+  expect(plainReference('inv_1234567890_abcdef')).toBe('inv_1234567890_abcdef');
   expect(plainReference(null)).toBeNull();
   expect(plainReference('  ')).toBeNull();
   expect(plainReference(`<${'a'.repeat(40)}@mail.example.test>`)).toBe(`<${'a'.repeat(23)}…`);

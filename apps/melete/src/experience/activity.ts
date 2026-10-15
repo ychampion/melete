@@ -22,7 +22,7 @@ export function plainReference(ref: unknown): string | null {
   // Melete's own browser sessions and trash entries: brws_<uuid>, del_<time>_<hex>.
   if (/^[a-z]+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))
     return null;
-  if (/^[a-z]+_\d{10,}_[0-9a-f]{6,}$/i.test(value)) return null;
+  if (/^del_\d{10,}_[0-9a-f]{6,}$/.test(value)) return null;
   return value.length > 32 ? `${value.slice(0, 24)}…` : value;
 }
 
