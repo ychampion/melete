@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { cronWords } from './cron-words.ts';
+import { CRON_FORMAT } from './runs.ts';
 
 test('common schedules read in plain words', () => {
   expect(cronWords('0 9 * * 1-5')).toBe('Every weekday at 9:00');
@@ -35,4 +36,13 @@ test('anything else gets a neutral line, never a wrong one', () => {
     '',
   ])
     expect(cronWords(cron)).toBe('On a set schedule');
+});
+
+test('the format the agent is given shows a first-weekday schedule and warns about mixing day and weekday', () => {
+  const examples = [...CRON_FORMAT.matchAll(/"([^"]+)"/g)].map((m) => m[1] as string);
+  expect(examples).toContain('0 9 * * 1#1');
+  expect(cronWords('0 9 * * 1#1')).toBe('On the first Monday of every month at 9:00');
+  expect(CRON_FORMAT).toMatch(/0 9 1-7 \* 1" runs every Monday/);
+  for (const example of examples.filter((e) => e !== '0 9 1-7 * 1'))
+    expect(cronWords(example)).not.toBe('On a set schedule');
 });

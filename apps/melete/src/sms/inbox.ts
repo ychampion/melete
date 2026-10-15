@@ -176,11 +176,16 @@ export class SmsInbox {
     });
   }
 
-  /** Whose space it is: the person a text from their own number speaks as. */
+  /**
+   * Whose space it is: the person a text from their own number speaks as.
+   * Null unless that person's account is still active, so a disabled account
+   * reaches its assistant by text no more than by signing in.
+   */
   private async owner(spaceId: string): Promise<string | null> {
-    const [row] = await this.deps.sql`select coalesce(owner_principal_id,
-      (select id from owner limit 1)) as owner_id from space
-      where id = ${spaceId} and removed_at is null`;
+    const [row] = await this.deps.sql`select p.id as owner_id from space s
+      join principal p on p.id = coalesce(s.owner_principal_id, (select id from owner limit 1))
+      where s.id = ${spaceId} and s.removed_at is null
+        and p.kind = 'person' and p.disabled_at is null`;
     return row?.owner_id ? String(row.owner_id) : null;
   }
 
@@ -275,7 +280,8 @@ const REPLY_WINDOW = '1 day';
  * Answer, by text, each finished turn a text started and nothing has answered
  * yet. Each text of a reply is written as `sending` before Twilio is asked, and
  * the rows are unique by turn and part, so a turn is answered at most once
- * however many sweeps find it. Returns how many turns it answered.
+ * however many sweeps find it. A turn whose space's person has since been
+ * disabled is not answered. Returns how many turns it answered.
  */
 export async function sweepSmsReplies(deps: {
   sql: Sql;
@@ -287,9 +293,12 @@ export async function sweepSmsReplies(deps: {
     from sms_text i
     join experience_turn t on t.id = i.turn_id
     join connection c on c.id = i.connection_id
+    join space s on s.id = i.space_id
+    join principal p on p.id = coalesce(s.owner_principal_id, (select id from owner limit 1))
     where i.direction = 'in' and i.state = 'conversation'
       and t.status in ('done', 'needs_you', 'failed')
       and c.status = 'active' and c.secret_ref is not null
+      and p.kind = 'person' and p.disabled_at is null
       and i.created_at > now() - ${REPLY_WINDOW}::interval
       and not exists (select 1 from sms_text o where o.direction = 'out' and o.turn_id = i.turn_id)
     order by i.created_at

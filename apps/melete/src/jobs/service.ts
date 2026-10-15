@@ -350,6 +350,26 @@ export class JobService {
     );
   }
 
+  /** Whether a waiting job has an attempt left to wake into. */
+  async attemptsLeft(tx: Transaction, row: JobRow): Promise<boolean> {
+    // A run counts failed shifts in a row instead, when each shift ends.
+    if (isRunKind(row.kind)) return true;
+    const [used] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(attempt)
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          ['chat', 'routine'].includes(row.kind)
+            ? row.currentTurnId
+              ? eq(attempt.turnId, row.currentTurnId)
+              : sql`false`
+            : undefined,
+        ),
+      );
+    return Number(used?.count ?? 0) < jobBudget.parse(row.budget).max_attempts;
+  }
+
   /** The only production write to job.state, including cancellation and recovery. */
   async move(
     tx: Transaction,
@@ -359,24 +379,8 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
-    // A run counts failed shifts in a row instead, when each shift ends.
-    if (result.value === 'queued' && row.state !== 'running' && !isRunKind(row.kind)) {
-      const [used] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(attempt)
-        .where(
-          and(
-            eq(attempt.jobId, row.id),
-            ['chat', 'routine'].includes(row.kind)
-              ? row.currentTurnId
-                ? eq(attempt.turnId, row.currentTurnId)
-                : sql`false`
-              : undefined,
-          ),
-        );
-      if (Number(used?.count ?? 0) >= jobBudget.parse(row.budget).max_attempts)
-        throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
-    }
+    if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
+      throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
     const baseWakeAt =
       result.value === 'queued'

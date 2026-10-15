@@ -294,7 +294,7 @@ describe('broker actions', () => {
         connection: { id: 'd', label: 'Linear', provider: 'mcp' },
       },
     ]);
-    expect(group?.label).toBe('Ran a command, Used Linear');
+    expect(group?.label).toBe('Ran a command, Ran create issue in Linear');
   });
 });
 
