@@ -3,6 +3,7 @@ import {
   createSharedSpaceRequest,
   grantMembershipRequest,
   space as spaceContract,
+  updateAccountRequest,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -25,7 +26,7 @@ import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
-import { requireJobAccess, spaceAuthority } from './authority.ts';
+import { managesConnection, requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
 /** Resource IDs and space headers select a resource; authenticated membership authorizes it. */
@@ -87,7 +88,7 @@ export function mountPrincipals(
     }
     if (resource === 'connections' && id) {
       const [row] = await db.select().from(connection).where(eq(connection.id, id));
-      if (!row || (await spaceAuthority(db, row.spaceId, actor)).role !== 'owner')
+      if (!row || !managesConnection(await spaceAuthority(db, row.spaceId, actor), row.sharedUse))
         throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     }
     if (resource === 'approvals' && id) {
@@ -136,6 +137,10 @@ export function mountPrincipals(
     const made = await service.create(c.get('owner').id, request.email, request.password);
     c.set('createdSpaceId', made.spaceId);
     return c.json({ principal: made.principal }, 201);
+  });
+  app.patch('/principals/:id', async (c) => {
+    const request = updateAccountRequest.parse(await c.req.json());
+    return c.json(await service.setAdmin(c.get('owner').id, c.req.param('id'), request.admin));
   });
   app.post('/spaces/shared', async (c) => {
     const request = createSharedSpaceRequest.parse(await c.req.json());

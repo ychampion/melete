@@ -11,7 +11,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { agent, experienceTurn, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { overlapsProcedure, type ProcedureReach } from '../learning/triggers.ts';
-import { spaceAuthority } from './authority.ts';
+import { ownsSpace, spaceAuthority } from './authority.ts';
 
 /** A file's audience can narrow membership; it can never grant membership. */
 export function audienceVisible(audience: string | undefined, spaceId: string, isOwner: boolean) {
@@ -46,7 +46,7 @@ export async function usableSkills(
   return loaded.skills.filter(
     (skill) =>
       (skill.source === 'builtin' ||
-        audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
+        audienceVisible(skill.frontmatter.audience, spaceId, ownsSpace(access))) &&
       offered(skill.frontmatter.tools) &&
       (keepsMemory || !skill.frontmatter.keeps_memory) &&
       !(
@@ -148,7 +148,7 @@ export async function selectedContext(
       !('memory_revision' in record.frontmatter) &&
       record.frontmatter.space === paths.space &&
       record.frontmatter.status === 'active' &&
-      audienceVisible(record.frontmatter.audience, spaceId, access.role === 'owner'),
+      audienceVisible(record.frontmatter.audience, spaceId, ownsSpace(access)),
   );
   const knowledge = records.slice(0, 12).map((record) => ({
     path: record.path,
