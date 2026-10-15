@@ -149,9 +149,11 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
 
   const chat: ReviewChat = async (messages, signal, scope, format) => {
     // The model is read for each review, so one connected in the app applies at once.
-    // It is a safety check: no person's secondary model ever takes it.
+    // It is a safety check: no person's secondary model ever takes it. It reads
+    // the action, so it keeps to the models the space's rules allow; with none
+    // of them usable the review is unavailable, and the action waits for a person.
     const target = options.source
-      ? await options.source.current()
+      ? await options.source.current({ spaceId: scope.spaceId })
       : { provider: options.provider, model: options.model };
     const model = `${target.provider}/${target.model}`;
     const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));

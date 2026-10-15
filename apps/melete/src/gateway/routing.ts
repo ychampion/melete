@@ -145,10 +145,20 @@ export function agentRoutes(
   return { ...(vision ? { vision } : {}), ...(fallback.length ? { fallback } : {}) };
 }
 
-/** The fallbacks a call to `primary` may take: those that speak its protocol. */
-export function serviceFallback(routing: ModelRouting, primary: ModelChoice): ModelChoice[] {
+/**
+ * The fallbacks a call to `primary` may take: those that speak its protocol,
+ * and, where a space's rules hold the call to a list (`allowed`), only those
+ * on it.
+ */
+export function serviceFallback(
+  routing: ModelRouting,
+  primary: ModelChoice & { allowed?: readonly string[] },
+): ModelChoice[] {
   return routing.fallback.filter(
-    (choice) => !sameModel(choice, primary) && sameProtocol(choice, primary),
+    (choice) =>
+      !sameModel(choice, primary) &&
+      sameProtocol(choice, primary) &&
+      (!primary.allowed || primary.allowed.includes(`${choice.provider}/${choice.model}`)),
   );
 }
 

@@ -156,26 +156,35 @@ export function configuredExtractor(
   const providers = () =>
     configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined);
   const named = process.env.MELETE_COMPANIES_MODEL?.trim();
-  if (!settings || named) {
-    const extraction = companiesExtraction(env);
+  const extraction = companiesExtraction(env);
+  if (!settings) {
     if (!extraction) return scriptedExtractor();
     return gatewayExtractor({
       ...extraction,
       ...metered,
       privacy,
       providers: providers(),
-      ...(settings ? { currentProviders: (configured) => settings.providers(configured) } : {}),
       ...(fetch ? { fetch } : {}),
     });
   }
+  if (named && !extraction) return scriptedExtractor();
   // Reading a message for companies is a short extraction: the fast model when there is one.
   const source = sideCallSource('companies', { env, settings, routing: routingFromEnv(env) });
   const scripted = scriptedExtractor();
   const configured = providers();
-  const live = async (): Promise<ServiceModel | null> => {
+  const picked = async (): Promise<ServiceModel | null> => {
+    if (named) return extraction;
     const choice = await source.current();
     if (choice.provider === 'fake' || !(await source.connected(choice.provider))) return null;
     return choice;
+  };
+  // A space's mail is read only by a model its rules allow; with none of them
+  // usable, the scripted reader takes it and nothing is sent to a model.
+  const live = async (spaceId: string): Promise<ServiceModel | null> => {
+    const choice = await picked();
+    if (!choice) return null;
+    const held = await settings.allowedModelFor(spaceId, choice);
+    return held.refused ? null : { provider: held.provider, model: held.model };
   };
   const extractorFor = (choice: ServiceModel) =>
     gatewayExtractor({
@@ -188,14 +197,14 @@ export function configuredExtractor(
     });
   return {
     async extract(request) {
-      const choice = await live();
+      const choice = await live(request.spaceId);
       return choice ? extractorFor(choice).extract(request) : scripted.extract(request);
     },
-    async forScan() {
-      const choice = await live();
+    async forScan(spaceId) {
+      const choice = await live(spaceId);
       if (choice) {
         const scan = extractorFor(choice).forScan;
-        if (scan) return scan();
+        if (scan) return scan(spaceId);
       }
       return { extract: (request) => scripted.extract(request), close: async () => {} };
     },

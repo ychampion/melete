@@ -15,6 +15,7 @@ import type { RunnerOptions } from '../jobs/runner.ts';
 import { connectionServesJob, typedAudience } from '../jobs/scopes.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
+import { connectorDenied, readSpaceRules } from '../spaces/policy.ts';
 
 /**
  * Every tool name an attempt can reach: all it was granted, not the first few
@@ -58,7 +59,12 @@ export class RuntimeCatalog {
     const serving = audience
       ? connections.filter((row) => connectionServesJob(audience, row.sharedUse))
       : connections;
-    return grantedToolCatalog(serving, this.connectors, scopes);
+    return grantedToolCatalog(
+      serving,
+      this.connectors,
+      scopes,
+      await readSpaceRules(query, spaceId),
+    );
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
@@ -162,10 +168,12 @@ export class RuntimeCatalog {
     const terminal = granted.some(
       (tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id !== null,
     );
+    const rules = await readSpaceRules(tx, claims.space_id);
     const lines: string[] = [];
     for (const row of rows) {
       if (!connectionServesJob(audience, row.sharedUse) || !connectionOffered(access, row.id))
         continue;
+      if (connectorDenied(rules, row.provider)) continue;
       const configuration = (row.configuration ?? {}) as Record<string, unknown>;
       if (typeof configuration.builtin === 'string') continue;
       if (row.provider === 'command_line') {

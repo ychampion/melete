@@ -24,6 +24,7 @@ import type { EgressAdmission } from '../broker/egress-admission.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
 import { agentAccess } from '../experience/access.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
+import { connectorDenied, spaceRulesFor } from '../spaces/policy.ts';
 import type { AdapterSet } from './adapters/index.ts';
 import { type CredentialAdapter, egressReadScope, hostCovered } from './adapters/types.ts';
 import type { EgressCertificateAuthority } from './ca.ts';
@@ -149,6 +150,9 @@ export function postgresEgressCredentials(options: {
     const [row] = await sql`select kind, audience from space where id = ${space}`;
     const kind = reach(row?.kind, row?.audience);
     if (!kind) return [];
+    // A space whose rules keep command-line accounts out gets none of them,
+    // for reads as well as changes.
+    if (connectorDenied(await spaceRulesFor(sql, space), 'command_line')) return [];
     const usable = await accounts(space);
     return kind === 'room' ? usable.filter((account) => account.sharedUse === 'room') : usable;
   };
