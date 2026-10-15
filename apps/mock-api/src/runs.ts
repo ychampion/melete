@@ -451,7 +451,7 @@ export class MockRuns {
     if (value.repeat)
       run.view.standing = {
         kind: 'schedule',
-        description: C.cronWords(value.repeat.cron),
+        description: C.scheduleWords(value.repeat),
         next_wake_at: null,
       };
     return this.refresh(run);

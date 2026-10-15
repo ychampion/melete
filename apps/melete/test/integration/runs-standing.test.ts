@@ -738,6 +738,35 @@ withDb('standing work', () => {
     expect(Date.parse(required(standing?.next_wake_at))).toBeGreaterThan(Date.now());
     expect((await request(`/runs/${run_id}/stop`, 'POST')).status).toBe(200);
 
+    // What a cron cannot say goes as a calendar rule, read in the person's zone.
+    const fortnightly = await call({
+      goal: 'Check the account on payday',
+      title: 'payday',
+      repeat: { rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR', starts: '2026-10-16T09:00' },
+    });
+    expect(fortnightly.status).toBe(200);
+    const payday = ((await fortnightly.json()) as { run_id: string }).run_id;
+    expect((await triggerOf(payday)).spec).toEqual({
+      kind: 'schedule',
+      rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR',
+      starts: '2026-10-16T09:00',
+      timezone: 'America/Los_Angeles',
+    });
+    const paydayStanding = (await view(payday)).standing;
+    expect(paydayStanding).toMatchObject({
+      kind: 'schedule',
+      description: 'Every other Friday at 9:00',
+    });
+    // The next wake is a Friday at 9:00 in Los Angeles, a whole number of fortnights on.
+    const nextPayday = Date.parse(required(paydayStanding?.next_wake_at));
+    expect(nextPayday).toBeGreaterThan(Date.now());
+    const fortnights = (nextPayday - Date.parse('2026-10-16T16:00:00Z')) / (14 * 86_400_000);
+    expect(Math.abs(fortnights - Math.round(fortnights))).toBeLessThan(0.01);
+    expect((await request(`/runs/${payday}/stop`, 'POST')).status).toBe(200);
+    expect(await refusal({ goal, repeat: { rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR' } })).toContain(
+      'repeat.starts',
+    );
+
     // A zone the model names is kept.
     const named = await call({
       goal,

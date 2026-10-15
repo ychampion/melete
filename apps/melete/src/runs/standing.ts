@@ -9,9 +9,10 @@
  * step with what the run asked for, and says in words what it waits for.
  */
 import {
-  cronWords,
+  canonicalTimeZone,
   type RunStandingView,
   type RunWake,
+  scheduleWords,
   type TriggerSpec,
   triggerSpec,
   type WaitSpec,
@@ -31,6 +32,7 @@ import {
   checkTriggerScope,
   checkTriggerSpec,
   linkWatchedSubject,
+  scheduleTimes,
   type TriggerRow,
 } from '../jobs/triggers.ts';
 import { clip, object } from './record.ts';
@@ -90,14 +92,16 @@ export async function stand(
     wake.kind === 'schedule'
       ? triggerSpec.parse({
           kind: 'schedule',
-          cron: wake.cron,
+          ...(wake.rrule === undefined
+            ? { cron: wake.cron }
+            : { rrule: wake.rrule, starts: wake.starts }),
           timezone: wake.timezone ?? (await profileZone(tx, row.spaceId)),
         })
       : triggerSpec.parse(wake);
   checkTriggerSpec(jobs, spec);
   if (spec.kind === 'schedule') {
     const least = setBy === 'person' ? STANDING_MIN_GAP_MS : WORK_STANDING_MIN_GAP_MS;
-    const times = jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 6 });
+    const times = scheduleTimes(jobs, spec, 6);
     for (let index = 1; index < times.length; index++) {
       const gap = (times[index]?.getTime() ?? 0) - (times[index - 1]?.getTime() ?? 0);
       if (gap < least)
@@ -270,7 +274,7 @@ function nextTime(
   spec: Extract<TriggerSpec, { kind: 'schedule' }>,
 ): Date | null {
   try {
-    return jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 1 })[0] ?? null;
+    return scheduleTimes(jobs, spec, 1)[0] ?? null;
   } catch {
     return null;
   }
@@ -279,8 +283,10 @@ function nextTime(
 /** What a run stands on, in words: "Every weekday at 9:00", "When new mail arrives in Mail". */
 async function describe(tx: Transaction, row: JobRow, spec: TriggerSpec): Promise<string> {
   if (spec.kind === 'schedule') {
-    const words = cronWords(spec.cron);
-    return spec.timezone === (await profileZone(tx, row.spaceId))
+    const words = scheduleWords(spec);
+    // The same zone under another name ("Asia/Calcutta") is still the person's own.
+    return canonicalTimeZone(spec.timezone) ===
+      canonicalTimeZone(await profileZone(tx, row.spaceId))
       ? words
       : `${words} (${spec.timezone})`;
   }
@@ -370,7 +376,7 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
         spec?.success && spec.data.kind === 'schedule'
           ? spec.data.timezone
           : await profileZone(tx, row.spaceId);
-      const words = spec?.success && spec.data.kind === 'schedule' ? cronWords(spec.data.cron) : '';
+      const words = spec?.success && spec.data.kind === 'schedule' ? scheduleWords(spec.data) : '';
       lines.push(
         `Why this shift started: it is the scheduled time${words ? ` (${words.toLowerCase()})` : ''}: ${formatAt(woke.createdAt, zone)}.`,
         // Told only the time, a shift read "remind me every Monday" as the

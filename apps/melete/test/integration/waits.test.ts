@@ -598,6 +598,70 @@ withDb('durable waits, triggers and approval inputs', () => {
     ).toHaveLength(0);
   });
 
+  test('a calendar rule wakes hourly at its minute and fires only on its own times, once each', async () => {
+    const { queue, handle } = fixture();
+    const row = await create();
+    const registration = await triggers.create(row.id, {
+      kind: 'schedule',
+      rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR',
+      starts: '2026-10-16T09:00',
+      timezone: 'America/New_York',
+    });
+    expect(
+      (await queue.boss.getSchedules(QUEUES.triggerSchedule)).find(
+        (item) => item.key === registration.id,
+      ),
+    ).toMatchObject({ cron: '0 * * * *', timezone: 'America/New_York' });
+    // The rule was set up before the times below.
+    await handle.db
+      .update(trigger)
+      .set({ createdAt: new Date('2026-10-01T00:00:00Z') })
+      .where(eq(trigger.id, registration.id));
+    const fired = async (at: string, wake: string) => {
+      triggers.clock = () => new Date(at);
+      await triggers.fireSchedule(registration.id, wake);
+      return (
+        await handle.sql<{ id: string }[]>`select payload->>'occurrence_id' as id from event
+          where payload->>'kind' = 'schedule_event' and payload->>'trigger_id' = ${registration.id}
+          order by seq`
+      ).map((found) => found.id);
+    };
+    try {
+      // The Friday of the week off, and the right Friday an hour early.
+      expect(await fired('2026-10-23T13:00:00Z', 'wake-1')).toEqual([]);
+      expect(await fired('2026-10-30T12:00:00Z', 'wake-2')).toEqual([]);
+      // Its time, then a late wake for the same time.
+      expect(await fired('2026-10-30T13:00:00Z', 'wake-3')).toEqual([
+        'rule:2026-10-30T13:00:00.000Z',
+      ]);
+      expect(await fired('2026-10-30T14:30:00Z', 'wake-4')).toHaveLength(1);
+      // After the clocks go back, 9:00 in New York is 14:00 UTC.
+      expect(await fired('2026-11-13T13:00:00Z', 'wake-5')).toHaveLength(1);
+      expect(await fired('2026-11-13T14:00:00Z', 'wake-6')).toEqual([
+        'rule:2026-10-30T13:00:00.000Z',
+        'rule:2026-11-13T14:00:00.000Z',
+      ]);
+    } finally {
+      triggers.clock = () => new Date();
+    }
+  });
+
+  test('a calendar rule with nothing left to run is refused', async () => {
+    const { handle } = fixture();
+    const row = await create();
+    await rejects(
+      () =>
+        triggers.create(row.id, {
+          kind: 'schedule',
+          rrule: 'FREQ=DAILY;COUNT=2',
+          starts: '2020-01-01T09:00',
+          timezone: 'UTC',
+        }),
+      'invalid_schedule',
+    );
+    expect(await handle.db.select().from(trigger)).toHaveLength(0);
+  });
+
   test('invalid cron or timezone rejects without registering durable work', async () => {
     const { handle } = fixture();
     const row = await create();

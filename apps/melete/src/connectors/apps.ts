@@ -871,7 +871,13 @@ export function createAppsConnector(options: AppsOptions): Connector {
     publisher: string,
   ): Promise<DispatchResult> => {
     const rows = await options.sql<
-      { id: string; title: string; spec: { cron?: string }; enabled: boolean; files: string[] }[]
+      {
+        id: string;
+        title: string;
+        spec: { cron?: string; rrule?: string; starts?: string; timezone?: string };
+        enabled: boolean;
+        files: string[];
+      }[]
     >`select t.id, j.title, t.spec, t.enabled,
         coalesce((select array_agg(distinct a.path order by a.path) from artifact a
           where a.job_id = j.id and a.space_id = j.space_id and a.area = 'work'), '{}') as files
@@ -882,7 +888,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
     const routines = rows.map((row) => ({
       routine_id: row.id,
       title: row.title,
-      schedule: row.spec?.cron ?? null,
+      schedule: row.spec?.cron ?? row.spec?.rrule ?? null,
       enabled: row.enabled,
       files: row.files,
     }));

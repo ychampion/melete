@@ -57,6 +57,7 @@ export * from './provider-signin.ts';
 export * from './push.ts';
 export * from './reach.ts';
 export * from './reactions.ts';
+export * from './recurrence.ts';
 export * from './redact.ts';
 export * from './repair.ts';
 export * from './responsibility.ts';
