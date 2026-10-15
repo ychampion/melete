@@ -20,6 +20,8 @@ const LIMITS_TTL_MS = 2_000;
 export class SpendLimitStore {
   private cached: { at: number; limits: SpendLimits } | null = null;
   private reading: Promise<SpendLimits> | null = null;
+  /** Counts changes made here, so a read begun before one is not kept after it. */
+  private generation = 0;
 
   constructor(
     private readonly sql: Sql,
@@ -31,8 +33,9 @@ export class SpendLimitStore {
     const at = this.now().getTime();
     if (!fresh && this.cached && at - this.cached.at < LIMITS_TTL_MS) return this.cached.limits;
     if (!fresh && this.reading) return this.reading;
+    const generation = this.generation;
     const reading = this.read().then((limits) => {
-      this.cached = { at: this.now().getTime(), limits };
+      if (generation === this.generation) this.cached = { at: this.now().getTime(), limits };
       return limits;
     });
     this.reading = reading;
@@ -67,7 +70,9 @@ export class SpendLimitStore {
         values (${kind}, ${targetId}, ${monthlyUsd}, ${setBy}, now())
         on conflict (kind, target_id) do update set monthly_usd = excluded.monthly_usd,
           set_by = excluded.set_by, updated_at = excluded.updated_at`;
+    this.generation++;
     this.cached = null;
+    this.reading = null;
   }
 }
 

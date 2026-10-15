@@ -172,7 +172,8 @@ export function backgroundLimitMessage(period: Period, resetsAt: Date): string {
     : `Background work has reached today's limit; it starts again on ${dayName(resetsAt)} at 00:00 UTC. Your own messages still go through.`;
 }
 
-const usdText = (usd: number) => `$${usd.toFixed(2)}`;
+const usdText = (usd: number) =>
+  usd.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
 /** The sentence a member reads when the monthly limit set for them is reached. */
 export function memberLimitMessage(usd: number, resetsAt: Date): string {
@@ -481,10 +482,10 @@ export class SpendingGuard implements GatewaySpending {
       used: SpendingTotals,
       limit: SpendingWindow,
     ) => {
-      const fractions = [
-        limit.usd !== null ? used.usd / limit.usd : 0,
-        limit.tokens !== null ? used.tokens / limit.tokens : 0,
-      ];
+      // A limit of nothing is reached before anything is spent; 0 / 0 is not a number.
+      const share = (spent: number, most: number | null) =>
+        most === null ? 0 : most > 0 ? spent / most : Number.POSITIVE_INFINITY;
+      const fractions = [share(used.usd, limit.usd), share(used.tokens, limit.tokens)];
       const fraction = Math.max(...fractions);
       const resets = period === 'month' ? nextMonth : nextDay;
       let notice: SpendingNotice | null = null;

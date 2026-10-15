@@ -208,6 +208,19 @@ withDb('member limits and space budgets', () => {
     );
   });
 
+  test('a limit or a budget of $0 refuses even the first call', async () => {
+    const guard = new SpendingGuard(db().sql, limits(), prices, () => NOW);
+    await guard.spendLimits.set('member', ada, 0, ada);
+    await guard.spendLimits.set('space', room, 0, ada);
+    expect(await refusal(guard, ada, adaSpace)).toBe(
+      `You have reached your monthly limit of $0.00; ${RESETS}`,
+    );
+    expect(await refusal(guard, bea, room)).toBe(
+      `"Launch" has reached its monthly budget of $0.00; ${RESETS}`,
+    );
+    expect(await refusal(guard, bea, beaSpace)).toBeNull();
+  });
+
   test('calls running side by side in a space are held against its budget', async () => {
     const guard = new SpendingGuard(db().sql, limits(), prices, () => NOW);
     await guard.spendLimits.set('space', room, 0.4, ada);
@@ -220,7 +233,11 @@ withDb('member limits and space budgets', () => {
     };
     // Each may cost $0.40: the second, admitted while the first runs, is refused.
     await guard.admit(callBy(ada, room), call);
-    await expect(guard.admit(callBy(bea, room), call)).rejects.toMatchObject({ status: 402 });
+    let refused: unknown;
+    await guard.admit(callBy(bea, room), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ status: 402, code: 'spending_limit_reached' });
   });
 
   function app(actor: string) {
