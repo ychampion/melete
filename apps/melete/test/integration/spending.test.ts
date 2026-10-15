@@ -1,8 +1,8 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { AttemptBundle, AttemptOutcome, RuntimeAdapter } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { attempt, job, principal, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
@@ -131,6 +131,13 @@ async function createJob(title: string, kind = 'responsibility'): Promise<JobRow
 }
 
 withDb('spending caps', () => {
+  // The runner checks the limits around transactions that hold the event
+  // order lock; a check that sent its reads to the pool inside one fails here.
+  const lockGuard = process.env.MELETE_EVENT_LOCK_GUARD;
+  beforeAll(() => {
+    process.env.MELETE_EVENT_LOCK_GUARD = 'throw';
+  });
+
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
@@ -149,6 +156,8 @@ withDb('spending caps', () => {
   }, 15_000);
 
   afterAll(async () => {
+    if (lockGuard === undefined) delete process.env.MELETE_EVENT_LOCK_GUARD;
+    else process.env.MELETE_EVENT_LOCK_GUARD = lockGuard;
     await Promise.all(
       servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))),
     );
@@ -264,7 +273,9 @@ withDb('spending caps', () => {
         runner.stopForSpending(refused.jobId, refused.attemptId, message);
     };
     const wake = async (row: JobRow) => {
-      await handle.db.update(job).set({ nextWakeAt: new Date() }).where(eq(job.id, row.id));
+      // Due by the database's clock, which the runner judges a wake by; this
+      // process's clock can run a millisecond ahead of it.
+      await handle.db.update(job).set({ nextWakeAt: sql`now()` }).where(eq(job.id, row.id));
       const current = await jobs.get(row.id);
       return runner.handleWake({
         job_id: current.id,

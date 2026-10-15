@@ -162,6 +162,9 @@ export type RunnerOptions = {
    * with that sentence rather than as a failure to retry. A background
    * attempt is also held to the person's background limits; an interactive
    * one never is.
+   *
+   * It may read the pool, so the runner asks it before a transaction takes
+   * the event order lock, never inside one.
    */
   spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<LimitReached | null>;
   /**
@@ -170,6 +173,15 @@ export type RunnerOptions = {
    */
   retryBackoffMs?: number;
 };
+
+/** The spending limit a job's person has reached, for each class of work. */
+type ReachedLimits = Readonly<Record<UsageClass, LimitReached | null>>;
+
+const NO_LIMITS: ReachedLimits = { interactive: null, background: null };
+
+/** An outcome that ends on a reached spending limit, when one holds, rather than as a failure. */
+const endsOnLimit = (given: AttemptOutcome) =>
+  given.kind === 'failed' || given.kind === 'budget_exhausted';
 
 /** The first wait before a provider that was busy or limiting requests is asked again. */
 export const PROVIDER_RETRY_MS = 15_000;
@@ -317,8 +329,26 @@ export class AttemptRunner {
     return this.options.leaseMs ?? LEASE_MS;
   }
 
+  /**
+   * The spending limits this job's person has reached, for either class of
+   * work. The totals are read on the pool, so this runs before a transaction
+   * takes the event order lock: a pool read while it is held waits behind
+   * every event writer queued on it. The guard keeps its totals for a moment
+   * anyway, so a reading taken just before the lock is as current as one
+   * taken under it.
+   */
+  private async reachedLimits(jobId: string): Promise<ReachedLimits> {
+    const read = this.options.spendingLimit;
+    if (!read) return NO_LIMITS;
+    // One after the other, so the second is answered from the totals the first read.
+    const interactive = await read(jobId, 'interactive');
+    const background = await read(jobId, 'background');
+    return { interactive, background };
+  }
+
   async claim(wake: AttemptWake): Promise<ClaimedAttempt | null> {
     const capabilities = await this.runtime.capabilities();
+    const limits = await this.reachedLimits(wake.job_id);
     return this.jobs.transaction(async (tx) => {
       let row = await this.jobs.lock(tx, wake.job_id, true);
       // pg-boss delivers a wake by the database clock; judge it by the same
@@ -499,7 +529,7 @@ export class AttemptRunner {
       const settled =
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
-        await this.finish(tx, row, attemptId, settled);
+        await this.finish(tx, row, attemptId, settled, limits);
         return null;
       }
       // An attempt that starts no engine reads none of its inputs: they are
@@ -511,10 +541,13 @@ export class AttemptRunner {
           .where(eq(attempt.id, attemptId));
       if (guarded) {
         await unread();
-        await this.finish(tx, row, attemptId, {
-          kind: 'waiting_for_input',
-          question: WAKE_GUARD_QUESTION,
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'waiting_for_input', question: WAKE_GUARD_QUESTION },
+          limits,
+        );
         await tellOnce(tx, row, WAKE_GUARD_QUESTION, `wake-guard:${row.id}:${attemptId}`);
         return null;
       }
@@ -528,6 +561,7 @@ export class AttemptRunner {
           row,
           attemptId,
           { kind: 'budget_exhausted', summary: chosen.refused },
+          limits,
           [],
           chosen.refused,
         );
@@ -537,13 +571,19 @@ export class AttemptRunner {
       // background job ends at once with the sentence that says when it resets.
       // Background long work instead rests until then, keeping what arrives
       // for it, and the person is told the limit once, in its own words.
-      const capped = await this.options.spendingLimit?.(row.id, cause.usageClass);
+      const capped = limits[cause.usageClass];
       if (capped) await unread();
       if (capped && cause.usageClass === 'background' && isRunKind(row.kind)) {
-        await this.finish(tx, row, attemptId, {
-          kind: 'waiting_for_event_or_time',
-          wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          {
+            kind: 'waiting_for_event_or_time',
+            wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
+          },
+          limits,
+        );
         await tellOnce(
           tx,
           row,
@@ -554,10 +594,13 @@ export class AttemptRunner {
         return null;
       }
       if (capped) {
-        await this.finish(tx, row, attemptId, {
-          kind: 'budget_exhausted',
-          summary: capped.message,
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'budget_exhausted', summary: capped.message },
+          limits,
+        );
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
@@ -790,6 +833,9 @@ export class AttemptRunner {
     const envelope = isOutcomeEnvelope(input)
       ? responsibilityAttemptOutcome.parse(input)
       : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
+    const limits = endsOnLimit(envelope.outcome)
+      ? await this.reachedLimits(claims.job_id)
+      : NO_LIMITS;
     return this.jobs.transaction(async (tx) => {
       const active = await requireCurrentAttempt(tx, claims, { settling: true });
       const row = await this.finish(
@@ -797,6 +843,7 @@ export class AttemptRunner {
         active.job,
         claims.attempt_id,
         envelope.outcome,
+        limits,
         envelope.questions,
       );
       return (await this.carrySteers(tx, row)) ?? row;
@@ -966,6 +1013,8 @@ export class AttemptRunner {
     row: JobRow,
     attemptId: string,
     given: AttemptOutcome,
+    /** The spending limits reached for this job, read before the transaction (`reachedLimits`). */
+    limits: ReachedLimits,
     raised: readonly QuestionSpec[] = [],
     /**
      * The sentence a conversation turn stopped short ends on, in place of the
@@ -975,11 +1024,9 @@ export class AttemptRunner {
   ): Promise<JobRow> {
     // An attempt whose model calls were refused at a spending limit ends on
     // that limit, not as a failure to run again while it still holds.
-    const capped =
-      (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
-        ? ((await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId)))?.message ??
-          null)
-        : null;
+    const capped = endsOnLimit(given)
+      ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
+      : null;
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
       : await this.citedOnlyWhatWasRead(
@@ -1506,7 +1553,8 @@ export class AttemptRunner {
         ? await this.runs.recordedFinish(tx, row, attemptId)
         : null;
     if (given) {
-      await this.finish(tx, row, attemptId, given);
+      // A recorded result is the work's own, never a refusal, so no spending limit applies.
+      await this.finish(tx, row, attemptId, given, NO_LIMITS);
       return true;
     }
     const [counts] = await tx
@@ -1639,6 +1687,8 @@ export class AttemptRunner {
       .from(attempt)
       .where(and(isNull(attempt.endedAt), sql`${attempt.leaseExpiresAt} <= now()`));
     for (const candidate of expired) {
+      // A committed outcome finished below may be a refusal at a spending limit.
+      const limits = await this.reachedLimits(candidate.jobId);
       const fenced = await this.jobs
         .transaction(async (tx) => {
           const row = await this.jobs.lock(tx, candidate.jobId, true);
@@ -1695,7 +1745,7 @@ export class AttemptRunner {
             connection_generations: execution.connectionGenerations,
           });
           if (parsed.success && execution.revision === row.revision)
-            await this.finish(tx, row, execution.id, parsed.data);
+            await this.finish(tx, row, execution.id, parsed.data, limits);
           else await this.lose(tx, row, execution.id, 'lease_expired');
           return true;
         })
