@@ -29,7 +29,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
-import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { managesConnection, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import { carryForward, jobsReachedBy } from './connection-use.ts';
 import { type AttemptRunner, DISCONNECTED_NOTE } from './runner.ts';
 import { type JobService, routineRest } from './service.ts';
@@ -311,7 +311,10 @@ export class PolicyService {
       if (!source) throw new ServiceError('not_found', 'Connection not found.', 404);
       if (
         requestPrincipal() &&
-        (await spaceAuthority(reader, source.spaceId, requestPrincipal(), lock)).role !== 'owner'
+        !managesConnection(
+          await spaceAuthority(reader, source.spaceId, requestPrincipal(), lock),
+          source.sharedUse,
+        )
       )
         throw new ServiceError('scope_denied', 'Space owner required.', 403);
       if (source.generation !== request.expected_generation)

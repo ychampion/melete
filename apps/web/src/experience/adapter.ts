@@ -301,6 +301,11 @@ export const adapter = {
     guard<{ preview: AccountRemovalPreview }>(() =>
       api.GET('/principals/{id}/removal/preview', path(id)),
     ),
+  /** The setup owner makes another person's account an admin, or takes that away. */
+  setAccountAdmin: (id: string, admin: boolean) =>
+    guard<{ account: { id: string; admin: boolean } }>(() =>
+      api.PATCH('/principals/{id}', { ...path(id), body: { admin } }),
+    ),
   removeOtherAccount: (id: string, confirmEmail: string) =>
     guard<{ removal: AccountRemoval }>(() =>
       api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),

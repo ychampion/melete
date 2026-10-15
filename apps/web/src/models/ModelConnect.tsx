@@ -1050,7 +1050,7 @@ export function ModelsTab({ loaded }: { loaded: Loaded<ModelSettings> }) {
             </>
           ) : (
             <p className="models-hint">
-              Only the owner of this installation can change its models or their keys.
+              Only the owner of this installation, or an admin, can change its models or their keys.
             </p>
           )}
         </>

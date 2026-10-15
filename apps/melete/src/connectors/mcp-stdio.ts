@@ -117,12 +117,20 @@ export class StdioServer {
   private busy = false;
   private readonly limits: Required<Omit<StdioLifecycleOptions, 'now'>>;
   private readonly now: () => number;
+  /** The credential the running server was started with. */
+  private startedWith?: string | null;
 
   constructor(
     private readonly spec: Omit<StdioLaunchSpec, 'env'>,
     private readonly launcher: StdioLauncher,
-    /** Current row authority and sealed variables, read again before every start. */
-    private readonly authority: () => Promise<{ env: Record<string, string> } | null>,
+    /**
+     * Current row authority and sealed variables, read again before every start
+     * and before every call to a running server, with which credential they came from.
+     */
+    private readonly authority: () => Promise<{
+      env: Record<string, string>;
+      credential?: string | null;
+    } | null>,
     options: StdioLifecycleOptions = {},
   ) {
     const { now, ...limits } = options;
@@ -190,6 +198,7 @@ export class StdioServer {
     }
     this.channel = watched;
     this.state = 'running';
+    this.startedWith = granted.credential;
     return openLineMcpTransport(watched, { timeoutMs: this.limits.requestTimeoutMs });
   }
 
@@ -202,7 +211,24 @@ export class StdioServer {
     this.inflight += 1;
     this.holdOpen();
     if (this.state === 'crash_loop') return STDIO_REFUSALS.crashLoop;
-    if (this.state === 'running' && this.channel) return undefined;
+    if (this.state === 'running' && this.channel) {
+      // A server keeps the variables it was started with. When the connection
+      // has since been switched to another credential, or lost its own, it is
+      // stopped and the call starts it again under what the row holds now.
+      const channel = this.channel;
+      let granted: Awaited<ReturnType<typeof this.authority>>;
+      try {
+        granted = await this.authority();
+      } catch (error) {
+        // The caller ends only a call that was let through.
+        this.done();
+        throw error;
+      }
+      if (granted && granted.credential === this.startedWith) return undefined;
+      // Another call may have restarted it meanwhile; that server is current.
+      if (this.channel === channel) await this.stop();
+      else if (this.state === 'running' && this.channel) return undefined;
+    }
     const before = this.crashTotal;
     this.busy = false;
     this.starting ??= reopen()
@@ -426,7 +452,7 @@ export async function openStdioMcpConnector(
       // The sealed box must hold exactly the variables the row names, no more and no fewer.
       const names = Object.keys(env).sort();
       if (names.join('\n') !== [...launch.secret_env_names].sort().join('\n')) return null;
-      return { env };
+      return { env, credential: String(row.secret_ref) };
     },
     options,
   );
