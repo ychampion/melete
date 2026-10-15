@@ -413,7 +413,7 @@ async function runSteps(
   let rerun: string | null = null;
   // What a Ctrl-C says: where the restore stopped, and what to run next. While a step
   // that replaces something runs, it may have begun to, so the stack must not start.
-  const hint = (running?: RestoreAction) =>
+  const hint = (running?: Extract<RestoreAction, { kind: 'run' }>) =>
     context.interruptHint?.(
       running?.phase === 'start'
         ? `Every part is back; the start was stopped. See bun run melete status, then start it with ${start}. The restore need not run again.`
