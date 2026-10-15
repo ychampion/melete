@@ -23,12 +23,24 @@
  * for one use (MELETE_MEMORY_MODEL and the like) wins over the fast model.
  *
  * MELETE_MODEL_ROUTES sends each kind of agent work to a model of its own
- * (`work-routes.ts`); its `background` route fills the `background` role.
+ * (`work-routes.ts`). Two of its routes fill the roles above, so there is one
+ * setting for each role and one order between them:
+ *
+ * - `side` fills the `fast` role. MELETE_MODEL_FAST is the same role written
+ *   on its own: it wins over the `recommended` preset's `side`, and naming
+ *   both MELETE_MODEL_FAST and `side=` stops start-up.
+ * - `background` fills the `background` role, which nothing else names.
+ *
+ * For a side call the order is: a model pinned for that use, then the space
+ * owner's secondary, then the fast role, then the model in use. For background
+ * work: the owner's secondary, then the `background` route, then the model in
+ * use.
  *
  * The gateway relays the request as the engine wrote it, so an alternative
  * model is only ever taken when it speaks the same protocol as the request.
  */
 import { localHostLiteral } from '../privacy/local.ts';
+import { PriceTable, parseModelPrices } from './prices.ts';
 import {
   CHATGPT_PROVIDER,
   modelApiMode,
@@ -39,8 +51,10 @@ import type { GatewayRoutes } from './types.ts';
 import {
   RECOMMENDED,
   RECOMMENDED_ROUTES,
+  ROUTE_KINDS,
+  type RouteKind,
+  SIDE,
   WORK_KINDS,
-  type WorkKind,
   type WorkRoutes,
 } from './work-routes.ts';
 
@@ -96,7 +110,8 @@ export function routingFromEnv(env: {
     ? parseWorkRoutes(env.MELETE_MODEL_ROUTES, { keyed: keyedIn(env) }).routes
     : undefined;
   return {
-    fast: one(env.MELETE_MODEL_FAST, 'MELETE_MODEL_FAST'),
+    // MELETE_MODEL_FAST, else the `side` route (the start-up check refuses both written out).
+    fast: one(env.MELETE_MODEL_FAST, 'MELETE_MODEL_FAST') ?? work?.side?.[0] ?? null,
     vision: one(env.MELETE_MODEL_VISION, 'MELETE_MODEL_VISION'),
     fallback: (env.MELETE_MODEL_FALLBACK ?? '')
       .split(',')
@@ -109,7 +124,28 @@ export function routingFromEnv(env: {
 }
 
 const ROUTES_SETTING = 'MELETE_MODEL_ROUTES';
-const KINDS_LIST = WORK_KINDS.join(', ');
+const KINDS_LIST = ROUTE_KINDS.join(', ');
+
+/** Whether some route sends agent turns a person may wait on to a model of their own. */
+export function routesAgentTurns(routing: ModelRouting): boolean {
+  return WORK_KINDS.some((kind) => kind !== 'background' && routing.work?.[kind]?.length);
+}
+
+/**
+ * The start-up check of MELETE_MODEL_ROUTES beside the other settings: the
+ * fast role is named in one place only. Throws a message naming both.
+ */
+export function checkRouteSettings(env: {
+  MELETE_MODEL_FAST?: string | undefined;
+  MELETE_MODEL_ROUTES?: string | undefined;
+}): void {
+  if (!env.MELETE_MODEL_ROUTES?.trim()) return;
+  const { named } = parseWorkRoutes(env.MELETE_MODEL_ROUTES);
+  if (env.MELETE_MODEL_FAST?.trim() && named.includes(SIDE))
+    throw new Error(
+      `${ROUTES_SETTING} names a ${SIDE} route and MELETE_MODEL_FAST is set too; both name the model for the service's short calls. Keep one.`,
+    );
+}
 
 /**
  * Whether the environment holds a key for this provider. A provider signed in
@@ -140,16 +176,21 @@ export function parseWorkRoutes(
   value: string,
   options: {
     keyed?: (provider: string) => boolean;
-    preset?: Readonly<Partial<Record<WorkKind, readonly string[]>>>;
+    preset?: Readonly<Partial<Record<RouteKind, readonly string[]>>>;
   } = {},
-): { routes: WorkRoutes; dropped: { kind: WorkKind; choice: ModelChoice }[] } {
+): {
+  routes: WorkRoutes;
+  dropped: { kind: RouteKind; choice: ModelChoice }[];
+  /** The kinds written out after `=`, as opposed to taken from the preset. */
+  named: RouteKind[];
+} {
   const entries = value
     .split(/[;\n]/)
     .map((entry) => entry.trim())
     .filter(Boolean);
   const routes: WorkRoutes = {};
-  const dropped: { kind: WorkKind; choice: ModelChoice }[] = [];
-  const named = new Set<WorkKind>();
+  const dropped: { kind: RouteKind; choice: ModelChoice }[] = [];
+  const named = new Set<RouteKind>();
   entries.forEach((entry, index) => {
     if (entry.toLowerCase() === RECOMMENDED) {
       if (index !== 0)
@@ -157,7 +198,7 @@ export function parseWorkRoutes(
           `${ROUTES_SETTING} takes "${RECOMMENDED}" only as its first entry. Kinds: ${KINDS_LIST}.`,
         );
       const preset = options.preset ?? RECOMMENDED_ROUTES;
-      for (const kind of WORK_KINDS) {
+      for (const kind of ROUTE_KINDS) {
         const models = (preset[kind] ?? []).map((model) =>
           parseModelChoice(model, `${ROUTES_SETTING} (${RECOMMENDED}, ${kind})`),
         );
@@ -180,11 +221,11 @@ export function parseWorkRoutes(
         `${ROUTES_SETTING} entries are written kind=provider/model, with kind one of: ${KINDS_LIST}. "${entry}" is not.`,
       );
     const kind = entry.slice(0, equals).trim().toLowerCase();
-    if (!(WORK_KINDS as readonly string[]).includes(kind))
+    if (!(ROUTE_KINDS as readonly string[]).includes(kind))
       throw new Error(
         `${ROUTES_SETTING} names the kind "${kind}", which is not one of: ${KINDS_LIST}.`,
       );
-    const workKind = kind as WorkKind;
+    const workKind = kind as RouteKind;
     if (named.has(workKind))
       throw new Error(`${ROUTES_SETTING} names the kind "${kind}" twice. Kinds: ${KINDS_LIST}.`);
     named.add(workKind);
@@ -199,7 +240,7 @@ export function parseWorkRoutes(
         }
       });
   });
-  return { routes, dropped };
+  return { routes, dropped, named: [...named] };
 }
 
 /**
@@ -207,7 +248,7 @@ export function parseWorkRoutes(
  * route whose first model it is, in precedence order.
  */
 export function routeFallbacks(routing: ModelRouting, primary: ModelChoice): ModelChoice[] {
-  return WORK_KINDS.flatMap((kind) => {
+  return ROUTE_KINDS.flatMap((kind) => {
     const models = routing.work?.[kind];
     return models?.[0] && sameModel(models[0], primary) ? models.slice(1) : [];
   });
@@ -314,7 +355,7 @@ export function routingWarnings(
     ...(routing.fast ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]] : []),
     ...(routing.vision ? [['MELETE_MODEL_VISION', routing.vision] as [string, ModelChoice]] : []),
     ...routing.fallback.map((choice) => ['MELETE_MODEL_FALLBACK', choice] as [string, ModelChoice]),
-    ...WORK_KINDS.flatMap((kind) =>
+    ...ROUTE_KINDS.flatMap((kind) =>
       (routing.work?.[kind] ?? []).map(
         (choice) => [`${ROUTES_SETTING} (${kind})`, choice] as [string, ModelChoice],
       ),
@@ -340,8 +381,9 @@ export function routingWarnings(
 
 /**
  * What the operator should hear about MELETE_MODEL_ROUTES beyond its keys:
- * the preset's models left out for want of a key, and a route's fallbacks
- * that speak another protocol than its first model, which are never taken.
+ * the preset's models left out for want of a key, a route's fallbacks that
+ * speak another protocol than its first model, which are never taken, and a
+ * routed model with no price of its own, whose spending is only a guess.
  */
 function workRouteWarnings(
   env: Record<string, string | undefined>,
@@ -354,7 +396,7 @@ function workRouteWarnings(
       warnings.push(
         `${ROUTES_SETTING} (${RECOMMENDED}) leaves out ${choice.provider}/${choice.model} for ${kind}: ${choice.provider} has no key in the environment.`,
       );
-  for (const kind of WORK_KINDS) {
+  for (const kind of ROUTE_KINDS) {
     const [first, ...rest] = routing.work?.[kind] ?? [];
     if (!first) continue;
     for (const choice of rest)
@@ -363,5 +405,26 @@ function workRouteWarnings(
           `${ROUTES_SETTING} (${kind}) falls back to ${choice.provider}/${choice.model}, which speaks another protocol than ${first.provider}/${first.model}; it is never taken.`,
         );
   }
+  const prices = new PriceTable(safePrices(env.MELETE_MODEL_PRICES));
+  const unpriced = new Set<string>();
+  for (const kind of ROUTE_KINDS)
+    for (const { provider, model } of routing.work?.[kind] ?? []) {
+      if (provider === 'fake' || provider === CHATGPT_PROVIDER) continue;
+      const { entry } = prices.priceFor(provider, model);
+      if (entry === '*' || entry === `${provider}/*`) unpriced.add(`${provider}/${model}`);
+    }
+  for (const name of unpriced)
+    warnings.push(
+      `${ROUTES_SETTING} sends work to ${name}, which has no price of its own; its spending is counted at a rough estimate. Give its price in MELETE_MODEL_PRICES.`,
+    );
   return warnings;
+}
+
+/** The operator's prices, or none when they do not parse (the start-up check names that). */
+function safePrices(value: string | undefined) {
+  try {
+    return parseModelPrices(value);
+  } catch {
+    return {};
+  }
 }

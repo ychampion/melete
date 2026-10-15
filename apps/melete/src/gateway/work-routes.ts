@@ -11,6 +11,10 @@
  * connected decides the model (`ModelSettingsService.routedChoice`). A model
  * the owner chose in the app always wins for agent turns.
  *
+ * One more route, `side`, is not a kind of agent turn: it names the model for
+ * the service's own short calls, the role MELETE_MODEL_FAST fills
+ * (`routing.ts`).
+ *
  * This module holds the kinds, their precedence, the preset and the
  * classifier. It reads nothing and calls nothing: the signals are gathered
  * by the caller (`jobs/work-signals.ts`).
@@ -34,8 +38,16 @@ export const WORK_KINDS = [
 
 export type WorkKind = (typeof WORK_KINDS)[number];
 
+/** The route for the service's own short calls: memory reads, voice asides, the reviewer. */
+export const SIDE = 'side';
+
+/** Every kind MELETE_MODEL_ROUTES may name: the kinds of agent work, then `side`. */
+export const ROUTE_KINDS = [...WORK_KINDS, SIDE] as const;
+
+export type RouteKind = (typeof ROUTE_KINDS)[number];
+
 /** Each routed kind's models: the first is used, the rest are its fallbacks, in order. */
-export type WorkRoutes = Partial<Record<WorkKind, ModelChoice[]>>;
+export type WorkRoutes = Partial<Record<RouteKind, ModelChoice[]>>;
 
 /** The value of MELETE_MODEL_ROUTES that expands to `RECOMMENDED_ROUTES`. */
 export const RECOMMENDED = 'recommended';
@@ -59,7 +71,7 @@ const OPUS = 'anthropic/claude-opus-5-5';
  * many tasks as the large ones in most kinds, so they lead. Each kind's
  * comment says where that is not so.
  */
-export const RECOMMENDED_ROUTES: Readonly<Partial<Record<WorkKind, readonly string[]>>> = {
+export const RECOMMENDED_ROUTES: Readonly<Partial<Record<RouteKind, readonly string[]>>> = {
   // Everyday asks, judgment calls and memory. Opus was the only model that kept every
   // remembered detail across chats; name it here when that matters more than cost.
   chat: [DEEPSEEK, GLM, HAIKU, SONNET],
@@ -75,6 +87,9 @@ export const RECOMMENDED_ROUTES: Readonly<Partial<Record<WorkKind, readonly stri
   team: [DEEPSEEK, KIMI, OPUS, SONNET],
   // Routines and scheduled work; Haiku set them up least reliably.
   background: [DEEPSEEK, GLM, SONNET, OPUS],
+  // The service's own short calls (reading chat into memory, voice asides, the reviewer). They
+  // are small and many, so the cheap models lead.
+  side: [DEEPSEEK, GLM, HAIKU, SONNET],
 };
 
 /**

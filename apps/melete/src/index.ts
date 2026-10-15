@@ -112,7 +112,7 @@ import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ModelSettingsService } from './gateway/model-settings.ts';
-import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
+import { routesAgentTurns, routingFromEnv, routingWarnings } from './gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
 import type { UsageClass } from './gateway/usage-class.ts';
 import { startUsageRollup } from './gateway/usage-day.ts';
@@ -1571,7 +1571,7 @@ export async function bootstrap(
                   {
                     spaceId: row.spaceId,
                     usageClass,
-                    ...(Object.keys(routing.work ?? {}).some((kind) => kind !== 'background')
+                    ...(routesAgentTurns(routing)
                       ? {
                           kinds: (otherwise: { model: string }) =>
                             attemptWorkKinds(tx, row, usageClass, otherwise),

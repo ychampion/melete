@@ -16,6 +16,9 @@
  * its own price. An entry that names none takes its provider's published share
  * of the input price (`CACHE_PRICE_SHARE`); a provider not listed there, an
  * operator's own endpoint included, is assumed to give no discount.
+ *
+ * A model that costs more for a long prompt carries `long_prompt`: a call
+ * whose input is over its `over_tokens` is charged at those prices instead.
  */
 import { z } from 'zod';
 
@@ -28,6 +31,14 @@ export type ModelPrice = {
   cached_input?: number;
   /** Dollars per million input tokens written to the cache. Left out, the provider's share of `input`. */
   cache_write_input?: number;
+  /** The prices of a call whose input is over `over_tokens`, for a model that charges more for those. */
+  long_prompt?: {
+    over_tokens: number;
+    input: number;
+    output: number;
+    cached_input?: number;
+    cache_write_input?: number;
+  };
 };
 
 /**
@@ -84,10 +95,21 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'fireworks/*deepseek*': { input: 0.6, output: 2.2 },
   'fireworks/*qwen*': { input: 0.5, output: 1.5 },
   'fireworks/*llama*': { input: 0.2, output: 0.6 },
+  'fireworks/*glm-5p3*': { input: 1.4, output: 4.4, cached_input: 0.26 },
+  'fireworks/*kimi-k3*': { input: 3, output: 15, cached_input: 0.3 },
   'anthropic/*': { input: 3, output: 15, cached_input: 0.3 },
   'anthropic/*opus*': { input: 15, output: 75, cached_input: 1.5 },
   'anthropic/*sonnet*': { input: 3, output: 15, cached_input: 0.3 },
   'anthropic/*haiku*': { input: 1, output: 5, cached_input: 0.1 },
+  // The current models, at their listed prices; the routes' `recommended` preset names them.
+  'anthropic/claude-opus-5-5*': { input: 4, output: 20, cached_input: 0.2 },
+  'anthropic/claude-sonnet-5-5*': { input: 2, output: 10, cached_input: 0.2 },
+  // Haiku 5.5 charges five times as much for a prompt over 100K tokens.
+  'anthropic/claude-haiku-5-5*': {
+    input: 0.1,
+    output: 0.5,
+    long_prompt: { over_tokens: 100_000, input: 0.5, output: 2.5 },
+  },
   'openai/*': { input: 2.5, output: 10, cached_input: 0.25 },
   'openai/*mini*': { input: 0.4, output: 1.6, cached_input: 0.1 },
   'openai/*nano*': { input: 0.1, output: 0.4, cached_input: 0.025 },
@@ -102,12 +124,24 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'google/*embedding*': { input: 0.15, output: 0 },
 };
 
+const dollars = z.number().nonnegative().finite();
+
 const priceSchema = z
   .object({
-    input: z.number().nonnegative().finite(),
-    output: z.number().nonnegative().finite(),
-    cached_input: z.number().nonnegative().finite().optional(),
-    cache_write_input: z.number().nonnegative().finite().optional(),
+    input: dollars,
+    output: dollars,
+    cached_input: dollars.optional(),
+    cache_write_input: dollars.optional(),
+    long_prompt: z
+      .object({
+        over_tokens: z.number().int().positive(),
+        input: dollars,
+        output: dollars,
+        cached_input: dollars.optional(),
+        cache_write_input: dollars.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -184,7 +218,11 @@ export class PriceTable {
    * cache write at the write price.
    */
   cost(provider: string, model: string, usage: PricedUsage): number {
-    const price = this.priceFor(provider, model);
+    const listed = this.priceFor(provider, model);
+    const price =
+      listed.long_prompt && usage.inputTokens > listed.long_prompt.over_tokens
+        ? listed.long_prompt
+        : listed;
     const cache = this.cachePrices(provider, price);
     const { cached, written, fresh } = split(usage);
     const dollars =

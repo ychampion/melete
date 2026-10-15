@@ -11,7 +11,7 @@ import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete
 import { z } from 'zod';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
 import { parseModelPrices } from './gateway/prices.ts';
-import { parseModelChoice, parseWorkRoutes } from './gateway/routing.ts';
+import { checkRouteSettings, parseModelChoice, parseWorkRoutes } from './gateway/routing.ts';
 import { DEFAULT_NETWORK_POOL, parseNetworkPool } from './runtime/network-pool.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -748,6 +748,7 @@ const variables = z.object({
    * A model per kind of agent work: entries separated by `;` or new lines,
    * each `kind=provider/model[,provider/model...]`, or `recommended` first for
    * the preset (gateway/work-routes.ts). Unset, one model serves every turn.
+   * Its `side` route is MELETE_MODEL_FAST's role; name that in one place.
    */
   MELETE_MODEL_ROUTES: unsetWhenBlank(z.string().max(8000).optional()),
   /**
@@ -1140,6 +1141,7 @@ export const envSchema = variables.transform((value, context) => {
   if (value.MELETE_MODEL_ROUTES)
     try {
       parseWorkRoutes(value.MELETE_MODEL_ROUTES);
+      checkRouteSettings(value);
     } catch (error) {
       context.addIssue({
         code: 'custom',

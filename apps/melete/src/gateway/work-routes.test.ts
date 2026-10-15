@@ -9,9 +9,12 @@ import {
   space,
 } from '../db/schema.ts';
 import { loadEnv } from '../env.ts';
-import { ModelSettingsService } from './model-settings.ts';
-import { parseWorkRoutes, routingFromEnv, routingWarnings } from './routing.ts';
+import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
+import { PriceTable } from './prices.ts';
+import { parseWorkRoutes, routesAgentTurns, routingFromEnv, routingWarnings } from './routing.ts';
 import {
+  RECOMMENDED_ROUTES,
+  ROUTE_KINDS,
   WORK_KEYWORDS,
   WORK_KINDS,
   type WorkKind,
@@ -45,7 +48,7 @@ describe('MELETE_MODEL_ROUTES is read', () => {
 
   test('an unknown kind fails, naming the setting and the kinds', () => {
     expect(() => parseWorkRoutes('voice=openai/gpt-a')).toThrow(
-      'MELETE_MODEL_ROUTES names the kind "voice", which is not one of: background, team, computer, browser, long, files, research, chat.',
+      'MELETE_MODEL_ROUTES names the kind "voice", which is not one of: background, team, computer, browser, long, files, research, chat, side.',
     );
   });
 
@@ -116,13 +119,13 @@ describe('MELETE_MODEL_ROUTES is read', () => {
   test('the shipped preset routes every kind with only Fireworks, only Anthropic, or both, on one protocol each', () => {
     const installs = [
       { FIREWORKS_API_KEY: 'fw-test' },
-      { ANTHROPIC_API_KEY: 'sk-ant-test' },
-      { FIREWORKS_API_KEY: 'fw-test', ANTHROPIC_API_KEY: 'sk-ant-test' },
+      { ANTHROPIC_API_KEY: 'anthropic-test-key' },
+      { FIREWORKS_API_KEY: 'fw-test', ANTHROPIC_API_KEY: 'anthropic-test-key' },
     ];
     for (const keys of installs) {
       const env = { MELETE_MODEL_ROUTES: 'recommended', ...keys };
       const routing = routingFromEnv(env);
-      expect(Object.keys(routing.work ?? {}).sort()).toEqual([...WORK_KINDS].sort());
+      expect(Object.keys(routing.work ?? {}).sort()).toEqual([...ROUTE_KINDS].sort());
       for (const models of Object.values(routing.work ?? {})) {
         expect(models.length).toBeGreaterThanOrEqual(2);
         const providers = new Set(models.map((model) => model.provider));
@@ -134,7 +137,7 @@ describe('MELETE_MODEL_ROUTES is read', () => {
     const both = routingFromEnv({
       MELETE_MODEL_ROUTES: 'recommended',
       FIREWORKS_API_KEY: 'fw-test',
-      ANTHROPIC_API_KEY: 'sk-ant-test',
+      ANTHROPIC_API_KEY: 'anthropic-test-key',
     }).work;
     expect(both?.chat?.[0]?.provider).toBe('fireworks');
     expect(both?.research?.[0]).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
@@ -166,13 +169,90 @@ describe('MELETE_MODEL_ROUTES is read', () => {
     expect(routing.background).toEqual({ provider: 'fireworks', model: 'small' });
   });
 
+  test('the side route fills the fast role, so side calls run on it', async () => {
+    const env = {
+      MELETE_DEFAULT_PROVIDER: 'fireworks',
+      MELETE_DEFAULT_MODEL: DEFAULT,
+      MELETE_MODEL_ROUTES: 'side=anthropic/claude-haiku-5-5',
+    };
+    const routing = routingFromEnv(env);
+    expect(routing.fast).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+    // Side calls are not agent turns: a side route alone reads nothing about attempts.
+    expect(routesAgentTurns(routing)).toBe(false);
+    expect(
+      routesAgentTurns(routingFromEnv({ MELETE_MODEL_ROUTES: 'background=fireworks/a' })),
+    ).toBe(false);
+    expect(routesAgentTurns(routingFromEnv({ MELETE_MODEL_ROUTES: 'team=fireworks/a' }))).toBe(
+      true,
+    );
+    const side = serviceModelSource({ env, fast: routing.fast });
+    expect(await side.current()).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+  });
+
+  test('MELETE_MODEL_FAST wins over the preset’s side route, and naming both stops start-up', () => {
+    const keys = { ANTHROPIC_API_KEY: 'anthropic-test-key' };
+    expect(routingFromEnv({ MELETE_MODEL_ROUTES: 'recommended', ...keys }).fast).toEqual({
+      provider: 'anthropic',
+      model: 'claude-haiku-5-5',
+    });
+    expect(
+      routingFromEnv({
+        MELETE_MODEL_ROUTES: 'recommended',
+        MELETE_MODEL_FAST: 'anthropic/claude-sonnet-5-5',
+        ...keys,
+      }).fast,
+    ).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5-5' });
+    expect(() =>
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_MODEL_FAST: 'fireworks/a',
+        MELETE_MODEL_ROUTES: 'recommended; side=fireworks/b',
+      }),
+    ).toThrow(/side route and MELETE_MODEL_FAST/);
+    expect(
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_MODEL_FAST: 'fireworks/a',
+        MELETE_MODEL_ROUTES: 'recommended',
+      }).MELETE_MODEL_FAST,
+    ).toBe('fireworks/a');
+  });
+
+  test('every model the preset names has a price of its own, so spending is counted right', () => {
+    const prices = new PriceTable();
+    for (const models of Object.values(RECOMMENDED_ROUTES))
+      for (const name of models ?? []) {
+        const slash = name.indexOf('/');
+        const provider = name.slice(0, slash);
+        const { entry } = prices.priceFor(provider, name.slice(slash + 1));
+        expect([name, entry]).not.toEqual([name, '*']);
+        expect([name, entry]).not.toEqual([name, `${provider}/*`]);
+      }
+  });
+
+  test('a routed model with no price of its own is named at start-up, until the operator prices it', () => {
+    const env = {
+      MELETE_MODEL_ROUTES: 'browser=fireworks/accounts/fireworks/models/brand-new',
+      FIREWORKS_API_KEY: 'fw-test',
+    };
+    expect(routingWarnings(env, routingFromEnv(env))).toEqual([
+      'MELETE_MODEL_ROUTES sends work to fireworks/accounts/fireworks/models/brand-new, which has no price of its own; its spending is counted at a rough estimate. Give its price in MELETE_MODEL_PRICES.',
+    ]);
+    const priced = {
+      ...env,
+      MELETE_MODEL_PRICES: '{"fireworks/*brand-new":{"input":1,"output":2}}',
+    };
+    expect(routingWarnings(priced, routingFromEnv(priced))).toEqual([]);
+  });
+
   test('a fallback on another protocol is named at start-up as never taken', () => {
     const env = {
       MELETE_MODEL_ROUTES: 'chat=openai/gpt-a,anthropic/claude-x',
       OPENAI_API_KEY: 'sk-test',
-      ANTHROPIC_API_KEY: 'sk-ant-test',
+      ANTHROPIC_API_KEY: 'anthropic-test-key',
     };
-    expect(routingWarnings(env, routingFromEnv(env))).toEqual([
+    const warnings = routingWarnings(env, routingFromEnv(env));
+    expect(warnings.filter((warning) => warning.includes('never taken'))).toEqual([
       'MELETE_MODEL_ROUTES (chat) falls back to anthropic/claude-x, which speaks another protocol than openai/gpt-a; it is never taken.',
     ]);
   });

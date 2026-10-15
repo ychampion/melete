@@ -2102,7 +2102,13 @@ provider's published share of `input`: a cache read at a tenth for Anthropic,
 OpenAI, a ChatGPT plan and Google, a fifth for Fireworks (the highest share it
 lists for any model), and an
 Anthropic cache write at a quarter more. Any other provider, an endpoint you
-add yourself included, is priced as though nothing was cached. A call answered on the person's own model (the local
+add yourself included, is priced as though nothing was cached.
+
+`long_prompt` prices a model that charges more for a long prompt: a call whose
+input is over its `over_tokens` is counted at its prices instead, for example
+`{"input":0.1,"output":0.5,"long_prompt":{"over_tokens":100000,"input":0.5,"output":2.5}}`.
+
+A call answered on the person's own model (the local
 model a private conversation uses, an endpoint the owner confirmed is on their
 device, or an OpenAI-compatible endpoint at a local address) costs nothing and
 is recorded as served by `local` where the privacy router sent it there; its
@@ -2187,7 +2193,7 @@ Melete pick a better model per call:
 
 | Setting | Used for |
 | --- | --- |
-| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan. The `side` route of `MELETE_MODEL_ROUTES` is the same job; name it in one of the two |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
@@ -2241,6 +2247,12 @@ own receipt.
 is off unless set: a self-hosted install with one key and no
 `MELETE_MODEL_ROUTES` runs every turn on one model, as before.
 
+In short: Melete looks at what each turn is about (browsing, files, research,
+a long conversation, a shared space, background work, or plain chat) and runs
+it on the model named for that kind. The quickest start is
+`MELETE_MODEL_ROUTES=recommended`, which picks good, inexpensive models for
+every kind from the keys you have, Fireworks, Anthropic or both.
+
 The value is a list of entries separated by `;` or new lines. Each entry is
 `kind=provider/model`, optionally followed by `,provider/model` fallbacks,
 tried in order when the first model's provider rate-limits, fails or cannot be
@@ -2262,6 +2274,7 @@ The kinds, and when an attempt is each:
 | `files` | The newest message carries a file other than a picture |
 | `research` | The job's recent attempts searched or read the web, or the newest message asks to compare, research or look into something, or for sources |
 | `chat` | Every agent turn; a `chat` route covers whatever no other route took |
+| `side` | Not an agent turn: the service's own short calls, the job `MELETE_MODEL_FAST` does (see below) |
 
 An attempt can be several kinds at once. It runs on the route of the first of
 its kinds in this order: `background`, `team`, `computer`, `browser`, `long`,
@@ -2292,6 +2305,23 @@ The rules:
   at start-up with a message naming `MELETE_MODEL_ROUTES` and the kinds. A
   model whose provider has no key in the environment is named in a warning.
 
+How routes sit beside the other model settings, so each job is named in one
+place:
+
+- `side` is the fast model's job: reading chat into memory, voice-mode
+  asides, the auto-review classifier and the companies scan. Name it either
+  as `side=` or as `MELETE_MODEL_FAST`. Setting both stops start-up;
+  `MELETE_MODEL_FAST` with `recommended` replaces the preset's `side`.
+- For a side call the order is: a model pinned for that use
+  (`MELETE_MEMORY_MODEL` and the like), then the owner's secondary model,
+  then the fast model (`MELETE_MODEL_FAST` or `side`), then the model in use.
+- For background work: the owner's secondary model when they moved scheduled
+  work to it, then the `background` route, then the model in use. Sorting
+  new mail (`MELETE_MODEL_TRIAGE`, when unset) follows the same order before
+  the fast model.
+- `MELETE_MODEL_VISION` and `MELETE_MODEL_FALLBACK` apply to routed turns as
+  to any other; a route's own fallbacks come first.
+
 `recommended`, alone or as the first entry, starts from Melete's built-in
 table of a model for each kind. The entries after it replace the table's for
 their kind:
@@ -2313,6 +2343,7 @@ no keyed model is left out, with a warning at start-up.
 | `computer`, `files`, `long` | DeepSeek V4.1 Flash, then Kimi K3 | Haiku 5.5, then Sonnet 5.5 |
 | `team` | DeepSeek V4.1 Flash, then Kimi K3 | Opus 5.5, then Sonnet 5.5 |
 | `background` | DeepSeek V4.1 Flash, then GLM 5.3 | Sonnet 5.5, then Opus 5.5 |
+| `side` | DeepSeek V4.1 Flash, then GLM 5.3 | Haiku 5.5, then Sonnet 5.5 |
 
 The table comes from running real personal and team tasks on each model
 (live research, memory across chats, long conversations, the browser and the
@@ -2326,6 +2357,12 @@ for a fraction of the cost, so they lead. The exceptions:
   cost.
 - In shared spaces Opus 5.5 finished clearly more tasks than Haiku or Sonnet,
   so it leads `team` on an Anthropic-only install.
+
+Every model in the table has its own price in Melete's price table, so
+spending limits count routed work at what it costs; Haiku 5.5's higher price
+for prompts over 100K tokens is counted too. A route to a model with no price
+of its own is named in a start-up warning, since its spending is only a rough
+estimate until you give its price in `MELETE_MODEL_PRICES`.
 
 Each routed attempt writes one line to the service log, naming the job, the
 kind and the model: `model route: job <id> browser -> anthropic/claude-opus-5-5`.
