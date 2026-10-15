@@ -1,7 +1,8 @@
 /**
- * "Forget and don't learn again" holds for the detail the person forgot,
- * wherever a later message files it, and not for a different detail filed
- * under the same subject. The block keeps no word of what was forgotten. The
+ * "Forget and don't learn again" holds for anything about the forgotten
+ * detail's subject by default. Asked for just that detail, it holds for the
+ * detail wherever a later message files it, and not for a different detail
+ * filed under the same subject. The block keeps no word of what was forgotten. The
  * proposals below are the subjects and sentences real models wrote for these
  * messages.
  */
@@ -11,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtractionProposal } from '@melete/contracts';
 import { blockBelief, listBeliefs, listBlocks } from '../../src/memory/beliefs.ts';
-import { blockedSubject } from '../../src/memory/blocks.ts';
+import { type BlockScope, blockedSubject } from '../../src/memory/blocks.ts';
 import { commitExtraction } from '../../src/memory/commit.ts';
 import { type MemoryScope, stableId } from '../../src/memory/db.ts';
 import { ingest, persistEvidence } from '../../src/memory/evidence.ts';
@@ -122,18 +123,34 @@ withDb('a block holds for the detail that was forgotten', () => {
     await file.initializeNew();
     return file;
   };
-  /** Forget each held detail whose words match, and don't learn it again. */
-  const block = async (scope: MemoryScope, ...patterns: RegExp[]) => {
+  /**
+   * Forget each held detail whose words match, and don't learn it again: as
+   * far as `reach` asks, or as far as the default reaches when it is left out.
+   */
+  const blockAs = async (
+    reach: BlockScope | undefined,
+    scope: MemoryScope,
+    ...patterns: RegExp[]
+  ) => {
+    const reached: string[] = [];
     for (const pattern of patterns) {
       const belief = (await listBeliefs(store.sql, scope, 'UTC')).find((item) =>
         pattern.test(item.value),
       );
       if (!belief) throw new Error(`nothing held matches ${pattern}`);
-      await blockBelief(store.sql, scope, belief.id, await journal());
+      const result = reach
+        ? await blockBelief(store.sql, scope, belief.id, await journal(), reach)
+        : await blockBelief(store.sql, scope, belief.id, await journal());
+      reached.push(String((result as { scope?: unknown }).scope));
     }
+    return reached;
   };
+  /** Forget just the detail, as the tests of a detail's block below do. */
+  const block = (scope: MemoryScope, ...patterns: RegExp[]) =>
+    blockAs('detail', scope, ...patterns);
   /** Someone who said four things about themselves, then blocked all four. */
-  const blockedFour = async () => {
+  /** Four details forgotten as far as `reach` asks; 'default' leaves it out. */
+  const blockedFour = async (reach: BlockScope | 'default' = 'detail') => {
     const scope = await createScope(store);
     await say(
       scope,
@@ -149,7 +166,14 @@ withDb('a block holds for the detail that was forgotten', () => {
         ['home.city', 'I live in Lisbon', 'Lives in Lisbon'],
       ],
     );
-    await block(scope, /aisle/, /peanut/, /vegetarian/i, /lisbon/i);
+    await blockAs(
+      reach === 'default' ? undefined : reach,
+      scope,
+      /aisle/,
+      /peanut/,
+      /vegetarian/i,
+      /lisbon/i,
+    );
     expect(await held(scope)).toEqual([]);
     return scope;
   };
@@ -377,8 +401,13 @@ withDb('a block holds for the detail that was forgotten', () => {
 
   test('a block on a detail an older extraction saved as one run of words is the person’s own', async () => {
     const scope = await createScope(store);
-    const kept = blockedSubject(scope.spaceId, 'person.peanut_allergy', 'Allergic to peanuts');
-    expect(kept.detail).toBe(true);
+    const kept = blockedSubject(
+      scope.spaceId,
+      'person.peanut_allergy',
+      'Allergic to peanuts',
+      'detail',
+    );
+    expect(kept.scope).toBe('detail');
     await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
       ('mb_run', ${scope.spaceId}, ${kept.subject}, null, 'Peanut allergy')`;
     expect(
@@ -404,7 +433,7 @@ withDb('a block holds for the detail that was forgotten', () => {
     ]);
     await block(scope, /allergies/);
     expect((await listBlocks(store.sql, scope)).blocks.map((row) => row.label)).toEqual([
-      'Health allergy',
+      'Anything about Health allergy',
     ]);
     expect(
       await say(scope, "I'm allergic to shellfish.", [
@@ -421,7 +450,7 @@ withDb('a block holds for the detail that was forgotten', () => {
     ]);
     await block(plain, /peanut/);
     expect((await listBlocks(store.sql, plain)).blocks.map((row) => row.label)).toEqual([
-      'Health allergy',
+      'Anything about Health allergy',
     ]);
     expect(
       await say(plain, "I'm allergic to shellfish.", [
@@ -434,7 +463,7 @@ withDb('a block holds for the detail that was forgotten', () => {
       await say(plain, 'I go by Maxi now.', [['general', 'I go by Maxi', 'Goes by Maxi']]),
     ).toEqual(['blocked_by_person']);
 
-    // Kept for its subject, it is not a block on a subject it narrows to, as before.
+    // Kept for its subject, it is a block on anything about it, the subjects it narrows to included.
     await say(plain, 'When I fly I always book an aisle seat.', [
       [
         'travel.seat',
@@ -446,6 +475,11 @@ withDb('a block holds for the detail that was forgotten', () => {
     expect(
       await say(plain, 'On trains I like a window seat.', [
         ['travel.seat.train', 'On trains I like a window seat', 'Prefers window seats on trains'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(plain, 'On long flights I like extra legroom.', [
+        ['travel.legroom', 'On long flights I like extra legroom', 'Likes extra legroom'],
       ]),
     ).toEqual([]);
     await say(plain, 'My friend Sam lives in Porto.', [
@@ -554,8 +588,8 @@ withDb('a block holds for the detail that was forgotten', () => {
     ]);
     await block(russian, /Лиссабон/, /арахис/);
     expect((await listBlocks(store.sql, russian)).blocks.map((row) => row.label).sort()).toEqual([
-      'Health allergy peanuts',
-      'Home city',
+      'Anything about Health allergy peanuts',
+      'Anything about Home city',
     ]);
     expect(
       await say(russian, 'Мой дом — Лиссабон.', [
@@ -596,5 +630,296 @@ withDb('a block holds for the detail that was forgotten', () => {
       skipped: 0,
     });
     expect(await held(target)).toEqual(['health.allergy :: Allergic to shellfish']);
+  });
+
+  test('by default a block holds for anything about the subject, the detail in new words included', async () => {
+    const scope = await blockedFour('default');
+    expect(
+      (await listBlocks(store.sql, scope)).blocks.map((row) => [row.label, row.scope]).sort(),
+    ).toEqual([
+      ['Anything about Food diet', 'topic'],
+      ['Anything about Health allergy', 'topic'],
+      ['Anything about Home city', 'topic'],
+      ['Anything about Travel seat', 'topic'],
+    ]);
+    // Said again in words the block's matcher was never shown, as real models
+    // filed them, and a different detail under each subject.
+    const again: [string, [string, string, string]][] = [
+      [
+        'Corridor seat for me on every flight.',
+        [
+          'travel.seat',
+          'Corridor seat for me on every flight',
+          'Prefers a corridor seat on every flight',
+        ],
+      ],
+      ["I don't eat animals.", ['food.diet', "I don't eat animals", "Doesn't eat animals"]],
+      [
+        'I stick to plant-based food.',
+        ['food.diet', 'I stick to plant-based food', 'Sticks to plant-based food'],
+      ],
+      [
+        "Groundnuts are a no-go for me, I'm allergic.",
+        ['health.allergy', "Groundnuts are a no-go for me, I'm allergic", 'Allergic to groundnuts'],
+      ],
+      [
+        "I'm living in the Portuguese capital.",
+        ['home.city', "I'm living in the Portuguese capital", 'Lives in the Portuguese capital'],
+      ],
+      ['I moved to Porto last month.', ['home.city', 'I moved to Porto', 'Lives in Porto']],
+      [
+        "I'm also allergic to shellfish.",
+        ['health.allergy', 'allergic to shellfish', 'Allergic to shellfish'],
+      ],
+      [
+        'On long flights I like extra legroom.',
+        [
+          'travel.seat',
+          'On long flights I like extra legroom',
+          'Likes extra legroom on long flights',
+        ],
+      ],
+    ];
+    for (const [text, [subject, quote, content]] of again)
+      expect(await say(scope, text, [[subject, quote, content]])).toEqual(['blocked_by_person']);
+    // Filed under another subject of the person's own, it is still the detail.
+    expect(
+      await say(scope, 'I have a peanut allergy, please tell restaurants when you book.', [
+        [
+          'dining.allergy_notice',
+          'please tell restaurants when you book',
+          'Tell restaurants about the peanut allergy when booking',
+        ],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(await held(scope)).toEqual([]);
+    // Someone else's detail under a subject like it is theirs, not blocked.
+    expect(
+      await say(scope, 'My friend Sam is allergic to peanuts.', [
+        [
+          'person.sam.allergy',
+          'My friend Sam is allergic to peanuts',
+          'Friend Sam is allergic to peanuts',
+        ],
+      ]),
+    ).toEqual([]);
+    // A subject that names no topic of its own still holds for anything under it.
+    await say(scope, 'Call me Max.', [['general', 'Call me Max', 'Goes by Max']]);
+    expect(await blockAs(undefined, scope, /Max/)).toEqual(['topic']);
+    expect(
+      await say(scope, 'I go by Maxi now.', [['general', 'I go by Maxi', 'Goes by Maxi']]),
+    ).toEqual(['blocked_by_person']);
+  });
+
+  test('asked for just this detail, a block lets a different detail under its subject be learned', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'I live in Lisbon.', [['home.city', 'I live in Lisbon', 'Lives in Lisbon']]);
+    expect(await blockAs('detail', scope, /Lisbon/)).toEqual(['detail']);
+    expect(
+      (await listBlocks(store.sql, scope)).blocks.map((row) => [row.label, row.scope]),
+    ).toEqual([['Home city, the detail you forgot', 'detail']]);
+    expect(
+      await say(scope, 'My flat is in Lisbon, near Alfama.', [
+        ['home.city', 'My flat is in Lisbon, near Alfama', 'Flat is in Lisbon, near Alfama'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(scope, 'I moved to Porto last month.', [
+        ['home.city', 'I moved to Porto', 'Lives in Porto'],
+      ]),
+    ).toEqual([]);
+    expect(await held(scope)).toEqual(['home.city :: Lives in Porto']);
+  });
+
+  test('a block on anything about a subject holds for it under the names models use today', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'On flights I always pick the aisle.', [
+      [
+        'preference.flights.seat',
+        'On flights I always pick the aisle',
+        'Prefers aisle seats on flights',
+      ],
+    ]);
+    await say(scope, "I don't eat meat.", [
+      ['person.diet.vegetarian', "I don't eat meat", 'Vegetarian, no meat'],
+    ]);
+    expect(await blockAs(undefined, scope, /aisle/, /meat/)).toEqual(['topic', 'topic']);
+    // Another seat on flights, and another diet detail, under today's subjects.
+    expect(
+      await say(scope, 'Window seats on flights from now on.', [
+        ['travel.seat', 'Window seats on flights from now on', 'Prefers window seats on flights'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(scope, 'I am a vegetarian who also skips eggs.', [
+        ['food.diet', 'I am a vegetarian who also skips eggs', 'Vegetarian who also skips eggs'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    // Not about the subject at all.
+    expect(
+      await say(scope, 'On trains I like a window seat.', [
+        ['travel.seat.train', 'On trains I like a window seat', 'Prefers window seats on trains'],
+      ]),
+    ).toEqual([]);
+    expect(await held(scope)).toEqual(['travel.seat.train :: Prefers window seats on trains']);
+  });
+
+  test('anything about a subject holds for the narrower subjects under it; just a detail does not', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'When I fly I always book an aisle seat. I live in Lisbon.', [
+      [
+        'travel.seat',
+        'When I fly I always book an aisle seat',
+        'Always books an aisle seat when flying',
+      ],
+      ['home.city', 'I live in Lisbon', 'Lives in Lisbon'],
+    ]);
+    expect(await blockAs('topic', scope, /aisle/)).toEqual(['topic']);
+    expect(await blockAs('detail', scope, /Lisbon/)).toEqual(['detail']);
+    // Under the subject, as real models filed these: "Anything about Travel seat".
+    for (const [text, subject, content] of [
+      [
+        'On trains I prefer a window seat.',
+        'travel.seat.window',
+        'Prefers a window seat on trains',
+      ],
+      ['On trains I prefer a window seat.', 'travel.seat.train', 'Prefers a window seat on trains'],
+      ['On long flights I like extra legroom.', 'travel.seat.legroom', 'Likes extra legroom'],
+    ] as const)
+      expect(await say(scope, text, [[subject, text.slice(0, -1), content]])).toEqual([
+        'blocked_by_person',
+      ]);
+    // Beside it, not under it, is another subject.
+    expect(
+      await say(scope, 'On long flights I like extra legroom.', [
+        ['travel.legroom', 'On long flights I like extra legroom', 'Likes extra legroom'],
+      ]),
+    ).toEqual([]);
+    expect(
+      await say(scope, 'I always pack carry-on only.', [
+        ['travel.luggage', 'I always pack carry-on only', 'Packs carry-on only'],
+      ]),
+    ).toEqual([]);
+    expect(
+      await say(scope, 'I like to see the cabin map first.', [
+        [
+          'travel.seating_chart',
+          'I like to see the cabin map first',
+          'Looks at the cabin map first',
+        ],
+      ]),
+    ).toEqual([]);
+    // A block on just a detail reaches no narrower subject for a different detail.
+    expect(
+      await say(scope, 'Before Lisbon I lived in Madrid.', [
+        ['home.city.previous', 'Before Lisbon I lived in Madrid', 'Previously lived in Madrid'],
+      ]),
+    ).toEqual([]);
+    expect(await held(scope)).toEqual([
+      'home.city.previous :: Previously lived in Madrid',
+      'travel.legroom :: Likes extra legroom',
+      'travel.luggage :: Packs carry-on only',
+      'travel.seating_chart :: Looks at the cabin map first',
+    ]);
+
+    // Blocks kept for their subject, from before the choice, reach as far, under
+    // the older names of the person's own subjects too.
+    const legacy = await createScope(store);
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_allergy', ${legacy.spaceId}, 'health.allergy', null, 'Health allergy'),
+      ('mb_user_city', ${legacy.spaceId}, 'person.user.city', null, 'Your city'),
+      ('mb_general', ${legacy.spaceId}, 'general', null, 'General')`;
+    expect(
+      await say(legacy, "I'm also allergic to shellfish.", [
+        ['health.allergy.shellfish', 'allergic to shellfish', 'Allergic to shellfish'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(
+      await say(legacy, 'Before that I lived in Madrid.', [
+        ['self.city.previous', 'Before that I lived in Madrid', 'Previously lived in Madrid'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    // A heading that names nothing is no topic to reach under.
+    expect(
+      await say(legacy, 'I have asthma. My timezone is Lisbon time.', [
+        ['health.condition', 'I have asthma', 'Has asthma'],
+        ['general.timezone', 'My timezone is Lisbon time', 'Timezone is Lisbon time'],
+      ]),
+    ).toEqual([]);
+    expect(await held(legacy)).toEqual([
+      'general.timezone :: Timezone is Lisbon time',
+      'health.condition :: Has asthma',
+    ]);
+
+    // In a room, a member's block reaches under its subject for that member only.
+    const room: MemoryScope = {
+      ...(await createScope(store)),
+      audience: 'space',
+      publisher: 'room',
+    };
+    const bob = 'prn_bob_narrower';
+    const bobs = `travel.seat.member_${stableId('member', bob).slice(0, 12)}`;
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_room_narrower', ${room.spaceId}, ${bobs}, null, 'Travel seat')`;
+    const fromBob = await memberSaid(room, bob, 'On trains I want a window seat.');
+    await commitExtraction(store.sql, room, fromBob, {
+      proposals: [
+        add(
+          fromBob,
+          'travel.seat.train',
+          'On trains I want a window seat',
+          'Window seat on trains',
+        ),
+      ],
+    });
+    const fromAlice = await memberSaid(
+      room,
+      'prn_alice_narrower',
+      'On trains I want a window seat.',
+    );
+    await commitExtraction(store.sql, room, fromAlice, {
+      proposals: [
+        add(
+          fromAlice,
+          'travel.seat.train',
+          'On trains I want a window seat',
+          'Window seat on trains',
+        ),
+      ],
+    });
+    expect(await held(room)).toEqual(['travel.seat.train :: Window seat on trains']);
+  });
+
+  test('just this detail, in a script whose words are not compared, blocks anything about its subject', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'Я живу в Лиссабоне.', [
+      ['home.city', 'Я живу в Лиссабоне', 'Живу в Лиссабоне'],
+    ]);
+    expect(await blockAs('detail', scope, /Лиссабон/)).toEqual(['topic']);
+    expect(
+      (await listBlocks(store.sql, scope)).blocks.map((row) => [row.label, row.scope]),
+    ).toEqual([['Anything about Home city', 'topic']]);
+    expect(
+      await say(scope, 'I moved to Porto last month.', [
+        ['home.city', 'I moved to Porto', 'Lives in Porto'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(await held(scope)).toEqual([]);
+  });
+
+  test('a block on anything about a subject reads as one kept for its subject where the choice is not known', async () => {
+    const scope = await createScope(store);
+    const topic = blockedSubject(scope.spaceId, 'home.city', 'Lives in Lisbon', 'topic');
+    const detail = blockedSubject(scope.spaceId, 'home.city', 'Lives in Lisbon', 'detail');
+    expect(topic.scope).toBe('topic');
+    expect(detail.scope).toBe('detail');
+    // Both keep the detail's tags, never its words; they differ only in the check.
+    const [, topicTags] = topic.subject.split(':detail:');
+    const [, detailTags] = detail.subject.split(':detail:');
+    expect(topicTags?.split('.').slice(1)).toEqual(detailTags?.split('.').slice(1));
+    expect(topic.subject.toLowerCase()).not.toContain('lisbon');
+    // A reader that compares the check as it was before sees one that never matches.
+    expect(topicTags?.split('.')[0]).not.toBe(detailTags?.split('.')[0]);
+    expect(topicTags?.split('.')[0]).not.toMatch(/^[0-9a-f]{6}$/);
   });
 });
