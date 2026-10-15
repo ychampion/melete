@@ -26,6 +26,7 @@ import {
 import { z } from 'zod';
 import { FILE_BLOCK } from '../attachments/render.ts';
 import { estimateInputTokens } from '../gateway/metering.ts';
+import { saysWanted } from '../intents/said.ts';
 
 /** The notice kind a summary is kept under, in the job's events. */
 export const HISTORY_SUMMARY_KIND = 'history_summary';
@@ -188,6 +189,45 @@ const comparable = (text: string) =>
     .trim();
 
 /**
+ * "Don't forget to" asks for what follows it rather than ruling it out, so it
+ * reads as "remember to" wherever a rule is looked for.
+ */
+const reminded = (text: string) =>
+  text.replace(/\b(?:do not|don't|dont|never)\s+(?:forget|fail)\s+to\b/g, 'remember to');
+
+/**
+ * What the person wrote as a rule is looked for in: comparable, one line per
+ * paragraph, so a rule never runs from one message into the next.
+ */
+const heard = (text: string) =>
+  text
+    .split(/\n\s*\n/)
+    .map((paragraph) => reminded(comparable(paragraph)))
+    .filter(Boolean)
+    .join('\n');
+
+/** Where someone else's text starts in a person's message: a forward or reply marker, or a pasted email's headers. */
+const ELSEWHERE =
+  /^\s*(?:-{2,}\s*(?:forwarded|original) message|begin forwarded message|on .{3,80} wrote:\s*$|(?:from|subject|sent|reply-to):\s)/i;
+
+/**
+ * The person's own words in a message they sent: without the text of files
+ * they attached, lines they quoted ("> ..."), or anything from a forward or
+ * reply marker or a pasted email's headers onward. Only clear marks count: a
+ * guess from a message's shape (a greeting, a sign-off, a long paragraph)
+ * would also take away rules the person typed themselves.
+ */
+function personWords(content: string): string {
+  const kept: string[] = [];
+  for (const raw of content.replace(FILE_BLOCK, ' ').split('\n')) {
+    if (ELSEWHERE.test(raw)) break;
+    // A quoted line keeps its place as a break between paragraphs.
+    kept.push(/^\s*>/.test(raw) ? '' : raw);
+  }
+  return kept.join('\n');
+}
+
+/**
  * The standing instructions after a summary call, and any rule it offered
  * that cannot be kept as one.
  *
@@ -195,9 +235,11 @@ const comparable = (text: string) =>
  * rather than taken: a rule it leaves out is kept, because a standing
  * instruction goes only when the person replaces it. A rule it offers
  * replaces the one with the same topic and moves to the end, so the list is
- * oldest first and the newest version of a rule always wins. A rule is new
- * only when its words are in what the person wrote in the messages that call
- * read (`personText`): one the summariser paraphrased, or took from the
+ * oldest first and the newest version of a rule always wins; two rules the
+ * same answer gives under one topic are both kept. A rule is new only when
+ * its words are in what the person wrote in the messages that call read
+ * (`personText`), as words of their own and not ruled out where they are
+ * said: one the summariser paraphrased, cut from a "never", or took from the
  * assistant or a page it quoted, is not the person's instruction, so it goes
  * back to the summary's facts (`facts`, the ones it returned) instead of being
  * carried as one, unless they already say it.
@@ -208,26 +250,32 @@ export function mergeStanding(
   personText: string,
   facts: readonly string[] = [],
 ): { standing: StandingInstruction[]; demoted: string[] } {
-  const said = comparable(personText);
+  const said = heard(personText);
   const keyOf = (entry: StandingInstruction) => comparable(entry.topic) || comparable(entry.rule);
   const held = new Map<string, StandingInstruction>();
   for (const entry of previous) held.set(keyOf(entry), entry);
   const known = new Set(facts.map(comparable));
   const demoted: string[] = [];
+  // The topics this answer has set a rule under so far.
+  const added = new Set<string>();
   for (const entry of offered) {
     const rule = line(entry.rule).slice(0, STANDING_INSTRUCTIONS.characters);
     const wording = comparable(rule);
     if (!wording) continue;
     // Already held, under this topic or another: nothing changed.
     if ([...held.values()].some((kept) => comparable(kept.rule) === wording)) continue;
-    if (!said.includes(wording)) {
+    if (!saysWanted(said, reminded(wording))) {
       // Offered again on a later call, it is already a fact: never a second copy.
       if (!known.has(wording)) demoted.push(rule);
       known.add(wording);
       continue;
     }
     const kept = { topic: line(entry.topic), rule };
-    const key = keyOf(kept);
+    let key = keyOf(kept);
+    // A second rule under a topic this same answer used is a rule beside the
+    // first, not a newer version of it: the answer gives only the newest.
+    if (added.has(key)) key = `${key}\u0000${wording}`;
+    added.add(key);
     held.delete(key);
     held.set(key, kept);
   }
@@ -303,7 +351,8 @@ export function planExtension(
 /**
  * One call's worth of messages, as text, and how many messages it completes.
  * `person` is what the person wrote in those messages, without the text of
- * files they attached, which a standing instruction has to be found in.
+ * files they attached or what they forwarded or quoted, which a standing
+ * instruction has to be found in.
  */
 export type SummaryChunk = { text: string; completes: number; person: string };
 
@@ -358,9 +407,10 @@ export function chunkMessages(
   };
   for (const [index, message] of messages.entries()) {
     const parts = partsOf(message, maxTokens);
-    // The person's own words. The text of a file they attached sits in their
-    // message, but it came from the file, so it can never set a rule.
-    const words = message.role === 'user' ? message.content.replace(FILE_BLOCK, ' ') : null;
+    // The person's own words. The text of a file they attached, an email they
+    // forwarded or a line they quoted sit in their message but came from
+    // someone else, so they can never set a rule.
+    const words = message.role === 'user' ? personWords(message.content) : null;
     for (const [number, part] of parts.entries()) {
       const cost = estimateInputTokens(part);
       if (used > 0 && used + cost > maxTokens) flush();
