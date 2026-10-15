@@ -95,6 +95,14 @@ export const roomsApi = {
     call<{ member: RoomMember }>(() =>
       api.POST('/rooms/{id}/members', { ...room(id), body: { principal_id } }),
     ),
+  /** An owner makes someone an owner, or an owner a member again. */
+  setMemberRole: (id: string, principalId: string, role: 'owner' | 'member') =>
+    call<{ member: RoomMember }>(() =>
+      api.PATCH('/rooms/{id}/members/{principalId}', {
+        params: { path: { id, principalId } },
+        body: { role },
+      }),
+    ),
   /** An owner removes someone, or a person removes themselves to leave. */
   removeMember: (id: string, principalId: string) =>
     call<{ removed: string }>(() =>

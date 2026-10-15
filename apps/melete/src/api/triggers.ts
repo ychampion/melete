@@ -4,7 +4,7 @@ import type { Hono } from 'hono';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import { eventDelivery, type TriggerService } from '../jobs/triggers.ts';
-import { spaceAuthority } from '../principals/authority.ts';
+import { managesConnection, spaceAuthority } from '../principals/authority.ts';
 import { ServiceError } from './errors.ts';
 
 export function mountTriggers(app: Hono, triggers: TriggerService, db: Database | null): void {
@@ -35,7 +35,7 @@ export function mountTriggers(app: Hono, triggers: TriggerService, db: Database 
     const input = eventDelivery.parse(await c.req.json());
     if (!db) throw new ServiceError('database_unavailable', 'Configure Postgres.', 503);
     const [row] = await db
-      .select({ spaceId: connection.spaceId })
+      .select({ spaceId: connection.spaceId, sharedUse: connection.sharedUse })
       .from(connection)
       .where(eq(connection.id, input.connection_id));
     const access = row
@@ -44,7 +44,8 @@ export function mountTriggers(app: Hono, triggers: TriggerService, db: Database 
           throw error;
         })
       : null;
-    if (access?.role !== 'owner')
+    // A connection kept for a room's maker is theirs, and so is what it delivers.
+    if (!row || !access || !managesConnection(access, row.sharedUse))
       throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     return c.json(await triggers.deliver(input), 202);
   });
