@@ -144,6 +144,53 @@ test('nothing starts once the connection is gone', async () => {
   await expect(server.open()).rejects.toThrow('closed');
 });
 
+test('a running server is started again with the credential its connection was switched to', async () => {
+  const launcher = new FakeStdioLauncher();
+  let held: { env: Record<string, string>; credential: string } | null = {
+    env: { NOTES_TOKEN: 'first-value' },
+    credential: 'sec_first',
+  };
+  const server = new StdioServer({ ...binding, launch }, launcher, async () => held, {
+    idleMs: 60_000,
+  });
+  const worker = await openMcpWorker(config, binding, {
+    transportFactory: () => server.open(),
+    pinned,
+  });
+  const reopen = () => worker.reconnect();
+
+  expect(await server.ready(reopen)).toBeUndefined();
+  server.done();
+  expect(await server.ready(reopen)).toBeUndefined();
+  server.done();
+  expect(launcher.starts).toHaveLength(1);
+
+  // Calls keep it busy, so it never stops for being idle: the switch alone restarts it,
+  // once, however many calls arrive together.
+  held = { env: { NOTES_TOKEN: 'second-value' }, credential: 'sec_second' };
+  expect(await Promise.all([server.ready(reopen), server.ready(reopen)])).toEqual([
+    undefined,
+    undefined,
+  ]);
+  server.done();
+  server.done();
+  expect(launcher.starts.map((start) => start.env)).toEqual([
+    { NOTES_TOKEN: 'first-value' },
+    { NOTES_TOKEN: 'second-value' },
+  ]);
+  expect(launcher.stops).toBe(1);
+  expect(launcher.running).toBe(1);
+
+  // A connection left with no credential stops the server and starts nothing.
+  held = null;
+  expect(await server.ready(reopen)).toBe(STDIO_REFUSALS.start);
+  server.done();
+  expect(launcher.running).toBe(0);
+  expect(launcher.starts).toHaveLength(2);
+  await worker.close();
+  await server.close();
+});
+
 test("a server's annotations and results never change what a tool may do", async () => {
   const { server, worker, reopen } = await lifecycle();
   // The policy, not readOnlyHint or a description, decides each tool; an unnamed tool is absent.
