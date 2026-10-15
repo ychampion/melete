@@ -9,13 +9,13 @@
  * their own in the space; nobody having changed it since is the file holding
  * exactly the content that work last left at its name.
  *
- * The role is the one the space's own routes read (`spaceRole`, the raw-SQL
+ * The role is the one the space's own routes read (`spaceStanding`, the raw-SQL
  * twin of `spaceAuthority`), and `managesSharedFiles` is the one rule both the
  * files tools and the Files routes apply to it.
  */
 import type { Query } from '../broker/records.ts';
 import { segmentsFor } from '../paths.ts';
-import { type MembershipRole, spaceRole } from '../principals/authority.ts';
+import { type MembershipRole, spaceStanding } from '../principals/authority.ts';
 import { beneath } from './files-ownership.ts';
 
 /** Whether a role changes what others put in a shared space's Files: only its owner's does. */
@@ -60,7 +60,7 @@ export async function sharedFilesRule(
   // A job this space does not hold, or a room's work nobody is recorded as asking for.
   if (!row || (row.for_room && !row.works_for)) return NONE;
   const actor = row.works_for ? String(row.works_for) : null;
-  if (managesSharedFiles(await spaceRole(query, spaceId, actor))) return ANY_FILE;
+  if (managesSharedFiles((await spaceStanding(query, spaceId, actor))?.role)) return ANY_FILE;
   if (!actor) return NONE;
   // Only steps that settled: one still out, or whose outcome is not known,
   // makes nothing theirs, and the check of the bytes there covers what it did.

@@ -422,6 +422,21 @@ databaseTest(
       'succeeded',
     );
     expect(existsSync(space.files('notes.md'))).toBe(false);
+
+    // An owner the room's maker added changes anything there too.
+    const [added] = await space.sql`insert into principal (id, email, kind)
+      values (${recordId('prn')}, ${`co-owner-${recordId('x').toLowerCase()}@example.test`}, 'person')
+      returning id`;
+    const coOwner = String(added?.id);
+    const [{ space_id } = { space_id: '' }] = await space.sql`select space_id from job
+      where id = ${owners.jobId}`;
+    await space.sql`insert into space_membership (principal_id, space_id, role)
+      values (${coOwner}, ${space_id}, 'owner')`;
+    const coOwners = await space.request(coOwner);
+    expect(
+      (await coOwners.run('files.delete', { path: 'papers/lease.pdf', area: 'artifacts' })).status,
+    ).toBe('succeeded');
+    expect(existsSync(space.files('papers', 'lease.pdf'))).toBe(false);
   },
   SLOW,
 );
