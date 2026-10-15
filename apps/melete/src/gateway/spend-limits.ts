@@ -98,8 +98,8 @@ export type MemberUsage = {
 };
 
 /**
- * This month's spending in each space the account may see it for: the spaces
- * it owns (its own and the rooms it runs), and for the person who runs the
+ * This month's spending in each space the account may see it for: its own
+ * space and the rooms it is an owner of now, and for the person who runs the
  * installation every room as well. Each with its budget, if one is set.
  */
 export async function usageBySpace(
@@ -117,10 +117,13 @@ export async function usageBySpace(
       from space s
       left join model_usage u on u.space_id = s.id and u.created_at >= ${month}::timestamptz
       where s.removed_at is null and (
-        coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${actor}
+        (s.kind = 'personal'
+          and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${actor})
+        -- A room by who owns it now: whoever made it no longer sees it once they leave.
         or (s.kind = 'shared' and (${installationOwner} or exists (
           select 1 from space_membership m where m.space_id = s.id
-            and m.principal_id = ${actor} and m.role = 'owner' and m.revoked_at is null))))
+            and m.principal_id = ${actor} and m.role = 'owner' and m.revoked_at is null
+            and (m.expires_at is null or m.expires_at > now())))))
       group by s.id, s.name, s.kind
       order by usd desc, tokens desc, s.name, s.id
       limit 100`;

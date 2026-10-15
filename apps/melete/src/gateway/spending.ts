@@ -587,6 +587,9 @@ export class SpendingGuard implements GatewaySpending {
     const notice = this.noticeFor(totals, now, true, memberUsd);
     if (notice?.level === 'reached')
       return { message: notice.message, resetsAt: new Date(notice.resets_at) };
+    // The person's background limit is theirs too, so it is named before the space's budget.
+    const ownBackground = background ? this.backgroundReached(totals, now) : null;
+    if (ownBackground) return ownBackground;
     if (spaceId && spaceUsd !== undefined) {
       const spent = await this.spaceMonth(spaceId, now);
       if (spent.usd >= spaceUsd) {
@@ -597,7 +600,7 @@ export class SpendingGuard implements GatewaySpending {
         };
       }
     }
-    return background ? this.backgroundReached(totals, now) : null;
+    return null;
   }
 
   /** The sentence for a reached limit that applies to this person, or null. */
@@ -698,7 +701,8 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
-    this.release(principal);
+    // The call stays held until its row is written and the totals read again,
+    // so an admission judged meanwhile counts it one way or the other.
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;
@@ -733,6 +737,8 @@ export class SpendingGuard implements GatewaySpending {
       process.stderr.write(
         `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,
       );
+    } finally {
+      this.release(principal);
     }
   }
 

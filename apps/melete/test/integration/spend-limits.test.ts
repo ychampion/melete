@@ -10,7 +10,12 @@ import { Hono } from 'hono';
 import { mountUsage } from '../../src/api/usage.ts';
 import { owner, principal, space, spaceMembership } from '../../src/db/schema.ts';
 import { PriceTable } from '../../src/gateway/prices.ts';
-import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
+import {
+  backgroundLimitMessage,
+  NO_LIMIT,
+  SpendingGuard,
+  type SpendingLimits,
+} from '../../src/gateway/spending.ts';
 import type { GatewayPrincipal, GatewaySettlement } from '../../src/gateway/types.ts';
 import { newId } from '../../src/ids.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
@@ -43,11 +48,15 @@ const settlement = (outputTokens: number): GatewaySettlement => ({
   httpStatus: 200,
 });
 
-/** A call one person makes in one space. */
-const callBy = (actor: string, spaceId: string): GatewayPrincipal => ({
-  jobId: `voice:${spaceId}`,
-  attemptId: `voice:${randomUUID()}`,
-  privacy: { kind: 'service', purpose: 'voice', spaceId, sourceJobId: null },
+/** A call one person makes in one space: a voice call has them waiting, `learning` does not. */
+const callBy = (
+  actor: string,
+  spaceId: string,
+  purpose: 'voice' | 'learning' = 'voice',
+): GatewayPrincipal => ({
+  jobId: `${purpose}:${spaceId}`,
+  attemptId: `${purpose}:${randomUUID()}`,
+  privacy: { kind: 'service', purpose, spaceId, sourceJobId: null },
   actor,
   epoch: 0,
   revision: 0,
@@ -67,8 +76,15 @@ function db() {
   return handle;
 }
 
-async function spend(guard: SpendingGuard, actor: string, spaceId: string, calls: number) {
-  for (let n = 0; n < calls; n++) await guard.record(callBy(actor, spaceId), settlement(40));
+async function spend(
+  guard: SpendingGuard,
+  actor: string,
+  spaceId: string,
+  calls: number,
+  purpose: 'voice' | 'learning' = 'voice',
+) {
+  for (let n = 0; n < calls; n++)
+    await guard.record(callBy(actor, spaceId, purpose), settlement(40));
 }
 
 /** The refusal a call would meet now, or null when it is admitted. */
@@ -240,6 +256,61 @@ withDb('member limits and space budgets', () => {
     expect(refused).toMatchObject({ status: 402, code: 'spending_limit_reached' });
   });
 
+  test('a finished call stays held until its row is written', async () => {
+    const { sql } = db();
+    const run = sql as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    // Writing the finished call's row waits until the next call has been judged.
+    const gated = ((strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings.join('').includes('insert into model_usage')
+        ? gate.then(() => run(strings, ...values))
+        : run(strings, ...values)) as unknown as typeof sql;
+    const guard = new SpendingGuard(gated, limits(), prices, () => NOW);
+    await guard.spendLimits.set('space', room, 0.4, ada);
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 40,
+      local: false,
+    };
+    const first = callBy(ada, room);
+    await guard.admit(first, call);
+    const recording = guard.record(first, settlement(40));
+    let refused: unknown;
+    await guard.admit(callBy(bea, room), call).catch((error) => {
+      refused = error;
+    });
+    open();
+    await recording;
+    expect(refused).toMatchObject({ status: 402, code: 'spending_limit_reached' });
+    // Written, the row alone holds the room at its budget.
+    expect(await refusal(guard, bea, room)).toBe(
+      `"Launch" has reached its monthly budget of $0.40; ${RESETS}`,
+    );
+  });
+
+  test("a person's background limit is named before a space's budget", async () => {
+    const guard = new SpendingGuard(
+      db().sql,
+      { ...limits(), background: { day: NO_LIMIT, month: { usd: 0.4, tokens: null } } },
+      prices,
+      () => NOW,
+    );
+    await guard.spendLimits.set('space', room, 0.4, ada);
+    await spend(guard, ada, room, 1, 'learning');
+    expect(await guard.reached(ada, 'background', room)).toBe(
+      backgroundLimitMessage('month', new Date('2026-11-01T00:00:00Z')),
+    );
+    // With someone waiting on the answer only the space's budget holds it back.
+    expect(await guard.reached(ada, 'interactive', room)).toBe(
+      `"Launch" has reached its monthly budget of $0.40; ${RESETS}`,
+    );
+  });
+
   function app(actor: string) {
     const { sql } = db();
     const guard = new SpendingGuard(sql, limits(), prices);
@@ -341,5 +412,22 @@ withDb('member limits and space budgets', () => {
       { principal_id: bea, name: `bea-${bea}`, calls: 4, usd: 1.6, tokens: 200, limit_usd: 2 },
       { principal_id: ada, name: 'Ada', calls: 3, usd: 1.2, tokens: 150, limit_usd: null },
     ]);
+  });
+
+  test('a room is listed by space only for who owns it now, never for its other members', async () => {
+    const { db: orm, sql } = db();
+    const cy = newId('own');
+    await orm.insert(principal).values({ id: cy, email: `${cy}@example.test`, displayName: 'Cy' });
+    await orm.insert(spaceMembership).values({ principalId: cy, spaceId: room, role: 'member' });
+    await spend(new SpendingGuard(sql, limits(), prices), bea, room, 1);
+
+    const asCy = usageResponse.parse(await (await app(cy).hono.request('/usage')).json());
+    expect(asCy.by_space).toEqual([]);
+    expect(asCy.by_member).toBeNull();
+    // Bea made the room; once she leaves it, its spending is no longer hers to see.
+    await sql`update space_membership set revoked_at = now()
+      where space_id = ${room} and principal_id = ${bea}`;
+    const asBea = usageResponse.parse(await (await app(bea).hono.request('/usage')).json());
+    expect(asBea.by_space?.map((row) => row.space_id)).toEqual([beaSpace]);
   });
 });
