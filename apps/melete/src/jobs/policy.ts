@@ -263,7 +263,11 @@ export class PolicyService {
         );
       } else if (
         row.state === 'waiting_for_approval' &&
-        pending.some((effect) => effect.status === 'needs_approval')
+        pending.some((effect) => effect.status === 'needs_approval') &&
+        // Waiting work with no attempt left cannot wake into one. What it asked
+        // is refused above and it holds nothing, so it stays as it is rather
+        // than stopping the change that fences it.
+        (await this.jobs.attemptsLeft(tx, row))
       ) {
         await this.jobs.move(
           tx,
@@ -280,7 +284,8 @@ export class PolicyService {
             .where(eq(trigger.id, wait.trigger_id));
           if (
             (registration?.spec as { connection_id?: string } | undefined)?.connection_id ===
-            connectionId
+              connectionId &&
+            (await this.jobs.attemptsLeft(tx, row))
           )
             await this.jobs.move(
               tx,
