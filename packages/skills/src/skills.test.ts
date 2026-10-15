@@ -212,3 +212,12 @@ test('schedule-a-check-in sends a repeating reminder to a schedule, since one wa
   expect(body).toContain('job.wait');
   expect(body).toMatch(/wakes once[\s\S]*repeats[\s\S]*run\.start with repeat\.cron/);
 });
+
+test('schedule-a-check-in sends every-other-week schedules to a calendar rule, which a cron cannot say', () => {
+  const skill = loadBuiltInSkills().skills.find(
+    (s) => s.frontmatter.name === 'schedule-a-check-in',
+  );
+  const body = skill?.body ?? '';
+  expect(body).toMatch(/every\s+other week[\s\S]*repeat\.rrule[\s\S]*repeat\.starts/);
+  expect(body).toContain('FREQ=WEEKLY;INTERVAL=2;BYDAY=FR');
+});

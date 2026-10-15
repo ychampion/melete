@@ -5,6 +5,7 @@ import {
   isTerminal,
   jobState,
   planCreate,
+  scheduleWords,
   triggerSpec,
   unavailable,
 } from '@melete/contracts';
@@ -465,7 +466,9 @@ export class ExperiencePlanning {
       title: plainText(title, 'Routine'),
       schedule:
         spec.kind === 'schedule'
-          ? scheduleSentence(spec.cron, spec.timezone)
+          ? spec.rrule !== undefined
+            ? `${scheduleWords(spec, { clock: '12h' })} (${spec.timezone})`
+            : scheduleSentence(spec.cron ?? '', spec.timezone)
           : 'When the connected app has an update',
       enabled: row.enabled && !isTerminal(jobState.parse(state)),
       ended: isTerminal(jobState.parse(state)),
