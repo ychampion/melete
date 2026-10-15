@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 import { EXEC_LIMITS } from './execution.ts';
+import { RRULE_FORMAT, scheduleTimingProblem } from './recurrence.ts';
 import type { ToolSpec } from './runtime.ts';
 import { WATCH_OPERATORS, watchPredicate } from './watch.ts';
 
@@ -91,20 +92,41 @@ const body = z.string().max(RUN_BODY_LIMIT);
 export const CRON_FORMAT =
   'Write it as five fields, minute hour day-of-month month day-of-week: "0 9 * * 1" is Mondays at 9:00, "30 8 * * 1-5" is weekdays at 8:30, "0 9 * * 1#1" is the first Monday of each month and "0 9 * * 5L" its last Friday. A day of the month and a weekday together match either one: "0 9 1-7 * 1" runs every Monday and on the 1st to the 7th.';
 
+/** Said when a schedule names no time: how to write a cron, and when to use a rule instead. */
+const SCHEDULE_FORMAT = `${CRON_FORMAT} A cron cannot count weeks, months or years: for every other week or every few months, give rrule and starts instead of a cron.`;
+
+const scheduleFields = {
+  cron: z
+    .string({ error: `must be text. ${CRON_FORMAT}` })
+    .trim()
+    .min(1, `empty. ${CRON_FORMAT}`)
+    .max(120)
+    .optional(),
+  /** An RFC 5545 RRULE, for what a cron cannot say: "every other Friday". */
+  rrule: z
+    .string({ error: `must be text. ${RRULE_FORMAT}` })
+    .trim()
+    .min(1)
+    .max(300)
+    .optional(),
+  /** The rule's first time, a local date and time in the schedule's zone: "2026-10-16T09:00". */
+  starts: z.string().trim().min(1).max(40).optional(),
+  timezone: z.string().trim().min(1).max(64).optional(),
+};
+
+/** A schedule says when with a cron, or with a calendar rule and its start; never both. */
+function checkTiming(value: z.infer<z.ZodObject<typeof scheduleFields>>, ctx: z.RefinementCtx) {
+  const problem = scheduleTimingProblem(value);
+  if (problem)
+    ctx.addIssue({
+      code: 'custom',
+      path: [problem.field],
+      message: problem.problem === 'missing' ? `missing. ${SCHEDULE_FORMAT}` : problem.problem,
+    });
+}
+
 /** A repeating time, in the person's time zone unless another is named. */
-export const runSchedule = z
-  .object({
-    cron: z
-      .string({
-        error: (issue) =>
-          issue.input === undefined ? `missing. ${CRON_FORMAT}` : `must be text. ${CRON_FORMAT}`,
-      })
-      .trim()
-      .min(1, `empty. ${CRON_FORMAT}`)
-      .max(120),
-    timezone: z.string().trim().min(1).max(64).optional(),
-  })
-  .strict();
+export const runSchedule = z.object(scheduleFields).strict().superRefine(checkTiming);
 export type RunSchedule = z.infer<typeof runSchedule>;
 
 /**
@@ -113,7 +135,10 @@ export type RunSchedule = z.infer<typeof runSchedule>;
  * wakes only then, with no model call while nothing happens.
  */
 export const runWake = z.discriminatedUnion('kind', [
-  runSchedule.extend({ kind: z.literal('schedule') }).strict(),
+  z
+    .object({ kind: z.literal('schedule'), ...scheduleFields })
+    .strict()
+    .superRefine(checkTiming),
   z
     .object({
       kind: z.literal('event'),
@@ -327,16 +352,22 @@ export const RUN_START_TOOL: ToolSpec = {
       },
       repeat: {
         type: 'object',
-        description: 'For work that repeats on a schedule.',
+        description:
+          'For work that repeats on a schedule: a cron, or an rrule with starts for what a cron cannot count, such as every other week or every 3 months.',
         properties: {
           cron: { type: 'string', description: CRON_FORMAT },
+          rrule: { type: 'string', description: RRULE_FORMAT },
+          starts: {
+            type: 'string',
+            description:
+              'With rrule: the first time, a local date and time with no zone, such as "2026-10-16T09:00". It sets the time of day and which weeks or months count.',
+          },
           timezone: {
             type: 'string',
             description:
               'A time zone name such as "America/Los_Angeles". Leave it out to use the person’s time zone.',
           },
         },
-        required: ['cron'],
         additionalProperties: false,
       },
     },
@@ -490,6 +521,8 @@ export const RUN_CHECKPOINT_TOOL: ToolSpec = {
             {
               kind: { type: 'string', enum: ['schedule', 'event', 'watch'] },
               cron: { type: 'string' },
+              rrule: { type: 'string' },
+              starts: { type: 'string' },
               timezone: { type: 'string' },
               connection_id: { type: 'string' },
               event_name: { type: 'string' },
@@ -499,7 +532,7 @@ export const RUN_CHECKPOINT_TOOL: ToolSpec = {
           ),
         ],
         description:
-          '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}],any?:[...]}} (before/after take seconds from now, older_than an age in seconds). "drop_trigger" ends that.',
+          '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?} or {kind:"schedule",rrule,starts,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}],any?:[...]}} (before/after take seconds from now, older_than an age in seconds). "drop_trigger" ends that.',
       },
     },
     ['summary', 'next'],

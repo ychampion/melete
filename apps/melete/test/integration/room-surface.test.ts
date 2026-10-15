@@ -20,6 +20,7 @@ import {
   roomMessageResponse,
   roomThreadView,
 } from '@melete/contracts';
+import { setDisabled } from '../../src/account/cli.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -784,5 +785,35 @@ withDb('rooms on a chat platform', () => {
         }),
       ),
     ).toBe('invalid_message_ref 400');
+  }, 60_000);
+
+  test('a disabled account speaks from no platform, and none can be linked to it', async () => {
+    const { sql } = database();
+    const email = 'frank@example.test';
+    const frank = await ok<{ principal: { id: string } }>(
+      send(world.alice.cookie, '/principals', 'POST', { email, password }),
+      201,
+    );
+    const id = frank.principal.id;
+    await chatter.gate.link('U-FRANK', id);
+    const speak = () =>
+      refusal(
+        chatter.message({ user: 'U-FRANK', user_name: 'Frank', room: 'sp_none', text: 'Hi' }),
+      );
+    // Linked, the account gets past the gate and is refused only by the room.
+    expect(await speak()).toBe('not_found 404');
+
+    expect((await setDisabled(sql, email, true)).ok).toBe(true);
+    // Disabling removed the link, and a platform cannot link the account again.
+    expect(await speak()).toBe('unlinked_account 403');
+    expect(await refusal(chatter.gate.link('U-FRANK', id))).toBe('not_found 404');
+    // A link that is still there does not speak for a disabled account either.
+    await sql`insert into principal_identity (provider, external_id, principal_id)
+      values ('chatter', 'U-FRANK', ${id})`;
+    expect(await speak()).toBe('unlinked_account 403');
+
+    // Enabled again, the link speaks again.
+    expect((await setDisabled(sql, email, false)).ok).toBe(true);
+    expect(await speak()).toBe('not_found 404');
   }, 60_000);
 });
