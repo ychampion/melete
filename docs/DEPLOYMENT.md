@@ -1342,6 +1342,16 @@ The exit code is 0 when it was done, 2 when it was refused (no such account,
 an email already in use, a setup code once the owner exists) and 1 when it
 failed.
 
+In the app, the account that set Melete up can make another person's account
+an admin, or take that away, from Settings › Account › Accounts on this Melete
+(`PATCH /principals/{id}` with `admin: true` or `false`). An admin adds
+accounts (`POST /principals`), sees the list of them, and chooses the
+installation's model and its keys, as the setup owner does. Only the setup
+owner makes admins, deletes other people's accounts and sets the secondary
+model, and nobody can change the setup owner, who is always an admin. Only a
+person's account that can sign in holds admin; a disabled one administers
+nothing.
+
 ## Signing out everywhere
 
 Settings › Account › Where you're signed in lists every browser signed in to the
@@ -1662,8 +1672,9 @@ provider, paste its API key (and, for `openai-compatible`, the endpoint's
 address), test the connection, choose a model from the provider's list or type
 its identifier, and use it. The test makes one small call, the provider's model
 list, and says plainly when the key is refused, the address answers 404, or the
-provider does not answer in time. Only the setup owner can change a key or the
-model; every other account sees which model is active.
+provider does not answer in time. Only the setup owner, or an account they made
+an admin, can change a key or the model; every other account sees which model
+is active. The secondary model stays the setup owner's own.
 
 A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
 so the app refuses to store one while that key is unset. No answer ever carries
