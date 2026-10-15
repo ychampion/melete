@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DrizzleQueryError } from 'drizzle-orm';
 import { sweepTrash } from '../connectors/files-trash.ts';
 import { stuckCheck } from '../health/monitor.ts';
 import { sweepStagedWrites } from '../knowledge/staged.ts';
@@ -105,6 +106,135 @@ describe('a background pass with an item that keeps failing', () => {
     } finally {
       await rm(folder, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a background pass whose database call fails', () => {
+  const refusedBy = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+  test('never logs the values a query was sent with, nor one the database quoted back', () => {
+    const said: string[] = [];
+    const failures = new ItemFailures('test pass values', {
+      firstMs: 1_000,
+      maxMs: 1_000,
+      say: (line) => said.push(line),
+    });
+    const quoted = 'invalid input syntax for type uuid: "person@example.com"';
+    const throughDrizzle = new DrizzleQueryError(
+      'select "id" from "principal" where "email" = $1',
+      ['person@example.com', 'divorce settlement'],
+      refusedBy('22P02', quoted),
+    );
+    // As postgres.js gives it for a query sent without Drizzle.
+    const direct = Object.assign(refusedBy('22P02', quoted), {
+      name: 'PostgresError',
+      query: 'select * from memory_claims where principal_id = $1',
+    });
+    for (let i = 0; i < STUCK_AFTER; i++) {
+      failures.failed('sp_drizzle', throughDrizzle);
+      failures.failed('sp_direct', direct);
+    }
+    const stuck = failures.stuck();
+    expect(stuck).toHaveLength(2);
+    for (const text of [...said, ...stuck.map((item) => item.error)]) {
+      expect(text).not.toContain('person@example.com');
+      expect(text).not.toContain('divorce');
+    }
+    expect(said[0]).toBe(
+      'test pass values: sp_drizzle failed (Failed query: select "id" from "principal" where "email" = $1 (database error 22P02)); the others carry on, and it is tried again in 1 s',
+    );
+    expect(stuck.find((item) => item.id === 'sp_direct')?.error).toBe(
+      'Failed query: select * from memory_claims where principal_id = $1 (database error 22P02)',
+    );
+  });
+
+  test('keeps the database error code when the statement is too long to log whole', () => {
+    const failures = new ItemFailures('test pass long', {
+      firstMs: 1_000,
+      maxMs: 1_000,
+      say: () => {},
+    });
+    const columns = Array.from({ length: 40 }, (_, n) => `"column_${n}"`).join(', ');
+    const error = new DrizzleQueryError(
+      `select ${columns} from "memory_claims" where "space_id" = $1`,
+      ['sp_x'],
+      refusedBy('23505', 'duplicate key value violates unique constraint "memory_claims_pkey"'),
+    );
+    for (let i = 0; i < STUCK_AFTER; i++) failures.failed('sp_long', error);
+    const text = failures.stuck()[0]?.error ?? '';
+    expect(text.length).toBeLessThanOrEqual(200);
+    expect(text).toStartWith('Failed query: select "column_0"');
+    expect(text).toEndWith('(database error 23505)');
+  });
+
+  test('takes a key out of any other error it logs', () => {
+    const said: string[] = [];
+    const failures = new ItemFailures('test pass keys', {
+      firstMs: 1_000,
+      maxMs: 1_000,
+      say: (line) => said.push(line),
+    });
+    failures.failed('sp_key', new Error('the provider refused sk-live-0123456789abcdefghij'));
+    expect(said[0]).toContain('the provider refused');
+    expect(said[0]).not.toContain('0123456789abcdefghij');
+  });
+
+  test('a database out of reach counts against no item, and is said once', () => {
+    const time = clock();
+    const said: string[] = [];
+    const failures = new ItemFailures('test pass outage', {
+      firstMs: 1_000,
+      maxMs: 60_000,
+      now: time.now,
+      say: (line) => said.push(line),
+    });
+    const refused = () =>
+      new DrizzleQueryError(
+        'select 1',
+        [],
+        refusedBy('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:5432'),
+      );
+    // Three passes over the same items, the database refusing every call. Each
+    // is due again, and a pass that takes items by time waits the first pause.
+    for (let pass = 0; pass < STUCK_AFTER; pass++)
+      for (const id of ['sp_a', 'sp_b', 'sp_c'])
+        expect(failures.failed(id, refused())).toBe(time.now() + 1_000);
+    for (const id of ['sp_a', 'sp_b', 'sp_c']) expect(failures.due(id)).toBe(true);
+    expect(failures.waiting()).toEqual([]);
+    expect(failures.stuck()).toEqual([]);
+    expect(said).toEqual([
+      'test pass outage: the database cannot be reached (Failed query: select 1 (database error ECONNREFUSED)); no item is counted as failing, and each is tried again on the next pass',
+    ]);
+    // Said again only after a growing pause, while it lasts. postgres.js, for a
+    // query sent without Drizzle, rejects it with the statement attached.
+    const ended = () =>
+      Object.assign(refusedBy('CONNECTION_ENDED', 'write CONNECTION_ENDED 127.0.0.1:5432'), {
+        query: 'select 1',
+      });
+    time.pass(1_000);
+    failures.failed('sp_a', ended());
+    failures.failed('sp_b', ended());
+    expect(said).toHaveLength(2);
+    // Once it answers, that is said too.
+    failures.succeeded('sp_a');
+    expect(said[2]).toBe('test pass outage: the database answers again');
+    failures.succeeded('sp_b');
+    expect(said).toHaveLength(3);
+  });
+
+  test('a refused connection to anything else is the item’s failure, and backs off', () => {
+    const time = clock();
+    const failures = new ItemFailures('test pass provider', {
+      firstMs: 1_000,
+      maxMs: 60_000,
+      now: time.now,
+      say: () => {},
+    });
+    // As a model provider or mail server that is down answers.
+    const refused = () => refusedBy('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:11434');
+    for (let i = 0; i < STUCK_AFTER; i++) failures.failed('sp_model', refused());
+    expect(failures.due('sp_model')).toBe(false);
+    expect(failures.stuck().map((item) => item.id)).toEqual(['sp_model']);
   });
 });
 
