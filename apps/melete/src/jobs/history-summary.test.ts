@@ -168,7 +168,10 @@ test('a rule the person typed is theirs however their message opens or closes', 
     ['"Only use euros from now on" is my rule for this trip.', 'Only use euros from now on'],
     ['---\nOnly use euros from now on.', 'Only use euros from now on.'],
     ["Don't forget to only use euros from now on.", 'only use euros from now on'],
-    ['Do not forget to reply in French from now on.', 'Do not forget to reply in French from now on.'],
+    [
+      'Do not forget to reply in French from now on.',
+      'Do not forget to reply in French from now on.',
+    ],
     ['Never fail to reply in French.', 'reply in French'],
   ];
   for (const [content, rule] of messages) {
@@ -212,6 +215,17 @@ test('two rules given under one topic in the same answer are both kept, in order
   // A rule held from before is still replaced by a newer one under its topic.
   const plain = { topic: 'format', rule: 'Plain text only, no tables.' };
   expect(mergeStanding([table], [table, plain], 'Plain text only, no tables.').standing).toEqual([
+    plain,
+  ]);
+  // Both stay held through the next call, whether it offers them again or not.
+  expect(mergeStanding([table, bullets], [], 'Thanks.').standing).toEqual([table, bullets]);
+  expect(mergeStanding([table, bullets], [table, bullets], 'Thanks.').standing).toEqual([
+    table,
+    bullets,
+  ]);
+  // And a newer rule under the topic replaces only the first of them.
+  expect(mergeStanding([table, bullets], [plain], 'Plain text only, no tables.').standing).toEqual([
+    bullets,
     plain,
   ]);
 });

@@ -253,7 +253,13 @@ export function mergeStanding(
   const said = heard(personText);
   const keyOf = (entry: StandingInstruction) => comparable(entry.topic) || comparable(entry.rule);
   const held = new Map<string, StandingInstruction>();
-  for (const entry of previous) held.set(keyOf(entry), entry);
+  // A second rule held under one topic sits beside the first, as it was added.
+  const beside = (key: string, entry: StandingInstruction) =>
+    `${key}\u0000${comparable(entry.rule)}`;
+  for (const entry of previous) {
+    const key = keyOf(entry);
+    held.set(held.has(key) ? beside(key, entry) : key, entry);
+  }
   const known = new Set(facts.map(comparable));
   const demoted: string[] = [];
   // The topics this answer has set a rule under so far.
@@ -274,7 +280,7 @@ export function mergeStanding(
     let key = keyOf(kept);
     // A second rule under a topic this same answer used is a rule beside the
     // first, not a newer version of it: the answer gives only the newest.
-    if (added.has(key)) key = `${key}\u0000${wording}`;
+    if (added.has(key)) key = beside(key, kept);
     added.add(key);
     held.delete(key);
     held.set(key, kept);
