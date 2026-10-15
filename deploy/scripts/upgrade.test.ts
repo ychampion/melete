@@ -8,6 +8,8 @@ import {
   type MachineAccess,
   parseDockerInfo,
 } from '../../apps/melete/src/runtime/docker-host.ts';
+import { expandHome } from '../../packages/cli/src/commands/backup.ts';
+import { defaultBackupDir } from '../../packages/cli/src/deploy-config.ts';
 import {
   type CommandRunner,
   installationDependencies,
@@ -249,6 +251,7 @@ describe('arguments', () => {
       waitTimeoutSeconds: 300,
       repositoryRoot: '/srv/melete',
       backupDir: '/home/owner/melete-backups/upgrade-v0.2.0-20300102T030405Z',
+      backupDirByProject: true,
     });
     expect(
       parseArguments(
@@ -265,6 +268,9 @@ describe('arguments', () => {
       waitTimeoutSeconds: 600,
       backupDir: '/mnt/b/upgrade-v1.2.3-rc.1-20300102T030405Z',
     });
+    expect(
+      parseArguments(['v0.2.0', '--backup-dir', '/mnt/b'], now, '/h', '/r').backupDirByProject,
+    ).toBeUndefined();
   });
 
   test('each overlay the installation runs with is named on its own', () => {
@@ -569,6 +575,45 @@ describe('running the upgrade with an injected command runner', () => {
     const plain: string[] = [];
     await runUpgrade({ ...options, dryRun: true }, dependencies(host().run, plain));
     expect(plain.join('\n')).not.toContain('This copy was taken from');
+  });
+
+  test("with no --backup-dir the backup goes in the project's own folder, the one melete backup uses", async () => {
+    const now = new Date('2030-01-02T03:04:05Z');
+    const parsed = parseArguments(['v0.2.0', '--dry-run'], now, '/home/owner', '/srv/melete');
+    for (const project of ['melete', 'assistant']) {
+      const { run, commands } = host();
+      const output: string[] = [];
+      const result = await runUpgrade(parsed, {
+        ...dependencies(run, output),
+        environment: async () => ({ COMPOSE_PROJECT_NAME: project }),
+      });
+      const folder = expandHome(defaultBackupDir(project), '/home/owner').replaceAll('\\', '/');
+      expect(result.context.backupDir).toBe(`${folder}/upgrade-v0.2.0-20300102T030405Z`);
+      expect(commands).toContain(`df -Pk ${folder}`);
+      expect(output).toContain(`Backup directory: ${folder}/upgrade-v0.2.0-20300102T030405Z`);
+    }
+    // A folder that is named stays where it was named, whatever the project.
+    const named = parseArguments(
+      ['v0.2.0', '--dry-run', '--backup-dir', '/mnt/b'],
+      now,
+      '/h',
+      '/r',
+    );
+    const result = await runUpgrade(named, {
+      ...dependencies(host().run, []),
+      environment: async () => ({ COMPOSE_PROJECT_NAME: 'assistant' }),
+    });
+    expect(result.context.backupDir).toBe('/mnt/b/upgrade-v0.2.0-20300102T030405Z');
+  });
+
+  test('a backup folder that does not exist yet is named, with the command that makes it', async () => {
+    const { run } = host({ 'df -Pk /srv/backups': { code: 1, stdout: '' } });
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
+    expect(result.status).toBe('refused');
+    expect(output.join('\n')).toContain(
+      'its parent, /srv/backups, must exist (mkdir -p -m 700 /srv/backups)',
+    );
   });
 
   test('a dry run still prints the plan when the preflight finds problems', async () => {

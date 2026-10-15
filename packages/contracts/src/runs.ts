@@ -89,7 +89,7 @@ const body = z.string().max(RUN_BODY_LIMIT);
 
 /** How a schedule's cron is written, said wherever one is asked for or refused. */
 export const CRON_FORMAT =
-  'Write it as five fields, minute hour day-of-month month day-of-week: "0 9 * * 1" is Mondays at 9:00, "30 8 * * 1-5" is weekdays at 8:30.';
+  'Write it as five fields, minute hour day-of-month month day-of-week: "0 9 * * 1" is Mondays at 9:00, "30 8 * * 1-5" is weekdays at 8:30, "0 9 * * 1#1" is the first Monday of each month and "0 9 * * 5L" its last Friday. A day of the month and a weekday together match either one: "0 9 1-7 * 1" runs every Monday and on the 1st to the 7th.';
 
 /** A repeating time, in the person's time zone unless another is named. */
 export const runSchedule = z

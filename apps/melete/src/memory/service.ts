@@ -142,8 +142,8 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
  * Spaces whose memory work failed: each waits from half a minute, doubling up
  * to half an hour, before it is tried again, while every other space goes on.
  */
-export const derivedWorkFailures = () =>
-  new ItemFailures('memory background work', { firstMs: 30_000, maxMs: 30 * 60_000 });
+export const derivedWorkFailures = (reported = true) =>
+  new ItemFailures('memory background work', { firstMs: 30_000, maxMs: 30 * 60_000, reported });
 
 /**
  * Builds what memory derives from its writes. Resolves to whether there was any
@@ -151,7 +151,8 @@ export const derivedWorkFailures = () =>
  */
 export async function runDerivedWork(
   options: MemoryServiceOptions,
-  failures = derivedWorkFailures(),
+  // A pass run once on its own: kept out of the health detail, which reads the loop's.
+  failures = derivedWorkFailures(false),
 ): Promise<boolean> {
   const markdown = options.markdown;
   // A space waiting out a failure is left out here, so it neither takes one of
