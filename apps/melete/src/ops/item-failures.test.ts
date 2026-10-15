@@ -236,6 +236,30 @@ describe('a background pass whose database call fails', () => {
     expect(failures.due('sp_model')).toBe(false);
     expect(failures.stuck().map((item) => item.id)).toEqual(['sp_model']);
   });
+
+  test('a failure from elsewhere while the database is out of reach does not say it answers', () => {
+    const said: string[] = [];
+    const failures = new ItemFailures('test pass mixed', {
+      firstMs: 1_000,
+      maxMs: 60_000,
+      say: (line) => said.push(line),
+    });
+    const down = () =>
+      new DrizzleQueryError(
+        'select 1',
+        [],
+        refusedBy('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:5432'),
+      );
+    failures.failed('sp_a', down());
+    // A file or a provider failing says nothing about the database.
+    failures.failed('sp_b', new Error('EACCES: permission denied'));
+    failures.failed('sp_c', down());
+    expect(said.filter((line) => line.includes('answers again'))).toEqual([]);
+    expect(said.filter((line) => line.includes('cannot be reached'))).toHaveLength(1);
+    // The database answering, even with a refusal of its own, ends it.
+    failures.failed('sp_d', new DrizzleQueryError('select 1', [], refusedBy('23505', 'duplicate')));
+    expect(said.filter((line) => line.includes('answers again'))).toHaveLength(1);
+  });
 });
 
 describe("the operator's health detail", () => {

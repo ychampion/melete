@@ -96,11 +96,13 @@ export class ItemFailures {
    */
   failed(id: string, error: unknown, label = id): number {
     const now = this.now();
-    if (fromDatabase(error) && databaseUnreachable(error)) {
+    const database = fromDatabase(error);
+    if (database && databaseUnreachable(error)) {
       this.unreachable(now, error);
       return now + this.options.firstMs;
     }
-    this.answered();
+    // A refusal the database gave shows it answers; a file or a provider failing does not.
+    if (database) this.answered();
     this.prune(now);
     const before = this.failing.get(id);
     const failures = (before?.failures ?? 0) + 1;
