@@ -834,8 +834,13 @@ withDb('rooms', () => {
         email,
         refused.status,
         ((await refused.json()) as { error?: { message?: string } }).error?.message,
-      ]).toEqual([email, 409, 'That email cannot be invited.']);
+      ]).toEqual([email, 409, 'That email has a full account here. Add them from People instead.']);
     }
+    // The same answer as for an account that is on, so an invite does not tell which are off.
+    const on = await send(world.alice.cookie, `/rooms/${other}/invites`, 'POST', {
+      email: 'bob@example.test',
+    });
+    expect(on.status).toBe(409);
     // Turned on again, Gus is found and added as before.
     await sql`update principal set disabled_at = null where id = ${gus}`;
     expect(await found(world.bob.cookie)).toContain(gus);
