@@ -620,7 +620,22 @@ function filesRig(
       return ok();
     }
     if (text.startsWith('docker volume create ')) {
-      volumes.add(command.at(-1) ?? '');
+      const volume = command.at(-1) ?? '';
+      volumes.add(volume);
+      // The engine keeps the labels it is given, and the volume has only those.
+      const given = command.flatMap((arg, index) =>
+        command[index - 1] === '--label' ? [arg] : [],
+      );
+      if (given.length > 0)
+        owners.set(
+          volume,
+          Object.fromEntries(
+            given.map((label) => [
+              label.slice(0, label.indexOf('=')),
+              label.slice(label.indexOf('=') + 1),
+            ]),
+          ),
+        );
       return ok();
     }
     if (
@@ -1247,9 +1262,12 @@ describe('computers made under an earlier sandbox project', () => {
     });
     expect(await runRestore(taken.context, [taken.set], false)).toBe(0);
     expect(taken.context.printed()).toMatch(
-      /warn\s+restore\.computers_left_out\s+1 agent computer/,
+      /warn\s+restore\.computers_named_elsewhere\s+1 agent computer\(s\) in this backup have volumes here that name the installation other/,
     );
+    expect(taken.context.printed()).not.toContain('restore.computers_left_out');
     expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
+    expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-work,dst=/v`);
+    expect(taken.context.printed()).not.toContain(`docker stop ${COMPUTERS[0]}`);
     expect(taken.context.printed()).toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
   });
 
@@ -1283,6 +1301,189 @@ describe('computers made under an earlier sandbox project', () => {
     expect(unsure.context.printed()).toMatch(
       new RegExp(`warn\\s+backup\\.computer_volumes_unattributed\\s+.*${theirs}-home`),
     );
+  });
+
+  test('a label with no value names no installation', async () => {
+    const blank = 'melete-sbx-proj-sbx_h';
+    const elsewhere = 'melete-sbx-old-sbx_i';
+    const rig = filesRig();
+    addComputer(rig, blank, { ...computerLabels(blank, 'proj'), 'melete.install_project': '' });
+    addComputer(rig, elsewhere, {
+      ...computerLabels(elsewhere, 'old'),
+      'melete.install_project': '',
+    });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const files = readdirSync(rig.set);
+    expect(files).toContain(`computer-${blank}-work.tar`);
+    expect(files.some((file) => file.includes(elsewhere))).toBe(false);
+    expect(rig.context.printed()).toMatch(
+      new RegExp(`warn\\s+backup\\.computer_volumes_unattributed\\s+.*${elsewhere}-home`),
+    );
+  });
+
+  test('the same workspace under two sandbox projects is two computers, each kept', async () => {
+    const before = 'melete-sbx-old-sbx_j';
+    const after = 'melete-sbx-proj-sbx_j';
+    const rig = filesRig();
+    addComputer(rig, before, computerLabels(before, 'old', 'melete'));
+    addComputer(rig, after, computerLabels(after, 'proj', 'melete'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    for (const computer of [before, after])
+      for (const kind of ['work', 'home'])
+        expect(readdirSync(rig.set)).toContain(`computer-${computer}-${kind}.tar`);
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    for (const computer of [before, after])
+      expect(indexOf(rig.events, `src=${computer}-home,dst=/v `)).toBeGreaterThan(-1);
+  });
+
+  test('computers that name an installation with no service here are named in a warning', async () => {
+    const renamed = 'melete-sbx-proj-sbx_k';
+    const running = 'melete-sbx-proj-sbx_l';
+    const rig = filesRig();
+    // Made before this installation's Compose project was renamed from earlier.
+    addComputer(rig, renamed, computerLabels(renamed, 'proj', 'earlier'));
+    // Another installation, whose service is on this engine.
+    addComputer(rig, running, computerLabels(running, 'proj', 'other'));
+    rig.services.set('0a1b2c3d4e5f', { compose: 'other', sandbox: 'proj' });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      new RegExp(
+        `warn\\s+backup\\.computer_volumes_other_installation\\s+2 agent computer volume\\(s\\) name the installation earlier, .*${renamed}-home, ${renamed}-work`,
+      ),
+    );
+    expect(printed).toContain('COMPOSE_PROJECT_NAME');
+    expect(printed).not.toContain(running);
+    expect(readdirSync(rig.set).some((file) => file.includes(renamed))).toBe(false);
+  });
+});
+
+/** Moves the rig to an installation of another Compose project, on a machine that has its stack's volumes. */
+function renameInstallation(rig: ReturnType<typeof filesRig>, project: string) {
+  writeEnv(rig.deployDir, { MELETE_SANDBOX_PROJECT: 'proj', COMPOSE_PROJECT_NAME: project });
+  writeFileSync(
+    join(rig.deployDir, DEPLOY_FILE),
+    JSON.stringify({ contract: 1, project, backup: { dir: rig.backups, keep: 3 } }),
+  );
+  for (const part of ['spaces', 'artifacts', 'work', 'pgdata', 'restrictions'])
+    rig.volumes.add(`${project}_${part}`);
+}
+
+/** Takes every computer, its container and volumes, off the rig's engine: a new machine. */
+function removeComputers(rig: ReturnType<typeof filesRig>) {
+  for (const volume of [...rig.volumes])
+    if (volume.startsWith('melete-sbx-')) rig.volumes.delete(volume);
+  rig.containers.clear();
+  rig.running.clear();
+}
+
+describe('a backup restored into an installation of another Compose project', () => {
+  const EARLIER = 'melete-sbx-old-sbx_c';
+  const LABELLED = 'melete-sbx-proj-sbx_d';
+  const ALL = [...COMPUTERS, EARLIER, LABELLED];
+
+  async function backedUpAsMelete() {
+    const rig = filesRig();
+    addComputer(rig, EARLIER, computerLabels(EARLIER, 'old', 'melete'));
+    addComputer(rig, LABELLED, computerLabels(LABELLED, 'proj', 'melete'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    rig.events.length = 0;
+    return rig;
+  }
+
+  test('puts back every computer the backup holds, named for the installation it is restored into', async () => {
+    const rig = await backedUpAsMelete();
+    renameInstallation(rig, 'renamed');
+    removeComputers(rig);
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    expect(rig.context.printed()).not.toContain('restore.computers_left_out');
+    for (const computer of ALL)
+      for (const kind of ['work', 'home']) {
+        const volume = `${computer}-${kind}`;
+        expect(indexOf(rig.events, `src=${volume},dst=/v `)).toBeGreaterThan(-1);
+        const labels = rig.owners.get(volume) ?? {};
+        // What the service finds a computer's kept volumes by, and what reconciles them.
+        expect(labels['com.melete.sandbox']).toBe('v1');
+        expect(labels['com.melete.sandbox.name']).toBe(computer);
+        expect(labels['melete.owner']).toBe('v1');
+        expect(labels['melete.project']).toBe(computer === EARLIER ? 'old' : 'proj');
+        expect(labels['melete.install_project']).toBe('renamed');
+      }
+
+    // The next backup of that installation takes them all, and warns of none.
+    const later = join(rig.backups, 'later');
+    rig.events.length = 0;
+    expect(await runBackup(rig.context, ['--dir', later], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).not.toContain('backup.computer_volumes_unattributed');
+    expect(printed).not.toContain('backup.computer_volumes_other_installation');
+    for (const computer of ALL)
+      expect(readdirSync(join(later, 'melete-20261002T100000Z'))).toContain(
+        `computer-${computer}-home.tar`,
+      );
+  });
+
+  test('never empties a volume here of the same name that names another installation, and says how to put it back', async () => {
+    const rig = await backedUpAsMelete();
+    renameInstallation(rig, 'renamed');
+    // The volumes are still here, as they were made: named for the earlier Compose project.
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      /warn\s+restore\.computers_named_elsewhere\s+2 agent computer\(s\) in this backup have volumes here that name the installation melete/,
+    );
+    expect(printed).toContain(`${EARLIER}, ${LABELLED}`);
+    expect(printed).toContain('docker volume rm');
+    expect(printed).not.toContain(`src=${EARLIER}-home,dst=/v`);
+    expect(printed).not.toContain(`src=${LABELLED}-home,dst=/v`);
+    // Unlabelled, under the sandbox project the installation runs with: still its own.
+    expect(printed).toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
+  });
+
+  test("a set that names its installation never brings back another installation's computer", async () => {
+    const rig = await backedUpAsMelete();
+    const contents = JSON.parse(readFileSync(join(rig.set, 'contents.json'), 'utf8'));
+    for (const computer of contents.computers)
+      if (computer.computer === LABELLED) computer.labels['melete.install_project'] = 'other';
+    replaceInSet(rig.set, 'contents.json', JSON.stringify(contents));
+    renameInstallation(rig, 'renamed');
+    removeComputers(rig);
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not computers of the installation it is a backup of \(melete\): their labels name another installation/,
+    );
+    const plan = printed.slice(printed.indexOf('restore.checksums'));
+    expect(plan).not.toContain(`${LABELLED}-home`);
+    expect(plan).toContain(`--label melete.install_project=renamed ${EARLIER}-home`);
+  });
+
+  test("a set whose contents.json names no installation is the one its own contract names, or else judged by this installation's labels", async () => {
+    const unnamed = async () => {
+      const rig = await backedUpAsMelete();
+      const contents = JSON.parse(readFileSync(join(rig.set, 'contents.json'), 'utf8'));
+      delete contents.project;
+      replaceInSet(rig.set, 'contents.json', JSON.stringify(contents));
+      renameInstallation(rig, 'renamed');
+      removeComputers(rig);
+      return rig;
+    };
+    // Its contract names the installation it is a backup of.
+    const named = await unnamed();
+    expect(await runRestore(named.context, [named.set, '--yes'], false)).toBe(0);
+    expect(named.context.printed()).not.toContain('restore.computers_left_out');
+    expect(named.owners.get(`${LABELLED}-home`)?.['melete.install_project']).toBe('renamed');
+
+    // Nothing in it does.
+    const rig = await unnamed();
+    removeFromSet(rig.set, DEPLOY_FILE);
+    removeFromSet(rig.set, 'deploy.env');
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    expect(rig.context.printed()).toMatch(/warn\s+restore\.computers_left_out\s+2 agent computer/);
+    expect(indexOf(rig.events, `src=${LABELLED}-home,dst=/v `)).toBe(-1);
+    expect(indexOf(rig.events, `src=${COMPUTERS[0]}-home,dst=/v `)).toBeGreaterThan(-1);
+    expect(rig.owners.get(`${COMPUTERS[0]}-home`)?.['melete.install_project']).toBe('renamed');
   });
 });
 
@@ -1926,7 +2127,7 @@ describe('restoring the files', () => {
     expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
     const printed = rig.context.printed();
     expect(printed).toMatch(
-      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not this installation's \(Compose project melete, MELETE_SANDBOX_PROJECT=proj\)/,
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not computers of the installation it is a backup of \(melete\)/,
     );
     expect(printed).toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
     expect(printed).not.toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
@@ -1941,7 +2142,7 @@ describe('restoring the files', () => {
     });
     expect(await runRestore(taken.context, [taken.set], false)).toBe(0);
     expect(taken.context.printed()).toMatch(
-      /warn\s+restore\.computers_left_out\s+1 agent computer/,
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup have a volume of the same name on this engine that is not this installation's, or not one it can tell is its own .*: melete-sbx-proj-sbx_a\./,
     );
     expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-work,dst=/v`);
     expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-home,dst=/v`);

@@ -127,11 +127,14 @@ function projectsInUse(run: Run): Set<string> | null {
 }
 
 /**
- * The sandbox projects the Melete service containers of the other
- * installations on this engine (every Compose project but `own`) run with,
- * running or stopped; null when the engine did not answer.
+ * The other installations on this engine (every Compose project but `own`)
+ * that have a Melete service container, running or stopped, and the sandbox
+ * projects those containers run with; null when the engine did not answer.
  */
-export function otherSandboxProjects(run: Run, own: string): Set<string> | null {
+export function otherInstallations(
+  run: Run,
+  own: string,
+): { installations: Set<string>; sandboxProjects: Set<string> } | null {
   const listed = run([
     'docker',
     'ps',
@@ -142,12 +145,16 @@ export function otherSandboxProjects(run: Run, own: string): Set<string> | null 
     `{{.ID}}\t{{json (.Label "${COMPOSE_PROJECT}")}}`,
   ]);
   if (listed.code !== 0) return null;
+  const installations = new Set<string>();
   const ids = lines(listed.stdout).flatMap((line) => {
     const [id = '', label = ''] = line.split('\t');
     const project = labelOf(label);
-    return CONTAINER_ID.test(id) && project !== null && project !== own ? [id] : [];
+    if (!CONTAINER_ID.test(id) || project === null || project === own) return [];
+    installations.add(project);
+    return [id];
   });
-  return projectsOf(run, ids);
+  const sandboxProjects = projectsOf(run, ids);
+  return sandboxProjects === null ? null : { installations, sandboxProjects };
 }
 
 /** The MELETE_SANDBOX_PROJECT each of these service containers runs with. */
