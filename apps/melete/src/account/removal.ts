@@ -106,6 +106,8 @@ type Account = {
   display_name: string | null;
   kind: string;
   created_at: string;
+  /** Granted by the setup owner, and still able to sign in. */
+  admin: boolean;
 };
 
 export class AccountRemovalService {
@@ -130,7 +132,8 @@ export class AccountRemovalService {
   }
 
   private async account(principalId: string): Promise<Account | undefined> {
-    const [row] = await this.deps.sql<Account[]>`select id, email, display_name, kind, created_at
+    const [row] = await this.deps.sql<Account[]>`select id, email, display_name, kind, created_at,
+        admin and disabled_at is null as admin
       from principal where id = ${principalId}`;
     return row;
   }
@@ -166,7 +169,8 @@ export class AccountRemovalService {
     }
     const rooms = await this.deps.sql<{ id: string; name: string }[]>`
       select s.id, s.name from space s join space_membership m on m.space_id = s.id
-      where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'owner'
+      where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'agent'
+        and s.owner_principal_id is distinct from ${principalId}
         and s.kind = 'shared' and s.removed_at is null order by s.name`;
     const blocked =
       principalId === setupOwner
@@ -265,8 +269,9 @@ export class AccountRemovalService {
     await principalContext.run(principalId, async () => {
       const rooms = await sql<{ space_id: string }[]>`select m.space_id from space_membership m
         join space s on s.id = m.space_id
-        where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'owner'
-          and m.role <> 'agent' and s.kind = 'shared' and s.removed_at is null`;
+        where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'agent'
+          and s.owner_principal_id is distinct from ${principalId}
+          and s.kind = 'shared' and s.removed_at is null`;
       for (const room of rooms)
         await principals
           .revoke(principalId, room.space_id, principalId)
@@ -295,8 +300,6 @@ export class AccountRemovalService {
       where j.principal_id = ${principalId} and j.audience = 'principal'
         and s.kind = 'shared' and s.removed_at is null
         and s.owner_principal_id is distinct from ${principalId}
-        and not exists (select 1 from space_membership m where m.space_id = s.id
-          and m.principal_id = ${principalId} and m.role = 'owner')
       order by j.id`;
     if (own.length)
       await removeChats(own.map((row) => row.id)).catch((error) =>
@@ -381,16 +384,19 @@ export class AccountRemovalService {
   /** The accounts on this Melete, for the person who set it up. */
   async list(actor: string): Promise<AccountSummary[]> {
     const setupOwner = await this.setupOwner();
-    if (actor !== setupOwner)
+    const [standing] = await this.deps.sql<{ admin: boolean }[]>`select exists (select 1
+      from principal where id = ${actor} and admin and kind = 'person' and disabled_at is null)
+      as admin`;
+    if (actor !== setupOwner && !standing?.admin)
       throw new ServiceError(
         'scope_denied',
-        'Only the account that set Melete up manages accounts.',
+        'Only the account that set Melete up, or an admin, sees the accounts.',
         403,
       );
     // A deleted account whose row has to stay, because a room someone else
     // owns still names it, is not an account any more and is not listed.
     const rows = await this.deps.sql<Account[]>`select p.id, p.email, p.display_name, p.kind,
-        p.created_at from principal p
+        p.created_at, p.admin and p.disabled_at is null as admin from principal p
       where p.kind <> 'room' and (p.email <> 'removed+' || lower(p.id) || '@removed.invalid'
         or exists (select 1 from space_removal r where r.requested_by = p.id
           and r.state <> 'complete')
@@ -409,6 +415,7 @@ function summary(row: Account, setupOwner: string | null): AccountSummary {
     kind: row.kind === 'guest' ? 'guest' : 'person',
     created_at: iso(row.created_at),
     setup_owner: row.id === setupOwner,
+    admin: row.id === setupOwner || (row.admin && row.kind === 'person' && !removing),
     state: removing ? 'removing' : 'active',
   };
 }

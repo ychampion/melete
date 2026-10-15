@@ -32,7 +32,7 @@ import { appendToolTrace } from '../experience/tools.ts';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
-import { spaceRole } from '../principals/authority.ts';
+import { spaceStanding } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
 import { ASK_PERSON_TOOL } from './ask-person.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
@@ -484,15 +484,16 @@ export class ToolCatalog {
   ): Promise<readonly SourcedSkill[]> {
     if (job.constraints.public_compartment) return [];
     const skills = (await this.options.skills?.(job.space_id)) ?? [];
-    // The rule every other surface uses: a co-owner is an owner, and a space
-    // from before principals belongs to the installation's owner. A principal
-    // the space does not admit reads nothing.
-    const role = await spaceRole(tx, job.space_id, claims.principal_id ?? null);
-    if (!role) return [];
+    // The rule the skills a run is given use: a private skill is the space's
+    // own owner's (a room's maker, not an owner they added), and a space from
+    // before principals belongs to the installation's owner. A principal the
+    // space does not admit reads nothing.
+    const standing = await spaceStanding(tx, job.space_id, claims.principal_id ?? null);
+    if (!standing) return [];
     return readableSkills(skills, {
       spaceId: job.space_id,
       scopes: claims.scopes,
-      owner: role === 'owner',
+      owner: standing.owns,
     });
   }
 
