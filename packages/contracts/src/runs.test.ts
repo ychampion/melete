@@ -68,5 +68,14 @@ describe('run tool schemas', () => {
     expect(issue({ rrule: 'FREQ=WEEKLY;BYDAY=1FR', starts: rule.starts })?.message).toContain(
       'needs FREQ=MONTHLY',
     );
+    // Each refusal points at the part to change.
+    expect(issue({ rrule: 'FREQ=HOURLY' })).toMatchObject({
+      path: ['rrule'],
+      message: expect.stringContaining('FREQ=HOURLY is not supported'),
+    });
+    expect(issue({ rrule: rule.rrule, starts: '16 October at 9' })).toMatchObject({
+      path: ['starts'],
+      message: expect.stringContaining('starts is the first time'),
+    });
   });
 });

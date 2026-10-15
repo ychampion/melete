@@ -784,9 +784,11 @@ export function scheduleTimingProblem(
   }
   if (timing.cron !== undefined)
     return { field: 'rrule', problem: 'Give a cron or an rrule, not both.' };
+  const rule = parseRecurrence(timing.rrule);
+  if (!rule.ok) return { field: 'rrule', problem: rule.problem };
+  // The rule reads, so what is left wrong is its start.
   const read = readRecurrence(timing.rrule, timing.starts);
-  if (read.ok) return null;
-  return { field: timing.starts === undefined ? 'starts' : 'rrule', problem: read.problem };
+  return read.ok ? null : { field: 'starts', problem: read.problem };
 }
 
 /** A schedule's rule and start, read, when it has a valid one. */

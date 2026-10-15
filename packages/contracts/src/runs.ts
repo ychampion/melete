@@ -93,7 +93,7 @@ export const CRON_FORMAT =
   'Write it as five fields, minute hour day-of-month month day-of-week: "0 9 * * 1" is Mondays at 9:00, "30 8 * * 1-5" is weekdays at 8:30, "0 9 * * 1#1" is the first Monday of each month and "0 9 * * 5L" its last Friday. A day of the month and a weekday together match either one: "0 9 1-7 * 1" runs every Monday and on the 1st to the 7th.';
 
 /** Said when a schedule names no time: how to write a cron, and when to use a rule instead. */
-const SCHEDULE_FORMAT = `${CRON_FORMAT} For every other week, a numbered weekday of the month or a yearly date, give rrule and starts instead of a cron.`;
+const SCHEDULE_FORMAT = `${CRON_FORMAT} A cron cannot count weeks, months or years: for every other week or every few months, give rrule and starts instead of a cron.`;
 
 const scheduleFields = {
   cron: z
@@ -353,7 +353,7 @@ export const RUN_START_TOOL: ToolSpec = {
       repeat: {
         type: 'object',
         description:
-          'For work that repeats on a schedule: a cron, or for what a cron cannot say (every other week, the last Friday of the month, a yearly date) an rrule with starts.',
+          'For work that repeats on a schedule: a cron, or an rrule with starts for what a cron cannot count, such as every other week or every 3 months.',
         properties: {
           cron: { type: 'string', description: CRON_FORMAT },
           rrule: { type: 'string', description: RRULE_FORMAT },
