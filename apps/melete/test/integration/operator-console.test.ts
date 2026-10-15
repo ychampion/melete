@@ -25,8 +25,8 @@ import {
   operatorResetResponse,
 } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
-import { createAccount } from '../../src/account/cli.ts';
-import { AccountRemovalService } from '../../src/account/removal.ts';
+import { createAccount, setDisabled } from '../../src/account/cli.ts';
+import { AccountRemovalService, removedEmail } from '../../src/account/removal.ts';
 import { loadEnv } from '../../src/env.ts';
 import type { AccountMail, AccountMailer } from '../../src/experience/account-mail.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
@@ -633,7 +633,9 @@ withDb('the operator console', () => {
     expect(host?.target.email).toBe('host@example.test');
     for (const entry of web) {
       expect(entry.actor).toEqual({ id: ownerId, email: ownerEmail });
-      expect(entry.target).toEqual({ id, email: 'audit@example.test' });
+      // Deleted, the account is named by its id alone, as its own row is: its
+      // email left every entry with it, the entry for its deletion included.
+      expect(entry.target).toEqual({ id, email: removedEmail(id) });
       expect(Date.now() - new Date(entry.at).getTime()).toBeLessThan(60_000);
     }
     expect(web.find((entry) => entry.action === 'caps_changed')?.detail).toBe(
@@ -642,12 +644,58 @@ withDb('the operator console', () => {
     const stored = JSON.stringify(
       await h.sql`select payload from event where payload->>'kind' = 'operator_action'`,
     );
-    for (const secret of [invited.invite.code, reset.reset.code, 'https://', '/reset?token='])
+    for (const secret of [
+      invited.invite.code,
+      reset.reset.code,
+      'https://',
+      '/reset?token=',
+      'audit@example.test',
+    ])
       expect(stored).not.toContain(secret);
     // The record is the owner's alone: no conversation shows it.
     expect(
       await h.sql`select 1 from event where payload->>'kind' = 'operator_action' and job_id is not null`,
     ).toHaveLength(0);
+  });
+
+  test('the host command records a disable or an enable only when it changes something', async () => {
+    const h = await harness();
+    const { owner } = await setUp(h);
+    const someone = await person(h, owner, 'twice@example.test');
+    for (const disabled of [true, true, false, false])
+      expect((await setDisabled(h.sql, 'twice@example.test', disabled)).ok).toBe(true);
+    const { entries } = operatorAudit.parse(await (await h.call(owner, '/operator/audit')).json());
+    expect(
+      entries.filter((entry) => entry.target.id === someone.id).map((entry) => entry.action),
+    ).toEqual(['enabled', 'disabled']);
+  });
+
+  test('someone who signs in with an emailed link reads as active, not invited', async () => {
+    const h = await harness();
+    const { owner, ownerId } = await setUp(h);
+    const invited = operatorInviteResponse.parse(
+      await (
+        await h.call(owner, '/operator/people', 'POST', { email: 'linked@example.test' })
+      ).json(),
+    );
+    const id = invited.person.id;
+    expect(invited.person.status).toBe('invited');
+    const statusOf = async () =>
+      operatorPeople
+        .parse(await (await h.call(owner, '/operator/people')).json())
+        .people.find((entry) => entry.id === id)?.status;
+    // A sign-in link leaves a session and no password: they have been in.
+    await sessionFor(h, id, ownerId);
+    expect(await statusOf()).toBe('active');
+    // Once that session has expired and been cleared away, what they did still says so.
+    await h.sql`delete from session where principal_id = ${id}`;
+    await h.sql`insert into model_usage (id, principal_id, purpose, provider, model, status, cost_usd, created_at)
+      values (${randomBytes(8).toString('hex')}, ${id}, 'agent', 'anthropic', 'claude', 'ok', 0.1, now())`;
+    expect(await statusOf()).toBe('active');
+    const overview = operatorOverview.parse(
+      await (await h.call(owner, '/operator/overview')).json(),
+    );
+    expect(overview.people.invited).toBe(0);
   });
 
   test('the overview reads the installation as it is now', async () => {

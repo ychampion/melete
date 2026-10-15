@@ -53,7 +53,8 @@ export type SpendingLimits = {
 
 export const NO_LIMIT: SpendingWindow = { usd: null, tokens: null };
 
-const isSet = (window: SpendingWindow) => window.usd !== null || window.tokens !== null;
+/** Whether a window has a limit in dollars or in tokens. */
+export const isSet = (window: SpendingWindow) => window.usd !== null || window.tokens !== null;
 
 /** Whether any installation or per-person limit is set. */
 const anyLimit = (limits: SpendingLimits) =>

@@ -1,0 +1,1 @@
+CREATE INDEX "event_operator_action_idx" ON "event" USING btree ("seq") WHERE "event"."job_id" is null and "event"."type" = 'notice' and "event"."payload"->>'kind' = 'operator_action';

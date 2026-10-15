@@ -1988,7 +1988,11 @@ fewest, and among equals to the one who started something longest ago, so one
 person with many chats or routines cannot keep everyone else waiting.
 `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` (unset by default, which is no limit of
 its own) also caps how many one person runs at once, even while slots are
-free; `init --hosted` writes `2`.
+free; `init --hosted` writes `2`. The cap counts everything a person runs.
+Their routines and quiet work may use all of it but one slot, which stays free
+for their chats, so their own routines never hold back their chat (with a cap
+of `1`, a chat waits for their running routine). Work held by its person's cap waits
+without taking a queue worker, so other people's work still starts.
 
 ## Starter tasks
 
@@ -2032,7 +2036,7 @@ again before every new call.
 | Setting | Limit |
 | --- | --- |
 | `MELETE_SPEND_MONTHLY_USD`, `MELETE_SPEND_DAILY_USD` | Dollars the whole installation may spend in a UTC month or day |
-| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend |
+| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend (at most $1,000,000, like the background caps below) |
 | `MELETE_SPEND_MONTHLY_TOKENS`, `MELETE_SPEND_DAILY_TOKENS` | Input and output tokens for the whole installation |
 | `MELETE_SPEND_PERSON_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_DAILY_TOKENS` | Tokens for one person |
 | `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
@@ -2085,6 +2089,12 @@ before the built-in table:
 ```bash
 MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":{"input":0.3,"output":1.2},"anthropic/*sonnet*":{"input":3,"output":15,"cached_input":0.3}}'
 ```
+
+A model that charges more for a long prompt can name that price as
+`long_prompt`, for example
+`{"input":0.1,"output":0.5,"long_prompt":{"above":100000,"input":0.5,"output":2.5}}`:
+a call whose input, cached input included, is above `above` tokens is charged
+at it in full. The built-in table prices Haiku 5.5 this way.
 
 `cached_input` is the price of input read from the provider's cache, and
 `cache_write_input` the price of input written to it. Left out, each is the
@@ -2820,10 +2830,20 @@ A backup that stays on the same disk goes when that disk goes. Run one every
 day, encrypted, to another machine, and have something tell you when a day is
 missed. `deploy/backup-schedule/` holds an example: `melete-backup.sh` takes
 the backup with `--to` and `--encrypt-to`, then calls a check-in address you
-choose, with `/fail` added when the backup did not finish; the systemd
-`melete-backup.timer` runs it every night, and runs a missed night as soon as
-the machine is back. Any monitor that alerts you when its pings stop arriving
-will do.
+choose; the systemd `melete-backup.timer` runs it every night, and runs a
+missed night as soon as the machine is back. Any monitor that alerts you when
+its pings stop arriving will do.
+
+A finished backup calls the check-in address exactly as you gave it. A backup
+that did not finish calls it as a failure:
+
+- Most monitors (healthchecks.io and those like it) get `/fail` added to the
+  address's path, before any query string: `https://hc-ping.com/abc?rid=1`
+  becomes `https://hc-ping.com/abc/fail?rid=1`.
+- An Uptime Kuma push address (one whose path holds `/api/push/`) signals
+  failure with `status=down`, not `/fail`, so `status` and `msg` in its query
+  are replaced: `https://kuma.example/api/push/T0k3n?status=up&msg=OK&ping=`
+  becomes `https://kuma.example/api/push/T0k3n?ping=&status=down&msg=backup%20failed`.
 
 ```bash
 age-keygen -o melete-backup.key   # on another machine; keep this file off the server
@@ -2832,9 +2852,13 @@ sudoedit /etc/systemd/system/melete-backup.service   # the account, the paths, t
 sudo systemctl daemon-reload && sudo systemctl enable --now melete-backup.timer
 ```
 
-With cron instead, one line in the installation account's crontab does the same:
+With cron instead, two lines in the installation account's crontab do the same.
+Cron runs with a bare `PATH` that does not include `~/.bun/bin`, so the first
+line names where `bun` is (the same `PATH` the systemd unit sets); without it
+every night's backup fails with `bun: command not found`:
 
 ```cron
+PATH=/home/melete/.bun/bin:/usr/local/bin:/usr/bin:/bin
 30 3 * * * cd /home/melete/melete && MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1... MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
 ```
 

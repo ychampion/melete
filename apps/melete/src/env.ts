@@ -11,6 +11,7 @@ import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete
 import { z } from 'zod';
 import { startersFromSetting } from './experience/starters.ts';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
+import { MAX_CAP_USD } from './gateway/person-limits.ts';
 import { parseModelPrices } from './gateway/prices.ts';
 import { parseModelChoice } from './gateway/routing.ts';
 
@@ -72,6 +73,14 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
  */
 const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
+
+/** A per-person dollar cap: at most what the operator console shows and sets (`MAX_CAP_USD`). */
+const personCapUsd = () =>
+  z.coerce
+    .number()
+    .positive()
+    .max(MAX_CAP_USD, `A per-person cap can be at most $${MAX_CAP_USD.toLocaleString('en-US')}`)
+    .optional();
 
 /**
  * Whether the Postgres client can read this address. It is judged here, the
@@ -287,8 +296,10 @@ const variables = z.object({
   MELETE_ATTEMPT_CONCURRENCY: unsetWhenBlank(z.coerce.number().int().min(1).max(32).default(4)),
   /**
    * How many of those one person may run at once; their further attempts wait
-   * while others' start. Unset is no limit of its own: free slots are shared
-   * in turn between the people waiting for them either way.
+   * while others' start. Their background work (routines, watches, quiet work)
+   * may use all of them but one, which stays free for their chats, so their own
+   * routines never hold back their chat. Unset is no limit of its own: free slots are shared in
+   * turn between the people waiting for them either way.
    */
   MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: unsetWhenBlank(
     z.coerce.number().int().min(1).max(32).optional(),
@@ -625,11 +636,13 @@ const variables = z.object({
    * Spending caps on model calls, in US dollars (estimated from the price
    * table) and in tokens, for the whole installation and for each person, per
    * UTC day and month. Unset is no limit. docs/DEPLOYMENT.md, "Spending caps".
+   * A per-person dollar cap is at most $1,000,000, as one the owner gives a
+   * person is.
    */
   MELETE_SPEND_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
   MELETE_SPEND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
-  MELETE_SPEND_PERSON_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
-  MELETE_SPEND_PERSON_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_MONTHLY_USD: unsetWhenBlank(personCapUsd()),
+  MELETE_SPEND_PERSON_DAILY_USD: unsetWhenBlank(personCapUsd()),
   MELETE_SPEND_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
@@ -640,10 +653,8 @@ const variables = z.object({
    * messages never count here and are never held back by them. Unset is no
    * limit. docs/BACKGROUND-COMPUTE.md.
    */
-  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD: unsetWhenBlank(
-    z.coerce.number().positive().optional(),
-  ),
-  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD: unsetWhenBlank(personCapUsd()),
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD: unsetWhenBlank(personCapUsd()),
   MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
   ),
@@ -896,10 +907,10 @@ const variables = z.object({
   /** The most sandboxes this installation may have running at once, over every connection. */
   MELETE_SANDBOX_MAX_CONCURRENT: unsetWhenBlank(z.coerce.number().int().positive().default(4)),
   /**
-   * The most any one connection may have running. A provider quota belongs to
-   * an account, and a connection is an account here, so this keeps one busy
-   * space from spending another's. Left unset it is the ceiling above, and it
-   * is never allowed past it.
+   * The most computers any one person may have running at once, counted over
+   * every space they work in (the name is kept from when it counted per
+   * connection). Work nobody can be named for is counted per connection. Left
+   * unset it is the ceiling above, and it is never allowed past it.
    */
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
@@ -1150,13 +1161,24 @@ export const envSchema = variables.transform((value, context) => {
     'MELETE_MODEL_VISION',
     'MELETE_MODEL_FALLBACK',
     'MELETE_MODEL_BACKGROUND',
-  ] as const)
-    for (const entry of (value[name] ?? '').split(',').filter((part) => part.trim()))
+  ] as const) {
+    const setting = value[name] ?? '';
+    // Only the fallbacks are a list; any other names one model, as routingFromEnv reads it.
+    if (name !== 'MELETE_MODEL_FALLBACK' && setting.includes(',')) {
+      context.addIssue({
+        code: 'custom',
+        path: [name],
+        message: `${name} names one model, written provider/model; only MELETE_MODEL_FALLBACK takes a comma-separated list`,
+      });
+      continue;
+    }
+    for (const entry of setting.split(',').filter((part) => part.trim()))
       try {
         parseModelChoice(entry, name);
       } catch (error) {
         context.addIssue({ code: 'custom', path: [name], message: (error as Error).message });
       }
+  }
   if (value.MELETE_STARTERS)
     try {
       startersFromSetting(value.MELETE_STARTERS);

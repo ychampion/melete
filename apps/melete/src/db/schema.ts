@@ -485,6 +485,8 @@ export const job = pgTable(
     // The recovery scan reads this every 60 seconds.
     index('job_next_wake_idx').on(t.nextWakeAt),
     index('job_room_thread_idx').on(t.roomThreadId),
+    // A person's chats, which the starter tasks scan for whether they have begun.
+    index('job_chat_principal_idx').on(t.principalId).where(sql`${t.kind} = 'chat'`),
     check('job_audience', sql`${t.audience} in ('principal', 'room')`),
   ],
 );
@@ -699,6 +701,13 @@ export const event = pgTable(
     index('event_connector_observation_idx')
       .on(sql`(${t.payload}->>'connection_id')`)
       .where(sql`${t.jobId} is null and ${t.payload}->>'kind' = 'connector_event'`),
+    // The operator's record (`operator/audit.ts`), newest first, read without
+    // walking every other event no job owns.
+    index('event_operator_action_idx')
+      .on(t.seq)
+      .where(
+        sql`${t.jobId} is null and ${t.type} = 'notice' and ${t.payload}->>'kind' = 'operator_action'`,
+      ),
   ],
 );
 

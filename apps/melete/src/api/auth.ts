@@ -172,13 +172,22 @@ function sessionCookie(c: Context, token: string, env: Env) {
 /**
  * Sign a principal in on this response: a new session row and its cookie. For
  * routes outside this module that make an account, such as accepting a room
- * invite.
+ * invite or using an account invite.
+ *
+ * The new cookie replaces whatever session this browser held, so that session
+ * is ended too: a browser that was signed in to another account (the owner
+ * opening an invite link they just copied) does not leave that account's
+ * session alive behind a cookie nobody holds any more.
  */
 export async function startSession(c: Context, db: Database, env: Env, principalId: string) {
   const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
   if (!installation) throw new Error('No installation to sign in to');
   const authenticated = newSession(installation.id, principalId, undefined, browserOf(c));
-  await db.insert(session).values(authenticated.row);
+  const previous = getCookie(c, SESSION_COOKIE);
+  await db.transaction(async (tx) => {
+    if (previous) await tx.delete(session).where(eq(session.tokenHash, tokenHash(previous)));
+    await tx.insert(session).values(authenticated.row);
+  });
   sessionCookie(c, authenticated.token, env);
 }
 

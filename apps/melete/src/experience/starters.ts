@@ -41,10 +41,18 @@ export function startersFromSetting(raw: string | undefined): readonly StarterTa
   return parsed.data;
 }
 
+/**
+ * Whether a space's setup is done, given whether it is recorded as done: the
+ * rule Home's profile uses (ExperienceHome.onboarded), so a space set up
+ * before setup was recorded is offered starters too.
+ */
+export type SpaceOnboarded = (spaceId: string, recorded: boolean) => Promise<boolean>;
+
 export class StarterService {
   constructor(
     private readonly sql: Sql,
     private readonly starters: readonly StarterTask[] = DEFAULT_STARTERS,
+    private readonly onboarded: SpaceOnboarded = async (_spaceId, recorded) => recorded,
   ) {}
 
   /** What Home offers this person in this space, and why nothing when nothing. */
@@ -53,16 +61,19 @@ export class StarterService {
       where space_id = ${spaceId}`;
     const [dismissed] = await this.sql`select 1 from starter_dismissal
       where principal_id = ${personId}`;
-    // Their own chats in any space, counted only as far as the limit.
+    const onboarded = await this.onboarded(spaceId, Boolean(profile?.onboarded_at));
+    // Nothing is offered before setup or once put away, so the chats are not counted then.
+    const before = starterVisibility({ onboarded, dismissed: Boolean(dismissed), chats: 0 });
+    if (!before.show) return { ...before, starters: [] };
+    // Their own chats in any space, counted only as far as the limit. A chat
+    // with no principal is the installation owner's. Written as an OR, not a
+    // coalesce, so an index on job (principal_id) where kind = 'chat' serves it.
     const chats = await this.sql`select 1 from job j
       where j.kind = 'chat'
-        and coalesce(j.principal_id, (select id from owner limit 1)) = ${personId}
+        and (j.principal_id = ${personId}
+          or (j.principal_id is null and ${personId} = (select id from owner limit 1)))
       limit ${STARTER_CHAT_LIMIT}`;
-    const visibility = starterVisibility({
-      onboarded: Boolean(profile?.onboarded_at),
-      dismissed: Boolean(dismissed),
-      chats: chats.length,
-    });
+    const visibility = starterVisibility({ onboarded, dismissed: false, chats: chats.length });
     if (!visibility.show) return { ...visibility, starters: [] };
     const city = cityFromTimeZone(profile?.time_zone ? String(profile.time_zone) : null);
     return { ...visibility, starters: this.starters.map((starter) => fillStarter(starter, city)) };

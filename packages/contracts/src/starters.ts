@@ -154,24 +154,34 @@ export const starterView = z.strictObject({
 });
 export type StarterView = z.infer<typeof starterView>;
 
+/** `{city}`, or one `[blank]`, in a starter's words, in the order they come. */
+const FILLED = /\{city\}|\[([^[\]]{1,60})\]/g;
+
 /**
- * A starter's words for the composer: `{city}` becomes a blank holding the
- * city when one is known, or "your city"; the first blank's brackets are
- * dropped and its words selected.
+ * A starter's words for the composer: `{city}` becomes the city when one is
+ * known, or "your city"; the blank's brackets are dropped. The operator's
+ * `[blank]` is what gets selected, since it is the part the person is meant
+ * to fill; with no blank, the city is selected instead, so a wrong guess is
+ * one keystroke to replace.
  */
 export function fillStarter(starter: StarterTask, city: string | null): StarterView {
-  const words = starter.text.replaceAll('{city}', `[${city ?? 'your city'}]`);
-  let select: StarterView['select'] = null;
+  const place = city ?? 'your city';
+  let blank: StarterView['select'] = null;
+  let near: StarterView['select'] = null;
   let text = '';
   let last = 0;
-  for (const match of words.matchAll(BLANK)) {
-    const inner = match[1] ?? '';
-    text += words.slice(last, match.index);
-    if (!select) select = { start: text.length, end: text.length + inner.length };
+  for (const match of starter.text.matchAll(FILLED)) {
+    text += starter.text.slice(last, match.index);
+    const isBlank = match[1] !== undefined;
+    const inner = isBlank ? (match[1] ?? '').replaceAll('{city}', place) : place;
+    const range = { start: text.length, end: text.length + inner.length };
+    if (isBlank) blank ??= range;
+    else near ??= range;
     text += inner;
     last = (match.index ?? 0) + match[0].length;
   }
-  text += words.slice(last);
+  text += starter.text.slice(last);
+  const select = blank ?? near;
   return {
     id: starter.id,
     label: starter.label,

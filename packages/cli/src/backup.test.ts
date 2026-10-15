@@ -176,6 +176,17 @@ describe('melete backup', () => {
     );
   });
 
+  test('a finished backup whose note cannot be written stays whole, and says so', async () => {
+    const rig = backupRig();
+    // Something in the way of the note: a folder where its file goes.
+    mkdirSync(lastBackupPath(rig.deployDir), { recursive: true });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups)).toEqual(['melete-20261002T100000Z']);
+    expect(rig.context.printed()).toContain('The backup is whole, but its time was not noted');
+    // The database still takes its note.
+    expect(rig.calls.some((call) => call.includes("'backup_taken'"))).toBe(true);
+  });
+
   test('a finished backup is also noted in the database, where the web app reads it', async () => {
     const rig = backupRig();
     expect(await runBackup(rig.context, [], false)).toBe(0);

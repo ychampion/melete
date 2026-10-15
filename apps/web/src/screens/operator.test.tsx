@@ -11,6 +11,8 @@ import {
   ago,
   auditSentence,
   backupLine,
+  dayOf,
+  InFlight,
   OneTimeLink,
   OverviewTiles,
   PersonRow,
@@ -259,4 +261,38 @@ test('every change reads as who did what to whom, and when', () => {
   expect(html).toContain('Daily cap: the installation’s → $3.00');
   expect(html).toContain('dateTime="2026-10-12T09:30:00.000Z"');
   expect(renderToStaticMarkup(<AuditList entries={[]} />)).toContain('Nothing yet.');
+});
+
+test('the month starts again on the first, read in UTC whatever the clock here', () => {
+  const zone = process.env.TZ;
+  try {
+    // A clock behind UTC would put midnight UTC on Nov 1 at Oct 31 evening.
+    process.env.TZ = 'America/Los_Angeles';
+    expect(dayOf('2026-11-01T00:00:00.000Z')).toBe('Nov 1');
+  } finally {
+    process.env.TZ = zone;
+  }
+});
+
+test('a second click on a person while their request is under way makes nothing', async () => {
+  const seen: string[][] = [];
+  const inFlight = new InFlight((ids) => seen.push([...ids]));
+  let made = 0;
+  let finish: () => void = () => {};
+  const first = inFlight.run('a', () => {
+    made += 1;
+    return new Promise<string>((resolve) => {
+      finish = () => resolve('link');
+    });
+  });
+  // Another row's request in between does not free the first person's buttons.
+  expect(await inFlight.run('b', async () => 'other')).toBe('other');
+  expect(await inFlight.run('a', async () => 'second link')).toBeNull();
+  expect(made).toBe(1);
+  expect(seen.at(-1)).toEqual(['a']);
+  finish();
+  expect(await first).toBe('link');
+  expect(seen.at(-1)).toEqual([]);
+  // Once it ended, the person can be asked again.
+  expect(await inFlight.run('a', async () => 'again')).toBe('again');
 });

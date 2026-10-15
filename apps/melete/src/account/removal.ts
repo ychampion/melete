@@ -41,6 +41,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { ServiceError } from '../api/errors.ts';
 import { forgetSavedSignIns } from '../connectors/sign-in-vault.ts';
+import { forgetInOperatorRecord } from '../operator/audit.ts';
 import { principalContext } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import type { SpaceRemovalService } from '../spaces/removal.ts';
@@ -89,6 +90,7 @@ const LEFTOVER_RECORDS = [
   'managed_call',
   'person_spend_limit',
   'starter_dismissal',
+  'saved_sign_in',
 ];
 
 export type AccountRemovalDeps = {
@@ -221,10 +223,9 @@ export class AccountRemovalService {
       for (const table of ACCOUNT_RECORDS)
         await tx`delete from ${tx(table)} where principal_id = ${principalId}`;
       await unlinkElsewhere(tx, principalId);
+      // The record of what the operator did to the account keeps its id, not its email.
+      await forgetInOperatorRecord(tx, principalId, removedEmail(principalId));
     });
-    // The account's saved sign-ins go now, in rooms too, with their sealed passwords:
-    // a room's removal would never reach the ones it keeps in a room it does not own.
-    await forgetSavedSignIns(this.deps.sql, principalId);
     await this.carryOn(principalId);
     return this.status(principalId);
   }
@@ -260,6 +261,17 @@ export class AccountRemovalService {
    */
   private async carryOn(principalId: string): Promise<void> {
     const { sql, spaces, principals } = this.deps;
+    // Its saved sign-ins go with their sealed passwords, in rooms too: a room's
+    // removal would never reach the ones it keeps in a room it does not own.
+    // What does not go now goes on the next pass, and the account is not
+    // finished until it has.
+    await forgetSavedSignIns(sql, principalId).catch((error) =>
+      this.log(`account deletion: its saved sign-ins did not all go yet (${describe(error)})`),
+    );
+    // An account whose deletion began before its email left the operator's record.
+    await forgetInOperatorRecord(sql, principalId, removedEmail(principalId)).catch((error) =>
+      this.log(`account deletion: the operator record still names it (${describe(error)})`),
+    );
     await principalContext.run(principalId, async () => {
       const rooms = await sql<{ space_id: string }[]>`select m.space_id from space_membership m
         join space s on s.id = m.space_id
@@ -314,6 +326,11 @@ export class AccountRemovalService {
     if (unfinished) return false;
     const [owns] = await sql`select 1 from space where owner_principal_id = ${principalId} limit 1`;
     if (owns) return false;
+    // A sealed password must not outlive its row: the row goes with the account's
+    // own only once its secret has, which a deleted principal row would skip.
+    const [sealed] =
+      await sql`select 1 from saved_sign_in where principal_id = ${principalId} limit 1`;
+    if (sealed) return false;
     await sql`delete from feedback where principal_id = ${principalId}`;
     await sql`delete from voice_usage where principal_id = ${principalId}`;
     await sql`delete from managed_call where principal_id = ${principalId}`;

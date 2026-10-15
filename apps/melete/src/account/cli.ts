@@ -198,9 +198,14 @@ export async function setDisabled(
 ): Promise<AccountOutcome> {
   const account = await principalByEmail(sql, email.trim());
   if (!account) return refused(`No account signs in as ${email.trim()}.`);
+  // Only a real change goes in the record; running the command again changes nothing.
+  const [before] = await sql<{ disabled: boolean }[]>`select disabled_at is not null as disabled
+    from principal where id = ${account.id}`;
+  const changes = before?.disabled !== disabled;
   if (!disabled) {
     await enableAccount(sql, account.id);
-    await recordOperatorAction(sql, { actor: null, action: 'enabled', target: account });
+    if (changes)
+      await recordOperatorAction(sql, { actor: null, action: 'enabled', target: account });
     return {
       ok: true,
       text: `${account.email} can sign in again.\n`,
@@ -208,7 +213,8 @@ export async function setDisabled(
     };
   }
   const devices = await disableAccount(sql, account.id);
-  await recordOperatorAction(sql, { actor: null, action: 'disabled', target: account });
+  if (changes)
+    await recordOperatorAction(sql, { actor: null, action: 'disabled', target: account });
   const [owner] = await sql`select 1 from owner where id = ${account.id}`;
   const note = owner
     ? ' It is the installation’s owner, so nobody can change its settings until it is enabled again.'

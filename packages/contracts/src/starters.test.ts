@@ -60,6 +60,17 @@ describe('a starter in the composer', () => {
     expect(trip.select).toEqual({ start: 21, end: 27 });
     expect(fillStarter(base, 'Paris')).toMatchObject({ text: 'Do one thing.', select: null });
   });
+
+  test('with both a city and a blank, the operator’s blank is selected, not the city', () => {
+    const both = { ...base, text: 'Near {city}, find [a quiet café] open late.' };
+    const filled = fillStarter(both, 'Lisbon');
+    expect(filled.text).toBe('Near Lisbon, find a quiet café open late.');
+    expect(filled.text.slice(filled.select?.start, filled.select?.end)).toBe('a quiet café');
+    // The order in the words does not change which one is meant.
+    const after = fillStarter({ ...base, text: 'Find [a quiet café] near {city}.' }, null);
+    expect(after.text).toBe('Find a quiet café near your city.');
+    expect(after.text.slice(after.select?.start, after.select?.end)).toBe('a quiet café');
+  });
 });
 
 describe('an operator’s list', () => {

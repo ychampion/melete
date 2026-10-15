@@ -24,6 +24,30 @@ import type {
 import { toast } from '../shell/Shell.tsx';
 import { DeleteAccountDialog } from './AccountData.tsx';
 
+/**
+ * The people with a request under way. A person's buttons stay busy until
+ * their own request ends, whatever happens to anyone else's, and a second
+ * click while one is under way does nothing, so a reset link is never made
+ * twice by a double click or a click on another row in between.
+ */
+export class InFlight {
+  private readonly ids = new Set<string>();
+  constructor(private readonly changed: (ids: ReadonlySet<string>) => void) {}
+
+  /** Runs `work` for a person, or answers null when one is already under way. */
+  async run<T>(id: string, work: () => Promise<T>): Promise<T | null> {
+    if (this.ids.has(id)) return null;
+    this.ids.add(id);
+    this.changed(new Set(this.ids));
+    try {
+      return await work();
+    } finally {
+      this.ids.delete(id);
+      this.changed(new Set(this.ids));
+    }
+  }
+}
+
 /* ---------- words, kept apart so they can be tested without a page ---------- */
 
 export const usd = (amount: number) =>
@@ -33,8 +57,13 @@ export const usd = (amount: number) =>
 export const spentOf = (spent: number, cap: number | null) =>
   cap === null ? `${usd(spent)}, no cap` : `${usd(spent)} of ${usd(cap)}`;
 
-const dayOf = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+/**
+ * The day a month's spending starts again. The service resets at midnight UTC
+ * on the first, so the day is read in UTC: on a clock behind UTC the local
+ * date would be the last day of the month before.
+ */
+export const dayOf = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 const momentOf = (iso: string) =>
   new Date(iso).toLocaleString('en-US', {
@@ -641,7 +670,8 @@ export function OperatorTab() {
   const people = useLoad(() => adapter.operatorPeople(), []);
   const audit = useLoad(() => adapter.operatorAudit(), []);
   const [open, setOpen] = useState<Open | null>(null);
-  const [working, setWorking] = useState<string | null>(null);
+  const [working, setWorking] = useState<ReadonlySet<string>>(() => new Set());
+  const [inFlight] = useState(() => new InFlight(setWorking));
 
   /** After any change: the people, the record, and the counts at the top. */
   const changed = () => {
@@ -660,9 +690,8 @@ export function OperatorTab() {
   };
 
   const sendLink = async (person: OperatorPerson) => {
-    setWorking(person.id);
-    const done = await adapter.sendPersonReset(person.id);
-    setWorking(null);
+    const done = await inFlight.run(person.id, () => adapter.sendPersonReset(person.id));
+    if (done === null) return;
     if (done.data === null) {
       toast({ kind: 'err', title: 'Couldn’t make a link', sub: problemOf(done, '') });
       return;
@@ -671,9 +700,8 @@ export function OperatorTab() {
     setOpen({ kind: 'link', person: done.data.person, link: done.data.reset });
   };
   const turnOn = async (person: OperatorPerson) => {
-    setWorking(person.id);
-    const done = await adapter.setPersonDisabled(person.id, false);
-    setWorking(null);
+    const done = await inFlight.run(person.id, () => adapter.setPersonDisabled(person.id, false));
+    if (done === null) return;
     if (done.data === null) {
       toast({ kind: 'err', title: 'Couldn’t turn it on', sub: problemOf(done, '') });
       return;
@@ -682,9 +710,8 @@ export function OperatorTab() {
     toast({ kind: 'ok', title: `${person.email ?? 'The account'} can sign in again` });
   };
   const askDelete = async (person: OperatorPerson) => {
-    setWorking(person.id);
-    const read = await adapter.personRemovalPreview(person.id);
-    setWorking(null);
+    const read = await inFlight.run(person.id, () => adapter.personRemovalPreview(person.id));
+    if (read === null) return;
     if (read.data === null) {
       toast({ kind: 'err', title: 'Couldn’t check that account', sub: problemOf(read, '') });
       return;
@@ -734,7 +761,7 @@ export function OperatorTab() {
               <PersonRow
                 key={person.id}
                 person={person}
-                busy={working === person.id}
+                busy={working.has(person.id)}
                 onCaps={() => setOpen({ kind: 'caps', person })}
                 onLink={() => void sendLink(person)}
                 onTurnOff={() => setOpen({ kind: 'off', person })}

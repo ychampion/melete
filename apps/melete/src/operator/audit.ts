@@ -45,13 +45,41 @@ export async function recordOperatorAction(
     values ('notice', ${JSON.stringify(payload)}::text::jsonb, ${`operator:${randomUUID()}`})`;
 }
 
-/** The newest operator actions, newest first. */
+/**
+ * A deleted account's email leaves the record: every entry that names the
+ * account, as the one acted on or the one acting, keeps its id and says
+ * `placeholder` (the address the account's own row is left with) in place of
+ * the email. Safe to run again. Answers how many entries changed.
+ */
+export async function forgetInOperatorRecord(
+  q: Sql | TransactionSql,
+  principalId: string,
+  placeholder: string,
+): Promise<number> {
+  const rows = await q`update event set payload = payload
+      || case when payload->>'target_id' = ${principalId}
+        then jsonb_build_object('target_email', ${placeholder}::text) else '{}'::jsonb end
+      || case when payload->>'actor_id' = ${principalId}
+        then jsonb_build_object('actor_email', ${placeholder}::text) else '{}'::jsonb end
+    where job_id is null and type = 'notice' and payload->>'kind' = 'operator_action'
+      and ((payload->>'target_id' = ${principalId}
+          and payload->>'target_email' is distinct from ${placeholder})
+        or (payload->>'actor_id' = ${principalId}
+          and payload->>'actor_email' is distinct from ${placeholder}))`;
+  return rows.count;
+}
+
+/**
+ * The newest operator actions, newest first. The kind is written out rather
+ * than passed, so a prepared plan still matches `event_operator_action_idx`,
+ * which holds these entries alone.
+ */
 export async function listOperatorActions(sql: Sql, limit = 100): Promise<OperatorAuditEntry[]> {
   const rows = await sql<
     { seq: string; created_at: Date | string; payload: Record<string, unknown> }[]
   >`
     select seq::text as seq, created_at, payload from event
-    where job_id is null and type = 'notice' and payload->>'kind' = ${OPERATOR_ACTION_KIND}
+    where job_id is null and type = 'notice' and payload->>'kind' = 'operator_action'
     order by seq desc limit ${limit}`;
   const text = (value: unknown) => (typeof value === 'string' && value ? value : null);
   return rows.map((row) => ({

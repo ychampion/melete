@@ -54,6 +54,30 @@ test('with limits, each period shows its share, its tone and when it starts agai
   expect(backgroundCapLine(usageFixture())).toBe('$1.20 of $5.00 this month');
 });
 
+test('a limit in tokens alone is read against the tokens spent, in the same units', () => {
+  const tokens = usageFixture({
+    spent: { month: { usd: 4.2, tokens: 123_456 }, day: { usd: 0.3, tokens: 800 } },
+    caps: {
+      month: { usd: null, tokens: 500_000 },
+      day: { usd: null, tokens: 50_000 },
+      background: null,
+    },
+  });
+  expect(capRows(tokens, now, 'UTC').map((row) => [row.spent, row.limit])).toEqual([
+    ['123k', 'of 500k tokens'],
+    ['800', 'of 50k tokens'],
+  ]);
+  // With a dollar limit as well, both read in dollars.
+  const both = usageFixture({
+    caps: {
+      month: { usd: 20, tokens: 500_000 },
+      day: { usd: null, tokens: null },
+      background: null,
+    },
+  });
+  expect(capRows(both, now, 'UTC')[0]).toMatchObject({ spent: '$16.40', limit: 'of $20.00' });
+});
+
 test('without limits it is spending alone', () => {
   const open = usageFixture({ caps: null });
   expect(capRows(open, now, 'UTC').map((row) => [row.spent, row.limit, row.share])).toEqual([

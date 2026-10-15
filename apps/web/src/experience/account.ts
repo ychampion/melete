@@ -28,6 +28,32 @@ export async function stopPushHere(): Promise<void> {
 }
 
 /**
+ * Uses an invite while this browser may be signed in to another account. The
+ * invite signs this browser in as the new account, and the service ends the
+ * old sign-in, so the old account's notifications are stopped here first,
+ * while its session can still say so; otherwise they would keep reaching the
+ * new person's browser.
+ */
+export async function consumingAsAnotherAccount<T extends { data: { signed_in?: boolean } | null }>(
+  signedInHere: boolean,
+  consume: () => Promise<T>,
+  push: {
+    subscribed: () => Promise<boolean>;
+    stop: () => Promise<void>;
+    restart: () => Promise<unknown>;
+  } = { subscribed: thisDeviceSubscribed, stop: stopPushHere, restart: enablePush },
+): Promise<T> {
+  if (!signedInHere) return consume();
+  const before = await push.subscribed().catch(() => false);
+  await push.stop();
+  const result = await consume();
+  // The browser is still the old account's when the invite was refused or
+  // signed nobody in, so its notifications come back.
+  if (before && !result.data?.signed_in) await push.restart().catch(() => undefined);
+  return result;
+}
+
+/**
  * Runs something that ends the account's other access, which takes every
  * browser's notifications with it, and then subscribes this browser again if
  * it was subscribed before. Notifications are already allowed here, so the

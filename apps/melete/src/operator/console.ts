@@ -133,8 +133,13 @@ export class OperatorConsole {
     const { sql } = this.deps;
     return sql<PersonRow[]>`select p.id, p.email, p.display_name, p.kind, p.created_at,
         p.disabled_at,
+        -- Invited is someone who has never been in: no password, passkey or
+        -- linked sign-in, and no sign of having signed in another way, such as
+        -- an emailed sign-in link, which leaves a session and then their use.
         (p.password_hash is not null or p.passkey is not null
-          or exists (select 1 from principal_identity i where i.principal_id = p.id)) as signs_in,
+          or exists (select 1 from principal_identity i where i.principal_id = p.id)
+          or exists (select 1 from session s where coalesce(s.principal_id, s.owner_id) = p.id)
+          or exists (select 1 from model_usage u where u.principal_id = p.id)) as signs_in,
         exists (select 1 from owner o where o.id = p.id) as is_owner,
         (select count(*)::int from session s
           where coalesce(s.principal_id, s.owner_id) = p.id and s.expires_at > now()) as sessions,
@@ -414,12 +419,13 @@ export class OperatorConsole {
   }
 
   async remove(actor: NonNullable<OperatorActor>, id: string, confirmEmail: string) {
-    const person = await this.changeable(id);
+    await this.changeable(id);
     const removal = await this.removals().remove(actor.id, id, confirmEmail);
+    // The deleted account is named as its own row now is: by its id, never its email.
     await recordOperatorAction(this.deps.sql, {
       actor,
       action: 'removed',
-      target: { id, email: person.email },
+      target: { id, email: removedEmail(id) },
       detail: 'Account and its spaces deleted',
     });
     return removal;

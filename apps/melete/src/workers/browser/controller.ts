@@ -6,10 +6,16 @@ import {
   BrowserNetworkError,
   type BrowserNetworkOptions,
   BrowserRedirect,
+  carriesSecret,
   createBrowserEgress,
+  type HeldSignInWrite,
+  printCarried,
+  type SecretPrint,
   SITE_FAILURES,
+  secretPrint,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
+import { hostOf, siteOf } from './live-protocol.ts';
 import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
 import {
   BrowserFault,
@@ -18,12 +24,15 @@ import {
   type BrowserSessionsOptions,
 } from './sessions.ts';
 import {
+  guardSignInSubmit,
   markSignInFields,
   originOf,
   pageMeasure,
+  SIGN_IN_STEP_MS,
   type SignInFields,
   type SignInStepOutcome,
   signInState,
+  signInSubmitHeld,
   unmarkSignInFields,
 } from './sign-in-page.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
@@ -59,7 +68,14 @@ type BrowserElement = {
   select(): void;
   dispatchEvent(event: Event): boolean;
 };
-type BrowserForm = { elements: BrowserElement[]; method: string; enctype: string; action: string };
+declare const browserForm: unique symbol;
+/**
+ * A form, as page code may only read it: through `HTMLFormElement.prototype`'s own getters. A
+ * field named `action`, `method`, `enctype` or `elements` shadows the property of that name on
+ * the form itself, so a hidden `<input name="action">` would stand in for the form's address.
+ */
+type BrowserForm = { readonly [browserForm]: true };
+declare const HTMLFormElement: { prototype: object };
 /** A document or a shadow root: what can be searched for elements. */
 type BrowserRoot = { querySelectorAll(selector: string): ArrayLike<BrowserElement> };
 declare const document: BrowserRoot & {
@@ -349,7 +365,12 @@ function controlLooks(...elements: BrowserElement[]) {
         ['BUTTON', 'INPUT'].includes(element.tagName) &&
         element.type === 'submit' &&
         form !== null &&
-        (element.getAttribute('formmethod') ?? form.method).toLowerCase() === 'post',
+        (
+          element.getAttribute('formmethod') ??
+          String(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'method')?.get?.call(form),
+          )
+        ).toLowerCase() === 'post',
     };
   });
 }
@@ -406,6 +427,12 @@ export class BrowserController {
    * top-level document.
    */
   private handback = false;
+  /**
+   * Prints of the passwords sign-in steps typed in this browser context, never the passwords
+   * themselves: a look never shows an address that carries one, whatever put it there and
+   * whenever, a script's `history.replaceState` after the step included.
+   */
+  private signInPrints: SecretPrint[] = [];
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
   constructor(
@@ -424,6 +451,7 @@ export class BrowserController {
         this.pageId = undefined;
         // A new context opens on a new document, so nothing a person left behind is on it.
         this.handback = false;
+        this.signInPrints = [];
         // Additional windows cannot become an unobserved channel outside the single-page lease,
         // except one popup at a time that a person in control opens and sees in their live view.
         context.on('page', (page) => {
@@ -492,12 +520,22 @@ export class BrowserController {
     }
   }
 
-  private async navigate(command: BrowserCommand, target: string): Promise<void> {
+  private async navigate(
+    command: BrowserCommand,
+    target: string,
+    deadline?: number,
+  ): Promise<void> {
     if (!this.network || !this.sessions.context) throw new BrowserFault('worker_unavailable');
     let url = target;
     for (let hop = 0; hop < 6; hop++) {
       const page = this.sessions.page;
       if (!page) throw new BrowserFault('session_not_found');
+      // A sign-in step's deadline cuts the load short, and no hop starts past it.
+      const left = deadline === undefined ? 15_000 : Math.min(15_000, deadline - Date.now());
+      if (left <= 0)
+        throw new BrowserFault(
+          `page_timeout: ${new URL(url).host} did not finish loading in time.`,
+        );
       try {
         await this.network.run(
           'navigate',
@@ -505,7 +543,7 @@ export class BrowserController {
             this.input(command, () =>
               // Longer than the network guard gives one request, so a resource whose host never
               // answers is cut off and the page still finishes loading without it.
-              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 }),
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: left }),
             ),
           undefined,
           () => this.sessions.checkInput(command.session_id, command.control_epoch),
@@ -514,7 +552,9 @@ export class BrowserController {
       } catch (error) {
         if (error instanceof Error && error.name === 'TimeoutError')
           throw new BrowserFault(
-            `page_timeout: ${new URL(url).host} did not finish loading the page within 15 seconds.`,
+            left < 15_000
+              ? `page_timeout: ${new URL(url).host} did not finish loading in time.`
+              : `page_timeout: ${new URL(url).host} did not finish loading the page within 15 seconds.`,
           );
         if (!(error instanceof BrowserRedirect) || error.after_commit) throw error;
         url = error.target_url;
@@ -660,6 +700,22 @@ export class BrowserController {
     return { controls, unlisted: rest.length, sensitive, guarded, submits: [...submits] };
   }
 
+  /**
+   * The page's address as a look shows it: without its query and fragment when it carries a
+   * password a sign-in step typed here, and only its origin when its path does too.
+   */
+  private shownAddress(address: string): string {
+    const carries = (text: string) => this.signInPrints.some((print) => printCarried(text, print));
+    if (!carries(address)) return address;
+    try {
+      const url = new URL(address);
+      const path = `${url.origin}${url.pathname}`;
+      return carries(path) ? `${url.origin}/` : path;
+    } catch {
+      return '';
+    }
+  }
+
   private async formIntent(page: Page, name: string): Promise<BrowserSubmitIntent> {
     const button = await this.unique(this.role(page, 'button', name));
     const data = await button.evaluate((element) => {
@@ -670,8 +726,11 @@ export class BrowserController {
       )
         return null;
       const form = element.form;
-      const controls = Array.from(form.elements).filter((field): field is BrowserElement =>
-        ['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName),
+      // Read through the prototype: a field named for a property shadows it on the form.
+      const read = (name: string): unknown =>
+        Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, name)?.get?.call(form);
+      const controls = Array.from(read('elements') as ArrayLike<BrowserElement>).filter(
+        (field): field is BrowserElement => ['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName),
       );
       const sensitive = controls.some(
         (field) =>
@@ -681,8 +740,8 @@ export class BrowserController {
             `${field.name} ${field.getAttribute('aria-label') ?? ''}`,
           ),
       );
-      const method = (element.getAttribute('formmethod') ?? form.method).toUpperCase();
-      const enctype = element.getAttribute('formenctype') ?? form.enctype;
+      const method = (element.getAttribute('formmethod') ?? String(read('method'))).toUpperCase();
+      const enctype = element.getAttribute('formenctype') ?? String(read('enctype'));
       if (sensitive || method !== 'POST' || enctype !== 'application/x-www-form-urlencoded')
         return null;
       if (controls.some((field) => !field.validity.valid)) return null;
@@ -694,7 +753,10 @@ export class BrowserController {
         // Native HTML form submission normalizes line breaks before URL encoding.
         pairs.push([key.replace(/\r?\n|\r/g, '\r\n'), value.replace(/\r?\n|\r/g, '\r\n')]);
       }
-      const url = new URL(element.getAttribute('formaction') ?? form.action, location.href).href;
+      const url = new URL(
+        element.getAttribute('formaction') ?? String(read('action')),
+        location.href,
+      ).href;
       return { url, pairs, page_url: location.href };
     });
     if (!data) throw new BrowserFault('unsupported_or_incomplete_form');
@@ -797,7 +859,7 @@ export class BrowserController {
       control_epoch: epoch,
       observation: {
         id: `obs_${randomUUID()}`,
-        url: handedBack ? handbackUrl(page.url()) : page.url(),
+        url: handedBack ? handbackUrl(page.url()) : this.shownAddress(page.url()),
         title,
         schema: handedBack
           ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
@@ -975,8 +1037,14 @@ export class BrowserController {
             checked: element.tagName === 'INPUT' ? element.checked : undefined,
           })),
         forms: Array.from(document.forms).map((form) => ({
-          action: form.action,
-          valid: Array.from(form.elements).every(
+          action: String(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'action')?.get?.call(form),
+          ),
+          valid: Array.from(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements')?.get?.call(
+              form,
+            ) as ArrayLike<BrowserElement>,
+          ).every(
             (element) => !('validity' in element) || (element as BrowserElement).validity.valid,
           ),
         })),
@@ -996,17 +1064,35 @@ export class BrowserController {
   private async signIn(
     command: BrowserCommand,
     operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
+    deadline: number,
   ): Promise<BrowserCommandResult> {
     const network = this.network;
     if (!network) throw new BrowserFault('worker_unavailable');
     const origin = originOf(operation.origin);
     if (origin === null || origin !== operation.origin) throw new BrowserFault('sign_in_origin');
-    const answer = (outcome: SignInStepOutcome, extra: Record<string, unknown> = {}) => {
+    const secret = operation.kind === 'sign_in' ? operation.password : undefined;
+    if (secret && !this.signInPrints.some((print) => printCarried(secret, print)))
+      this.signInPrints = [...this.signInPrints.slice(-7), secretPrint(secret)];
+    // What the step types besides the password: a write that carries it is the sign-in itself.
+    const typedFor = operation.kind === 'sign_in' ? [operation.username] : [operation.code];
+    // Once the username went, no answer says nothing was typed.
+    let usernameSent = false;
+    let passwordTyped = false;
+    // A write that may have carried the sign-in to another origin of the saved site was held
+    // back while the form was sent.
+    let heldOnSite = false;
+    // A write past the step's budget was held back while the form was sent.
+    let overBudget = false;
+    const answer = (outcome: SignInStepOutcome) => {
       const current = this.sessions.requireSession(command.session_id, command.job_id);
       return {
         session_id: current.id,
         control_epoch: current.control_epoch,
-        result: { sign_in: outcome, at: originOf(this.sessions.page?.url()) ?? '', ...extra },
+        result: {
+          sign_in: outcome,
+          at: originOf(this.sessions.page?.url()) ?? '',
+          ...(usernameSent ? { username_sent: true } : {}),
+        },
       };
     };
     if (!origin.startsWith('https://') && !network.fixture(origin)) return answer('insecure_site');
@@ -1020,7 +1106,7 @@ export class BrowserController {
           operation.url ?? (originOf(page.url()) === origin ? undefined : `${origin}/`);
         if (target !== undefined) {
           if (originOf(target) !== origin) return answer('wrong_site');
-          await this.navigate(command, target);
+          await this.navigate(command, target, deadline);
           ({ page, cdp } = await this.attach());
         }
       }
@@ -1030,32 +1116,84 @@ export class BrowserController {
         // sign-in, is never typed into.
         if (here() !== origin) return answer('wrong_site');
         if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
+        // Past the step's bound nothing new is typed, so the service, which waits a while
+        // longer, hears what came of it.
+        if (Date.now() >= deadline) {
+          if (usernameSent) return answer('username_sent');
+          throw new BrowserFault(`page_timeout: ${new URL(origin).host} took too long to sign in.`);
+        }
         const found = await page.evaluate(markSignInFields, nonce);
-        if (found.ambiguous) return answer('form_not_found');
-        const typed = await this.typeSignIn(command, page, cdp, operation, found, nonce);
+        if (found.ambiguous) return answer(usernameSent ? 'username_sent' : 'form_not_found');
+        // A form that would send what it holds to another site is never typed into.
+        const to = originOf(found.action);
+        if (to !== null && to !== origin) return answer('wrong_site');
+        // After the username, the page asks for the password or a code. One that asks for the
+        // username again, or for nothing, is told so: the username is never sent twice.
+        if (usernameSent && !found.password)
+          return answer(found.code !== 'none' ? 'code_asked' : 'username_sent');
+        if (operation.kind === 'sign_in' && found.password) passwordTyped = true;
+        let typed: 'nothing' | 'username' | 'password' | 'code';
+        try {
+          typed = await this.typeSignIn(command, page, cdp, operation, found, nonce);
+        } catch (error) {
+          const refused = signInRefusal(error);
+          if (refused) return answer(refused);
+          throw error;
+        }
         if (typed === 'nothing') {
           if (operation.kind === 'sign_in' && found.code !== 'none') return answer('code_asked');
           return answer('form_not_found');
         }
         typedLast = typed;
-        const moved = await this.sendSignIn(command, page, cdp, found, nonce);
-        if (moved === 'elsewhere') return answer('wrong_site');
+        const sent = await this.sendSignIn(
+          command,
+          page,
+          cdp,
+          found,
+          nonce,
+          secret,
+          typedFor,
+          deadline,
+        );
+        if (typed === 'username') usernameSent = true;
+        if (sent.moved !== 'sent') return answer(sent.moved);
+        if (sent.heldOnSite) heldOnSite = true;
+        if (sent.overBudget) overBudget = true;
         ({ page, cdp } = await this.attach());
-        await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {});
+        await page
+          .waitForLoadState('domcontentloaded', {
+            timeout: Math.max(1, Math.min(5_000, deadline - Date.now())),
+          })
+          .catch(() => {});
         // A first step that asked for the username alone shows the password field next.
         if (operation.kind === 'sign_in' && typed === 'username') continue;
         break;
       }
       if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
       const state = await page.evaluate(signInState, nonce);
-      if (state.filled) await this.clearSignIn(command, page, cdp, nonce);
-      if (state.code) return answer('code_asked');
+      // A page that asks again after its sign-in was held back did not refuse it: one that sent
+      // more writes than a step allows may never have had it, and a site whose script sent it
+      // to another of its origins sent it elsewhere. The person is never told a password or a
+      // code they saved is wrong when the site did not hear it.
+      if (state.code) {
+        if (operation.kind === 'sign_in_code' && overBudget)
+          throw new BrowserFault('sign_in_budget');
+        return answer('code_asked');
+      }
       // The username went, and no password field followed it.
-      if (typedLast === 'username') return answer('form_not_found');
-      if (state.password || (operation.kind === 'sign_in_code' && state.username))
+      if (typedLast === 'username') return answer('username_sent');
+      if (state.password || (operation.kind === 'sign_in_code' && state.username)) {
+        if (heldOnSite) return answer('wrong_site');
+        if (overBudget) throw new BrowserFault('sign_in_budget');
         return answer('not_accepted');
+      }
       return answer('signed_in');
     } finally {
+      // However the step ended, a password the site left in its field is taken out of it, and
+      // a page whose address came to hold the password is closed for a blank one.
+      if (passwordTyped) await this.clearSignIn(command, nonce, secret);
+      if (secret && carriesSecret(this.sessions.page?.url() ?? '', secret))
+        await this.replacePage(command).catch(() => {});
       await this.sessions.page?.evaluate(unmarkSignInFields).catch(() => {});
       if (handedBackIn !== undefined) {
         const now = await this.attach().catch(() => undefined);
@@ -1113,6 +1251,8 @@ export class BrowserController {
       },
       undefined,
       () => this.sessions.checkInput(command.session_id, command.control_epoch),
+      undefined,
+      operation.password,
     );
     return found.password ? 'password' : 'username';
   }
@@ -1120,7 +1260,10 @@ export class BrowserController {
   /**
    * Sends the form the step filled, by its own submit button or by Enter in its last field, and
    * waits for the page to answer: a new page, a changed one, or the site's redirect, which is
-   * followed under every check `open` makes. `elsewhere` when the form would send to another site.
+   * followed under every check `open` makes. `wrong_site` when the form or the page's script
+   * would send it to another site, and `unsafe_form` when it would put the password in an
+   * address; either is held back, and nothing of it is sent. `held` when it was sent, and a
+   * write to another origin of the same site was held back meanwhile.
    */
   private async sendSignIn(
     command: BrowserCommand,
@@ -1128,7 +1271,14 @@ export class BrowserController {
     cdp: CDPSession,
     found: SignInFields,
     nonce: string,
-  ): Promise<'sent' | 'elsewhere'> {
+    secret: string | undefined,
+    typed: readonly string[],
+    stepDeadline: number,
+  ): Promise<{
+    moved: 'sent' | 'wrong_site' | 'unsafe_form';
+    heldOnSite: boolean;
+    overBudget: boolean;
+  }> {
     const network = this.network;
     if (!network) throw new BrowserFault('worker_unavailable');
     const last = found.password
@@ -1149,6 +1299,14 @@ export class BrowserController {
         })
         .catch(() => 'gone');
     const before = await look();
+    // The browser's own sending of a form that would put the password in the address, or
+    // send it elsewhere, is held back in the page; the network window refuses it besides.
+    await page.evaluate(guardSignInSubmit, nonce).catch(() => {});
+    // What was held back before the send is the typing's, not the send's.
+    network.takeDropped();
+    network.takeSignInHeld();
+    let redirect: BrowserRedirect | undefined;
+    let refused: SignInStepOutcome | undefined;
     try {
       await network.run(
         'sign_in',
@@ -1201,53 +1359,98 @@ export class BrowserController {
         },
         undefined,
         () => this.sessions.checkInput(command.session_id, command.control_epoch),
+        undefined,
+        secret,
+        typed,
       );
     } catch (error) {
-      if (error instanceof BrowserNetworkError && error.code === 'sign_in_origin')
-        return 'elsewhere';
-      if (!(error instanceof BrowserRedirect)) throw error;
+      if (error instanceof BrowserRedirect) redirect = error;
+      else refused = signInRefusal(error);
+      if (!redirect && !refused) {
+        await page.evaluate(signInSubmitHeld, nonce).catch(() => '');
+        throw error;
+      }
+    }
+    const held = await page.evaluate(signInSubmitHeld, nonce).catch(() => '');
+    // What the send held back is the send's to answer for; a later look does not name it.
+    network.takeDropped();
+    const writes = network.takeSignInHeld();
+    const heldOnSite = heldWriteOnSite(writes, originOf(page.url()) ?? '');
+    const overBudget = writes.some((write) => write.budget);
+    const answered = (moved: 'sent' | 'wrong_site' | 'unsafe_form') => ({
+      moved,
+      heldOnSite,
+      overBudget,
+    });
+    if (refused === 'wrong_site' || refused === 'unsafe_form') return answered(refused);
+    if (held === 'elsewhere') return answered('wrong_site');
+    if (held === 'address') return answered('unsafe_form');
+    if (redirect) {
+      // A redirect to an address that holds the password is never followed.
+      if (secret && carriesSecret(redirect.target_url, secret)) return answered('unsafe_form');
       // The site answered with a redirect: followed as an opened page is, on a new page,
       // with the cookies it set kept.
       await this.replacePage(command);
-      await this.navigate(command, error.target_url);
+      await this.navigate(command, redirect.target_url, stepDeadline);
     }
-    return 'sent';
+    return answered('sent');
   }
 
-  /** Empties the password field a step filled, when the site left it holding the password. */
-  private async clearSignIn(command: BrowserCommand, page: Page, cdp: CDPSession, nonce: string) {
-    const handle = await this.unique(
-      page.locator(`[data-melete-sign-in="${nonce}:password"]`),
-    ).catch(() => null);
-    if (!handle || !this.network) return;
-    await this.network
-      .run('sign_in', async () => {
-        await this.input(command, () =>
-          handle.evaluate((element) => {
-            element.focus();
-            element.select();
-          }),
-        );
-        for (const type of ['keyDown', 'keyUp'] as const)
-          await this.input(command, () =>
-            cdp.send('Input.dispatchKeyEvent', {
-              type,
-              key: 'Backspace',
-              windowsVirtualKeyCode: 8,
-            }),
-          );
-      })
-      .catch(() => {});
+  /**
+   * Empties the password field a step filled, when the site left it holding the password, shown
+   * or hidden. Run however the step ended, so it never fails the step.
+   */
+  private async clearSignIn(command: BrowserCommand, nonce: string, secret: string | undefined) {
+    const attached = await this.attach().catch(() => undefined);
+    if (!attached || !this.network) return;
+    const { page, cdp } = attached;
+    const field = page.locator(`[data-melete-sign-in="${nonce}:password"]`);
+    const holds = await field
+      .evaluateAll((elements) =>
+        (elements as unknown as BrowserElement[]).some((element) => element.value !== ''),
+      )
+      .catch(() => false);
+    if (!holds) return;
+    // A field still shown is emptied as a person would, so the page's script hears it.
+    const handle = await this.unique(field).catch(() => null);
+    if (handle)
+      await this.network
+        .run(
+          'sign_in',
+          async () => {
+            await this.input(command, () =>
+              handle.evaluate((element) => {
+                element.focus();
+                element.select();
+              }),
+            );
+            for (const type of ['keyDown', 'keyUp'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchKeyEvent', {
+                  type,
+                  key: 'Backspace',
+                  windowsVirtualKeyCode: 8,
+                }),
+              );
+          },
+          undefined,
+          undefined,
+          undefined,
+          secret,
+        )
+        .catch(() => {});
     // Whatever the page's script did with the keys, the field ends empty.
-    await handle
-      .evaluate((element) => {
-        (element as { value: string }).value = '';
+    await field
+      .evaluateAll((elements) => {
+        for (const element of elements as unknown as BrowserElement[]) element.value = '';
       })
       .catch(() => {});
   }
 
   async command(input: unknown): Promise<BrowserCommandResult> {
     const command = browserCommand.parse(input);
+    // A sign-in step's bound counts from now, so time spent waiting for the session counts too.
+    const signInDeadline = Date.now() + SIGN_IN_STEP_MS;
     let commitStarted = false;
     // The HTTP status the form's POST got, which the read-back after a submit weighs.
     let commitStatus: number | undefined;
@@ -1281,7 +1484,7 @@ export class BrowserController {
         // Even a caller that skips planning checks reaches this controller gate before it can act.
         this.sessions.checkInput(command.session_id, command.control_epoch);
         if (command.operation.kind === 'sign_in' || command.operation.kind === 'sign_in_code')
-          return await this.signIn(command, command.operation);
+          return await this.signIn(command, command.operation, signInDeadline);
         const before = await this.transition(page, cdp);
         const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
@@ -1515,6 +1718,39 @@ export class BrowserController {
 
 /** How long a sign-in step waits for the page to answer what was sent. */
 export const SIGN_IN_SETTLE_MS = 8_000;
+
+/**
+ * What a sign-in step's network window refused, as the step's answer: the page or its script
+ * would have sent the sign-in to another site, or put the password in an address. Undefined for
+ * anything else.
+ */
+export function signInRefusal(error: unknown): 'wrong_site' | 'unsafe_form' | undefined {
+  if (!(error instanceof BrowserNetworkError)) return undefined;
+  if (error.code === 'sign_in_origin' || error.code === 'sign_in_secret_elsewhere')
+    return 'wrong_site';
+  if (error.code === 'sign_in_secret_in_url') return 'unsafe_form';
+  return undefined;
+}
+
+/**
+ * Whether the writes a sign-in send held back include one that may have been the sign-in
+ * itself (its body held the username, password or code, or its address is named for signing
+ * in) sent to another origin of the page's own site, such as the sign-in posted from
+ * www.example.com to api.example.com: only the exact saved origin is sent a sign-in. A beacon
+ * to a third party, or a site's own telemetry to another of its hosts, says nothing of the
+ * sign-in and is left out.
+ */
+export function heldWriteOnSite(held: readonly HeldSignInWrite[], origin: string): boolean {
+  const own = hostOf(origin);
+  if (own === undefined) return false;
+  return held.some(
+    ({ method, host, credentials }) =>
+      credentials &&
+      !['GET', 'HEAD'].includes(method) &&
+      host !== own &&
+      siteOf(host) === siteOf(own),
+  );
+}
 
 /** At most this many hosts are named; a page can ask for resources from as many as it likes. */
 export const UNREACHABLE_HOSTS_SHOWN = 10;

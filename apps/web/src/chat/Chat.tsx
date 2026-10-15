@@ -1492,7 +1492,7 @@ ${words}`
                   ))}
                 </div>
               ) : null}
-              <ChatCapBanner turns={working} />
+              <ChatCapBanner working={working} />
               <WorkPill
                 turn={atWorkTurn}
                 conversationId={conversationId}

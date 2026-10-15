@@ -6,7 +6,9 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import type { Action, HandOffReason, JsonObject } from '@melete/contracts';
+import type { PgBoss } from 'pg-boss';
 import {
   OWN_WORK_ONLY,
   prepareSignIn,
@@ -29,6 +31,8 @@ import { stepAsk } from '../../src/experience/projectors.ts';
 import { actionCall, actionPhrase } from '../../src/experience/tools.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { PrincipalService } from '../../src/principals/service.ts';
 import type { BrowserWorkerClient } from '../../src/workers/browser/client.ts';
 import { BrowserFault } from '../../src/workers/browser/sessions.ts';
 import { seedJob } from '../helpers/broker.ts';
@@ -792,5 +796,199 @@ suite('saved sign-ins', () => {
     expect(await forgetSavedSignIns(handle().sql, memberId)).toBe(1);
     expect(await rowOf(theirs.id)).toBeUndefined();
     expect(await secretRow(theirRef)).toBeUndefined();
+  });
+
+  test('under another key, a sign-in with a code asks for its password and code secret, and saves with both', async () => {
+    const vault = vaultUnder(KEY);
+    const rotated = vaultUnder(NEW_KEY);
+    const coded = await vault.create(spaceId, ownerId, {
+      site: 'rekey.example',
+      username: USERNAME,
+      password: PASSWORD,
+      code_secret: CODE_SECRET,
+    });
+    // The password alone cannot save it again: the code secret is sealed with it.
+    const alone = await refusal(rotated.update(spaceId, ownerId, coded.id, { password: PASSWORD }));
+    expect(alone.code).toBe('key_changed');
+    expect(alone.message).toContain('Enter its password and its code secret again');
+    holdsNoSecret(alone.message);
+    const checked = await rotated.check(spaceId, ownerId, coded.id);
+    expect(checked.checks.find((item) => item.name === 'sealed')?.detail).toContain(
+      'its password and its code secret',
+    );
+    // Given what it asked for, it is saved under the current key, code and all.
+    await rotated.update(spaceId, ownerId, coded.id, {
+      password: PASSWORD,
+      code_secret: CODE_SECRET,
+    });
+    expect((await rotated.code(spaceId, ownerId, coded.id)).code).toMatch(/^\d{6}$/);
+
+    // Without a code, the password is all there is to give again, and all it asks for.
+    const plain = await vault.create(spaceId, ownerId, {
+      site: 'rekey-plain.example',
+      username: USERNAME,
+      password: PASSWORD,
+    });
+    const asked = await refusal(
+      rotated.withCredential(
+        await rotated.get(spaceId, ownerId, plain.id),
+        async (c) => c.password,
+      ),
+    );
+    expect(asked.message).toContain('Enter its password again');
+    await rotated.update(spaceId, ownerId, plain.id, { password: PASSWORD });
+    expect(
+      await rotated.withCredential(
+        await rotated.get(spaceId, ownerId, plain.id),
+        async (c) => c.password,
+      ),
+    ).toBe(PASSWORD);
+    await vault.delete(spaceId, ownerId, coded.id);
+    await vault.delete(spaceId, ownerId, plain.id);
+  });
+
+  test('a long site is named within the list’s limits, a cleared name is the site’s again, and an old long row still lists', async () => {
+    // A real host can be long: each part up to 63 characters, the whole up to 253.
+    const host = `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.example`;
+    const saved = await save({ site: host, username: USERNAME, password: PASSWORD });
+    expect(saved.status).toBe(201);
+    expect(saved.body.site).toBe(host);
+    expect(saved.body.label.length).toBeLessThanOrEqual(120);
+    expect(saved.body.label).toStartWith('a'.repeat(60));
+    const listed = await call('/sign-ins');
+    expect(listed.status).toBe(200);
+    expect(listed.body.sign_ins.map((entry: { id: string }) => entry.id)).toEqual([saved.body.id]);
+
+    // A name of one's own, and then none: the site's name again.
+    const named = await call(`/sign-ins/${saved.body.id}`, {
+      method: 'PATCH',
+      body: { label: 'Work' },
+    });
+    expect(named.body.label).toBe('Work');
+    const cleared = await call(`/sign-ins/${saved.body.id}`, {
+      method: 'PATCH',
+      body: { label: '  ' },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.label).toBe(saved.body.label);
+    // Cleared alongside a new password too.
+    await call(`/sign-ins/${saved.body.id}`, { method: 'PATCH', body: { label: 'Work' } });
+    const both = await call(`/sign-ins/${saved.body.id}`, {
+      method: 'PATCH',
+      body: { label: '', password: PASSWORD },
+    });
+    expect(both.body.label).toBe(saved.body.label);
+
+    // A host longer than any real one is not a site.
+    const tooLong = await save({
+      site: `${`${'d'.repeat(63)}.`.repeat(4)}example`,
+      username: USERNAME,
+      password: PASSWORD,
+    });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe('invalid_site');
+
+    // A row saved before names and sites were kept short still lists, and still goes.
+    await handle().sql`update saved_sign_in set label = ${'x'.repeat(300)},
+        origin = ${`https://${'e'.repeat(400)}.example`}
+      where id = ${saved.body.id}`;
+    const old = await call('/sign-ins');
+    expect(old.status).toBe(200);
+    expect(old.body.sign_ins[0].label.length).toBeLessThanOrEqual(120);
+    expect(old.body.sign_ins[0].site.length).toBeLessThanOrEqual(255);
+    expect(old.body.sign_ins[0].origin.length).toBeLessThanOrEqual(300);
+    expect((await call(`/sign-ins/${saved.body.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect((await call('/sign-ins')).body).toEqual({ sign_ins: [] });
+  });
+
+  test('a sign-in saved as its person leaves the room is never kept, nor its sealed password', async () => {
+    const vault = vaultUnder(KEY);
+    const { sql } = handle();
+    const email = `leaver-${randomBytes(4).toString('hex')}@example.test`;
+    expect(
+      (await call('/principals', { method: 'POST', body: { email, password: LOGIN } })).status,
+    ).toBe(201);
+    const [{ id: leaver } = { id: '' }] = await sql<{ id: string }[]>`select id from principal
+      where email = ${email}`;
+    await sql`insert into space_membership (principal_id, space_id, role, generation)
+      values (${leaver}, ${spaceId}, 'member', 1)`;
+    const secrets = async () =>
+      Number((await sql`select count(*)::int as n from secret`)[0]?.n ?? 0);
+    const kept = async () =>
+      (
+        await sql`select id from saved_sign_in where space_id = ${spaceId} and principal_id = ${leaver}`
+      ).length;
+    const before = await secrets();
+    // The room's removal of them holds the room, as `endMembership` does, while their save runs.
+    let locked: () => void = () => {};
+    const holding = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const leaving = sql.begin(async (tx) => {
+      await tx`select id from space where id = ${spaceId} for update`;
+      locked();
+      await tx`update space_membership set revoked_at = now(), generation = generation + 1
+        where space_id = ${spaceId} and principal_id = ${leaver}`;
+      await tx`delete from saved_sign_in where space_id = ${spaceId} and principal_id = ${leaver}`;
+      // The save is sealed and waits on the room meanwhile.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    });
+    await holding;
+    const saving = vault.create(spaceId, leaver, {
+      site: 'race.example',
+      username: 'leaver',
+      password: 'a-password-saved-while-leaving',
+    });
+    const [left, saved] = await Promise.allSettled([leaving, saving]);
+    expect(left.status).toBe('fulfilled');
+    expect(saved.status).toBe('rejected');
+    if (saved.status === 'rejected') expect(saved.reason).toBeInstanceOf(VaultFault);
+    expect(await kept()).toBe(0);
+    expect(await secrets()).toBe(before);
+    // Once gone, a save is refused outright and leaves nothing sealed behind.
+    expect(
+      (
+        await refusal(
+          vault.create(spaceId, leaver, { site: 'later.example', username: 'x', password: 'y' }),
+        )
+      ).code,
+    ).toBe('changed');
+    expect(await kept()).toBe(0);
+    expect(await secrets()).toBe(before);
+  });
+
+  test('someone who leaves a room takes the sign-ins they saved there, and only those', async () => {
+    const vault = vaultUnder(KEY);
+    const { db } = handle();
+    const theirs = await vault.create(spaceId, memberId, {
+      site: 'leaving.example',
+      username: 'member@example.test',
+      password: 'their-own-password',
+    });
+    // A space they are still in.
+    await handle().sql`insert into space_membership (principal_id, space_id, role, generation)
+      values (${memberId}, ${otherSpaceId}, 'member', 1) on conflict do nothing`;
+    const elsewhere = await vault.create(otherSpaceId, memberId, {
+      site: 'leaving.example',
+      username: 'member@example.test',
+      password: 'their-own-password',
+    });
+    const owners = await vault.create(spaceId, ownerId, {
+      site: 'leaving.example',
+      username: USERNAME,
+      password: PASSWORD,
+    });
+    const theirRef = String((await rowOf(theirs.id))?.secret_ref);
+    // The room's work starts again behind the new roster; its queue is not under test.
+    const queue = { send: async () => null } as unknown as PgBoss;
+    const principals = new PrincipalService(db, tmpdir(), new JobService(db, queue));
+    await principals.revoke(memberId, spaceId, memberId);
+    expect(await rowOf(theirs.id)).toBeUndefined();
+    expect(await secretRow(theirRef)).toBeUndefined();
+    // What they keep in a space they are still in, and what others saved in the room, stay.
+    expect(await rowOf(elsewhere.id)).toBeDefined();
+    expect(await rowOf(owners.id)).toBeDefined();
+    await vault.delete(otherSpaceId, memberId, elsewhere.id);
+    await vault.delete(spaceId, ownerId, owners.id);
   });
 });

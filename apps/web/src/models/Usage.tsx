@@ -152,11 +152,14 @@ export function UsageNotice() {
 
 /**
  * The calm line above a chat's composer while a limit is close or reached,
- * with when it starts again. Read again each time `turns` changes, so it
- * appears as soon as the turn that crossed the line ends.
+ * with when it starts again. Read once when the chat opens and once each time
+ * a turn ends, so it appears as soon as the turn that crossed the line ends;
+ * a turn starting reads nothing, since nothing has been spent yet.
  */
-export function ChatCapBanner({ turns }: { turns: unknown }) {
-  const loaded = useLoad(() => usage(), [turns]);
+export function ChatCapBanner({ working }: { working: boolean }) {
+  const [seen, setSeen] = useState({ working, ended: 0 });
+  if (seen.working !== working) setSeen({ working, ended: working ? seen.ended : seen.ended + 1 });
+  const loaded = useLoad(() => usage(), [seen.ended]);
   return <CapBannerLine banner={capBanner(loaded.data?.notice)} />;
 }
 

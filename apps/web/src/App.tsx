@@ -285,6 +285,20 @@ export function App() {
     setGuest(false);
   }, []);
 
+  // An invite used here signed this browser in to another account: what was
+  // held for the previous one goes, and the profile is read for the new one.
+  const accountSwitched = useCallback(() => {
+    setAgents([]);
+    setRemovedAgents([]);
+    setAgentsLoaded(false);
+    askedAgents.current.clear();
+    setConversations([]);
+    setConversationsError(null);
+    setDecisions(NO_DECISIONS);
+    setOnboarded(false);
+    profile.reload();
+  }, [setOnboarded, profile.reload]);
+
   const signOut = useCallback(async () => {
     // Notifications stop here first, while the session can still say so.
     await stopPushHere();
@@ -331,10 +345,12 @@ export function App() {
       refreshConversations,
       refreshAgents,
       signOut,
+      accountSwitched,
       guest: guest && !signedOut,
     }),
     [
       signOut,
+      accountSwitched,
       guest,
       signedOut,
       signedIn,

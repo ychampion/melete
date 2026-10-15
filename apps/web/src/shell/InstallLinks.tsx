@@ -32,11 +32,24 @@ export function installLinks(settings: Settings | null | undefined): InstallLink
   return links;
 }
 
-// Asked once per page load: the operator's settings do not change while it is open.
+// Asked once per page load: the operator's settings do not change while it is
+// open. An answer that did not come is not kept, so the next page that shows
+// the links asks again.
 let asked: Promise<InstallLink[]> | null = null;
-const ask = () => {
-  asked ??= adapter.setupStatus().then((result) => installLinks(result.data));
-  return asked;
+export const ask = () => {
+  if (asked) return asked;
+  const asking = adapter.setupStatus().then(
+    (result) => {
+      if (result.data === null && asked === asking) asked = null;
+      return installLinks(result.data);
+    },
+    () => {
+      if (asked === asking) asked = null;
+      return [];
+    },
+  );
+  asked = asking;
+  return asking;
 };
 
 export function InstallLinksRow({ links }: { links: InstallLink[] }) {

@@ -518,16 +518,17 @@ describe('the price table', () => {
       ['claude-sonnet-5-5', 2, 10, 0.2],
       ['claude-haiku-5-5', 0.1, 0.5, 0.01],
     ] as const) {
-      expect(cost(model, { inputTokens: 1_000_000 })).toBeCloseTo(input, 6);
+      // A tenth of a million tokens, under Haiku 5.5's long-prompt line (prices.test.ts).
+      expect(cost(model, { inputTokens: 100_000 })).toBeCloseTo(input / 10, 6);
       expect(cost(model, { outputTokens: 1_000_000 })).toBeCloseTo(output, 6);
       // A cache read at its listed price (a twentieth of Opus 5.5's input, a
       // tenth of the others'), a five-minute write a quarter more than input.
-      expect(cost(model, { inputTokens: 1_000_000, cachedInputTokens: 1_000_000 })).toBeCloseTo(
-        cacheRead,
+      expect(cost(model, { inputTokens: 100_000, cachedInputTokens: 100_000 })).toBeCloseTo(
+        cacheRead / 10,
         6,
       );
-      expect(cost(model, { inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000 })).toBeCloseTo(
-        input * 1.25,
+      expect(cost(model, { inputTokens: 100_000, cacheWriteInputTokens: 100_000 })).toBeCloseTo(
+        (input * 1.25) / 10,
         6,
       );
     }

@@ -621,4 +621,48 @@ describeWithDb('a secondary model beside the primary', () => {
       fallback: [{ provider: 'fireworks', model: SPARE }],
     });
   }, 60_000);
+
+  test("the operator's background model never replaces the owner's own choice, a local primary, or a model with no key", async () => {
+    const api = service();
+    const { owner, member } = await people(api);
+    const CHEAP = 'accounts/fireworks/models/fixture-cheap';
+    const operator = routingFromEnv({ MELETE_MODEL_BACKGROUND: `fireworks/${CHEAP}` });
+    const background = async (routing: ModelRouting) =>
+      (
+        await api.settings.routedChoice(routing, database().db, {
+          spaceId: member.spaceId,
+          usageClass: 'background',
+        })
+      ).model;
+    expect(await background(operator)).toBe(CHEAP);
+    // Its provider has no key: the primary, rather than attempts that cannot reach a model.
+    expect(
+      await background(routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' })),
+    ).toBe(PRIMARY);
+    // A model the owner chose in the app is used exactly as chosen.
+    const CHOSEN = 'accounts/fireworks/models/fixture-chosen';
+    const chosen = await api.call(
+      '/model-settings/default',
+      owner.cookie,
+      put({ provider: 'fireworks', model: CHOSEN }),
+    );
+    expect(chosen.status).toBe(200);
+    expect(await background(operator)).toBe(CHOSEN);
+    // A primary on this machine keeps the work on it.
+    const local = service({
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'llama3.3',
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OPENAI_COMPAT_API_KEY: 'local-fixture-key-1a2b',
+    });
+    await api.call('/model-settings/default', owner.cookie, { method: 'DELETE' });
+    expect(
+      (
+        await local.settings.routedChoice(operator, database().db, {
+          spaceId: member.spaceId,
+          usageClass: 'background',
+        })
+      ).model,
+    ).toBe('llama3.3');
+  }, 60_000);
 });

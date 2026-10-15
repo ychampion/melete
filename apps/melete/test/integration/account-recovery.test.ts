@@ -256,6 +256,33 @@ describeWithDb('changing and resetting a password', () => {
     ).toBe(200);
   });
 
+  test('an invite used in a browser signed in to another account ends that sign-in', async () => {
+    const api = app();
+    const { here, elsewhere } = await signedIn(api);
+    const made = await createAccount(
+      database().sql,
+      'new.person@example.test',
+      'https://melete.test',
+    );
+    const code = (made.json as { code?: string }).code;
+    if (!made.ok || !code) throw new Error('the account was not made');
+    const before = await sessionCount();
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: code, new_password: 'my-own-password-1' }, here),
+    );
+    expect(used.status).toBe(200);
+    expect(await used.json()).toEqual({ status: 'ok', purpose: 'invite', signed_in: true });
+    const cookie = cookieOf(used);
+    expect(cookie).not.toBe(here);
+    // The owner's session this browser held is gone, not left behind the new cookie.
+    expect((await api.request('/me', { headers: { Cookie: here } })).status).toBe(401);
+    // The owner's other browsers are untouched, and the new person is signed in.
+    expect((await api.request('/me', { headers: { Cookie: elsewhere } })).status).toBe(200);
+    expect((await api.request('/me', { headers: { Cookie: cookie } })).status).toBe(200);
+    expect(await sessionCount()).toBe(before);
+  });
+
   test('an invite used twice, at once or one after the other, signs in exactly once', async () => {
     const { api, code } = await invited();
     const before = await sessionCount();

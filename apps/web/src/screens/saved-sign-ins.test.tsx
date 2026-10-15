@@ -76,6 +76,8 @@ test('an edit sends only what changed; blank keeps the saved password and code',
     policy: 'ask_first',
     label: 'Work',
   });
+  // An emptied name is sent as "", which puts the site's own name back.
+  expect(updateBody(signIn(), { ...draft, label: '  ' })).toEqual({ label: '' });
 });
 
 test('saved sign-ins are not shown where there is no browser', () => {

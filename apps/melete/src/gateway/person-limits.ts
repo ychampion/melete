@@ -36,6 +36,8 @@ const money = (value: unknown): number | null =>
 export class PersonLimitStore {
   private cached: { at: number; rows: Map<string, PersonCaps> } | null = null;
   private loading: Promise<Map<string, PersonCaps>> | null = null;
+  /** Counts `forget`s, so a read begun before a change is neither shared nor kept after it. */
+  private generation = 0;
 
   constructor(
     private readonly sql: Sql,
@@ -44,7 +46,9 @@ export class PersonLimitStore {
 
   private async rows(): Promise<Map<string, PersonCaps>> {
     if (this.cached && this.now() - this.cached.at < CACHE_MS) return this.cached.rows;
-    this.loading ??= this.sql<
+    if (this.loading) return this.loading;
+    const generation = this.generation;
+    const loading = this.sql<
       {
         principal_id: string;
         day_usd: number | null;
@@ -63,13 +67,14 @@ export class PersonLimitStore {
             background_day_usd: money(row.background_day_usd),
             background_month_usd: money(row.background_month_usd),
           });
-        this.cached = { at: this.now(), rows };
+        if (generation === this.generation) this.cached = { at: this.now(), rows };
         return rows;
       })
       .finally(() => {
-        this.loading = null;
+        if (this.loading === loading) this.loading = null;
       });
-    return this.loading;
+    this.loading = loading;
+    return loading;
   }
 
   /** Whether anyone has a cap of their own. */
@@ -105,7 +110,9 @@ export class PersonLimitStore {
 
   /** The next read goes to the database. */
   forget(): void {
+    this.generation++;
     this.cached = null;
+    this.loading = null;
   }
 }
 

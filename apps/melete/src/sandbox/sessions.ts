@@ -106,11 +106,17 @@ export type OpenSession = {
   /** The job's sandbox-time budget in seconds. Absent or null means no cap. */
   maxSandboxSeconds?: number | null;
   /**
-   * How many sandboxes may be running when this one opens: this connection's
-   * own allowance, and the whole installation's ceiling. Absent means neither
-   * is enforced.
+   * How many sandboxes may be running when this one opens: the allowance of
+   * the person the job is for, counted over every space they work in, and the
+   * whole installation's ceiling. Absent means neither is enforced.
+   *
+   * `perConnection` is the same person's allowance under the name its setting
+   * keeps (MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION); `perPerson` wins when
+   * both are given. It is not counted by connection: a connection is a
+   * space's, so that let one member's computer in a room refuse another
+   * member, and let one person run one computer in every room they are in.
    */
-  concurrency?: { perConnection: number; installation: number };
+  concurrency?: { perPerson?: number; perConnection?: number; installation: number };
 };
 
 export type WorkspacePersistence = Exclude<SessionPersistence, 'ephemeral'>;
@@ -433,31 +439,48 @@ export class SandboxSessions {
    * Both allowances, counted inside the transaction that writes the row and
    * behind one lock, so concurrent opens queue rather than all reading the same
    * count and passing. The lock is the installation's, which is what the
-   * ceiling belongs to; a connection's own allowance is counted under it too.
+   * ceiling belongs to; a person's own allowance is counted under it too.
+   *
+   * A computer is the person's whose work opened it: the member who asked,
+   * for a request of a room, else the job's own person, else, for a job with
+   * nobody, its space's owner, as slots are shared (`jobs/runner.ts`). Work
+   * nobody can be named for, in a space with no owner, keeps the allowance it
+   * had before people did: its connection's.
    */
   private async checkConcurrency(tx: TransactionSql, input: OpenSession, takesOver = false) {
     const limit = input.concurrency;
-    if (!limit || (!Number.isFinite(limit.perConnection) && !Number.isFinite(limit.installation)))
-      return;
+    const perPerson = limit?.perPerson ?? limit?.perConnection ?? Number.POSITIVE_INFINITY;
+    if (!limit || (!Number.isFinite(perPerson) && !Number.isFinite(limit.installation))) return;
     await tx`select pg_advisory_xact_lock(hashtext('sandbox-open'))`;
+    const [whose] = await tx<{ person: string | null }[]>`select
+        coalesce(j.requested_by_principal_id, j.principal_id, s.owner_principal_id) as person
+      from job j join space s on s.id = j.space_id where j.id = ${input.jobId}`;
+    const person = whose?.person ?? null;
     // A computer its processes keep running is running, so it counts. The one
     // this opening would take over is not counted: taking it over starts
     // nothing new.
     const [counted] = await tx`select count(*)::int as live,
-        count(*) filter (where connection_id = ${input.connectionId})::int as own
-      from sandbox_session where status in ('opening', 'ready')
+        count(*) filter (where case when ${person}::text is null
+          then ss.connection_id = ${input.connectionId}
+          else coalesce(j.requested_by_principal_id, j.principal_id, s.owner_principal_id)
+            = ${person} end)::int as own
+      from sandbox_session ss
+        left join job j on j.id = ss.job_id
+        left join space s on s.id = ss.space_id
+      where ss.status in ('opening', 'ready')
         ${
           takesOver && input.agentId
-            ? tx`and not (held_by is not distinct from 'processes' and space_id = ${input.spaceId}
-                and agent_id = ${input.agentId} and connection_id = ${input.connectionId})`
+            ? tx`and not (ss.held_by is not distinct from 'processes'
+                and ss.space_id = ${input.spaceId} and ss.agent_id = ${input.agentId}
+                and ss.connection_id = ${input.connectionId})`
             : tx``
         }`;
     const live = Number(counted?.live ?? 0);
     const mine = Number(counted?.own ?? 0);
-    // A connection's own limit first, when it is below the ceiling: each
-    // person's computer is their own connection, so that limit is theirs.
-    // At the ceiling or above, only the installation's limit can be reached.
-    if (limit.perConnection < limit.installation && mine >= limit.perConnection)
+    // The person's own limit first, when it is below the ceiling, counted over
+    // every space they are in and nobody else's computers. At the ceiling or
+    // above, only the installation's limit can be reached.
+    if (perPerson < limit.installation && mine >= perPerson)
       throw new SandboxRefusal(
         'concurrency_exhausted',
         computerLimitReached('person', mine),

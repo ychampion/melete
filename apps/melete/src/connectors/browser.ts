@@ -23,6 +23,7 @@ import { sensitiveName } from '../workers/browser/visible.ts';
 import {
   prepareSignIn,
   runSignIn,
+  SIGN_IN_DISPATCH_MS,
   SIGN_IN_TOOL,
   type SignInVaultPort,
   signInAsksFirst,
@@ -481,6 +482,8 @@ export function createBrowserConnector(options: {
 
   return {
     manifest: browserManifest,
+    /** A saved sign-in takes its password step and its code step; every other action the broker's own bound. */
+    dispatchBudgetMs: (action) => (action.kind === 'browser.sign_in' ? SIGN_IN_DISPATCH_MS : 0),
     /** A saved sign-in its person wants to be asked about is asked about. */
     asksFirst: signInAsksFirst,
     async validateBinding(action, ctx, tx) {

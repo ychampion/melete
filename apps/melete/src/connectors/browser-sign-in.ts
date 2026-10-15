@@ -25,7 +25,11 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import type { BrowserWorkerClient } from '../workers/browser/client.ts';
 import { BrowserFault } from '../workers/browser/sessions.ts';
-import { originOf, type SignInStepOutcome } from '../workers/browser/sign-in-page.ts';
+import {
+  originOf,
+  SIGN_IN_REQUEST_MS,
+  type SignInStepOutcome,
+} from '../workers/browser/sign-in-page.ts';
 import {
   maskUsername,
   type SignInVault,
@@ -35,6 +39,15 @@ import {
 } from './sign-in-vault.ts';
 import { currentCode } from './totp.ts';
 import type { ConnectorContext } from './types.ts';
+
+/**
+ * How long the broker waits for one `browser.sign_in` before its outcome is unknown: the
+ * password step and the code step may each take the service's whole wait for the worker
+ * (`SIGN_IN_REQUEST_MS`), and before them come the lease and up to two looks at the page, each
+ * bounded by a worker request's own 30 seconds; a minute more covers the vault. Waiting less
+ * would report a sign-in as unknown while the worker still signs in.
+ */
+export const SIGN_IN_DISPATCH_MS = 2 * SIGN_IN_REQUEST_MS + 4 * 30_000 + 60_000;
 
 /** The part of the vault the browser uses; a test may stand in for it. */
 export type SignInVaultPort = Pick<
@@ -206,8 +219,12 @@ const stepResult = z.object({
       'wrong_site',
       'insecure_site',
       'captcha',
+      'unsafe_form',
+      'username_sent',
     ]),
     at: z.string().max(300).optional(),
+    /** The username went to the site before the step ended. */
+    username_sent: z.boolean().optional(),
   }),
 });
 
@@ -254,11 +271,17 @@ type Settled = {
 
 function settle(
   step: SignInStepOutcome | 'code_refused',
-  host: string,
+  origin: string,
   account: string,
   at: string | undefined,
   hasCode: boolean,
+  usernameSent = false,
 ): Settled {
+  const host = siteOf(origin);
+  // Once the username went, the words never say nothing was typed.
+  const untyped = usernameSent
+    ? `the saved username was sent to ${host}, but the password wasn't typed`
+    : 'nothing was typed';
   switch (step) {
     case 'signed_in':
       return { outcome: 'signed_in', words: `Signed in as ${account} on ${host}.`, done: true };
@@ -301,9 +324,28 @@ function settle(
         done: false,
       };
     case 'wrong_site':
+      // Still on the saved site: its form or its script would have sent the sign-in elsewhere.
+      if (at === origin)
+        return {
+          outcome: 'wrong_site',
+          words: `The sign-in on ${host} sends to another address than the saved site, so the browser held it back. A saved sign-in is only sent to its own site.`,
+          done: false,
+        };
       return {
         outcome: 'wrong_site',
-        words: `The page isn't on ${host}${at ? ` (it is on ${siteOf(at)})` : ''}, so nothing was typed. A saved sign-in is only used on its own site.`,
+        words: `The page isn't on ${host}${at ? ` (it is on ${siteOf(at)})` : ''}, so ${untyped}. A saved sign-in is only used on its own site.`,
+        done: false,
+      };
+    case 'unsafe_form':
+      return {
+        outcome: 'form_not_found',
+        words: `The sign-in form on ${host} would put what is typed into it in the page's address, so it wasn't sent. The person can sign in to it in the browser themselves.`,
+        done: false,
+      };
+    case 'username_sent':
+      return {
+        outcome: 'form_not_found',
+        words: `The saved username was sent to ${host}, but no password field followed, so the password wasn't typed. Observe the page to see what it asks for.`,
         done: false,
       };
     case 'insecure_site':
@@ -368,13 +410,19 @@ export async function runSignIn(options: {
     sessionId = session.id;
     epoch = session.control_epoch;
     const send = async (operation: JsonObject) => {
+      // The worker bounds a sign-in step itself; waiting less would report a failure while the
+      // worker still signs in.
       const request = () =>
-        worker.request('/command', {
-          session_id: session.id,
-          job_id: ctx.job_id,
-          control_epoch: session.control_epoch,
-          operation,
-        });
+        worker.request(
+          '/command',
+          {
+            session_id: session.id,
+            job_id: ctx.job_id,
+            control_epoch: session.control_epoch,
+            operation,
+          },
+          SIGN_IN_REQUEST_MS,
+        );
       try {
         return stepResult.parse(await request());
       } catch (error) {
@@ -417,7 +465,14 @@ export async function runSignIn(options: {
         : second;
     });
     epoch = step.control_epoch;
-    settled = settle(step.result.sign_in, host, account, step.result.at, record.hasCode);
+    settled = settle(
+      step.result.sign_in,
+      record.origin,
+      account,
+      step.result.at,
+      record.hasCode,
+      step.result.username_sent,
+    );
     if (settled.handOff && sessionId)
       await options.handOff(ctx, sessionId, settled.handOff, record.origin, action).catch(() => {});
   } catch (error) {

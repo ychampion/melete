@@ -75,14 +75,14 @@ export type SavedSignInCreate = z.input<typeof savedSignInCreate>;
 /**
  * A change to a saved sign-in. Its site cannot change: a password belongs to
  * the site it was saved for, so another site is a new sign-in. `code_secret`
- * null removes the code.
+ * null removes the code; an empty `label` names it after its site again.
  */
 export const savedSignInUpdate = z
   .object({
     username: z.string().min(1).max(512).optional(),
     password: z.string().min(1).max(1024).optional(),
     code_secret: codeSecretInput.nullable().optional(),
-    label: z.string().trim().min(1).max(120).optional(),
+    label: z.string().trim().max(120).optional(),
     policy: savedSignInPolicy.optional(),
   })
   .strict()

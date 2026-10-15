@@ -76,8 +76,9 @@ export function updateBody(signIn: SavedSignIn, draft: Draft): SavedSignInUpdate
   if (draft.password) change.password = draft.password;
   if (draft.remove_code) change.code_secret = null;
   else if (draft.code_secret.trim()) change.code_secret = draft.code_secret.trim();
+  // A name emptied goes back to the site's own name: the service takes "" so.
   const label = draft.label.trim();
-  if (label && label !== signIn.label) change.label = label;
+  if (label !== signIn.label) change.label = label;
   const policy = draft.ask_first ? 'ask_first' : 'whenever_needed';
   if (policy !== signIn.policy) change.policy = policy;
   return Object.keys(change).length ? change : null;
@@ -507,7 +508,10 @@ export function SavedSignIns() {
       </div>
       <Dialog
         open={dialog !== null}
-        onClose={close}
+        onClose={() => {
+          // Escape or a click outside mid-save would lose the answer; it stays open.
+          if (!saving) close();
+        }}
         icon="lock"
         title={dialog?.editing ? `Edit ${dialog.editing.label}` : 'Add a sign-in'}
         width={480}

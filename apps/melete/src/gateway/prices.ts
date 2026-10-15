@@ -16,6 +16,10 @@
  * its own price. An entry that names none takes its provider's published share
  * of the input price (`CACHE_PRICE_SHARE`); a provider not listed there, an
  * operator's own endpoint included, is assumed to give no discount.
+ *
+ * A model that charges more for a long prompt carries that price as
+ * `long_prompt`: a call whose input, cached input included, is above `above`
+ * tokens is charged at it in full, as the provider charges it.
  */
 import { z } from 'zod';
 
@@ -28,6 +32,8 @@ export type ModelPrice = {
   cached_input?: number;
   /** Dollars per million input tokens written to the cache. Left out, the provider's share of `input`. */
   cache_write_input?: number;
+  /** The whole call's price when its prompt is above `above` tokens. */
+  long_prompt?: { above: number } & Omit<ModelPrice, 'long_prompt'>;
 };
 
 /**
@@ -91,11 +97,15 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   // The Claude 5.5 models at their list prices. A cache read is a tenth of the
   // input price, except on Opus 5.5, where it is a twentieth; a five-minute
   // cache write is a quarter more (CACHE_PRICE_SHARE).
-  // Haiku 5.5 charges five times as much for a prompt above 100,000 tokens,
-  // which one price per entry cannot say; the lower price is kept here.
+  // Haiku 5.5 charges five times as much for a prompt above 100,000 tokens.
   'anthropic/*opus-5-5*': { input: 4, output: 20, cached_input: 0.2 },
   'anthropic/*sonnet-5-5*': { input: 2, output: 10, cached_input: 0.2 },
-  'anthropic/*haiku-5-5*': { input: 0.1, output: 0.5, cached_input: 0.01 },
+  'anthropic/*haiku-5-5*': {
+    input: 0.1,
+    output: 0.5,
+    cached_input: 0.01,
+    long_prompt: { above: 100_000, input: 0.5, output: 2.5, cached_input: 0.05 },
+  },
   'openai/*': { input: 2.5, output: 10, cached_input: 0.25 },
   'openai/*mini*': { input: 0.4, output: 1.6, cached_input: 0.1 },
   'openai/*nano*': { input: 0.1, output: 0.4, cached_input: 0.025 },
@@ -110,12 +120,19 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'google/*embedding*': { input: 0.15, output: 0 },
 };
 
+const flatPrice = {
+  input: z.number().nonnegative().finite(),
+  output: z.number().nonnegative().finite(),
+  cached_input: z.number().nonnegative().finite().optional(),
+  cache_write_input: z.number().nonnegative().finite().optional(),
+};
 const priceSchema = z
   .object({
-    input: z.number().nonnegative().finite(),
-    output: z.number().nonnegative().finite(),
-    cached_input: z.number().nonnegative().finite().optional(),
-    cache_write_input: z.number().nonnegative().finite().optional(),
+    ...flatPrice,
+    long_prompt: z
+      .object({ above: z.number().int().nonnegative(), ...flatPrice })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -133,7 +150,7 @@ export function parseModelPrices(value: string | undefined): Record<string, Mode
   const result = z.record(z.string().min(1).max(400), priceSchema).safeParse(parsed);
   if (!result.success)
     throw new Error(
-      'MELETE_MODEL_PRICES entries are "provider/model": {"input": dollars, "output": dollars, "cached_input"?: dollars} per million tokens',
+      'MELETE_MODEL_PRICES entries are "provider/model": {"input": dollars, "output": dollars, "cached_input"?: dollars, "long_prompt"?: {"above": tokens, "input": dollars, "output": dollars}} per million tokens',
     );
   return result.data;
 }
@@ -177,6 +194,13 @@ export class PriceTable {
     return { ...fallback, entry: '*' };
   }
 
+  /** The price one call is charged at: the long-prompt price when its prompt is above the line. */
+  private priceOfCall(provider: string, model: string, usage: PricedUsage): ModelPrice {
+    const price = this.priceFor(provider, model);
+    const long = price.long_prompt;
+    return long && usage.inputTokens > long.above ? long : price;
+  }
+
   /** Dollars per million tokens for a cache read and a cache write of this model. */
   private cachePrices(provider: string, price: ModelPrice): { read: number; write: number } {
     const share = shareOf(provider);
@@ -192,7 +216,7 @@ export class PriceTable {
    * cache write at the write price.
    */
   cost(provider: string, model: string, usage: PricedUsage): number {
-    const price = this.priceFor(provider, model);
+    const price = this.priceOfCall(provider, model, usage);
     const cache = this.cachePrices(provider, price);
     const { cached, written, fresh } = split(usage);
     const dollars =
@@ -213,7 +237,7 @@ export class PriceTable {
    * with any input is never charged nothing.
    */
   chargedInputTokens(provider: string, model: string, usage: PricedUsage): number {
-    const price = this.priceFor(provider, model);
+    const price = this.priceOfCall(provider, model, usage);
     const share =
       price.input > 0
         ? (() => {

@@ -1,0 +1,1 @@
+CREATE INDEX "job_chat_principal_idx" ON "job" USING btree ("principal_id") WHERE "job"."kind" = 'chat';

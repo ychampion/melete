@@ -70,8 +70,40 @@ const FAULT_WORDS: Record<VaultFaultCode, string> = {
   changed: 'This sign-in changed while you were saving. Look at it again and retry.',
 };
 
+/**
+ * A changed key for a sign-in that also keeps a code secret: the password
+ * alone cannot save it again, since the code secret is sealed with it and is
+ * as unreadable, so the person is asked for both.
+ */
+const KEY_CHANGED_WITH_CODE =
+  'This sign-in was saved under a different installation key, so it can’t be opened. Enter its password and its code secret again to save it under the current key.';
+
 const fault = (code: VaultFaultCode, detail?: string) =>
   new VaultFault(code, detail ?? FAULT_WORDS[code]);
+
+/** The longest name a sign-in shows, as the list contract allows. */
+export const LABEL_MAX = 120;
+/** The longest host a site may have: a DNS name's limit, well inside the contract's 255. */
+const HOST_MAX = 253;
+
+/**
+ * `text` cut to at most `max` UTF-16 units (what the contract counts) without
+ * splitting a character, ending in an ellipsis when anything was cut.
+ */
+export function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let kept = '';
+  for (const character of text) {
+    if (kept.length + character.length > max - 1) break;
+    kept += character;
+  }
+  return `${kept}…`;
+}
+
+/** The name a sign-in is listed under: the one given, else its site, either within the limit. */
+function labelFor(given: string | undefined, origin: string): string {
+  return clipText(given?.trim() || siteOf(origin), LABEL_MAX);
+}
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -93,7 +125,11 @@ export function siteOrigin(input: string, options: { allowLoopbackHttp?: boolean
   }
   if (url.username || url.password) throw fault('invalid_site');
   const host = url.hostname.toLowerCase();
-  if (!host || (!host.includes('.') && !LOOPBACK.has(host) && !host.startsWith('[')))
+  if (
+    !host ||
+    host.length > HOST_MAX ||
+    (!host.includes('.') && !LOOPBACK.has(host) && !host.startsWith('['))
+  )
     throw fault('invalid_site');
   if (url.protocol === 'http:') {
     if (options.allowLoopbackHttp && LOOPBACK.has(host)) return url.origin.toLowerCase();
@@ -208,13 +244,17 @@ function recordOf(row: Row): VaultRecord {
   };
 }
 
-/** A saved sign-in as its person sees it in a list: the password is always the mask. */
+/**
+ * A saved sign-in as its person sees it in a list: the password is always the
+ * mask. What is shown is kept within the list's limits, so a row saved before
+ * they were checked on save still lists, and can still be deleted.
+ */
 export function publicSignIn(record: VaultRecord): SavedSignIn {
   return {
     id: record.id,
-    origin: record.origin,
-    site: siteOf(record.origin),
-    label: record.label,
+    origin: clipText(record.origin, 300),
+    site: clipText(siteOf(record.origin), 255),
+    label: clipText(record.label, LABEL_MAX) || clipText(siteOf(record.origin), LABEL_MAX),
     username: record.username,
     password: PASSWORD_MASK,
     has_code: record.hasCode,
@@ -352,7 +392,7 @@ export class SignInVault {
     const origin = this.origin(input.site);
     const totp = input.code_secret ? codeConfig(input.code_secret) : null;
     const id = recordId(ID_PREFIXES.saved_sign_in);
-    const label = input.label?.trim() || siteOf(origin);
+    const label = labelFor(input.label, origin);
     const sealed = await this.seal(spaceId, {
       sign_in: id,
       principal: principalId,
@@ -362,13 +402,30 @@ export class SignInVault {
       totp: totp ? sealableTotp(totp) : null,
     });
     try {
-      const [row] = await this.sql<Row[]>`insert into saved_sign_in
-        (id, space_id, principal_id, origin, label, username, secret_ref, key_id, has_code, policy)
-        values (${id}, ${spaceId}, ${principalId}, ${origin}, ${label}, ${input.username},
-          ${sealed.ref}, ${sealed.keyId}, ${totp !== null}, ${input.policy ?? 'whenever_needed'})
-        returning *`;
-      if (!row) throw fault('changed');
-      return publicSignIn(recordOf(row));
+      const row = await this.sql.begin(async (tx) => {
+        // The room is held as a removal of its members holds it (for update), so a save never
+        // crosses its person's leaving: one that lands after they left, when no one could see
+        // or delete it any more, is refused here, and its sealed copy forgotten below.
+        const [room] = await tx`select id from space
+          where id = ${spaceId} and removed_at is null for share`;
+        if (!room) throw fault('changed');
+        // Read after the hold, so it sees a leaving that committed while the save waited.
+        const [member] = await tx`select 1 as member from space s where s.id = ${spaceId}
+          and ((s.kind = 'personal'
+              and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
+            or exists (select 1 from space_membership m
+              where m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null
+                and (m.expires_at is null or m.expires_at > now())))`;
+        if (!member) throw fault('changed');
+        const [inserted] = await tx<Row[]>`insert into saved_sign_in
+          (id, space_id, principal_id, origin, label, username, secret_ref, key_id, has_code, policy)
+          values (${id}, ${spaceId}, ${principalId}, ${origin}, ${label}, ${input.username},
+            ${sealed.ref}, ${sealed.keyId}, ${totp !== null}, ${input.policy ?? 'whenever_needed'})
+          returning *`;
+        if (!inserted) throw fault('changed');
+        return inserted;
+      });
+      return publicSignIn(recordOf(row as Row));
     } catch (error) {
       await this.secrets.forget(sealed.ref, spaceId).catch(() => {});
       if (unique(error)) throw fault('duplicate');
@@ -383,13 +440,15 @@ export class SignInVault {
     change: SignInChange,
   ): Promise<SavedSignIn> {
     const record = await this.get(spaceId, principalId, id);
+    // A name cleared back to nothing is the site's name again.
+    const label = change.label === undefined ? record.label : labelFor(change.label, record.origin);
     const resealing =
       change.username !== undefined ||
       change.password !== undefined ||
       change.code_secret !== undefined;
     if (!resealing) {
       const [row] = await this.sql<Row[]>`update saved_sign_in set
-        label = ${change.label?.trim() || record.label},
+        label = ${label},
         policy = ${change.policy ?? record.policy}, updated_at = now()
         where id = ${id} and space_id = ${spaceId} and principal_id = ${principalId}
         returning *`;
@@ -404,7 +463,9 @@ export class SignInVault {
           : sealableTotp(codeConfig(change.code_secret));
     // A new password, with a new code or none, is everything there is to seal:
     // the old record need not open, so this is how a sign-in saved under an
-    // earlier key is saved again under the current one.
+    // earlier key is saved again under the current one. A sign-in with a code
+    // needs its code secret given again too, since the old one is sealed with
+    // the password: under another key the refusal asks for both.
     const whole = change.password !== undefined && (nextTotp !== undefined || !record.hasCode);
     const previous = whole
       ? null
@@ -425,7 +486,7 @@ export class SignInVault {
     let row: Row | undefined;
     try {
       [row] = await this.sql<Row[]>`update saved_sign_in set
-        username = ${username}, label = ${change.label?.trim() || record.label},
+        username = ${username}, label = ${label},
         policy = ${change.policy ?? record.policy}, secret_ref = ${sealed.ref},
         key_id = ${sealed.keyId}, has_code = ${totp !== null}, updated_at = now()
         where id = ${id} and space_id = ${spaceId} and principal_id = ${principalId}
@@ -469,7 +530,8 @@ export class SignInVault {
     use: (credential: SignInCredential) => Promise<T>,
   ): Promise<T> {
     const key = await this.currentKey();
-    if (key !== record.keyId) throw fault('key_changed');
+    if (key !== record.keyId)
+      throw fault('key_changed', record.hasCode ? KEY_CHANGED_WITH_CODE : undefined);
     let opened: SealedSignIn;
     try {
       opened = await this.secrets.withSecret(record.secretRef, record.spaceId, async (value) => {
@@ -576,15 +638,40 @@ export class SignInVault {
 /**
  * Every sign-in a person saved, in every space, gone with its sealed secrets:
  * for an account being deleted. Removing a sealed secret needs no key, so this
- * works even where the key is gone. Answers how many went.
+ * works even where the key is gone. Each sealed secret goes before its row, so
+ * a run that stops part way leaves the row to be found by the next run, never
+ * a sealed password nothing points at. Answers how many went.
  */
 export async function forgetSavedSignIns(sql: Sql, principalId: string): Promise<number> {
-  const rows = await sql<{ space_id: string; secret_ref: string }[]>`
-    delete from saved_sign_in where principal_id = ${principalId}
-    returning space_id, secret_ref`;
+  const rows = await sql<{ id: string; space_id: string; secret_ref: string }[]>`
+    select id, space_id, secret_ref from saved_sign_in where principal_id = ${principalId}`;
   const secrets = new PostgresSecretRepository(sql);
-  for (const row of rows) await secrets.forget(row.secret_ref, row.space_id);
-  return rows.length;
+  let gone = 0;
+  for (const row of rows) {
+    await secrets.forget(row.secret_ref, row.space_id);
+    const [deleted] = await sql<{ secret_ref: string }[]>`delete from saved_sign_in
+      where id = ${row.id} returning secret_ref`;
+    if (!deleted) continue;
+    gone += 1;
+    // Saved again in between: the copy it was saved under then goes too.
+    if (deleted.secret_ref !== row.secret_ref)
+      await secrets.forget(deleted.secret_ref, row.space_id);
+  }
+  return gone;
+}
+
+/**
+ * The sealed secrets of sign-ins whose rows a transaction has already
+ * deleted, once it has committed. One that cannot be removed now is left to
+ * the daily sweep of sealed secrets nothing points at (`revocation.ts`).
+ */
+export async function forgetSealedSignIns(
+  sql: Sql,
+  spaceId: string,
+  refs: readonly string[],
+): Promise<void> {
+  const secrets = new PostgresSecretRepository(sql);
+  for (const ref of refs) await secrets.forget(ref, spaceId);
 }
 
 /**

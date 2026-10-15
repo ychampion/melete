@@ -49,7 +49,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { backupNoteStatement } from '../../../../apps/melete/src/operator/backup-note.ts';
-import { recordBackup } from '../backup-age.ts';
+import { lastBackupPath, recordBackup } from '../backup-age.ts';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
@@ -729,8 +729,19 @@ export async function takeBackup(
         detail: `Kept the newest ${config.backup.keep}; removed ${removed.join(', ')}.`,
       });
   }
-  // Noted for check and status, which judge how old the newest backup is.
-  recordBackup(context.deployDir, started, location);
+  // Noted for check and status, which judge how old the newest backup is. The
+  // backup is whole whatever becomes of the note, so a note that cannot be
+  // written is said, never taken for a failed backup.
+  try {
+    recordBackup(context.deployDir, started, location);
+  } catch (error) {
+    const said = error instanceof Error ? error.message.split('\n')[0]?.slice(0, 200) : '';
+    results.push({
+      id: 'backup.recorded',
+      level: 'warn',
+      detail: `The backup is whole, but its time was not noted in ${lastBackupPath(context.deployDir)}, so check and status may judge the newest backup older than it is${said ? `: ${said}` : '.'}`,
+    });
+  }
   // And in the database, where the operator console reads it.
   const noted = context.run(psqlLine(compose, config, backupNoteStatement(name, started)));
   if (noted.code !== 0) {

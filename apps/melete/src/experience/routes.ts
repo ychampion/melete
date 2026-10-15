@@ -154,7 +154,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects, deps.liveness);
-  const starters = deps.sql ? new StarterService(deps.sql, deps.starters) : undefined;
+  const starters = deps.sql
+    ? new StarterService(deps.sql, deps.starters, (spaceId, recorded) =>
+        home.onboarded(spaceId, recorded),
+      )
+    : undefined;
   // Work rooms handed the person, shown on their Home and with their approvals.
   const handoffs = deps.jobs
     ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })

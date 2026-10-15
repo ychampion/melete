@@ -11,7 +11,12 @@ import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { MeleteMark } from '../design/mark.tsx';
 import { Button, Field, Input } from '../design/primitives.tsx';
-import { NEW_PASSWORD_MIN, passwordPageWords, resetCodeFrom } from '../experience/account.ts';
+import {
+  consumingAsAnotherAccount,
+  NEW_PASSWORD_MIN,
+  passwordPageWords,
+  resetCodeFrom,
+} from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
 import { linkParam, navigate, useRoute } from '../router.ts';
@@ -50,7 +55,7 @@ function Problem({ text }: { text: string }) {
 }
 
 function ChooseNew({ token, invite }: { token: string; invite: boolean }) {
-  const { refreshProfile, setOnboarded } = useApp();
+  const { accountSwitched, profile } = useApp();
   const words = passwordPageWords(invite);
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
@@ -96,16 +101,20 @@ function ChooseNew({ token, invite }: { token: string; invite: boolean }) {
         if (password !== again) return setNotice('The two passwords are not the same.');
         setBusy(true);
         setNotice(null);
-        void adapter.consumePasswordReset(token, password).then((result) => {
+        // An invite opened in a browser signed in to another account replaces
+        // that sign-in: its notifications stop here before the switch.
+        void consumingAsAnotherAccount(invite && profile !== null, () =>
+          adapter.consumePasswordReset(token, password),
+        ).then((result) => {
           setBusy(false);
           if (result.data) {
             // The used code leaves the address bar and the history entry.
             window.history.replaceState(null, '', `${window.location.pathname}#/reset`);
             if (result.data.signed_in) {
-              // An invite signs the person in: on to setting up, with no second sign-in.
-              setOnboarded(false);
+              // An invite signs the person in: on to setting up, with no second
+              // sign-in, and nothing the previous account had stays on screen.
+              accountSwitched();
               navigate('/setup');
-              refreshProfile();
               return;
             }
             setDone(true);

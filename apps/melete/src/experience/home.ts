@@ -87,23 +87,27 @@ export class ExperienceHome {
     /** Left out, the stored state is all there is to show. */
     readonly liveness?: ConnectionLiveness,
   ) {}
+  /**
+   * Whether the space's setup is done: recorded as done, or, for a space set
+   * up before setup was recorded here, it has an agent to show for it.
+   */
+  async onboarded(spaceId: string, recorded: boolean): Promise<boolean> {
+    if (recorded) return true;
+    // Read only while setup is not recorded, so a set-up account's profile needs no agent list.
+    const made = await this.db
+      .select({ id: agent.id })
+      .from(agent)
+      // Melete is in every space from the start, so only an agent the person made counts.
+      .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
+      .limit(1);
+    return made.length > 0;
+  }
   async profile(spaceId: string) {
     const [row] = await this.db
       .select()
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
-    // A space set up before setup was recorded here has an agent to show for it.
-    const onboarded =
-      Boolean(row?.onboardedAt) ||
-      // Read only while setup is not recorded, so a set-up account's profile needs no agent list.
-      (
-        await this.db
-          .select({ id: agent.id })
-          .from(agent)
-          // Melete is in every space from the start, so only an agent the person made counts.
-          .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
-          .limit(1)
-      ).length > 0;
+    const onboarded = await this.onboarded(spaceId, Boolean(row?.onboardedAt));
     return {
       profile: {
         ...profileInput.parse(

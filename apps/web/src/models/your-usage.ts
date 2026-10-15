@@ -50,6 +50,7 @@ export function shareUsed(spent: Spent, limit: Window): number | null {
 
 export type CapRow = {
   label: string;
+  /** "$4.20", or "123k" against a limit in tokens alone. */
   spent: string;
   /** "of $20.00", or null with no limit. */
   limit: string | null;
@@ -59,11 +60,18 @@ export type CapRow = {
   resets: string;
 };
 
+/** A count of tokens: "800", "123k". */
+const tokenCount = (tokens: number) =>
+  tokens < 1000 ? `${tokens}` : `${Math.round(tokens / 1000)}k`;
+
+/** A limit in tokens alone is read in tokens; any other in dollars. */
+const inTokens = (limit: Window) => limit.usd === null && limit.tokens !== null;
+
 const limitWords = (limit: Window) =>
   limit.usd !== null
     ? `of ${money(limit.usd)}`
     : limit.tokens !== null
-      ? `of ${Math.round(limit.tokens / 1000)}k tokens`
+      ? `of ${tokenCount(limit.tokens)} tokens`
       : null;
 
 const toneOf = (share: number | null): CapRow['tone'] =>
@@ -93,7 +101,7 @@ export function capRows(data: MyUsage, now = new Date(), timeZone?: string): Cap
     const share = limit ? shareUsed(spent, limit) : null;
     return {
       label,
-      spent: money(spent.usd),
+      spent: limit && inTokens(limit) ? tokenCount(spent.tokens) : money(spent.usd),
       limit: limit ? limitWords(limit) : null,
       share,
       tone: toneOf(share),

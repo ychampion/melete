@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -28,8 +28,272 @@ export type BrowserNetworkPolicy = {
  */
 export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human' | 'sign_in';
 
-/** The most requests that change something one sign-in step may send to its own site. */
+/**
+ * The most requests that change something one sign-in step may send to its own site. Past it,
+ * what the page's script sends is held back and the step goes on; a page's own document ends it.
+ */
 export const SIGN_IN_MUTATIONS = 16;
+
+/**
+ * A secret shorter than this is looked for only as a whole part of what is sent. Sites are
+ * expected to ask for at least 8 characters (NIST SP 800-63B's floor), so anything shorter is
+ * a PIN or a word, and words and numbers that short sit inside a site's own addresses by chance:
+ * `github` in github.com/login, `123456` in a cache-buster's timestamp. From 8 characters on, a
+ * secret of mixed kinds of characters is found anywhere it appears.
+ */
+export const WHOLE_SECRET_BELOW = 8;
+
+/** What splits text into parts when a secret is looked for whole: any field break of a form, JSON, multipart body or address. */
+const PART_BREAKS = /[\s&=?#/;:,"'{}[\]<>()]+/;
+
+/**
+ * Whether a secret is looked for only as a whole part (an address's path segment, query or
+ * fragment key or value, or a body's field): one that is short, or of letters alone or digits
+ * alone, which an ordinary word or number holds. One that a part break would cut in two is
+ * looked for anywhere, so the narrower match never misses it.
+ */
+function wholeOnly(secret: string): boolean {
+  if (PART_BREAKS.test(secret)) return false;
+  return secret.length < WHOLE_SECRET_BELOW || /^\d+$/.test(secret) || /^\p{L}+$/u.test(secret);
+}
+
+/**
+ * Percent escapes decoded one UTF-8 character at a time, so an escape that is no character (a
+ * stray `%`, or a password's own `%a5`) stays as written and hides nothing around it; `+` as a
+ * space when asked.
+ */
+function percentDecoded(text: string, plus: boolean): string {
+  const spaced = plus ? text.replace(/\+/g, ' ') : text;
+  return spaced.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    let decoded = '';
+    for (let index = 0; index < run.length; ) {
+      const lead = Number.parseInt(run.slice(index + 1, index + 3), 16);
+      const size =
+        lead < 0x80 ? 1 : lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
+      if (size && index + size * 3 <= run.length)
+        try {
+          decoded += decodeURIComponent(run.slice(index, index + size * 3));
+          index += size * 3;
+          continue;
+        } catch {}
+      decoded += run.slice(index, index + 3);
+      index += 3;
+    }
+    return decoded;
+  });
+}
+
+/** Percent escapes read as single bytes, as a page that is not UTF-8 encodes a form. */
+const latin1Decoded = (text: string, plus: boolean) =>
+  (plus ? text.replace(/\+/g, ' ') : text).replace(/%([0-9a-f]{2})/gi, (_hex, byte: string) =>
+    String.fromCharCode(Number.parseInt(byte, 16)),
+  );
+
+const JSON_ESCAPES: Record<string, string> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+const jsonUnescaped = (text: string) =>
+  text.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g, (_all, hex?: string, escaped?: string) =>
+    hex
+      ? String.fromCharCode(Number.parseInt(hex, 16))
+      : (JSON_ESCAPES[escaped ?? ''] ?? escaped ?? ''),
+  );
+
+/** How many readings of one text are tried, and how many rounds of decoding. */
+const MAX_READINGS = 32;
+const DECODE_ROUNDS = 3;
+
+/**
+ * Every way the text can be read back, decoded up to three times over: as it is, with percent
+ * escapes as UTF-8 or as single bytes, each with `+` kept or read as a space (a script that
+ * joins a password into an address leaves `+` as it is, a form turns a space into one), and
+ * with JSON escapes undone. So a password written once, twice, or by a mix of these is read.
+ */
+function readings(text: string): string[] {
+  const seen = new Set([text]);
+  let round = [text];
+  for (let pass = 0; pass < DECODE_ROUNDS && round.length; pass++) {
+    const next: string[] = [];
+    for (const value of round) {
+      const reads: string[] = [];
+      if (value.includes('%'))
+        reads.push(
+          percentDecoded(value, false),
+          percentDecoded(value, true),
+          latin1Decoded(value, false),
+          latin1Decoded(value, true),
+        );
+      else if (value.includes('+')) reads.push(value.replace(/\+/g, ' '));
+      if (value.includes('\\')) reads.push(jsonUnescaped(value));
+      for (const read of reads)
+        if (!seen.has(read) && seen.size < MAX_READINGS) {
+          seen.add(read);
+          next.push(read);
+        }
+    }
+    round = next;
+  }
+  return [...seen];
+}
+
+/**
+ * The parts of a text a whole secret is matched against: an address's credentials, path
+ * segments, and the keys and values of its query and fragment (never its host, which names the
+ * site); a body's fields, split at every break of a form, JSON or multipart body.
+ */
+function partsOf(text: string): string[] {
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const url = new URL(text);
+      const fields = (list: string) =>
+        list.split('&').flatMap((pair) => {
+          const at = pair.indexOf('=');
+          return at < 0 ? [pair] : [pair.slice(0, at), pair.slice(at + 1)];
+        });
+      const fragment = url.hash.slice(1);
+      return [
+        url.username,
+        url.password,
+        ...url.pathname.split('/'),
+        ...fields(url.search.slice(1)),
+        fragment,
+        ...fields(fragment),
+      ].filter(Boolean);
+    } catch {}
+  }
+  return text.split(PART_BREAKS).filter(Boolean);
+}
+
+/**
+ * The secret as base64 writes it, at each of the three places it can start within what is
+ * encoded, so `btoa(password)` or `btoa(user + ':' + password)` is found too; standard and URL
+ * alphabets. Only the characters the secret's bytes alone decide are kept.
+ */
+function base64Forms(secret: string): string[] {
+  const encodings = [Buffer.from(secret, 'utf8')];
+  if (!/[Ā-￿]/.test(secret) && /[\x80-\xff]/.test(secret))
+    encodings.push(Buffer.from(secret, 'latin1'));
+  const forms = new Set<string>();
+  for (const bytes of encodings)
+    for (const [lead, start] of [
+      [0, 0],
+      [1, 2],
+      [2, 3],
+    ] as const) {
+      const encoded = Buffer.concat([Buffer.alloc(lead), bytes]).toString('base64');
+      const piece = encoded.slice(start, Math.floor(((lead + bytes.length) * 8) / 6));
+      if (piece.length >= WHOLE_SECRET_BELOW)
+        forms.add(piece).add(piece.replace(/\+/g, '-').replace(/\//g, '_'));
+    }
+  return [...forms];
+}
+
+/**
+ * Whether text a page would send, an address or a body, holds a secret, however the page wrote
+ * it there: as typed, percent-encoded (as UTF-8 or single bytes), form-encoded, JSON-escaped,
+ * base64, or any mix of these up to three times over. A short secret, or one of letters or
+ * digits alone, counts only as a whole part of the text (see `wholeOnly`).
+ */
+export function carriesSecret(text: string, secret: string): boolean {
+  if (!secret || !text) return false;
+  const forms = secretForms(secret);
+  if (wholeOnly(secret))
+    return partsOf(text).some((part) => readings(part).some((read) => forms.includes(read)));
+  if (text.includes(secret)) return true;
+  return readings(text).some((read) => forms.some((form) => read.includes(form)));
+}
+
+/**
+ * The forms a secret is looked for in: itself, each reading of it (so a password holding its
+ * own `%41` or `+` is read back as the text it was joined into is), the same without the spaces
+ * at its ends that an address drops when it ends with them, and its base64 forms. Looked for
+ * anywhere, a reading of fewer than four characters besides spaces is left out: `%20%20` read
+ * as two spaces would be found in everything.
+ */
+function secretForms(secret: string): string[] {
+  const trimmed = secret.trim();
+  const reads = new Set([
+    ...readings(secret),
+    ...(trimmed && trimmed !== secret ? readings(trimmed) : []),
+  ]);
+  if (wholeOnly(secret)) return [...reads];
+  return [
+    ...[...reads].filter((read) => read === secret || read.trim().length >= 4),
+    ...base64Forms(secret),
+  ];
+}
+
+/**
+ * What a sign-in step leaves behind of a password, so a later look at the page can tell an
+ * address that carries it without the password being kept: a keyed hash of each form the
+ * password is looked for in (itself, and its base64 forms), under a key made for this print
+ * alone. A cheap rolling hash of each form finds the places worth hashing; the keyed hash
+ * decides. Neither gives the password back.
+ */
+export type SecretPrint = {
+  whole: boolean;
+  key: Buffer;
+  base: number;
+  forms: Array<{ length: number; roll: number; digest: string }>;
+};
+
+const keyedHash = (key: Buffer, text: string) =>
+  createHmac('sha256', key).update(text, 'utf8').digest('hex');
+
+/** A polynomial hash of `text`'s UTF-16 units, modulo 2^32, with an odd base. */
+function rollOf(text: string, base: number): number {
+  let hash = 0;
+  for (let index = 0; index < text.length; index++)
+    hash = (Math.imul(hash, base) + text.charCodeAt(index)) >>> 0;
+  return hash;
+}
+
+export function secretPrint(secret: string): SecretPrint {
+  const key = randomBytes(32);
+  const base = (key.readUInt32LE(0) | 1) >>> 0;
+  const whole = wholeOnly(secret);
+  const forms = secretForms(secret);
+  return {
+    whole,
+    key,
+    base,
+    forms: forms.map((form) => ({
+      length: form.length,
+      roll: rollOf(form, base),
+      digest: keyedHash(key, form),
+    })),
+  };
+}
+
+/** Whether `text` holds the printed secret, read exactly as `carriesSecret` reads it. */
+export function printCarried(text: string, print: SecretPrint): boolean {
+  if (!text) return false;
+  const matches = (candidate: string, form: SecretPrint['forms'][number]) =>
+    keyedHash(print.key, candidate) === form.digest;
+  if (print.whole)
+    return partsOf(text).some((part) =>
+      readings(part).some((read) =>
+        print.forms.some((form) => read.length === form.length && matches(read, form)),
+      ),
+    );
+  for (const read of readings(text))
+    for (const form of print.forms) {
+      const length = form.length;
+      if (read.length < length) continue;
+      // The base to the power of the window's length, to take its first unit off again.
+      let top = 1;
+      for (let index = 0; index < length; index++) top = Math.imul(top, print.base) >>> 0;
+      let hash = rollOf(read.slice(0, length), print.base);
+      for (let start = 0; ; start++) {
+        if (hash === form.roll && matches(read.slice(start, start + length), form)) return true;
+        if (start + length >= read.length) break;
+        hash =
+          (Math.imul(hash, print.base) +
+            read.charCodeAt(start + length) -
+            Math.imul(read.charCodeAt(start), top)) >>>
+          0;
+      }
+    }
+  return false;
+}
 
 /** A person's live channel: any method inside the takeover's site scope, nothing outside it. */
 export type BrowserHumanWindow = {
@@ -386,6 +650,34 @@ export const pinnedBrowserRequest: BrowserNetworkTransport = (url, address, opti
     req.end(options.body);
   });
 
+/** A write a sign-in step held back, and whether it may have been the sign-in itself. */
+export type HeldSignInWrite = {
+  method: string;
+  host: string;
+  /** Held only because the step had sent its budget of writes. */
+  budget: boolean;
+  /** Its body held the password, the username or the code, or its address is named for signing in. */
+  credentials: boolean;
+};
+
+/** An address's path named for signing in: where a site's script sends a sign-in. */
+const SIGN_IN_PATH =
+  /(^|[^a-z])(log.?in|log.?on|sign.?in|sign.?on|session|sessions|auth|oauth2?|authenticate|token|sso|password|passwd|credentials?|identity|identifier|verify|mfa|otp)([^a-z]|$)/i;
+
+/** Whether a write's body carries the password or what else the step typed. */
+function carriesTyped(operation: Operation, body: Buffer | null): boolean {
+  if (!body?.length) return false;
+  const text = body.toString('utf8');
+  return [operation.secret, ...operation.typed].some(
+    (value) => value !== undefined && carriesSecret(text, value),
+  );
+}
+
+/** Whether a write a sign-in step held back may have been the sign-in itself. */
+function maySignIn(operation: Operation, url: URL, body: Buffer | null): boolean {
+  return carriesTyped(operation, body) || SIGN_IN_PATH.test(url.pathname);
+}
+
 type Operation = {
   mode: BrowserNetworkMode;
   human: BrowserHumanWindow | undefined;
@@ -394,6 +686,10 @@ type Operation = {
   origin: string | undefined;
   commit: BrowserCommitBinding | undefined;
   guard: (() => void) | undefined;
+  /** A sign-in step's password: never in any address, and never in a body to another origin. */
+  secret: string | undefined;
+  /** What else the step typed (the username, a code): a body holding it is the sign-in itself. */
+  typed: readonly string[];
   requests: number;
   mutations: number;
   pending: Set<Promise<void>>;
@@ -459,6 +755,8 @@ export function createBrowserEgress(
    * each held back, until the controller takes them.
    */
   const dropped = new Set<string>();
+  /** The writes a sign-in step held back, until the controller takes them. */
+  const signInHeld: HeldSignInWrite[] = [];
 
   async function checkAddress(
     url: URL,
@@ -543,12 +841,25 @@ export function createBrowserEgress(
     if (operation.mode === 'navigate' && !read) {
       networkError('mutation_requires_commit', 'browser mutation requires an approved submit');
     }
+    const secret = operation.mode === 'sign_in' ? operation.secret : undefined;
+    // An address is logged, shown and kept, by the browser and by every site it passes: a form
+    // or a script that puts the password in one is refused, whatever its method or site.
+    if (secret && carriesSecret(url.href, secret))
+      networkError('sign_in_secret_in_url', 'a saved password is never sent in an address');
     if (operation.mode === 'sign_in' && !read) {
-      // A saved sign-in is sent to the site it was saved for and nowhere else.
+      // A saved sign-in is sent to the site it was saved for and nowhere else. A request that
+      // carries the password elsewhere ends the step; it is never quietly held back as a beacon.
       if (url.origin !== operation.origin)
-        networkError('sign_in_origin', 'a saved sign-in is sent only to its own site');
+        networkError(
+          secret && body && carriesSecret(body.toString('utf8'), secret)
+            ? 'sign_in_secret_elsewhere'
+            : 'sign_in_origin',
+          'a saved sign-in is sent only to its own site',
+        );
       operation.mutations += 1;
-      if (operation.mutations > SIGN_IN_MUTATIONS)
+      // The sign-in itself is never held back for the budget, however busy the page was before
+      // it: a write whose body carries what the step typed goes.
+      if (operation.mutations > SIGN_IN_MUTATIONS && !carriesTyped(operation, body))
         networkError('sign_in_budget', 'a sign-in step sent more requests than a sign-in needs');
     }
     if (operation.mode === 'commit') {
@@ -802,12 +1113,24 @@ export function createBrowserEgress(
       } else if (
         pageResource &&
         error instanceof BrowserNetworkError &&
-        (error.code === 'mutation_requires_commit' || error.code === 'sign_in_origin')
+        (error.code === 'mutation_requires_commit' ||
+          error.code === 'sign_in_origin' ||
+          error.code === 'sign_in_budget')
       ) {
         // Something the page sends as it loads (an analytics beacon, a log) is held back, as
         // every change is outside an approved submit, and the page loads without it; the look
-        // after says what was held back.
-        if (url) dropped.add(`${route.request().method()} ${hostname(url)}`);
+        // after says what was held back. So is what a page's script sends past a sign-in step's
+        // budget; the sign-in itself is never among it (see admitRequest).
+        if (url) {
+          dropped.add(`${route.request().method()} ${hostname(url)}`);
+          if (operation?.mode === 'sign_in')
+            signInHeld.push({
+              method: route.request().method(),
+              host: hostname(url),
+              budget: error.code === 'sign_in_budget',
+              credentials: maySignIn(operation, url, route.request().postDataBuffer()),
+            });
+        }
       } else if (operation && operation.mode !== 'human' && !operation.error) {
         // A person's refused request fails alone; it never ends the takeover's network window.
         operation.error =
@@ -853,6 +1176,11 @@ export function createBrowserEgress(
       const hosts = [...unreachable].sort();
       unreachable.clear();
       return hosts;
+    },
+
+    /** The writes sign-in steps held back since the last call, in order, then forgets them. */
+    takeSignInHeld(): HeldSignInWrite[] {
+      return signInHeld.splice(0);
     },
 
     /** The requests held back while a page loaded since the last call, then forgets them. */
@@ -904,6 +1232,10 @@ export function createBrowserEgress(
       commit?: BrowserCommitBinding,
       guard?: () => void,
       human?: BrowserHumanWindow,
+      /** A sign-in step's password, which no request may carry in its address. */
+      secret?: string,
+      /** What else a sign-in step typed: a write that carries it is never held for the budget. */
+      typed: readonly string[] = [],
     ): Promise<T> {
       if (!context || closed)
         networkError('network_closed', 'browser network guard is not available');
@@ -938,6 +1270,8 @@ export function createBrowserEgress(
         origin,
         commit: binding,
         guard,
+        secret: mode === 'sign_in' ? secret : undefined,
+        typed: mode === 'sign_in' ? typed.filter(Boolean) : [],
         requests: 0,
         mutations: 0,
         pending: new Set(),

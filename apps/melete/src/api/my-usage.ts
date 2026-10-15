@@ -16,7 +16,7 @@
 import { myUsageResponse, type UsageRun } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
-import { periodBounds, type SpendingGuard } from '../gateway/spending.ts';
+import { isSet, periodBounds, type SpendingGuard } from '../gateway/spending.ts';
 import { usageSeries } from '../gateway/usage-day.ts';
 
 const RUN_LIMIT = 20;
@@ -77,22 +77,27 @@ export async function myUsage(
 ) {
   const { monthStart } = periodBounds(now);
   const month = monthStart.toISOString();
-  // The installation's own warnings are its runner's business; a reached one
-  // still shows, since it holds this person's calls back too.
-  const summary = await spending.summary(personId, false);
+  const [summary, days, [computer], runs] = await Promise.all([
+    // The installation's own warnings are its runner's business; a reached one
+    // still shows, since it holds this person's calls back too.
+    spending.summary(personId, false),
+    usageSeries(sql, personId, now, now.getUTCDate()),
+    sql`select coalesce(sum(a.seconds), 0)::float8 as seconds
+      from sandbox_awake_day a join space s on s.id = a.space_id
+      where a.day >= ${month.slice(0, 10)}::date
+        and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${personId}`,
+    recentRuns(sql, personId, month),
+  ]);
   const spent = summary.person ?? {
     month: { usd: 0, tokens: 0 },
     day: { usd: 0, tokens: 0 },
   };
   const limits = summary.limits;
-  const set = (window: { usd: number | null; tokens: number | null }) =>
-    window.usd !== null || window.tokens !== null;
   const background = limits.background ?? null;
   const capped =
-    set(limits.person.month) ||
-    set(limits.person.day) ||
-    (background !== null && (set(background.month) || set(background.day)));
-  const days = await usageSeries(sql, personId, now, now.getUTCDate());
+    isSet(limits.person.month) ||
+    isSet(limits.person.day) ||
+    (background !== null && (isSet(background.month) || isSet(background.day)));
   const kinds = (['interactive', 'background'] as const).map((usageClass) => {
     const rows = summary.by_purpose.filter((row) => row.class === usageClass);
     return {
@@ -102,10 +107,6 @@ export async function myUsage(
       tokens: rows.reduce((sum, row) => sum + row.tokens, 0),
     };
   });
-  const [computer] = await sql`select coalesce(sum(a.seconds), 0)::float8 as seconds
-    from sandbox_awake_day a join space s on s.id = a.space_id
-    where a.day >= ${month.slice(0, 10)}::date
-      and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${personId}`;
   return myUsageResponse.parse({
     month_start: summary.month_start,
     month_resets_at: summary.month_resets_at,
@@ -120,14 +121,14 @@ export async function myUsage(
           month: limits.person.month,
           day: limits.person.day,
           background:
-            background && (set(background.month) || set(background.day)) ? background : null,
+            background && (isSet(background.month) || isSet(background.day)) ? background : null,
         }
       : null,
     notice: summary.notice,
     days,
     kinds,
     computer_seconds: Math.round(Number(computer?.seconds ?? 0)),
-    runs: await recentRuns(sql, personId, month),
+    runs,
   });
 }
 

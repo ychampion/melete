@@ -210,6 +210,8 @@ export class AttemptRunner {
   private stopping = false;
   scheduler: FairScheduler;
   private readonly wakes = new Set<Promise<void>>();
+  /** Wakes waiting in the scheduler for their person's own limit, by job, epoch and version. */
+  private readonly held = new Set<string>();
   /** Wait registration is supplied by the trigger service, inside the outcome transaction. */
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
@@ -265,14 +267,22 @@ export class AttemptRunner {
   }
 
   /**
-   * Whose turn a wake is, for sharing slots fairly: the job's person, else
-   * its space's owner. A job that is gone has nobody, and its wake is dropped
-   * when it runs.
+   * Whose turn a wake is, for sharing slots fairly: the person whose calls it
+   * will make, as spending charges them (`PERSON_FOR_JOB` in
+   * gateway/spending.ts): whoever spoke last in its conversation, else the
+   * job's person, else its space's owner. A job that is gone has nobody, and
+   * its wake is dropped when it runs.
    */
   async personForWake(jobId: string): Promise<string | undefined> {
     const [row] = await this.jobs.db
       .select({
-        person: sql<string | null>`coalesce(${job.principalId}, ${space.ownerPrincipalId})`,
+        person: sql<string | null>`coalesce(
+          (select ${event.payload}->>'principal_id' from ${event}
+            where ${event.jobId} = ${job.id} and ${event.type} = 'notice'
+              and ${event.payload}->>'kind' = 'user_message'
+              and ${event.payload}->>'principal_id' is not null
+            order by ${event.seq} desc limit 1),
+          ${job.principalId}, ${space.ownerPrincipalId})`,
       })
       .from(job)
       .innerJoin(space, eq(space.id, job.spaceId))
@@ -1622,6 +1632,9 @@ export class AttemptRunner {
           !['queued', 'waiting_for_event_or_time'].includes(row.state)
         )
           return;
+        // Held here for its person's own limit: it starts from this process,
+        // and a copy would only be dropped (and kept by the queue for days).
+        if (this.held.has(`${row.id}:${row.leaseEpoch}:${row.stateVersion}`)) return;
         const live = await tx.execute(
           sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
         );
@@ -1969,7 +1982,8 @@ export class AttemptRunner {
     await this.recover();
     // Each queue hands over more wakes than can run, so one that has to wait
     // waits here, in the scheduler's fair order, where its conversation can be
-    // told so, rather than unseen in the queue.
+    // told so, rather than unseen in the queue. One held by its person's own
+    // limit lets its worker go (`scheduledWake`).
     for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
       await workQuiet<AttemptWake>(
         this.jobs.boss,
@@ -2001,19 +2015,47 @@ export class AttemptRunner {
   }
 
   private async scheduledWake(scheduling: SchedulingClass, wake: AttemptWake) {
+    const key = `${wake.job_id}:${wake.expected_epoch}:${wake.expected_version}`;
+    // A copy of a wake already held here (the recovery scan sent it again) is done.
+    if (this.held.has(key)) return;
     try {
       const person = await this.personForWake(wake.job_id);
-      const reason = this.scheduler.waitReason(person);
+      const reason = this.scheduler.waitReason(person, scheduling);
       if (reason) {
-        // What holds it back: every slot, or this person's own share of them.
+        // What holds it back: every slot, or this person's own limit.
         const running =
-          reason === 'person' && person
-            ? this.scheduler.activeFor(person)
-            : this.scheduler.activeCount;
+          reason === 'person' ? this.scheduler.activeFor(person) : this.scheduler.activeCount;
         void this.noteWaiting(wake, running).catch((error: unknown) =>
           process.stderr.write(`waiting note not recorded: ${String(error)}
 `),
         );
+      }
+      if (this.held.has(key)) return;
+      if (this.scheduler.heldByOwnLimit(scheduling, person)) {
+        // It waits for its person's own limit, which could take as long as
+        // their running work does. It waits here instead of in the queue's
+        // fetch worker, so the worker goes on to fetch other people's wakes
+        // while slots are free. Its queue job is done; until it starts, the
+        // recovery scan sends it again each minute, as for any wake not in the
+        // queue, so one lost with this process is found again, and a copy that
+        // reaches this process is dropped above.
+        this.held.add(key);
+        void this.scheduler
+          .run(
+            scheduling,
+            () => {
+              this.held.delete(key);
+              return this.handleWake(wake);
+            },
+            person,
+          )
+          .catch((error: unknown) => {
+            if (!this.stopping)
+              process.stderr.write(`held wake for ${wake.job_id} failed: ${String(error)}
+`);
+          })
+          .finally(() => this.held.delete(key));
+        return;
       }
       await this.scheduler.run(scheduling, () => this.handleWake(wake), person);
     } catch (error) {
