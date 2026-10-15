@@ -101,6 +101,12 @@ export const TEAM_ACCOUNT_APPROVERS_LINE: Record<RoomTeamAccountApprovers, strin
   owners: "What it does through the room's own accounts is answered only by the room's owners.",
 };
 
+/** Who answers what goes through the room's command-line accounts, whatever the room's rules say. */
+export const COMMAND_LINE_APPROVERS_LINE = {
+  team: "Changes made with a command-line account the room uses are answered only by the room's owners.",
+  own: "Where a command-line account is set to each person's own, it uses the account of the person who asked, and only they answer changes made with it.",
+} as const;
+
 /**
  * The thread a room request was asked in, for its attempt. The request's own
  * messages are left out: they reach the attempt as its own input, named by the
@@ -193,11 +199,23 @@ export async function roomTranscript(
   const team = policy?.teamAccountApprovers === 'owners' ? 'owners' : 'any_member';
   // The team-account rule is said only where the room has accounts of its own
   // still connected (counted as `isTeamAccount` in `approvals.ts` counts them).
-  const accounts = await tx.execute(sql`select 1 from connection where space_id = ${row.spaceId}
-    and shared_use = 'room' and status <> 'revoked' and not (configuration ? 'builtin') limit 1`);
+  const accounts = (await tx.execute(sql`select provider, per_member from connection
+    where space_id = ${row.spaceId} and shared_use = 'room' and status <> 'revoked'
+      and not (configuration ? 'builtin')`)) as unknown as Array<{
+    provider: string;
+    per_member: boolean;
+  }>;
   const general =
     APPROVERS_LINE[rule === 'requester' && asker?.kind === 'guest' ? 'owners' : rule] ??
     APPROVERS_LINE.requester;
-  const approvers = accounts.length ? `${general} ${TEAM_ACCOUNT_APPROVERS_LINE[team]}` : general;
+  const commandLine = accounts.filter((account) => account.provider === 'command_line');
+  const approvers = [
+    general,
+    ...(accounts.length > commandLine.length ? [TEAM_ACCOUNT_APPROVERS_LINE[team]] : []),
+    ...(commandLine.some((account) => !account.per_member)
+      ? [COMMAND_LINE_APPROVERS_LINE.team]
+      : []),
+    ...(commandLine.some((account) => account.per_member) ? [COMMAND_LINE_APPROVERS_LINE.own] : []),
+  ].join(' ');
   return { thread, names, requester, approvers };
 }

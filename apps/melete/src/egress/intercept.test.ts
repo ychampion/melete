@@ -38,6 +38,7 @@ async function setup(
     holdMaxBytes?: number;
     computerBodyBytes?: number;
     deadlineAt?: number;
+    use?: { missing?: string; readOnly?: string };
   } = {},
 ) {
   const opened: EgressRecordOpen[] = [];
@@ -48,6 +49,7 @@ async function setup(
     readOnlyHosts: ['mirror.creds.test'],
     ...(options.admitWrite ? { admitWrite: options.admitWrite } : {}),
     none: () => options.none === true,
+    ...(options.use ? { use: options.use } : {}),
   });
   const route = { address: { address: '127.0.0.1', family: 4 as const }, port: upstream.port };
   const guard = new SandboxEgressGuard({
@@ -224,6 +226,64 @@ describe('a connected host', () => {
     expect(answer?.status).toBe(403);
     expect(answer?.body).toContain('read only');
     expect(upstream.seen).toEqual([]);
+  });
+});
+
+describe("a room's account set to each person's own", () => {
+  test('with no account of their own, every request is answered with the note and nothing is sent', async () => {
+    let asked = 0;
+    const missing =
+      "This room uses each person's own GitHub account, and Ana has not connected one yet.";
+    const { relayPort, token, ca } = await setup({
+      use: { missing },
+      admitWrite: async (input) => {
+        asked += 1;
+        return { kind: 'sent', actionId: 'act_SENT', result: await input.forward() };
+      },
+    });
+    const answers = await throughRelay({
+      relayPort,
+      host: HOST,
+      ca,
+      token,
+      requests: [
+        rawRequest('GET', HOST, '/user'),
+        rawRequest('POST', HOST, '/repos', { body: 'x' }),
+      ],
+    });
+    expect(answers.map((answer) => [answer.status, answer.body.trim()])).toEqual([
+      [403, missing],
+      [403, missing],
+    ]);
+    expect(asked).toBe(0);
+    expect(upstream.seen).toEqual([]);
+  });
+
+  test('an own account connected for reading reads, and no change through it is even asked for', async () => {
+    let asked = 0;
+    const readOnly =
+      "This room uses each person's own GitHub account, and Ana connected theirs for reading only.";
+    const { relayPort, token, ca } = await setup({
+      use: { readOnly },
+      admitWrite: async (input) => {
+        asked += 1;
+        return { kind: 'sent', actionId: 'act_SENT', result: await input.forward() };
+      },
+    });
+    const [read, change] = await throughRelay({
+      relayPort,
+      host: HOST,
+      ca,
+      token,
+      requests: [rawRequest('GET', HOST, '/user'), rawRequest('DELETE', HOST, '/repos/a/b')],
+    });
+    expect(read?.status).toBe(200);
+    expect(change?.status).toBe(403);
+    expect(change?.body.trim()).toBe(readOnly);
+    expect(asked).toBe(0);
+    expect(upstream.seen.map((request) => [request.method, request.headers.authorization])).toEqual(
+      [['GET', `Bearer ${SECRET}`]],
+    );
   });
 });
 

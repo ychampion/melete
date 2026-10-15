@@ -340,9 +340,19 @@ export const roomConnection = z.strictObject({
   shared_use: z.enum(['owner', 'room']),
   /** One of the tools every room has (its files, the web, its computer), not an account someone added. */
   builtin: z.boolean(),
+  /**
+   * A command-line account (GitHub, GitLab, npm, AWS) the room uses, set so
+   * each person's request uses that person's own account of the same kind
+   * instead of this one. Only a command-line connection serving the room may be.
+   */
+  per_member: z.boolean(),
 });
 export const roomConnectionList = z.strictObject({ connections: z.array(roomConnection) });
-export const roomConnectionUpdate = z.strictObject({ shared_use: z.enum(['owner', 'room']) });
+/** Who a connection serves, and for a command-line one, whether each person uses their own account. */
+export const roomConnectionUpdate = z.strictObject({
+  shared_use: z.enum(['owner', 'room']).optional(),
+  per_member: z.boolean().optional(),
+});
 export const roomConnectionResponse = z.strictObject({ connection: roomConnection });
 
 /**

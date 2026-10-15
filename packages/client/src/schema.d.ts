@@ -18695,8 +18695,9 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
+                        per_member?: boolean;
                         /** @enum {string} */
-                        shared_use: "owner" | "room";
+                        shared_use?: "owner" | "room";
                     };
                 };
             };
@@ -25632,6 +25633,7 @@ export interface components {
             builtin: boolean;
             id: components["schemas"]["__schema421"];
             label: string;
+            per_member: boolean;
             provider: string;
             /** @enum {string} */
             shared_use: "owner" | "room";

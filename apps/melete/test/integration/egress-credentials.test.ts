@@ -121,6 +121,7 @@ async function setup(options: { holdSeconds: number }) {
     relayPort,
     caPem,
     credentials,
+    secrets,
   };
 }
 
@@ -387,5 +388,180 @@ withDb('where an account is offered', () => {
     await sql`update job set constraints = constraints || '{"public_compartment": true}'::jsonb
       where id = ${claims.job_id}`;
     expect(await ask(claims.job_id)).toBeNull();
+  });
+
+  test("a room's account set to each person's own uses the asker's own account, and nobody else's", async () => {
+    const { claims, credentials, sql, connectionId, secrets, mint, relayPort, caPem } = await setup(
+      { holdSeconds: 0 },
+    );
+    const room = claims.space_id;
+    const person = async (kind: 'person' | 'room', name: string | null = null) => {
+      const id = recordId('own');
+      await sql`insert into principal (id, email, kind, display_name)
+        values (${id}, ${`${id.toLowerCase()}@example.test`}, ${kind}, ${name})`;
+      return id;
+    };
+    const [owner, ana, ben, cal, dee, agent] = await Promise.all([
+      person('person', 'Olive'),
+      person('person', 'Ana'),
+      person('person', 'Ben'),
+      person('person', 'Cal'),
+      person('person', 'Dee'),
+      person('room'),
+    ]);
+    await sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${owner}
+      where id = ${room}`;
+    for (const [principal, role] of [
+      [owner, 'owner'],
+      [ana, 'member'],
+      [ben, 'member'],
+      [cal, 'member'],
+      [dee, 'member'],
+    ] as const)
+      await sql`insert into space_membership (principal_id, space_id, role)
+        values (${principal}, ${room}, ${role})`;
+    // The room's own account, set to each person's own: its secret is never used.
+    await sql`update connection set shared_use = 'room', per_member = true where id = ${connectionId}`;
+    // Ana and Ben each connected their own account in their own space; Cal has
+    // none, and Dee connected hers for reading only.
+    const own = async (
+      principal: string,
+      secret: string,
+      scopes = ['egress.test_read', 'egress.test_write'],
+    ) => {
+      const space = recordId('sp');
+      await sql`insert into space (id, name, git_path, kind, audience, owner_principal_id)
+        values (${space}, 'Own', ${`spaces/${space}`}, 'personal', 'owner', ${principal})`;
+      const ref = await secrets.put(space, secret);
+      await sql`insert into connection (id, space_id, provider, label, scopes, status, secret_ref,
+          configuration)
+        values (${recordId('conn')}, ${space}, 'command_line', 'Own account',
+          ${JSON.stringify(scopes)}::jsonb, 'active', ${ref},
+          ${JSON.stringify({ kind: 'command_line', adapter: 'test', config: { hosts: [HOST] } })}::jsonb)`;
+    };
+    const anaSecret = `tok_${randomBytes(18).toString('hex')}`;
+    const benSecret = `tok_${randomBytes(18).toString('hex')}`;
+    await own(ana, anaSecret);
+    await own(ben, benSecret);
+    const deeSecret = `tok_${randomBytes(18).toString('hex')}`;
+    await own(dee, deeSecret, ['egress.test_read']);
+    const request = async (requestedBy: string, parent: string | null = null) => {
+      const id = recordId('job');
+      await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
+          constraints, principal_id, audience, requested_by_principal_id, experience_parent_id)
+        values (${id}, ${room}, 'Fixture', 'Push the branch', 'running', 1, '{}'::jsonb,
+          '{"public_compartment": false, "allowed_domains": []}'::jsonb, ${agent},
+          'room', ${parent ? null : requestedBy}, ${parent})`;
+      return id;
+    };
+    const ask = (jobId: string) =>
+      credentials.find({
+        space: room,
+        attribution: {
+          kind: 'command',
+          sessionId: 'sbx_one',
+          jobId,
+          attemptId: claims.attempt_id,
+          actionId: 'act_cmd',
+        },
+        host: HOST,
+      });
+    const secretOf = async (jobId: string) => {
+      const use = await ask(jobId);
+      expect(use?.connectionId).toBe(connectionId);
+      expect(use?.missing).toBeUndefined();
+      return use?.withSecret(async (secret) => secret);
+    };
+
+    // Each request uses the account of the person who asked it; a step, its request's asker's.
+    const anas = await request(ana);
+    expect(await secretOf(anas)).toBe(anaSecret);
+    expect((await ask(anas))?.readOnly).toBeUndefined();
+    expect(await secretOf(await request(ben))).toBe(benSecret);
+    expect(await secretOf(await request(ana, anas))).toBe(anaSecret);
+
+    // An own account connected for reading reads for its owner, and makes no changes.
+    const dees = await request(dee);
+    expect(await secretOf(dees)).toBe(deeSecret);
+    expect((await ask(dees))?.readOnly).toContain('Dee connected theirs for reading only');
+
+    // Someone with no account of their own is asked to connect one; nothing is opened.
+    const missing = await ask(await request(cal));
+    expect(missing?.missing).toContain("This room uses each person's own");
+    expect(missing?.missing).toContain('Cal has not connected one yet');
+    await expect(missing?.withSecret(async (secret) => secret) ?? null).rejects.toThrow();
+
+    // Someone who left the room no longer lends the room their account.
+    const bens = await request(ben);
+    await sql`update space_membership set revoked_at = now()
+      where space_id = ${room} and principal_id = ${ben}`;
+    expect((await ask(bens))?.missing).toContain('only a person who is a member of the room');
+
+    // Nor does someone whose account was turned off, while their request still runs.
+    const anasLater = await request(ana);
+    expect(await secretOf(anasLater)).toBe(anaSecret);
+    await sql`update principal set disabled_at = now() where id = ${ana}`;
+    const turnedOff = await ask(anasLater);
+    expect(turnedOff?.missing).toContain('only a person who is a member of the room');
+    await expect(turnedOff?.withSecret(async (secret) => secret) ?? null).rejects.toThrow();
+    await sql`update principal set disabled_at = null where id = ${ana}`;
+
+    // The installation's owner's own space may name no owner; it is still theirs.
+    await sql`insert into owner (id, email) values (${recordId('own')}, 'installation@example.test')
+      on conflict do nothing`;
+    const [installation] = await sql`select id from owner limit 1`;
+    const first = String(installation?.id);
+    await sql`insert into principal (id, email, kind, display_name)
+      values (${first}, ${`${first.toLowerCase()}@example.test`}, 'person', 'Ivy')
+      on conflict (id) do update set kind = 'person'`;
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${first}, ${room}, 'member')`;
+    const ivySecret = `tok_${randomBytes(18).toString('hex')}`;
+    const unnamed = recordId('sp');
+    // Older than any other space here, so it is the one their account is read from.
+    await sql`insert into space (id, name, git_path, kind, audience, created_at)
+      values (${unnamed}, 'Own', ${`spaces/${unnamed}`}, 'personal', 'owner', '2000-01-01')`;
+    await sql`insert into connection (id, space_id, provider, label, scopes, status, secret_ref,
+        configuration)
+      values (${recordId('conn')}, ${unnamed}, 'command_line', 'Own account',
+        '["egress.test_read", "egress.test_write"]'::jsonb, 'active',
+        ${await secrets.put(unnamed, ivySecret)},
+        ${JSON.stringify({ kind: 'command_line', adapter: 'test', config: { hosts: [HOST] } })}::jsonb)`;
+    expect(await secretOf(await request(first))).toBe(ivySecret);
+    // Nobody else ever reads from it.
+    expect((await ask(await request(cal)))?.missing).toContain('Cal has not connected one yet');
+
+    // Through the relay: Ana's request carries Ana's token, and Cal's sends nothing.
+    await sql`update job set audience = 'room', principal_id = ${agent},
+      requested_by_principal_id = ${ana} where id = ${claims.job_id}`;
+    const read = () =>
+      throughRelay({
+        relayPort,
+        host: HOST,
+        ca: caPem,
+        token: mint(claims.attempt_id),
+        requests: [rawRequest('GET', HOST, '/user')],
+      }).then((answers) => answers[0]);
+    const anaRead = await read();
+    expect(anaRead?.status).toBe(200);
+    expect(upstream.seen.map((seen) => seen.headers.authorization)).toEqual([
+      `Bearer ${anaSecret}`,
+    ]);
+    await sql`update job set requested_by_principal_id = ${cal} where id = ${claims.job_id}`;
+    const calRead = await read();
+    expect(calRead?.status).toBe(403);
+    expect(calRead?.body).toContain('Cal has not connected one yet');
+    // Cal is asked on the screen, once for the turn, and the turn then waits for Cal.
+    expect(calRead?.body).toContain('Cal has been asked to connect');
+    expect((await read())?.status).toBe(403);
+    const asked = await sql`select payload from event
+      where dedup_key = ${`${claims.attempt_id}:ask-person`}`;
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.payload.question.text).toStartWith('Cal, to do this I need your own');
+    expect(upstream.seen).toHaveLength(1);
+    // The room's own secret was never sent for anyone.
+    expect(upstream.seen.some((seen) => seen.headers.authorization === `Bearer ${SECRET}`)).toBe(
+      false,
+    );
   });
 });

@@ -12,7 +12,13 @@
  * connections in the room's space marked for the room, other than the tools
  * every room has) follows the room's team-account rule instead: any member who
  * is not a guest, the person who asked included (the default), or the room's
- * owners. `approverRuleFor` is the one place that picks the rule for an action.
+ * owners. A command-line account the room uses (a GitHub, GitLab, npm or AWS
+ * account for the room's computer) is held to the owners whatever the rule
+ * says: a push or a deploy made with it carries the account's identity, which
+ * only the owners who added it may lend. A command-line account set to each
+ * person's own account acts as the person who asked, so only they answer what
+ * is done with it. `approverRuleFor` is the one place that picks the rule for
+ * an action.
  *
  * Guests, the room's own principal, the service's own key and anyone outside
  * the room never decide. The check runs when an answer is recorded, inside the
@@ -58,9 +64,19 @@ export type RoomAuthority = {
   /** Null when nothing records who asked; then no one is the requester. */
   requestedBy: string | null;
   approvers: RoomApprovers;
-  /** Which of the room's rules named `approvers`: its general one, or its team-account one. */
-  rule: 'room' | 'team_accounts';
+  /**
+   * Which of the room's rules named `approvers`: its general one, its
+   * team-account one, or the asker's own account's (always the asker).
+   */
+  rule: 'room' | 'team_accounts' | 'own_account';
 };
+
+/**
+ * Which of the room's accounts an action goes through: none of them, one of
+ * its team accounts, one of its command-line accounts, or a command-line
+ * account set to each person's own account.
+ */
+export type RoomAccountKind = 'none' | 'team' | 'command_line' | 'own_account';
 
 /** What one permission is about, as far as choosing its rule goes. */
 export type ApprovalSubject = {
@@ -76,15 +92,19 @@ export type ApprovalSubject = {
  * would be chosen here, ahead of these.
  *
  * `roomDecisions` in `push/service.ts` makes the same choice in SQL, together
- * with `isTeamAccount` and `eligibleApprovers`, to pick who is pushed about a
+ * with `roomAccountKind` and `eligibleApprovers`, to pick who is pushed about a
  * permission. A change to the rule here changes it there too; the room
  * approval tests check both agree on who is told.
  */
 export function approverRuleFor(
   policy: Pick<RoomPolicyValues, 'approvers' | 'team_account_approvers'>,
-  action: { teamAccount: boolean; guestAsked: boolean },
+  action: { account: RoomAccountKind; guestAsked: boolean },
 ): Pick<RoomAuthority, 'approvers' | 'rule'> {
-  if (action.teamAccount)
+  // The asker's own identity: nobody else may approve what it does.
+  if (action.account === 'own_account') return { approvers: 'requester', rule: 'own_account' };
+  // An identity the room's owners lent it: only they decide what it does.
+  if (action.account === 'command_line') return { approvers: 'owners', rule: 'team_accounts' };
+  if (action.account === 'team')
     return { approvers: policy.team_account_approvers, rule: 'team_accounts' };
   return {
     approvers: policy.approvers === 'requester' && action.guestAsked ? 'owners' : policy.approvers,
@@ -93,19 +113,23 @@ export function approverRuleFor(
 }
 
 /**
- * Whether a connection is one of a room's own accounts: in the room's space,
- * marked for the room, and not one of the tools every room has. A person's own
- * account lives in their own space, so it is never one.
+ * Which of a room's own accounts a connection is. One of them is in the room's
+ * space, marked for the room, and not one of the tools every room has; it is
+ * then a command-line one or not, and a command-line one may be set to each
+ * person's own account. A person's own account lives in their own space, so it
+ * is never one.
  */
-export async function isTeamAccount(
+export async function roomAccountKind(
   tx: Query,
   spaceId: string,
   connectionId: string | null,
-): Promise<boolean> {
-  if (!connectionId) return false;
-  const [row] = await tx`select 1 from connection where id = ${connectionId}
+): Promise<RoomAccountKind> {
+  if (!connectionId) return 'none';
+  const [row] = await tx`select provider, per_member from connection where id = ${connectionId}
     and space_id = ${spaceId} and shared_use = 'room' and not (configuration ? 'builtin')`;
-  return Boolean(row);
+  if (!row) return 'none';
+  if (row.provider !== 'command_line') return 'team';
+  return row.per_member === true ? 'own_account' : 'command_line';
 }
 
 /**
@@ -154,7 +178,7 @@ export async function roomAuthorityOf(
     threadId: request.threadId,
     requestedBy: request.requestedBy,
     ...approverRuleFor(policy, {
-      teamAccount: await isTeamAccount(tx, spaceId, subject?.connectionId ?? null),
+      account: await roomAccountKind(tx, spaceId, subject?.connectionId ?? null),
       guestAsked: await guestAsked(tx, request.requestedBy),
     }),
   };
@@ -202,6 +226,14 @@ export async function mayDecide(
 
 /** Who the room is waiting for, in a person's words. */
 export function waitingFor(authority: RoomAuthority, names: ReadonlyMap<string, string>): string {
+  if (authority.rule === 'own_account') {
+    if (!authority.requestedBy)
+      return "It goes through each person's own account, and no person asked for it, so nobody can answer it.";
+    const asker = names.get(authority.requestedBy);
+    return asker
+      ? `It goes through ${asker}'s own account. Waiting for ${asker} to answer it.`
+      : 'It goes through the own account of the person who asked, who is no longer in the room, so nobody can answer it.';
+  }
   if (authority.rule === 'team_accounts')
     return authority.approvers === 'owners'
       ? "It goes through an account the room uses. Waiting for one of the room's owners to answer it."

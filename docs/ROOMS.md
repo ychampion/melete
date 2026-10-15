@@ -160,6 +160,18 @@ changes through one of them follows the room's team-account rule
   person who asked included;
 - `owners`: the room's owners.
 
+A command-line account the room uses (GitHub, GitLab, npm or AWS for the
+agent's computer) is the exception: a push or a deploy made with it goes out
+as whoever connected it, so its changes are always answered by the room's
+owners, under either team-account rule. An owner may set such an account to
+each person's own (`per_member`, under Accounts the room uses, or
+`PUT /rooms/{id}/connections/{connectionId}` with `{ "per_member": true }`):
+then each request uses the asker's own account of the same kind, never
+anyone else's, and only the person who asked answers what is done with it
+([command-line access](COMMAND-LINE-ACCESS.md#in-a-room)). Only a command-line
+account that serves the room can be set this way, and keeping it for the
+owner's own work turns it off.
+
 Everything else a request asks permission for follows the general rule above.
 Guests never answer under either rule, auto-review never answers, and the card,
 the decision push and the agent all name the people the rule for that action
@@ -171,8 +183,10 @@ send under the any-member rule`, `a guest never approves a team-account send,
 under either team-account rule, even their own`, `under the owners'
 team-account rule only owners approve a team-account send, and only they are
 told`, `an action outside the team accounts still follows the room's general
-rule` and `when approvers leave, a team-account permission is withdrawn and the
-request is told`.
+rule`, `when approvers leave, a team-account permission is withdrawn and the
+request is told`, `a command-line account the room uses is approved only by its
+owners, whatever the room's rules` and `a command-line account set to each
+person's own is approved only by the person who asked`.
 
 ### Values someone else typed
 

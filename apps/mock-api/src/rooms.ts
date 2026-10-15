@@ -221,6 +221,8 @@ export function mountRoomsMock(
    */
   const sharedUse = new Map<string, 'owner' | 'room'>();
   const useOf = (id: string) => sharedUse.get(id) ?? 'room';
+  /** Command-line accounts set to each person's own account. */
+  const perMember = new Set<string>();
   /** The room's own accounts: added for the room, serving it, and not one of its tools. */
   const teamAccountsOf = (room: Room) =>
     [...deps.store.connections.values()].filter(
@@ -1149,6 +1151,7 @@ Thanks`,
       status: entry.status,
       shared_use: useOf(entry.id),
       builtin: entry.builtin === true,
+      per_member: perMember.has(entry.id),
     });
   app.get(
     '/rooms/:id/connections',
@@ -1177,7 +1180,23 @@ Thanks`,
       const entry = deps.store.connections.get(param(c, 'connectionId'));
       if (!entry || entry.space_id !== room.id || entry.status === 'revoked')
         throw new RoomError(404, 'not_found', 'That connection is not in this room.');
-      sharedUse.set(entry.id, input.shared_use);
+      const use = input.shared_use ?? useOf(entry.id);
+      const own = use === 'room' && (input.per_member ?? perMember.has(entry.id));
+      if ((own || input.per_member) && entry.provider !== 'command_line')
+        throw new RoomError(
+          400,
+          'invalid_request',
+          "Only a command-line account (GitHub, GitLab, npm or AWS for the agent's computer) can use each person's own account.",
+        );
+      if (input.per_member && use !== 'room')
+        throw new RoomError(
+          400,
+          'invalid_request',
+          "Let the room's requests use this account before setting it to each person's own.",
+        );
+      sharedUse.set(entry.id, use);
+      if (own) perMember.add(entry.id);
+      else perMember.delete(entry.id);
       return answer(C.roomConnectionResponse, { connection: connectionView(entry) });
     }),
   );
