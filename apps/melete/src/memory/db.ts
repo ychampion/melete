@@ -78,9 +78,17 @@ export async function bumpRevision(tx: MemoryTx, spaceId: string): Promise<numbe
     await tx`update memory_spaces set data_revision = data_revision + 1 where space_id = ${spaceId} returning data_revision`;
   return row?.data_revision as number;
 }
+/**
+ * Queues derived work for a memory change. The commit also sends the change
+ * notice (events/stream.ts), so the derived-work loops look at once rather
+ * than at their idle wait: an edit made straight to memory raises no job event
+ * of its own. Postgres sends one notice per transaction for this payload,
+ * however many rows it queues.
+ */
 export async function enqueue(tx: MemoryTx, spaceId: string, kind: string, targetId: string) {
   const id = stableId(spaceId, kind, targetId);
   await tx`insert into memory_outbox (id, space_id, kind, target_id) values (${id}, ${spaceId}, ${kind}, ${targetId}) on conflict do nothing`;
+  await tx`select pg_notify('melete_events', 'memory')`;
 }
 /** Provisioning is a server operation, independent of any ingest payload. */
 export async function provisionMemorySpace(sql: MemorySql, ownerId: string, spaceId: string) {

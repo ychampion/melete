@@ -41,6 +41,16 @@ import { configuredSearchGateway } from './search-gateway.ts';
 import type { BrokerOptions, BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
+/**
+ * The broker's queue. The service already wakes quiet queues when their jobs
+ * fall due, and its notices reach every instance; a second waker here would
+ * only send each notice twice.
+ */
+export const brokerQueueOptions = (env: Pick<Env, 'MELETE_EFFECTS_DATABASE_URL'>) => ({
+  createSchema: queueCreatesSchema(env),
+  dueWaker: false,
+});
+
 /** Start only the effect listener; the API keeps its own port and authentication surface. */
 export async function startEffectBoundary(
   handle: DatabaseHandle,
@@ -143,7 +153,7 @@ export async function startEffectBoundary(
         }
       }
     }
-    queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
+    queue = await startQueue(env.DATABASE_URL, brokerQueueOptions(env));
     const activeQueue = queue;
     const spaces = filesystemSpaces(env.MELETE_SPACES_DIR);
     queue.boss.on('error', () => process.stderr.write('effect queue error\n'));

@@ -939,6 +939,14 @@ export class TriggerService {
     const schedules = await this.jobs.boss.getSchedules(QUEUES.triggerSchedule);
     const desired = new Set<string>();
     let ownError: { error: unknown } | undefined;
+    // A failure kept for a routine or schedule that is gone (another instance
+    // removed it) has nothing left to retry, so it leaves the health detail now.
+    this.scheduleFailures.keepOnly(
+      new Set([
+        ...rows.filter((row) => row.enabled).map((row) => row.id),
+        ...schedules.map((schedule) => schedule.key),
+      ]),
+    );
     for (const row of rows) {
       if (!row.enabled) continue;
       desired.add(row.id);

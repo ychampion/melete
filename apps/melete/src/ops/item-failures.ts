@@ -132,6 +132,15 @@ export class ItemFailures {
     this.say(`${this.pass}: ${before.label} works again after ${before.failures} failed tries`);
   }
 
+  /**
+   * Forgets every item not in `ids`: the pass has seen that they no longer
+   * exist (another instance finished them, say), so there is nothing left to
+   * retry or report. Nothing is said in the log, since they did not work again.
+   */
+  keepOnly(ids: ReadonlySet<string>): void {
+    for (const id of this.failing.keys()) if (!ids.has(id)) this.failing.delete(id);
+  }
+
   /** The items that have failed `STUCK_AFTER` times or more in a row. */
   stuck(): StuckItem[] {
     this.prune(this.now());
