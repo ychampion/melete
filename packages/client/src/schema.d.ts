@@ -6799,7 +6799,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema229"];
+                        "application/json": components["schemas"]["__schema232"];
                     };
                 };
             };
