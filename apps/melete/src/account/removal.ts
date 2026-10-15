@@ -50,6 +50,10 @@ import { iso, ownedSpaces } from './export.ts';
 export const removedEmail = (principalId: string) =>
   `removed+${principalId.toLowerCase()}@removed.invalid`;
 
+/** Whether an address is the one a deleted account is left with, which is no account to sign in to. */
+export const isRemovedEmail = (email: string) =>
+  /^removed\+[^@\s]+@removed\.invalid$/i.test(email.trim());
+
 export const SETUP_OWNER_KEPT =
   'The account that set Melete up can’t be deleted: it runs this Melete and manages the other accounts. You can erase everything in your space instead, or remove Melete from the computer it runs on.';
 
@@ -69,6 +73,7 @@ const ACCOUNT_RECORDS = [
 const LEFTOVER_RECORDS = [
   ...ACCOUNT_RECORDS,
   'push_setting',
+  'client_focus',
   'memory_settings',
   'model_secondary',
   'engine_skill_prohibition',
@@ -114,6 +119,12 @@ export class AccountRemovalService {
   private readonly log: (line: string) => void;
   /** Accounts whose deletion pass failed, each tried again later on its own. */
   private readonly failures: ItemFailures;
+  /**
+   * Deleted accounts whose row had to stay, empty, because a room someone
+   * else owns still names it. There is nothing more to do for them, so they
+   * are not tried again until the service restarts.
+   */
+  private readonly settled = new Set<string>();
 
   constructor(readonly deps: AccountRemovalDeps) {
     this.log = deps.log ?? ((line) => process.stderr.write(`${line}\n`));
@@ -329,6 +340,7 @@ export class AccountRemovalService {
       // message it wrote there. Its records go; the row stays, empty.
       for (const table of LEFTOVER_RECORDS)
         await sql`delete from ${sql(table)} where principal_id = ${principalId}`.catch(() => {});
+      this.settled.add(principalId);
       return true;
     }
   }
@@ -345,7 +357,7 @@ export class AccountRemovalService {
     let finished = 0;
     // One account whose deletion fails never holds up the others.
     for (const { id } of pending) {
-      if (!this.failures.due(id)) continue;
+      if (this.settled.has(id) || !this.failures.due(id)) continue;
       try {
         await this.carryOn(id);
         if (await this.finish(id)) finished += 1;

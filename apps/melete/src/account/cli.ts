@@ -19,6 +19,7 @@ import { endAccess } from '../api/account-access.ts';
 import { issuePasswordReset, principalByEmail, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { issueSetupCode, SETUP_CODE_HOURS, setupLink } from '../api/setup-code.ts';
 import { newId } from '../ids.ts';
+import { isRemovedEmail } from './removal.ts';
 import { describeReset, operatorReset } from './reset-password.ts';
 
 export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
@@ -135,6 +136,9 @@ export async function setDisabled(
 ): Promise<AccountOutcome> {
   const account = await principalByEmail(sql, email.trim());
   if (!account) return refused(`No account signs in as ${email.trim()}.`);
+  // What is left of a deleted account is no account: turned back on, it could be listed and added.
+  if (isRemovedEmail(account.email))
+    return refused(`${account.email} is what is left of a deleted account. It cannot sign in.`);
   if (!disabled) {
     await sql`update principal set disabled_at = null where id = ${account.id}`;
     return {
