@@ -17,6 +17,7 @@ import {
   roomPolicyUpdate,
   sandboxComputerList,
   updateMeRequest,
+  updateRoomMemberRequest,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { readEventCursor } from '../api/events.ts';
@@ -98,7 +99,16 @@ export function mountRooms(
   app.get('/rooms/:id', async (c) => c.json(await service.detail(param(c, 'id'), actor(c))));
   app.post('/rooms/:id/members', async (c) => {
     const input = addRoomMemberRequest.parse(await c.req.json());
-    return c.json(await service.addMember(param(c, 'id'), actor(c), input.principal_id), 201);
+    return c.json(
+      await service.addMember(param(c, 'id'), actor(c), input.principal_id, input.role),
+      201,
+    );
+  });
+  app.patch('/rooms/:id/members/:principalId', async (c) => {
+    const input = updateRoomMemberRequest.parse(await c.req.json());
+    return c.json(
+      await service.setMemberRole(param(c, 'id'), actor(c), param(c, 'principalId'), input.role),
+    );
   });
   app.delete('/rooms/:id/members/:principalId', async (c) =>
     c.json(await service.removeMember(param(c, 'id'), actor(c), param(c, 'principalId'))),

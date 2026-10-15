@@ -254,7 +254,10 @@ function chatMarkdown(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
-/** The spaces an account owns and can still open. */
+/**
+ * The spaces an account owns and can still open: its personal space and the
+ * rooms it made. A room it was made an owner of is someone else's room.
+ */
 export async function ownedSpaces(sql: Sql, principalId: string) {
   return sql<{ id: string; name: string; kind: string; created_at: string }[]>`
     select s.id, s.name, s.kind, s.created_at from space s
@@ -262,7 +265,8 @@ export async function ownedSpaces(sql: Sql, principalId: string) {
       (s.kind = 'personal'
         and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
       or exists (select 1 from space_membership m where m.space_id = s.id
-        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null))
+        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null
+        and s.owner_principal_id = ${principalId}))
     order by s.created_at, s.id`;
 }
 

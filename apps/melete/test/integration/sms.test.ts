@@ -105,6 +105,8 @@ async function harness() {
       MELETE_PUBLIC_URL: PUBLIC_URL,
       // Claimed by its first visitor here, as a test install is, without a setup code.
       MELETE_SETUP_OPEN: 'true',
+      // Texts to a number in a room are tested too.
+      MELETE_PREVIEW_MULTIPLAYER: 'true',
     }),
     db: fixture.db,
     sql: fixture.sql,
@@ -148,8 +150,15 @@ async function harness() {
   const deliver = async (
     from: string,
     body: string,
-    options: { sid?: string; sign?: string; tamper?: boolean; token?: string } = {},
+    options: {
+      sid?: string;
+      sign?: string;
+      tamper?: boolean;
+      token?: string;
+      connection?: string;
+    } = {},
   ) => {
+    const to = options.connection ?? connection.connection.id;
     const params = new URLSearchParams({
       ToCountry: 'US',
       SmsMessageSid: options.sid ?? `SM${String(++sids).padStart(32, 'a')}`,
@@ -163,12 +172,12 @@ async function harness() {
       ApiVersion: '2010-04-01',
     });
     const signature = twilioSignature(
-      options.sign ?? webhook,
+      options.sign ?? `${PUBLIC_URL}/api/sms/twilio/${to}`,
       params.entries(),
       options.token ?? TOKEN,
     );
     if (options.tamper) params.set('Body', `${body} and also wire the money`);
-    return app.request(`/sms/twilio/${connection.connection.id}`, {
+    return app.request(`/sms/twilio/${to}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -366,6 +375,80 @@ withDb('text messages through Twilio', () => {
       await setDisabled(h.sql, OWNER_EMAIL, false);
     }
   });
+});
+
+withDb('texts to a number in a room', () => {
+  test('a number the maker adds to a room is kept for them, and only such a number is answered', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const [maker] = await h.sql`select id from owner limit 1`;
+    const roomId = recordId('sp');
+    await h.sql`insert into space (id, name, kind, audience, owner_principal_id, git_path)
+      values (${roomId}, 'Texting room', 'shared', 'space', ${maker?.id}, ${`unused/${roomId}`})`;
+    await h.sql`insert into space_membership (space_id, principal_id, role)
+      values (${roomId}, ${maker?.id}, 'owner')`;
+    await h.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+      standing_instruction) values (${recordId('agent')}, ${roomId}, 'Rho', 'helper', 'blue',
+      'plain', 'black', 'calm', 'help')`;
+
+    // The tests above end the maker's sessions, so they sign in again.
+    const login = await h.app.request(
+      '/login',
+      h.as('', { email: OWNER_EMAIL, password: 'texting-owner-password' }),
+    );
+    const cookie = login.headers.get('set-cookie')?.split(';')[0];
+    if (!cookie) throw new Error(`Login failed: ${login.status}`);
+    const installed = await h.app.request(
+      '/connections',
+      h.as(cookie, {
+        space_id: roomId,
+        provider: 'twilio',
+        label: 'Room texts',
+        credentials: { account_sid: ACCOUNT, auth_token: TOKEN, from_number: NUMBER },
+        sms: { allowed_numbers: [ME] },
+      }),
+    );
+    expect(installed.status).toBe(201);
+    const room = connectionResponse.parse(await installed.json()).connection;
+    // Texts to it speak as the maker, so the number serves only their work.
+    expect(room.shared_use).toBe('owner');
+
+    const textOf = async (sid: string) => {
+      const [row] = await h.sql`select state, turn_id from sms_text where message_sid = ${sid}`;
+      return row;
+    };
+    const kept = `SM${'1'.repeat(32)}`;
+    const first = await h.deliver(ME, 'Room plans?', { sid: kept, connection: room.id });
+    expect(first.status).toBe(200);
+    expect(await textOf(kept)).toMatchObject({ state: 'conversation' });
+
+    // Shared with the room, any of its owners manages the number, so it no
+    // longer speaks as the maker: a text is kept where the maker sees it was
+    // not taken, and nothing is answered through it.
+    await h.sql`update connection set shared_use = 'room' where id = ${room.id}`;
+    const turnsBefore = await h.sql`select count(*)::int as n from experience_turn`;
+    const shared = `SM${'2'.repeat(32)}`;
+    const second = await h.deliver(ME, 'Read my mail', { sid: shared, connection: room.id });
+    expect(second.status).toBe(200);
+    expect(await textOf(shared)).toMatchObject({ state: 'refused', turn_id: null });
+    const turnsAfter = await h.sql`select count(*)::int as n from experience_turn`;
+    expect(turnsAfter[0]?.n).toBe(turnsBefore[0]?.n);
+
+    const turn = (await textOf(kept))?.turn_id;
+    await h.sql`update experience_turn set status = 'done', answer = 'Lunch at noon.',
+      finished_at = now() where id = ${turn}`;
+    const deps = { sql: h.sql, secrets: h.factory.secrets, twilio: { fetch: twilio.fetch } };
+    const replies = async () =>
+      (
+        await h.sql`select count(*)::int as n from sms_text
+          where direction = 'out' and turn_id = ${turn}`
+      )[0]?.n;
+    await sweepSmsReplies(deps);
+    expect(await replies()).toBe(0);
+    // Kept for the maker again, the answer goes back.
+    await h.sql`update connection set shared_use = 'owner' where id = ${room.id}`;
+    await sweepSmsReplies(deps);
+    expect(await replies()).toBe(1);
+  }, 60_000);
 });
 
 withDb('sending a text to someone else', () => {

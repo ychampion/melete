@@ -5,7 +5,7 @@ import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { principal, space } from '../db/schema.ts';
 import { newId } from '../ids.ts';
-import { spaceAuthority } from './authority.ts';
+import { ownsSpace, spaceAuthority } from './authority.ts';
 
 /** The one space a request speaks for, already authorized for its principal. */
 export type SessionSpace = {
@@ -118,7 +118,11 @@ export async function selectedSpace(
     return {
       spaceId: selection.spaceId,
       kind,
-      role: access.role,
+      // The owner's surfaces here (their home, tasks, settings and every
+      // conversation in the space) are the maker's own. An owner the maker
+      // added manages the room through its own routes and works here as a
+      // member does.
+      role: ownsSpace(access) ? 'owner' : 'member',
       generation: access.generation,
       created: false,
     };
