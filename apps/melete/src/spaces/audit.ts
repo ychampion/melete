@@ -28,7 +28,7 @@ import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { spaceAuthority, spaceRole } from '../principals/authority.ts';
+import { spaceAuthority } from '../principals/authority.ts';
 
 /**
  * Where a page ends: the last entry's creation time in UTC to the microsecond
@@ -92,8 +92,12 @@ export async function authorizeAuditReader(
     const [row] = await sql`select kind, removed_at from space where id = ${spaceId}`;
     if (!row) throw new ServiceError('not_found', 'Space not found.', 404);
     if (row.removed_at) throw new ServiceError('scope_denied', 'This space is being cleared.', 403);
-    if (row.kind === 'shared')
-      return { id: actor, inSpace: (await spaceRole(sql, spaceId, actor)) !== null };
+    if (row.kind === 'shared') {
+      const [membership] = await sql`select 1 from space_membership
+        where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null
+          and (expires_at is null or expires_at > now())`;
+      return { id: actor, inSpace: Boolean(membership) };
+    }
   }
   const access = await spaceAuthority(db, spaceId, actor);
   if (access.role !== 'owner') throw new ServiceError('scope_denied', READ_REFUSED, 403);
