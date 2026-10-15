@@ -416,14 +416,23 @@ function compatible(a: string, b: string): boolean {
 const CONTRACTED = new Set(
   "it's that's there's here's what's who's where's he's she's let's".split(' '),
 );
+/** Words that may stand between a relation and a name and still describe them: "my good friend Sam". */
+const DESCRIBING = new Set(
+  'good best old older oldest young younger youngest little big baby dear close new great'.split(
+    ' ',
+  ),
+);
 /**
  * How a text relates the person to someone it names: "Brother Sam", "my
  * friend Sam", "Sam, my colleague". A relation of theirs ("Sam's sister")
  * is not one, nor is a relation of someone else's ("my friend's brother
  * Sam"). A relation by marriage or a former one ("brother-in-law",
- * "ex-boyfriend") is one of its own, not a brother or a partner.
+ * "ex-boyfriend") is one of its own, not a brother or a partner. `beside`
+ * reads a relation before the name only when nothing but describing words
+ * stand between them, as in a sentence the person said: "My friend told me
+ * Sam moved" says how they heard it, not who Sam is.
  */
-export function relationsIn(text: string, name: string): Set<string> {
+export function relationsIn(text: string, name: string, beside = false): Set<string> {
   const found = new Set<string>();
   const kinOf = (word: string) => word.split('-').some((part) => RELATIONS.has(part));
   const words = text
@@ -447,6 +456,7 @@ export function relationsIn(text: string, name: string): Set<string> {
       if (possessive(before)) break;
       // "My friend's brother Sam" is the friend's brother.
       if (isRelation(before) && !possessive(words[back - 1] ?? '')) found.add(relation(before));
+      else if (beside && !DESCRIBING.has(before)) break;
     }
     // "Sam's sister" is Sam's relation, not the person's.
     if (possessive(word)) return;

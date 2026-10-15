@@ -38,10 +38,12 @@ import {
   olderOwnSubjects,
   PERSON_HEADS,
   relatedSubject,
+  relationsIn,
   SELF,
   sameWhose,
   saysRelation,
   twoPeople,
+  type Whose,
   whoseDetail,
   withoutMember,
 } from './labels.ts';
@@ -128,9 +130,7 @@ async function apartFrom(
       : ((await earlierWords(tx, held)).find((words) => saysRelation(before, words)) ?? content);
     const relating = saysRelation(now, proposed.content)
       ? proposed.content
-      : ((proposed.sources ?? [])
-          .map((span) => span.quote)
-          .find((quote) => saysRelation(now, quote)) ?? proposed.content);
+      : (relatedInQuotes(now, proposed.sources ?? []) ?? proposed.content);
     if (!twoPeople(before, related, now, relating)) return null;
     const subject = relatedSubject(proposed.domain_key, now, relating);
     return subject && subject !== held.domain_key ? subject : null;
@@ -140,6 +140,22 @@ async function apartFrom(
     const parts = proposed.domain_key.split('.');
     if (!PERSON_HEADS.has(parts[0] ?? '') || parts.length < 3) return null;
     return ['self', ...parts.slice(2)].join('.');
+  }
+  return null;
+}
+
+/**
+ * How the person's words a change cites relate the someone it is about, read
+ * only beside their name (see `relationsIn`), as "friend sam": "My friend Sam
+ * just moved to Faro" says a friend; "My friend told me Sam moved to Faro" and
+ * "My sister says Sam lives in Faro" say nothing of who Sam is.
+ */
+function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): string | null {
+  if (whose.kind !== 'other') return null;
+  const name = whose.name ?? whose.who;
+  for (const { quote } of sources) {
+    const [found] = relationsIn(quote, name, true);
+    if (found) return `${found} ${name}`;
   }
   return null;
 }
@@ -353,8 +369,10 @@ async function validateProposal(
       )
         throw new MemoryError('target_mismatch');
       filed = { ...proposal, domain_key: head.domain_key };
-    } else if (proposal.op === 'supersede') {
-      // Brother Sam is not Friend Sam: the change is a detail of his own.
+    }
+    if (proposal.op === 'supersede') {
+      // Brother Sam is not Friend Sam, under whichever subject the change was
+      // proposed: the change is a detail of his own.
       const apart = await apartFrom(tx, head, proposal);
       if (apart) await keepApart(proposal, apart);
     }
@@ -774,6 +792,8 @@ export async function commitExtraction(
       const restated: number[] = [];
       /** Changes refused on their own (see `REFUSED_ALONE`), and the first one's error. */
       const refusedAlone: Tier1Rejection[] = [];
+      /** The changes left once those are refused: what review puts to the person. */
+      const reviewable: ExtractionProposal[] = [];
       let firstRefusal: { error: MemoryError; index: number; key: string | null } | null = null;
       /** Whether anything but a no-op is kept from this message. */
       let keeps = false;
@@ -793,6 +813,7 @@ export async function commitExtraction(
           });
           continue;
         }
+        reviewable.push(proposal);
         if (proposal.op !== 'no-op') keeps = true;
         if (item.proposal !== proposal && item.proposal.op === 'add')
           restated.push(validated.length);
@@ -830,7 +851,7 @@ export async function commitExtraction(
       failedIndex = 0;
       failedKey = null;
       if (space.require_review && !reviewed && validated.some((v) => v.proposal.op !== 'no-op')) {
-        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals })}::text::jsonb)
+        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals: reviewable })}::text::jsonb)
           on conflict (id) do update set fence = excluded.fence, payload = excluded.payload, status = 'pending'`;
         await tx`update memory_work set status = 'review', lease_until = null where id = ${batch.work.id}`;
         await enqueue(tx, scope.spaceId, 'proposal', batch.work.id);
