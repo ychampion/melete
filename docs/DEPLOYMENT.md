@@ -310,11 +310,17 @@ them. `doctor` also reports `docker.leftover_sandboxes`: the stopped agents'
 computers and empty networks whose sandbox project no installation on this
 engine uses, which an installation's own clean-up never reaches. Another
 installation's computers are never listed; they are told apart by the
-`MELETE_SANDBOX_PROJECT` each installation's service runs with. An
-installation that is down (`docker compose down` removes its service
-container) cannot be told apart that way, so check the list before
-`bun run melete doctor --remove-leftovers` removes it. It removes only those
-stopped computers and empty networks, and keeps the computers' volumes.
+`MELETE_SANDBOX_PROJECT` each installation's service runs with, and by the
+`melete.install_project` label each computer and its network carry: the Compose
+project of the installation that made them. While that project still has a
+container or a volume on this engine they are its own, even with the
+installation down (`docker compose down` removes its service container but
+keeps its volumes); once it has neither, they are listed. Computers made before
+they carried that label are listed with an unknown owner when their sandbox
+project is not in use, since an installation that is down cannot be told from
+one that was removed that way; check those before
+`bun run melete doctor --remove-leftovers` removes them. It removes only the
+listed stopped computers and empty networks, and keeps the computers' volumes.
 
 ## The melete command
 
