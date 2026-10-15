@@ -27047,7 +27047,7 @@ export interface components {
         __schema805: string;
         __schema806: string;
         __schema807: string;
-        __schema808: string;
+        __schema808: string | null;
         /** @enum {string} */
         __schema809: "principal" | "room";
         __schema810: string;

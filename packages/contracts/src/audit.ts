@@ -2,8 +2,8 @@
  * A space's audit log: every effect its work proposed through a connection,
  * with whose work it was, who asked for it and who approved it. It is read by
  * the space's owners (and by the person who set the installation up, for any
- * space), and it names effects without saying what they said: a payload is
- * shown by its hash, never its body.
+ * shared space), and it names effects without saying what they said: a
+ * payload is shown by its hash, never its body.
  */
 import { z } from 'zod';
 import { actionStatus, effectClass, payloadHash } from './broker.ts';
@@ -51,8 +51,12 @@ export const spaceAuditEntry = z
     action_id: z.string(),
     job_id: z.string(),
     attempt_id: z.string(),
-    /** The chat, plan or request the effect came from. */
-    job_title: z.string(),
+    /**
+     * The chat, plan or request the effect came from. Null when the reader
+     * could not otherwise read it: another person's own work, or a room's
+     * request read by someone who is not in the room.
+     */
+    job_title: z.string().nullable(),
     /** `room` for a request made of a room's agent; `principal` for a person's own work. */
     audience: z.enum(['principal', 'room']),
     /** The tool the effect went through, such as `gmail.send`. */

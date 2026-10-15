@@ -71,6 +71,13 @@ describe('each entry in words', () => {
     expect(html).toContain('Asked by Carol · Approved by Bob');
     expect(html).toContain('abababababab');
     expect(html).toContain('Done');
+    expect(html).toContain('from “Post the notes”');
+  });
+
+  test('an entry whose title the reader may not see leaves the title out', () => {
+    const html = renderToStaticMarkup(<AuditEntries entries={[entry({ job_title: null })]} />);
+    expect(html).toContain('Asked by Carol · Approved by Bob');
+    expect(html).not.toContain('from “');
   });
 });
 

@@ -97,7 +97,8 @@ export function AuditEntries({ entries }: { entries: AuditEntry[] }) {
               {EFFECT_WORDS[entry.effect_class]} · {entry.connection.label}
             </span>
             <span className="activity-log-sub">
-              {whoLine(entry)} · {approvalLine(entry)} · from “{entry.job_title}”
+              {whoLine(entry)} · {approvalLine(entry)}
+              {entry.job_title ? ` · from “${entry.job_title}”` : ''}
             </span>
             <span className="activity-log-meta">
               <time dateTime={entry.created_at}>{when(entry.created_at)}</time> · {entry.kind} ·{' '}

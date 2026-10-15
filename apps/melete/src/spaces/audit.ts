@@ -7,8 +7,10 @@
  * principal: `GET /actions` shows a person their own work only, and a request
  * made of a room's agent belongs to the room's principal, not to the member
  * who asked. This reads every action in one space, for its owners (and for the
- * person who set the installation up, who answers for every space on it), and
- * names for each one whose work it was, who asked, and who approved it.
+ * person who set the installation up, who answers for every shared space on
+ * it), and names for each one whose work it was, who asked, and who approved
+ * it. Where a reader could not otherwise read what the work was about, the
+ * entry leaves its title out.
  *
  * It never returns what an effect said. A payload is shown by its hash, which
  * is enough to match an entry to a receipt or an approval, and nothing else.
@@ -26,7 +28,7 @@ import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { spaceAuthority } from '../principals/authority.ts';
+import { spaceAuthority, spaceRole } from '../principals/authority.ts';
 
 /**
  * Where a page ends: the last entry's creation time in UTC to the microsecond
@@ -68,25 +70,34 @@ export function decodeAuditCursor(value: string): Cursor | null {
 const READ_REFUSED = 'Only the space’s owners can read its activity log.';
 
 /**
- * Whether the actor may read the space's log: an owner of it, or the person
- * who set the installation up. Anyone else, members included, is refused, and
- * so is a space under removal.
+ * Who is reading the log: their id, and whether they are in the space and so
+ * can already read what its people said to its agent there.
+ */
+export type AuditReader = { id: string; inSpace: boolean };
+
+/**
+ * Whether the actor may read the space's log: an owner of it, or, for a
+ * shared space, the person who set the installation up, in it or not. Another
+ * person's own space is theirs alone, so the setup owner is refused there like
+ * anyone else. Members are refused, and so is a space under removal.
  */
 export async function authorizeAuditReader(
   db: Database,
   sql: Sql,
   spaceId: string,
   actor: string,
-): Promise<void> {
+): Promise<AuditReader> {
   const [setup] = await sql<{ id: string }[]>`select id from owner limit 1`;
   if (setup?.id === actor) {
-    const [row] = await sql`select removed_at from space where id = ${spaceId}`;
+    const [row] = await sql`select kind, removed_at from space where id = ${spaceId}`;
     if (!row) throw new ServiceError('not_found', 'Space not found.', 404);
     if (row.removed_at) throw new ServiceError('scope_denied', 'This space is being cleared.', 403);
-    return;
+    if (row.kind === 'shared')
+      return { id: actor, inSpace: (await spaceRole(sql, spaceId, actor)) !== null };
   }
   const access = await spaceAuthority(db, spaceId, actor);
   if (access.role !== 'owner') throw new ServiceError('scope_denied', READ_REFUSED, 403);
+  return { id: actor, inSpace: true };
 }
 
 type Row = {
@@ -101,7 +112,7 @@ type Row = {
   cursor_at: string;
   dispatched_at: Stamp | null;
   resolved_at: Stamp | null;
-  title: string;
+  title: string | null;
   audience: string;
   principal_id: string | null;
   requested_by: string | null;
@@ -122,10 +133,16 @@ const iso = (value: Stamp | null) => (value === null ? null : instant(value));
 /**
  * One page of the log, newest first. Reads one more row than it returns, so
  * it knows whether there is a page after this one without counting.
+ *
+ * A job's title is what the chat or request it came from was called, often
+ * the first words someone typed, so it is shown only to a reader who could
+ * already read it: the person whose own work it was, and, for the room's
+ * work, someone in the room. Anyone else sees the effect without it.
  */
 export async function readSpaceAudit(
   sql: Sql,
   spaceId: string,
+  reader: AuditReader,
   filter: SpaceAuditFilter,
   page: { limit: number; cursor?: Cursor | null },
 ): Promise<{ entries: SpaceAuditEntry[]; next: Cursor | null }> {
@@ -134,13 +151,17 @@ export async function readSpaceAudit(
   const rows = await sql<Row[]>`select a.id, a.job_id, a.attempt_id, a.kind, a.effect_class,
       a.status, a.payload_hash, a.created_at,
       to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at,
-      a.dispatched_at, a.resolved_at, j.title, j.audience,
+      a.dispatched_at, a.resolved_at, j.audience,
+      case when coalesce(j.principal_id, (select id from owner limit 1)) = ${reader.id}
+          or (${reader.inSpace} and (j.audience = 'room' or jp.kind = 'room'))
+        then j.title end as title,
       coalesce(j.principal_id, (select id from owner limit 1)) as principal_id,
       coalesce(t.requested_by_principal_id, j.requested_by_principal_id) as requested_by,
       c.id as connection_id, c.label as connection_label, c.provider,
       p.decision, p.decided_by, p.requested_at as approval_requested_at, p.decided_at
     from action a
     join job j on j.id = a.job_id
+    left join principal jp on jp.id = j.principal_id
     join attempt t on t.id = a.attempt_id
     join connection c on c.id = a.connection_id
     left join lateral (select decision, decided_by, requested_at, decided_at from approval
@@ -221,14 +242,14 @@ export function mountSpaceAudit(app: Hono, deps: { db: Database; sql: Sql }): vo
 
   app.get('/spaces/:id/audit', async (c) => {
     const spaceId = c.req.param('id');
-    await authorizeAuditReader(db, sql, spaceId, c.get('owner').id);
+    const reader = await authorizeAuditReader(db, sql, spaceId, c.get('owner').id);
     const parsed = spaceAuditQuery.safeParse(c.req.query());
     if (!parsed.success) throw badQuery();
     const { cursor: token, limit, ...filter } = parsed.data;
     const cursor = token ? decodeAuditCursor(token) : null;
     if (token && !cursor)
       throw new ServiceError('invalid_cursor', 'That page marker is not one of ours.', 400);
-    const page = await readSpaceAudit(sql, spaceId, filter, { limit, cursor });
+    const page = await readSpaceAudit(sql, spaceId, reader, filter, { limit, cursor });
     return c.json(
       spaceAuditResponse.parse({
         entries: page.entries,
@@ -239,10 +260,12 @@ export function mountSpaceAudit(app: Hono, deps: { db: Database; sql: Sql }): vo
 
   app.get('/spaces/:id/audit/export', async (c) => {
     const spaceId = c.req.param('id');
-    await authorizeAuditReader(db, sql, spaceId, c.get('owner').id);
+    const reader = await authorizeAuditReader(db, sql, spaceId, c.get('owner').id);
     const parsed = spaceAuditFilter.safeParse(c.req.query());
     if (!parsed.success) throw badQuery();
-    const page = await readSpaceAudit(sql, spaceId, parsed.data, { limit: AUDIT_EXPORT_MAX });
+    const page = await readSpaceAudit(sql, spaceId, reader, parsed.data, {
+      limit: AUDIT_EXPORT_MAX,
+    });
     return c.body(auditCsv(page.entries), 200, {
       'Content-Type': 'text/csv; charset=utf-8',
       // Set when the window held more than one file carries; export it in parts.

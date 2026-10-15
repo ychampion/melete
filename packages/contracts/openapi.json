@@ -47912,7 +47912,10 @@
         "type": "string"
       },
       "__schema808": {
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "__schema809": {
         "type": "string",

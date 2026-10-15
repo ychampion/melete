@@ -317,11 +317,19 @@ withDb('a space’s activity log', () => {
     // Nobody is named by their email.
     expect(text).not.toContain('example.test');
 
-    // The person who set the installation up reads any space, a room they are not in included.
-    const setupRead = spaceAuditResponse.parse(
-      await ok(send(alice.cookie, `/spaces/${roomId}/audit`)),
-    );
+    // The owner, in the room, reads what was asked: the room's own words.
+    expect(approved?.job_title).toBe('@Melete post the notes to the team');
+
+    // The person who set the installation up reads any room, one they are not
+    // in included, but not what was said in it: a request's title is the first
+    // line of a member's message there.
+    const setupText = await (await send(alice.cookie, `/spaces/${roomId}/audit`)).text();
+    const setupRead = spaceAuditResponse.parse(JSON.parse(setupText));
     expect(setupRead.entries).toHaveLength(2);
+    expect(setupRead.entries.map((entry) => entry.job_title)).toEqual([null, null]);
+    expect(setupText).not.toContain('post the notes');
+    const setupCsv = await (await send(alice.cookie, `/spaces/${roomId}/audit/export`)).text();
+    expect(setupCsv).not.toContain('post the notes');
 
     // Pages follow on from each other without repeating an entry.
     const firstPage = spaceAuditResponse.parse(
@@ -430,7 +438,9 @@ withDb('a space’s activity log', () => {
       expect((await send(danCookie, path)).status).toBe(403);
     }
     await ok(send(bob.cookie, `/spaces/${personal.id}/audit`));
-    await ok(send(alice.cookie, `/spaces/${personal.id}/audit`));
+    // A person's own space is theirs alone, the setup owner's reach included.
+    for (const path of [`/spaces/${personal.id}/audit`, `/spaces/${personal.id}/audit/export`])
+      expect((await send(alice.cookie, path)).status).toBe(403);
 
     // A page marker made up by hand is a bad request, even one whose time
     // JavaScript would read, and never a failed query.
@@ -439,5 +449,69 @@ withDb('a space’s activity log', () => {
 
     // A space that does not exist is refused like one that is not yours.
     expect((await send(bob.cookie, '/spaces/spc_missing/audit')).status).toBe(403);
+  }, 60_000);
+
+  // A person's own work in a room is private to them: nobody else can open
+  // the chat it came from. Another owner of the room, and the setup owner,
+  // still see the effect it made through the room's account, but not what
+  // the chat was called.
+  test('another owner sees the effect of the owner’s own work, not its title', async () => {
+    const { sql, runner, broker } = database();
+    const made = roomDetail.parse(
+      await ok(send(bob.cookie, '/rooms', 'POST', { name: 'Board' }), 201),
+    );
+    const roomId = made.room.id;
+    await ok(send(bob.cookie, `/rooms/${roomId}/members`, 'POST', { principal_id: carol.id }), 201);
+    await sql`update space_membership set role = 'owner'
+      where space_id = ${roomId} and principal_id = ${carol.id}`;
+    const connectionId = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+      values (${connectionId}, ${roomId}, ${notesManifest.provider}, 'Bob notes',
+        ${JSON.stringify(['notes.post'])}::jsonb, 'owner')`;
+    registry.register(connectionId, notesConnector());
+
+    const secretTitle = 'Talk to a lawyer about the divorce 5521';
+    const created = await ok<{ job: { id: string } }>(
+      send(bob.cookie, '/jobs', 'POST', {
+        space_id: roomId,
+        title: secretTitle,
+        objective: secretTitle,
+      }),
+      201,
+    );
+    const [epoch] =
+      await sql`select lease_epoch, state_version from job where id = ${created.job.id}`;
+    const claimed = await runner.claim({
+      job_id: created.job.id,
+      expected_epoch: Number(epoch?.lease_epoch),
+      expected_version: Number(epoch?.state_version),
+      reason: 'created',
+    });
+    if (!claimed) throw new Error('The owner’s job could not be claimed');
+    const proposed = await broker.propose(claimed.claims as CapabilityClaims, {
+      connection_id: connectionId,
+      kind: 'notes.post',
+      payload: { to: ['me'], body: `${MARKER} own` },
+    });
+
+    // Bob reads his own work's title.
+    const own = spaceAuditResponse.parse(await ok(send(bob.cookie, `/spaces/${roomId}/audit`)));
+    expect(own.entries.map((entry) => [entry.action_id, entry.job_title])).toEqual([
+      [proposed.action_id, secretTitle],
+    ]);
+
+    // Carol, an owner too, and Alice, who set the installation up, see the
+    // effect and whose work it was, never what the chat was about.
+    for (const reader of [carol, alice]) {
+      const text = await (await send(reader.cookie, `/spaces/${roomId}/audit`)).text();
+      const log = spaceAuditResponse.parse(JSON.parse(text));
+      expect(log.entries.map((entry) => entry.action_id)).toEqual([proposed.action_id]);
+      expect(log.entries[0]?.principal?.id).toBe(bob.id);
+      expect(log.entries[0]?.job_title).toBeNull();
+      expect(text).not.toContain('lawyer');
+      const csv = await (await send(reader.cookie, `/spaces/${roomId}/audit/export`)).text();
+      expect(csv).toContain(proposed.action_id);
+      expect(csv).not.toContain('lawyer');
+    }
   }, 60_000);
 });
