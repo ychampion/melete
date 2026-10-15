@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { AttemptBundle, AttemptOutcome, RuntimeAdapter } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { attempt, job, principal, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
@@ -273,7 +273,9 @@ withDb('spending caps', () => {
         runner.stopForSpending(refused.jobId, refused.attemptId, message);
     };
     const wake = async (row: JobRow) => {
-      await handle.db.update(job).set({ nextWakeAt: new Date() }).where(eq(job.id, row.id));
+      // Due by the database's clock, which the runner judges a wake by; this
+      // process's clock can run a millisecond ahead of it.
+      await handle.db.update(job).set({ nextWakeAt: sql`now()` }).where(eq(job.id, row.id));
       const current = await jobs.get(row.id);
       return runner.handleWake({
         job_id: current.id,
