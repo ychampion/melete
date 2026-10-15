@@ -129,7 +129,8 @@ withDb('a schedule the person set', () => {
       .where(eq(trigger.id, routine.id));
     const jobId = required(registration).jobId;
     for (let day = 1; day <= 5; day++) {
-      expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+      // Each morning's occurrence, as the schedule delivers it.
+      await required(triggers).fireSchedule(routine.id, `morning-${routine.id}-${day}`);
       const row = await required(jobs).get(jobId);
       // Due now: the occurrence was not swallowed as a deferred check.
       expect(row.state).toBe('queued');
@@ -176,6 +177,17 @@ withDb('a schedule the person set', () => {
         { principalId: ownerId },
       ),
     );
+    // The work naming the same schedule again at a checkpoint leaves it the person's.
+    await required(jobs).transaction(async (tx) => {
+      const current = required(await required(jobs).lock(tx, asked.id));
+      await stand(
+        tx,
+        required(jobs),
+        current,
+        { kind: 'schedule', cron: '0 7 * * *', timezone: 'UTC' },
+        'work',
+      );
+    });
     for (const id of [typed.id, asked.id]) {
       const after = await unreadResults(await required(jobs).get(id), 5);
       expect(after.cadenceMultiplier).toBe(1);

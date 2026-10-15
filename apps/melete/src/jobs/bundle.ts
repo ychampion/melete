@@ -1043,15 +1043,20 @@ export async function buildAttemptSkeleton(
     attemptContextBudget(model.model, jobBudget.parse(row.budget)).max_skills,
   );
   const wait = waitSpec.parse(row.wait);
-  // A transition into queued clears the wait. A queued job that still holds an
-  // event wait, or a timer not yet due, was requeued before that wait fired: a
-  // correction to a relied-on claim does this, and a retry carries it forward.
-  // Due is asked of the database, the clock the restore is decided against, so
-  // a skewed host cannot tell an attempt about a wait nothing will bring back.
+  // A transition into queued clears the wait, and a timer's own firing does
+  // too. A queued job that still holds an event wait, or a timer not yet due,
+  // was requeued before that wait fired: a message to a conversation resting
+  // on a reminder does this, so does a correction to a relied-on claim, and a
+  // retry carries it forward. Other work woken after its timer's time has
+  // nothing left to wait for. A conversation's reminder is its own message to
+  // the person, so one that came due before its wake was handled is still
+  // named: the attempt puts it back and it fires at once, late but not lost.
+  // Due is asked of the database, the clock the restore is decided against.
   const now = (await databaseNow(tx)).getTime();
   const cancelledWait =
     row.state === 'queued' &&
-    (wait.kind === 'event' || (wait.kind === 'timer' && Date.parse(wait.wake_at) > now))
+    (wait.kind === 'event' ||
+      (wait.kind === 'timer' && (row.kind === 'chat' || Date.parse(wait.wake_at) > now)))
       ? wait
       : undefined;
   const [open] = await tx

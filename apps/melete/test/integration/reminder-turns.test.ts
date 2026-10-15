@@ -280,6 +280,88 @@ withDb('a reminder the agent set', () => {
     expect(await turnsOf(chat.id)).toHaveLength(3);
   });
 
+  test('a reminder already due when the message arrives, but not yet delivered, still comes', async () => {
+    const who = await person();
+    const { chat } = await reminderSet(who);
+    // The time has come, and its wake has not been handled yet.
+    const lapsed = { kind: 'timer' as const, wake_at: new Date(Date.now() - 1000).toISOString() };
+    await required(handle)
+      .db.update(job)
+      .set({ wait: lapsed, nextWakeAt: new Date(lapsed.wake_at) })
+      .where(eq(job.id, chat.id));
+    expect(
+      (await who.request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Hi.' })).status,
+    ).toBe(200);
+    const reply = await claimNow(await required(jobs).get(chat.id));
+    expect(reply.bundle.inputs.cancelled_wait).toEqual(lapsed);
+    await required(runner).commitOutcome(reply.claims, {
+      kind: 'completed',
+      summary: 'Hello.',
+      evidence: [],
+    });
+    const resting = await required(jobs).get(chat.id);
+    expect(resting.state).toBe('waiting_for_event_or_time');
+    expect(resting.nextWakeAt?.getTime()).toBeLessThanOrEqual(Date.now());
+    await claimNow(resting, 'timer');
+    expect(await turnsOf(chat.id)).toHaveLength(3);
+  });
+
+  test('a reply tried again after the reminder came due still puts the reminder back', async () => {
+    const who = await person();
+    const { chat, wait } = await reminderSet(who);
+    expect(
+      (await who.request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Ok.' })).status,
+    ).toBe(200);
+    const first = await claimNow(await required(jobs).get(chat.id));
+    expect(first.bundle.inputs.cancelled_wait).toEqual(wait);
+    const lapsed = { kind: 'timer' as const, wake_at: new Date(Date.now() - 1000).toISOString() };
+    await required(handle)
+      .sql`update event set payload = jsonb_set(payload, '{wait}', ${JSON.stringify(lapsed)}::jsonb)
+      where dedup_key = ${`${first.claims.attempt_id}:wait-cancelled`}`;
+    await required(runner).commitOutcome(first.claims, {
+      kind: 'failed',
+      reason: 'The model did not answer.',
+      retryable: true,
+    });
+    const retrying = await required(jobs).get(chat.id);
+    expect(retrying.state).toBe('queued');
+    const retry = await claimNow(retrying, 'input');
+    expect(retry.bundle.inputs.cancelled_wait).toEqual(lapsed);
+    await required(runner).commitOutcome(retry.claims, {
+      kind: 'completed',
+      summary: 'Sure.',
+      evidence: [],
+    });
+    const resting = await required(jobs).get(chat.id);
+    expect(resting.state).toBe('waiting_for_event_or_time');
+    await claimNow(resting, 'timer');
+    expect(await turnsOf(chat.id)).toHaveLength(3);
+  });
+
+  test('a reply cut off by a restart is tried again, and the reminder is still kept', async () => {
+    const who = await person();
+    const { chat, wait } = await reminderSet(who);
+    expect(
+      (await who.request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Ok.' })).status,
+    ).toBe(200);
+    const first = await claimNow(await required(jobs).get(chat.id));
+    expect(await required(runner).loseAttempt(first.claims.attempt_id, 'process_exited')).toBe(
+      true,
+    );
+    const retrying = await required(jobs).get(chat.id);
+    expect(retrying.state).toBe('queued');
+    const retry = await claimNow(retrying, 'input');
+    expect(retry.bundle.inputs.cancelled_wait).toEqual(wait);
+    await required(runner).commitOutcome(retry.claims, {
+      kind: 'completed',
+      summary: 'Sure.',
+      evidence: [],
+    });
+    const resting = await required(jobs).get(chat.id);
+    expect(resting.state).toBe('waiting_for_event_or_time');
+    expect(resting.wait).toEqual(wait);
+  });
+
   test('one wake opens one turn, however often it is delivered', async () => {
     const who = await person();
     const { chat } = await reminderSet(who);

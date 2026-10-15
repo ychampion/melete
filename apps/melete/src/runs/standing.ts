@@ -25,6 +25,7 @@ import { connection, event, experienceProfile, runState, trigger } from '../db/s
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { personSetSchedule } from '../jobs/attention.ts';
 import { workZone } from '../jobs/local-now.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
@@ -153,6 +154,10 @@ export async function stand(
     checkTriggerScope(spec);
   }
   const before = await standingTrigger(tx, row.id);
+  // The work standing again on the schedule the person asked for leaves it theirs.
+  const asked =
+    personAsked ||
+    (before !== null && Bun.deepEquals(before.spec, spec) && (await personSetSchedule(tx, row)));
   await tx.delete(trigger).where(eq(trigger.jobId, row.id));
   const [created] = await tx
     .insert(trigger)
@@ -169,7 +174,7 @@ export async function stand(
   await appendEvent(tx, {
     jobId: row.id,
     type: 'notice',
-    payload: { kind: 'trigger_created', trigger_id: created.id, spec, person_asked: personAsked },
+    payload: { kind: 'trigger_created', trigger_id: created.id, spec, person_asked: asked },
     dedupKey: `${created.id}:created`,
   });
   return { registration: created, changed: !before || !Bun.deepEquals(before.spec, spec) };

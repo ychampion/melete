@@ -798,9 +798,9 @@ export class AttemptRunner {
 
   /**
    * The wait this attempt was told had been cancelled, if it can still fire:
-   * its trigger is still registered and enabled on this job, or it is a timer
-   * (one that fell due meanwhile fires at once), and no effect is pending that
-   * a wait would have to outrank.
+   * its trigger is still registered and enabled on this job, or its timer is
+   * still ahead (a conversation's reminder that fell due meanwhile fires at
+   * once), and no effect is pending that a wait would have to outrank.
    */
   private async restorableWait(
     tx: Transaction,
@@ -833,10 +833,14 @@ export class AttemptRunner {
       )
       .limit(1);
     if (pending) return null;
-    // The attempt was told about this timer while it was still ahead. If it
-    // came due while the attempt worked, it is put back all the same and wakes
-    // the job at once: a reminder is late, never lost, because a reply took time.
-    if (wait.kind === 'timer') return wait;
+    // A conversation's reminder is its own message to the person: one that came
+    // due while a reply was written is put back all the same and fires at once,
+    // late but never lost. Other work woken after its timer's time has nothing
+    // left to wait for.
+    if (wait.kind === 'timer')
+      return row.kind === 'chat' || Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime()
+        ? wait
+        : null;
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })
@@ -1456,6 +1460,12 @@ export class AttemptRunner {
       : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
     // A routine whose run is lost for good goes back to its schedule.
     const rest = row.state === 'running' && remaining === 0 ? await routineRest(tx, row) : null;
+    // A wait the lost attempt was told had been set aside goes to its retry, as
+    // it does when an attempt fails and is tried again.
+    const setAside =
+      row.state === 'running' && remaining > 0
+        ? await this.restorableWait(tx, row, attemptId)
+        : null;
     const moved =
       row.state !== 'running'
         ? row
@@ -1486,7 +1496,7 @@ export class AttemptRunner {
                 tx,
                 row,
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
-                { attemptId, reason: 'recovery' },
+                { attemptId, reason: 'recovery', ...(setAside ? { wait: setAside } : {}) },
               );
     // Long work that stops to ask gives the person what it has first.
     if (
