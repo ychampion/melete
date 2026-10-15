@@ -386,6 +386,8 @@ withDb('the wake guard', () => {
           status, cost_usd, class, tier)
         values (${randomUUID()}, now(), ${spaceId}, ${ownerId}, 'memory', 'x', 'y', 'succeeded', 1,
           'background', 'service')`;
+    // Written here rather than recorded through the guard, so read afresh as recording does.
+    await guard.totals(ownerId, new Date(), true);
     for (let n = 0; n < WAKE_GUARD_LIMIT + 1; n++) {
       await mail(`order${n}`, { from: `p${n}@supplier.example`, subject: `Order ${n}` });
       const current = await row(run.id);

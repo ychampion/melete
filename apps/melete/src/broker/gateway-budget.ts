@@ -32,6 +32,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
       /**
        * The operator's alternatives for an attempt on this model: a vision
        * model and fallbacks. None for a model the owner chose in the app.
+       * Called after the admission's transaction commits, so it may read the pool.
        */
       routes?: (
         attempt: ModelChoice & { usageClass: 'interactive' | 'background' },
@@ -53,7 +54,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
       throw new GatewayError(401, 'capability_denied');
     }
     try {
-      const principal = await this.options.sql.begin(async (tx) => {
+      const admitted = await this.options.sql.begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
         const [attempt] = await tx`select a.provider, a.model, a.class, t.text as turn_text
@@ -73,35 +74,42 @@ export class PostgresGatewayBudget implements GatewayBudget {
         // not offered.
         const rules = await spaceRulesFor(tx, job.space_id);
         if (!modelAllowed(rules, primary)) throw new GatewayError(403, 'model_denied');
-        const routes = allowedRoutes(
-          rules,
-          await this.options.routes?.({
-            ...primary,
-            usageClass: attempt.class === 'background' ? 'background' : 'interactive',
-          }),
-        );
-        const allowedModels = allowedWithRoutes(primary, routes);
         return {
-          jobId: job.id,
-          attemptId: claims.attempt_id,
-          privacy: { kind: 'job' as const },
-          epoch: claims.epoch,
-          revision: claims.revision,
-          maxRequests: job.budget.max_turns,
-          maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
-          remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
-          maxInputTokens: Math.min(
-            inputTokenCeiling(attempt.model, job.budget),
-            inputTokenCeiling(attempt.model, claims.budget),
-          ),
-          allowedModels,
-          ...(routes ? { routes } : {}),
-          ...(briefTurn ? { briefTurn } : {}),
-          ...(deepTurn ? { deepTurn } : {}),
-          // Every conversation of one person in one space shares a provider cache.
-          cacheScope: [job.space_id, job.principal_id ?? ''].join('\u0000'),
+          primary,
+          rules,
+          usageClass:
+            attempt.class === 'background' ? ('background' as const) : ('interactive' as const),
+          principal: {
+            jobId: job.id,
+            attemptId: claims.attempt_id,
+            privacy: { kind: 'job' as const },
+            epoch: claims.epoch,
+            revision: claims.revision,
+            maxRequests: job.budget.max_turns,
+            maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
+            remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
+            maxInputTokens: Math.min(
+              inputTokenCeiling(attempt.model, job.budget),
+              inputTokenCeiling(attempt.model, claims.budget),
+            ),
+            ...(briefTurn ? { briefTurn } : {}),
+            ...(deepTurn ? { deepTurn } : {}),
+            // Every conversation of one person in one space shares a provider cache.
+            cacheScope: [job.space_id, job.principal_id ?? ''].join('\u0000'),
+          },
         };
       });
+      // The operator's routes come from the model settings, read on the pool,
+      // so they are read once the lock is released: a pool read while it is
+      // held waits behind every event writer queued on it. The rules read
+      // under the lock still decide which of them are offered.
+      const { primary, rules, usageClass } = admitted;
+      const routes = allowedRoutes(rules, await this.options.routes?.({ ...primary, usageClass }));
+      const principal: GatewayPrincipal = {
+        ...admitted.principal,
+        allowedModels: allowedWithRoutes(primary, routes),
+        ...(routes ? { routes } : {}),
+      };
       this.claims.set(principal, claims);
       return principal;
     } catch (error) {

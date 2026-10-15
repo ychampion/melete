@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { AttemptBundle, AttemptOutcome, RuntimeAdapter } from '@melete/contracts';
@@ -131,6 +131,13 @@ async function createJob(title: string, kind = 'responsibility'): Promise<JobRow
 }
 
 withDb('spending caps', () => {
+  // The runner checks the limits around transactions that hold the event
+  // order lock; a check that sent its reads to the pool inside one fails here.
+  const lockGuard = process.env.MELETE_EVENT_LOCK_GUARD;
+  beforeAll(() => {
+    process.env.MELETE_EVENT_LOCK_GUARD = 'throw';
+  });
+
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
@@ -149,6 +156,8 @@ withDb('spending caps', () => {
   }, 15_000);
 
   afterAll(async () => {
+    if (lockGuard === undefined) delete process.env.MELETE_EVENT_LOCK_GUARD;
+    else process.env.MELETE_EVENT_LOCK_GUARD = lockGuard;
     await Promise.all(
       servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))),
     );
