@@ -182,7 +182,7 @@ Nothing is stopped or written until every check passes:
 | `database.contents` | The archive's table of contents; it exists only if the dump is readable |
 | `deploy.env` | `deploy/.env`. It holds the master key: without it the sealed credentials in the database cannot be opened |
 | `config/` | `deploy/config/` |
-| `data.tar` | `/data`: spaces, artifacts and the restriction journal as it was |
+| `data.tar` | `/data`: spaces, artifacts and the restriction journal as it was. Each space's search index (`.index/`) and staged writes (`.proposed/`) are left out, as `melete backup` leaves them out; the service rebuilds the index |
 | `work.tar` | `/work`: job workspaces |
 | `restrictions.tar` | The restriction journal alone |
 | `SHA256SUMS` | Checksums of the files above |

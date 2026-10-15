@@ -774,8 +774,11 @@ export const madeAt = (entry: string): number => {
  * Whose backup a set is, from its own files: contents.json names the
  * installation's Compose project; an unencrypted set's contract, or its
  * deploy/.env when it has none, names it too; and a set made under this
- * installation's master key is this installation's. A set that holds no file
- * is no one's backup. `unknown` when nothing in it says.
+ * installation's master key is this installation's. A set named for this
+ * project but made under another master key is from another machine's
+ * installation of the same name, or from before the key was replaced:
+ * `unknown`, as is a set in which nothing says. A set that holds no file is
+ * no one's backup.
  */
 function ownerOf(
   set: string,
@@ -796,11 +799,15 @@ function ownerOf(
     return 'unknown';
   }
   if (files.length === 0) return 'ours';
+  const recorded = read(FINGERPRINT_FILE)?.trim() || null;
+  const sameKey = recorded === null || fingerprint === null || recorded === fingerprint;
   const named = (value: unknown) =>
     typeof value === 'string' && PROJECT_NAME.test(value)
-      ? value === project
-        ? 'ours'
-        : 'another'
+      ? value !== project
+        ? 'another'
+        : sameKey
+          ? 'ours'
+          : 'unknown'
       : null;
   const contents = read(CONTENTS_FILE);
   if (contents !== null) {
@@ -817,7 +824,7 @@ function ownerOf(
   const env = read('deploy.env');
   if (env !== null)
     return named(parseEnvFile(env).COMPOSE_PROJECT_NAME?.trim() || 'melete') ?? 'unknown';
-  if (fingerprint !== null && read(FINGERPRINT_FILE)?.trim() === fingerprint) return 'ours';
+  if (fingerprint !== null && recorded === fingerprint) return 'ours';
   return 'unknown';
 }
 
@@ -895,8 +902,8 @@ function pruneBackups(
     results.push({
       id: 'backup.keep_unknown',
       level: 'warn',
-      detail: `${unknown.join(', ')} in ${dir} ${one(unknown.length, 'does', 'do')} not say which installation made ${one(unknown.length, 'it', 'them')}, so keep and max_age_days leave ${one(unknown.length, 'it', 'them')} alone.`,
-      fix: 'Remove a backup no installation needs by hand.',
+      detail: `${unknown.join(', ')} in ${dir} ${one(unknown.length, 'does', 'do')} not show which installation made ${one(unknown.length, 'it', 'them')}, or ${one(unknown.length, 'was', 'were')} made under another master key, so keep and max_age_days leave ${one(unknown.length, 'it', 'them')} alone.`,
+      fix: 'Remove a backup no installation needs by hand. Give an installation on another machine its own backup.dir.',
     });
   return results;
 }

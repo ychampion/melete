@@ -208,6 +208,34 @@ describe('which backups keep and max_age_days remove', () => {
     ]);
   });
 
+  test("two machines that share a folder under the same project name keep each other's backups", async () => {
+    const backups = backupsDir();
+    const ours = keepRig('melete', backups, { keep: 1 });
+    // The other machine's installation is also called melete, under its own master key.
+    const theirs = [
+      backupSet(backups, 'melete-20260920T000000Z', {
+        ...plainOf('melete'),
+        'master-key.fingerprint': masterKeyFingerprint('their key'),
+      }),
+      backupSet(backups, 'melete-20260921T000000Z', {
+        'database.dump.age': 'sealed',
+        'contents.json': JSON.stringify({ format: 1, project: 'melete' }),
+        'master-key.fingerprint': masterKeyFingerprint('their key'),
+      }),
+    ];
+    const old = backupSet(backups, 'melete-20260922T000000Z', {
+      ...plainOf('melete'),
+      'master-key.fingerprint': masterKeyFingerprint(OUR_KEY),
+    });
+    expect(await runBackup(ours.context, [], true)).toBe(0);
+    for (const dir of theirs) expect(existsSync(dir)).toBe(true);
+    expect(existsSync(old)).toBe(false);
+    expect(resultOf(ours.context.printed(), 'backup.keep_unknown')).toMatchObject({
+      level: 'warn',
+      detail: expect.stringContaining('melete-20260920T000000Z, melete-20260921T000000Z'),
+    });
+  });
+
   test('a backup named for a time ahead of the clock is aged by when its folder last changed, and named', async () => {
     const backups = backupsDir();
     const rig = keepRig('melete', backups, { keep: 5, max_age_days: 30 });
