@@ -43,6 +43,8 @@ describe('how a text relates the person to someone it names', () => {
     expect([...relationsIn("Sam's sister lives in Oslo", 'Sam')]).toEqual([]);
     // Still read: the person's own relation, before or after the name.
     expect([...relationsIn('My brother Sam lives in Oslo', 'Sam')]).toEqual(['brother']);
+    // "It's" is not anyone's.
+    expect([...relationsIn("It's brother Sam's birthday on Friday", 'Sam')]).toEqual(['brother']);
     expect([...relationsIn('Sam, my colleague, lives in Oslo', 'Sam')]).toEqual(['colleague']);
     // A hyphenated name is still the name.
     expect([...relationsIn('My friend Jean-Luc lives in Lyon', 'Jean-Luc')]).toEqual(['friend']);

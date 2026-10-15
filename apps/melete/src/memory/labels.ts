@@ -343,6 +343,10 @@ function compatible(a: string, b: string): boolean {
   const circleB = CIRCLE[b];
   return !circleA || !circleB || circleA === circleB;
 }
+/** Words ending in "'s" that are no one's: "It's brother Sam's birthday". */
+const CONTRACTED = new Set(
+  "it's that's there's here's what's who's where's he's she's let's".split(' '),
+);
 /**
  * How a text relates the person to someone it names: "Brother Sam", "my
  * friend Sam", "Sam, my colleague". A relation of theirs ("Sam's sister")
@@ -360,7 +364,8 @@ export function relationsIn(text: string, name: string): Set<string> {
     .flatMap((word) => (word.includes('-') && kinOf(word) ? [word] : word.split('-')))
     .filter(Boolean);
   const isRelation = (word: string) => RELATIONS.has(word) || (word.includes('-') && kinOf(word));
-  const possessive = (word: string) => /['’]s$/u.test(word);
+  const possessive = (word: string) =>
+    /['’]s$/u.test(word) && !CONTRACTED.has(word.replace('’', "'"));
   const who = textWords(name);
   const last = who.at(-1);
   if (!last) return found;
