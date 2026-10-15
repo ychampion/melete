@@ -41,6 +41,9 @@ export type AgentDeleted = Success<Ok<paths['/agents/{id}'], 'delete'>>;
 export type ActivityList = Success<Ok<paths['/activity'], 'get'>>;
 export type SpaceMembers = Success<Ok<paths['/space/members'], 'get'>>;
 export type SpaceMember = SpaceMembers['members'][number];
+/** What work in a space may use, and whether the person asking may change it. */
+export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
+export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
 export type DeliveryState = NonNullable<Turn['delivery']>;
 export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;

@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
+import type { ModelSettingsService } from '../gateway/model-settings.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import { defaultPrivacyRouter } from '../privacy/index.ts';
 import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
@@ -19,6 +20,7 @@ import { runScan } from './scan.ts';
 import {
   companiesExtraction,
   configuredDailyCalls,
+  configuredExtractor,
   DEFAULT_DAILY_SCAN_CALLS,
   gatewayExtractor,
   SCAN_CALL_CEILING,
@@ -118,7 +120,7 @@ describe('the live extractor’s budget', () => {
       extractor: {
         extract: live.extract,
         async forScan() {
-          session = await live.forScan?.();
+          session = await live.forScan?.(first.spaceId);
           if (!session) throw new Error('the live extractor has no scan session');
           return session;
         },
@@ -141,6 +143,60 @@ describe('the live extractor’s budget', () => {
     });
     expect(seen.calls).toBe(before);
   });
+});
+
+describe('a space whose rules allow no usable model', () => {
+  test('has its mail read by the scripted reader, and nothing reaches a model', async () => {
+    const saved = process.env.MELETE_COMPANIES_MODEL;
+    delete process.env.MELETE_COMPANIES_MODEL;
+    try {
+      const { seen, fetch } = upstream();
+      const env = loadEnv({
+        MELETE_DEFAULT_PROVIDER: 'openai',
+        MELETE_DEFAULT_MODEL: DEFAULT_EXTRACTION_MODEL,
+        OPENAI_API_KEY: 'a-key-that-stays-inside-the-gateway',
+      });
+      const asked: string[] = [];
+      // The space `second` has rules that allow only a model nothing connects.
+      const settings = {
+        activeChoice: async () => ({ provider: 'openai', model: DEFAULT_EXTRACTION_MODEL }),
+        servesLocally: async () => false,
+        isConnected: async () => true,
+        providers: async (configured: GatewayProvider[]) => configured,
+        allowedModelFor: async (spaceId: string, picked: { provider: string; model: string }) => {
+          asked.push(spaceId);
+          return spaceId === second.spaceId
+            ? { ...picked, refused: "This space's rules let its work run only on another model." }
+            : picked;
+        },
+      } as unknown as ModelSettingsService;
+      const extractor = configuredExtractor(
+        env,
+        defaultPrivacyRouter(),
+        undefined,
+        settings,
+        fetch,
+      );
+      const scan = (owner: Owner) =>
+        runScan({
+          store: new MemoryCompanyStore(),
+          mailbox: fixtureMailbox(fixtureMessages()),
+          extractor,
+          owner,
+          now,
+        });
+
+      expect((await scan(second)).status).toBe('done');
+      expect(seen.calls).toBe(0);
+      expect(asked).toContain(second.spaceId);
+      // Another space, with no such rules, is read by the model as before.
+      expect((await scan(first)).status).toBe('done');
+      expect(seen.calls).toBeGreaterThan(0);
+    } finally {
+      if (saved === undefined) delete process.env.MELETE_COMPANIES_MODEL;
+      else process.env.MELETE_COMPANIES_MODEL = saved;
+    }
+  }, 60_000);
 });
 
 describe('the daily allowance setting', () => {

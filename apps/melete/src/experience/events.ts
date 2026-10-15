@@ -820,7 +820,13 @@ export class ExperienceEvents {
             } else if (payload.experience_completed === false) {
               // The saved turn ends with this sentence; a page following live reads it too.
               if (source.jobId === id && outcome.kind === 'budget_exhausted')
-                await emit(source, { type: 'note', text: LIMIT_REACHED_NOTE });
+                await emit(source, {
+                  type: 'note',
+                  text:
+                    typeof payload.limit_note === 'string' && payload.limit_note.trim()
+                      ? payload.limit_note
+                      : LIMIT_REACHED_NOTE,
+                });
               if (!settled)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             } else if (outcome.kind === 'failed')

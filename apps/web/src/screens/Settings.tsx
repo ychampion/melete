@@ -28,6 +28,7 @@ import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
 import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
+import { SpaceRules } from './SpaceRules.tsx';
 import './settings.css';
 
 const dateOf = (iso: string | null) =>
@@ -416,13 +417,15 @@ const TABS = [
   'rules',
   'activity',
   'models',
+  'space-rules',
   'privacy',
   'feedback',
 ] as const;
 type Tab = (typeof TABS)[number] | 'memory';
 /**
  * The tabs that set up the space itself: its apps, computers, approvals,
- * rules, models and privacy. They are its owner's, so a member does not see them.
+ * rules, models, what its work may use, and privacy. They are its owner's, so a
+ * member does not see them.
  */
 const OWNER_TABS: ReadonlySet<string> = new Set([
   'connections',
@@ -430,6 +433,7 @@ const OWNER_TABS: ReadonlySet<string> = new Set([
   'approvals',
   'rules',
   'models',
+  'space-rules',
   'privacy',
 ]);
 /** Whether Settings lists this tab: every tab for an owner, none of the owner's for a member. */
@@ -532,6 +536,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 },
                 { value: 'activity', label: 'Activity' },
                 { value: 'models', label: 'Models' },
+                { value: 'space-rules', label: 'Space rules' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
               ].filter((item) => showsTab(item.value, member === true))}
@@ -545,6 +550,13 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           </div>
         ) : null}
         {current === 'activity' ? <ActivityTab /> : null}
+        {current === 'space-rules' ? (
+          people.error ? (
+            <LoadError what="this space’s rules" error={people.error} onRetry={people.reload} />
+          ) : (
+            <SpaceRules spaceId={people.data?.space.id} />
+          )
+        ) : null}
         {current === 'people' ? (
           <PeopleTab
             people={people.data}
@@ -569,7 +581,10 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <AccountSettings />
         ) : current === 'connections' ? (
           <ConnectionsTab connections={connections} />
-        ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (
+        ) : current === 'privacy' ||
+          current === 'people' ||
+          current === 'activity' ||
+          current === 'space-rules' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke

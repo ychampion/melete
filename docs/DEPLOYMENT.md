@@ -2145,6 +2145,33 @@ past the limit; the next is refused, as an action past the limit is. Jobs carry
 a $1 limit by default, so turn this on together with the dollar limits your
 installation gives its jobs.
 
+## Space rules
+
+Spending caps apply to everyone alike. Space rules are set per space, for an
+installation several people share: which models a space's work may run on, and
+which kinds of connected app and tool it may not use. Every space starts with
+none, so a single-person installation behaves as it always has.
+
+Whoever set up the installation may set the rules of any space; a space's own
+owner may set them for that space. Anyone the space admits can read them. They
+are in Settings › Space rules, and through the API:
+
+```bash
+curl -b cookies.txt https://melete.example.com/spaces/sp_.../policy
+curl -b cookies.txt -X PUT https://melete.example.com/spaces/sp_.../policy \
+  -H 'content-type: application/json' \
+  -d '{"allowed_models":["anthropic/claude-sonnet-4-5"],"denied_connector_kinds":["mcp"],"denied_tool_kinds":["email.send"]}'
+```
+
+| Rule | What it does |
+| --- | --- |
+| `allowed_models` | `provider/model` entries, in order. When the model work would use is not listed, it moves to the first listed model whose provider is connected; with none connected, the attempt stops and the conversation says why. A vision or fallback route to a model not listed is not taken, and the service's own model calls about the space (memory reads, summaries, reviews of its actions, reading its mail for Companies) keep to the list too. A review with no allowed model to use leaves the action for a person to approve. Empty allows any model. |
+| `denied_connector_kinds` | Connection providers, such as `imap`, `caldav`, `mcp` or `command_line`. A connection of a listed kind cannot be added to the space, and one added earlier is neither offered to the agent nor used. |
+| `denied_tool_kinds` | A tool by its name, such as `email.send`, or a family by the part before its first dot, such as `email`, which covers `email.read` and `email.send`. It covers the tools of connections, the built-in files, web and computer ones included. The agent is not offered them, and is refused if it asks for one anyway. Melete's own tools for asking the person, following up and searching memory are not affected. |
+
+A change applies from the next attempt, catalog and call; an attempt already
+running on a model the rules now leave out has its next call refused.
+
 ## Attachments
 
 Files sent in chat (pictures, PDFs, Word documents, spreadsheets and text

@@ -126,6 +126,7 @@ import {
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { SMS_INBOUND_LIMITED, SMS_INBOUND_NEEDS, smsWebhookUrl } from '../sms/inbox.ts';
+import { connectorDenied, connectorRefusal, readSpaceRules } from '../spaces/policy.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 
@@ -651,6 +652,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await installer(deps.db, spaceId, actor, installation.kind);
+    // Nor of a kind the space's rules keep out.
+    await allowedKind(deps.db, spaceId, installation.provider);
     // An address outside the setup owner's own space must be public; the
     // connector holds it to that again on every connection it makes.
     const reach = await spaceReach(deps.sql, spaceId);
@@ -698,6 +701,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       const access = await installer(tx, spaceId, actor, installation.kind, true);
+      await allowedKind(tx, spaceId, installation.provider);
       if (installation.kind === 'sandbox') {
         // One execution backend per space, as one browser worker per space:
         // two would mean two places a command could run, and two answers to
@@ -1644,6 +1648,12 @@ function mayInstall(
   return (
     access.role === 'owner' && (access.space.audience === 'owner' || access.space.kind === 'shared')
   );
+}
+
+/** Refuses a new connection of a kind the space's rules keep out, in words the person reads. */
+async function allowedKind(reader: Database | Transaction, spaceId: string, provider: string) {
+  if (connectorDenied(await readSpaceRules(reader, spaceId), provider))
+    throw new ServiceError('scope_denied', connectorRefusal(provider), 403);
 }
 
 /**

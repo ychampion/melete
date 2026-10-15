@@ -236,6 +236,9 @@ const SPACE_KEYED_OPERATIONAL = [
   'triage_verdict',
   // Texts to and from a connected Twilio number. They name connections.
   'sms_text',
+  // What the space's work may use. An emptied space keeps its row, so the
+  // cascade from it never fires.
+  'space_policy',
 ] as const;
 
 /**
