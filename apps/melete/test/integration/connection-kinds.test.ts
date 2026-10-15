@@ -851,6 +851,9 @@ withDb('installing each kind of connection through the API', () => {
       status: 'failing',
       reason: 'sign_in_required',
     });
+    // The calendar goes too, so the tests after this one see only the connections they install.
+    expect((await h.revoke(calendarId)).status).toBe(200);
+    expect((await opened?.health())?.status).toBe('failing');
   }, 120_000);
 
   test('CalDAV: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
