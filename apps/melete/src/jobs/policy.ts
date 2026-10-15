@@ -8,6 +8,7 @@ import {
   jobBudget,
   MAIL_EVENT_NAMES,
   type ProviderAccess,
+  type ProviderRevokeAt,
   policyGeneration,
   waitSpec,
 } from '@melete/contracts';
@@ -66,8 +67,9 @@ export class PolicyService {
       /**
        * Runs once a revocation has committed, with the connection as it was:
        * withdraws the access at the provider where that is possible and
-       * deletes the sealed tokens. Answers what happened at the provider. It
-       * never undoes the revocation.
+       * deletes the sealed tokens. Answers what happened at the provider,
+       * and where the person cancels the credential when Melete could not.
+       * It never undoes the revocation.
        */
       afterRevoke?: (connection: {
         id: string;
@@ -75,7 +77,7 @@ export class PolicyService {
         provider: string;
         configuration: unknown;
         secretRef: string | null;
-      }) => Promise<ProviderAccess | undefined>;
+      }) => Promise<{ provider_access: ProviderAccess; revoke_at?: ProviderRevokeAt } | undefined>;
     } = {},
   ) {}
 
@@ -458,8 +460,8 @@ export class PolicyService {
     }
     await this.signal(result.controls);
     if (result.released && this.options.afterRevoke) {
-      const access = await this.options.afterRevoke(result.released).catch(() => undefined);
-      if (access) return { ...result.response, provider_access: access };
+      const outcome = await this.options.afterRevoke(result.released).catch(() => undefined);
+      if (outcome) return { ...result.response, ...outcome };
     }
     return result.response;
   }

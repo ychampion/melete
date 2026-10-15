@@ -370,6 +370,15 @@ export const providerAccess = z.enum([
   'not_confirmed',
 ]);
 export type ProviderAccess = z.infer<typeof providerAccess>;
+/**
+ * Where the person cancels the credential itself, when Melete could not:
+ * the provider's own page for the token, key or app access, and its name.
+ */
+export const providerRevokeAt = z.object({
+  name: z.string().min(1).max(80),
+  url: z.url(),
+});
+export type ProviderRevokeAt = z.infer<typeof providerRevokeAt>;
 export const connectionGeneration = z.object({
   connection_id: prefixedId(ID_PREFIXES.connection),
   generation: z.number().int().nonnegative(),
@@ -377,6 +386,8 @@ export const connectionGeneration = z.object({
   status: z.string(),
   /** Present after a disconnection that held a credential. */
   provider_access: providerAccess.optional(),
+  /** Present when the person still has to cancel the credential at the provider. */
+  revoke_at: providerRevokeAt.optional(),
 });
 export const policyChange = z.object({ expected_generation: z.number().int().nonnegative() });
 export const policyGeneration = z.object({

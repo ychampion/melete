@@ -153,6 +153,12 @@ export type RemovalDeps = {
   /** Left out, nothing is serving connectors in this process and none is released. */
   connectors?: ConnectorReleases;
   /**
+   * Withdraws at each provider the access the space's connections hold,
+   * before their sealed tokens are deleted. Best effort: it never stops the
+   * removal. Left out, the tokens are only deleted.
+   */
+  withdrawAccess?: (spaceId: string) => Promise<void>;
+  /**
    * The space a running browser worker mounts as its own, which cannot be
    * taken out from under it. Set from the deployment's browser configuration.
    */
@@ -570,6 +576,14 @@ export class SpaceRemovalService {
         // halfway gone. Recreating one is refused separately, by the removal
         // stamp the default-connection query reads.
         await this.releaseConnectors(row.connectionIds);
+        // While the sealed tokens are still here to name what is withdrawn.
+        await this.deps
+          .withdrawAccess?.(row.spaceId)
+          .catch((error: unknown) =>
+            process.stderr.write(
+              `space removal: provider access was not withdrawn (${error instanceof Error ? error.message : 'error'})\n`,
+            ),
+          );
         await sweepPrincipals(raw, row.spaceId, hold);
         return counts;
       case 'memory':
