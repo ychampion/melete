@@ -33,6 +33,7 @@ import {
 } from '../../src/connectors/files-trash.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
+import { LocalWorkspaceFs } from '../../src/runtime/workspace-fs.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -438,6 +439,27 @@ databaseTest(
     expect((await list()).some((file) => file.id === working)).toBe(false);
     expect((await remove(working)).status).toBe(404);
     expect(await readFile(inChat('.melete', 'exec', 'output.txt'), 'utf8')).toBe('output\n');
+  },
+);
+
+databaseTest(
+  'a working record is never put back by its id, even with its file in the trash',
+  async () => {
+    await mkdir(inChat('.melete', 'exec'), { recursive: true });
+    await writeFile(inChat('.melete', 'exec', 'run.log'), 'run log\n');
+    const working = await fileAction({
+      path: '.melete/exec/run.log',
+      area: 'work',
+      content_hash: hash('run log\n'),
+    });
+    const trashed = await moveToTrash(
+      await new LocalWorkspaceFs(workRoot).trash(jobId),
+      [{ path: '.melete/exec/run.log', hash: null }],
+      { days: 7 },
+    );
+    expect(await exists(inChat('.melete', 'exec', 'run.log'))).toBe(false);
+    expect((await restore(working, trashed.trash_id as string)).status).toBe(404);
+    expect(await exists(inChat('.melete', 'exec', 'run.log'))).toBe(false);
   },
 );
 
