@@ -137,7 +137,7 @@ export async function setDisabled(
   const account = await principalByEmail(sql, email.trim());
   if (!account) return refused(`No account signs in as ${email.trim()}.`);
   // What is left of a deleted account is no account: turned back on, it could be listed and added.
-  if (isRemovedEmail(account.email))
+  if (isRemovedEmail(account.id, account.email))
     return refused(`${account.email} is what is left of a deleted account. It cannot sign in.`);
   if (!disabled) {
     await sql`update principal set disabled_at = null where id = ${account.id}`;

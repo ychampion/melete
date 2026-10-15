@@ -50,9 +50,9 @@ import { iso, ownedSpaces } from './export.ts';
 export const removedEmail = (principalId: string) =>
   `removed+${principalId.toLowerCase()}@removed.invalid`;
 
-/** Whether an address is the one a deleted account is left with, which is no account to sign in to. */
-export const isRemovedEmail = (email: string) =>
-  /^removed\+[^@\s]+@removed\.invalid$/i.test(email.trim());
+/** Whether an account's address is the one its deletion left it with: it is no account to sign in to. */
+export const isRemovedEmail = (principalId: string, email: string) =>
+  email === removedEmail(principalId);
 
 export const SETUP_OWNER_KEPT =
   'The account that set Melete up can’t be deleted: it runs this Melete and manages the other accounts. You can erase everything in your space instead, or remove Melete from the computer it runs on.';
@@ -121,8 +121,9 @@ export class AccountRemovalService {
   private readonly failures: ItemFailures;
   /**
    * Deleted accounts whose row had to stay, empty, because a room someone
-   * else owns still names it. There is nothing more to do for them, so they
-   * are not tried again until the service restarts.
+   * else owns still names it, once every other step went through. There is
+   * nothing more to do for them, so they are not tried again until the
+   * service restarts.
    */
   private readonly settled = new Set<string>();
 
@@ -270,9 +271,15 @@ export class AccountRemovalService {
   /**
    * Steps 2 and 3: leave other people's rooms and start removing each space
    * it owns that is not being removed yet. Safe to run again at any point.
+   * Answers whether every step went through.
    */
-  private async carryOn(principalId: string): Promise<void> {
+  private async carryOn(principalId: string): Promise<boolean> {
     const { sql, spaces, principals } = this.deps;
+    let done = true;
+    const missed = (line: string) => {
+      done = false;
+      this.log(line);
+    };
     await principalContext.run(principalId, async () => {
       const rooms = await sql<{ space_id: string }[]>`select m.space_id from space_membership m
         join space s on s.id = m.space_id
@@ -282,7 +289,7 @@ export class AccountRemovalService {
         await principals
           .revoke(principalId, room.space_id, principalId)
           .catch((error) =>
-            this.log(
+            missed(
               `account deletion: leaving ${room.space_id} did not finish yet (${describe(error)})`,
             ),
           );
@@ -290,7 +297,7 @@ export class AccountRemovalService {
         const row = await spaces
           .fence(principalId, space.id, space.name, { forAccountDeletion: true })
           .catch((error) => {
-            this.log(
+            missed(
               `account deletion: removing ${space.id} did not start yet (${describe(error)})`,
             );
             return null;
@@ -301,7 +308,7 @@ export class AccountRemovalService {
     // Its own chats in rooms someone else owns: nobody else could read them,
     // so nothing of the room's is lost with them. Rooms it owns go whole above.
     const removeChats = this.deps.removeChats;
-    if (!removeChats) return;
+    if (!removeChats) return done;
     const own = await sql<{ id: string }[]>`select j.id from job j join space s on s.id = j.space_id
       where j.principal_id = ${principalId} and j.audience = 'principal'
         and s.kind = 'shared' and s.removed_at is null
@@ -311,15 +318,17 @@ export class AccountRemovalService {
       order by j.id`;
     if (own.length)
       await removeChats(own.map((row) => row.id)).catch((error) =>
-        this.log(`account deletion: its chats in rooms did not go yet (${describe(error)})`),
+        missed(`account deletion: its chats in rooms did not go yet (${describe(error)})`),
       );
+    return done;
   }
 
   /**
    * Step 4, once nothing of the account's spaces is left: its remaining
-   * records and its row. Answers whether the account is fully gone.
+   * records and its row. Answers whether the account is fully gone. `settle`
+   * says the steps before went through, so a row that has to stay is done.
    */
-  private async finish(principalId: string): Promise<boolean> {
+  private async finish(principalId: string, settle: boolean): Promise<boolean> {
     const { sql } = this.deps;
     if ((await ownedSpaces(sql, principalId)).length) return false;
     const [unfinished] = await sql`select 1 from space_removal
@@ -340,7 +349,7 @@ export class AccountRemovalService {
       // message it wrote there. Its records go; the row stays, empty.
       for (const table of LEFTOVER_RECORDS)
         await sql`delete from ${sql(table)} where principal_id = ${principalId}`.catch(() => {});
-      this.settled.add(principalId);
+      if (settle) this.settled.add(principalId);
       return true;
     }
   }
@@ -359,8 +368,8 @@ export class AccountRemovalService {
     for (const { id } of pending) {
       if (this.settled.has(id) || !this.failures.due(id)) continue;
       try {
-        await this.carryOn(id);
-        if (await this.finish(id)) finished += 1;
+        const done = await this.carryOn(id);
+        if (await this.finish(id, done)) finished += 1;
         this.failures.succeeded(id);
       } catch (error) {
         this.failures.failed(id, error);

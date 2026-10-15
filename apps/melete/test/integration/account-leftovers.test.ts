@@ -216,6 +216,55 @@ withDb('what an account leaves behind', () => {
     expect(again.mock.calls.filter(([principalId]) => principalId === id)).toHaveLength(1);
   });
 
+  test('a deleted account that could not leave a room yet is tried again on the next pass', async () => {
+    const room = await seedSpace(h.sql, {
+      kind: 'shared',
+      name: 'Choir',
+      spacesRoot,
+      workRoot,
+    });
+    const [thread] = await h.sql<{ id: string }[]>`select id from room_thread
+      where space_id = ${room.spaceId} limit 1`;
+    await h.sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
+      values (${recordId('rmg')}, ${room.spaceId}, ${thread?.id ?? ''}, ${room.memberId},
+        'See you on Thursday.', ${recordId('rmg')})`;
+    // Leaving the room fails for a while, as it can when the room is busy.
+    let busy = true;
+    const { principals } = h.removalDeps;
+    const flaky = new AccountRemovalService({
+      ...h.removalDeps,
+      principals: {
+        revoke: (actor: string, spaceId: string, memberId: string) =>
+          busy
+            ? Promise.reject(new Error('the room is busy'))
+            : principals.revoke(actor, spaceId, memberId),
+      } as unknown as PrincipalService,
+    });
+    await flaky.remove(room.memberId, room.memberId, `${room.memberId}@example.test`);
+    await flaky.resume();
+    const stillIn = () => h.sql`select 1 from space_membership
+      where principal_id = ${room.memberId} and space_id = ${room.spaceId} and revoked_at is null`;
+    expect(await stillIn()).toHaveLength(1);
+    busy = false;
+    await flaky.resume();
+    expect(await stillIn()).toHaveLength(0);
+  });
+
+  test('an account whose address only looks like a deleted one can still be turned off', async () => {
+    const id = newId('own');
+    const email = `removed+${newId('own').toLowerCase()}@removed.invalid`;
+    await h.sql`insert into principal (id, email) values (${id}, ${email})`;
+    try {
+      const disabled = await runAccount(h.sql, ['disable', email], PUBLIC_URL);
+      expect(disabled.code).toBe(0);
+      const [row] = await h.sql`select disabled_at is not null as disabled from principal
+        where id = ${id}`;
+      expect(row?.disabled).toBe(true);
+    } finally {
+      await h.sql`delete from principal where id = ${id}`;
+    }
+  });
+
   test('the row a deleted account leaves keeps no record of when it last had Melete open', async () => {
     const id = await tombstone();
     await h.accounts.resume();
