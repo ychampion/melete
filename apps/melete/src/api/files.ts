@@ -33,7 +33,7 @@ import {
   SPACE_FILES_TRASH,
   type TrashPlace,
 } from '../connectors/files-trash.ts';
-import { managesSharedFiles } from '../connectors/shared-files.ts';
+import { inFilesTurn, managesSharedFiles } from '../connectors/shared-files.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
@@ -434,37 +434,40 @@ export function mountFiles(
     } catch {
       throw noFile();
     }
-    let trashed: Awaited<ReturnType<typeof moveToTrash>>;
-    try {
-      // A chat's record of a file in the space's Files deletes only the file
-      // it saved: anything put at its name since is the space's, and its
-      // owner's to delete. The file checked is the open one, the one that goes.
-      if (
-        found.job !== null &&
-        !inChatFolder(found.row) &&
-        !(await managesSpaceFiles(db, scope)) &&
-        !(await stillSaved(found, opened))
-      )
-        throw notTheirs('delete');
-      const checked = await opened.handle.stat().catch(() => {
-        throw noFile();
-      });
-      const file = { dev: checked.dev, ino: checked.ino };
-      trashed = await moveToTrash(place, [{ path: target.path, hash: null, file }], {
-        days: trash.days,
-        maxBytes: trash.maxBytes,
-      }).catch((error: unknown) => {
-        throw new ServiceError(
-          'file_not_deleted',
-          error instanceof Error
-            ? `The file was not deleted: ${error.message}.`
-            : 'The file was not deleted.',
-          409,
-        );
-      });
-    } finally {
-      await opened.handle.close();
-    }
+    // The check and the delete are one turn in the space's Files: nothing the
+    // service saves there can change the open file between them.
+    const trashed = await inFilesTurn(scope.spaceId, async () => {
+      try {
+        // A chat's record of a file in the space's Files deletes only the file
+        // it saved: anything put at its name since is the space's, and its
+        // owner's to delete. The file checked is the open one, the one that goes.
+        if (
+          found.job !== null &&
+          !inChatFolder(found.row) &&
+          !(await managesSpaceFiles(db, scope)) &&
+          !(await stillSaved(found, opened))
+        )
+          throw notTheirs('delete');
+        const checked = await opened.handle.stat().catch(() => {
+          throw noFile();
+        });
+        const file = { dev: checked.dev, ino: checked.ino };
+        return await moveToTrash(place, [{ path: target.path, hash: null, file }], {
+          days: trash.days,
+          maxBytes: trash.maxBytes,
+        }).catch((error: unknown) => {
+          throw new ServiceError(
+            'file_not_deleted',
+            error instanceof Error
+              ? `The file was not deleted: ${error.message}.`
+              : 'The file was not deleted.',
+            409,
+          );
+        });
+      } finally {
+        await opened.handle.close();
+      }
+    });
     // Anything kept means the file asked for is not what went: it changed
     // after the check, even when what took its place is now in the trash.
     if (!trashed.trash_id || !trashed.moved.length || trashed.kept.length) {
