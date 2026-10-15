@@ -16,7 +16,7 @@ import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -313,7 +313,7 @@ export async function configuredMemoryGateway(
     model: pinned.model || env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
     // Reading a message into memory is a short call: the fast model, unless one is pinned.
-    source: serviceModelSource({ env, settings: connected.settings, pinned, fast: routing.fast }),
+    source: sideCallSource('memory', { env, settings: connected.settings, pinned, routing }),
     dailyCalls: env.MELETE_MEMORY_DAILY_CALLS,
     fake,
     privacy,
