@@ -31,6 +31,26 @@ function composeProjects(line: string, containers: string[], volumes: string[]) 
 }
 
 /**
+ * The answer to the inspection of the Melete service containers, one row each
+ * of its installation and the MELETE_SANDBOX_PROJECT it runs with (null when
+ * its environment names none), as the template a command asks for prints it;
+ * null for any other command.
+ */
+function serviceProjects(command: readonly string[], rows: [string, string | null][]) {
+  if (!command.join(' ').startsWith('docker inspect --format ')) return null;
+  const format = command[command.indexOf('--format') + 1] ?? '';
+  const setting = (project: string) => `MELETE_SANDBOX_PROJECT=${project}`;
+  return format.includes('.Config.Labels')
+    ? rows
+        .map(
+          ([installation, project]) =>
+            `${JSON.stringify(installation)}${project === null ? '' : `\t${JSON.stringify(setting(project))}`}`,
+        )
+        .join('\n')
+    : rows.flatMap(([, project]) => (project === null ? [] : [setting(project)])).join('\n');
+}
+
+/**
  * An engine with two installations: `melete` on sandbox project melete-aaaa1111
  * and `melete2` (stopped) on melete-bbbb2222, and computers and networks of
  * those and of two projects nobody uses any more. None of them names the
@@ -48,10 +68,11 @@ function engine(options: { refuse?: string[] } = {}) {
     if (projects !== null) return answer(projects);
     if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
       return answer('aaa111\nbbb222\n');
-    if (line.startsWith('docker inspect --format {{range .Config.Env}}'))
-      return answer(
-        'MELETE_SANDBOX_PROJECT=melete-aaaa1111\nMELETE_SANDBOX_PROJECT=melete-bbbb2222\n',
-      );
+    const services = serviceProjects(command, [
+      ['melete', 'melete-aaaa1111'],
+      ['melete2', 'melete-bbbb2222'],
+    ]);
+    if (services !== null) return answer(services);
     if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
       return answer(
         [
@@ -275,8 +296,8 @@ describe("agents' computers that name the installation that made them", () => {
       if (projects !== null) return answer(projects);
       if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
         return answer('aaa111\n');
-      if (line.startsWith('docker inspect --format {{range .Config.Env}}'))
-        return answer('MELETE_SANDBOX_PROJECT=melete-live0001\n');
+      const services = serviceProjects(command, [['live', 'melete-live0001']]);
+      if (services !== null) return answer(services);
       if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
         return answer(
           [
@@ -381,5 +402,100 @@ describe("agents' computers that name the installation that made them", () => {
 
   test('an engine that does not list its volumes lists nothing rather than guessing', () => {
     expect(readSandboxLeftovers(engine({ volumes: 'fail' }).run, null)).toBeNull();
+  });
+});
+
+describe('an installation still here that runs with another sandbox project now', () => {
+  /**
+   * Installations here: `live`, whose service runs with melete-bbbb0002 now and
+   * ran with melete-aaaa0001 before; `other`, whose service runs with
+   * melete-shrd0001; and `quiet`, whose service container's environment names
+   * no sandbox project, so what it runs with is not known.
+   */
+  function engine() {
+    const run: Run = (command) => {
+      const line = command.join(' ');
+      const answer = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+      const label = (value: string) => printedLabel(command, value);
+      const here = ['live', 'other', 'quiet'];
+      const projects = composeProjects(line, here, here);
+      if (projects !== null) return answer(projects);
+      if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
+        return answer('aaa111\nbbb222\nccc333\n');
+      const services = serviceProjects(command, [
+        ['live', 'melete-bbbb0002'],
+        ['other', 'melete-shrd0001'],
+        ['quiet', null],
+      ]);
+      if (services !== null) return answer(services);
+      if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
+        return answer(
+          [
+            // The earlier project's: one stopped, one running, and one made before
+            // computers named their installation.
+            `a1\tmelete-sbx-melete-aaaa0001-a\texited\t${label('melete-aaaa0001')}\t${label('live')}`,
+            `a2\tmelete-sbx-melete-aaaa0001-b\trunning\t${label('melete-aaaa0001')}\t${label('live')}`,
+            `u1\tmelete-sbx-melete-aaaa0001-c\texited\t${label('melete-aaaa0001')}\t${label('')}`,
+            // The project it runs with now, and one another installation's service runs with.
+            `b1\tmelete-sbx-melete-bbbb0002-a\texited\t${label('melete-bbbb0002')}\t${label('live')}`,
+            `h1\tmelete-sbx-melete-shrd0001-a\texited\t${label('melete-shrd0001')}\t${label('live')}`,
+            // The installation whose sandbox project cannot be read.
+            `q1\tmelete-sbx-melete-qqqq0001-a\texited\t${label('melete-qqqq0001')}\t${label('quiet')}`,
+            `q2\tmelete-sbx-melete-qqqq0001-b\texited\t${label('melete-qqqq0001')}\t${label('')}`,
+          ].join('\n'),
+        );
+      if (line === 'docker network ls --quiet --filter label=com.melete.sandbox=v1')
+        return answer('aa01aa01aa01\nbb01bb01bb01\nqq01qq01qq01\n');
+      if (line.startsWith('docker network inspect --format {{.Name}}'))
+        return answer(
+          [
+            `melete-sbx-melete-aaaa0001-a-net\t${label('melete-aaaa0001')}\t${label('live')}\t0`,
+            `melete-sbx-melete-bbbb0002-a-net\t${label('melete-bbbb0002')}\t${label('live')}\t0`,
+            `melete-sbx-melete-qqqq0001-a-net\t${label('melete-qqqq0001')}\t${label('quiet')}\t0`,
+          ].join('\n'),
+        );
+      return { code: 1, stdout: '', stderr: 'no such command in this test' };
+    };
+    return { run };
+  }
+
+  const owners = (leftovers: ReturnType<typeof readSandboxLeftovers>) =>
+    leftovers?.map((each) => ({
+      project: each.project,
+      installation: each.installation,
+      containers: each.containers.map((container) => container.id),
+      networks: each.networks.map((network) => network.name),
+    }));
+
+  test("the earlier project's stopped computers and empty networks are left over; the current one's are not", () => {
+    expect(owners(readSandboxLeftovers(engine().run, null))).toEqual([
+      // Made before computers named their installation: its project is no longer anyone's.
+      { project: 'melete-aaaa0001', installation: null, containers: ['u1'], networks: [] },
+      {
+        project: 'melete-aaaa0001',
+        installation: 'live',
+        containers: ['a1'],
+        networks: ['melete-sbx-melete-aaaa0001-a-net'],
+      },
+    ]);
+  });
+
+  test("a project another installation's service still runs with is kept", () => {
+    const listed = readSandboxLeftovers(engine().run, null) ?? [];
+    const ids = listed.flatMap((each) => each.containers.map((container) => container.id));
+    expect(ids).not.toContain('h1');
+    expect(listed.map((each) => each.project)).not.toContain('melete-shrd0001');
+  });
+
+  test('an installation whose service names no sandbox project keeps all of its own', () => {
+    const listed = readSandboxLeftovers(engine().run, null) ?? [];
+    expect(listed.map((each) => each.project)).not.toContain('melete-qqqq0001');
+  });
+
+  test('the rule says which project the installation runs with now', () => {
+    const result = judgeLeftovers(readSandboxLeftovers(engine().run, null));
+    expect(result.detail).toContain(
+      'melete-aaaa0001, of installation live, which runs with melete-bbbb0002 now (1 stopped computer, 1 empty network)',
+    );
   });
 });

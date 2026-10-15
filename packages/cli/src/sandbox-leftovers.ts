@@ -10,16 +10,21 @@
  * an empty network is normal for it between a pause and a resume. A sandbox
  * project counts as in use when this installation's deploy/.env names it, or
  * when any Melete service container on the engine, running or stopped, runs
- * with it. Only that one setting is read from a container, so no secret in
- * its environment leaves the engine.
+ * with it. Only that one setting, and the Compose project the container
+ * belongs to, are read from a container, so no secret in its environment
+ * leaves the engine.
  *
  * A computer and its network also name the Compose project of the
  * installation that made them (INSTALL_PROJECT). While that project has any
  * container or volume on the engine, running or not, they are its own, even
- * with the installation down; once it has neither, they are left over. One
+ * with the installation down; once it has neither, they are left over. They
+ * are left over too when that installation's service container is here and
+ * runs with another sandbox project, one an earlier setting gave them: an
+ * installation removes only its current project's computers. When the
+ * service container's sandbox project cannot be read, they stay its own. One
  * made before computers carried that name has an unknown owner: it is judged
  * by its sandbox project alone, as before, and said to have an unknown owner,
- * unless a computer or network that does carry an installation's name shares
+ * unless a computer or network that an installation still here owns shares
  * its sandbox project, and then it is that installation's.
  */
 import type { Run } from './context.ts';
@@ -58,9 +63,12 @@ export type Leftovers = {
   project: string;
   /**
    * The installation that made them, which no longer has a container or a
-   * volume on this engine; null when they name none, an unknown owner.
+   * volume on this engine, or whose service runs with `runsWith` now; null
+   * when they name none, an unknown owner.
    */
   installation: string | null;
+  /** The sandbox project the installation's service runs with now; left out when it is gone. */
+  runsWith?: string;
   /** Stopped computers. */
   containers: SandboxContainer[];
   /** Networks no container is on. */
@@ -110,8 +118,24 @@ function composeProjects(run: Run): Set<string> | null {
   );
 }
 
-/** The sandbox projects the Melete service containers on this engine run with. */
-function projectsInUse(run: Run): Set<string> | null {
+const SETTING = 'MELETE_SANDBOX_PROJECT=';
+
+type ServiceProjects = {
+  /** Every sandbox project a Melete service container on this engine runs with. */
+  inUse: Set<string>;
+  /**
+   * By installation, the one sandbox project its service containers run with,
+   * or null when one of them names none, or they disagree: not known.
+   */
+  current: Map<string, string | null>;
+};
+
+/**
+ * The sandbox projects the Melete service containers on this engine run with,
+ * each beside the Compose project of its container. Both go through `json`,
+ * so a value with a line break or a tab stays inside its own field.
+ */
+function serviceProjects(run: Run): ServiceProjects | null {
   const listed = run([
     'docker',
     'ps',
@@ -122,21 +146,33 @@ function projectsInUse(run: Run): Set<string> | null {
   ]);
   if (listed.code !== 0) return null;
   const ids = lines(listed.stdout).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
-  if (ids.length === 0) return new Set();
+  const found: ServiceProjects = { inUse: new Set(), current: new Map() };
+  if (ids.length === 0) return found;
   const inspected = run([
     'docker',
     'inspect',
     '--format',
-    '{{range .Config.Env}}{{if eq (index (split . "=") 0) "MELETE_SANDBOX_PROJECT"}}{{.}}{{end}}{{end}}',
+    `{{json (index .Config.Labels "${COMPOSE_PROJECT}")}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "MELETE_SANDBOX_PROJECT"}}\t{{json .}}{{end}}{{end}}`,
     ...ids,
   ]);
   if (inspected.code !== 0) return null;
-  return new Set(
-    lines(inspected.stdout)
-      .filter((line) => line.startsWith('MELETE_SANDBOX_PROJECT='))
-      .map((line) => line.slice('MELETE_SANDBOX_PROJECT='.length).trim())
-      .filter(Boolean),
-  );
+  for (const line of lines(inspected.stdout)) {
+    const [install = '', ...settings] = line.split('\t');
+    const projects = settings
+      .map(labelOf)
+      .flatMap((setting) =>
+        setting?.startsWith(SETTING) ? [setting.slice(SETTING.length).trim()] : [],
+      )
+      .filter(Boolean);
+    for (const project of projects) found.inUse.add(project);
+    const installation = installationOf(labelOf(install) ?? '');
+    if (installation === null) continue;
+    const [only] = projects;
+    const one = projects.length === 1 && only && PROJECT_NAME.test(only) ? only : null;
+    const before = found.current.get(installation);
+    found.current.set(installation, before === undefined || before === one ? one : null);
+  }
+  return found;
 }
 
 /**
@@ -145,8 +181,9 @@ function projectsInUse(run: Run): Set<string> | null {
  * null when the engine could not be asked.
  */
 export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] | null {
-  const inUse = projectsInUse(run);
-  if (inUse === null) return null;
+  const services = serviceProjects(run);
+  if (services === null) return null;
+  const { inUse, current } = services;
   if (own) inUse.add(own);
   const installations = composeProjects(run);
   if (installations === null) return null;
@@ -197,23 +234,41 @@ export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] 
       ? [{ id, name, state, project, installation: installationOf(installation) }]
       : [];
   });
+  // The sandbox project an installation still here runs with now, when its
+  // service container says; a project not in use is then an earlier one.
+  const runsWith = (installation: string) =>
+    installations.has(installation) ? (current.get(installation) ?? null) : null;
   // A sandbox project that a computer or network of an installation still here
-  // carries is that installation's, those of an unknown owner included.
+  // carries is that installation's, those of an unknown owner included, unless
+  // that installation runs with another one now.
   const claimed = new Set(
     [...computers, ...networks].flatMap((each) =>
-      each.installation !== null && installations.has(each.installation) ? [each.project] : [],
+      each.installation !== null &&
+      installations.has(each.installation) &&
+      runsWith(each.installation) === null
+        ? [each.project]
+        : [],
     ),
   );
   const left = ({ project, installation }: { project: string; installation: string | null }) =>
     PROJECT_NAME.test(project) &&
     !inUse.has(project) &&
-    (installation === null ? !claimed.has(project) : !installations.has(installation));
+    (installation === null
+      ? !claimed.has(project)
+      : !installations.has(installation) || runsWith(installation) !== null);
   const byOwner = new Map<string, Leftovers>();
   const entry = (project: string, installation: string | null) => {
     const key = `${project}\t${installation ?? ''}`;
     let found = byOwner.get(key);
     if (!found) {
-      found = { project, installation, containers: [], networks: [] };
+      const now = installation === null ? null : runsWith(installation);
+      found = {
+        project,
+        installation,
+        ...(now === null ? {} : { runsWith: now }),
+        containers: [],
+        networks: [],
+      };
       byOwner.set(key, found);
     }
     return found;
@@ -237,7 +292,13 @@ const described = (leftovers: readonly Leftovers[]) =>
   leftovers
     .map(
       (each) =>
-        `${each.project}, ${each.installation === null ? 'unknown owner' : `of installation ${each.installation}, gone from this engine`} (${[
+        `${each.project}, ${
+          each.installation === null
+            ? 'unknown owner'
+            : each.runsWith
+              ? `of installation ${each.installation}, which runs with ${each.runsWith} now`
+              : `of installation ${each.installation}, gone from this engine`
+        } (${[
           each.containers.length
             ? count(each.containers.length, 'stopped computer', 'stopped computers')
             : '',
