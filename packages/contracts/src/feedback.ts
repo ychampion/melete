@@ -117,3 +117,12 @@ export const feedbackListResponse = z.object({
   can_manage: z.boolean(),
 });
 export type FeedbackListResponse = z.infer<typeof feedbackListResponse>;
+
+export const feedbackForwarding = z.object({
+  /**
+   * True when each new report, with the reporter's email address, is also sent
+   * to an address the person who runs the installation set, outside the app.
+   */
+  forwarded: z.boolean(),
+});
+export type FeedbackForwarding = z.infer<typeof feedbackForwarding>;

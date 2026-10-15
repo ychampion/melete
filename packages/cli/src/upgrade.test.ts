@@ -12,6 +12,7 @@ import {
 import { runUpgrade, upgradeOverlayArguments } from './commands/upgrade.ts';
 import { CLIENT_TLS, EXTERNAL_LOAD } from './database.ts';
 import { composeCommand, type DeployConfig, deployConfigSchema } from './deploy-config.ts';
+import { LEFT_OUT } from './files.ts';
 import { ok, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 const config = (value: object): DeployConfig =>
@@ -94,6 +95,22 @@ describe('the upgrade reads the same Compose files and profiles as a deploy', ()
 
   test("the upgrade script's rollback loads an external database the way restore does", () => {
     expect(UPGRADE_EXTERNAL_LOAD).toBe(EXTERNAL_LOAD);
+  });
+
+  test("the upgrade's copy of /data leaves out what a backup leaves out of the spaces", () => {
+    const options = parseArguments(['v1.0.0'], new Date(), '/h', '/srv/melete');
+    const data = upgradePlan({
+      ...options,
+      project: 'melete',
+      fromCommit: 'a'.repeat(40),
+      fromBranch: 'main',
+      fromVersion: 'v0.9.0',
+    }).find((step) => step.stdoutFile?.endsWith('/data.tar'));
+    const excluded = (data?.command ?? []).flatMap((part) =>
+      part.startsWith('--exclude=') ? [part.slice('--exclude='.length)] : [],
+    );
+    // The archive holds /data as data/, with the spaces' volume at data/spaces.
+    expect(excluded).toEqual(LEFT_OUT.spaces.map((path) => `data/spaces/${path.slice(2)}`));
   });
 });
 

@@ -36,6 +36,14 @@ test('a past day reads Today, Yesterday, a weekday this week, then a date', () =
   expect(pastDay(new Date(2025, 11, 30, 12, 0), now)).toBe('Dec 30, 2025');
 });
 
+test('a day still to come reads Today, Tomorrow, then a date, never Today for a later day', () => {
+  const now = Date.parse('2026-10-10T15:00:00.000Z');
+  expect(pastDay('2026-10-10T22:00:00.000Z', now, 'UTC')).toBe('Today');
+  expect(pastDay('2026-10-11T09:00:00.000Z', now, 'UTC')).toBe('Tomorrow');
+  expect(pastDay('2026-10-14T09:00:00.000Z', now, 'UTC')).toBe('Oct 14');
+  expect(pastDay('2027-01-02T09:00:00.000Z', now, 'UTC')).toBe('Jan 2, 2027');
+});
+
 test('the same words saved twice show once, the first kept and the copy behind it', () => {
   const belief = (id: string, label: string, value: string, category = 'people') =>
     ({ id, label, value, category }) as Belief;
@@ -103,6 +111,29 @@ test('the chat list takes in chats started or renamed since it was read', () => 
     ['a', 'New name'],
   ]);
   expect(withFresh(paged, [], true)).toEqual(paged);
+});
+
+test('a chat deleted elsewhere leaves the list once the fresh list covers where it was', () => {
+  const chat = (id: string, updated_at: string) => ({ id, title: id, updated_at }) as Conversation;
+  const paged = [
+    chat('a', '2026-10-09T09:00:00.000Z'),
+    chat('b', '2026-10-09T08:00:00.000Z'),
+    chat('c', '2026-10-09T07:00:00.000Z'),
+    chat('d', '2026-10-09T05:00:00.000Z'),
+  ];
+  // "b" was deleted in another tab; "d" is older than anything the fresh list reaches.
+  const fresh = [chat('a', '2026-10-09T09:00:00.000Z'), chat('c', '2026-10-09T07:00:00.000Z')];
+  expect(withFresh(paged, fresh, false).map((item) => item.id)).toEqual(['a', 'c', 'd']);
+  // A chat started after the fresh list was read is not taken for deleted.
+  const newer = [chat('e', '2026-10-09T10:00:00.000Z'), ...paged];
+  expect(withFresh(newer, fresh, false).map((item) => item.id)).toEqual(['e', 'a', 'c', 'd']);
+  // "f" ties the fresh list's last chat and fell just past its end; it is not taken for deleted.
+  const tied = [
+    ...paged.slice(0, 3),
+    chat('f', '2026-10-09T07:00:00.000Z'),
+    paged[3] as Conversation,
+  ];
+  expect(withFresh(tied, fresh, false).map((item) => item.id)).toEqual(['a', 'c', 'f', 'd']);
 });
 
 test('the line under a status pill does not repeat the pill', () => {

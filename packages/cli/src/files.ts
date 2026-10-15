@@ -209,6 +209,47 @@ export function journalOnEngine(
   return lines === 'none' || Number(lines) <= 1 ? 'empty' : 'kept';
 }
 
+/** Where the journal sits in an archive a backup made of the journal's folder. */
+export const JOURNAL_MEMBER = `restrictions/${JOURNAL_FILE}`;
+
+/** The journal in a volume that holds one, as text; unreadable, with why, when it could not be read. */
+export function journalInVolume(
+  context: Context,
+  image: string,
+  volume: string,
+): string | { unreadable: string } {
+  const read = context.run(
+    helperCommand(image, [{ volume, path: '/v', readOnly: true }], 'cat', [`/v/${JOURNAL_FILE}`]),
+  );
+  return read.code === 0 ? read.stdout : { unreadable: failure(read) };
+}
+
+/** A removal the journal records, as a report names it. */
+export type JournalRemoval = { id: string; operation: string; recordedAt: string };
+
+/**
+ * The removals a journal's text records, in order: each line after the header
+ * holds one. Null when a line is not one the service writes.
+ */
+export function journalRemovals(text: string): JournalRemoval[] | null {
+  const removals: JournalRemoval[] = [];
+  for (const line of text.split('\n').slice(1)) {
+    if (!line.trim()) continue;
+    try {
+      const record = (JSON.parse(line) as { record?: Record<string, unknown> }).record;
+      if (typeof record?.id !== 'string') return null;
+      removals.push({
+        id: record.id,
+        operation: String(record.operation ?? 'unknown'),
+        recordedAt: String(record.recorded_at ?? 'unknown'),
+      });
+    } catch {
+      return null;
+    }
+  }
+  return removals;
+}
+
 /**
  * Which of these volumes hold at least one file, from one container that mounts
  * them read-only; null when that could not be read. Only volumes already on
@@ -463,11 +504,26 @@ export function computerRunning(context: Context, computer: string): boolean {
   return state.code === 0 && state.stdout.trim() === 'true false';
 }
 
-/** Whether a computer's container is on this machine, in any state. */
-export function computerExists(context: Context, computer: string): boolean {
-  return (
-    context.run(['docker', 'container', 'inspect', '--format', '{{.Id}}', computer]).code === 0
-  );
+/**
+ * Whether a computer's container is on this machine, in any state. As with
+ * volumePresence, only the engine saying it has no such container makes it
+ * absent; any other failure leaves it unknown, with why.
+ */
+export function computerExists(
+  context: Context,
+  computer: string,
+): 'present' | 'absent' | { unreadable: string } {
+  const inspected = context.run([
+    'docker',
+    'container',
+    'inspect',
+    '--format',
+    '{{.Id}}',
+    computer,
+  ]);
+  if (inspected.code === 0) return 'present';
+  if (/no such container/i.test(inspected.stderr)) return 'absent';
+  return { unreadable: failure(inspected) };
 }
 
 /** Whether a computer's container is paused now. */
@@ -521,11 +577,14 @@ export function measureFiles(
     return null;
   }
   // Only volumes already on the engine: mounting a missing one would create it outside Compose.
+  // One the engine could not describe may hold files, so the size is not known.
+  const parts = FILE_PARTS.map((part) => composeVolume(config.project, part)).map((volume) => ({
+    volume,
+    presence: volumePresence(context, volume),
+  }));
+  if (parts.some(({ presence }) => typeof presence === 'object')) return null;
   const volumes = [
-    ...FILE_PARTS.map((part) => composeVolume(config.project, part)).filter(
-      (volume) =>
-        context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code === 0,
-    ),
+    ...parts.filter(({ presence }) => presence === 'present').map(({ volume }) => volume),
     ...computers.map((computer) => computer.volume),
   ];
   if (volumes.length === 0) return 0;

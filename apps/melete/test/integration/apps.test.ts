@@ -5,7 +5,7 @@
  * pointer at once, and the Apps routes list, show, re-grant and delete.
  */
 import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Action, JsonObject } from '@melete/contracts';
@@ -24,8 +24,11 @@ import { testDatabase } from '../helpers/database.ts';
 const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
 const SLOW = 30_000;
+/** The folders each setup makes for its workspace and files, removed when the tests are done. */
+const made: string[] = [];
 
 afterAll(async () => {
+  await Promise.all(made.map((dir) => rm(dir, { recursive: true, force: true })));
   await fixture?.close();
 }, 15_000);
 
@@ -50,6 +53,7 @@ async function setup() {
   // Alice's own space, as a personal space is.
   await sql`update space set owner_principal_id = ${alice} where id = ${seed.claims.space_id}`;
   const roots = await mkdtemp(path.join(tmpdir(), 'melete-apps-'));
+  made.push(roots);
   const workRoot = path.join(roots, 'work');
   const blobs = new LocalBlobStore(path.join(roots, 'blobs'));
   const connector = createAppsConnector({ sql, workRoot, blobs });

@@ -236,6 +236,25 @@ describe('labels', () => {
       'The owner of the café is Ana',
     );
   });
+  test('"the owner" outside a detail filed under the person is someone else, and stays as written', () => {
+    expect(beliefLabel(null, 'home.rent', 'The owner said the rent goes up')).toBe(
+      'The owner said the rent goes up',
+    );
+    expect(beliefLabel(null, 'home.flat', "The owner's dog barks at night")).toBe(
+      "The owner's dog barks at night",
+    );
+    expect(
+      beliefLabel(null, 'person.owner.home', 'The owner of my flat said the rent goes up'),
+    ).toBe('The owner of my flat said the rent goes up');
+    // Filed under the person themself, "the owner" is them, as older details say.
+    expect(beliefLabel(null, 'self.home', 'The owner lives in a flat in Lisbon')).toBe(
+      'Lives in a flat in Lisbon',
+    );
+    // "The user" is the person wherever it is filed.
+    expect(beliefLabel(null, 'home.rent', 'The user said the rent goes up')).toBe(
+      'Said the rent goes up',
+    );
+  });
   test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {
     expect(beliefLabel(null, 'person.sister.lena.city', 'Sister Lena lives in Seattle.')).toBe(
       'Sister Lena lives in Seattle',

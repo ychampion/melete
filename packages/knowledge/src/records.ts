@@ -109,7 +109,8 @@ export async function hardDelete(
     subject: `Delete ${record.frontmatter.title}: ${request.reason.trim()}`,
     now,
   });
-  index.remove(record.frontmatter.id);
+  // The rebuild drops everything and leaves the deleted record out, which
+  // erases it; removing it first would rewrite the whole file once more.
   const contents = rebuild(paths, index);
   // Staged writes hold the record's text too, and would write it back.
   discardProposalsFor(paths, { ids: [record.frontmatter.id], paths: [record.path] });

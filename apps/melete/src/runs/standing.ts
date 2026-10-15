@@ -25,6 +25,7 @@ import { connection, event, experienceProfile, runState, trigger } from '../db/s
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { personSetSchedule } from '../jobs/attention.ts';
 import { workZone } from '../jobs/local-now.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
@@ -93,7 +94,9 @@ async function latestSeq(tx: Transaction): Promise<number> {
  * only what happens from now: mail that came in last week does not wake it.
  * A schedule the work set for itself wakes it at most once an hour; one the
  * person set, at most every 5 minutes. `changed` is false when the run
- * already stood on the same thing.
+ * already stood on the same thing. `personAsked` records that the person
+ * asked for this schedule, typed or in a conversation, so it runs every time
+ * it is due even when its results go unread.
  */
 export async function stand(
   tx: Transaction,
@@ -101,6 +104,7 @@ export async function stand(
   row: JobRow,
   wake: RunWake,
   setBy: 'person' | 'work',
+  personAsked = setBy === 'person',
 ): Promise<{ registration: TriggerRow; changed: boolean }> {
   const spec: TriggerSpec =
     wake.kind === 'schedule'
@@ -150,6 +154,10 @@ export async function stand(
     checkTriggerScope(spec);
   }
   const before = await standingTrigger(tx, row.id);
+  // The work standing again on the schedule the person asked for leaves it theirs.
+  const asked =
+    personAsked ||
+    (before !== null && Bun.deepEquals(before.spec, spec) && (await personSetSchedule(tx, row)));
   await tx.delete(trigger).where(eq(trigger.jobId, row.id));
   const [created] = await tx
     .insert(trigger)
@@ -166,7 +174,7 @@ export async function stand(
   await appendEvent(tx, {
     jobId: row.id,
     type: 'notice',
-    payload: { kind: 'trigger_created', trigger_id: created.id, spec },
+    payload: { kind: 'trigger_created', trigger_id: created.id, spec, person_asked: asked },
     dedupKey: `${created.id}:created`,
   });
   return { registration: created, changed: !before || !Bun.deepEquals(before.spec, spec) };

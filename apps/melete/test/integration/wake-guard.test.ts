@@ -505,7 +505,7 @@ withDb('the wake guard', () => {
     await required(runner).commitOutcome(scheduled.claims, done('Two orders overnight.'));
     expect(await classes(routineJob)).toEqual(['interactive', 'background']);
   });
-  test("a routine's test that is put off leaves its next scheduled run background", async () => {
+  test("a routine's test is not put off by a slowed check, and its next scheduled run stays background", async () => {
     const response = await request('/automations', 'POST', {
       title: 'Evening check',
       instruction: 'Check the day of orders',
@@ -518,17 +518,20 @@ withDb('the wake guard', () => {
       .from(trigger)
       .where(eq(trigger.id, routine.id));
     const routineJob = required(registration).jobId;
-    // The routine is being checked less often, so the next occurrence is put off.
+    // An earlier version left it checked less often. A schedule the person set
+    // is never put off, so the test runs now, as the person's.
     await required(handle)
       .db.update(job)
       .set({ scheduleSkipRemaining: 1 })
       .where(eq(job.id, routineJob));
     expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
-    expect((await row(routineJob)).state).toBe('waiting_for_event_or_time');
+    expect((await row(routineJob)).state).toBe('queued');
+    const tried = required(await claim(routineJob));
+    await required(runner).commitOutcome(tried.claims, done('Nothing new.'));
     await required(triggers).fireSchedule(routine.id, `occ-${++occurrence}`);
     const scheduled = required(await claim(routineJob));
-    await required(runner).commitOutcome(scheduled.claims, done('Nothing new.'));
-    expect(await classes(routineJob)).toEqual(['background']);
+    await required(runner).commitOutcome(scheduled.claims, done('Still nothing new.'));
+    expect(await classes(routineJob)).toEqual(['interactive', 'background']);
   });
 
   test('only a turn cut off to be tried again carries the person on; a final failure does not', async () => {

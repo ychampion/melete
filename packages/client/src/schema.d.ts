@@ -6762,6 +6762,56 @@ export interface paths {
         };
         trace?: never;
     };
+    "/feedback/forwarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether new reports are also sent outside the app
+         * @description True when the installation forwards each new report, with the reporter’s email address, to the webhook its operator set (`MELETE_FEEDBACK_WEBHOOK_URL`). The report dialog asks before anything is sent, so it can say so.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Forwarding */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            forwarded: boolean;
+                        };
+                    };
+                };
+                /** @description A session is required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema232"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/files": {
         parameters: {
             query?: never;
@@ -27694,6 +27744,8 @@ export interface components {
                 kind: "waiting_for_event_or_time";
                 wait: components["schemas"]["__schema466"];
             } | {
+                /** @enum {string} */
+                failure?: "key_refused" | "quota" | "rate_limited" | "model_not_found" | "context_too_long" | "provider_down";
                 /** @constant */
                 kind: "failed";
                 reason: string;

@@ -299,6 +299,7 @@ export type FeedbackList = Ok<paths['/feedback'], 'get'>;
 export type FeedbackReport = FeedbackList['reports'][number];
 export type FeedbackStatus = FeedbackReport['status'];
 export type FeedbackCreate = Body<paths['/feedback'], 'post'>;
+export type FeedbackForwarding = Ok<paths['/feedback/forwarding'], 'get'>;
 
 /* ---------- voice ---------- */
 

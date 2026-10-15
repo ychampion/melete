@@ -101,11 +101,20 @@ withDb('a block holds for the detail that was forgotten', () => {
       ],
     } as ExtractionProposal;
   };
-  /** One message, read as a model filed it: [subject, words quoted, sentence saved]. */
-  const say = async (scope: MemoryScope, text: string, proposals: [string, string, string][]) => {
+  /**
+   * One message, read as a model filed it: [subject, words quoted, sentence
+   * saved], and the registry key it was given, if any.
+   */
+  const say = async (
+    scope: MemoryScope,
+    text: string,
+    proposals: [string, string, string, string?][],
+  ) => {
     const batch = await said(scope, text);
     const result = await commitExtraction(store.sql, scope, batch, {
-      proposals: proposals.map(([subject, quote, content]) => add(batch, subject, quote, content)),
+      proposals: proposals.map(([subject, quote, content, key]) =>
+        key ? { ...add(batch, subject, quote, content), key } : add(batch, subject, quote, content),
+      ),
     });
     expect(result.status).toBe('committed');
     const refused = await store.sql`select reason from memory_rejections
@@ -281,11 +290,14 @@ withDb('a block holds for the detail that was forgotten', () => {
         ['person.tom.diet', 'My brother Tom is vegetarian', 'Brother Tom is vegetarian'],
       ],
     ];
-    // Each said by someone who blocked the four details above, so none lands on another.
+    // Each said, one after another, by someone who blocked the four details
+    // above. Blocks are checked on each detail as it is proposed, so one
+    // learned earlier changes nothing for the next; a later detail under the
+    // same subject may replace an earlier one.
+    const scope = await blockedFour();
     for (const [text, [subject, quote, content]] of nearby) {
-      const scope = await blockedFour();
       expect(await say(scope, text, [[subject, quote, content]])).toEqual([]);
-      expect(await held(scope)).toEqual([`${subject} :: ${content}`]);
+      expect(await held(scope)).toContain(`${subject} :: ${content}`);
     }
   });
 
@@ -504,6 +516,61 @@ withDb('a block holds for the detail that was forgotten', () => {
         ['health.allergy', 'allergic to shellfish', 'Allergic to shellfish'],
       ]),
     ).toEqual(['blocked_by_person']);
+  });
+
+  test('a detail block made before the install key changed lists as holding for its whole subject, as it does', async () => {
+    const scope = await createScope(store);
+    await say(scope, "I'm allergic to peanuts.", [
+      ['health.allergy', 'allergic to peanuts', 'Allergic to peanuts'],
+    ]);
+    await block(scope, /peanut/);
+    const listed = async () =>
+      (await listBlocks(store.sql, scope)).blocks.map((row) => [row.label, row.scope]);
+    expect(await listed()).toEqual([['Health allergy, the detail you forgot', 'detail']]);
+    process.env.MELETE_MASTER_KEY = `${KEY}-rotated`;
+    expect(await listed()).toEqual([['Anything about Health allergy', 'topic']]);
+    expect(
+      await say(scope, "I'm allergic to shellfish.", [
+        ['health.allergy', 'allergic to shellfish', 'Allergic to shellfish'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    delete process.env.MELETE_MASTER_KEY;
+    expect(await listed()).toEqual([['Anything about Health allergy', 'topic']]);
+  });
+
+  test('a block on a keyed detail holds for any value said under that key', async () => {
+    const scope = await createScope(store);
+    await say(scope, 'On flights I take an aisle seat.', [
+      ['pref.travel.seat', 'aisle seat', 'aisle seat', 'pref.travel.seat'],
+    ]);
+    await block(scope, /aisle/);
+    expect(
+      await say(scope, 'Put me in a window seat on flights from now on.', [
+        ['pref.travel.seat', 'window seat', 'window seat', 'pref.travel.seat'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    // Another key is another detail.
+    expect(
+      await say(scope, 'On flights I take the vegetarian meal.', [
+        ['pref.travel.meal', 'vegetarian meal', 'vegetarian meal', 'pref.travel.meal'],
+      ]),
+    ).toEqual([]);
+    expect(await held(scope)).toEqual(['pref.travel.meal :: vegetarian meal']);
+  });
+
+  test('an older block on a two-word subject holds for that subject, not for a detail it only shares a word with', async () => {
+    const scope = await createScope(store);
+    await store.sql`insert into memory_blocks (id, space_id, domain_key, key, label) values
+      ('mb_work_lisbon', ${scope.spaceId}, 'work.lisbon', null, 'Work lisbon')`;
+    expect(
+      await say(scope, 'I live in Lisbon.', [['general', 'I live in Lisbon', 'Lives in Lisbon']]),
+    ).toEqual([]);
+    expect(
+      await say(scope, 'I work in Lisbon.', [
+        ['work.lisbon', 'I work in Lisbon', 'Works in Lisbon'],
+      ]),
+    ).toEqual(['blocked_by_person']);
+    expect(await held(scope)).toEqual(['general :: Lives in Lisbon']);
   });
 
   test("in a room, a member's block holds for what that member says, not for another member", async () => {

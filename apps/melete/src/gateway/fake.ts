@@ -3,7 +3,9 @@ import type { GatewayProtocol, GatewayProvider } from './types.ts';
 
 export type FakeTurn =
   | { tool: { name: string; arguments: Record<string, unknown>; id?: string }; text?: string }
-  | { text: string; tool?: never };
+  | { text: string; tool?: never }
+  /** The provider refuses the call, as a real one does: a status and its own error body. */
+  | { refuse: { status: number; body: unknown }; tool?: never; text?: never };
 
 export const fakeProvider: GatewayProvider = {
   name: 'fake',
@@ -26,6 +28,8 @@ export function createScriptedProvider(script: readonly FakeTurn[] = defaultScri
     if (!turn)
       return Response.json({ error: { message: 'fake script exhausted' } }, { status: 409 });
     turns.set(attemptId, index + 1);
+    if ('refuse' in turn && turn.refuse)
+      return Response.json(turn.refuse.body, { status: turn.refuse.status });
     const toolId = turn.tool?.id ?? `call_scripted_${index}`;
     const usage = {
       prompt_tokens: 12 + index * 5,

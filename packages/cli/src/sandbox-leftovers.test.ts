@@ -383,3 +383,45 @@ describe("agents' computers that name the installation that made them", () => {
     expect(readSandboxLeftovers(engine({ volumes: 'fail' }).run, null)).toBeNull();
   });
 });
+
+describe('an installation whose sandbox project changed', () => {
+  /**
+   * `live` is running, and its service runs with melete-bbbb0002 now; its
+   * computers of melete-aaaa0001 were made while it ran with that project. A
+   * paused workspace is resumed by the name it was made with, so they can
+   * still be its agents' workspaces.
+   */
+  function engine() {
+    const run: Run = (command) => {
+      const line = command.join(' ');
+      const answer = (stdout: string) => ({ code: 0, stdout, stderr: '' });
+      const label = (value: string) => printedLabel(command, value);
+      const projects = composeProjects(line, ['live'], ['live']);
+      if (projects !== null) return answer(projects);
+      if (line === 'docker ps --all --quiet --filter label=com.docker.compose.service=melete')
+        return answer('aaa111\n');
+      if (line.startsWith('docker inspect --format {{range .Config.Env}}'))
+        return answer('MELETE_SANDBOX_PROJECT=melete-bbbb0002\n');
+      if (line.startsWith('docker ps --all --filter label=com.melete.sandbox=v1 --format'))
+        return answer(
+          [
+            `a1\tmelete-sbx-melete-aaaa0001-a\texited\t${label('melete-aaaa0001')}\t${label('live')}`,
+            `a2\tmelete-sbx-melete-aaaa0001-b\texited\t${label('melete-aaaa0001')}\t${label('')}`,
+            `b1\tmelete-sbx-melete-bbbb0002-a\texited\t${label('melete-bbbb0002')}\t${label('live')}`,
+          ].join('\n'),
+        );
+      if (line === 'docker network ls --quiet --filter label=com.melete.sandbox=v1')
+        return answer('aa01aa01aa01\n');
+      if (line.startsWith('docker network inspect --format {{.Name}}'))
+        return answer(
+          `melete-sbx-melete-aaaa0001-a-net\t${label('melete-aaaa0001')}\t${label('live')}\t0`,
+        );
+      return { code: 1, stdout: '', stderr: 'no such command in this test' };
+    };
+    return { run };
+  }
+
+  test('keeps the computers and networks it made under its earlier project as its own', () => {
+    expect(readSandboxLeftovers(engine().run, null)).toEqual([]);
+  });
+});

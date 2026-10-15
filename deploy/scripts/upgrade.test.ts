@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,7 +55,7 @@ describe('the upgrade plan', () => {
     const dump = indexOf(rendered, 'pg_dump');
     const verifyDump = indexOf(rendered, 'pg_restore --list');
     const env = indexOf(rendered, 'cp -p deploy/.env');
-    const data = indexOf(rendered, 'cp -a melete:/data -');
+    const data = indexOf(rendered, '--entrypoint tar melete');
     const work = indexOf(rendered, 'cp -a melete:/work -');
     const journal = indexOf(rendered, 'cp -a melete:/data/restrictions -');
     const checkout = indexOf(rendered, 'checkout --detach refs/tags/v0.2.0');
@@ -73,7 +74,7 @@ describe('the upgrade plan', () => {
     const journal = plan[indexOf(rendered, 'melete:/data/restrictions -')];
     expect(journal?.stdoutFile).toBe('/srv/backups/melete-upgrade-v0.2.0/restrictions.tar');
     expect(rendered).toContain(
-      'docker compose -f deploy/docker-compose.yml cp -a melete:/data - > /srv/backups/melete-upgrade-v0.2.0/data.tar',
+      "docker compose -f deploy/docker-compose.yml run --rm --no-deps -T --user 0:0 --entrypoint tar melete -C / --numeric-owner --anchored --no-wildcards-match-slash '--exclude=data/spaces/*/.index' '--exclude=data/spaces/*/.proposed' -cf - data > /srv/backups/melete-upgrade-v0.2.0/data.tar",
     );
     expect(indexOf(rendered, 'chmod 600')).toBeLessThan(indexOf(rendered, 'checkout --detach'));
     expect(indexOf(rendered, 'sha256sum')).toBeLessThan(indexOf(rendered, 'checkout --detach'));
@@ -104,6 +105,18 @@ describe('the upgrade plan', () => {
     expect(migrations).toBeGreaterThan(up);
     expect(rendered[migrations]).toContain('select count(*) from drizzle.__drizzle_migrations');
     expect(migrations).toBe(plan.length - 1);
+  });
+
+  test("the data archive leaves out each space's search index and staged writes", () => {
+    const data = plan.find((step) => step.stdoutFile?.endsWith('/data.tar'));
+    expect(data?.command).toEqual(
+      expect.arrayContaining([
+        '--anchored',
+        '--no-wildcards-match-slash',
+        '--exclude=data/spaces/*/.index',
+        '--exclude=data/spaces/*/.proposed',
+      ]),
+    );
   });
 
   test('never removes a volume, prunes, or restores over a live schema', () => {
@@ -354,6 +367,18 @@ describe('the installation a copy of the script acts on', () => {
       'Usage',
     );
     expect(() => parseArguments(['v0.2.0', '--repository'], now, '/h', '/r')).toThrow('Usage');
+  });
+
+  test('one that does not exist is named, with an exit code of its own', () => {
+    const missing = join(tmpdir(), 'melete-no-such-installation');
+    const result = spawnSync(
+      process.execPath,
+      [join(import.meta.dir, 'upgrade.ts'), 'v0.2.0', '--dry-run', '--repository', missing],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain(`repository not found: ${missing}`);
+    expect(result.stderr).not.toContain('Usage');
   });
 
   test('one that is not the top of a git checkout is refused by name', () => {

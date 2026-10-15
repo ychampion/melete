@@ -7,6 +7,7 @@ import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AppContext, type AppContextValue, NO_DECISIONS } from '../experience/hooks.ts';
 import type { Profile } from '../experience/types.ts';
+import { opensAgents, showsRail } from '../shell/member-guards.ts';
 import { AccountSettings } from './AccountSettings.tsx';
 import { settingsTab, showsTab } from './Settings.tsx';
 
@@ -64,6 +65,18 @@ test('a member who opens an owner’s tab by its address lands on their account'
   }
   for (const tab of MEMBER_TABS) expect(settingsTab(tab, true)).toBe(tab);
   expect(settingsTab('nowhere', true)).toBe('account');
+});
+
+test('a member’s pages have no day rail, and neither does a page with a docked panel', () => {
+  expect(showsRail({ rail: true, panel: undefined, member: false })).toBe(true);
+  expect(showsRail({ rail: true, panel: undefined, member: true })).toBe(false);
+  expect(showsRail({ rail: true, panel: 'plan sheet', member: false })).toBe(false);
+  expect(showsRail({ rail: false, panel: undefined, member: false })).toBe(false);
+});
+
+test('the Agents page opens for an owner and not for a member', () => {
+  expect(opensAgents(false)).toBe(true);
+  expect(opensAgents(true)).toBe(false);
 });
 
 test('a member reads the space’s time zone but does not change it', () => {

@@ -29,7 +29,8 @@ export type PendingFile = {
   kind: AttachmentKind;
   /** A local picture to show while it uploads, for a picture. */
   thumb: string | null;
-  state: 'uploading' | 'ready' | 'failed';
+  /** `retrying` waits to be tried again on its own; `failed` has stopped trying. */
+  state: 'uploading' | 'ready' | 'retrying' | 'failed';
   view: AttachmentView | null;
   error: string | null;
 };
@@ -197,19 +198,42 @@ type UploadAnswer = { attachment?: AttachmentView; error?: { message?: string } 
 /**
  * What an upload's answer means: the file, a refusal that says why, or the
  * service out of reach (no answer, or one from a service that is down), which
- * is tried again.
+ * is tried again. A service that is up but failing says why in its own words,
+ * shown once the tries are spent.
  */
 export function uploadResult(status: number | null, body: UploadAnswer): Result<AttachmentView> {
   if (status !== null && status < 300 && body?.attachment)
     return { data: body.attachment, error: null, unavailable: null };
   if (status !== null && status < 500 && body?.error?.message)
     return { data: null, error: body.error.message, unavailable: null };
-  return { data: null, error: null, unavailable: OFFLINE };
+  return { data: null, error: null, unavailable: body?.error?.message || OFFLINE };
 }
 
 /** How long to wait before trying an upload again after `tried` tries; undefined to stop. */
 export function nextUploadTry(result: Result<AttachmentView>, tried: number): number | undefined {
   return result.unavailable ? UPLOAD_RETRY_DELAYS[tried] : undefined;
+}
+
+/** A file's state after a try that did not upload it, and how long until the next try. */
+export function afterFailedTry(
+  result: Result<AttachmentView>,
+  tried: number,
+): { state: PendingFile['state']; error: string | null; wait: number | undefined } {
+  const wait = nextUploadTry(result, tried);
+  return wait === undefined
+    ? { state: 'failed', error: result.error ?? result.unavailable, wait }
+    : { state: 'retrying', error: TRYING_AGAIN, wait };
+}
+
+/** The line under the box about its files; null when there is nothing to say. */
+export function fileNote(
+  problem: string | null,
+  files: readonly Pick<PendingFile, 'state'>[],
+): string | null {
+  if (problem) return problem;
+  return files.some((file) => file.state === 'failed')
+    ? 'A file didn’t upload. Remove it to send, or attach it again.'
+    : null;
 }
 
 /** Take back an uploaded file that was not sent. Failing quietly is fine: it is swept after a day. */
@@ -371,11 +395,8 @@ export function useAttachments() {
               return;
             }
             // The service could not be reached: tried again a few times on its own.
-            const wait = nextUploadTry(result, tried);
-            update(pending.key, {
-              state: 'failed',
-              error: wait === undefined ? (result.error ?? result.unavailable) : TRYING_AGAIN,
-            });
+            const { wait, ...change } = afterFailedTry(result, tried);
+            update(pending.key, change);
             if (wait !== undefined)
               retries.current.set(
                 pending.key,
@@ -402,14 +423,15 @@ export function useAttachments() {
 
   /** Take out every file that did not upload, as a new chat starts without them. */
   const dropFailed = useCallback(() => {
+    const notUploaded = (file: PendingFile) => file.state === 'failed' || file.state === 'retrying';
     for (const file of live.current) {
-      if (file.state !== 'failed') continue;
+      if (!notUploaded(file)) continue;
       gone.current.add(file.key);
       clearTimeout(retries.current.get(file.key));
       retries.current.delete(file.key);
       if (file.thumb) URL.revokeObjectURL(file.thumb);
     }
-    setFiles((current) => current.filter((entry) => entry.state !== 'failed'));
+    setFiles((current) => current.filter((entry) => !notUploaded(entry)));
     setProblem(null);
   }, []);
 

@@ -62,6 +62,7 @@ import type {
   EngineSkill,
   ExperienceEvent,
   FeedbackCreate,
+  FeedbackForwarding,
   FeedbackList,
   FeedbackReport,
   FeedbackStatus,
@@ -1112,6 +1113,7 @@ export const adapter = {
     guard<FeedbackList>(() =>
       api.GET('/feedback', { params: { query: status ? { status } : {} } }),
     ),
+  feedbackForwarding: () => guard<FeedbackForwarding>(() => api.GET('/feedback/forwarding')),
   feedbackReport: (id: string) =>
     guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
   setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
@@ -1148,13 +1150,17 @@ async function binary<T>(
       headers: { ...client.options.headers, ...(init.headers as Record<string, string>) },
       credentials: client.options.credentials,
     });
-    if (!response.ok)
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
       return {
         data: null,
-        error: errorMessage(await response.json().catch(() => null), OFFLINE),
+        error: errorMessage(body, OFFLINE),
         unavailable: null,
         unauthorized: response.status === 401,
+        ...(typeof code === 'string' ? { code } : {}),
       };
+    }
     return { data: await read(response), error: null, unavailable: null };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;

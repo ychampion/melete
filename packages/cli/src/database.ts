@@ -55,20 +55,25 @@ export function rolesElsewhere(env: Record<string, string>): string[] {
 export const TABLE_COUNT_SQL =
   "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')";
 
+/** The schemas that hold those tables, at most five by name, for a refusal to say. */
+export const TABLE_SCHEMAS_SQL =
+  "select string_agg(schemaname, ', ' order by schemaname) || case when max(total) > 5 then ' and ' || (max(total) - 5) || ' more' else '' end from (select schemaname, count(*) over () as total from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema') group by schemaname order by schemaname limit 5) as held";
+
 /**
  * Loads the custom-format dump on stdin into the database DATABASE_URL names,
  * run in the database-client container. It loads only into a database that
  * holds no table yet, so it never mixes the backup's tables with tables
  * already there (`pg_restore --clean` would drop only the backup's own, and
- * leave a newer release's behind). It loads in one transaction, so a load that
- * fails part way leaves the database as empty as it found it, ready for the
- * same load again. A refused or failed load reads the dump to its end before
+ * leave a newer release's behind). A refusal names the schemas that hold them,
+ * since a provider's default database can come with tables of its own. It
+ * loads in one transaction, so a load that fails part way leaves the database
+ * as empty as it found it, ready for the same load again. A refused or failed load reads the dump to its end before
  * it exits, so the command streaming it in sees no broken pipe. A failed one
  * ends with pg_restore's error and what it left, for the restore's report, all
  * in one write as soon as pg_restore stops: Compose soon stops passing on what
  * a container writes once the stream into it has ended.
  */
-export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
+export const EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_COUNT_SQL}") || exit 1; if [ "$n" != 0 ]; then s=$(psql --dbname="$DATABASE_URL" -X -At -c "${TABLE_SCHEMAS_SQL}" 2>/dev/null); echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; [ -z "$s" ] || echo "The schemas that hold them: $s. A provider's default database can hold tables of its own; load into a new, empty database." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
 
 /**
  * The connection arguments a psql, pg_dump or pg_restore line takes, read from

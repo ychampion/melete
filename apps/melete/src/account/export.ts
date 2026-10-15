@@ -48,6 +48,8 @@ const WITHHELD_TABLES = new Set([
   'password_reset',
   'magic_link',
   'mcp_token',
+  // A browser's push address and keys, which let whoever holds them notify it.
+  'push_subscription',
   'privacy_vault',
   'provider_credential',
 ]);
@@ -110,6 +112,9 @@ async function readableTables(sql: Sql): Promise<Table[]> {
     join information_schema.tables t
       on t.table_schema = c.table_schema and t.table_name = c.table_name
     where c.table_schema = 'public' and t.table_type = 'BASE TABLE'
+      -- A partition's rows are read once, through the table it is part of.
+      and not exists (select 1 from pg_class p join pg_namespace n on n.oid = p.relnamespace
+        where n.nspname = c.table_schema and p.relname = c.table_name and p.relispartition)
     order by c.table_name, c.ordinal_position`;
   // Read from the catalog itself: information_schema shows a table's key only
   // to a role that may do more than read it.

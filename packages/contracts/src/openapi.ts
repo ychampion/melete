@@ -101,6 +101,7 @@ import { executionSettlement, executionStartResponse } from './execution-admissi
 import { experiencePaths } from './experience-openapi.ts';
 import {
   createFeedbackRequest,
+  feedbackForwarding,
   feedbackListQuery,
   feedbackListResponse,
   feedbackResponse,
@@ -4273,6 +4274,21 @@ export function buildOpenApiDocument() {
             requestParams: { query: feedbackListQuery },
             responses: {
               '200': jsonResponse('Reports', feedbackListResponse),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
+        '/feedback/forwarding': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Whether new reports are also sent outside the app',
+            description:
+              'True when the installation forwards each new report, with the reporter’s email ' +
+              'address, to the webhook its operator set (`MELETE_FEEDBACK_WEBHOOK_URL`). The ' +
+              'report dialog asks before anything is sent, so it can say so.',
+            responses: {
+              '200': jsonResponse('Forwarding', feedbackForwarding),
               '401': problem('A session is required'),
             },
           },
