@@ -412,10 +412,15 @@ const variables = z.object({
    */
   MELETE_CELLS_URL: z.string().url().optional(),
   MELETE_CELLS_KEY: z.string().min(32).optional(),
+  /**
+   * The Compose project this service runs in, which Compose passes. Left out,
+   * the service's own containers are named for `melete`, and the computers it
+   * makes carry no installation, since none is known.
+   */
   MELETE_COMPOSE_PROJECT: z
     .string()
     .regex(/^[a-z0-9][a-z0-9_-]*$/)
-    .default('melete'),
+    .optional(),
   /**
    * This service instance's name among several on one database. Left out, the
    * container's host name. Each instance labels the containers it starts with

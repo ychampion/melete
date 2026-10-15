@@ -91,6 +91,8 @@ describe('the model defaults', () => {
   test('the default model is the identifier its provider serves', () => {
     const env = loadEnv({});
     expect(env.MELETE_DEFAULT_PROVIDER).toBe('fireworks');
+    // Outside Compose the service names no installation of its own.
+    expect(env.MELETE_COMPOSE_PROJECT).toBeUndefined();
     expect(env.MELETE_DEFAULT_MODEL).toBe('accounts/fireworks/models/deepseek-v4p1-flash');
   });
 
