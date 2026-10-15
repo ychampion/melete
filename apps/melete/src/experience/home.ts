@@ -405,6 +405,8 @@ export class ExperienceHome {
    * connections belong to the space, so only its owner finds them here.
    */
   async search(spaceId: string, query: string, spaceOwner = true) {
+    // Nothing stored holds a NUL, and the database refuses one in a pattern.
+    if (query.includes('\u0000')) return experienceSearch.parse({ results: [] });
     const pattern = `%${query.replace(/[\\%_]/g, (value) => `\\${value}`)}%`;
     const results = [];
     const jobs = await this.db

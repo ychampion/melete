@@ -775,6 +775,98 @@ withDb('rooms', () => {
     expect(await found(dan)).toEqual([dan.id]);
   }, 60_000);
 
+  test('an account that is turned off, or being deleted, is not found and is not added', async () => {
+    const { sql } = database();
+    const make = async (name: string) => {
+      const made = await ok<{ principal: { id: string } }>(
+        send(world.alice.cookie, '/principals', 'POST', {
+          email: `${name}@example.test`,
+          password,
+        }),
+        201,
+      );
+      return made.principal.id;
+    };
+    const gus = await make('gus');
+    const hal = await make('hal');
+    const roomId = await makeRoom('Gus and Hal', [world.bob]);
+    for (const id of [gus, hal])
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/members`, 'POST', { principal_id: id }),
+        201,
+      );
+    // Gus is turned off; Hal's deletion has begun, which leaves his row disabled
+    // under an address nothing receives mail for until his rooms let him go.
+    await sql`update principal set disabled_at = now() where id = ${gus}`;
+    await sql`update principal set email = 'removed+' || lower(id) || '@removed.invalid',
+      display_name = null, disabled_at = now() where id = ${hal}`;
+    const found = async (cookie: string, query?: string) =>
+      (
+        await ok<{ people: { id: string }[] }>(
+          send(
+            cookie,
+            `/people${query === undefined ? '' : `?query=${encodeURIComponent(query)}`}`,
+          ),
+        )
+      ).people.map((one) => one.id);
+    for (const cookie of [world.bob.cookie, world.alice.cookie]) {
+      const listed = await found(cookie);
+      expect(listed).toContain(world.bob.id);
+      expect(listed).not.toContain(gus);
+      expect(listed).not.toContain(hal);
+      expect(await found(cookie, 'gus@example.test')).toEqual([]);
+      expect(await found(cookie, `removed+${hal.toLowerCase()}@removed.invalid`)).toEqual([]);
+    }
+    // Neither is added to another room, by id, nor invited there as a guest.
+    const other = await makeRoom('Elsewhere again', []);
+    for (const id of [gus, hal]) {
+      const refused = await send(world.alice.cookie, `/rooms/${other}/members`, 'POST', {
+        principal_id: id,
+      });
+      expect([id, refused.status]).toEqual([id, 404]);
+    }
+    const [inOther] = await sql`select count(*)::int as count from space_membership
+      where space_id = ${other} and principal_id = any(${[gus, hal]})`;
+    expect(inOther?.count).toBe(0);
+    for (const email of ['gus@example.test', `removed+${hal.toLowerCase()}@removed.invalid`]) {
+      const refused = await send(world.alice.cookie, `/rooms/${other}/invites`, 'POST', { email });
+      expect([
+        email,
+        refused.status,
+        ((await refused.json()) as { error?: { message?: string } }).error?.message,
+      ]).toEqual([email, 409, 'That email cannot be invited.']);
+    }
+    // Turned on again, Gus is found and added as before.
+    await sql`update principal set disabled_at = null where id = ${gus}`;
+    expect(await found(world.bob.cookie)).toContain(gus);
+    await ok(
+      send(world.alice.cookie, `/rooms/${other}/members`, 'POST', { principal_id: gus }),
+      201,
+    );
+  }, 60_000);
+
+  test('a NUL in what is searched for is refused or finds nothing, never a server error', async () => {
+    const people = await send(world.bob.cookie, `/people?query=${encodeURIComponent('bob\u0000')}`);
+    expect(people.status).toBe(400);
+    const search = await send(world.alice.cookie, `/search?q=${encodeURIComponent('a\u0000b')}`);
+    expect(search.status).toBe(200);
+    expect(((await search.json()) as { results: unknown[] }).results).toEqual([]);
+  }, 60_000);
+
+  test("a room's name is not a person's, so anyone may go by it", async () => {
+    // Carol is not in this room, and its own account carries its name.
+    const roomId = await makeRoom('Quiet Corner', [world.bob]);
+    const [room] = await database().sql`select p.display_name from space_membership m
+      join principal p on p.id = m.principal_id where m.space_id = ${roomId} and p.kind = 'room'`;
+    expect(room?.display_name).toBe('Quiet Corner');
+    await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: 'quiet corner' }));
+    // A person's name is still refused.
+    expect((await send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Bob' })).status).toBe(
+      409,
+    );
+    await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Carol' }));
+  }, 60_000);
+
   test("room jobs appear on no personal surface, the room owner's included", async () => {
     const { sql } = database();
     const roomId = await makeRoom('Private plans');

@@ -125,13 +125,14 @@ export class InviteService {
     await this.requireOwner(spaceId, actor);
     const email = input.email.toLowerCase();
     const [account] = await this.deps.db
-      .select({ id: principal.id, kind: principal.kind })
+      .select({ id: principal.id, kind: principal.kind, disabledAt: principal.disabledAt })
       .from(principal)
       .where(eq(principal.email, email));
-    if (account && account.kind !== 'guest')
+    // An account that is turned off, as one being deleted is, is neither added nor invited.
+    if (account && (account.kind !== 'guest' || account.disabledAt))
       throw new ServiceError(
         'person_account',
-        account.kind === 'person'
+        account.kind === 'person' && !account.disabledAt
           ? 'That email has a full account here. Add them from People instead.'
           : 'That email cannot be invited.',
         409,

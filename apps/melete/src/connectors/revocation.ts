@@ -138,8 +138,9 @@ export function spaceAccessWithdrawal(options: RevocationOptions, boundMs = 20_0
         const outcome = await within(boundMs, withdraw(options, connection, ref, spaceId));
         if (outcome?.provider_access === 'not_confirmed')
           log(`connections: the provider did not confirm withdrawing ${row.id}'s access`);
-      } catch (error) {
-        log(`connections: the provider access of ${row.id} was not withdrawn (${reason(error)})`);
+      } catch {
+        // Only the id: what failed, such as reading the sealed copy, can quote the token.
+        log(`connections: the provider access of ${row.id} was not withdrawn`);
       }
     }
   };
@@ -230,9 +231,14 @@ async function withdraw(
       redirectUri: '',
       refreshEncoding: 'form',
     };
+    // An issuer may hold one grant per person and client, and a client named by
+    // its metadata document has the same id everywhere: while another connection
+    // signs in to this server as this client, only this connection's own access
+    // token goes, so that connection's access is never ended with this one.
     const done = await revokeToken(
       issuer,
-      credential.refresh_token
+      credential.refresh_token &&
+        !(await sameClientElsewhere(options, connection, credential.client_id, leaving))
         ? { value: credential.refresh_token, hint: 'refresh_token' }
         : { value: credential.access_token, hint: 'access_token' },
       fetcher,
@@ -355,15 +361,7 @@ async function withdrawGithub(
   const revokeAt = { name: 'GitHub', url: 'https://github.com/settings/applications' };
   if (!credential.client_id || !credential.client_secret)
     return { provider_access: 'not_offered', revoke_at: revokeAt };
-  const server = (connection.configuration as { server?: { endpoint?: { url?: unknown } } } | null)
-    ?.server?.endpoint?.url;
-  const [other] = await options.sql`select 1 from connection
-    where id <> ${connection.id} and provider = 'mcp' and status <> 'revoked'
-      and secret_ref is not null
-      and (${typeof server === 'string' ? server : null}::text is null
-        or configuration->'server'->'endpoint'->>'url' = ${typeof server === 'string' ? server : null}::text)
-      and (${leaving ?? null}::text is null or space_id <> ${leaving ?? null}::text)
-    limit 1`;
+  const [other] = await sameServerElsewhere(options, connection, leaving);
   const basic = Buffer.from(`${credential.client_id}:${credential.client_secret}`).toString(
     'base64',
   );
@@ -392,6 +390,51 @@ async function withdrawGithub(
   } catch {
     return { provider_access: 'not_confirmed', revoke_at: revokeAt };
   }
+}
+
+/**
+ * The other connections, in any space and of any person, that sign in to the
+ * same MCP server as this one, leaving out those of a space being removed. A
+ * connection whose server is not known counts every MCP connection.
+ */
+async function sameServerElsewhere(
+  options: RevocationOptions,
+  connection: RevokedConnection,
+  leaving: string | undefined,
+) {
+  const server = (connection.configuration as { server?: { endpoint?: { url?: unknown } } } | null)
+    ?.server?.endpoint?.url;
+  const url = typeof server === 'string' ? server : null;
+  return options.sql<{ space_id: string; secret_ref: string }[]>`select space_id, secret_ref
+    from connection
+    where id <> ${connection.id} and provider = 'mcp' and status <> 'revoked'
+      and secret_ref is not null
+      and (${url}::text is null or configuration->'server'->'endpoint'->>'url' = ${url}::text)
+      and (${leaving ?? null}::text is null or space_id <> ${leaving ?? null}::text)`;
+}
+
+/**
+ * Whether another connection on the same MCP server signs in as the same
+ * client. Its sealed copy is opened here only for its client id, which goes
+ * nowhere; a copy that cannot be read counts as the same client.
+ */
+async function sameClientElsewhere(
+  options: RevocationOptions,
+  connection: RevokedConnection,
+  clientId: string,
+  leaving: string | undefined,
+): Promise<boolean> {
+  for (const row of await sameServerElsewhere(options, connection, leaving)) {
+    const theirs = await options.secrets
+      .withSecret(
+        row.secret_ref,
+        row.space_id,
+        async (value) => mcpCredentials.parse(JSON.parse(value)).client_id,
+      )
+      .catch(() => clientId);
+    if (theirs === clientId) return true;
+  }
+  return false;
 }
 
 /**
