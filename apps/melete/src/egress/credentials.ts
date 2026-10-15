@@ -103,7 +103,8 @@ const serviceOf = (adapter: string) => SERVICE_NAME[adapter] ?? 'this service';
 /**
  * What a request of the room hears when its account is each person's own and
  * the person who asked has none to use. Someone who is not a person in the
- * room (a guest, someone who left, or nobody) can never lend one. `asked` is
+ * room (a guest, someone who left, someone whose account is turned off, or
+ * nobody) can never lend one. `asked` is
  * true when the person was asked on their screen to connect theirs.
  */
 export function ownAccountMissing(
@@ -207,8 +208,8 @@ export function postgresEgressCredentials(options: {
    * The person who asked a room's request, read from the request itself (or
    * the request a step belongs to, as `roomAuthorityOf` reads it, so the
    * account used is that of the one person who may approve its changes), with
-   * their name, while they are a person still in the room. Anyone else, or no
-   * one, is null.
+   * their name, while they are a person still in the room whose account is not
+   * turned off. Anyone else, or no one, is null.
    */
   const askerOf = async (jobId: string, room: string) => {
     const [row] = await sql`select case
@@ -221,7 +222,7 @@ export function postgresEgressCredentials(options: {
     const [person] = await sql`select p.id, p.display_name from space_membership m
       join principal p on p.id = m.principal_id
       where m.space_id = ${room} and m.principal_id = ${asker} and m.revoked_at is null
-        and m.role in ('owner', 'member') and p.kind = 'person'`;
+        and m.role in ('owner', 'member') and p.kind = 'person' and p.disabled_at is null`;
     if (!person) return { id: null, name: null };
     return { id: asker, name: (person.display_name ?? null) as string | null };
   };

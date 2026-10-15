@@ -497,6 +497,15 @@ withDb('where an account is offered', () => {
       where space_id = ${room} and principal_id = ${ben}`;
     expect((await ask(bens))?.missing).toContain('only a person who is a member of the room');
 
+    // Nor does someone whose account was turned off, while their request still runs.
+    const anasLater = await request(ana);
+    expect(await secretOf(anasLater)).toBe(anaSecret);
+    await sql`update principal set disabled_at = now() where id = ${ana}`;
+    const turnedOff = await ask(anasLater);
+    expect(turnedOff?.missing).toContain('only a person who is a member of the room');
+    await expect(turnedOff?.withSecret(async (secret) => secret) ?? null).rejects.toThrow();
+    await sql`update principal set disabled_at = null where id = ${ana}`;
+
     // The installation's owner's own space may name no owner; it is still theirs.
     await sql`insert into owner (id, email) values (${recordId('own')}, 'installation@example.test')
       on conflict do nothing`;
