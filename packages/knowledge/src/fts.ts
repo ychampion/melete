@@ -116,21 +116,19 @@ const userVersion = (db: Database): number =>
   db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
 
 /**
- * Wipe a file written by an older build, or one this SQLite cannot read.
- * Dropping the tables zeroes their pages, because secure_delete is on by now;
- * VACUUM then rewrites the file, which clears the pages freed before that, and
- * those still hold old text.
+ * Wipe a file written by an older build. Dropping the tables zeroes their pages,
+ * because secure_delete is on by now; VACUUM then rewrites the file, which
+ * clears the pages freed before that, and those still hold old text.
  *
- * Two processes can open the same old file at once. Whether it needs wiping is
- * asked again under the write lock, so a file another process has already
- * brought up to date, and perhaps refilled, is left alone. The version is
- * written only after VACUUM, so a wipe that is cut short runs again on the next
- * open.
+ * Two processes can open the same old file at once. The version is checked
+ * again under the write lock, so a file another process has already brought up
+ * to date, and perhaps refilled, is left alone. It is written only after VACUUM,
+ * so a wipe that is cut short runs again on the next open.
  */
-function wipeIndex(db: Database, needed: () => boolean): void {
+function wipeOlderIndex(db: Database): void {
   const dropped = db
     .transaction(() => {
-      if (!needed()) return false;
+      if (userVersion(db) === INDEX_SCHEMA_VERSION) return false;
       db.run(DROP);
       return true;
     })
@@ -138,23 +136,6 @@ function wipeIndex(db: Database, needed: () => boolean): void {
   if (!dropped) return;
   db.run('VACUUM');
   db.run(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
-}
-
-/**
- * Whether this SQLite can read the full-text table. Before 3.44 it cannot read
- * one that has secure-delete stored with it (see `eraseTermsOnDelete`), and
- * reports the file format as invalid. That happens when an index written on a
- * newer SQLite is opened on an older one; the index is derived, so it is wiped
- * and built again rather than left failing every search.
- */
-function readsFullText(db: Database): boolean {
-  try {
-    db.query('SELECT rowid FROM record_fts LIMIT 1').get();
-    return true;
-  } catch (error) {
-    if (/invalid fts5 file format/i.test((error as Error).message)) return false;
-    throw error;
-  }
 }
 
 /** Another connection holds a lock this one would have to wait for. */
@@ -165,7 +146,7 @@ const isBusy = (error: unknown): boolean =>
  * Turn on FTS5's secure-delete, which takes a deleted record's words out of the
  * segments that hold them instead of leaving them there until a later merge.
  * The setting is stored with the table, so this writes only once. SQLite before
- * 3.44 does not have it; the index then merges its segments after a removal
+ * 3.42 does not have it; the index then merges its segments after a removal
  * instead, which costs more on a large space but leaves nothing behind either.
  */
 function eraseTermsOnDelete(db: Database): boolean {
@@ -228,19 +209,14 @@ export class SpaceIndex {
     db.run('PRAGMA journal_mode = WAL');
     // A deleted row is overwritten with zeros, not left in the file as free space.
     db.run('PRAGMA secure_delete = ON');
-    const outdated = userVersion(db) !== INDEX_SCHEMA_VERSION;
-    if (outdated) wipeIndex(db, () => userVersion(db) !== INDEX_SCHEMA_VERSION);
+    const wiped = userVersion(db) !== INDEX_SCHEMA_VERSION;
+    if (wiped) wipeOlderIndex(db);
     db.run(SCHEMA);
-    const unreadable = !readsFullText(db);
-    if (unreadable) {
-      wipeIndex(db, () => !readsFullText(db));
-      db.run(SCHEMA);
-    }
     const index = new SpaceIndex(db, space, eraseTermsOnDelete(db));
     // A removal whose rewrite failed (a full disk) or never ran (the process
     // stopped) is finished now.
     if (index.erasePending()) index.finishPendingErase();
-    else if (outdated || unreadable) index.flush();
+    else if (wiped) index.flush();
     return index;
   }
 

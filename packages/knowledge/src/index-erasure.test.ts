@@ -222,64 +222,6 @@ describe('an index written before forgotten text was erased', () => {
     expect(copiesOnDisk()).toBe(0);
   });
 
-  /**
-   * Makes every index act as SQLite before 3.44 does, until restored: it
-   * cannot store FTS5's secure-delete, and it cannot read a full-text table
-   * that has it stored.
-   */
-  const actAsOlderSqlite = () => {
-    const { run, query } = Database.prototype;
-    const refuse = (db: Database, sql: string) => {
-      if (/^\s*INSERT\b/i.test(sql) && sql.includes("'secure-delete'"))
-        throw new Error('SQL logic error');
-      if (!/\brecord_fts\b/.test(sql) || /^\s*(CREATE|DROP)\b/i.test(sql)) return;
-      let stored: unknown = null;
-      try {
-        stored = query.call(db, "SELECT v FROM record_fts_config WHERE k = 'secure-delete'").get();
-      } catch {
-        // No full-text table yet.
-      }
-      if (stored) throw new Error("invalid fts5 file format (found 5, expected 4) - run 'rebuild'");
-    };
-    Database.prototype.run = function (this: Database, ...args: Parameters<Database['run']>) {
-      refuse(this, String(args[0]));
-      return run.apply(this, args);
-    } as Database['run'];
-    Database.prototype.query = function (this: Database, ...args: Parameters<Database['query']>) {
-      refuse(this, String(args[0]));
-      return query.apply(this, args);
-    } as Database['query'];
-    return {
-      restore: () => {
-        Database.prototype.run = run;
-        Database.prototype.query = query;
-      },
-    };
-  };
-
-  test('is built again when this SQLite cannot read it', () => {
-    // Written where secure-delete is stored with the table, then opened where
-    // SQLite is too old to read such a table.
-    buildIndex(paths).index.close();
-    const older = actAsOlderSqlite();
-    try {
-      const { index, rebuilt } = openIndex(paths);
-      try {
-        expect(rebuilt).toBe(true);
-        expect(index.search('bun')).toHaveLength(1);
-        expect(index.search(MARKER)).toHaveLength(1);
-        // Without secure-delete, a removal still takes the words out of the file.
-        index.remove(IDS.landlord);
-        expect(index.search(MARKER)).toEqual([]);
-      } finally {
-        index.close();
-      }
-    } finally {
-      older.restore();
-    }
-    expect(copiesOnDisk()).toBe(0);
-  });
-
   test('is cleaned once, and then works as usual', () => {
     writeOldIndex();
 
