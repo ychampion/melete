@@ -346,8 +346,12 @@ withDb('a conversation turn the provider refused', () => {
     expect(statuses).not.toContain('failed');
     expect(statuses).not.toContain('needs_you');
     expect(statuses.at(-1)).toBe('working');
+    // The wait is told while it lasts, and drops out of the log once the turn ends.
     expect(
-      items.some((item) => item.type === 'note' && item.text.includes('slow down')),
+      items.some(
+        (item) =>
+          item.type === 'note' && item.text.includes('slow down') && item.transient === true,
+      ),
     ).toBeTrue();
     // A wake before the backoff is over starts nothing.
     expect(

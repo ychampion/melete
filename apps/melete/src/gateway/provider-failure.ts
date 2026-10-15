@@ -9,11 +9,14 @@ import { GatewayError } from './types.ts';
 export function classifyProviderFailure(status: number, text: string): ProviderFailure | null {
   const said = text.toLowerCase();
   // Spent credit is reported as 429 by some providers and 400 or 403 by others.
+  // Some word a per-minute limit the same way as a spent account; that one
+  // clears by waiting, so it is a rate limit.
   if (
     status === 402 ||
-    /insufficient_quota|exceeded your current quota|credit balance|insufficient (?:credits|funds|balance)|out of credits/.test(
+    (/insufficient_quota|exceeded your current quota|credit balance|insufficient (?:credits|funds|balance)|out of credits|usage_limit_reached|usage limit has been reached/.test(
       said,
-    )
+    ) &&
+      !(status === 429 && /per ?minute|per_minute/.test(said)))
   )
     return 'quota';
   if (status === 401 || status === 403) return 'key_refused';

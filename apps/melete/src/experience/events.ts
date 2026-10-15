@@ -836,6 +836,8 @@ export class ExperienceEvents {
                     failure.data,
                     Math.round(Math.max(0, Number.isFinite(waitMs) ? waitMs : 0) / 1000),
                   ),
+                  // It is about the wait under way; once the turn has ended it says nothing.
+                  transient: true,
                 });
               await emit(source, { type: 'status', status: 'working', composer: 'pause' });
             } else if (

@@ -20,6 +20,21 @@ describe('a provider refusal is read for its class alone', () => {
       [429, '{"error":{"type":"rate_limit_error"}}', 'rate_limited'],
       [
         429,
+        '[{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","details":[{"violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}]}}]',
+        'rate_limited',
+      ],
+      [
+        429,
+        '[{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}]',
+        'quota',
+      ],
+      [
+        429,
+        '{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}',
+        'quota',
+      ],
+      [
+        429,
         '{"error":{"message":"Rate limit reached for requests per min. You can increase your rate limit by adding a payment method at https://example.test/account/billing."}}',
         'rate_limited',
       ],
