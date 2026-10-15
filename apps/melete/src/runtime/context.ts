@@ -6,10 +6,10 @@ import {
   knowledgeExcerpt,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { loadSpace, openIndex } from '@melete/knowledge';
+import { loadRecords, openIndex } from '@melete/knowledge';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import type { SpaceResolver } from '../knowledge/spaces.ts';
-import { type PrepareEngine, withMemoryRuntime } from '../memory/context.ts';
+import { withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
 import { lockEventOrder } from '../memory/invalidate.ts';
 import { knowledgeTokens } from '../memory/recall.ts';
@@ -22,8 +22,6 @@ type ContextOptions = {
   /** Semantic recall, and whether a job's words may be read by a cloud embedder. */
   embedding?: EmbeddingProvider;
   embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
-  /** Gets the attempt's engine ready while its memory and knowledge are put together. */
-  prepareEngine?: PrepareEngine;
 };
 
 async function legacyKnowledge(
@@ -38,14 +36,21 @@ async function legacyKnowledge(
   const { index } = openIndex(space.paths);
   try {
     const hits = index.query(bundle.job.objective.slice(0, 2000), { limit: 20 });
+    // Only the records the search found are read: every remembered fact is a
+    // file here too, and parsing them all held up the start of every attempt.
     const records = new Map(
-      loadSpace(space.paths).records.map((record) => [record.frontmatter.id, record]),
+      loadRecords(
+        space.paths,
+        hits.map((hit) => hit.path),
+      ).map((record) => [record.frontmatter.id, record]),
     );
-    const claimed = await options.sql`select id from memory_claims where space_id = ${scope.spaceId}
-      and id = any(${hits.map((hit) => hit.id)})`;
-    const derived = await options.sql`select distinct output_id from memory_derivations
-      where space_id = ${scope.spaceId} and output_kind = 'markdown'
-        and output_id = any(${hits.map((hit) => hit.path)})`;
+    const [claimed, derived] = await Promise.all([
+      options.sql`select id from memory_claims where space_id = ${scope.spaceId}
+        and id = any(${hits.map((hit) => hit.id)})`,
+      options.sql`select distinct output_id from memory_derivations
+        where space_id = ${scope.spaceId} and output_kind = 'markdown'
+          and output_id = any(${hits.map((hit) => hit.path)})`,
+    ]);
     const claimIds = new Set(claimed.map((row) => String(row.id)));
     const derivedPaths = new Set(derived.map((row) => String(row.output_id)));
     const now = new Date().toISOString().slice(0, 10);
@@ -147,7 +152,6 @@ export function withDeploymentContext(
   const memory = withMemoryRuntime(legacy, options.sql, options.scopeForJob, {
     ...(options.embedding ? { embedding: options.embedding } : {}),
     ...(options.embedsQuery ? { embedsQuery: options.embedsQuery } : {}),
-    ...(options.prepareEngine ? { prepareEngine: options.prepareEngine } : {}),
   });
   return {
     ...memory,

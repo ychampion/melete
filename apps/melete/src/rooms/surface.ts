@@ -98,12 +98,13 @@ export class RoomGate {
    * The person behind a speaker. On the web the speaker is the signed-in
    * person. On a platform it is the platform's account id, which counts only
    * through its link, checked now: an account with no link, or one linked to
-   * anything but a person or a guest, is refused.
+   * anything but a person or a guest, or to an account the operator disabled,
+   * is refused.
    */
   async principalOf(speaker: string): Promise<string> {
     if (!this.platform) return speaker;
     const [row] = await this.deps.db
-      .select({ id: principal.id, kind: principal.kind })
+      .select({ id: principal.id, kind: principal.kind, disabledAt: principal.disabledAt })
       .from(principalIdentity)
       .innerJoin(principal, eq(principal.id, principalIdentity.principalId))
       .where(
@@ -112,7 +113,7 @@ export class RoomGate {
           eq(principalIdentity.externalId, speaker),
         ),
       );
-    if (!row || !LINKABLE.includes(row.kind)) throw unlinked();
+    if (!row || !LINKABLE.includes(row.kind) || row.disabledAt) throw unlinked();
     return row.id;
   }
 
@@ -131,10 +132,11 @@ export class RoomGate {
         400,
       );
     const [person] = await this.deps.db
-      .select({ kind: principal.kind })
+      .select({ kind: principal.kind, disabledAt: principal.disabledAt })
       .from(principal)
       .where(eq(principal.id, principalId));
-    if (!person || !LINKABLE.includes(person.kind))
+    // A disabled account takes no new links, as it takes no new sign-ins.
+    if (!person || !LINKABLE.includes(person.kind) || person.disabledAt)
       throw new ServiceError('not_found', 'Account not found.', 404);
     await this.deps.db
       .insert(principalIdentity)
