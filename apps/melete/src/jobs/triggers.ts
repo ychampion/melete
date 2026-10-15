@@ -889,9 +889,10 @@ export class TriggerService {
     }
     for (const schedule of schedules)
       if (!desired.has(schedule.key))
-        await this.jobs.boss
-          .unschedule(QUEUES.triggerSchedule, schedule.key)
-          .catch((error: unknown) => this.scheduleFailures.failed(schedule.key, error));
+        await this.jobs.boss.unschedule(QUEUES.triggerSchedule, schedule.key).then(
+          () => this.scheduleFailures.succeeded(schedule.key),
+          (error: unknown) => this.scheduleFailures.failed(schedule.key, error),
+        );
     if (ownError) throw ownError.error;
   }
 

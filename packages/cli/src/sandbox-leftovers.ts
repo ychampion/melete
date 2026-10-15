@@ -12,22 +12,55 @@
  * when any Melete service container on the engine, running or stopped, runs
  * with it. Only that one setting is read from a container, so no secret in
  * its environment leaves the engine.
+ *
+ * A computer and its network also name the Compose project of the
+ * installation that made them (INSTALL_PROJECT). While that project has any
+ * container or volume on the engine, running or not, they are its own, even
+ * with the installation down; once it has neither, they are left over. One
+ * made before computers carried that name has an unknown owner: it is judged
+ * by its sandbox project alone, as before, and said to have an unknown owner,
+ * unless a computer or network that does carry an installation's name shares
+ * its sandbox project, and then it is that installation's.
  */
 import type { Run } from './context.ts';
+import { PROJECT_NAME as COMPOSE_PROJECT_NAME } from './deploy-config.ts';
 import type { Result } from './schema.ts';
 
 const SANDBOX = 'label=com.melete.sandbox=v1';
 const PROJECT = 'melete.project';
+/**
+ * The service's LABEL_INSTALL_PROJECT (apps/melete/src/sandbox/adapters/docker.ts),
+ * repeated so this command does not load the adapter; a test keeps them equal.
+ */
+export const INSTALL_PROJECT = 'melete.install_project';
+const COMPOSE_PROJECT = 'com.docker.compose.project';
 /** A sandbox project as the service accepts MELETE_SANDBOX_PROJECT; no computer it makes has another. */
 const PROJECT_NAME = /^[a-z0-9][a-z0-9-]{2,40}$/;
 /** States in which a container runs nothing and `docker rm` removes it without force. */
 const STOPPED = new Set(['exited', 'created', 'dead']);
 
-export type SandboxContainer = { id: string; name: string; state: string; project: string };
-export type SandboxNetwork = { name: string; project: string; containers: number };
+export type SandboxContainer = {
+  id: string;
+  name: string;
+  state: string;
+  project: string;
+  /** The Compose project of the installation that made it; null when it names none. */
+  installation: string | null;
+};
+export type SandboxNetwork = {
+  name: string;
+  project: string;
+  installation: string | null;
+  containers: number;
+};
 
 export type Leftovers = {
   project: string;
+  /**
+   * The installation that made them, which no longer has a container or a
+   * volume on this engine; null when they name none, an unknown owner.
+   */
+  installation: string | null;
   /** Stopped computers. */
   containers: SandboxContainer[];
   /** Networks no container is on. */
@@ -52,6 +85,29 @@ function labelOf(field: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** An installation label as a Compose project; null for none, or for anything Compose would not take. */
+const installationOf = (value: string): string | null =>
+  value && COMPOSE_PROJECT_NAME.test(value) ? value : null;
+
+/**
+ * Every Compose project with a container or a volume on this engine, running
+ * or stopped, or null when the engine did not answer. A project that is down
+ * keeps its volumes, so it is still here.
+ */
+function composeProjects(run: Run): Set<string> | null {
+  const format = `{{json (.Label "${COMPOSE_PROJECT}")}}`;
+  const filter = `label=${COMPOSE_PROJECT}`;
+  const containers = run(['docker', 'ps', '--all', '--filter', filter, '--format', format]);
+  if (containers.code !== 0) return null;
+  const volumes = run(['docker', 'volume', 'ls', '--filter', filter, '--format', format]);
+  if (volumes.code !== 0) return null;
+  return new Set(
+    [...lines(containers.stdout), ...lines(volumes.stdout)]
+      .map(labelOf)
+      .filter((project): project is string => Boolean(project)),
+  );
 }
 
 /** The sandbox projects the Melete service containers on this engine run with. */
@@ -84,14 +140,16 @@ function projectsInUse(run: Run): Set<string> | null {
 }
 
 /**
- * Stopped computers and empty networks, by sandbox project, of every project
- * neither `own` nor any installation on this engine uses; null when the
- * engine could not be asked.
+ * Stopped computers and empty networks, by sandbox project and installation,
+ * that no installation on this engine owns (see above), and not of `own`;
+ * null when the engine could not be asked.
  */
 export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] | null {
   const inUse = projectsInUse(run);
   if (inUse === null) return null;
   if (own) inUse.add(own);
+  const installations = composeProjects(run);
+  if (installations === null) return null;
   const containers = run([
     'docker',
     'ps',
@@ -99,7 +157,7 @@ export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] 
     '--filter',
     SANDBOX,
     '--format',
-    `{{.ID}}\t{{.Names}}\t{{.State}}\t{{json (.Label "${PROJECT}")}}`,
+    `{{.ID}}\t{{.Names}}\t{{.State}}\t{{json (.Label "${PROJECT}")}}\t{{json (.Label "${INSTALL_PROJECT}")}}`,
   ]);
   if (containers.code !== 0) return null;
   const listed = run(['docker', 'network', 'ls', '--quiet', '--filter', SANDBOX]);
@@ -112,43 +170,65 @@ export function readSandboxLeftovers(run: Run, own: string | null): Leftovers[] 
       'network',
       'inspect',
       '--format',
-      `{{.Name}}\t{{json (index .Labels "${PROJECT}")}}\t{{len .Containers}}`,
+      `{{.Name}}\t{{json (index .Labels "${PROJECT}")}}\t{{json (index .Labels "${INSTALL_PROJECT}")}}\t{{len .Containers}}`,
       ...networkIds,
     ]);
     if (inspected.code !== 0) return null;
     networks = lines(inspected.stdout).flatMap((line) => {
       const fields = line.split('\t');
-      const [name = '', label = '', count = ''] = fields;
+      const [name = '', label = '', install = '', count = ''] = fields;
       const project = labelOf(label);
-      return fields.length === 3 && name && project !== null && /^\d+$/.test(count)
-        ? [{ name, project, containers: Number(count) }]
+      const installation = labelOf(install);
+      return fields.length === 4 &&
+        name &&
+        project !== null &&
+        installation !== null &&
+        /^\d+$/.test(count)
+        ? [{ name, project, installation: installationOf(installation), containers: Number(count) }]
         : [];
     });
   }
-  const stopped = lines(containers.stdout).flatMap((line): SandboxContainer[] => {
+  const computers = lines(containers.stdout).flatMap((line): SandboxContainer[] => {
     const fields = line.split('\t');
-    const [id = '', name = '', state = '', label = ''] = fields;
+    const [id = '', name = '', state = '', label = '', install = ''] = fields;
     const project = labelOf(label);
-    return fields.length === 4 && id && project !== null && STOPPED.has(state)
-      ? [{ id, name, state, project }]
+    const installation = labelOf(install);
+    return fields.length === 5 && id && project !== null && installation !== null
+      ? [{ id, name, state, project, installation: installationOf(installation) }]
       : [];
   });
-  const left = (project: string) => PROJECT_NAME.test(project) && !inUse.has(project);
-  const byProject = new Map<string, Leftovers>();
-  const entry = (project: string) => {
-    let found = byProject.get(project);
+  // A sandbox project that a computer or network of an installation still here
+  // carries is that installation's, those of an unknown owner included.
+  const claimed = new Set(
+    [...computers, ...networks].flatMap((each) =>
+      each.installation !== null && installations.has(each.installation) ? [each.project] : [],
+    ),
+  );
+  const left = ({ project, installation }: { project: string; installation: string | null }) =>
+    PROJECT_NAME.test(project) &&
+    !inUse.has(project) &&
+    (installation === null ? !claimed.has(project) : !installations.has(installation));
+  const byOwner = new Map<string, Leftovers>();
+  const entry = (project: string, installation: string | null) => {
+    const key = `${project}\t${installation ?? ''}`;
+    let found = byOwner.get(key);
     if (!found) {
-      found = { project, containers: [], networks: [] };
-      byProject.set(project, found);
+      found = { project, installation, containers: [], networks: [] };
+      byOwner.set(key, found);
     }
     return found;
   };
-  for (const container of stopped)
-    if (left(container.project)) entry(container.project).containers.push(container);
+  for (const container of computers)
+    if (STOPPED.has(container.state) && left(container))
+      entry(container.project, container.installation).containers.push(container);
   for (const network of networks)
-    if (network.containers === 0 && left(network.project))
-      entry(network.project).networks.push(network);
-  return [...byProject.values()].sort((a, b) => a.project.localeCompare(b.project));
+    if (network.containers === 0 && left(network))
+      entry(network.project, network.installation).networks.push(network);
+  return [...byOwner.values()].sort(
+    (a, b) =>
+      a.project.localeCompare(b.project) ||
+      (a.installation ?? '').localeCompare(b.installation ?? ''),
+  );
 }
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -157,7 +237,7 @@ const described = (leftovers: readonly Leftovers[]) =>
   leftovers
     .map(
       (each) =>
-        `${each.project} (${[
+        `${each.project}, ${each.installation === null ? 'unknown owner' : `of installation ${each.installation}, gone from this engine`} (${[
           each.containers.length
             ? count(each.containers.length, 'stopped computer', 'stopped computers')
             : '',
@@ -187,11 +267,12 @@ export function judgeLeftovers(leftovers: readonly Leftovers[] | null): Result {
       detail:
         "No agents' computers or networks are left by a sandbox project no installation here uses.",
     };
+  const unknown = leftovers.some((each) => each.installation === null);
   return {
     id: LEFTOVERS_ID,
     level: 'warn',
     detail: `Left by sandbox projects no installation on this engine uses: ${described(leftovers)}. They keep disk and Docker network addresses.`,
-    fix: "If none of them belongs to an installation that is down (docker compose down removes its service container, so its computers are listed here too), remove them with bun run melete doctor --remove-leftovers. It removes only these stopped computers and empty networks; the computers' volumes are kept.",
+    fix: `${unknown ? "Those of unknown owner were made before agents' computers named their installation, so one whose installation is down (docker compose down removes its service container) looks the same as one whose installation was removed: if any may be an installation's that is down, start that installation first. Then remove" : 'Remove'} them with bun run melete doctor --remove-leftovers. It removes only these stopped computers and empty networks; the computers' volumes are kept.`,
   };
 }
 
