@@ -317,6 +317,13 @@ describe('a second installation on one machine', () => {
     expect(context.attached).toEqual([]);
     expect(readdirSync(deployDir)).not.toContain('.env');
     expect(changingCalls(context.docker.calls)).toEqual([]);
+    // --force answers only an engine that cannot say; a name in use stays refused.
+    const forced = configuring(
+      deployDir,
+      using('melete', ['/srv/melete/deploy', '/srv/melete/deploy'], ['melete_pgdata']),
+    );
+    expect(await runInit(forced, ['--fake', '--force'])).toBe(2);
+    expect(forced.attached).toEqual([]);
   });
 
   test("a stopped installation's volumes are refused too: its database would not open", async () => {
@@ -325,6 +332,9 @@ describe('a second installation on one machine', () => {
     expect(await runInit(context, ['--fake', '--project', 'melete2'])).toBe(2);
     expect(context.errors()).toContain('Compose project melete2 already has 1 volume(s)');
     expect(context.attached).toEqual([]);
+    const forced = configuring(deployDir, using('melete2', [], ['melete2_pgdata']));
+    expect(await runInit(forced, ['--fake', '--project', 'melete2', '--force'])).toBe(2);
+    expect(forced.attached).toEqual([]);
   });
 
   test('a free name goes ahead; an engine that does not answer is refused, unless --force', async () => {
