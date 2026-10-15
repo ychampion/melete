@@ -31,7 +31,12 @@ import type { ComposerState } from '../experience/types.ts';
 import { openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { models } from '../models/api.ts';
 import { href } from '../router.ts';
-import { type AttachmentsControl, attachmentUrl, type PendingFile } from './attachments.ts';
+import {
+  type AttachmentsControl,
+  attachmentUrl,
+  fileNote,
+  type PendingFile,
+} from './attachments.ts';
 import { elapsed, useNowTick, useRecorder, type VoicePlace } from './voice.ts';
 import './composer.css';
 import './message-files.css';
@@ -241,11 +246,7 @@ export function Composer({
     event.preventDefault();
     attachments.add(pasted);
   };
-  const note = attachments?.problem
-    ? attachments.problem
-    : files.some((file) => file.state === 'failed')
-      ? 'A file didn’t upload. Remove it to send, or attach it again.'
-      : null;
+  const note = fileNote(attachments?.problem ?? null, files);
 
   return (
     <div className="composer" data-disabled={disabled ? 'true' : undefined}>
@@ -370,6 +371,8 @@ export function Composer({
 
 /** One file in the box: a thumbnail or a name, its state, and a way to take it out. */
 function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void }) {
+  // A file waiting to be tried again looks like one that failed, with its own words.
+  const failed = file.state === 'failed' || file.state === 'retrying';
   const picture =
     file.kind === 'image'
       ? (file.thumb ?? (file.view?.has_preview ? attachmentUrl(file.view.id, true) : null))
@@ -377,7 +380,7 @@ function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void 
   const state =
     file.state === 'uploading'
       ? 'Uploading'
-      : file.state === 'failed'
+      : failed
         ? (file.error ?? 'Didn’t upload')
         : attachmentSize(file.size);
   return (
@@ -392,7 +395,7 @@ function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void 
         <img src={picture} alt={file.name} />
       ) : (
         <>
-          <Icon name={file.state === 'failed' ? 'alert' : 'fileText'} size={16} />
+          <Icon name={failed ? 'alert' : 'fileText'} size={16} />
           <span className="attach-name">
             <span className="attach-title">{file.name}</span>
             <span className="attach-meta">{state}</span>
@@ -403,7 +406,7 @@ function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void 
         <span className="attach-busy" role="status" aria-label={`Uploading ${file.name}`}>
           <Icon name="loader" size={14} className="spin" />
         </span>
-      ) : file.state === 'failed' && picture ? (
+      ) : failed && picture ? (
         <span className="attach-busy" data-failed="true" role="img" aria-label={state}>
           <Icon name="alert" size={14} />
         </span>

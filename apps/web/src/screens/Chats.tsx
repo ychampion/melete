@@ -48,7 +48,8 @@ function when(iso: string, now: number): string {
  * The pages read here, kept current by the list the sidebar reads again every
  * few seconds: a chat that changed shows its new state and title, and one
  * started meanwhile comes in at the top, so this list and the sidebar agree.
- * A newer chat is added only where it belongs among what has been read.
+ * A newer chat is added only where it belongs among what has been read, and
+ * one the fresh list should hold but does not was deleted elsewhere.
  */
 export function withFresh(
   paged: readonly Conversation[],
@@ -63,7 +64,22 @@ export function withFresh(
     (chat) =>
       !known.has(chat.id) && (complete || oldest === undefined || chat.updated_at >= oldest),
   );
-  return [...added, ...paged.map((chat) => byId.get(chat.id) ?? chat)].sort((a, b) =>
+  // The fresh list is the newest chats, from its first to its last. A paged
+  // chat in that span that it leaves out is gone; one older than its last (or
+  // as old: a tie that fell past its end), or newer than its first (read
+  // since), is not its to say.
+  const newestFresh = fresh.reduce(
+    (latest, chat) => (chat.updated_at > latest ? chat.updated_at : latest),
+    '',
+  );
+  const oldestFresh = fresh.reduce(
+    (earliest, chat) => (chat.updated_at < earliest ? chat.updated_at : earliest),
+    newestFresh,
+  );
+  const kept = paged.filter(
+    (chat) => byId.has(chat.id) || chat.updated_at <= oldestFresh || chat.updated_at > newestFresh,
+  );
+  return [...added, ...kept.map((chat) => byId.get(chat.id) ?? chat)].sort((a, b) =>
     b.updated_at.localeCompare(a.updated_at),
   );
 }

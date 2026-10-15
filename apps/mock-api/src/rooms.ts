@@ -1088,11 +1088,20 @@ Thanks`,
   app.get(
     '/people',
     route((c) => {
-      personOnly(me());
+      const viewer = me();
+      personOnly(viewer);
       const query = C.peopleQuery.parse(c.req.query()).query?.trim().toLowerCase() ?? '';
+      // Like the service: themselves, people they share a room with now, and
+      // anyone else only by their whole email, so nobody can list every account.
+      const shared = new Set(
+        [...rooms.values()]
+          .filter((room) => roleIn(room, viewer.id))
+          .flatMap((room) => [...room.members.keys()].filter((id) => roleIn(room, id))),
+      );
       return answer(C.peopleList, {
         people: [...people.values()]
           .filter((p) => p.kind === 'person')
+          .filter((p) => p.id === viewer.id || shared.has(p.id) || p.email.toLowerCase() === query)
           .filter(
             (p) => !query || `${p.email} ${p.display_name ?? ''}`.toLowerCase().includes(query),
           )
