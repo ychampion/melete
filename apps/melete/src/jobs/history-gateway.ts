@@ -355,7 +355,7 @@ export function historyModelSource(options: {
         if (!(await side.local(chosen.provider))) {
           const background = (await options.settings.routingFor(spaceId, options.routing))
             .background;
-          if (background) return { provider: background.provider, model: background.model };
+          if (background) return options.settings.sideModelFor(spaceId, background);
         }
       }
       return side.current({ spaceId });

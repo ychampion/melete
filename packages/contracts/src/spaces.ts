@@ -183,3 +183,53 @@ export const spaceRemovalReport = z
   })
   .meta({ id: 'SpaceRemovalReport' });
 export type SpaceRemovalReport = z.infer<typeof spaceRemovalReport>;
+
+/**
+ * What a space's work may use. `allowed_models` lists `provider/model` choices
+ * in the order a refused model falls back through them; empty, any model may
+ * be used. A denied connector kind is a connection provider (`imap`, `mcp`,
+ * `caldav`), and a denied tool kind is a tool's name (`email.send`) or a whole
+ * family by the part before its first dot (`email`). Every list empty is the
+ * default and restricts nothing.
+ */
+const policyModel = z
+  .string()
+  .trim()
+  .regex(/^[a-z0-9-]{1,40}\/\S{1,300}$/, 'Write each model as provider/model.')
+  .meta({ id: 'SpacePolicyModel' });
+const policyKind = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9][a-z0-9_.-]{0,79}$/, 'Use a short name, such as imap or email.send.')
+  .meta({ id: 'SpacePolicyKind' });
+
+/** Built afresh for each schema, so the document names no shared fragment of them. */
+const ruleLists = () => ({
+  allowed_models: z.array(policyModel).max(50),
+  denied_connector_kinds: z.array(policyKind).max(50),
+  denied_tool_kinds: z.array(policyKind).max(100),
+});
+
+export const spacePolicyRules = z.object(ruleLists()).meta({ id: 'SpacePolicyRules' });
+export type SpacePolicyRules = z.infer<typeof spacePolicyRules>;
+
+export const spacePolicy = z
+  .object({
+    space_id: prefixedId(ID_PREFIXES.space),
+    ...ruleLists(),
+    /** Who last changed the rules; null while the space has never had any. */
+    updated_by: z.string().nullable(),
+    updated_at: timestamp.nullable(),
+  })
+  .meta({ id: 'SpacePolicy' });
+export type SpacePolicy = z.infer<typeof spacePolicy>;
+
+export const spacePolicyResponse = z
+  .object({
+    policy: spacePolicy,
+    /** Whether the person asking may change these rules. */
+    can_change: z.boolean(),
+  })
+  .meta({ id: 'SpacePolicyResponse' });
+export type SpacePolicyResponse = z.infer<typeof spacePolicyResponse>;

@@ -16,6 +16,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { principal, space } from '../db/schema.ts';
 
 export const spaceRemoval = pgTable(
   'space_removal',
@@ -78,3 +79,25 @@ export const spaceRemoval = pgTable(
 );
 
 export type SpaceRemovalRow = typeof spaceRemoval.$inferSelect;
+
+/**
+ * What a space's work may use, as its owner or the installation's setup owner
+ * set it: the models it may run on (none named means any), and the kinds of
+ * connected app and tool it may not. A space with no row, or with every list
+ * empty, is unrestricted, which is how every single-person install stays.
+ */
+export const spacePolicy = pgTable('space_policy', {
+  spaceId: text('space_id')
+    .primaryKey()
+    .references(() => space.id, { onDelete: 'cascade' }),
+  /** `provider/model`, in the order a refused model falls back through them. */
+  allowedModels: jsonb('allowed_models').$type<string[]>().notNull().default([]),
+  /** Connection providers, such as `imap` or `mcp`. */
+  deniedConnectorKinds: jsonb('denied_connector_kinds').$type<string[]>().notNull().default([]),
+  /** Tool names, such as `email.send`, or a whole family by its prefix, such as `email`. */
+  deniedToolKinds: jsonb('denied_tool_kinds').$type<string[]>().notNull().default([]),
+  updatedBy: text('updated_by').references(() => principal.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type SpacePolicyRow = typeof spacePolicy.$inferSelect;

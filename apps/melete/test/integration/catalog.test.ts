@@ -497,7 +497,7 @@ dbTest('skills.read reads an indexed skill by name, once per read, with a tool e
   ]);
 });
 
-dbTest('a private space skill is read by the space owners and never by a member', async () => {
+dbTest('a private space skill is read only by the space’s own owner', async () => {
   const s = await setup({
     skills: [
       {
@@ -530,7 +530,8 @@ dbTest('a private space skill is read by the space owners and never by a member'
   s.claims.principal_id = String(installation?.id);
   expect(await readable()).toBe('The private way.');
 
-  // In a shared space a co-owner reads it as the owner does; a member does not.
+  // In a shared space it is the maker's: an owner they added reads it as a
+  // member does, which is not at all, as the context a run is built from agrees.
   const owner = recordId('prn');
   const coOwner = recordId('prn');
   const member = recordId('prn');
@@ -551,7 +552,7 @@ dbTest('a private space skill is read by the space owners and never by a member'
     return readable();
   };
   expect(await as(owner)).toBe('The private way.');
-  expect(await as(coOwner)).toBe('The private way.');
+  expect(await as(coOwner)).toBe('unknown_tool');
   expect(await as(member)).toBe('unknown_tool');
 });
 

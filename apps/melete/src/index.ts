@@ -179,6 +179,7 @@ import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
+  ownsSpace,
   refusedForRemoval,
   requestPrincipal,
   SPACE_BEING_CLEARED,
@@ -237,6 +238,7 @@ import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
 import { startSmsReplies } from './sms/inbox.ts';
 import { mountSms } from './sms/routes.ts';
+import { mountSpacePolicy } from './spaces/policy.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -460,6 +462,8 @@ export function createApp(deps: AppDeps) {
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
+  // What work in a space may use, set by its owner or the setup owner.
+  if (deps.db) mountSpacePolicy(app, { db: deps.db });
   if (connections) mountConnections(app, connections);
   if (devices) mountDevices(app, devices, limits);
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
@@ -761,12 +765,15 @@ export function createApp(deps: AppDeps) {
           const actor = requestPrincipal();
           if (!scope || !actor || !deps.db) return null;
           const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          // A space's memory is its owner's: the person who made a room, not
+          // the owners they added, who read what the room shares as members do.
+          const owns = ownsSpace(access);
           return {
             ...scope,
             principalId: actor,
             membershipGeneration: access.generation,
-            role: access.role === 'owner' ? 'owner' : 'reader',
-            audience: access.role === 'owner' ? scope.audience : 'space',
+            role: owns ? 'owner' : 'reader',
+            audience: owns ? scope.audience : 'space',
           };
         },
       }),
@@ -815,7 +822,7 @@ export function createApp(deps: AppDeps) {
       ...(db
         ? {
             authorizeSpace: async (id: string) => ({
-              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+              owner: ownsSpace(await spaceAuthority(db, id, requestPrincipal())),
             }),
           }
         : {}),

@@ -148,7 +148,7 @@ export class SmsInbox {
   ) {
     const experience = this.deps.experience;
     if (!experience) return;
-    const owner = await this.owner(connection.space_id);
+    const owner = await this.owner(connection.id);
     if (!owner) return;
     await principalContext.run(owner, async () => {
       let conversation: string | null;
@@ -179,12 +179,16 @@ export class SmsInbox {
   /**
    * Whose space it is: the person a text from their own number speaks as.
    * Null unless that person's account is still active, so a disabled account
-   * reaches its assistant by text no more than by signing in.
+   * reaches its assistant by text no more than by signing in. In a room the
+   * number must be kept for its maker: one that serves the room is managed by
+   * any of its owners, so texts to it speak for nobody.
    */
-  private async owner(spaceId: string): Promise<string | null> {
-    const [row] = await this.deps.sql`select p.id as owner_id from space s
+  private async owner(connectionId: string): Promise<string | null> {
+    const [row] = await this.deps.sql`select p.id as owner_id from connection c
+      join space s on s.id = c.space_id
       join principal p on p.id = coalesce(s.owner_principal_id, (select id from owner limit 1))
-      where s.id = ${spaceId} and s.removed_at is null
+      where c.id = ${connectionId} and s.removed_at is null
+        and (s.kind <> 'shared' or c.shared_use = 'owner')
         and p.kind = 'person' and p.disabled_at is null`;
     return row?.owner_id ? String(row.owner_id) : null;
   }
@@ -281,7 +285,8 @@ const REPLY_WINDOW = '1 day';
  * yet. Each text of a reply is written as `sending` before Twilio is asked, and
  * the rows are unique by turn and part, so a turn is answered at most once
  * however many sweeps find it. A turn whose space's person has since been
- * disabled is not answered. Returns how many turns it answered.
+ * disabled is not answered, nor one through a room's number that has since
+ * been shared with the room. Returns how many turns it answered.
  */
 export async function sweepSmsReplies(deps: {
   sql: Sql;
@@ -299,6 +304,7 @@ export async function sweepSmsReplies(deps: {
       and t.status in ('done', 'needs_you', 'failed')
       and c.status = 'active' and c.secret_ref is not null
       and p.kind = 'person' and p.disabled_at is null
+      and (s.kind <> 'shared' or c.shared_use = 'owner')
       and i.created_at > now() - ${REPLY_WINDOW}::interval
       and not exists (select 1 from sms_text o where o.direction = 'out' and o.turn_id = i.turn_id)
     order by i.created_at

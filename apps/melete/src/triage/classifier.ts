@@ -265,13 +265,22 @@ export function triageModelSource(options: {
   return {
     async current(spaceId) {
       if (setting === 'off') return null;
-      if (pinned) return pinned;
+      // A model the space's rules leave out sorts nothing there.
+      const bound = async (choice: ServiceModel) => {
+        if (!options.settings) return choice;
+        const { provider, model, refused, allowed } = await options.settings.allowedModelFor(
+          spaceId,
+          choice,
+        );
+        return refused ? null : { provider, model, ...(allowed ? { allowed } : {}) };
+      };
+      if (pinned) return bound(pinned);
       if (options.settings) {
         const chosen = await options.settings.activeChoice();
         if (!(await side.local(chosen.provider))) {
           const background = (await options.settings.routingFor(spaceId, options.routing))
             .background;
-          if (background) return { provider: background.provider, model: background.model };
+          if (background) return bound(background);
         }
       }
       return side.current({ spaceId });

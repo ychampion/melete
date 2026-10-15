@@ -1342,6 +1342,16 @@ The exit code is 0 when it was done, 2 when it was refused (no such account,
 an email already in use, a setup code once the owner exists) and 1 when it
 failed.
 
+In the app, the account that set Melete up can make another person's account
+an admin, or take that away, from Settings › Account › Accounts on this Melete
+(`PATCH /principals/{id}` with `admin: true` or `false`). An admin adds
+accounts (`POST /principals`), sees the list of them, and chooses the
+installation's model and its keys, as the setup owner does. Only the setup
+owner makes admins, deletes other people's accounts and sets the secondary
+model, and nobody can change the setup owner, who is always an admin. Only a
+person's account that can sign in holds admin; a disabled one administers
+nothing.
+
 ## Signing out everywhere
 
 Settings › Account › Where you're signed in lists every browser signed in to the
@@ -1662,8 +1672,9 @@ provider, paste its API key (and, for `openai-compatible`, the endpoint's
 address), test the connection, choose a model from the provider's list or type
 its identifier, and use it. The test makes one small call, the provider's model
 list, and says plainly when the key is refused, the address answers 404, or the
-provider does not answer in time. Only the setup owner can change a key or the
-model; every other account sees which model is active.
+provider does not answer in time. Only the setup owner, or an account they made
+an admin, can change a key or the model; every other account sees which model
+is active. The secondary model stays the setup owner's own.
 
 A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
 so the app refuses to store one while that key is unset. No answer ever carries
@@ -2133,6 +2144,33 @@ the limit is not yet spent and charged when it reports, so one call may finish
 past the limit; the next is refused, as an action past the limit is. Jobs carry
 a $1 limit by default, so turn this on together with the dollar limits your
 installation gives its jobs.
+
+## Space rules
+
+Spending caps apply to everyone alike. Space rules are set per space, for an
+installation several people share: which models a space's work may run on, and
+which kinds of connected app and tool it may not use. Every space starts with
+none, so a single-person installation behaves as it always has.
+
+Whoever set up the installation may set the rules of any space; a space's own
+owner may set them for that space. Anyone the space admits can read them. They
+are in Settings › Space rules, and through the API:
+
+```bash
+curl -b cookies.txt https://melete.example.com/spaces/sp_.../policy
+curl -b cookies.txt -X PUT https://melete.example.com/spaces/sp_.../policy \
+  -H 'content-type: application/json' \
+  -d '{"allowed_models":["anthropic/claude-sonnet-4-5"],"denied_connector_kinds":["mcp"],"denied_tool_kinds":["email.send"]}'
+```
+
+| Rule | What it does |
+| --- | --- |
+| `allowed_models` | `provider/model` entries, in order. When the model work would use is not listed, it moves to the first listed model whose provider is connected; with none connected, the attempt stops and the conversation says why. A vision or fallback route to a model not listed is not taken, and the service's own model calls about the space (memory reads, summaries, reviews of its actions, reading its mail for Companies) keep to the list too. A review with no allowed model to use leaves the action for a person to approve. Empty allows any model. |
+| `denied_connector_kinds` | Connection providers, such as `imap`, `caldav`, `mcp` or `command_line`. A connection of a listed kind cannot be added to the space, and one added earlier is neither offered to the agent nor used. |
+| `denied_tool_kinds` | A tool by its name, such as `email.send`, or a family by the part before its first dot, such as `email`, which covers `email.read` and `email.send`. It covers the tools of connections, the built-in files, web and computer ones included. The agent is not offered them, and is refused if it asks for one anyway. Melete's own tools for asking the person, following up and searching memory are not affected. |
+
+A change applies from the next attempt, catalog and call; an attempt already
+running on a model the rules now leave out has its next call refused.
 
 ## Attachments
 
