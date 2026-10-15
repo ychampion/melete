@@ -558,7 +558,10 @@ export function boundHistory(
             estimateInputTokens(JSON.stringify(summary)) -
             (carried ? estimateInputTokens(carried) : 0),
         ),
-        maxBytes: Math.max(0, limits.maxBytes - wireBytes(summary) - wireBytes(carried)),
+        maxBytes: Math.max(
+          0,
+          limits.maxBytes - wireBytes(summary) - (carried ? wireBytes(carried) : 0),
+        ),
       }
     : limits;
   const bounded = boundAroundNewMessages(kept, fresh, room);

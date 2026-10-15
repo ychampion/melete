@@ -157,7 +157,9 @@ export async function extendHistory(
         estimateInputTokens(JSON.stringify(fresh)) -
         (read.stored
           ? estimateInputTokens(JSON.stringify(renderSummary(read.stored.summary))) +
-            estimateInputTokens(JSON.stringify(standingRules(read.stored.summary)))
+            (standingRules(read.stored.summary).length
+              ? estimateInputTokens(JSON.stringify(standingRules(read.stored.summary)))
+              : 0)
           : 0) -
         SUMMARY_GROWTH_TOKENS,
       messages: limits.maxMessages - fresh.length,
@@ -193,6 +195,7 @@ export async function extendHistory(
       summary.standing_instructions,
       answer.summary.standing_instructions,
       chunk.person,
+      answer.summary.facts,
     );
     summary = {
       ...answer.summary,

@@ -24,6 +24,7 @@ import {
   STANDING_INSTRUCTIONS,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { FILE_BLOCK } from '../attachments/render.ts';
 import { estimateInputTokens } from '../gateway/metering.ts';
 
 /** The notice kind a summary is kept under, in the job's events. */
@@ -179,17 +180,20 @@ const comparable = (text: string) =>
  * only when its words are in what the person wrote in the messages that call
  * read (`personText`): one the summariser paraphrased, or took from the
  * assistant or a page it quoted, is not the person's instruction, so it goes
- * back to the summary's facts instead of being carried as one.
+ * back to the summary's facts (`facts`, the ones it returned) instead of being
+ * carried as one, unless they already say it.
  */
 export function mergeStanding(
   previous: readonly StandingInstruction[],
   offered: readonly StandingInstruction[],
   personText: string,
+  facts: readonly string[] = [],
 ): { standing: StandingInstruction[]; demoted: string[] } {
   const said = comparable(personText);
   const keyOf = (entry: StandingInstruction) => comparable(entry.topic) || comparable(entry.rule);
   const held = new Map<string, StandingInstruction>();
   for (const entry of previous) held.set(keyOf(entry), entry);
+  const known = new Set(facts.map(comparable));
   const demoted: string[] = [];
   for (const entry of offered) {
     const rule = line(entry.rule).slice(0, STANDING_INSTRUCTIONS.characters);
@@ -198,7 +202,9 @@ export function mergeStanding(
     // Already held, under this topic or another: nothing changed.
     if ([...held.values()].some((kept) => comparable(kept.rule) === wording)) continue;
     if (!said.includes(wording)) {
-      demoted.push(rule);
+      // Offered again on a later call, it is already a fact: never a second copy.
+      if (!known.has(wording)) demoted.push(rule);
+      known.add(wording);
       continue;
     }
     const kept = { topic: line(entry.topic), rule };
@@ -277,8 +283,8 @@ export function planExtension(
 
 /**
  * One call's worth of messages, as text, and how many messages it completes.
- * `person` is the part of that text the person wrote, which a standing
- * instruction has to be found in.
+ * `person` is what the person wrote in those messages, without the text of
+ * files they attached, which a standing instruction has to be found in.
  */
 export type SummaryChunk = { text: string; completes: number; person: string };
 
@@ -333,11 +339,14 @@ export function chunkMessages(
   };
   for (const [index, message] of messages.entries()) {
     const parts = partsOf(message, maxTokens);
+    // The person's own words. The text of a file they attached sits in their
+    // message, but it came from the file, so it can never set a rule.
+    const words = message.role === 'user' ? message.content.replace(FILE_BLOCK, ' ') : null;
     for (const [number, part] of parts.entries()) {
       const cost = estimateInputTokens(part);
       if (used > 0 && used + cost > maxTokens) flush();
+      if (words !== null && (number === 0 || text.length === 0)) person.push(words);
       text.push(part);
-      if (message.role === 'user') person.push(part);
       used += cost;
       if (number === parts.length - 1) completed = index + 1;
     }
