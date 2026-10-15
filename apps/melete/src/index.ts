@@ -81,7 +81,12 @@ import { startTrashSweep } from './connectors/files-trash.ts';
 import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
-import { connectionRevocation, mcpIssuerFetch, startSecretSweep } from './connectors/revocation.ts';
+import {
+  connectionRevocation,
+  mcpIssuerFetch,
+  spaceAccessWithdrawal,
+  startSecretSweep,
+} from './connectors/revocation.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
@@ -943,6 +948,7 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
   let releaseCredential: ReturnType<typeof connectionRevocation> | undefined;
+  let withdrawSpaceAccess: ReturnType<typeof spaceAccessWithdrawal> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -1176,12 +1182,15 @@ export async function bootstrap(
       const composio = connectors.options.composio;
       releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
       // A disconnection deletes the sealed tokens and withdraws them at the provider where it can.
-      releaseCredential = connectionRevocation({
+      const revocation = {
         sql: handle.sql,
         secrets: connectors.secrets,
         ...(connectors.options.google ? { google: connectors.options.google } : {}),
         mcpFetch: mcpIssuerFetch(handle.sql),
-      });
+      };
+      releaseCredential = connectionRevocation(revocation);
+      // Removing a space withdraws its connections' access the same way first.
+      withdrawSpaceAccess = spaceAccessWithdrawal(revocation);
       // Accounts a removed space, a failed disconnection or an unfinished
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
@@ -1734,6 +1743,8 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // Each provider is asked to withdraw the space's access before its tokens go.
+          ...(withdrawSpaceAccess ? { withdrawAccess: withdrawSpaceAccess } : {}),
           // A space's sandboxes and snapshots go through providers built from
           // its connection rows, and the removal finishes only on what those
           // providers say they still hold.

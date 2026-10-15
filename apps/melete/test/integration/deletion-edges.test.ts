@@ -135,7 +135,7 @@ withDb('disconnecting a Google account', () => {
       fetcher: fetcherAnswering(200),
       log: () => {},
     });
-    expect(await revoke(leaving)).toBe('withdrawn');
+    expect(await revoke(leaving)).toEqual({ provider_access: 'withdrawn' });
     expect(revokeCalls).toEqual(['rt-a-leaving@example.test']);
     expect(await db.sql`select id from secret where id = ${leaving.secretRef}`).toHaveLength(0);
   });
@@ -157,7 +157,10 @@ withDb('disconnecting a Google account', () => {
       fetcher: fetcherAnswering(400),
       log: () => {},
     });
-    expect(await revoke(leaving)).toBe('not_confirmed');
+    expect(await revoke(leaving)).toEqual({
+      provider_access: 'not_confirmed',
+      revoke_at: { name: 'Google', url: 'https://myaccount.google.com/linkedapps' },
+    });
     expect(await db.sql`select id from secret where id = ${leaving.secretRef}`).toHaveLength(0);
   });
 
@@ -180,7 +183,10 @@ withDb('disconnecting a Google account', () => {
       fetcher: fetcherAnswering(200),
       log: () => {},
     });
-    expect(await revoke(leaving)).toBe('not_confirmed');
+    expect(await revoke(leaving)).toEqual({
+      provider_access: 'not_confirmed',
+      revoke_at: { name: 'Google', url: 'https://myaccount.google.com/linkedapps' },
+    });
     expect(revokeCalls).toEqual([]);
     expect(await db.sql`select id from secret where id = ${leaving.secretRef}`).toHaveLength(0);
   });
