@@ -81,7 +81,10 @@ export function mountPrincipals(
       resource === 'spaces' &&
       ((method === 'DELETE' && parts.length === 2) ||
         (method === 'GET' && parts.length === 3 && parts[2] === 'removal'));
-    if (resource === 'spaces' && id && id !== 'shared' && !removalRequest) {
+    // A space's rules answer for themselves too: the setup owner sets them for
+    // any space, including one they are not a member of (spaces/policy.ts).
+    const rulesRequest = resource === 'spaces' && parts.length === 3 && parts[2] === 'policy';
+    if (resource === 'spaces' && id && id !== 'shared' && !removalRequest && !rulesRequest) {
       const access = await spaceAuthority(db, id, actor);
       if (method !== 'GET' && access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);

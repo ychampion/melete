@@ -110,7 +110,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
 
     // A live extractor spends against a budget; this scan gets one of its own,
     // so no other scan, and no other person's, can use it up.
-    session = await options.extractor.forScan?.();
+    session = await options.extractor.forScan?.(options.owner.spaceId);
     const extractor = session ?? options.extractor;
     // A message a model has already answered for is not asked about again: what
     // it said is in the store, and asking twice only spends twice.
