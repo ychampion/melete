@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { dayResetLine, usageModelName } from './Usage.tsx';
+import { dayResetLine, usageGroups, usageModelName } from './Usage.tsx';
 
 const reset = '2026-10-04T00:00:00.000Z';
 
@@ -31,4 +31,49 @@ test('usage names each model as a person reads it, never by its provider path', 
   );
   expect(usageModelName('accounts/fireworks/models/glm-5p3')).toBe('GLM 5.3');
   expect(usageModelName('nomic-ai/nomic-embed-text-v1.5')).toBe('Memory search');
+});
+
+const personal = {
+  space_id: 'sp_2',
+  name: 'Personal',
+  kind: 'personal' as const,
+  calls: 1,
+  usd: 0.5,
+  tokens: 100,
+  budget_usd: null,
+};
+
+test('spending by space and by person names the limit and marks one that is reached', () => {
+  const groups = usageGroups({
+    by_space: [
+      {
+        space_id: 'sp_1',
+        name: 'Launch',
+        kind: 'shared',
+        calls: 12,
+        usd: 20,
+        tokens: 9000,
+        budget_usd: 20,
+      },
+      personal,
+    ],
+    by_member: [
+      { principal_id: 'p_1', name: 'Ada', calls: 3, usd: 4.2, tokens: 10, limit_usd: 10 },
+    ],
+  });
+  expect(groups.spaces).toEqual([
+    { key: 'sp_1', name: 'Launch (room)', line: '$20.00 of $20.00 · 12 calls', reached: true },
+    { key: 'sp_2', name: 'Personal', line: '$0.50 · 1 call', reached: false },
+  ]);
+  // One person, but with a limit of their own: still worth showing.
+  expect(groups.members).toEqual([
+    { key: 'p_1', name: 'Ada', line: '$4.20 of $10.00 · 3 calls', reached: false },
+  ]);
+});
+
+test('a single space with no budget, and no people list, add nothing to the totals', () => {
+  expect(usageGroups({ by_space: [personal], by_member: null })).toEqual({
+    spaces: [],
+    members: [],
+  });
 });

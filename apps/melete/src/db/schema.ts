@@ -1506,3 +1506,25 @@ export const spendingNotice = pgTable(
   },
   (t) => [primaryKey({ columns: [t.scope, t.period, t.level] })],
 );
+
+/**
+ * A monthly dollar limit the person who runs the installation set for one
+ * member (on all their calls) or for one space (on every call made in it). No
+ * row is no limit; a member's row takes the place of the installation-wide
+ * monthly dollar limit for that member.
+ */
+export const spendLimit = pgTable(
+  'spend_limit',
+  {
+    kind: text('kind').notNull(),
+    targetId: text('target_id').notNull(),
+    monthlyUsd: doublePrecision('monthly_usd').notNull(),
+    setBy: text('set_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.kind, t.targetId] }),
+    check('spend_limit_kind', sql`${t.kind} in ('member', 'space')`),
+    check('spend_limit_usd', sql`${t.monthlyUsd} >= 0`),
+  ],
+);
