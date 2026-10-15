@@ -313,13 +313,37 @@ function AddPeople({ detail, onAdded }: { detail: RoomDetail; onAdded: () => voi
           ))}
         </ul>
       ) : people ? (
-        <p className="people-hint">
-          {query.trim()
-            ? 'Nobody you share a space with matches that. To add someone else, type their whole email address.'
-            : 'Everyone you share a space with is already in the room. To add someone else, type their whole email address.'}
-        </p>
+        <AddPeopleHint query={query} people={people} inRoom={inRoom} />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * What the search found when there is nobody to add: someone already in the
+ * room, no account for a whole email (a guest invite is the way in), or how
+ * to find someone they do not share a space with.
+ */
+export function AddPeopleHint({
+  query,
+  people,
+  inRoom,
+}: {
+  query: string;
+  people: readonly Person[];
+  inRoom: ReadonlySet<string>;
+}) {
+  const typed = query.trim();
+  return (
+    <p className="people-hint">
+      {!typed
+        ? 'Everyone you share a space with is already in the room. To add someone else, type their whole email address.'
+        : people.some((person) => inRoom.has(person.id))
+          ? 'They are already in this room.'
+          : typed.includes('@')
+            ? 'No account here uses that email. You can invite them as a guest below.'
+            : 'Nobody you share a space with matches that. To add someone else, type their whole email address.'}
+    </p>
   );
 }
 

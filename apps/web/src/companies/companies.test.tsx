@@ -348,6 +348,25 @@ test('an empty ledger explains what will appear and offers the one thing to pres
   expect(html).not.toContain('messages read');
 });
 
+test('until the connections are read, neither scanning nor connecting a mailbox is offered', () => {
+  const ledger = (mailbox: boolean | null) =>
+    renderToStaticMarkup(
+      <EmptyLedger
+        scanning={false}
+        progress={null}
+        error={null}
+        onScan={() => undefined}
+        mailbox={mailbox}
+      />,
+    );
+  const unknown = ledger(null);
+  expect(unknown).toContain('No companies found yet');
+  expect(unknown).not.toContain('Scan the inbox');
+  expect(unknown).not.toContain('Connect a mailbox</');
+  expect(ledger(true)).toContain('Scan the inbox');
+  expect(ledger(false)).toContain('Connect a mailbox</');
+});
+
 test('a scan in progress counts out loud and takes the button away', () => {
   const html = renderToStaticMarkup(
     <EmptyLedger

@@ -35,7 +35,7 @@ import {
 } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
-import { clockTime, sameDay, weekday } from '../experience/clock.ts';
+import { clockTime, displayZone, sameDay, weekday } from '../experience/clock.ts';
 import {
   agentById,
   type Loaded,
@@ -52,7 +52,9 @@ import { UsageNotice } from '../models/Usage.tsx';
 import { href, navigate, newChat, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
+import { showsRail } from './member-guards.ts';
 import { sidebarNav } from './nav.ts';
+import { weekStrip } from './week-strip.ts';
 import './shell.css';
 
 export type ToastSpec = {
@@ -459,21 +461,7 @@ export function Rail({
     home.data && Array.isArray(home.data.upcoming) ? (home.data.upcoming as CalendarEvent[]) : null;
   const list = tasks.data?.tasks ?? [];
   const doneCount = list.filter((t) => t.done).length;
-  const dow = (today.getDay() + 6) % 7;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - dow);
-  const eventDays = new Set((upcoming ?? []).map((e) => new Date(e.starts_at).toDateString()));
-  const week = ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    return {
-      label,
-      num: d.getDate(),
-      key: d.toDateString(),
-      today: i === dow,
-      has: eventDays.has(d.toDateString()),
-    };
-  });
+  const { month, days: week } = weekStrip(today, displayZone(), upcoming ?? []);
   // The person's own apps; the tools that come with Melete are not counted.
   const connected =
     connections.data?.connections.filter((c) => c.status === 'connected' && !c.builtin).length ?? 0;
@@ -517,7 +505,7 @@ export function Rail({
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Your day</h2>
           <span className="row" style={{ gap: 0 }}>
             <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted)', paddingRight: 4 }}>
-              {today.toLocaleDateString('en-US', { month: 'long' })}
+              {month}
             </span>
             {closeButton}
           </span>
@@ -779,8 +767,7 @@ export function Shell({
     setDrawer(false);
   }, [route.path]);
 
-  // The day is the owner's calendar and tasks: a member's pages have no rail.
-  const showRail = rail && !panel && !member;
+  const showRail = showsRail({ rail, panel, member: member === true });
   const day: Day = {
     home: useLoad(() => (showRail ? adapter.home() : off<Home>()), [showRail]),
     tasks: useLoad(() => (showRail ? adapter.tasks() : off<{ tasks: Task[] }>()), [showRail]),

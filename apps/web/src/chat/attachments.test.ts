@@ -2,7 +2,9 @@ import { expect, test } from 'bun:test';
 import { ATTACHMENT_LIMITS } from '@melete/contracts/attachments';
 import { NEW_CHAT_AGAIN, newChat } from '../router.ts';
 import {
+  afterFailedTry,
   BROWSER_UPLOADS_AT_ONCE,
+  fileNote,
   fitForModel,
   nextUploadTry,
   queueOf,
@@ -155,6 +157,32 @@ test('an upload the service never answered is tried again a few times; a refusal
   const refused = uploadResult(413, { error: { message: 'Files can be up to 20 MB.' } });
   expect(refused).toMatchObject({ error: 'Files can be up to 20 MB.', unavailable: null });
   expect(nextUploadTry(refused, 0)).toBeUndefined();
+});
+
+test('a file waiting to be tried again is not called failed, and the box says nothing under it', () => {
+  const unreachable = uploadResult(null, null);
+  const waiting = afterFailedTry(unreachable, 0);
+  expect(waiting).toMatchObject({ state: 'retrying', wait: UPLOAD_RETRY_DELAYS[0] });
+  expect(waiting.error).toContain('Trying again');
+  expect(fileNote(null, [{ state: waiting.state }])).toBeNull();
+  const spent = afterFailedTry(unreachable, UPLOAD_RETRY_DELAYS.length);
+  expect(spent).toMatchObject({ state: 'failed', wait: undefined });
+  expect(fileNote(null, [{ state: spent.state }])).toContain('A file didn’t upload.');
+  expect(fileNote('Files can be up to 20 MB.', [{ state: 'retrying' }])).toBe(
+    'Files can be up to 20 MB.',
+  );
+});
+
+test('a busy service is tried again, and its own words are shown once the tries are spent', () => {
+  const busy = uploadResult(503, { error: { message: 'busy' } });
+  expect(nextUploadTry(busy, 0)).toBe(UPLOAD_RETRY_DELAYS[0]);
+  expect(afterFailedTry(busy, 0).error).toContain('Trying again');
+  expect(afterFailedTry(busy, UPLOAD_RETRY_DELAYS.length)).toMatchObject({
+    state: 'failed',
+    error: 'busy',
+  });
+  // A 5xx with no words of its own still reads as the service out of reach.
+  expect(uploadResult(503, null).unavailable).toContain('reach Melete');
 });
 
 test('asking for a new chat while one is open says so, so a file that never uploaded is dropped', () => {
