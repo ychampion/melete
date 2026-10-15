@@ -16,9 +16,23 @@ test('common schedules read in plain words', () => {
   expect(cronWords('15 * * * *')).toBe('Every hour, at 15 past');
   expect(cronWords('0 */3 * * *')).toBe('Every 3 hours');
   expect(cronWords('*/30 * * * *')).toBe('Every 30 minutes');
+  expect(cronWords('0 9 * * 1#1')).toBe('On the first Monday of every month at 9:00');
+  expect(cronWords('30 17 * * 5#2')).toBe('On the second Friday of every month at 17:30');
+  expect(cronWords('0 18 * * 0#5')).toBe('On the fifth Sunday of every month at 18:00');
+  expect(cronWords('0 9 * * 5L')).toBe('On the last Friday of every month at 9:00');
 });
 
 test('anything else gets a neutral line, never a wrong one', () => {
-  for (const cron of ['0 9 * 1 *', '0 9 1 * 1', '*/5 9 * * *', '0 9 * * MON', 'nonsense', ''])
+  for (const cron of [
+    '0 9 * 1 *',
+    '0 9 1 * 1',
+    '*/5 9 * * *',
+    '0 9 * * MON',
+    '0 9 * * 1#6',
+    '0 9 1-7 * 1',
+    '0 9 * * 1#1,3#1',
+    'nonsense',
+    '',
+  ])
     expect(cronWords(cron)).toBe('On a set schedule');
 });

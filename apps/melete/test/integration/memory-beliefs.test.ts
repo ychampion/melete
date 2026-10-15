@@ -144,7 +144,7 @@ withDb('beliefs a person can see and correct', () => {
     await blockBelief(db.sql, experienceScope(scope), id, await journalFor('block'));
     expect(await listBeliefs(db.sql, scope, 'UTC')).toEqual([]);
     expect((await listBlocks(db.sql, scope)).blocks.map((block) => block.label)).toEqual([
-      'Music: genre',
+      'Anything about Music: genre',
     ]);
     const again = await pref(db, scope, 'pref.music.genre', 'blues', '2026-09-03T09:00:00Z');
     expect(again.claim_ids).toEqual([]);

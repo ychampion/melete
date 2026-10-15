@@ -17,7 +17,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { rejectionOf, seedJob } from '../helpers/broker.ts';
+import { failOnceFor, rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
 const fixture = await createPostgresFixture();
@@ -830,6 +830,49 @@ databaseTest(
     expect(await s.broker.wakeAnswered()).toBe(0);
   },
 );
+
+databaseTest('one answered job that cannot be woken does not stop the others', async () => {
+  const harnesses = [await setup('calendar'), await setup('calendar')];
+  for (const s of harnesses) {
+    const ask = (summary: string) =>
+      s.broker.propose(s.claims, {
+        connection_id: s.connectionId,
+        kind: 'calendar.create',
+        payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+      });
+    const asked = [await ask('One'), await ask('Two')];
+    await s.sql`update attempt set outcome = 'waiting_for_approval', ended_at = now()
+      where id = ${s.claims.attempt_id}`;
+    await s.sql`update job set state = 'waiting_for_approval',
+      wait = ${JSON.stringify({ kind: 'approval', action_ids: asked.map((a) => a.action_id) })}::jsonb
+      where id = ${s.claims.job_id}`;
+    const one = await s.permissions.card(s.claims.space_id, asked[0]?.approval_id ?? '');
+    await s.permissions.decide(s.claims.space_id, one.id, {
+      option: 'allow_once',
+      version: one.version,
+    });
+    await s.sql`update approval set expires_at = now() - interval '1 minute'
+      where id = ${asked[1]?.approval_id ?? ''}`;
+  }
+  const jobs = harnesses.map((s) => s.claims.job_id);
+  const [first] = harnesses;
+  if (!first) throw new Error('Expected a harness');
+  const broken = failOnceFor(first.broker, 'wake', (args) => (args[1] as { id: string }).id, jobs);
+  try {
+    expect(await first.broker.wakeAnswered()).toBeGreaterThanOrEqual(1);
+  } finally {
+    broken.restore();
+  }
+  const failed = broken.failed();
+  expect(failed).not.toBeNull();
+  const state = async (id: string) =>
+    (await first.sql`select state from job where id = ${id}`)[0]?.state as string;
+  expect(await state(failed ?? '')).toBe('waiting_for_approval');
+  for (const id of jobs.filter((id) => id !== failed)) expect(await state(id)).toBe('queued');
+  // The one left over is woken by the next sweep.
+  await first.broker.wakeAnswered();
+  expect(await state(failed ?? '')).toBe('queued');
+});
 
 databaseTest(
   'identical requests deduplicate within a turn and remain distinct across turns',

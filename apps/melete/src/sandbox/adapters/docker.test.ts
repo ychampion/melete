@@ -26,6 +26,7 @@ import {
   EGRESS_ALIAS,
   ExecCapture,
   isDesktopProvider,
+  LABEL_INSTALL_PROJECT,
   OVER_ALLOWANCE_FILE_BLOCKS,
 } from './docker.ts';
 import { SandboxEgressGuard } from './docker-egress.ts';
@@ -185,6 +186,16 @@ describe('creating a sandbox', () => {
     // The guard admits this container's address and no other.
     const address = engine.containers.get(NAME)?.networks[`${NAME}-net`] ?? '';
     expect(guard.granted(NAME)).toEqual([address]);
+  });
+
+  test('a computer, its volumes and its network name the installation that made them', async () => {
+    const { engine, host } = setup({ open: true, settings: { installProject: 'melete-mine' } });
+    await host.create(spec('sbx_one', { kind: 'open' }), signal());
+    const install = { [LABEL_INSTALL_PROJECT]: 'melete-mine' };
+    expect(engine.containers.get(NAME)?.labels).toMatchObject(install);
+    expect(engine.networks.get(`${NAME}-net`)?.labels).toMatchObject(install);
+    expect(engine.volumes.get(`${NAME}-work`)).toMatchObject(install);
+    expect(engine.volumes.get(`${NAME}-home`)).toMatchObject(install);
   });
 
   test('open egress is refused when the service cannot be the way out', async () => {
@@ -855,6 +866,17 @@ describe('the life of a sandbox', () => {
     expect(engine.volumes.has('melete-sbx-proj-sbx_quiet-work')).toBe(true);
     await host.connect(handleOf('melete-sbx-proj-sbx_quiet'), signal());
     expect(engine.containers.get('melete-sbx-proj-sbx_quiet')?.running).toBe(true);
+  });
+
+  test('a container that will not stop leaves the others to be stopped, and is tried again', async () => {
+    const { engine, host, advance } = setup({ settings: { idleSeconds: 600 } });
+    await host.create(spec('sbx_stuck'), signal());
+    await host.create(spec('sbx_quiet'), signal());
+    advance(700_000);
+    engine.failNext = { match: /^POST \/containers\/melete-sbx-proj-sbx_stuck\/stop/, status: 500 };
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_quiet']);
+    expect(engine.containers.get('melete-sbx-proj-sbx_stuck')?.running).toBe(true);
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_stuck']);
   });
 
   test('a container its processes keep awake is not idle-stopped, and its idle clock starts when they end', async () => {

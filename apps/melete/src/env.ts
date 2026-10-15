@@ -600,8 +600,8 @@ const variables = z.object({
    */
   MELETE_MEMORY_MODEL: z.string().optional(),
   MELETE_MEMORY_PROVIDER: z.string().optional(),
-  /** Extraction calls one person's memory may make in a day. */
-  MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
+  /** Extraction calls one person's memory may make in a day. Unset or blank: no daily limit. */
+  MELETE_MEMORY_DAILY_CALLS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
   /**
    * Semantic recall embeds memory with this model. Unset, the default
    * provider's embedding model when it has one (Fireworks, OpenAI, Google),

@@ -157,13 +157,21 @@ as [Connect your model](README.md#connect-your-model) lists, for example
 `ANTHROPIC_API_KEY` with `--provider anthropic --model <model id>`.
 
 **Other ports or a second installation.** Before the first start, and only
-then, you can change the ports and the project name. Use them consistently from
-here on:
+then, you can change the ports and the project name. `configure.ts` also takes
+them directly, as `--project melete2 --api-port 3200 --web-port 3201`. Use them
+consistently from here on:
 
 ```bash
 bun run deploy/scripts/set-env.ts WEB_PORT=3201 MELETE_PORT=3200
 bun run deploy/scripts/set-env.ts COMPOSE_PROJECT_NAME=melete2
 ```
+
+A second installation keeps the `MELETE_SANDBOX_PROJECT` that `configure.ts`
+wrote, which keeps its agents' computers apart from the first one's, and backs
+up to a folder of its own, `~/melete-backups/<project>`. Before starting it, run
+`bun run melete doctor` and check `docker.address_pools` and
+`docker.network_pool`: both installations take networks from the same pools
+([Docker address pools](docs/DEPLOYMENT.md#docker-address-pools)).
 
 The rest of this page writes `3101`; use your `WEB_PORT` instead.
 

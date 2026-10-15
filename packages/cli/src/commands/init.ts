@@ -15,11 +15,19 @@
  * `status` require what an installation for other people needs.
  *
  * Either refuses, with nothing changed, when deploy/melete.deploy.json exists.
- * `--min-free-mb` and `--pull-margin-mb` set the disk floors in the new file.
+ * `--min-free-mb` and `--pull-margin-mb` set the disk floors in the new file,
+ * and `--backup-dir` the folder backups go to (by default one of the project's
+ * own).
+ *
+ * A second installation on the machine takes `--project <name> --api-port
+ * <port> --web-port <port>`, which configure.ts writes to deploy/.env. A new
+ * installation is refused while its project name is in use on this engine:
+ * another installation's containers or volumes would become this one's.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
+import { otherCheckouts, type ProjectUse, readProjectUse } from '../compose-project.ts';
 import type { Context, Run } from '../context.ts';
 import {
   BLOBS_S3_FILE,
@@ -32,9 +40,10 @@ import {
   EXTERNAL_DB_FILE,
   OVERLAY_FILES,
   type Overlay,
+  PROJECT_NAME,
   renderDeployConfig,
 } from '../deploy-config.ts';
-import { configFromEnv } from '../installation.ts';
+import { configFromEnv, sandboxProfile } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 
@@ -43,9 +52,17 @@ export class InitRefusal extends Error {}
 export type InitOptions = {
   adopt: boolean;
   disk: Partial<DeployConfig['disk']>;
+  /** `--backup-dir`: where backups go, absolute or under ~/. */
+  backupDir?: string;
+  /** `--project`: the Compose project, also handed to configure.ts. */
+  project?: string;
   /** Everything else, handed to configure.ts. */
   configure: string[];
 };
+
+/** An absolute folder, or one under the home folder (`~/…`), on any platform. */
+const homeOrAbsolute = (value: string) =>
+  value === '~' || value.startsWith('~/') || isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
 
 export function initOptions(args: readonly string[]): InitOptions {
   const options: InitOptions = { adopt: false, disk: {}, configure: [] };
@@ -61,13 +78,44 @@ export function initOptions(args: readonly string[]): InitOptions {
     if (arg === '--adopt') options.adopt = true;
     else if (arg === '--min-free-mb') floor('min_free_mb');
     else if (arg === '--pull-margin-mb') floor('pull_margin_mb');
-    else options.configure.push(arg);
+    else if (arg === '--backup-dir') {
+      const value = args[index + 1];
+      if (value === undefined || !homeOrAbsolute(value))
+        throw new InitRefusal('--backup-dir takes an absolute folder, or one under ~/.');
+      options.backupDir = value;
+      index += 1;
+    } else if (arg === '--project') {
+      const value = args[index + 1];
+      if (value === undefined || !PROJECT_NAME.test(value))
+        throw new InitRefusal(
+          '--project takes a Compose project name: lower-case letters, digits, - and _, starting with a letter or a digit.',
+        );
+      options.project = value;
+      options.configure.push(arg, value);
+      index += 1;
+    } else options.configure.push(arg);
   }
   if (options.adopt && options.configure.length > 0)
     throw new InitRefusal(
-      `--adopt takes only --min-free-mb and --pull-margin-mb; ${options.configure.join(' ')} belongs to a new installation.`,
+      `--adopt takes only --min-free-mb, --pull-margin-mb and --backup-dir; ${options.configure.join(' ')} belongs to a new installation.`,
     );
   return options;
+}
+
+/**
+ * Why a new installation may not take this project name, or null when nothing
+ * on this engine uses it. Another checkout's containers are named, so the
+ * operator sees which installation it is.
+ */
+export function projectInUse(project: string, use: ProjectUse, deployDir: string): string | null {
+  if (use.containers.length === 0 && use.volumes.length === 0) return null;
+  const others = otherCheckouts(use, deployDir);
+  const choose = `Give this one a project, ports and backup folder of its own, for example: bun run melete init --project ${project === 'melete2' ? 'melete3' : 'melete2'} --api-port 3200 --web-port 3201 (with the options you meant to give). Nothing was written.`;
+  if (others.length > 0)
+    return `Another installation, in ${others.join(', ')}, already runs as the Compose project ${project}, and this one would take over its containers and volumes. ${choose}`;
+  if (use.containers.length > 0)
+    return `Compose project ${project} already has containers on this engine, and this one would take them over with new secrets. ${choose} If they are left from an installation you removed, remove them first (docker compose -p ${project} down).`;
+  return `Compose project ${project} already has ${use.volumes.length} volume(s) on this engine: the data of an installation that is stopped or was removed. This one would start on that data with new secrets, and its database would not open. ${choose} If that data is no longer wanted, remove it first (docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=${project})).`;
 }
 
 export type ContainerFacts = {
@@ -115,6 +163,7 @@ export function adoptedConfig(
   containers: readonly ContainerFacts[],
   env: Record<string, string>,
   disk: Partial<DeployConfig['disk']>,
+  backupDir?: string,
 ): DeployConfig {
   const stack = containers.filter((container) => !container.oneoff);
   const services = stack.filter((container) => container.service === 'melete');
@@ -144,10 +193,7 @@ export function adoptedConfig(
     .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
     .map(([name]) => name);
   // sandbox-image keeps no container, except one an older Compose file started.
-  const sandbox =
-    names.has('sandbox-image') ||
-    env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker' ||
-    (env.COMPOSE_PROFILES ?? '').split(',').some((profile) => profile.trim() === 'sandbox');
+  const sandbox = names.has('sandbox-image') || sandboxProfile(env);
   const setting = (name: string) => env[name]?.trim() || undefined;
   const bucket = setting('MELETE_BLOB_S3_BUCKET');
   if (files.has(BLOBS_S3_FILE) && !bucket)
@@ -161,6 +207,7 @@ export function adoptedConfig(
     profiles: sandbox ? ['sandbox'] : [],
     overlays,
     disk: { min_free_mb: 4096, pull_margin_mb: 512, ...disk },
+    ...(backupDir ? { backup: { dir: backupDir } } : {}),
     database: { external: files.has(EXTERNAL_DB_FILE) || names.has('database-client') },
     blobs: files.has(BLOBS_S3_FILE)
       ? {
@@ -218,6 +265,7 @@ export async function runInit(context: Context, args: readonly string[]): Promis
           readContainers(context.run, project),
           env,
           options.disk,
+          options.backupDir,
         );
         await createDeployConfig(context.deployDir, config);
         context.out(`Wrote ${DEPLOY_FILE} from the running stack:\n${renderDeployConfig(config)}`);
@@ -234,6 +282,12 @@ export async function runInit(context: Context, args: readonly string[]): Promis
         'deploy/.env exists already. To describe that installation, run bun run melete init --adopt.',
       );
     return await withLock(context.deployDir, 'init', async () => {
+      // Checked before configure.ts writes anything. An engine that does not
+      // answer is left to configure.ts, which names what is wrong with it.
+      const project = options.project ?? 'melete';
+      const use = readProjectUse(context.run, project);
+      const taken = use && projectInUse(project, use, context.deployDir);
+      if (taken) throw new InitRefusal(taken);
       const code = await context.attach([
         process.execPath,
         join(context.deployDir, 'scripts', 'configure.ts'),
@@ -245,13 +299,16 @@ export async function runInit(context: Context, args: readonly string[]): Promis
         const env = parseEnvFile(readFileSync(envPath, 'utf8'));
         const tailscale = options.configure.includes('--tailscale');
         const hosted = options.configure.includes('--hosted');
-        const config = configFromEnv(env, {
+        const made = configFromEnv(env, {
           overlays: tailscale ? ['tailscale'] : [],
           disk: { min_free_mb: 4096, pull_margin_mb: 512, ...options.disk },
           ...(hosted ? { hosted: true } : {}),
         });
+        const config = options.backupDir
+          ? { ...made, backup: { ...made.backup, dir: options.backupDir } }
+          : made;
         await createDeployConfig(context.deployDir, config);
-        context.out(`Wrote ${DEPLOY_FILE}.\n`);
+        context.out(`Wrote ${DEPLOY_FILE}. Backups go to ${config.backup.dir}.\n`);
         return EXIT.ok;
       } catch (error) {
         context.err(

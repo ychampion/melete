@@ -36,7 +36,8 @@ export function experiencePaths(): ZodOpenApiPathsObject {
         ...('request' in operation
           ? {
               requestBody: {
-                required: true,
+                // A request that may be left out entirely, such as how far a block reaches.
+                required: !operation.request.safeParse(undefined).success,
                 content: { 'application/json': { schema: operation.request } },
               },
             }

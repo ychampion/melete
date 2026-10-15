@@ -62,11 +62,15 @@ class FakeEngine implements DockerStdioApi {
   /** Another image answers to the pinned reference. */
   swapped = false;
   prepareStatus = 0;
+  /** A request the engine answers with a 500, as `METHOD route` matched by its start. */
+  failing?: string;
   private counter = 0;
 
   async request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown) {
     this.calls.push(`${method} ${path}`);
     const [route = ''] = path.split('?');
+    if (this.failing && `${method} ${route}`.startsWith(this.failing))
+      throw new DockerError(500, method, route);
     let match = /^\/images\/(.+)\/json$/.exec(route);
     if (match) {
       const reference = decodeURIComponent(match[1] ?? '');
@@ -533,6 +537,53 @@ describe('the Docker stdio launcher', () => {
     );
     expect(engine.calls.some((call) => call.includes('/connect'))).toBe(false);
     expect(engine.created()).toHaveLength(0);
+    await launcher.close();
+  });
+
+  test('a server network is removed when the service cannot join it', async () => {
+    const engine = new FakeEngine();
+    engine.failing = `POST /networks/${PREFIX}-net/connect`;
+    const launcher = inContainer(engine);
+    await expect(launcher.start(spec({ egress: ['api.example.com'] }), signal())).rejects.toThrow();
+    expect([...engine.networks]).toEqual([]);
+    expect(engine.created()).toHaveLength(0);
+    await launcher.close();
+  });
+
+  test('a server network is removed when the proxy cannot listen', async () => {
+    const engine = new FakeEngine();
+    const proxy = new RecordingProxy();
+    proxy.listen = async () => {
+      throw new Error('address in use');
+    };
+    const launcher = inContainer(engine, proxy);
+    await expect(launcher.start(spec({ egress: ['api.example.com'] }), signal())).rejects.toThrow(
+      'address in use',
+    );
+    expect([...engine.networks]).toEqual([]);
+    await launcher.close();
+  });
+
+  test('a preparation whose network cannot be joined leaves no network', async () => {
+    const engine = new FakeEngine();
+    engine.failing = `POST /networks/${PREFIX}-net/connect`;
+    const launcher = inContainer(engine);
+    await expect(
+      launcher.start(spec({ runner: 'uvx', source: 'mcp-server-fetch==2026.1.1' }), signal()),
+    ).rejects.toThrow();
+    expect([...engine.networks]).toEqual([]);
+    expect(engine.created()).toHaveLength(0);
+    await launcher.close();
+  });
+
+  test("a server's network is removed even when its container cannot be", async () => {
+    const engine = new FakeEngine();
+    const launcher = inContainer(engine);
+    const channel = await launcher.start(spec({ egress: ['api.example.com'] }), signal());
+    expect([...engine.networks]).toEqual([`${PREFIX}-net`]);
+    engine.failing = 'DELETE /containers/';
+    await expect(channel.close()).rejects.toThrow();
+    expect([...engine.networks]).toEqual([]);
     await launcher.close();
   });
 

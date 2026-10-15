@@ -272,7 +272,14 @@ withDb('sorting what came in', () => {
         from: 'Dana Kim <dana@client.example>',
         subject: 'Can you sign the renewal?',
       });
-      const service = new TriageService({ sql: handle.sql, classifier: labeller });
+      // The service reads time from this clock, so the wait before a kept item
+      // is tried again is measured on the same clock that started it.
+      let clock = Date.now();
+      const service = new TriageService({
+        sql: handle.sql,
+        classifier: labeller,
+        now: () => new Date(clock),
+      });
       const first = await service.run();
       expect(first.byModel).toBe(1);
       expect(toCloud.join('\n')).not.toContain('Patel');
@@ -288,8 +295,8 @@ withDb('sorting what came in', () => {
         local_model: { base_url: 'http://127.0.0.1:11434/v1', model: 'llama3.3' },
       });
       router.invalidate(privateSpaceId);
-      await handle.sql`update triage_item set triaged_at = now() - interval '2 hours'
-        where space_id = ${privateSpaceId}`;
+      // One kept try waits two hours; a minute past that, the item is due again.
+      clock += 2 * 60 * 60_000 + 60_000;
       const second = await service.run();
       expect(second.byModel).toBe(1);
       expect(toLocal.join('\n')).toContain('follow-up');

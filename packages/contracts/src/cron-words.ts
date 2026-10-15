@@ -58,6 +58,14 @@ export function cronWords(cron: string): string {
   const times = `at ${listWords(hours.map((h) => `${h}:${String(at).padStart(2, '0')}`))}`;
   if (anyDay) return `Every day ${times}`;
   if (dom === '*') {
+    // One weekday of the month: `1#1` is the first Monday, `5L` the last Friday.
+    const nth = /^([0-7])(?:#([1-5])|(L))$/.exec(dow);
+    if (nth) {
+      const which = nth[3]
+        ? 'last'
+        : ['first', 'second', 'third', 'fourth', 'fifth'][Number(nth[2]) - 1];
+      return `On the ${which} ${DAYS[Number(nth[1]) % 7]} of every month ${times}`;
+    }
     const days = numbers(dow, 0, 7)?.map((day) => day % 7);
     if (!days) return fallback;
     const set = [...new Set(days)].sort((a, b) => a - b);

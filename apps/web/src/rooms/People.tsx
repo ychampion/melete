@@ -241,7 +241,10 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
   );
 }
 
-/** Owners add people who have an account on this installation. */
+/**
+ * Owners add people who have an account on this installation: those they
+ * already share a space with, or anyone else by their whole email address.
+ */
 function AddPeople({ detail, onAdded }: { detail: RoomDetail; onAdded: () => void }) {
   const [query, setQuery] = useState('');
   const [people, setPeople] = useState<Person[] | null>(null);
@@ -312,8 +315,8 @@ function AddPeople({ detail, onAdded }: { detail: RoomDetail; onAdded: () => voi
       ) : people ? (
         <p className="people-hint">
           {query.trim()
-            ? 'Nobody else here matches that.'
-            : 'Everyone with an account here is already in the room.'}
+            ? 'Nobody you share a space with matches that. To add someone else, type their whole email address.'
+            : 'Everyone you share a space with is already in the room. To add someone else, type their whole email address.'}
         </p>
       ) : null}
     </section>

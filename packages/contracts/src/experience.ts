@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { ATTACHMENT_LIMITS, attachmentView } from './attachments.ts';
 import {
   becauseLink,
+  beliefBlocked,
   beliefBlockList,
+  beliefBlockRequest,
   beliefExport,
   beliefExportQuery,
   beliefHistory,
@@ -1474,7 +1476,11 @@ export const experienceOperations = {
   'PUT /web/settings': { request: webReadSettings, response: webReadStatus },
   'GET /memory/beliefs': { response: beliefList },
   'GET /memory/beliefs/{id}/history': { response: beliefHistory },
-  'POST /memory/beliefs/{id}/block': { response: experienceOk },
+  /**
+   * Forgets the belief and stops learning it again: anything about its
+   * subject by default, or with `scope: "detail"` just that detail.
+   */
+  'POST /memory/beliefs/{id}/block': { request: beliefBlockRequest, response: beliefBlocked },
   'GET /memory/blocks': { response: beliefBlockList },
   'DELETE /memory/blocks/{id}': { response: experienceOk },
   'GET /memory/timeline': { query: memoryTimelineQuery, response: memoryTimeline },
