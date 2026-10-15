@@ -4,6 +4,7 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { ExperienceMemory } from '../../src/experience/memory.ts';
+import { newId } from '../../src/ids.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
 import { record } from './properties-fixtures.ts';
 
@@ -44,24 +45,34 @@ withDb('saved details in Settings', () => {
     if (!db) return;
     const scope = await createScope(db);
     const total = 205;
-    for (let i = 0; i < total; i++)
-      await record(
-        db,
-        scope,
-        {
-          identity: `habit-${i}`,
-          text: `Habit ${i} is value${i}.`,
-          eventAt: '2026-08-01T09:00:00Z',
-        },
-        [
-          {
-            key: `pref.habits.h${i}`,
-            content: `value${i}`,
-            quote: `value${i}`,
-            kind: 'preference',
-          },
-        ],
-      );
+    // One detail recorded as a conversation records it, and the rest copied
+    // from it in one insert per table, each cited by the same message.
+    const result = await record(
+      db,
+      scope,
+      { identity: 'habits', text: 'Habit 0 is value0.', eventAt: '2026-08-01T09:00:00Z' },
+      [{ key: 'pref.habits.h0', content: 'value0', quote: 'value0', kind: 'preference' }],
+    );
+    expect(result.status).toBe('committed');
+    const [seed] = await db.sql`select id from memory_claims
+      where space_id = ${scope.spaceId} and key = 'pref.habits.h0'`;
+    const id = String(seed?.id);
+    const copies = Array.from({ length: total - 1 }, () => newId('k'));
+    await db.sql`insert into memory_claims (id, space_id, domain_key, key, audience, head_revision)
+      select x.id, c.space_id, 'pref.habits.h' || x.n, 'pref.habits.h' || x.n, c.audience, c.head_revision
+      from memory_claims c, unnest(${copies}::text[]) with ordinality x(id, n) where c.id = ${id}`;
+    await db.sql`insert into memory_revisions
+      (claim_id, revision, kind, factual_status, status, valid_from, data_revision, origin_trust)
+      select x.id, r.revision, r.kind, r.factual_status, r.status, r.valid_from, r.data_revision,
+        r.origin_trust
+      from memory_revisions r, unnest(${copies}::text[]) x(id) where r.claim_id = ${id}`;
+    await db.sql`insert into memory_revision_content (claim_id, revision, content)
+      select x.id, r.revision, 'value' || x.n
+      from memory_revision_content r, unnest(${copies}::text[]) with ordinality x(id, n)
+      where r.claim_id = ${id}`;
+    await db.sql`insert into memory_references (claim_id, revision, source_id, source_version, start, "end")
+      select x.id, r.revision, r.source_id, r.source_version, r.start, r."end"
+      from memory_references r, unnest(${copies}::text[]) x(id) where r.claim_id = ${id}`;
     const memory = new ExperienceMemory(db.sql);
     const first = (await memory.list(scope.spaceId, scope.ownerId)) as Listed;
     expect(first.items).toHaveLength(200);

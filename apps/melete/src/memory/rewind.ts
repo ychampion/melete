@@ -474,8 +474,11 @@ export async function memoryTimeline(
         // The detail's own sentence names it when it is one, as on the beliefs list.
         label: beliefLabel(row.key as string | null, String(row.domain_key), String(row.content)),
         change,
-        value: inPersonsWords(String(row.content)),
-        previous: row.previous === null ? null : inPersonsWords(String(row.previous)),
+        value: inPersonsWords(String(row.content), String(row.domain_key)),
+        previous:
+          row.previous === null
+            ? null
+            : inPersonsWords(String(row.previous), String(row.domain_key)),
         at: at.toISOString(),
       });
     }
