@@ -19,7 +19,8 @@ Fix the time before anything else. Turn "next week" into a date, say it back,
 and use the person's own time zone.
 
 A reminder or a check-in is this job waiting: call job.wait with kind "timer"
-and wake_at set to that moment. Write down what will be checked when it wakes;
+and wake_at set to that moment. A wait wakes once: for one that repeats, use
+run.start with repeat.cron. Write down what will be checked when it wakes;
 a check-in with no question is only a notification. Do not add a calendar
 entry for a reminder unless the person asks for one.
 
