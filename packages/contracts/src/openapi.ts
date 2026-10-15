@@ -332,7 +332,12 @@ import {
   spaceRemovalReport,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
-import { healthDetailResponse, usageResponse } from './usage.ts';
+import {
+  healthDetailResponse,
+  spendLimitRequest,
+  spendLimitResponse,
+  usageResponse,
+} from './usage.ts';
 import {
   voiceAside,
   voiceAsideRequest,
@@ -4249,6 +4254,44 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Usage', usageResponse),
               '401': problem('Not signed in'),
+            },
+          },
+        },
+
+        '/usage/limits/members/{principal_id}': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Set or remove one member’s monthly dollar limit',
+            description:
+              'Only the person who runs the installation. The limit counts every model call made ' +
+              'for the member, in any space, and takes the place of the installation-wide monthly ' +
+              'dollar limit for them. `null` removes it; with none set there is no limit of its own.',
+            requestParams: idParam('principal_id', 'The member’s account id'),
+            requestBody: json(spendLimitRequest),
+            responses: {
+              '200': jsonResponse('The limit now', spendLimitResponse),
+              '400': problem('Not a dollar amount from 0 to 1,000,000, or null'),
+              '403': problem('Only the person who runs the installation sets limits'),
+              '404': problem('No such member'),
+            },
+          },
+        },
+
+        '/usage/limits/spaces/{space_id}': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Set or remove one space’s monthly dollar budget',
+            description:
+              'Only the person who runs the installation. The budget counts every model call made ' +
+              'in the space, whoever asked; past it, new calls there are refused until the month ' +
+              'resets. `null` removes it.',
+            requestParams: idParam('space_id', 'The space’s id'),
+            requestBody: json(spendLimitRequest),
+            responses: {
+              '200': jsonResponse('The budget now', spendLimitResponse),
+              '400': problem('Not a dollar amount from 0 to 1,000,000, or null'),
+              '403': problem('Only the person who runs the installation sets budgets'),
+              '404': problem('No such space'),
             },
           },
         },

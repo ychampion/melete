@@ -59,6 +59,63 @@ export function usageLine(
   return `${money} · ${count}`;
 }
 
+/** "$4.20 of $10.00 · 12 calls", or without the limit when there is none. */
+export function groupLine(row: { usd: number; calls: number }, limit: number | null) {
+  const money = limit !== null ? `${dollars(row.usd)} of ${dollars(limit)}` : dollars(row.usd);
+  return `${money} · ${row.calls} call${row.calls === 1 ? '' : 's'}`;
+}
+
+type Group = { key: string; name: string; line: string; reached: boolean };
+
+/**
+ * This month by space and by person, as Settings lists them. A list with a
+ * single row and no limit says nothing the totals above do not, so it is left
+ * out; a room is marked as one so it is not mistaken for someone's own space.
+ */
+export function usageGroups(data: Pick<Usage, 'by_space' | 'by_member'>) {
+  const spaceRows = (data.by_space ?? []).map((row) => ({ ...row, limit: row.budget_usd }));
+  const memberRows = (data.by_member ?? []).map((row) => ({ ...row, limit: row.limit_usd }));
+  const worth = (rows: { limit: number | null }[]) =>
+    rows.length > 1 || rows.some((row) => row.limit !== null);
+  const shape = (row: { usd: number; calls: number; limit: number | null }) => ({
+    line: groupLine(row, row.limit),
+    reached: row.limit !== null && row.usd >= row.limit,
+  });
+  return {
+    spaces: worth(spaceRows)
+      ? spaceRows.map(
+          (row): Group => ({
+            key: row.space_id,
+            name: row.kind === 'shared' ? `${row.name} (room)` : row.name,
+            ...shape(row),
+          }),
+        )
+      : [],
+    members: worth(memberRows)
+      ? memberRows.map(
+          (row): Group => ({ key: row.principal_id, name: row.name || 'Someone', ...shape(row) }),
+        )
+      : [],
+  };
+}
+
+function GroupList({ title, rows }: { title: string; rows: Group[] }) {
+  if (!rows.length) return null;
+  return (
+    <>
+      <span className="models-overline models-usage-group">{title}</span>
+      <ul className="models-usage-list">
+        {rows.map((row) => (
+          <li key={row.key}>
+            <span className="models-usage-name">{row.name}</span>
+            <span style={row.reached ? { color: 'var(--danger)' } : undefined}>{row.line}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 export function UsageThisMonth() {
   const loaded = useLoad(() => usage(), []);
   const data = loaded.data;
@@ -67,6 +124,7 @@ export function UsageThisMonth() {
   const limits = data.person ? data.limits.person : data.limits.installation;
   if (!mine || !limits) return null;
   const limit = limits.month;
+  const groups = usageGroups(data);
   return (
     <section className="card-12 models-usage" aria-labelledby="usage-head">
       <span id="usage-head" className="models-overline">
@@ -109,6 +167,8 @@ export function UsageThisMonth() {
           ))}
         </ul>
       ) : null}
+      <GroupList title="By space" rows={groups.spaces} />
+      <GroupList title="By person" rows={groups.members} />
     </section>
   );
 }

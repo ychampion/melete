@@ -15,6 +15,12 @@
  * limit. At MELETE_SPEND_NOTICE_PERCENT (default 80) of any limit the person
  * gets a quiet notice in the app, once per period.
  *
+ * The person who runs the installation may also give one member, or one
+ * space, a monthly dollar limit of its own (see `spend-limits.ts`). A
+ * member's takes the place of the monthly dollar limit above for them; a
+ * space's counts every call made in it, whoever asked. With none set, nothing
+ * changes.
+ *
  * Each call is also recorded as interactive (a person is waiting on it) or
  * background (nobody is), with its tier and the trigger behind it (see
  * `usage-class.ts`). A person's background limits, when the operator sets
@@ -25,6 +31,7 @@ import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
+import { SpendLimitStore } from './spend-limits.ts';
 import {
   GatewayError,
   type GatewayPrincipal,
@@ -165,6 +172,19 @@ export function backgroundLimitMessage(period: Period, resetsAt: Date): string {
     : `Background work has reached today's limit; it starts again on ${dayName(resetsAt)} at 00:00 UTC. Your own messages still go through.`;
 }
 
+const usdText = (usd: number) =>
+  usd.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+/** The sentence a member reads when the monthly limit set for them is reached. */
+export function memberLimitMessage(usd: number, resetsAt: Date): string {
+  return `You have reached your monthly limit of ${usdText(usd)}; it resets on ${dayName(resetsAt)}. The person who runs this Melete can raise it.`;
+}
+
+/** The sentence anyone in a space reads when the space's monthly budget is reached. */
+export function spaceBudgetMessage(name: string, usd: number, resetsAt: Date): string {
+  return `"${name}" has reached its monthly budget of ${usdText(usd)}; it resets on ${dayName(resetsAt)}. The person who runs this Melete can raise it.`;
+}
+
 function warningMessage(period: Period, percent: number): string {
   return `You have used ${percent}% of ${period === 'month' ? "this month's" : "today's"} model allowance.`;
 }
@@ -181,6 +201,7 @@ type Totals = {
 /** A call admitted and still running: what it may cost, held against the limits. */
 type Hold = {
   personId: string | null;
+  spaceId: string | null;
   usageClass: UsageClass;
   usd: number;
   tokens: number;
@@ -246,13 +267,17 @@ export class SpendingGuard implements GatewaySpending {
   onRefused?: (scope: SpendingScope, principal: GatewayPrincipal, message: string) => void;
   /** Told the first time in a period that a limit passes the notice level. */
   onNotice?: (notice: SpendingNotice, personId: string | null) => void;
+  /** The monthly limits set for one member or one space. */
+  readonly spendLimits: SpendLimitStore;
 
   constructor(
     private readonly sql: Sql,
     readonly limits: SpendingLimits,
     readonly prices: PriceTable = new PriceTable(),
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.spendLimits = new SpendLimitStore(sql, now);
+  }
 
   /** Whether any limit is set at all; without one, admission reads nothing. */
   get limited(): boolean {
@@ -441,7 +466,12 @@ export class SpendingGuard implements GatewaySpending {
    * warning, and a month before a day, since it lasts longer. `installation` false leaves
    * warnings about the installation's limits out, for a person who may not see them.
    */
-  noticeFor(totals: Totals, now = this.now(), installation = true): SpendingNotice | null {
+  noticeFor(
+    totals: Totals,
+    now = this.now(),
+    installation = true,
+    memberMonthUsd?: number,
+  ): SpendingNotice | null {
     const { nextMonth, nextDay } = periodBounds(now);
     let best: SpendingNotice | null = null;
     const rank = (notice: SpendingNotice) =>
@@ -452,19 +482,28 @@ export class SpendingGuard implements GatewaySpending {
       used: SpendingTotals,
       limit: SpendingWindow,
     ) => {
-      const fractions = [
-        limit.usd !== null ? used.usd / limit.usd : 0,
-        limit.tokens !== null ? used.tokens / limit.tokens : 0,
-      ];
+      // A limit of nothing is reached before anything is spent; 0 / 0 is not a number.
+      const share = (spent: number, most: number | null) =>
+        most === null ? 0 : most > 0 ? spent / most : Number.POSITIVE_INFINITY;
+      const fractions = [share(used.usd, limit.usd), share(used.tokens, limit.tokens)];
       const fraction = Math.max(...fractions);
       const resets = period === 'month' ? nextMonth : nextDay;
       let notice: SpendingNotice | null = null;
+      // The limit set for this member, when it is the one reached, is named.
+      const own =
+        scope === 'person' &&
+        period === 'month' &&
+        memberMonthUsd !== undefined &&
+        used.usd >= memberMonthUsd;
       if (fraction >= 1)
         notice = {
           level: 'reached',
           period,
           scope,
-          message: limitMessage(period, resets),
+          message:
+            own && memberMonthUsd !== undefined
+              ? memberLimitMessage(memberMonthUsd, resets)
+              : limitMessage(period, resets),
           resets_at: resets.toISOString(),
         };
       else if (fraction * 100 >= this.limits.noticePercent && (installation || scope === 'person'))
@@ -480,7 +519,7 @@ export class SpendingGuard implements GatewaySpending {
     consider('installation', 'month', totals.installation.month, this.limits.installation.month);
     consider('installation', 'day', totals.installation.day, this.limits.installation.day);
     if (totals.person) {
-      consider('person', 'month', totals.person.month, this.limits.person.month);
+      consider('person', 'month', totals.person.month, this.memberMonth(memberMonthUsd));
       consider('person', 'day', totals.person.day, this.limits.person.day);
     }
     return best;
@@ -501,31 +540,83 @@ export class SpendingGuard implements GatewaySpending {
     return null;
   }
 
+  /** The person's monthly window, with the dollar limit set for this member in place of the installation-wide one. */
+  private memberMonth(memberMonthUsd: number | undefined): SpendingWindow {
+    const month = this.limits.person.month;
+    return memberMonthUsd === undefined ? month : { ...month, usd: memberMonthUsd };
+  }
+
+  /**
+   * What a space has spent this month, with the calls still running in it in
+   * this process, and its name for the sentence a person reads.
+   */
+  private async spaceMonth(spaceId: string, now: Date): Promise<{ usd: number; name: string }> {
+    const { monthStart } = periodBounds(now);
+    const [row] = await this.sql`select s.name, (select coalesce(sum(u.cost_usd), 0)::float8
+        from model_usage u where u.space_id = s.id
+          and u.created_at >= ${monthStart.toISOString()}::timestamptz) as usd
+      from space s where s.id = ${spaceId}`;
+    let usd = Number(row?.usd ?? 0);
+    for (const list of this.holds.values())
+      for (const hold of list)
+        if (hold.spaceId === spaceId && now.getTime() - hold.at < HOLD_TTL_MS) usd += hold.usd;
+    return { usd: round(usd), name: row?.name ? String(row.name) : 'This space' };
+  }
+
   /**
    * The limit this person has reached, with its sentence and when it resets,
    * or null. A background call is also held to the person's background
-   * limits; an interactive one never is.
+   * limits; an interactive one never is. A call made in a space is also held
+   * to that space's monthly budget. When both are reached the person's own
+   * limit is named first: raising the space's budget alone would not let
+   * them through.
    */
   async reachedLimit(
     personId: string | null,
     usageClass: UsageClass = 'interactive',
+    spaceId: string | null = null,
   ): Promise<LimitReached | null> {
     const background = usageClass === 'background' && this.backgroundLimited;
-    if (!this.limited && !background) return null;
+    const set = await this.spendLimits.all();
+    const memberUsd = personId ? set.member.get(personId) : undefined;
+    const spaceUsd = spaceId ? set.space.get(spaceId) : undefined;
+    if (!this.limited && !background && memberUsd === undefined && spaceUsd === undefined)
+      return null;
     const now = this.now();
     const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
-    const notice = this.noticeFor(totals, now);
+    const notice = this.noticeFor(totals, now, true, memberUsd);
     if (notice?.level === 'reached')
       return { message: notice.message, resetsAt: new Date(notice.resets_at) };
-    return background ? this.backgroundReached(totals, now) : null;
+    // The person's background limit is theirs too, so it is named before the space's budget.
+    const ownBackground = background ? this.backgroundReached(totals, now) : null;
+    if (ownBackground) return ownBackground;
+    if (spaceId && spaceUsd !== undefined) {
+      const spent = await this.spaceMonth(spaceId, now);
+      if (spent.usd >= spaceUsd) {
+        const { nextMonth } = periodBounds(now);
+        return {
+          message: spaceBudgetMessage(spent.name, spaceUsd, nextMonth),
+          resetsAt: nextMonth,
+        };
+      }
+    }
+    return null;
   }
 
   /** The sentence for a reached limit that applies to this person, or null. */
   async reached(
     personId: string | null,
     usageClass: UsageClass = 'interactive',
+    spaceId: string | null = null,
   ): Promise<string | null> {
-    return (await this.reachedLimit(personId, usageClass))?.message ?? null;
+    return (await this.reachedLimit(personId, usageClass, spaceId))?.message ?? null;
+  }
+
+  /** Whether any limit at all could hold back a call of this class. */
+  private async anyLimit(usageClass: UsageClass): Promise<boolean> {
+    if (this.limited || (usageClass === 'background' && this.backgroundLimited)) return true;
+    const set = await this.spendLimits.all();
+    return set.member.size > 0 || set.space.size > 0;
   }
 
   /**
@@ -536,9 +627,13 @@ export class SpendingGuard implements GatewaySpending {
     jobId: string,
     usageClass: UsageClass = 'interactive',
   ): Promise<LimitReached | null> {
-    if (!this.limited && !(usageClass === 'background' && this.backgroundLimited)) return null;
+    if (!(await this.anyLimit(usageClass))) return null;
     const [row] = await PERSON_FOR_JOB(this.sql, jobId);
-    return this.reachedLimit(row?.person_id ? String(row.person_id) : null, usageClass);
+    return this.reachedLimit(
+      row?.person_id ? String(row.person_id) : null,
+      usageClass,
+      row?.space_id ? String(row.space_id) : null,
+    );
   }
 
   /** The reached-limit sentence for the person a job's work is for, or null. */
@@ -550,18 +645,19 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
-    if (!this.limited && !this.backgroundLimited) return;
+    if (!this.backgroundLimited && !(await this.anyLimit('interactive'))) return;
     const scope = await this.scopeOf(principal);
     // Reading the totals and holding this call's most are one step: admissions
     // in this process take their turn, so calls started side by side are
     // judged one after another, each with the ones before it held.
     const message = await this.inTurn(async () => {
-      const reached = await this.reached(scope.personId, scope.usageClass);
+      const reached = await this.reached(scope.personId, scope.usageClass, scope.spaceId);
       // While it runs, the call's most it can cost is held against the limits,
       // so calls running side by side cannot all slip in under one.
       if (!reached && call) {
         const hold: Hold = {
           personId: scope.personId,
+          spaceId: scope.spaceId,
           usageClass: scope.usageClass,
           usd:
             callCost(this.prices, call, {
@@ -605,7 +701,8 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
-    this.release(principal);
+    // The call stays held until its row is written and the totals read again,
+    // so an admission judged meanwhile counts it one way or the other.
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;
@@ -630,20 +727,25 @@ export class SpendingGuard implements GatewaySpending {
           ${scope.usageClass}, ${scope.tier}, ${scope.triggerId}, ${scope.situationId},
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
-      if (this.limited) await this.noticeOnce(scope.personId);
+      const memberUsd = scope.personId
+        ? (await this.spendLimits.all()).member.get(scope.personId)
+        : undefined;
+      if (this.limited || memberUsd !== undefined) await this.noticeOnce(scope.personId, memberUsd);
       // The next admission reads the totals with this call in them.
       else if (this.backgroundLimited) await this.totals(scope.personId, this.now(), true);
     } catch (error) {
       process.stderr.write(
         `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,
       );
+    } finally {
+      this.release(principal);
     }
   }
 
   /** Tell the person once per period that a limit is close or reached. */
-  private async noticeOnce(personId: string | null): Promise<void> {
+  private async noticeOnce(personId: string | null, memberUsd?: number): Promise<void> {
     const now = this.now();
-    const notice = this.noticeFor(await this.totals(personId, now, true), now);
+    const notice = this.noticeFor(await this.totals(personId, now, true), now, true, memberUsd);
     if (!notice) return;
     const owner = notice.scope === 'person' ? `person:${personId}` : 'installation';
     const period = notice.resets_at;
@@ -664,6 +766,7 @@ export class SpendingGuard implements GatewaySpending {
     const { monthStart, nextMonth, nextDay } = periodBounds(now);
     const month = monthStart.toISOString();
     const totals = await this.totals(personId, now, true);
+    const memberUsd = personId ? (await this.spendLimits.all()).member.get(personId) : undefined;
     const models = await this.sql`select provider, model, count(*)::int as calls,
         coalesce(sum(cost_usd), 0)::float8 as usd,
         coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
@@ -694,8 +797,11 @@ export class SpendingGuard implements GatewaySpending {
       person: totals.person,
       background: totals.background,
       installation: installation ? totals.installation : null,
-      limits: this.limits,
-      notice: this.noticeFor(totals, now, installation),
+      limits: {
+        ...this.limits,
+        person: { ...this.limits.person, month: this.memberMonth(memberUsd) },
+      },
+      notice: this.noticeFor(totals, now, installation, memberUsd),
       models: models.map((row) => ({
         provider: String(row.provider),
         model: String(row.model),

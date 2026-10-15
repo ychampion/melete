@@ -133,6 +133,8 @@ export async function sweepOperational(
         output_tokens = usage_day.output_tokens + excluded.output_tokens,
         cost_usd = round((usage_day.cost_usd + excluded.cost_usd)::numeric, 6)::float8`;
     await tx`delete from usage_day where space_id = ${spaceId}`;
+    // A monthly budget set for the space has nothing left to hold.
+    await tx`delete from spend_limit where kind = 'space' and target_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation
     // and publication rows.

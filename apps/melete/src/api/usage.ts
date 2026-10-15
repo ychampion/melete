@@ -3,14 +3,23 @@
  *
  * `GET /usage` answers any signed-in account with its own spending and the
  * installation's, the limits, the notice it should see, the month by purpose
- * and by tier, and its last 30 days; the owner also sees background cost per
- * person per day. `GET /health/detail` takes the operator's bearer token and
- * answers each health check with what it found; 503 while any fails.
+ * and by tier, its last 30 days, and the month by space for the spaces it
+ * owns; the owner also sees background cost per person per day and the month
+ * by member. `PUT /usage/limits/members/:id` and `/usage/limits/spaces/:id`
+ * let the owner set or remove one member's monthly limit or one space's
+ * budget. `GET /health/detail` takes the operator's bearer token and answers
+ * each health check with what it found; 503 while any fails.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { healthDetailResponse, usageResponse } from '@melete/contracts';
-import type { Hono } from 'hono';
+import {
+  healthDetailResponse,
+  spendLimitRequest,
+  spendLimitResponse,
+  usageResponse,
+} from '@melete/contracts';
+import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
+import { type SpendLimitKind, usageByMember, usageBySpace } from '../gateway/spend-limits.ts';
 import { NO_LIMIT, type SpendingGuard } from '../gateway/spending.ts';
 import { backgroundCostPerPersonDay, usageSeries, utcDay } from '../gateway/usage-day.ts';
 import type { HealthDetail } from '../health/monitor.ts';
@@ -43,6 +52,10 @@ export function mountUsage(
     const days = deps.sql ? await usageSeries(deps.sql, actor ?? null, now) : undefined;
     const perPersonDay =
       deps.sql && owner ? await backgroundCostPerPersonDay(deps.sql, weekAgo, today) : null;
+    const set = deps.sql && actor ? await deps.spending.spendLimits.all() : null;
+    const bySpace =
+      deps.sql && actor && set ? await usageBySpace(deps.sql, actor, owner, set, now) : undefined;
+    const byMember = deps.sql && owner && set ? await usageByMember(deps.sql, set, now) : null;
     return c.json(
       usageResponse.parse({
         ...summary,
@@ -61,9 +74,56 @@ export function mountUsage(
               mean_usd: perPersonDay.mean_usd,
             }
           : null,
+        ...(bySpace ? { by_space: bySpace } : {}),
+        by_member: byMember,
       }),
     );
   });
+
+  const sql = deps.sql;
+  if (!sql) return;
+  const setLimit = async (c: Context, kind: SpendLimitKind, id: string) => {
+    const actor = c.get('owner')?.id as string | undefined;
+    if (!(await deps.isOwner(actor)))
+      return c.json(
+        {
+          error: {
+            code: 'scope_denied',
+            message: 'Only the person who runs this Melete sets spending limits.',
+          },
+        },
+        403,
+      );
+    const parsed = spendLimitRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      return c.json(
+        {
+          error: {
+            code: 'invalid_request',
+            message: 'Give a monthly amount in dollars from 0 to 1,000,000, or null to remove it.',
+          },
+        },
+        400,
+      );
+    const [found] =
+      kind === 'member'
+        ? await sql`select id from principal where id = ${id} and kind in ('person', 'guest')`
+        : await sql`select id from space where id = ${id} and removed_at is null`;
+    if (!found)
+      return c.json(
+        {
+          error: {
+            code: 'not_found',
+            message: kind === 'member' ? 'No such member.' : 'No such space.',
+          },
+        },
+        404,
+      );
+    await deps.spending.spendLimits.set(kind, id, parsed.data.monthly_usd, actor ?? null);
+    return c.json(spendLimitResponse.parse({ kind, id, monthly_usd: parsed.data.monthly_usd }));
+  };
+  app.put('/usage/limits/members/:id', (c) => setLimit(c, 'member', c.req.param('id')));
+  app.put('/usage/limits/spaces/:id', (c) => setLimit(c, 'space', c.req.param('id')));
 }
 
 type ModelChoice = { provider: string; model: string };

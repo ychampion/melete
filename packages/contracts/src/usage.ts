@@ -16,7 +16,7 @@ export const usageTotals = z
 
 export const usageWindow = z
   .object({
-    usd: z.number().positive().nullable().meta({ description: 'Dollar limit; null is none' }),
+    usd: z.number().nonnegative().nullable().meta({ description: 'Dollar limit; null is none' }),
     tokens: z
       .number()
       .int()
@@ -85,6 +85,55 @@ export const backgroundCostSummary = z
   })
   .strict();
 
+export const spaceUsage = z
+  .object({
+    space_id: z.string(),
+    name: z.string(),
+    kind: z.enum(['personal', 'shared']).meta({ description: '`shared` is a room' }),
+    calls: z.number().int().nonnegative(),
+    usd: z.number().nonnegative(),
+    tokens: z.number().int().nonnegative(),
+    budget_usd: z.number().nonnegative().nullable().meta({
+      description:
+        'The space’s monthly dollar budget, counting every call made in it; null is none',
+    }),
+  })
+  .strict();
+
+export const memberUsage = z
+  .object({
+    principal_id: z.string(),
+    name: z.string(),
+    calls: z.number().int().nonnegative(),
+    usd: z.number().nonnegative(),
+    tokens: z.number().int().nonnegative(),
+    limit_usd: z.number().nonnegative().nullable().meta({
+      description:
+        'The member’s own monthly dollar limit, in place of the installation-wide one; null is none',
+    }),
+  })
+  .strict();
+
+/** A monthly dollar limit for one member or one space; null clears it. */
+export const spendLimitRequest = z
+  .object({
+    monthly_usd: z.number().nonnegative().max(1_000_000).nullable().meta({
+      description: 'Dollars a month, from 0 to 1,000,000; null removes the limit',
+    }),
+  })
+  .strict()
+  .meta({ id: 'SpendLimitRequest' });
+
+export const spendLimitResponse = z
+  .object({
+    kind: z.enum(['member', 'space']),
+    id: z.string(),
+    monthly_usd: z.number().nonnegative().nullable(),
+  })
+  .strict()
+  .meta({ id: 'SpendLimitResponse' });
+export type SpendLimitResponse = z.infer<typeof spendLimitResponse>;
+
 export const usageResponse = z
   .object({
     month_start: timestamp,
@@ -129,6 +178,23 @@ export const usageResponse = z
         description:
           'Background dollars per active person-day over the last seven finished days; only for ' +
           'the installation’s owner',
+      }),
+    by_space: z
+      .array(spaceUsage)
+      .optional()
+      .meta({
+        description:
+          'This month’s calls in each space this account owns, and for the installation’s owner ' +
+          'every room as well, with each space’s budget',
+      }),
+    by_member: z
+      .array(memberUsage)
+      .nullable()
+      .optional()
+      .meta({
+        description:
+          'This month’s calls for each person and guest, with their own limit; only for the ' +
+          'installation’s owner',
       }),
     notice: usageNotice.nullable(),
     models: z
